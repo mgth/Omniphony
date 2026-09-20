@@ -182,96 +182,115 @@ impl<'a> Section<'a> {
         );
         ui.add_space(theme::PANEL_GAP);
         ui.separator();
-        let header = ui.horizontal(|ui| {
-            let openness = state.openness(ui.ctx());
-            let (rect, chevron) =
-                ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
-            paint_chevron(ui, rect, openness);
-            let icon_response = icon.map(|icon| {
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(ICON_SIZE, ICON_SIZE), egui::Sense::click());
-                icons::paint(ui.painter(), rect, icon, icon_colour(openness));
-                response
-            });
-            let text = egui::RichText::new(&title)
-                .size(theme::FONT_SIZE_SECTION)
-                .color(theme::TEXT_STRONG);
-            let title_response = ui.add(
-                egui::Label::new(text)
-                    .sense(egui::Sense::click())
-                    .selectable(false),
-            );
-            if let Some(explains) = explains {
-                // The "i" beside the title: shown while the header is under
-                // the pointer (last frame's row, so the whole row counts, not
-                // just the title), always on a touch screen. Faded in, and
-                // its space always taken.
-                let row = ui
-                    .ctx()
-                    .data(|d| d.get_temp::<egui::Rect>(row_id(section_id)));
-                let (hovered_row, touch) = ui.ctx().input(|i| {
-                    let over = i
-                        .pointer
-                        .latest_pos()
-                        .is_some_and(|p| row.is_some_and(|r| r.contains(p)));
-                    (over, i.has_touch_screen())
-                });
-                let visibility = ui.ctx().animate_bool_with_time(
-                    id.with("info-glyph"),
-                    hovered_row || touch,
-                    0.12,
-                );
-                super::help::info_glyph(ui, visibility, || match explains {
-                    Explains::Info(prefix) => super::help::Overlay::info(prefix),
-                    Explains::Help(key) => super::help::Overlay::titled(&title, key),
-                });
-            }
-            if let Some(draw) = header_widget {
-                draw(ui);
-            }
-            if summary.is_some() || header_toggle.is_some() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some((on, hover)) = header_toggle {
-                        let (rect, response) =
-                            ui.allocate_exact_size(egui::vec2(16.0, 14.0), egui::Sense::click());
-                        if response.hovered() {
-                            ui.painter().rect_filled(
-                                rect,
-                                theme::CONTROL_RADIUS,
-                                theme::FILL_HOVER,
-                            );
-                        }
-                        paint_chevron(ui, rect, if on { 1.0 } else { 0.0 });
-                        if response.on_hover_text(hover).clicked() {
-                            ui.ctx()
-                                .data_mut(|d| d.insert_temp(toggle_id(section_id), true));
-                        }
-                    }
-                    let Some(summary) = &summary else {
-                        return;
-                    };
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(summary)
-                                .size(theme::FONT_SIZE_SMALL)
-                                .color(theme::TEXT_MUTED),
-                        )
-                        .truncate()
-                        .selectable(false),
+        // The whole row senses the click, beneath its children, as a list
+        // row does: the "i", the header toggle and whatever a header widget
+        // holds take their own clicks, and the row gets the rest — the
+        // spaces between the chevron, the icon and the title included, which
+        // were dead spots in what reads as one clickable line. Full width,
+        // so the space after a short title counts too.
+        let header = ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("section-header", section_id))
+                .sense(egui::Sense::click()),
+            |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let openness = state.openness(ui.ctx());
+                    let (rect, chevron) =
+                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
+                    paint_chevron(ui, rect, openness);
+                    let icon_response = icon.map(|icon| {
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(ICON_SIZE, ICON_SIZE),
+                            egui::Sense::click(),
+                        );
+                        icons::paint(ui.painter(), rect, icon, icon_colour(openness));
+                        response
+                    });
+                    let text = egui::RichText::new(&title)
+                        .size(theme::FONT_SIZE_SECTION)
+                        .color(theme::TEXT_STRONG);
+                    let title_response = ui.add(
+                        egui::Label::new(text)
+                            .sense(egui::Sense::click())
+                            .selectable(false),
                     );
-                });
-            }
-            // The title opens the section, as a title is expected to, and so
-            // does its icon; the help has its own glyph.
-            let header = chevron.union(title_response);
-            match icon_response {
-                Some(icon) => header.union(icon),
-                None => header,
-            }
-        });
+                    if let Some(explains) = explains {
+                        // The "i" beside the title: shown while the header is under
+                        // the pointer (last frame's row, so the whole row counts, not
+                        // just the title), always on a touch screen. Faded in, and
+                        // its space always taken.
+                        let row = ui
+                            .ctx()
+                            .data(|d| d.get_temp::<egui::Rect>(row_id(section_id)));
+                        let (hovered_row, touch) = ui.ctx().input(|i| {
+                            let over = i
+                                .pointer
+                                .latest_pos()
+                                .is_some_and(|p| row.is_some_and(|r| r.contains(p)));
+                            (over, i.has_touch_screen())
+                        });
+                        let visibility = ui.ctx().animate_bool_with_time(
+                            id.with("info-glyph"),
+                            hovered_row || touch,
+                            0.12,
+                        );
+                        super::help::info_glyph(ui, visibility, || match explains {
+                            Explains::Info(prefix) => super::help::Overlay::info(prefix),
+                            Explains::Help(key) => super::help::Overlay::titled(&title, key),
+                        });
+                    }
+                    if let Some(draw) = header_widget {
+                        draw(ui);
+                    }
+                    if summary.is_some() || header_toggle.is_some() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some((on, hover)) = header_toggle {
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(16.0, 14.0),
+                                    egui::Sense::click(),
+                                );
+                                if response.hovered() {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        theme::CONTROL_RADIUS,
+                                        theme::FILL_HOVER,
+                                    );
+                                }
+                                paint_chevron(ui, rect, if on { 1.0 } else { 0.0 });
+                                if response.on_hover_text(hover).clicked() {
+                                    ui.ctx()
+                                        .data_mut(|d| d.insert_temp(toggle_id(section_id), true));
+                                }
+                            }
+                            let Some(summary) = &summary else {
+                                return;
+                            };
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(summary)
+                                        .size(theme::FONT_SIZE_SMALL)
+                                        .color(theme::TEXT_MUTED),
+                                )
+                                .truncate()
+                                .selectable(false),
+                            );
+                        });
+                    }
+                    // The title opens the section, as a title is expected to, and so
+                    // does its icon; the help has its own glyph.
+                    let header = chevron.union(title_response);
+                    match icon_response {
+                        Some(icon) => header.union(icon),
+                        None => header,
+                    }
+                })
+                .inner
+            },
+        );
         ui.ctx()
             .data_mut(|d| d.insert_temp(row_id(section_id), header.response.rect));
-        if header.inner.clicked() {
+        if header.inner.clicked() || header.response.clicked() {
             state.toggle(ui);
         }
         state.show_body_unindented(ui, body).map(|r| r.inner)
@@ -282,6 +301,55 @@ impl<'a> Section<'a> {
 mod tests {
     use super::{Section, icon_colour};
     use crate::ui::{icons, theme};
+
+    /// The spaces between the chevron, the icon and the title are part of the
+    /// click target: a click in the gap after the chevron opens the section.
+    /// Before, only the three widgets took clicks, and the gaps between them
+    /// were dead spots in what reads as one clickable line.
+    #[test]
+    fn a_click_between_the_chevron_and_the_icon_opens_the_section() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0));
+        let spacing = std::cell::Cell::new(0.0f32);
+        let run = |events: Vec<egui::Event>| {
+            let mut body_drawn = false;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    spacing.set(ui.spacing().item_spacing.x);
+                    Section::new("gaps", "section.display")
+                        .icon(&icons::GRID)
+                        .show(ui, |_| body_drawn = true);
+                },
+            );
+            output.textures_delta.clear();
+            body_drawn
+        };
+        assert!(!run(Vec::new()), "the section starts folded");
+        let row = ctx
+            .data(|d| d.get_temp::<egui::Rect>(super::row_id("gaps")))
+            .expect("the header row of the last frame");
+        // Just past the chevron's 12 pt, halfway through the space before
+        // the icon.
+        let gap = egui::pos2(row.left() + 12.0 + spacing.get() / 2.0, row.center().y);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: gap,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(vec![egui::Event::PointerMoved(gap)]);
+        run(vec![button(true)]);
+        run(vec![button(false)]);
+        assert!(
+            run(Vec::new()),
+            "a click in the gap after the chevron did not open the section"
+        );
+    }
 
     /// A section's icon paints in its header — folded, so it is what tells a
     /// closed section apart — and it takes the header's colours at both ends.
