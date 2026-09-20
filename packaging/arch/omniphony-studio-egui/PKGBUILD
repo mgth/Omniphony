@@ -30,7 +30,7 @@ makedepends=('rust' 'cargo')
 options=('!lto')
 source=("omniphony-$pkgver.tar.gz::https://github.com/mgth/Omniphony/archive/refs/tags/v$pkgver.tar.gz")
 # Refreshed with `updpkgsums` once the tag exists (docs/release-process.md, §8).
-sha256sums=('SKIP')
+sha256sums=('2fc90db9f979710b4d4275f3da35c13ca7caddef0f0def7d30e06b21cb1ab355')
 
 _src="Omniphony-$pkgver"
 _studio="$_src/omniphony-studio-egui"
