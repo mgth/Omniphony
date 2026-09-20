@@ -63,6 +63,7 @@ impl StudioSpike {
         let hold = hold.unwrap_or(peak);
         let readout = format_level(meter.as_ref());
         Section::new("masterSection", "master.title")
+            .icon(&crate::ui::icons::SECTION_MASTER)
             .default_open(true)
             .help("help.master.gain")
             .header_widget(move |ui| master_meter(ui, peak, hold, &readout))

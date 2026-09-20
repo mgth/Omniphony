@@ -72,6 +72,7 @@ impl StudioSpike {
         let rows = self.object_rows();
         let cutoffs = self.crossover_cutoffs();
         Section::new("objectsSection", "section.objects")
+            .icon(&crate::ui::icons::OBJECTS)
             .default_open(true)
             .summary(format!("{}", rows.len()))
             .header_toggle(
@@ -256,6 +257,7 @@ impl StudioSpike {
                 .unwrap_or_default()
         };
         Section::new("speakersSection", "section.speakers")
+            .icon(&crate::ui::icons::SECTION_SPEAKERS)
             .default_open(true)
             .summary(layout_name)
             .show(ui, |ui| {

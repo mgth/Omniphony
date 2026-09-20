@@ -18,7 +18,7 @@ Every constant named here is in `src/ui/theme.rs`; every widget in
 
 ```
  ─────────────────────────────────────────────── rule (SECTION_RULE)
- ▾ Section title   [header widget]   summary…      ← Section header, 11 px
+ ▾ ▣ Section title  [header widget]   summary…     ← Section header, 11 px, its icon
    Row that applies to the whole section    [⌄]
    ┌───────────────────────────────────────────┐  ← Group card: hairline,
    │ Group title  status         [key control] │    radius 8, GROUP_FILL
@@ -35,7 +35,7 @@ Every constant named here is in `src/ui/theme.rs`; every widget in
 
 | Frame | Widget | Web class | Look |
 |---|---|---|---|
-| **Section** | `Section::new(id, title_key)` | `.info-section` | A rule above (`SECTION_RULE`), a header row — chevron, title at `FONT_SIZE_SECTION` in `TEXT_STRONG`, an "i" shown on hover, an optional header widget, the summary while folded — and a body that opens in place. |
+| **Section** | `Section::new(id, title_key)` | `.info-section` | A rule above (`SECTION_RULE`), a header row — chevron, the section's icon (`Section::icon`, from `ui::icons`, 13 px, `TEXT_MUTED` folded and `TEXT_STRONG` open), title at `FONT_SIZE_SECTION` in `TEXT_STRONG`, an "i" shown on hover, an optional header widget, the summary while folded — and a body that opens in place. |
 | **Group** | `Group::new(title)` | `.renderer-subpanel`, `.adaptive-subpanel`, `.input-panel-shell` | A card: `GROUP_FILL` on a `HAIRLINE` stroke, `GROUP_RADIUS`, padding `GROUP_PADDING_X/Y`, `GROUP_GAP` from the group before. Its bar: title at `FONT_SIZE` in `TEXT_WHITE`, an optional status, and the actions at the right end. |
 | **Inset** | drawn by `Group::show`; `group::inset` on its own | `.renderer-subpanel-body` | `GROUP_FILL` again with no stroke, `CONTROL_RADIUS`, padding `INSET_PADDING_X/Y`, indented `INSET_INDENT` from the card's left edge. Rows inside are `ROW_GAP` apart. Not drawn at all when its body adds nothing. |
 
@@ -46,11 +46,19 @@ under a `tab_bar` if it had tabs.
 
 ## What goes where
 
-**Section header.** The title, the section's help ("i" on hover:
+**Section header.** The icon, the title, the section's help ("i" on hover:
 `Section::info(prefix)` or `Section::help(key)`), a `header_widget` for a
 readout worth keeping in view with the section folded — a gauge, a meter, a
 bar — and the `summary`, one line, shown only while folded. No control in the
 header: the header opens the section.
+
+**Section icon.** Every collapsible section carries one (`Section::icon`),
+a glyph from `ui::icons` in the scene-effects bar's family (24-unit box,
+1.8 stroke): a folded panel is told apart by its glyph before its title is
+read. A section that the bar already has a button for uses the bar's icon
+(Display, Objects, Heatmaps); the others have one of their own, named
+`SECTION_*`. The pinned editors have no icon: they are not sections that
+fold, they close with their selection.
 
 **Section body, before the groups.** Readouts that belong to the header
 widget (the numbers under a gauge), then the rows that apply to the whole

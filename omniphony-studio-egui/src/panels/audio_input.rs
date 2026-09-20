@@ -79,6 +79,7 @@ impl StudioSpike {
             )
         };
         Section::new("audioInputSection", "section.audioInput")
+            .icon(&crate::ui::icons::SECTION_AUDIO_INPUT)
             .info("input")
             .summary(summary)
             .show(ui, |ui| {

@@ -210,7 +210,9 @@ impl StudioSpike {
         // The gauge's bar sits in the header, as `#rendererPerfWrap` does, so
         // it stays in view with the section folded; its numbers open the body.
         let perf = self.perf_snapshot();
-        let mut section = Section::new("rendererSection", "section.renderer").summary(summary);
+        let mut section = Section::new("rendererSection", "section.renderer")
+            .icon(&crate::ui::icons::SECTION_RENDERER)
+            .summary(summary);
         if let Some(perf) = perf {
             section = section.header_widget(move |ui| renderer_perf::perf_bar(ui, &perf));
         }
