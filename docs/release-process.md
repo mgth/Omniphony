@@ -179,7 +179,7 @@ publishes the bundles as a **draft on `mgth/Omniphony` under `mpv-vX.Y.Z`**
      FEL beta tag, rebase the fork's `orender-master` onto
      `upstream/master`, regenerate `patches-master/` with that base
      (`scripts/regenerate-patches-master.sh <fork> <base>`) and merge it as
-     its own PR — `v0.6.0-fel-beta.1` was tagged on that merge, and the
+     its own PR — `v0.6.0-fel-beta.2` was tagged after it (beta.1 died on an unreachable download host, see below), and the
      AUR `mpv-omniphony-fel` pins the same base as `_mpvcommit`.
 3. PR to its `main`; merge when its CI is green. Pushing workflow-file
    changes needs the SSH remote (`git@github.com-mgth:mgth/mpv-omniphony.git`);
@@ -192,6 +192,14 @@ publishes the bundles as a **draft on `mgth/Omniphony` under `mpv-vX.Y.Z`**
    `git fetch origin main && git tag vX.Y.Z origin/main && git push origin vX.Y.Z`.
    Publish the resulting `mpv-vX.Y.Z` draft on `mgth/Omniphony`
    **not-latest**, notes in the established style.
+   - A single external fetch in a release job is a point of failure:
+     at 0.6.0 `download.videolan.org` was unreachable for hours and the
+     Windows job of both the bundle and the FEL beta died fetching
+     libbluray. `scripts/build-libbluray-mingw.sh` now falls back to the
+     Debian pool and Launchpad and checks the archive's hash. No release
+     had been created for either tag, so `v0.6.0` was moved onto the fix
+     and the beta retagged `-fel-beta.2`; the AUR packages built from
+     those tags had to be re-summed.
 5. Don't trust `gh run watch --exit-status` for the verdict — at 0.5.2 it
    returned success while `build-windows` had failed and `release` was
    skipped. Read `gh run view <id> --json conclusion,jobs` instead.
@@ -218,7 +226,7 @@ truth: `packaging/arch/` in this repo, `packaging/` in mpv-omniphony).
 | `omniphony-studio` | every `v*` release |
 | `omniphony-studio-egui` | every `v*` release (from 0.6.0; template in `packaging/arch/omniphony-studio-egui`, depends on `orender` and links its layouts) |
 | `mpv-omniphony` | when an `mpv-v*` bundle was cut: `_tag`, `depends=('orender>=X.Y.Z')` (the release-train couple) |
-| `mpv-omniphony-fel` | with mpv-omniphony; `_tag` names the tag whose `patches-master/` apply to `_mpvcommit` — at 0.6.0 the FEL beta tag `v0.6.0-fel-beta.1` (the master-track rebase), with `pkgver=0.6.0` — and `_mpvcommit` the mpv master SHA those patches were rebased on and a build verified (`makepkg -fCd` itself, or `scripts/build-fel-local.sh`) |
+| `mpv-omniphony-fel` | with mpv-omniphony; `_tag` names the tag whose `patches-master/` apply to `_mpvcommit` — at 0.6.0 the FEL beta tag `v0.6.0-fel-beta.2` (the master-track rebase), with `pkgver=0.6.0` — and `_mpvcommit` the mpv master SHA those patches were rebased on and a build verified (`makepkg -fCd` itself, or `scripts/build-fel-local.sh`) |
 | `harletty-bridge` | on its own line only (0.7.x, 0.8.x…) — never the stack number. Its `_omniver` names the Omniphony source tag the bridge's path-deps (`bridge_api`/`spdif`/`sys`) are taken from: the current Studio `v*` tag, fetched as the `v<_omniver>` archive (directory `Omniphony-<_omniver>`) — the `liborender-v*` tag is optional and did not exist at 0.6.0, which the PKGBUILD used to fetch |
 
 The templates in `packaging/arch/` are kept in step with the AUR clones (the

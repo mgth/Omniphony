@@ -10,7 +10,7 @@ or to **binaural headphones**, in real time. Open source, GPL-3.0.
 <!-- The player lives under the mpv-v* tag namespace, which /releases/latest never
      resolves to (that is the Studio v* line) — bump these two on each mpv release. -->
 [![Download mpv-omniphony](https://img.shields.io/badge/Download-mpv--omniphony-1f6feb?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.6.0)
-[![Download mpv-omniphony FEL](https://img.shields.io/badge/Download-mpv--omniphony%20FEL-8957e5?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.6.0-fel-beta.1)
+[![Download mpv-omniphony FEL](https://img.shields.io/badge/Download-mpv--omniphony%20FEL-8957e5?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.6.0-fel-beta.2)
 
 ![Omniphony Studio rendering a spatial mix](Omniphony_capture.png)
 
