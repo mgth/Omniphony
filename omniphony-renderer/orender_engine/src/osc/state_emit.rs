@@ -3,7 +3,7 @@ use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 use serde_json::json;
 
 use super::OscSender;
-use super::export::build_live_state_bundle;
+use super::export::build_live_state;
 use runtime_control::osc_contract;
 impl OscSender {
     pub fn send_live_state_bundle(&self) -> Result<()> {
@@ -11,8 +11,8 @@ impl OscSender {
             Some(ref c) => c,
             None => return Ok(()),
         };
-        let bytes = build_live_state_bundle(control, self.host_handler.as_ref());
-        self.send_to_all(&bytes);
+        build_live_state(control, self.host_handler.as_ref())
+            .broadcast(&self.socket, &self.clients);
         Ok(())
     }
 

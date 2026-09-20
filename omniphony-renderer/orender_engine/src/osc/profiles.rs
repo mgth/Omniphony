@@ -16,7 +16,7 @@ use runtime_control::HostControlHandler;
 use runtime_control::osc_contract;
 
 use super::client_registry::OscClientRegistry;
-use super::export::build_live_state_bundle;
+use super::export::build_live_state;
 use super::gaintable::GaintableCache;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{broadcast_int, broadcast_string, send_raw};
@@ -155,8 +155,7 @@ pub(crate) fn handle_profile_message(
     broadcast_profiles_state(control, socket, clients);
     // Full state refresh so every client view (options, layout, binaural,
     // gains…) re-syncs to the post-operation state.
-    let state_bytes = build_live_state_bundle(control, host);
-    send_raw(socket, clients, &state_bytes);
+    build_live_state(control, host).broadcast(socket, clients);
     log::info!(
         "OSC {addr}: '{name}' done (active profile '{}')",
         config.active_profile_name()

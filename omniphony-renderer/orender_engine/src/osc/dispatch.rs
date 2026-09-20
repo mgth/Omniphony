@@ -20,7 +20,7 @@ use runtime_control::osc::{
 use runtime_control::osc_contract;
 
 use super::client_registry::OscClientRegistry;
-use super::export::{build_live_state_bundle, export_current_layout, save_live_config};
+use super::export::{build_live_state, export_current_layout, save_live_config};
 use super::gaintable::GaintableCache;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
@@ -448,8 +448,7 @@ pub(crate) fn handle_control_message(
     }
 
     if addr == osc_contract::CONTROL_INPUT_REFRESH {
-        let state_bytes = build_live_state_bundle(control, host);
-        super::transport::send_raw(socket, clients, &state_bytes);
+        build_live_state(control, host).broadcast(socket, clients);
         log::info!("OSC: input state refresh requested");
         return;
     }
@@ -754,8 +753,7 @@ fn apply_live_option(
         }
     }
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
-    let state_bytes = build_live_state_bundle(control, host);
-    super::transport::send_raw(socket, clients, &state_bytes);
+    build_live_state(control, host).broadcast(socket, clients);
     log::info!("OSC option {} set to '{}'", spec.key, canonical);
 }
 
@@ -832,8 +830,7 @@ fn apply_control_effects(
 ) {
     if effects.mark_dirty {
         set_dirty(control, socket, clients);
-        let state_bytes = build_live_state_bundle(control, host);
-        super::transport::send_raw(socket, clients, &state_bytes);
+        build_live_state(control, host).broadcast(socket, clients);
     }
     if let Some(reference_quat) = effects.persist_head_center {
         persist_head_center(control, reference_quat);

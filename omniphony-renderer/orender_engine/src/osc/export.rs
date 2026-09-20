@@ -1,4 +1,4 @@
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,14 +10,102 @@ use super::client_registry::OscClientRegistry;
 use super::transport::{broadcast_int, broadcast_string, send_raw};
 use runtime_control::osc_contract;
 
-/// Compose the live-state snapshot bundle: core messages (renderer/layout/
+/// Largest payload one UDP datagram carries over IPv4 (65 535 bytes minus the
+/// IP and UDP headers), with room to spare for the bundle framing.
+pub(crate) const MAX_STATE_DATAGRAM: usize = 65_000;
+
+const STATE_TIMETAG: OscTime = OscTime {
+    seconds: 0,
+    fractional: 1,
+};
+
+/// The live-state snapshot encoded for the wire: one OSC bundle when it fits a
+/// datagram, consecutive bundles when it does not (a long device list, a bridge
+/// error report…). Each bundle stays under [`MAX_STATE_DATAGRAM`]; a single
+/// message larger than that travels alone and fails on its own, instead of
+/// taking the whole snapshot down with it — which is what a snapshot that
+/// silently never arrives looks like from Studio: "not connected". Clients read
+/// the messages in order and act on `snapshot_complete`, the last one, so the
+/// split is invisible to them.
+pub(crate) struct LiveStateDatagrams(Vec<Vec<u8>>);
+
+impl LiveStateDatagrams {
+    /// Send the snapshot to one client (registration, refresh).
+    pub(crate) fn send_to(&self, socket: &UdpSocket, client: SocketAddr) {
+        for bytes in &self.0 {
+            if let Err(e) = socket.send_to(bytes, client) {
+                log::warn!(
+                    "Failed to send live state ({} bytes) to {}: {}",
+                    bytes.len(),
+                    client,
+                    e
+                );
+            }
+        }
+    }
+
+    /// Broadcast the snapshot to every registered client.
+    pub(crate) fn broadcast(&self, socket: &UdpSocket, clients: &OscClientRegistry) {
+        for bytes in &self.0 {
+            send_raw(socket, clients, bytes);
+        }
+    }
+}
+
+fn encode_bundle(content: Vec<OscPacket>) -> Vec<u8> {
+    let bundle = OscPacket::Bundle(OscBundle {
+        timetag: STATE_TIMETAG,
+        content,
+    });
+    rosc::encoder::encode(&bundle).unwrap_or_default()
+}
+
+/// Encode `messages` as one bundle when that fits `max` bytes, else as the
+/// fewest consecutive bundles that each do, in order. The common case costs
+/// the single encode it always did; only an oversized snapshot measures its
+/// messages one by one, and that is a state change or a registration, never
+/// the audio path.
+pub(crate) fn encode_state_datagrams(messages: Vec<OscPacket>, max: usize) -> Vec<Vec<u8>> {
+    let packet = OscPacket::Bundle(OscBundle {
+        timetag: STATE_TIMETAG,
+        content: messages,
+    });
+    let whole = rosc::encoder::encode(&packet).unwrap_or_default();
+    let content = match packet {
+        OscPacket::Bundle(bundle) if whole.len() > max => bundle.content,
+        _ => return vec![whole],
+    };
+    // Bundle framing: "#bundle\0" and an 8-byte timetag, then a 4-byte size
+    // prefix in front of every element.
+    const BUNDLE_HEADER: usize = 16;
+    let mut datagrams = Vec::new();
+    let mut group: Vec<OscPacket> = Vec::new();
+    let mut group_len = BUNDLE_HEADER;
+    for message in content {
+        let len = 4 + rosc::encoder::encode(&message)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        if !group.is_empty() && group_len + len > max {
+            datagrams.push(encode_bundle(std::mem::take(&mut group)));
+            group_len = BUNDLE_HEADER;
+        }
+        group.push(message);
+        group_len += len;
+    }
+    if !group.is_empty() {
+        datagrams.push(encode_bundle(group));
+    }
+    datagrams
+}
+
+/// Compose the live-state snapshot: core messages (renderer/layout/
 /// speakers/loudness/DRC/monitoring/objects) + the host handler's extra
 /// messages (e.g. /state/audio + /state/input device fields) + the
-/// snapshot_complete marker, bundled and encoded.
-pub(crate) fn build_live_state_bundle(
+/// snapshot_complete marker, bundled and encoded for the wire.
+pub(crate) fn build_live_state(
     control: &Arc<RendererControl>,
     host: Option<&Arc<dyn HostControlHandler>>,
-) -> Vec<u8> {
+) -> LiveStateDatagrams {
     let has_audio = host.is_some();
     let has_input = host.is_some();
     let mut messages =
@@ -44,14 +132,7 @@ pub(crate) fn build_live_state_bundle(
         addr: osc_contract::STATE_SNAPSHOT_COMPLETE.to_string(),
         args: vec![OscType::Int(1)],
     }));
-    let bundle = OscPacket::Bundle(OscBundle {
-        timetag: OscTime {
-            seconds: 0,
-            fractional: 1,
-        },
-        content: messages,
-    });
-    rosc::encoder::encode(&bundle).unwrap_or_default()
+    LiveStateDatagrams(encode_state_datagrams(messages, MAX_STATE_DATAGRAM))
 }
 
 pub(crate) fn save_live_config(
@@ -67,8 +148,7 @@ pub(crate) fn save_live_config(
     match runtime_control::persist::save_live_config(control, host_ref) {
         Ok(result) => {
             broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
-            let state_bytes = build_live_state_bundle(control, host);
-            send_raw(socket, clients, &state_bytes);
+            build_live_state(control, host).broadcast(socket, clients);
             log::info!("OSC: config saved to {}", result.path.display());
             if result.restart_required {
                 log::info!("OSC: render.bridge_path changed, requesting reload_config");
@@ -165,5 +245,64 @@ pub(crate) fn export_current_layout(control: &Arc<RendererControl>, requested_na
             out_path.display(),
             e
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(addr: &str, payload_len: usize) -> OscPacket {
+        OscPacket::Message(OscMessage {
+            addr: addr.to_string(),
+            args: vec![OscType::String("x".repeat(payload_len))],
+        })
+    }
+
+    fn addrs(datagram: &[u8]) -> Vec<String> {
+        match rosc::decoder::decode_udp(datagram).expect("valid OSC").1 {
+            OscPacket::Bundle(bundle) => bundle
+                .content
+                .iter()
+                .map(|p| match p {
+                    OscPacket::Message(m) => m.addr.clone(),
+                    OscPacket::Bundle(_) => panic!("nested bundle"),
+                })
+                .collect(),
+            OscPacket::Message(_) => panic!("a state datagram is a bundle"),
+        }
+    }
+
+    #[test]
+    fn a_snapshot_that_fits_is_one_bundle() {
+        let datagrams = encode_state_datagrams(vec![msg("/a", 10), msg("/b", 10)], 1000);
+        assert_eq!(datagrams.len(), 1);
+        assert_eq!(addrs(&datagrams[0]), ["/a", "/b"]);
+    }
+
+    #[test]
+    fn an_oversized_snapshot_splits_into_bundles_under_the_limit_in_order() {
+        let messages: Vec<OscPacket> = (0..20).map(|i| msg(&format!("/m{i}"), 300)).collect();
+        let datagrams = encode_state_datagrams(messages, 1000);
+        assert!(datagrams.len() > 1);
+        assert!(
+            datagrams.iter().all(|d| d.len() <= 1000),
+            "every bundle fits"
+        );
+        let seen: Vec<String> = datagrams.iter().flat_map(|d| addrs(d)).collect();
+        let expected: Vec<String> = (0..20).map(|i| format!("/m{i}")).collect();
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn a_message_larger_than_the_limit_travels_alone() {
+        let datagrams = encode_state_datagrams(
+            vec![msg("/small", 10), msg("/huge", 5000), msg("/tail", 10)],
+            1000,
+        );
+        assert_eq!(datagrams.len(), 3);
+        assert_eq!(addrs(&datagrams[1]), ["/huge"]);
+        assert!(datagrams[1].len() > 1000);
+        assert_eq!(addrs(&datagrams[2]), ["/tail"]);
     }
 }
