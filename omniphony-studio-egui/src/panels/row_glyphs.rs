@@ -167,29 +167,43 @@ pub fn position_icon(ui: &mut Ui, position: [f64; 3], spatialize: bool) {
 /// reading the frequency axis.
 pub fn filter_icon(ui: &mut Ui, freq_low: Option<f32>, freq_high: Option<f32>) {
     let filter = Filter::of(freq_low, freq_high);
+    let response = ui
+        .vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            cutoff_label(ui, freq_high);
+            paint_filter(ui, filter);
+            cutoff_label(ui, freq_low);
+        })
+        .response;
+    response.on_hover_text(t(filter.title()));
+}
+
+/// The crossover shape alone, its box and nothing above or below it: for a
+/// bar that has the cutoffs written beside it, where the stacked labels of
+/// [`filter_icon`] would push the glyph out of the line and over the row
+/// beneath. Named on hover, as the full icon is.
+pub fn filter_glyph(ui: &mut Ui, filter: Filter) -> egui::Response {
+    paint_filter(ui, filter).on_hover_text(t(filter.title()))
+}
+
+/// The glyph's 16×11 box, the shape stroked in it.
+fn paint_filter(ui: &mut Ui, filter: Filter) -> egui::Response {
     let colour = if filter == Filter::Full {
         ICON_STROKE
     } else {
         GLYPH_ON
     };
-    let response = ui
-        .vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            cutoff_label(ui, freq_high);
-            let (rect, _) = ui.allocate_exact_size(vec2(GLYPH_W, GLYPH_H), egui::Sense::hover());
-            if ui.is_rect_visible(rect) {
-                let points: Vec<egui::Pos2> = filter
-                    .path()
-                    .iter()
-                    .map(|(x, y)| rect.min + vec2(*x, *y))
-                    .collect();
-                ui.painter()
-                    .add(egui::Shape::line(points, Stroke::new(1.4, colour)));
-            }
-            cutoff_label(ui, freq_low);
-        })
-        .response;
-    response.on_hover_text(t(filter.title()));
+    let (rect, response) = ui.allocate_exact_size(vec2(GLYPH_W, GLYPH_H), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let points: Vec<egui::Pos2> = filter
+            .path()
+            .iter()
+            .map(|(x, y)| rect.min + vec2(*x, *y))
+            .collect();
+        ui.painter()
+            .add(egui::Shape::line(points, Stroke::new(1.4, colour)));
+    }
+    response
 }
 
 /// An absent cutoff reserves no height, so the glyph stays vertically centred
@@ -284,6 +298,30 @@ pub fn band_bars(ui: &mut Ui, cutoffs: &[f64], gains: &[f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bare glyph is its 16×11 box and nothing more, so it sits in a
+    /// bar's line; the full icon with two cutoffs is taller by its labels.
+    #[test]
+    fn the_bare_glyph_is_its_box_alone() {
+        let ctx = egui::Context::default();
+        let heights = |bare: bool| {
+            let mut height = 0.0;
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                height = if bare {
+                    filter_glyph(ui, Filter::Band).rect.height()
+                } else {
+                    ui.vertical(|ui| filter_icon(ui, Some(80.0), Some(2000.0)))
+                        .response
+                        .rect
+                        .height()
+                };
+            });
+            output.textures_delta.clear();
+            height
+        };
+        assert_eq!(heights(true), GLYPH_H);
+        assert!(heights(false) > GLYPH_H, "the full icon lost its cutoffs");
+    }
 
     /// `color-mix` interpolates premultiplied: an opaque accent at 34 % over
     /// the badge's `rgba(0, 0, 0, 0.55)` keeps 34 % of its light and lands

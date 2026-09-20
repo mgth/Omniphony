@@ -336,16 +336,18 @@ impl StudioSpike {
             // Band: the two limits the crossover gives this speaker. Empty
             // limits mean full range, which is why they are optional in the
             // model and sent as zero to clear. The bar names the shape the two
-            // make, when they make one, and draws it as the glyph the speaker
-            // list carries, cutoffs and all, so the editor and the row read
-            // the same.
+            // make — full band included, so the line always reads — and draws
+            // it as the glyph the speaker list carries, without the list's
+            // cutoff labels: the numbers are in the two fields right below,
+            // and stacked on the glyph they pushed it out of the bar and over
+            // the first field's label.
             let (freq_low, freq_high) = (speaker.freq_low, speaker.freq_high);
-            let mut band = Group::new(t("speaker.band")).actions(move |ui| {
-                super::row_glyphs::filter_icon(ui, freq_low, freq_high);
-            });
-            if let Some(shape) = band_status(freq_low, freq_high) {
-                band = band.status(t(shape), theme::TEXT_MUTED);
-            }
+            let filter = Filter::of(freq_low, freq_high);
+            let band = Group::new(t("speaker.band"))
+                .status(t(filter.title()), theme::TEXT_MUTED)
+                .actions(move |ui| {
+                    super::row_glyphs::filter_glyph(ui, filter);
+                });
             band.show(ui, |ui| {
                 self.frequency_row(
                     ui,
@@ -872,29 +874,9 @@ fn select_row(
     (chosen != current).then_some(chosen)
 }
 
-/// The status the Band group shows: the crossover shape its two limits make,
-/// or nothing while the speaker is full range — a bar reading "Full band" on
-/// every speaker would say nothing.
-fn band_status(freq_low: Option<f32>, freq_high: Option<f32>) -> Option<&'static str> {
-    let filter = Filter::of(freq_low, freq_high);
-    (filter != Filter::Full).then(|| filter.title())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{aligned_delays_ms, band_status, distances_from_delays};
-
-    #[test]
-    fn the_band_group_names_the_shape_only_when_limited() {
-        assert_eq!(band_status(None, None), None);
-        assert_eq!(band_status(Some(0.0), None), None);
-        assert_eq!(band_status(Some(80.0), None), Some("speaker.filter.high"));
-        assert_eq!(band_status(None, Some(120.0)), Some("speaker.filter.low"));
-        assert_eq!(
-            band_status(Some(80.0), Some(2000.0)),
-            Some("speaker.filter.band")
-        );
-    }
+    use super::{aligned_delays_ms, distances_from_delays};
 
     #[test]
     fn nearer_speakers_wait_for_the_farthest() {
