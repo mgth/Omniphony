@@ -11,6 +11,9 @@
 use egui::Ui;
 
 use crate::app::StudioSpike;
+use crate::host::channels::{
+    Family, LayoutSource, PlacementMode, family_placement, playing_family,
+};
 use crate::host::commands::engine;
 use crate::i18n::t;
 use crate::ui::group::Group;
@@ -129,16 +132,107 @@ impl StudioSpike {
                     effective_reason(phantom != "off", synthetic, processing.as_ref(), "phantom");
                 self.phantom_group(ui, &phantom, phantom_schema.as_ref(), &phantom_reason);
 
-                // The channel layout every fixed channel is placed by. The
-                // editor for one channel opens from the objects list. Aligned
-                // to the top of what is left, not its middle: centred, the
-                // button hung halfway down the empty panel.
-                ui.add_space(4.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    if ui.button(t("virtualBed.reset")).clicked() {
-                        self.virtual_bed_reset_confirm = true;
+                // Where the fixed channels go, per source family. The editor
+                // for one channel opens from the objects list.
+                self.placement_group(ui);
+            });
+    }
+
+    /// The placement policy of the family being edited: the family tabs, the
+    /// mode, what the family resolves to, and the way back to the generic
+    /// entries. Picking Manual seeds the family's entries with the poses it
+    /// renders right now, so nothing jumps.
+    fn placement_group(&mut self, ui: &mut Ui) {
+        let (family, placement, generic_has_mode, playing) = {
+            let live = self.host.read();
+            let family = live.editing_family;
+            (
+                family,
+                family_placement(&live.app, family),
+                family_placement(&live.app, Family::Generic)
+                    .own_mode
+                    .is_some(),
+                playing_family(&live.app),
+            )
+        };
+        let mode_name = t(placement.effective_mode.i18n_key());
+        Group::new(t("placement.title"))
+            .help("help.placement")
+            .show(ui, |ui| {
+                // The family tabs; the one the renderer is playing is marked.
+                let labels: Vec<String> = Family::ALL
+                    .iter()
+                    .map(|f| {
+                        if playing == Some(*f) {
+                            format!("{} ●", t(f.i18n_key()))
+                        } else {
+                            t(f.i18n_key()).to_owned()
+                        }
+                    })
+                    .collect();
+                let options: Vec<(Family, &str)> = Family::ALL
+                    .iter()
+                    .copied()
+                    .zip(labels.iter().map(String::as_str))
+                    .collect();
+                if let Some(picked) = widgets::tab_bar(ui, &family, &options) {
+                    engine::select_placement_family(&self.host, picked);
+                }
+
+                // The mode: the family's own, or inherited (every family but
+                // the generic one can leave the choice to it).
+                let current = placement.own_mode;
+                let mut choices: Vec<(Option<PlacementMode>, &str)> = Vec::new();
+                if family != Family::Generic {
+                    choices.push((None, t("placement.mode.inherit")));
+                }
+                for mode in PlacementMode::ALL {
+                    choices.push((Some(mode), t(mode.i18n_key())));
+                }
+                widgets::label_row_help(ui, t("placement.mode"), "help.placement.mode", |ui| {
+                    if let Some(picked) = widgets::toggle_buttons(ui, &current, &choices) {
+                        match picked {
+                            Some(PlacementMode::Manual) => {
+                                engine::switch_placement_to_manual(&self.host, family)
+                            }
+                            other => engine::set_placement_mode(&self.host, family, other),
+                        }
                     }
                 });
+                if placement.own_mode.is_none() {
+                    let text = if family != Family::Generic && generic_has_mode {
+                        t("placement.inherited")
+                    } else {
+                        t("placement.builtin")
+                    };
+                    widgets::note(ui, &text.replace("{mode}", mode_name));
+                }
+                widgets::note(
+                    ui,
+                    match placement.layout_source {
+                        LayoutSource::Own => t("placement.layout.own"),
+                        LayoutSource::Generic => t("placement.layout.generic"),
+                        LayoutSource::None => t("placement.layout.none"),
+                    },
+                );
+
+                // Back to the generic entries — or, for the generic family,
+                // to the defaults. Aligned to the top of what is left, not its
+                // middle: centred, the button hung halfway down the empty
+                // panel.
+                if placement.layout_source == LayoutSource::Own {
+                    ui.add_space(4.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        let label = if family == Family::Generic {
+                            t("virtualBed.reset")
+                        } else {
+                            t("placement.useGeneric")
+                        };
+                        if ui.button(label).clicked() {
+                            self.placement_reset_confirm = Some(family);
+                        }
+                    });
+                }
             });
     }
 
@@ -321,19 +415,26 @@ impl StudioSpike {
         }
     }
 
-    /// The web's `confirm('confirm.resetVirtualBed')`: the reset moves every
-    /// channel back to its default place.
-    pub(crate) fn virtual_bed_reset_modal(&mut self, ctx: &egui::Context) {
-        if !self.virtual_bed_reset_confirm {
+    /// The web's `confirm('confirm.resetVirtualBed')`, per family: clearing a
+    /// family's entries sends every channel back to the generic ones — or, for
+    /// the generic family, to the defaults.
+    pub(crate) fn placement_reset_modal(&mut self, ctx: &egui::Context) {
+        let Some(family) = self.placement_reset_confirm else {
             return;
-        }
+        };
         let mut run = false;
         let mut cancel = false;
-        let modal = egui::Modal::new(egui::Id::new("virtual-bed-reset-confirm"))
+        let text = t("confirm.resetPlacement").replace("{family}", t(family.i18n_key()));
+        let action = if family == Family::Generic {
+            t("virtualBed.reset")
+        } else {
+            t("placement.useGeneric")
+        };
+        let modal = egui::Modal::new(egui::Id::new("placement-reset-confirm"))
             .frame(widgets::modal_frame())
             .show(ctx, |ui| {
                 ui.set_max_width(340.0);
-                for line in t("confirm.resetVirtualBed").split('\n') {
+                for line in text.split('\n') {
                     if line.is_empty() {
                         ui.add_space(crate::ui::theme::ROW_GAP);
                     } else {
@@ -344,18 +445,15 @@ impl StudioSpike {
                 ui.horizontal(|ui| {
                     cancel = ui.button(t("common.cancel")).clicked();
                     run = ui
-                        .button(
-                            egui::RichText::new(t("virtualBed.reset"))
-                                .color(crate::ui::theme::WARN),
-                        )
+                        .button(egui::RichText::new(action).color(crate::ui::theme::WARN))
                         .clicked();
                 });
             });
         if run {
-            crate::host::commands::engine::reset_virtual_bed(&self.host);
+            engine::clear_placement_layout(&self.host, family);
         }
         if run || cancel || modal.should_close() {
-            self.virtual_bed_reset_confirm = false;
+            self.placement_reset_confirm = None;
         }
     }
 }

@@ -5,6 +5,7 @@
 
 use super::OscControlMsg;
 use super::{SharedState, send_control};
+use crate::host::channels::{CoordMode, Family, PlacementMode};
 use crate::osc_contract;
 
 pub fn control_save_config(state: &SharedState) {
@@ -190,70 +191,164 @@ pub fn control_phantom_extract_param(state: &SharedState, key: String, value: f3
     );
 }
 
-/// Set the parametrable virtual bed (a YAML `SpeakerLayout`, one entry per
-/// channel label). An empty string resets to the built-in canonical poses.
-/// The parametrable virtual bed, applied and sent. The document is what the
-/// channel editor built; the model shows it at once so the editor, the 3D view
-/// and the audio agree before the renderer echoes.
-pub fn set_virtual_bed(state: &SharedState, payload: serde_json::Value) {
-    let value = serde_json::to_string(&payload).ok();
-    preview_virtual_bed(state, payload);
-    if let Some(value) = value {
-        control_virtual_bed(state, value);
+/// Which family the channel editor and the at-rest markers show. A view
+/// choice that the core keeps, because the markers are a core service and
+/// must follow the same tab as the editor.
+pub fn select_placement_family(state: &SharedState, family: Family) {
+    let mut live = state.inner.lock().unwrap();
+    if live.editing_family == family {
+        return;
     }
-}
-
-/// Reset every channel to its catalogue corner, in cartesian mode.
-///
-/// Sending an empty string would hand the renderer its built-in *polar* poses,
-/// which the editor would then display as cartesian corners: the polar form
-/// would change while the cartesian fields stayed stale even though the mode
-/// read "cartesian". Pushing the explicit cartesian bed keeps the editor, the
-/// 3D view and the audio in agreement.
-pub fn reset_virtual_bed(state: &SharedState) {
-    use crate::host::channels::{Base, Channel, build_layout_payload, default_entry};
-    let payload = {
-        let live = state.inner.lock().unwrap();
-        let room = live.app.room_ratio.clone();
-        let channels: Vec<Channel> =
-            crate::host::channels::effective_channels(&live.channels, &live.app)
-                .iter()
-                .map(|channel| {
-                    let base = live.channels.base(&channel.name).cloned().unwrap_or(Base {
-                        name: channel.name.clone(),
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                        spatialize: true,
-                        polar: None,
-                    });
-                    default_entry(&room, &base)
-                })
-                .collect();
-        build_layout_payload(&live.app, &channels)
-    };
-    set_virtual_bed(state, payload);
-}
-
-/// A drag in flight moves the local copy only: the bed is a whole layout, and
-/// pushing one per pointer move would be a stream of layouts.
-pub fn preview_virtual_bed(state: &SharedState, payload: serde_json::Value) {
-    state.inner.lock().unwrap().app.live_options.virtual_bed = Some(payload);
-    // The bed's scene markers are published by a core service, so a bed the UI
-    // just changed has to reach the clock. Without this the markers would wait
-    // for whatever else wakes it — an incoming packet, which is exactly what a
-    // Studio editing its bed offline does not have.
+    live.editing_family = family;
+    drop(live);
     (state.waker)();
 }
 
-pub fn control_virtual_bed(state: &SharedState, value: String) {
+/// A family's placement mode: `None` clears the family's own choice, so it
+/// inherits (the generic mode, else its built-in default). Applied to the
+/// model at once and sent; the renderer echoes the resolved block.
+pub fn set_placement_mode(state: &SharedState, family: Family, mode: Option<PlacementMode>) {
+    {
+        let mut live = state.inner.lock().unwrap();
+        let block = placement_block_mut(&mut live.app, family);
+        block.insert(
+            "mode".to_owned(),
+            match mode {
+                Some(mode) => serde_json::Value::String(mode.as_str().to_owned()),
+                None => serde_json::Value::Null,
+            },
+        );
+    }
+    (state.waker)();
     send_control(
         &state.osc_tx,
-        OscControlMsg::SendString {
-            address: osc_contract::CONTROL_VIRTUAL_BED.to_string(),
-            value,
+        OscControlMsg::SendArgs {
+            address: osc_contract::CONTROL_PLACEMENT_MODE.to_string(),
+            args: vec![
+                rosc::OscType::String(family.as_str().to_owned()),
+                rosc::OscType::String(mode.map_or("inherit", PlacementMode::as_str).to_owned()),
+            ],
         },
     );
+}
+
+/// A family's own entries, applied and sent. The document is what the
+/// channel editor built; the model shows it at once so the editor, the 3D
+/// view and the audio agree before the renderer echoes.
+pub fn set_placement_layout(state: &SharedState, family: Family, payload: serde_json::Value) {
+    let value = serde_json::to_string(&payload).ok();
+    preview_placement_layout(state, family, payload);
+    if let Some(value) = value {
+        control_placement_layout(state, family, value);
+    }
+}
+
+/// Clear a family's own entries: it then uses the generic ones — or, for
+/// the generic family itself, the defaults (LFE direct, unity trims, the
+/// model's poses).
+pub fn clear_placement_layout(state: &SharedState, family: Family) {
+    {
+        let mut live = state.inner.lock().unwrap();
+        placement_block_mut(&mut live.app, family)
+            .insert("layout".to_owned(), serde_json::Value::Null);
+        if family == Family::Generic {
+            live.app.live_options.virtual_bed = None;
+        }
+    }
+    (state.waker)();
+    control_placement_layout(state, family, String::new());
+}
+
+/// Switch a family to manual mode with the poses it renders right now as
+/// its entries — what you hear becomes what you edit, with no jump. The
+/// renderer's own fixed-channel positions are taken when that family is
+/// playing (they carry the declared angles and the Side/Back choice); the
+/// model's poses otherwise.
+pub fn switch_placement_to_manual(state: &SharedState, family: Family) {
+    use crate::host::channels::{adm_to_polar, build_layout_payload, effective_channels_for};
+    let payload = {
+        let live = state.inner.lock().unwrap();
+        let room = live.app.room_ratio.clone();
+        let playing = crate::host::channels::playing_family(&live.app) == Some(family);
+        let mut channels = effective_channels_for(&live.channels, &live.app, family);
+        if playing {
+            for channel in &mut channels {
+                let Some(source) = live.app.sources.get(&channel.name) else {
+                    continue;
+                };
+                if source.fixed != Some(true) {
+                    continue;
+                }
+                let adm = [source.x, source.y, source.z];
+                let (azimuth, elevation, distance) = adm_to_polar(&room, adm);
+                channel.coord_mode = CoordMode::Cartesian;
+                channel.x = adm[0];
+                channel.y = adm[1];
+                channel.z = adm[2];
+                channel.azimuth = azimuth;
+                channel.elevation = elevation;
+                channel.distance = distance;
+            }
+        }
+        build_layout_payload(&live.app, &channels)
+    };
+    // Entries first, then the mode: the plan flips once, with the entries
+    // already in place.
+    set_placement_layout(state, family, payload);
+    set_placement_mode(state, family, Some(PlacementMode::Manual));
+}
+
+/// A drag in flight moves the local copy only: the entries are a whole
+/// layout, and pushing one per pointer move would be a stream of layouts.
+pub fn preview_placement_layout(state: &SharedState, family: Family, payload: serde_json::Value) {
+    {
+        let mut live = state.inner.lock().unwrap();
+        if family == Family::Generic {
+            live.app.live_options.virtual_bed = Some(payload.clone());
+        }
+        placement_block_mut(&mut live.app, family).insert("layout".to_owned(), payload);
+    }
+    // The markers are published by a core service, so entries the UI just
+    // changed have to reach the clock. Without this the markers would wait
+    // for whatever else wakes it — an incoming packet, which is exactly what
+    // a Studio editing offline does not have.
+    (state.waker)();
+}
+
+fn control_placement_layout(state: &SharedState, family: Family, value: String) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: osc_contract::CONTROL_PLACEMENT_LAYOUT.to_string(),
+            args: vec![
+                rosc::OscType::String(family.as_str().to_owned()),
+                rosc::OscType::String(value),
+            ],
+        },
+    );
+}
+
+/// The family's object in the mirrored `placement` block, created on demand
+/// so an optimistic edit lands somewhere even before the first echo.
+fn placement_block_mut(
+    app: &mut crate::model::app_state::AppState,
+    family: Family,
+) -> &mut serde_json::Map<String, serde_json::Value> {
+    let placement = app
+        .live_options
+        .placement
+        .get_or_insert_with(|| serde_json::Value::Object(Default::default()));
+    if !placement.is_object() {
+        *placement = serde_json::Value::Object(Default::default());
+    }
+    let families = placement.as_object_mut().expect("object");
+    let block = families
+        .entry(family.as_str().to_owned())
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+    if !block.is_object() {
+        *block = serde_json::Value::Object(Default::default());
+    }
+    block.as_object_mut().expect("object")
 }
 
 pub fn control_drc_mode(state: &SharedState, value: String) {
@@ -302,4 +397,81 @@ pub fn control_export_layout(state: &SharedState, name: Option<String>) {
             address: osc_contract::CONTROL_LAYOUT_EXPORT.to_string(),
         },
     );
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+    use crate::host::channels::{LayoutSource, PlacementMode, family_placement};
+
+    /// A mode edit lands in the mirrored block at once (optimistic), an
+    /// `inherit` clears it, and clearing the entries leaves the family on
+    /// the generic ones.
+    #[test]
+    fn placement_commands_update_the_model_before_the_echo() {
+        let state = crate::host::commands::tests::state();
+        set_placement_mode(&state, Family::Dts, Some(PlacementMode::Sphere));
+        {
+            let live = state.inner.lock().unwrap();
+            let dts = family_placement(&live.app, Family::Dts);
+            assert_eq!(dts.own_mode, Some(PlacementMode::Sphere));
+            assert_eq!(dts.effective_mode, PlacementMode::Sphere);
+            assert_eq!(
+                family_placement(&live.app, Family::Dolby).effective_mode,
+                PlacementMode::Room,
+                "another family is untouched"
+            );
+        }
+        set_placement_mode(&state, Family::Dts, None);
+        assert_eq!(
+            family_placement(&state.inner.lock().unwrap().app, Family::Dts).own_mode,
+            None
+        );
+
+        let entries = serde_json::json!({ "radius_m": 1.0, "speakers": [
+            { "name": "LFE", "coord_mode": "cartesian", "x": 0.0, "y": 1.0, "z": 0.0, "spatialize": false }
+        ] });
+        set_placement_layout(&state, Family::Dts, entries);
+        assert_eq!(
+            family_placement(&state.inner.lock().unwrap().app, Family::Dts).layout_source,
+            LayoutSource::Own
+        );
+        clear_placement_layout(&state, Family::Dts);
+        assert_eq!(
+            family_placement(&state.inner.lock().unwrap().app, Family::Dts).layout_source,
+            LayoutSource::None,
+            "no generic entries either"
+        );
+    }
+
+    /// Switching to manual seeds the family's entries with what it renders
+    /// now: in room mode, the corners.
+    #[test]
+    fn switching_to_manual_seeds_the_entries_from_the_current_poses() {
+        let state = crate::host::commands::tests::state();
+        {
+            let mut live = state.inner.lock().unwrap();
+            let app = std::mem::take(&mut live.app);
+            live.channels.refresh(&app);
+            live.app = app;
+        }
+        switch_placement_to_manual(&state, Family::Auro);
+        let live = state.inner.lock().unwrap();
+        let auro = family_placement(&live.app, Family::Auro);
+        assert_eq!(auro.own_mode, Some(PlacementMode::Manual));
+        assert_eq!(auro.layout_source, LayoutSource::Own);
+        let ls =
+            crate::host::channels::effective_channels_for(&live.channels, &live.app, Family::Auro)
+                .into_iter()
+                .find(|c| c.name == "Ls")
+                .expect("Ls");
+        // Auro's built-in mode is sphere: the seed is its nominal direction,
+        // kept as a polar entry.
+        assert_eq!(ls.coord_mode, CoordMode::Polar);
+        assert_eq!((ls.azimuth, ls.elevation), (-110.0, 0.0));
+        let family = live.editing_family;
+        drop(live);
+        select_placement_family(&state, Family::Pcm);
+        assert_ne!(state.inner.lock().unwrap().editing_family, family);
+    }
 }

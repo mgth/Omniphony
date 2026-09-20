@@ -460,7 +460,8 @@ pub fn build_frame(
             .get(index)
             .map(|sp| (gizmos::GizmoTarget::Speaker(index), sp.scene_pos)),
         None => selection.object.as_deref().and_then(|id| {
-            let name = gizmos::virtual_channel_of(&live.channels, &live.app, id)?;
+            let name =
+                gizmos::virtual_channel_of(&live.channels, &live.app, live.editing_family, id)?;
             objects.iter().find(|o| o.id == id).map(|o| {
                 let target = gizmos::GizmoTarget::Channel {
                     id: id.to_owned(),
