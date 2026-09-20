@@ -221,15 +221,18 @@ pub struct RenderConfig {
     /// `passes` / `lift`). Absent = the stage's declared defaults.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phantom_params: Option<std::collections::HashMap<String, f32>>,
-    /// Parametrable virtual bed for channel-based (non-object) content. One
-    /// entry per input-channel label (`L`, `R`, `C`, `LFE`, `Ls`, `Rs`, …):
-    /// `spatialize:true` virtualizes the channel as an object at the entry's
-    /// position; `spatialize:false` routes it direct to the matching output
-    /// speaker (e.g. LFE → sub). Absent = built-in canonical poses (LFE direct,
-    /// the rest virtualized). Reuses the speaker-layout schema so the Studio 3D
-    /// editor can edit it.
+    /// Legacy single virtual bed for channel-based content, read for
+    /// migration only: it becomes `placement.generic` in manual mode with
+    /// these entries, and is dropped on the next save. See `placement`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub virtual_bed: Option<crate::speaker_layout::SpeakerLayout>,
+    /// Where fixed channels go, per source family: a mode (`sphere`, `room`,
+    /// `manual`) and the family's entries (`spatialize`, `gain_db`, and the
+    /// pose in manual mode), families inheriting from `generic`. Absent =
+    /// every family at its built-in default (Auro-3D a sphere, the rest the
+    /// room model, LFE direct). See `renderer::placement`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement: Option<crate::placement::PlacementConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spread_from_distance: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

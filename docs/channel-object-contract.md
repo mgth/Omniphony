@@ -239,6 +239,16 @@ Rules:
   0.3 bridge is refused at load). `fixed_channel_poses` marks the end of the
   0.4 method prefix: methods added after it in later 0.4.x releases must
   carry a default body.
+- `FormatBridge::source_family` (0.4.x, after the prefix, default body:
+  empty) names the family of the current presentation — `dolby`, `dts`,
+  `auro`, `pcm` — as a string, so a new format costs no ABI change. The
+  renderer chooses the placement policy per family: **Sphere** (the
+  declared angles, else its nominal angle table), **Room** (its corner
+  model, declared angles ignored) or **Manual** (the family's own entries),
+  each family inheriting from `generic`. Declared poses are therefore read
+  in sphere mode only; a user's entry is never overridden by the
+  Side/Back surround placement any more, nor is a declared angle. See
+  [placement.md](placement.md).
 
 ### Rendering (engine/CLI)
 

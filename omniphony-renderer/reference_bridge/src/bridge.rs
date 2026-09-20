@@ -283,6 +283,10 @@ impl FormatBridge for WavBridge {
         // renderer's own pose for its label.
         RVec::new()
     }
+
+    fn source_family(&self) -> RString {
+        RString::from("pcm")
+    }
 }
 
 #[cfg(test)]

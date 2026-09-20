@@ -451,8 +451,10 @@ fn handle_audio_message(
         return handler.poll_runtime_state();
     }
     let frame = decoded.frame;
-    if let Some(poses) = decoded.declared_poses {
-        handler.spatial.declared_poses = poses;
+    if let Some(declaration) = decoded.declaration {
+        handler.spatial.source_family =
+            renderer::placement::SourceFamily::from_declared(&declaration.family);
+        handler.spatial.declared_poses = declaration.poses;
     }
     if frame.is_new_segment {
         handler.spatial.segment_start_samples = handler.session.decoded_samples;
@@ -606,7 +608,7 @@ fn pump_idle_feed(
         DecodedAudioData {
             source: DecodedSource::Bridge,
             frame,
-            declared_poses: None,
+            declaration: None,
             decode_time_ms: 0.0,
             sent_at: std::time::Instant::now(),
         },

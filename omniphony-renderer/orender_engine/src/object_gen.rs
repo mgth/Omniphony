@@ -371,10 +371,12 @@ pub(crate) fn channel_3d_position(
     placement: SurroundPlacement,
 ) -> Option<[f64; 3]> {
     use RChannelLabel::*;
-    // The height tier is stated as an angle, not a corner: its canonical
-    // position is that angle on the unit sphere.
-    if let Some((_, azimuth, elevation)) = crate::virtual_bed::angle_defined_pose(label) {
-        let (x, y, z) = renderer::spatial_vbap::spherical_to_adm(azimuth, elevation, 1.0);
+    // The height tier is on the wall above its floor speaker (the room
+    // model's corner for it), following the surround pair's Side/Back choice.
+    if matches!(label, Lh | Rh | Ch | Lhs | Rhs) {
+        let (_, x, y, z) = crate::virtual_bed::fallback_virtual_bed_pose(label, use_7_1)?;
+        let (x, y, z) = crate::virtual_bed::surround_placement_override(label, use_7_1, placement)
+            .unwrap_or((x, y, z));
         return Some([x as f64, y as f64, z as f64]);
     }
     let top = match label {

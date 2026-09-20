@@ -195,10 +195,13 @@ pub fn build_renderer_state_json(
         // their canonical (snake_case) keys. The flat camelCase keys above are
         // the legacy spellings, kept while clients migrate to this block.
         "options": renderer::options::options_json(live),
-        // Parametrable virtual bed for channel content (null = built-in
-        // canonical poses, LFE direct). Reuses the speaker-layout schema so the
-        // Studio 3D editor can target it.
-        "virtualBed": live.virtual_bed.as_ref()
+        // Per-family placement of fixed channels (`renderer::placement`):
+        // each family's own settings and what they resolve to.
+        "placement": placement_json(&live.placement),
+        // Legacy mirror of the generic family's own entries (null = none),
+        // for clients that predate `placement`.
+        "virtualBed": live.placement.family(renderer::placement::SourceFamily::Generic)
+            .layout.as_ref()
             .map(|bed| serde_json::to_value(bed).unwrap_or(serde_json::Value::Null)),
         "distanceModel": live.distance_model.to_string(),
         "distanceModelMetric": live.distance_model_metric.to_string(),
@@ -702,4 +705,34 @@ pub fn build_live_state_bundle(
     // The engine wrapper appends `HostControlHandler::extend_snapshot()` and
     // the `/state/snapshot_complete` marker, then bundles + encodes.
     all_messages
+}
+
+/// The `placement` block of the renderer snapshot: per family, its own
+/// `mode`/`layout` (null when unset, i.e. inherited) and the effective
+/// result — `effectiveMode`, and `layoutSource` saying whose entries apply
+/// (`own`, `generic` or `none`).
+fn placement_json(state: &renderer::placement::PlacementState) -> serde_json::Value {
+    use renderer::placement::SourceFamily;
+    let mut families = serde_json::Map::new();
+    for family in SourceFamily::ALL {
+        let own = state.family(family);
+        let layout_source = if own.layout.is_some() {
+            "own"
+        } else if state.family(SourceFamily::Generic).layout.is_some() {
+            "generic"
+        } else {
+            "none"
+        };
+        families.insert(
+            family.as_str().to_string(),
+            json!({
+                "mode": own.mode.map(|m| m.as_str()),
+                "layout": own.layout.as_ref()
+                    .map(|bed| serde_json::to_value(bed).unwrap_or(serde_json::Value::Null)),
+                "effectiveMode": state.effective_mode(family).as_str(),
+                "layoutSource": layout_source,
+            }),
+        );
+    }
+    serde_json::Value::Object(families)
 }

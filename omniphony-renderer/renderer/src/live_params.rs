@@ -1295,14 +1295,12 @@ pub struct LiveParams {
     /// `/omniphony/control/crossover_fir_transition_ratio`.
     pub crossover_fir_transition_ratio: f32,
 
-    /// Parametrable virtual bed for channel-based content (consulted only when
-    /// `channel_render_mode == Spatial`). One entry per input-channel label
-    /// (`L`, `R`, `C`, `LFE`, `Ls`, `Rs`, `Lb`, `Rb`, …): `spatialize:true`
-    /// virtualizes the channel as an object at the entry's position, `false`
-    /// routes it direct to the matching output speaker (e.g. LFE → sub). `None`
-    /// falls back to the built-in canonical poses (LFE direct, the rest
-    /// virtualized). Live-tunable via the `virtual_bed` layout OSC controls.
-    pub virtual_bed: Option<SpeakerLayout>,
+    /// Where fixed channels go, per source family (consulted only when
+    /// `channel_render_mode == Spatial`): each family's mode — sphere, room
+    /// or manual — and its entries (`spatialize` virtual/direct, `gain_db`
+    /// trim, and the pose in manual mode). See `crate::placement`.
+    /// Live-tunable via the `placement` OSC controls.
+    pub placement: crate::placement::PlacementState,
 
     /// Selects the bed→height object generator (2D upmix): synthesizes height
     /// objects from channel-based content so a height-capable layout (7.1.4, …)

@@ -396,6 +396,26 @@ impl SpeakerLayout {
         Ok(layout)
     }
 
+    /// Parse a set of placement entries from a YAML string: the same schema
+    /// as a layout, but a family's entries are a partial set — one channel
+    /// is a legitimate list, and so is none — so only each entry and the
+    /// names' uniqueness are validated, not the VBAP minimum an *output*
+    /// layout needs.
+    pub fn entries_from_yaml_str(yaml: &str) -> Result<Self> {
+        let layout: SpeakerLayout =
+            serde_yaml_ng::from_str(yaml).context("Failed to parse channel entries YAML")?;
+        for speaker in &layout.speakers {
+            speaker.validate()?;
+        }
+        let mut names = std::collections::HashSet::new();
+        for speaker in &layout.speakers {
+            if !names.insert(speaker.name.as_str()) {
+                anyhow::bail!("Duplicate channel entry: '{}'", speaker.name);
+            }
+        }
+        Ok(layout)
+    }
+
     /// Create a speaker layout from a vector of speakers
     pub fn from_speakers(speakers: Vec<Speaker>) -> Result<Self> {
         let layout = Self {
@@ -670,6 +690,33 @@ impl SpeakerLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placement_entries_accept_a_partial_set_and_reject_duplicates() {
+        // One channel is a legitimate set of entries: only its trim and
+        // routing are meant, the rest of the channels keep their defaults.
+        let one = SpeakerLayout::entries_from_yaml_str(
+            "speakers:\n  - { name: LFE, coord_mode: cartesian, x: 0, y: 1, z: 0, spatialize: false, gain_db: -6 }\n",
+        )
+        .expect("one entry parses");
+        assert_eq!(one.speakers.len(), 1);
+        assert!(!one.speakers[0].spatialize);
+        assert!(
+            SpeakerLayout::from_yaml_str(
+                "speakers:\n  - { name: LFE, coord_mode: cartesian, x: 0, y: 1, z: 0 }\n"
+            )
+            .is_err(),
+            "an output layout still needs its VBAP minimum"
+        );
+        assert!(SpeakerLayout::entries_from_yaml_str("speakers: []\n").is_ok());
+        assert!(
+            SpeakerLayout::entries_from_yaml_str(
+                "speakers:\n  - { name: Ls, coord_mode: polar, azimuth: -110, elevation: 0, distance: 1 }\n  - { name: Ls, coord_mode: polar, azimuth: -90, elevation: 0, distance: 1 }\n"
+            )
+            .is_err(),
+            "the same channel twice is a mistake, not a choice"
+        );
+    }
 
     #[test]
     fn label_mapping_accepts_every_legacy_alias() {
