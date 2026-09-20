@@ -758,6 +758,8 @@
   "display.speakerFaceListener": "Orientar hacia el oyente",
   "mpvOverlay.title": "Superposición mpv",
   "speaker.freqLow": "Frec. mín. (Hz)",
+  "speaker.freqHigh": "Frec. máx. (Hz)",
+  "speaker.output": "Salida",
   "telemetry.diagPlotToggle": "Alternar gráfico de métricas de diagnóstico",
   "log.stateLoaded": "Estado inicial cargado.",
   "log.stateLoadFailed": "No se pudo cargar el estado inicial: {error}",

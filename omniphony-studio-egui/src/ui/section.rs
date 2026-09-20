@@ -264,3 +264,36 @@ mod tests {
         assert!(!body_drawn, "the body drew while closed");
     }
 }
+
+/// The header of an editor pinned at the foot of an overlay
+/// (`#speakerEditSection`, `#channelEditSection`): a section's rule and title,
+/// without the chevron — a pinned editor does not fold, it closes with its
+/// selection — and, at the right end, `trailing` in `TEXT_MUTED`: which of
+/// the list's rows the editor is on.
+pub fn pinned_header(ui: &mut Ui, title: &str, trailing: Option<&str>) {
+    ui.add_space(theme::PANEL_GAP);
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(title)
+                    .size(theme::FONT_SIZE_SECTION)
+                    .color(theme::TEXT_STRONG),
+            )
+            .selectable(false),
+        );
+        if let Some(text) = trailing {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(text)
+                            .size(theme::FONT_SIZE_SMALL)
+                            .color(theme::TEXT_MUTED),
+                    )
+                    .truncate()
+                    .selectable(false),
+                );
+            });
+        }
+    });
+}

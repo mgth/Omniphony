@@ -44,7 +44,7 @@ impl Filter {
         }
     }
 
-    fn title(self) -> &'static str {
+    pub(crate) fn title(self) -> &'static str {
         match self {
             Filter::Full => "speaker.filter.full",
             Filter::Low => "speaker.filter.low",

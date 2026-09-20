@@ -779,3 +779,305 @@ mod accessibility_tests {
         assert!(on);
     }
 }
+
+/// The narrowest and the widest a `coord_table` field is drawn. The narrowest
+/// is what `-0.500` takes in the field style with `FIELD_PADDING_X` either
+/// side: a `DragValue` never draws narrower than its text, so a smaller
+/// minimum would only pretend.
+const COORD_FIELD_MIN: f32 = 48.0;
+const COORD_FIELD_MAX: f32 = 72.0;
+/// The side padding of a numeric field: tighter than a button's, a cell of
+/// digits having no word to breathe around.
+const FIELD_PADDING_X: f32 = 4.0;
+/// The height of a `coord_table`'s head row: a small caption, not a control.
+const COORD_HEAD_HEIGHT: f32 = 14.0;
+/// The width of a lone numeric field at the right end of a `label_row` — the
+/// delays, the band limits — so the fields of consecutive rows line up.
+pub const FIELD_WIDTH: f32 = 72.0;
+
+/// The text style of every numeric field of the editors: monospace at
+/// `FONT_SIZE_SECTION`, as the web's 11 px inputs. Digits of one width, so a
+/// column of them reads as a column, and one size for the lot, whatever text
+/// style the row a `DragValue` sits in would otherwise hand it.
+fn field_text_style() -> egui::TextStyle {
+    egui::TextStyle::Name("editor-field".into())
+}
+
+/// `add`, with every `DragValue` in it drawn in the editors' field style.
+fn with_field_style<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.scope(|ui| {
+        let style = ui.style_mut();
+        style.text_styles.insert(
+            field_text_style(),
+            egui::FontId::new(theme::FONT_SIZE_SECTION, egui::FontFamily::Monospace),
+        );
+        style.drag_value_text_style = field_text_style();
+        style.spacing.button_padding.x = FIELD_PADDING_X;
+        add(ui)
+    })
+    .inner
+}
+
+/// A numeric field `width` wide in the editors' field style, for the right
+/// end of a `label_row`.
+pub fn number_field(ui: &mut Ui, width: f32, drag: egui::DragValue<'_>) -> Response {
+    with_field_style(ui, |ui| {
+        ui.add_sized(vec2(width, ui.spacing().interact_size.y), drag)
+    })
+}
+
+/// An editable number in a [`coord_table`] cell.
+pub struct CoordField {
+    pub value: f32,
+    /// How far one point of drag moves it.
+    pub speed: f64,
+    pub range: Option<std::ops::RangeInclusive<f32>>,
+    /// The decimals shown — the same for every value of a column, so the
+    /// column reads as one.
+    pub decimals: usize,
+}
+
+/// One cell of a [`coord_table`].
+pub enum CoordCell {
+    Field(CoordField),
+    /// A value there is nothing to show for — a direct channel with no speaker
+    /// to stand at — drawn as a dash rather than filled with a made-up zero.
+    Blank,
+    /// No cell at all: the polar table's metres row has only a distance.
+    Empty,
+}
+
+impl CoordCell {
+    pub fn field(value: f32, speed: f64, decimals: usize) -> Self {
+        Self::Field(CoordField {
+            value,
+            speed,
+            range: None,
+            decimals,
+        })
+    }
+
+    /// Hold the field to `range`; a blank or empty cell is left as it is.
+    pub fn in_range(self, range: std::ops::RangeInclusive<f32>) -> Self {
+        match self {
+            Self::Field(field) => Self::Field(CoordField {
+                range: Some(range),
+                ..field
+            }),
+            other => other,
+        }
+    }
+}
+
+/// One row of a [`coord_table`]: its label, the help the label opens in a
+/// card under the table, and a cell under each head.
+pub struct CoordRow<'a> {
+    pub label: &'a str,
+    pub help: Option<Help<'a>>,
+    pub cells: [CoordCell; 3],
+}
+
+/// The width of a `coord_table`'s label column: its widest label.
+fn coord_label_width<'a>(ui: &Ui, labels: impl Iterator<Item = &'a str>) -> f32 {
+    labels
+        .map(|label| {
+            egui::WidgetText::from(label)
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                )
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max)
+}
+
+/// The narrowest a `coord_table` with these row labels is drawn: its fields
+/// at their minimum. What a caller placing something beside the table has
+/// to leave it.
+pub fn coord_table_min_width(ui: &Ui, labels: &[&str]) -> f32 {
+    coord_label_width(ui, labels.iter().copied())
+        + 3.0 * COORD_FIELD_MIN
+        + 3.0 * ui.spacing().item_spacing.x
+}
+
+/// The web's `.cart-coord-table`: a corner, the three axis heads, then one
+/// row per representation — its label, then a field under each head.
+///
+/// Every field is drawn the same width in one `Grid`, so the columns line up
+/// whatever the row labels measure. Two runs of `label, field, label, field`
+/// on a `horizontal` each — which is what stood here — put the X of the
+/// metres row a dozen points right of the X above it, "Real (m)" being wider
+/// than "Norm.", and every other field with it.
+///
+/// The fields share what the label column leaves, `COORD_FIELD_MIN` to
+/// `COORD_FIELD_MAX` each; past the minimum the table does overflow, on a
+/// panel narrower than the layout allows. Returns the `(row, axis, value)` of
+/// the cell edited this frame, if any, for the caller to map back to its own
+/// quantity.
+pub fn coord_table(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    heads: [&str; 3],
+    rows: &mut [CoordRow<'_>],
+) -> Option<(usize, usize, f32)> {
+    let spacing = ui.spacing().item_spacing;
+    let row_height = ui.spacing().interact_size.y;
+    let label_width = coord_label_width(ui, rows.iter().map(|row| row.label));
+    let field_width = ((ui.available_width() - label_width - 3.0 * spacing.x) / 3.0)
+        .clamp(COORD_FIELD_MIN, COORD_FIELD_MAX);
+    let mut edited = None;
+    with_field_style(ui, |ui| {
+        egui::Grid::new(id)
+            .num_columns(4)
+            .min_col_width(0.0)
+            .spacing(spacing)
+            .show(ui, |ui| {
+                // The corner, then a head centred over each column.
+                ui.allocate_exact_size(vec2(label_width, COORD_HEAD_HEIGHT), Sense::hover());
+                for head in heads {
+                    ui.add_sized(
+                        vec2(field_width, COORD_HEAD_HEIGHT),
+                        egui::Label::new(
+                            egui::RichText::new(head)
+                                .size(theme::FONT_SIZE_SECTION)
+                                .color(theme::TEXT_MUTED),
+                        )
+                        .selectable(false),
+                    );
+                }
+                ui.end_row();
+                for (row_index, row) in rows.iter_mut().enumerate() {
+                    // Every label cell is the label column's width, so the
+                    // grid needs no second pass to line the columns up.
+                    let label = ui
+                        .allocate_ui_with_layout(
+                            vec2(label_width, row_height),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| ui.add(egui::Label::new(row.label).selectable(false)),
+                        )
+                        .inner;
+                    if let Some(help) = row.help {
+                        super::help::trigger(ui, label.rect, help);
+                    }
+                    for (axis, cell) in row.cells.iter_mut().enumerate() {
+                        let size = vec2(field_width, row_height);
+                        match cell {
+                            CoordCell::Field(field) => {
+                                let mut drag = egui::DragValue::new(&mut field.value)
+                                    .speed(field.speed)
+                                    .fixed_decimals(field.decimals);
+                                if let Some(range) = &field.range {
+                                    drag = drag.range(range.clone());
+                                }
+                                if ui.add_sized(size, drag).changed() {
+                                    edited = Some((row_index, axis, field.value));
+                                }
+                            }
+                            CoordCell::Blank => {
+                                ui.add_sized(
+                                    size,
+                                    egui::Label::new(
+                                        egui::RichText::new("—").color(theme::TEXT_DIM),
+                                    )
+                                    .selectable(false),
+                                );
+                            }
+                            CoordCell::Empty => {
+                                ui.allocate_exact_size(size, Sense::hover());
+                            }
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+    });
+    for row in rows.iter() {
+        if let Some(help) = row.help {
+            super::help::card(ui, help);
+        }
+    }
+    edited
+}
+
+#[cfg(test)]
+mod coord_table_tests {
+    use super::*;
+
+    fn rows<'a>(first: &'a str, second: &'a str) -> [CoordRow<'a>; 2] {
+        [
+            CoordRow {
+                label: first,
+                help: None,
+                cells: [0.5, -0.25, 1.0].map(|v| CoordCell::field(v, 0.001, 3)),
+            },
+            CoordRow {
+                label: second,
+                help: None,
+                cells: [1.5, -0.75, 3.0].map(|v| CoordCell::field(v, 0.01, 2)),
+            },
+        ]
+    }
+
+    /// The fields the table painted: one filled rect per `DragValue`, keyed
+    /// by the left edge of the column it stands in.
+    fn field_lefts(output: &egui::FullOutput) -> Vec<f32> {
+        let mut lefts: Vec<f32> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect) if rect.fill != Color32::TRANSPARENT => {
+                    Some(rect.rect.left())
+                }
+                _ => None,
+            })
+            .collect();
+        lefts.sort_by(f32::total_cmp);
+        lefts
+    }
+
+    /// The X of the metres row stands under the X of the normalised row,
+    /// however much longer one label is than the other: the bug this pins had
+    /// each row lay its own label and fields out in turn, so a wider label
+    /// pushed its whole row of fields to the right.
+    #[test]
+    fn the_fields_of_a_column_share_a_left_edge_whatever_the_labels_measure() {
+        let ctx = egui::Context::default();
+        let mut table = rows("N.", "A much longer row label");
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            ui.set_max_width(320.0);
+            coord_table(ui, "t", ["X", "Y", "Z"], &mut table);
+        });
+        output.textures_delta.clear();
+        let lefts = field_lefts(&output);
+        assert_eq!(lefts.len(), 6, "six fields, one rect each: {lefts:?}");
+        for column in lefts.chunks(2) {
+            assert!(
+                (column[0] - column[1]).abs() < 0.5,
+                "a column's two fields do not share a left edge: {lefts:?}"
+            );
+        }
+    }
+
+    /// The table stays inside the width it is given: a group inset's width
+    /// on a panel at its default width, and on one 120 pt narrower. (On the
+    /// narrowest panel the inset is 142 pt, and no table of six fields fits
+    /// that; `PANELS.md` allows the overflow there and nowhere else.)
+    #[test]
+    fn the_table_keeps_to_the_width_it_is_given() {
+        for width in [362.0, 242.0] {
+            let ctx = egui::Context::default();
+            let mut table = rows("Norm.", "Real (m)");
+            let mut taken = 0.0;
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                ui.set_max_width(width);
+                coord_table(ui, "t", ["X", "Y", "Z"], &mut table);
+                taken = ui.min_rect().width();
+            });
+            output.textures_delta.clear();
+            assert!(taken <= width + 0.5, "{taken} pt of {width}");
+        }
+    }
+}
