@@ -126,8 +126,7 @@ pub fn control_phantom_extract_param(state: State<SharedState>, key: String, val
     );
 }
 
-/// Set the parametrable virtual bed (a YAML `SpeakerLayout`, one entry per
-/// channel label). An empty string resets to the built-in canonical poses.
+/// Legacy: the generic family's entries (see `control_placement_layout`).
 #[tauri::command]
 pub fn control_virtual_bed(state: State<SharedState>, value: String) {
     send_control(
@@ -135,6 +134,38 @@ pub fn control_virtual_bed(state: State<SharedState>, value: String) {
         OscControlMsg::SendString {
             address: "/omniphony/control/virtual_bed".to_string(),
             value,
+        },
+    );
+}
+
+/// A source family's placement mode (`renderer::placement`): `sphere`,
+/// `room`, `manual`, or `inherit` to clear the family's own choice.
+#[tauri::command]
+pub fn control_placement_mode(state: State<SharedState>, family: String, mode: String) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/placement/mode".to_string(),
+            args: vec![
+                rosc::OscType::String(family.trim().to_ascii_lowercase()),
+                rosc::OscType::String(mode.trim().to_ascii_lowercase()),
+            ],
+        },
+    );
+}
+
+/// A source family's own entries (a YAML `SpeakerLayout`, one entry per
+/// channel label); an empty string clears them.
+#[tauri::command]
+pub fn control_placement_layout(state: State<SharedState>, family: String, value: String) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/placement/layout".to_string(),
+            args: vec![
+                rosc::OscType::String(family.trim().to_ascii_lowercase()),
+                rosc::OscType::String(value),
+            ],
         },
     );
 }

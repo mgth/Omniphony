@@ -16,7 +16,7 @@ import { reflectBoundOptions } from '../options-binder.js';
 import { t, tf } from '../i18n.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inAudioPanel, inRendererPanel } from '../ui/panel-roots.js';
-import { syncVirtualBedObjects, renderChannelEditor } from './virtual-bed.js';
+import { syncVirtualBedObjects, renderChannelEditor, renderPlacementPanel } from './virtual-bed.js';
 
 function getAudioFormatInfoEl() { return inAudioPanel('audioFormatInfo'); }
 function getAudioOutputDeviceSelectEl() { return inAudioPanel('audioOutputDeviceSelect'); }
@@ -177,8 +177,6 @@ export function renderAudioFormatDisplay() {
     // The registry binder reflects the bound controls. Applicability only
     // changes status text: every setting remains available for offline setup.
     reflectBoundOptions();
-    const virtualBedActions = document.getElementById('virtualBedActions');
-    if (virtualBedActions) virtualBedActions.style.display = 'flex';
     const surroundRow = document.getElementById('surroundPlacementRow');
     if (surroundRow) surroundRow.style.display = 'flex';
     updateTwoDSourcesSummary();
@@ -191,6 +189,7 @@ export function renderAudioFormatDisplay() {
     updateFixedChannelProcessingUI();
     syncVirtualBedObjects();
     renderChannelEditor();
+    renderPlacementPanel();
   }
   if (audioSampleRateInputEl && !app.audioSampleRateEditing) {
     audioSampleRateInputEl.value = String(app.audioSampleRate || 0);

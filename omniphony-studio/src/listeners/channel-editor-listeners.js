@@ -11,13 +11,16 @@ import { metersPerUnit, metersToSceneUnits } from '../coordinates.js';
 import { updateSpeakerGizmo } from '../speakers.js';
 import {
   canonicalChannelName,
+  channelEditable,
+  editingFamily,
   getChannelPosition,
   applyChannelCartesian,
   applyChannelSceneCartesian,
   applyChannelPolar,
   applyChannelGain,
   applyChannelPlacement,
-  renderChannelEditor
+  renderChannelEditor,
+  switchPlacementToManual
 } from '../controls/virtual-bed.js';
 
 function el(id) { return document.getElementById(id); }
@@ -137,12 +140,20 @@ export function setupChannelEditorListeners() {
     });
   }
 
+  // Sphere or room mode: the family's model places the channel; this is the
+  // way to manual, seeded with what the model gives.
+  bind('channelEditManualBtn', 'click', () => {
+    if (selectedChannel()) switchPlacementToManual(editingFamily());
+  });
+
   // 3D Edit buttons arm the shared gizmo (same one the speakers use) on the
-  // selected channel object: cartesian handles or the polar ring/arc.
+  // selected channel object: cartesian handles or the polar ring/arc — in
+  // manual mode, the only one in which a position is the editor's to move.
   const cartGizmoBtn = el('channelEditCartesianGizmoBtn');
   if (cartGizmoBtn) {
     cartGizmoBtn.addEventListener('click', () => {
-      if (!selectedChannel()) return;
+      const name = selectedChannel();
+      if (!name || !channelEditable(name)) return;
       app.activeEditMode = 'cartesian';
       app.cartesianEditArmed = !app.cartesianEditArmed;
       if (app.cartesianEditArmed) app.polarEditArmed = false;
@@ -153,7 +164,8 @@ export function setupChannelEditorListeners() {
   const polarGizmoBtn = el('channelEditPolarGizmoBtn');
   if (polarGizmoBtn) {
     polarGizmoBtn.addEventListener('click', () => {
-      if (!selectedChannel()) return;
+      const name = selectedChannel();
+      if (!name || !channelEditable(name)) return;
       app.activeEditMode = 'polar';
       app.polarEditArmed = !app.polarEditArmed;
       if (app.polarEditArmed) app.cartesianEditArmed = false;

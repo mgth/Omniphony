@@ -345,6 +345,8 @@ fn main() {
             control_object_generator_param,
             control_phantom_extract_param,
             control_virtual_bed,
+            control_placement_mode,
+            control_placement_layout,
             control_profile_switch,
             control_profile_create,
             control_profile_delete,

@@ -408,10 +408,14 @@ pub struct LiveOptionsState {
     pub fixed_channel_catalog: Option<serde_json::Value>,
     pub fixed_channel_processing: Option<serde_json::Value>,
     pub output_channel_mapping_unroutable: Option<Vec<String>>,
-    /// `None` serializes as an explicit `"virtualBed": null` (no skip): the UI
-    /// distinguishes "renderer reports no saved bed" (null → it materialises
-    /// the canonical bed once) from a configured bed object.
+    /// `None` serializes as an explicit `"virtualBed": null` (no skip). Legacy
+    /// mirror of the generic family's entries; `placement` is the real thing.
     pub virtual_bed: Option<serde_json::Value>,
+    /// Per-family placement of fixed channels (`renderer::placement`), the
+    /// renderer's `placement` block passed through: one object per family
+    /// (`generic`, `dolby`, `dts`, `auro`, `pcm`) with its own `mode` and
+    /// `layout` (null when inherited), `effectiveMode` and `layoutSource`.
+    pub placement: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

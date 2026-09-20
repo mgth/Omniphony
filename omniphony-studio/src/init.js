@@ -48,7 +48,7 @@ import {
   renderVbapStatus
 } from './controls/vbap.js';
 import { updateAudioFormatDisplay, updateOutputChannelMappingUI } from './controls/audio.js';
-import { materializeDefaultVirtualBed } from './controls/virtual-bed.js';
+import { followPlayingFamily } from './controls/virtual-bed.js';
 import { updateInputControlUI } from './controls/input.js';
 import { updateAdaptiveResamplingUI } from './controls/adaptive.js';
 import { syncMeterRateFromRenderer } from './controls/osc.js';
@@ -505,22 +505,17 @@ export function applyInitState(payload) {
     updateAudioFormatDisplay();
   }
   if (Object.prototype.hasOwnProperty.call(payload, 'virtualBed')) {
-    // null = renderer is on the built-in canonical poses; an object is the
-    // configured/live bed. The editor seeds defaults when this is null.
+    // Legacy mirror of the generic family's entries (null = none); a renderer
+    // from before `placement` reports only this.
     app.virtualBed =
       payload.virtualBed && typeof payload.virtualBed === 'object' ? payload.virtualBed : null;
-    // First authoritative snapshot reporting no saved bed:
-    // materialise the canonical cartesian bed so the editor's values persist to
-    // config.yaml (like `current_layout`) and are used in priority, instead of
-    // relying on a built-in default. One-shot; once a bed exists this is skipped.
-    if (
-      !app.virtualBed &&
-      !app.virtualBedMaterialized
-    ) {
-      app.virtualBedMaterialized = true;
-      materializeDefaultVirtualBed();
-    }
   }
+  if (Object.prototype.hasOwnProperty.call(payload, 'placement')) {
+    app.placement =
+      payload.placement && typeof payload.placement === 'object' ? payload.placement : null;
+  }
+  // A new stream's family becomes the one being edited, once.
+  followPlayingFamily();
   if (typeof payload.audioOutputDevice === 'string') {
     app.audioOutputDevice = payload.audioOutputDevice.trim() || null;
   }
