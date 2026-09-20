@@ -37,12 +37,20 @@ pub enum DecodedSource {
 pub struct DecodedAudioData {
     pub source: DecodedSource,
     pub frame: bridge_api::RDecodedFrame,
-    /// The bridge's declared channel poses, sent with the first frame whose
-    /// labels differ from the previous frame's (the bridge lives on the
-    /// decoder thread; the handler keeps the last value it received).
-    pub declared_poses: Option<Vec<RChannelPose>>,
+    /// The bridge's declaration, sent with the first frame whose labels
+    /// differ from the previous frame's (the bridge lives on the decoder
+    /// thread; the handler keeps the last value it received).
+    pub declaration: Option<StreamDeclaration>,
     pub decode_time_ms: f32,
     pub sent_at: Instant,
+}
+
+/// What a bridge declares about a presentation beyond its labels: the
+/// source family (`FormatBridge::source_family`) and the poses the format
+/// states for its channels (`FormatBridge::fixed_channel_poses`).
+pub struct StreamDeclaration {
+    pub family: String,
+    pub poses: Vec<RChannelPose>,
 }
 
 pub enum DecoderMessage {
@@ -349,11 +357,14 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     }
                     for frame in result.frames {
                         frame_count += 1;
-                        let declared_poses =
+                        let declaration =
                             if frame.channel_labels.as_slice() != declared_labels.as_slice() {
                                 declared_labels.clear();
                                 declared_labels.extend_from_slice(frame.channel_labels.as_slice());
-                                Some(bridge.fixed_channel_poses().into_iter().collect())
+                                Some(StreamDeclaration {
+                                    family: bridge.source_family().to_string(),
+                                    poses: bridge.fixed_channel_poses().into_iter().collect(),
+                                })
                             } else {
                                 None
                             };
@@ -362,7 +373,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                             .send(Ok(DecoderMessage::AudioData(DecodedAudioData {
                                 source: DecodedSource::Bridge,
                                 frame,
-                                declared_poses,
+                                declaration,
                                 decode_time_ms: per_frame_decode_time_ms,
                                 sent_at,
                             })))

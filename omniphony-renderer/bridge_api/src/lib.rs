@@ -334,6 +334,19 @@ pub trait FormatBridge: Send + Sync + 'static {
     /// [`reset`]: FormatBridge::reset
     #[sabi(last_prefix_field)]
     fn fixed_channel_poses(&self) -> RVec<RChannelPose>;
+
+    /// The family the current presentation's format belongs to, for the
+    /// renderer's per-family placement policy: `dolby` (AC-3, E-AC-3,
+    /// TrueHD), `dts` (DTS, DTS-HD, DTS:X), `auro` (an unfolded Auro-3D
+    /// carrier), `pcm` (plain multichannel PCM). Empty, the default, or a
+    /// name the renderer does not know, means its generic family.
+    ///
+    /// Declaration-level like the labels: read when they change, never per
+    /// frame. Added after the 0.4 prefix with a default body, so a bridge
+    /// built before it keeps loading and reads as generic.
+    fn source_family(&self) -> RString {
+        RString::new()
+    }
 }
 
 /// Owned, heap-allocated bridge trait object.

@@ -118,7 +118,7 @@ import {
 } from './scene/gizmos.js';
 
 import { renderObjectTestEditor } from './controls/object-test.js';
-import { renderChannelEditor, canonicalChannelName, canonicalChannelOrder, channelPlacement } from './controls/virtual-bed.js';
+import { renderChannelEditor, canonicalChannelName, canonicalChannelOrder, channelEditable } from './controls/virtual-bed.js';
 import { t, tf } from './i18n.js';
 import { pushLog } from './log.js';
 import { scheduleUIFlush } from './flush.js';
@@ -1708,7 +1708,7 @@ export function resolveEditTarget() {
     const mesh = sourceMeshes.get(id);
     if (!mesh) return null;
     const name = sourceNames.get(id);
-    if (!canonicalChannelName(name) || channelPlacement(name) !== 'virtual') return null;
+    if (!canonicalChannelName(name) || !channelEditable(name)) return null;
     return { kind: 'channel', id, name, mesh, label: sourceLabels.get(id) };
   }
   return null;

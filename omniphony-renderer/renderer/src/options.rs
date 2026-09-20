@@ -454,7 +454,7 @@ pub fn reset_live_to_defaults(live: &mut LiveParams) {
     }
     live.object_generator_params.clear();
     live.phantom_params.clear();
-    live.virtual_bed = None;
+    live.placement = crate::placement::PlacementState::default();
 }
 
 /// Seed every declared live option — plus the document-valued companions the
@@ -499,9 +499,13 @@ pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig) {
                 .phantom_extract_mode
                 .is_some_and(|m| m != PhantomExtractMode::Off);
     }
-    // Virtual bed: absent = the built-in canonical poses (LFE direct).
-    if let Some(bed) = render.virtual_bed.clone() {
-        live.virtual_bed = Some(bed);
+    // Placement: absent = every family at its built-in defaults. A config
+    // from before placement existed carries the single `virtual_bed` that
+    // applied to every stream: that is the generic family in manual mode.
+    if let Some(placement) = render.placement.as_ref() {
+        live.placement = crate::placement::PlacementState::from_config(placement);
+    } else if let Some(bed) = render.virtual_bed.clone() {
+        live.placement = crate::placement::PlacementState::from_legacy_virtual_bed(bed);
     }
 }
 
@@ -529,12 +533,11 @@ pub fn store_live_to_config(render: &mut RenderConfig, live: &LiveParams) {
     // Legacy global-host and phantom boolean keys are read-only migrations.
     render.channel_render_mode = None;
     render.phantom_enabled = None;
-    // Virtual bed: persist verbatim (round the radius for stable diffs);
-    // `None` keeps the key out so the built-in canonical poses stay in effect.
-    render.virtual_bed = live.virtual_bed.clone().map(|mut bed| {
-        bed.radius_m = (bed.radius_m as f64 * 1e6).round() as f32 / 1e6;
-        bed
-    });
+    // Placement: `None` keeps the key out so every family stays at its
+    // built-in defaults. The legacy `virtual_bed` was migrated into it at
+    // seed time and is dropped here.
+    render.placement = live.placement.to_config();
+    render.virtual_bed = None;
 }
 
 /// The current value of every declared option, keyed by canonical name — the

@@ -21,7 +21,7 @@ mod transport;
 
 use self::client_registry::OscClientRegistry;
 use self::dispatch::{RealtimeSeqState, handle_control_message};
-use self::export::build_live_state_bundle;
+use self::export::build_live_state;
 use self::gaintable::GaintableCache;
 use self::transport::{
     flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client, send_metering_state,
@@ -524,8 +524,7 @@ impl OscSender {
                         if last_host_state_generation != Some(generation) {
                             last_host_state_generation = Some(generation);
                             if let Some(ref ctrl) = control {
-                                let state_bytes = build_live_state_bundle(ctrl, Some(host));
-                                send_raw_filtered(&socket, &clients, &state_bytes, |_| true);
+                                build_live_state(ctrl, Some(host)).broadcast(&socket, &clients);
                             }
                         }
                     }
@@ -552,8 +551,8 @@ impl OscSender {
                         let generation = ctrl.live_state_generation();
                         if last_live_state_generation != Some(generation) {
                             last_live_state_generation = Some(generation);
-                            let state_bytes = build_live_state_bundle(ctrl, host_handler.as_ref());
-                            send_raw_filtered(&socket, &clients, &state_bytes, |_| true);
+                            build_live_state(ctrl, host_handler.as_ref())
+                                .broadcast(&socket, &clients);
                         }
                         // One-shot clip notification carrying the offending speaker
                         // index (set on the audio thread on any detected clip,
@@ -585,15 +584,8 @@ impl OscSender {
                                     force_full_next.store(true, Ordering::Relaxed);
                                     // Send the current state bundle, including layout and speakers.
                                     if let Some(ref ctrl) = control {
-                                        let state_bytes =
-                                            build_live_state_bundle(ctrl, host_handler.as_ref());
-                                        if let Err(e) = socket.send_to(&state_bytes, client) {
-                                            log::warn!(
-                                                "Failed to send live state to {}: {}",
-                                                client,
-                                                e
-                                            );
-                                        }
+                                        build_live_state(ctrl, host_handler.as_ref())
+                                            .send_to(&socket, client);
                                     }
                                     send_buffered_logs_to_client(&socket, client, 0);
                                     send_metering_state(&socket, client, metering_enabled);

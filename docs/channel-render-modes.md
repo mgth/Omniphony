@@ -7,11 +7,13 @@ the synthetic-object stages described below.
 
 ## Fixed-channel rendering
 
-Omniphony renders every fixed channel according to its entry in the virtual-bed
-layout:
+Omniphony renders every fixed channel according to the placement policy of
+its source family ([placement.md](placement.md)) and the family's entries:
 
-- `spatialize: true` places the channel at its configured fixed position and
-  renders it through VBAP over the output layout;
+- `spatialize: true` virtualises the channel at a fixed position — a
+  direction on the listener's sphere, a corner of the room model, or the
+  entry's own pose, depending on the family's mode — and renders it through
+  VBAP over the output layout;
 - `spatialize: false` routes the channel directly to the output speaker with
   the matching label. LFE is direct by default, so it reaches the subwoofer
   rather than becoming a spatialized source.
@@ -67,11 +69,18 @@ render:
   synthetic_objects_enabled: false
   phantom_extract_mode: off
   object_generator_id: none
-  virtual_bed:
-    speakers:
-      - name: LFE
-        spatialize: false
+  placement:
+    generic:
+      layout:
+        speakers:
+          - name: LFE
+            spatialize: false
+    auro:
+      mode: sphere
 ```
+
+A pre-placement `virtual_bed` key migrates into `placement.generic` (manual
+mode) on load and is dropped on save; see [placement.md](placement.md).
 
 The declared options are available through `/omniphony/control/option` and the
 dedicated compatibility addresses documented in

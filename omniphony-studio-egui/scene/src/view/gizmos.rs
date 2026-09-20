@@ -18,7 +18,9 @@ use crate::render::{
     FrameData, LineVertex, MeshInstance, MeshItem, MeshKind, hex_linear, with_alpha,
 };
 
-use crate::host::channels::{ChannelCatalog, effective_channels};
+use crate::host::channels::{
+    ChannelCatalog, Family, PlacementMode, effective_channels_for, family_placement,
+};
 use crate::model::app_state::{AppState, RoomRatio};
 
 use super::Label;
@@ -140,23 +142,29 @@ pub fn snap_to_nodes(value: f64, nodes: &[f64]) -> f64 {
 
 /// The channel a selected object stands for, when its position is the
 /// editor's to move: the source's name resolved to its canonical channel,
-/// and that channel spatialised into an object rather than sent straight to
-/// a speaker (`channelPlacement(name) === 'virtual'`). Decided by the same
-/// `effective_channels` the channel editor reads, so the gizmo appears
+/// that channel spatialised into an object rather than sent straight to a
+/// speaker (`channelPlacement(name) === 'virtual'`), and the family being
+/// edited in manual mode — in sphere and room mode the model places the
+/// channel and there is nothing to drag. Decided by the same
+/// `effective_channels_for` the channel editor reads, so the gizmo appears
 /// exactly when the editor's "3D Edit" toggle is enabled — and not from the
-/// renderer's published bed, which is `null` until one is configured.
+/// renderer's published entries, which are `null` until some are configured.
 pub fn virtual_channel_of(
     catalog: &ChannelCatalog,
     app: &AppState,
+    family: Family,
     object_id: &str,
 ) -> Option<String> {
+    if family_placement(app, family).effective_mode != PlacementMode::Manual {
+        return None;
+    }
     let name = app
         .sources
         .get(object_id)
         .and_then(|s| s.name.clone())
         .unwrap_or_else(|| object_id.to_owned());
     let canonical = catalog.canonical(app, &name)?;
-    effective_channels(catalog, app)
+    effective_channels_for(catalog, app, family)
         .into_iter()
         .find(|c| c.name == canonical && c.spatialize)
         .map(|c| c.name)
@@ -377,14 +385,21 @@ mod tests {
     use crate::model::app_state::SourcePosition;
 
     /// The gizmo's channel is the editor's channel: a source named after a
-    /// bed channel resolves to it exactly when the editor holds it virtual,
-    /// and anything else resolves to nothing.
+    /// bed channel resolves to it exactly when the editor holds it virtual
+    /// and its family is in manual mode; anything else resolves to nothing.
     #[test]
     fn the_gizmo_follows_the_editor_on_what_a_virtual_channel_is() {
         let mut app = AppState::default();
-        // Nothing published: the catalogue falls back to the canonical bed.
+        // Nothing published: the catalogue falls back to the canonical bed,
+        // and every family is in room mode — nothing to drag.
         let mut catalog = ChannelCatalog::default();
         catalog.refresh(&app);
+        assert_eq!(
+            virtual_channel_of(&catalog, &app, Family::Generic, "L"),
+            None,
+            "room mode: the model places the channel"
+        );
+        app.live_options.placement = Some(serde_json::json!({ "generic": { "mode": "manual" } }));
         app.sources.insert(
             "L".to_owned(),
             SourcePosition {
@@ -394,17 +409,28 @@ mod tests {
         );
         app.sources
             .insert("obj-42".to_owned(), SourcePosition::default());
-        let editor_says = effective_channels(&catalog, &app)
+        let editor_says = effective_channels_for(&catalog, &app, Family::Generic)
             .into_iter()
             .find(|c| c.name == "L")
             .map(|c| c.spatialize);
         assert!(editor_says.is_some(), "the fallback bed has no L");
         assert_eq!(
-            virtual_channel_of(&catalog, &app, "L"),
+            virtual_channel_of(&catalog, &app, Family::Generic, "L"),
             editor_says.filter(|v| *v).map(|_| "L".to_owned())
         );
-        assert_eq!(virtual_channel_of(&catalog, &app, "obj-42"), None);
-        assert_eq!(virtual_channel_of(&catalog, &app, "nope"), None);
+        // Another family inherits the generic mode, so it drags too.
+        assert_eq!(
+            virtual_channel_of(&catalog, &app, Family::Dts, "L"),
+            Some("L".to_owned())
+        );
+        assert_eq!(
+            virtual_channel_of(&catalog, &app, Family::Generic, "obj-42"),
+            None
+        );
+        assert_eq!(
+            virtual_channel_of(&catalog, &app, Family::Generic, "nope"),
+            None
+        );
     }
 
     /// Scene depth is ADM y, scene up is ADM z and scene right is ADM x, and

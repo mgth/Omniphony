@@ -124,6 +124,12 @@ pub struct Live {
     /// When the last spatial frame arrived. The channel editor's at-rest
     /// markers stand down while a stream owns the scene.
     pub last_spatial_frame_at: Option<Instant>,
+    /// The family the channel editor and the at-rest markers show. Follows
+    /// the family of a stream when one starts (`followed_family` remembers
+    /// which, so a tab picked while it plays is not overridden on the next
+    /// snapshot).
+    pub editing_family: crate::host::channels::Family,
+    pub(crate) followed_family: Option<crate::host::channels::Family>,
     /// Peak-hold cursors of every meter, keyed as the host keys them
     /// (`master`, `spk:<id>`, `src:<id>`, `ear:<id>`).
     pub peaks: PeakHolds,
@@ -418,6 +424,8 @@ impl Live {
             overlay: None,
             object_test_position: None,
             last_spatial_frame_at: None,
+            editing_family: Default::default(),
+            followed_family: None,
             stage_windows: std::array::from_fn(|_| TimeWindow::new(RENDER_TIME_WINDOW_MS)),
             latency_window: TimeWindow::new(LATENCY_RAW_WINDOW_MS),
             peaks: PeakHolds::new(),
@@ -813,7 +821,17 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             Change::Scene
         }
         OscEvent::StateRenderer { value } => {
-            snapshot_if(apply_renderer_domain_state(&mut live.app, &value))
+            let changed = apply_renderer_domain_state(&mut live.app, &value);
+            if changed {
+                // A new stream's family becomes the one being edited, once.
+                if let Some(family) = crate::host::channels::playing_family(&live.app) {
+                    if live.followed_family != Some(family) {
+                        live.followed_family = Some(family);
+                        live.editing_family = family;
+                    }
+                }
+            }
+            snapshot_if(changed)
         }
         OscEvent::StateAudio { value } => {
             snapshot_if(apply_audio_domain_state(&mut live.app, &value))

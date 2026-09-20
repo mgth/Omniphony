@@ -16,8 +16,14 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { OBJECT_TEST_SOURCE_ID } from '../object-test-id.js';
-import { app, sourceDirectSpeakerIndices, sourceMeshes, sourceNames } from '../state.js';
-import { t } from '../i18n.js';
+import {
+  app,
+  sourceDirectSpeakerIndices,
+  sourceMeshes,
+  sourceNames,
+  sourcePositionsRaw
+} from '../state.js';
+import { t, tf } from '../i18n.js';
 import { updateSource, removeSource } from '../sources.js';
 import {
   sphericalToCartesianDeg,
@@ -29,44 +35,124 @@ import {
 } from '../coordinates.js';
 import { buildChannelAliasMap, normalizeChannelName } from '../channel-aliases.js';
 
-// Fallback editable fixed-channel set with default ADM cartesian poses
-// (X left/right, Y rear/front, Z down/up; ear level Z = 0). LFE channels
-// default to direct because they cannot be VBAP-panned. The renderer-published
-// catalogue replaces these values when available. A channel the renderer
-// defines by an angle rather than a corner (the height tier, 30° over the
-// floor speaker of the same name) carries a polar default; its x/y/z are that
-// angle on the unit sphere, for display only.
+// Fallback editable fixed-channel set: the default room corner (ADM
+// cartesian: X left/right, Y rear/front, Z down/up; ear level Z = 0) and the
+// nominal direction on the sphere (azimuth, elevation) of every channel, used
+// until the renderer publishes its catalogue. LFE channels default to direct
+// because they cannot be VBAP-panned. The height tier's corner is on the wall
+// above its floor speaker, 30° up in a cube. Mirrors the renderer's catalogue.
 const FALLBACK_BED = [
-  { name: 'L', x: -1, y: 1, z: 0, spatialize: true },
-  { name: 'R', x: 1, y: 1, z: 0, spatialize: true },
-  { name: 'C', x: 0, y: 1, z: 0, spatialize: true },
-  { name: 'LFE', x: 0, y: 1, z: 0, spatialize: false },
-  { name: 'Ls', x: -1, y: 0, z: 0, spatialize: true },
-  { name: 'Rs', x: 1, y: 0, z: 0, spatialize: true },
-  { name: 'Lb', x: -1, y: -1, z: 0, spatialize: true },
-  { name: 'Rb', x: 1, y: -1, z: 0, spatialize: true },
-  { name: 'TFL', x: -1, y: 1, z: 1, spatialize: true },
-  { name: 'TFR', x: 1, y: 1, z: 1, spatialize: true },
-  { name: 'TBL', x: -1, y: -1, z: 1, spatialize: true },
-  { name: 'TBR', x: 1, y: -1, z: 1, spatialize: true },
-  { name: 'Lsc', x: -0.5, y: 1, z: 0, spatialize: true },
-  { name: 'Rsc', x: 0.5, y: 1, z: 0, spatialize: true },
-  { name: 'Cb', x: 0, y: -1, z: 0, spatialize: true },
-  { name: 'Lsd', x: -1, y: -0.5, z: 0, spatialize: true },
-  { name: 'Rsd', x: 1, y: -0.5, z: 0, spatialize: true },
-  { name: 'Lw', x: -1, y: 0.5, z: 0, spatialize: true },
-  { name: 'Rw', x: 1, y: 0.5, z: 0, spatialize: true },
-  { name: 'LFE2', x: 0, y: 1, z: 0, spatialize: false },
-  { name: 'TSL', x: -1, y: 0, z: 1, spatialize: true },
-  { name: 'TSR', x: 1, y: 0, z: 1, spatialize: true },
-  { name: 'TC', x: 0, y: 0, z: 1, spatialize: true },
-  { name: 'TFC', x: 0, y: 1, z: 1, spatialize: true },
-  { name: 'Lh', x: -0.433, y: 0.75, z: 0.5, spatialize: true, coordMode: 'polar', azimuth: -30, elevation: 30 },
-  { name: 'Rh', x: 0.433, y: 0.75, z: 0.5, spatialize: true, coordMode: 'polar', azimuth: 30, elevation: 30 },
-  { name: 'Ch', x: 0, y: 0.866, z: 0.5, spatialize: true, coordMode: 'polar', azimuth: 0, elevation: 30 },
-  { name: 'Lhs', x: -0.8138, y: -0.2962, z: 0.5, spatialize: true, coordMode: 'polar', azimuth: -110, elevation: 30 },
-  { name: 'Rhs', x: 0.8138, y: -0.2962, z: 0.5, spatialize: true, coordMode: 'polar', azimuth: 110, elevation: 30 }
+  { name: 'L', x: -1, y: 1, z: 0, spatialize: true, azimuth: -30, elevation: 0 },
+  { name: 'R', x: 1, y: 1, z: 0, spatialize: true, azimuth: 30, elevation: 0 },
+  { name: 'C', x: 0, y: 1, z: 0, spatialize: true, azimuth: 0, elevation: 0 },
+  { name: 'LFE', x: 0, y: 1, z: 0, spatialize: false, azimuth: 0, elevation: 0 },
+  { name: 'Ls', x: -1, y: 0, z: 0, spatialize: true, azimuth: -110, elevation: 0 },
+  { name: 'Rs', x: 1, y: 0, z: 0, spatialize: true, azimuth: 110, elevation: 0 },
+  { name: 'Lb', x: -1, y: -1, z: 0, spatialize: true, azimuth: -135, elevation: 0 },
+  { name: 'Rb', x: 1, y: -1, z: 0, spatialize: true, azimuth: 135, elevation: 0 },
+  { name: 'TFL', x: -1, y: 1, z: 1, spatialize: true, azimuth: -45, elevation: 45 },
+  { name: 'TFR', x: 1, y: 1, z: 1, spatialize: true, azimuth: 45, elevation: 45 },
+  { name: 'TBL', x: -1, y: -1, z: 1, spatialize: true, azimuth: -135, elevation: 45 },
+  { name: 'TBR', x: 1, y: -1, z: 1, spatialize: true, azimuth: 135, elevation: 45 },
+  { name: 'Lsc', x: -0.5, y: 1, z: 0, spatialize: true, azimuth: -15, elevation: 0 },
+  { name: 'Rsc', x: 0.5, y: 1, z: 0, spatialize: true, azimuth: 15, elevation: 0 },
+  { name: 'Cb', x: 0, y: -1, z: 0, spatialize: true, azimuth: 180, elevation: 0 },
+  { name: 'Lsd', x: -1, y: -0.5, z: 0, spatialize: true, azimuth: -120, elevation: 0 },
+  { name: 'Rsd', x: 1, y: -0.5, z: 0, spatialize: true, azimuth: 120, elevation: 0 },
+  { name: 'Lw', x: -1, y: 0.5, z: 0, spatialize: true, azimuth: -60, elevation: 0 },
+  { name: 'Rw', x: 1, y: 0.5, z: 0, spatialize: true, azimuth: 60, elevation: 0 },
+  { name: 'LFE2', x: 0, y: 1, z: 0, spatialize: false, azimuth: 0, elevation: 0 },
+  { name: 'TSL', x: -1, y: 0, z: 1, spatialize: true, azimuth: -90, elevation: 45 },
+  { name: 'TSR', x: 1, y: 0, z: 1, spatialize: true, azimuth: 90, elevation: 45 },
+  { name: 'TC', x: 0, y: 0, z: 1, spatialize: true, azimuth: 0, elevation: 90 },
+  { name: 'TFC', x: 0, y: 1, z: 1, spatialize: true, azimuth: 0, elevation: 45 },
+  { name: 'Lh', x: -1, y: 1, z: 0.8165, spatialize: true, azimuth: -30, elevation: 30 },
+  { name: 'Rh', x: 1, y: 1, z: 0.8165, spatialize: true, azimuth: 30, elevation: 30 },
+  { name: 'Ch', x: 0, y: 1, z: 0.5774, spatialize: true, azimuth: 0, elevation: 30 },
+  { name: 'Lhs', x: -1, y: 0, z: 0.5774, spatialize: true, azimuth: -110, elevation: 30 },
+  { name: 'Rhs', x: 1, y: 0, z: 0.5774, spatialize: true, azimuth: 110, elevation: 30 }
 ];
+
+// ---------------------------------------------------------------------------
+// Families and modes (docs/placement.md)
+// ---------------------------------------------------------------------------
+
+// The source families the renderer's placement policy knows, in tab order.
+// `generic` is the base the others inherit from, and what an undeclared
+// format gets.
+const PLACEMENT_FAMILIES = ['generic', 'dolby', 'dts', 'auro', 'pcm'];
+const PLACEMENT_MODES = ['sphere', 'room', 'manual'];
+// The renderer's built-in default when neither the family nor generic sets
+// a mode: Auro-3D is a sphere, the rest a room.
+const BUILTIN_MODE = { auro: 'sphere' };
+
+function familyBlock(family) {
+  const block = app.placement && typeof app.placement === 'object' ? app.placement[family] : null;
+  return block && typeof block === 'object' ? block : null;
+}
+function ownMode(family) {
+  const mode = familyBlock(family)?.mode;
+  return PLACEMENT_MODES.includes(mode) ? mode : null;
+}
+function ownSpeakers(family) {
+  const speakers = familyBlock(family)?.layout?.speakers;
+  return Array.isArray(speakers) ? speakers : null;
+}
+function legacyBedSpeakers() {
+  return Array.isArray(app.virtualBed?.speakers) ? app.virtualBed.speakers : null;
+}
+
+// One family's placement as the renderer reports it, with the inheritance
+// resolved here by the renderer's own rule — so an offline Studio, or one
+// whose edit has not been echoed yet, shows the same answer.
+function familyPlacement(family) {
+  const own = ownMode(family);
+  const effectiveMode = own || ownMode('generic') || BUILTIN_MODE[family] || 'room';
+  const layoutSource = ownSpeakers(family)
+    ? 'own'
+    : ownSpeakers('generic') || legacyBedSpeakers()
+      ? 'generic'
+      : 'none';
+  return { ownMode: own, effectiveMode, layoutSource };
+}
+
+// The entries a family uses: its own, else the generic family's, else the
+// legacy single bed a renderer from before placement reports.
+function familySpeakers(family) {
+  return ownSpeakers(family) || ownSpeakers('generic') || legacyBedSpeakers() || [];
+}
+
+// The family of the stream the renderer is rendering, if a fixed-channel
+// stream is playing (`fixedChannelProcessing.family`).
+function playingFamily() {
+  const processing = app.fixedChannelProcessing;
+  if (!processing || processing.stream === 'idle') return null;
+  return PLACEMENT_FAMILIES.includes(processing.family) ? processing.family : null;
+}
+
+export function editingFamily() {
+  return PLACEMENT_FAMILIES.includes(app.placementFamily) ? app.placementFamily : 'generic';
+}
+
+// A new stream's family becomes the one being edited, once: a tab picked
+// while it plays stays picked.
+export function followPlayingFamily() {
+  const family = playingFamily();
+  if (family && app.placementFollowed !== family) {
+    app.placementFollowed = family;
+    app.placementFamily = family;
+  }
+}
+
+// The family's object in the mirrored block, created on demand so an
+// optimistic edit lands somewhere even before the first echo.
+function familyBlockForWrite(family) {
+  if (!app.placement || typeof app.placement !== 'object') app.placement = {};
+  if (!app.placement[family] || typeof app.placement[family] !== 'object') {
+    app.placement[family] = {};
+  }
+  return app.placement[family];
+}
 
 // Memoised view of the renderer-published fixed-channel catalogue: the alias map
 // (normalised spelling → canonical label, from each entry's 'aliases' field) and
@@ -144,31 +230,9 @@ function admToPolar(x, y, z) {
   return { azimuth: sph.az, elevation: sph.el, distance: Math.max(0.01, sph.dist) };
 }
 
-// Default model entry for a channel: the canonical ADM cartesian corner, with
-// the polar form derived so the editor/renderer can use either. A channel the
-// renderer defines by an angle (catalogue entry or fallback with a polar
-// default) starts as a polar entry, so it renders at that angle whatever the
-// room is instead of freezing the unit-sphere point into a cartesian corner.
+// The room model's channel: the catalogue corner, cartesian, with the polar
+// form derived so the editor can show either.
 function defaultEntry(base) {
-  const baseMode = String(base.coordMode || base.coord_mode || '').toLowerCase();
-  if (baseMode === 'polar' && Number.isFinite(Number(base.azimuth))) {
-    const azimuth = Number(base.azimuth);
-    const elevation = Number(base.elevation) || 0;
-    const distance = Number(base.distance) > 0 ? Number(base.distance) : 1.0;
-    const norm = polarToAdm(azimuth, elevation, distance);
-    return {
-      name: base.name,
-      coordMode: 'polar',
-      azimuth,
-      elevation,
-      distance,
-      x: norm.x,
-      y: norm.y,
-      z: norm.z,
-      spatialize: base.spatialize !== false,
-      gainDb: 0
-    };
-  }
   const polar = admToPolar(base.x, base.y, base.z);
   return {
     name: base.name,
@@ -182,8 +246,44 @@ function defaultEntry(base) {
   };
 }
 
-// Read a configured bed entry (polar or cartesian) as a normalized model entry,
-// falling back to the canonical default when it can't be parsed.
+// The sphere model's channel: the nominal direction, polar, at unit
+// distance — or the room corner when the catalogue gives no direction.
+function sphereEntry(base) {
+  if (!Number.isFinite(Number(base.azimuth))) return defaultEntry(base);
+  const azimuth = Number(base.azimuth);
+  const elevation = Number(base.elevation) || 0;
+  const norm = polarToAdm(azimuth, elevation, 1.0);
+  return {
+    name: base.name,
+    coordMode: 'polar',
+    azimuth,
+    elevation,
+    distance: 1.0,
+    x: norm.x,
+    y: norm.y,
+    z: norm.z,
+    spatialize: base.spatialize !== false,
+    gainDb: 0
+  };
+}
+
+// The channel as the family's `mode` renders it: manual reads the entry's
+// pose; room and sphere take the model's pose and only the entry's routing
+// and trim.
+function channelInMode(base, match, mode) {
+  if (mode === 'manual') return readEntry(base, match);
+  const channel = mode === 'sphere' ? sphereEntry(base) : defaultEntry(base);
+  if (match) {
+    if (typeof match.spatialize === 'boolean') channel.spatialize = match.spatialize;
+    if (Number.isFinite(Number(match.gain_db))) {
+      channel.gainDb = Math.round(Number(match.gain_db) * 10) / 10;
+    }
+  }
+  return channel;
+}
+
+// Read a configured entry as a manual-mode channel, falling back to the room
+// corner when it can't be parsed.
 function readEntry(base, match) {
   if (!match) return defaultEntry(base);
   const cartesian = String(match.coord_mode || '').toLowerCase() === 'cartesian';
@@ -219,10 +319,13 @@ function readEntry(base, match) {
   return defaultEntry(base);
 }
 
-// The full editable channel set: canonical defaults overridden by any matching
-// entry from the live virtual bed (matched by alias, case-insensitive).
-export function effectiveChannels() {
-  const configured = Array.isArray(app.virtualBed?.speakers) ? app.virtualBed.speakers : [];
+// The full editable channel set of one family, as its effective mode renders
+// it: the catalogue's channels with the family's entries applied (routing and
+// trim in every mode, the pose in manual mode), plus any channel the entries
+// or the stream mention that the catalogue does not.
+function effectiveChannels(family = editingFamily()) {
+  const configured = familySpeakers(family);
+  const mode = familyPlacement(family).effectiveMode;
   const published = Array.isArray(app.fixedChannelCatalog) && app.fixedChannelCatalog.length
     ? app.fixedChannelCatalog.map((entry) => ({
         name: entry.label,
@@ -230,10 +333,8 @@ export function effectiveChannels() {
         y: Number(entry.y) || 0,
         z: Number(entry.z) || 0,
         spatialize: entry.spatialize !== false,
-        coordMode: entry.coord_mode,
         azimuth: entry.azimuth,
-        elevation: entry.elevation,
-        distance: entry.distance
+        elevation: entry.elevation
       }))
     : FALLBACK_BED;
   const bases = [...published];
@@ -253,18 +354,19 @@ export function effectiveChannels() {
   return bases.map((base) => {
     const baseKey = canonicalChannelName(base.name) || base.name;
     const match = configured.find((s) => canonicalChannelName(s?.name) === baseKey);
-    return readEntry(base, match);
+    return channelInMode(base, match, mode);
   });
 }
 
-function channelByName(name) {
+function channelByName(name, family = editingFamily()) {
   const key = canonicalChannelName(name);
   if (!key) return null;
-  return effectiveChannels().find((c) => c.name === key) || null;
+  return effectiveChannels(family).find((c) => c.name === key) || null;
 }
 
-function buildLayoutPayload(channels) {
-  const radius = Number(app.virtualBed?.radius_m) > 0 ? Number(app.virtualBed.radius_m) : 1.0;
+function buildLayoutPayload(channels, family = editingFamily()) {
+  const stored = Number(familyBlock(family)?.layout?.radius_m);
+  const radius = stored > 0 ? stored : 1.0;
   // Ship the block matching each channel's coord_mode, exactly like the speaker
   // editor. A cartesian channel sends its ADM-normalized x/y/z and the RENDERER
   // derives the pose (the same code path the output speakers use); a polar
@@ -297,19 +399,95 @@ function buildLayoutPayload(channels) {
   };
 }
 
-// Update one channel entry (by canonical name) via `mutate`, push the whole bed
-// to the renderer, and refresh the synthetic objects + panel.
+// A family's own entries, applied to the model at once (so the editor, the 3D
+// view and the audio agree before the renderer echoes) and sent.
+function setPlacementLayout(family, payload) {
+  familyBlockForWrite(family).layout = payload;
+  if (family === 'generic') app.virtualBed = payload;
+  invoke('control_placement_layout', { family, value: JSON.stringify(payload) });
+  syncVirtualBedObjects(true);
+  renderChannelEditor(true);
+  renderPlacementPanel();
+}
+
+// Update one channel entry (by canonical name) via `mutate`, push the whole
+// layout of the family being edited to the renderer, and refresh the
+// synthetic objects + panel.
 function commitChannel(name, mutate) {
   const key = canonicalChannelName(name);
   if (!key) return;
-  const channels = effectiveChannels();
+  const family = editingFamily();
+  const channels = effectiveChannels(family);
   const target = channels.find((c) => c.name === key);
   if (!target) return;
   mutate(target);
-  app.virtualBed = buildLayoutPayload(channels);
-  invoke('control_virtual_bed', { value: JSON.stringify(app.virtualBed) });
+  setPlacementLayout(family, buildLayoutPayload(channels, family));
+}
+
+// Which family the channel editor and the at-rest markers show.
+export function setPlacementFamily(family) {
+  if (!PLACEMENT_FAMILIES.includes(family) || app.placementFamily === family) return;
+  app.placementFamily = family;
   syncVirtualBedObjects(true);
   renderChannelEditor(true);
+  renderPlacementPanel();
+}
+
+// A family's placement mode: null clears the family's own choice, so it
+// inherits (the generic mode, else its built-in default).
+export function setPlacementMode(family, mode) {
+  if (!PLACEMENT_FAMILIES.includes(family)) return;
+  if (mode !== null && !PLACEMENT_MODES.includes(mode)) return;
+  familyBlockForWrite(family).mode = mode;
+  invoke('control_placement_mode', { family, mode: mode ?? 'inherit' });
+  syncVirtualBedObjects(true);
+  renderChannelEditor(true);
+  renderPlacementPanel();
+}
+
+// Switch a family to manual mode with the poses it renders right now as its
+// entries — what you hear becomes what you edit, with no jump. The renderer's
+// own fixed-channel positions are taken when that family is playing (they
+// carry the declared angles and the Side/Back choice); the model's poses
+// otherwise.
+export function switchPlacementToManual(family) {
+  if (!PLACEMENT_FAMILIES.includes(family)) return;
+  const channels = effectiveChannels(family);
+  if (playingFamily() === family) {
+    for (const channel of channels) {
+      const id = liveFixedSourceId(channel.name);
+      const raw = id === null ? null : sourcePositionsRaw.get(String(id));
+      if (!raw || raw.fixed !== true) continue;
+      const x = Number(raw.x);
+      const y = Number(raw.y);
+      const z = Number(raw.z);
+      if (![x, y, z].every(Number.isFinite)) continue;
+      const polar = admToPolar(x, y, z);
+      Object.assign(channel, { coordMode: 'cartesian', x, y, z, ...polar });
+    }
+  }
+  // Entries first, then the mode: the plan flips once, with the entries
+  // already in place.
+  setPlacementLayout(family, buildLayoutPayload(channels, family));
+  setPlacementMode(family, 'manual');
+}
+
+// The live source that stands for a fixed channel of the playing stream.
+function liveFixedSourceId(name) {
+  const key = canonicalChannelName(name);
+  if (!key) return null;
+  for (const [id, sourceName] of sourceNames) {
+    if (syntheticIds.has(id)) continue;
+    if (canonicalChannelName(sourceName) === key) return id;
+  }
+  return null;
+}
+
+// True when the family being edited places its channels by hand: the only
+// mode in which a position is the editor's to move.
+export function channelEditable(name) {
+  if (channelPlacement(name) !== 'virtual') return false;
+  return familyPlacement(editingFamily()).effectiveMode === 'manual';
 }
 
 // Current placement of a channel as polar (az/el/dist) + pure normalized
@@ -339,7 +517,7 @@ export function getChannelPosition(name) {
 
 // Placement of a channel by name: 'virtual' (draggable object), 'direct'
 // (anchored to its speaker), or null (not a bed channel).
-export function channelPlacement(name) {
+function channelPlacement(name) {
   const ch = channelByName(name);
   if (!ch) return null;
   return ch.spatialize ? 'virtual' : 'direct';
@@ -415,33 +593,73 @@ export function applyChannelPlacement(name, spatialize) {
   });
 }
 
-// Reset the bed to the canonical defaults: every channel at its cube-corner
-// position in CARTESIAN mode (the published/fallback corners), not the renderer's
-// polar fallback angles. Sending an empty string used to hand the renderer its
-// built-in polar poses, which the editor then displayed as cartesian corners —
-// so the polar form changed while the cartesian fields stayed stale even though
-// the coord-mode read "cartesian". Pushing the explicit cartesian bed keeps the
-// editor, the 3D view and the audio render in agreement.
-export function resetVirtualBed() {
-  const channels = effectiveChannels().map((channel) => {
-    const base = (app.fixedChannelCatalog || []).find((e) => e?.label === channel.name)
-      || FALLBACK_BED.find((e) => e.name === channel.name)
-      || { name: channel.name, x: 0, y: 0, z: 0, spatialize: true };
-    return defaultEntry(base);
-  });
-  app.virtualBed = buildLayoutPayload(channels);
-  invoke('control_virtual_bed', { value: JSON.stringify(app.virtualBed) });
+// Clear a family's own entries: it then uses the generic ones — or, for the
+// generic family itself, the defaults (LFE direct, unity trims, the model's
+// poses).
+export function clearPlacementLayout(family = editingFamily()) {
+  if (!PLACEMENT_FAMILIES.includes(family)) return;
+  familyBlockForWrite(family).layout = null;
+  if (family === 'generic') app.virtualBed = null;
+  invoke('control_placement_layout', { family, value: '' });
   syncVirtualBedObjects(true);
   renderChannelEditor(true);
+  renderPlacementPanel();
 }
 
-// Materialise the canonical bed into the renderer/config the first time we learn
-// the renderer has no saved bed, so the editor's values live in config.yaml (like
-// the speaker layout's `current_layout`) and are used in priority — rather than
-// the renderer falling back to a built-in default. Same explicit cartesian push
-// as the manual Reset; the one-shot guard lives in the caller.
-export function materializeDefaultVirtualBed() {
-  resetVirtualBed();
+// The placement block of the fixed-channel panel: the family tabs (the one
+// the renderer is playing is marked), the mode, what the family resolves to,
+// and the way back to the generic entries.
+export function renderPlacementPanel() {
+  const tabs = el('placementFamilyTabs');
+  if (!tabs) return;
+  const family = editingFamily();
+  const placement = familyPlacement(family);
+  const playing = playingFamily();
+  tabs.replaceChildren(
+    ...PLACEMENT_FAMILIES.map((f) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'toggle-btn' + (f === family ? ' active' : '');
+      button.dataset.placementFamily = f;
+      button.textContent = playing === f ? `${t(`placement.family.${f}`)} ●` : t(`placement.family.${f}`);
+      if (playing === f) button.title = t('placement.playing');
+      return button;
+    })
+  );
+  const modes = el('placementModeButtons');
+  if (modes) {
+    const choices = family === 'generic' ? PLACEMENT_MODES : ['inherit', ...PLACEMENT_MODES];
+    const current = placement.ownMode ?? 'inherit';
+    modes.replaceChildren(
+      ...choices.map((mode) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'toggle-btn' + (mode === current ? ' active' : '');
+        button.dataset.placementMode = mode;
+        button.textContent = t(`placement.mode.${mode}`);
+        return button;
+      })
+    );
+  }
+  const modeNote = el('placementModeNote');
+  if (modeNote) {
+    const modeName = t(`placement.mode.${placement.effectiveMode}`);
+    if (placement.ownMode) {
+      modeNote.style.display = 'none';
+    } else {
+      modeNote.style.display = '';
+      const inherited = family !== 'generic' && familyPlacement('generic').ownMode;
+      modeNote.textContent = tf(inherited ? 'placement.inherited' : 'placement.builtin', { mode: modeName });
+    }
+  }
+  const layoutNote = el('placementLayoutNote');
+  if (layoutNote) layoutNote.textContent = t(`placement.layout.${placement.layoutSource}`);
+  const actions = el('virtualBedActions');
+  if (actions) actions.style.display = placement.layoutSource === 'own' ? 'flex' : 'none';
+  const resetBtn = el('virtualBedResetBtn');
+  if (resetBtn) {
+    resetBtn.textContent = family === 'generic' ? t('virtualBed.reset') : t('placement.useGeneric');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -617,7 +835,8 @@ export function renderChannelEditor(force = false) {
   if (!force && key === lastEditorKey && section.contains(document.activeElement)) return;
   lastEditorKey = key;
 
-  const ch = channelByName(key);
+  const family = editingFamily();
+  const ch = channelByName(key, family);
   if (!ch) {
     section.style.display = 'none';
     return;
@@ -625,9 +844,23 @@ export function renderChannelEditor(force = false) {
   section.style.display = '';
 
   const titleEl = el('channelEditTitle');
-  if (titleEl) titleEl.textContent = `${t('channelEdit.title')} — ${ch.name}`;
+  if (titleEl) {
+    titleEl.textContent = `${t('channelEdit.title')} — ${ch.name} · ${t(`placement.family.${family}`)}`;
+  }
 
   const spatialize = ch.spatialize !== false;
+  // A virtual channel is placed by hand in manual mode only; in the sphere
+  // and room modes its family's model places it, and the coordinates below
+  // are what that model gives.
+  const mode = familyPlacement(family).effectiveMode;
+  const manual = mode === 'manual';
+  const modeNote = el('channelEditModeNote');
+  if (modeNote) {
+    modeNote.style.display = spatialize && !manual ? '' : 'none';
+    modeNote.textContent = tf('placement.positionsFollow', { mode: t(`placement.mode.${mode}`) });
+  }
+  const modeActions = el('channelEditModeActions');
+  if (modeActions) modeActions.style.display = spatialize && !manual ? 'flex' : 'none';
   const directTarget = spatialize ? null : directSpeakerTarget(ch.name);
   const toggle = el('channelEditSpatializeToggle');
   if (toggle) toggle.checked = spatialize;
@@ -641,15 +874,15 @@ export function renderChannelEditor(force = false) {
     targetName.textContent = directTarget?.name || t('channelEdit.noMatchingSpeaker');
   }
 
-  const mode = !spatialize && directTarget
+  const coordMode = !spatialize && directTarget
     ? (String(directTarget.speaker.coordMode || directTarget.speaker.coord_mode || '').toLowerCase() === 'polar'
         ? 'polar'
         : 'cartesian')
     : (app.channelEditCoordMode === 'cartesian' ? 'cartesian' : 'polar');
   const cartMode = el('channelEditCartesianMode');
   const polarMode = el('channelEditPolarMode');
-  if (cartMode) cartMode.checked = mode === 'cartesian';
-  if (polarMode) polarMode.checked = mode === 'polar';
+  if (cartMode) cartMode.checked = coordMode === 'cartesian';
+  if (polarMode) polarMode.checked = coordMode === 'polar';
 
   // Direct mode displays the destination speaker's real position; the channel's
   // stored virtual pose is deliberately hidden because it is not used. Virtual
@@ -703,7 +936,8 @@ export function renderChannelEditor(force = false) {
     gainBox.textContent = `${g > 0 ? '+' : ''}${g.toFixed(1)} dB`;
   }
 
-  // Direct channels are pinned to their speaker: only Direct/Virtual + gain edit.
+  // Direct channels are pinned to their speaker, and a sphere or room
+  // channel to its model: only Direct/Virtual + gain edit then.
   const positionInputs = [
     'channelEditXInput', 'channelEditYInput', 'channelEditZInput',
     'channelEditXMetersInput', 'channelEditYMetersInput', 'channelEditZMetersInput',
@@ -713,7 +947,7 @@ export function renderChannelEditor(force = false) {
   ];
   for (const inputId of positionInputs) {
     const node = el(inputId);
-    if (node) node.disabled = !spatialize;
+    if (node) node.disabled = !spatialize || !manual;
   }
 
   const cartGizmoBtn = el('channelEditCartesianGizmoBtn');

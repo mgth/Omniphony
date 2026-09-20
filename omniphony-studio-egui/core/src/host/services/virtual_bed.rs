@@ -15,7 +15,7 @@
 use std::time::{Duration, Instant};
 
 use super::Tick;
-use crate::host::channels::{Channel, effective_channels};
+use crate::host::channels::{Channel, Family, effective_channels_for};
 use crate::host::commands::SharedState;
 use crate::model::app_state::SourcePosition;
 use crate::osc::dispatch::Live;
@@ -52,8 +52,9 @@ impl VirtualBed {
                 };
             }
         }
-        let channels = effective_channels(&live.channels, &live.app);
-        let signature = bed_signature(&channels);
+        let family = live.editing_family;
+        let channels = effective_channels_for(&live.channels, &live.app, family);
+        let signature = bed_signature(family, &channels);
         if self.signature == Some(signature) && self.ids.len() == channels.len() {
             return Tick::idle();
         }
@@ -136,9 +137,10 @@ impl VirtualBed {
 
 /// Cheap change detector for the marker set, so the sweep above runs only when
 /// the bed actually moved.
-fn bed_signature(channels: &[Channel]) -> u64 {
+fn bed_signature(family: Family, channels: &[Channel]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    family.hash(&mut hasher);
     for c in channels {
         c.name.hash(&mut hasher);
         c.coord_mode.hash(&mut hasher);

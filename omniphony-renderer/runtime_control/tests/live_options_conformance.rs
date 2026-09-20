@@ -28,6 +28,7 @@ use renderer::live_params::{
     LiveEvaluationMode, LiveParams, OutputChannelMapping, PhantomExtractMode,
     PreferredEvaluationMode, RendererControl, SurroundPlacement,
 };
+use renderer::placement::{PlacementMode, SourceFamily};
 use renderer::spatial_renderer::SpatialRenderer;
 use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
 use renderer::speaker_layout::SpeakerLayout;
@@ -122,14 +123,53 @@ const LIVE_OPTIONS: &[LiveOptionRow] = &[
         },
     },
     LiveOptionRow {
-        key: "virtual_bed",
+        key: "placement.generic.layout",
+        control_addr: osc_contract::CONTROL_PLACEMENT_LAYOUT,
+        snapshot_key: "placement",
+        set_non_default: |live| {
+            live.placement.family_mut(SourceFamily::Generic).layout =
+                Some(SpeakerLayout::preset("5.1").expect("5.1 preset"));
+        },
+        snapshot_reflects: |v| v["generic"]["layout"].is_object(),
+        config_reflects: |r| {
+            r.placement
+                .as_ref()
+                .and_then(|p| p.generic.as_ref())
+                .is_some_and(|g| g.layout.is_some())
+        },
+    },
+    LiveOptionRow {
+        key: "placement.auro.mode",
+        control_addr: osc_contract::CONTROL_PLACEMENT_MODE,
+        snapshot_key: "placement",
+        set_non_default: |live| {
+            live.placement.family_mut(SourceFamily::Auro).mode = Some(PlacementMode::Room);
+        },
+        snapshot_reflects: |v| v["auro"]["mode"] == "room" && v["auro"]["effectiveMode"] == "room",
+        config_reflects: |r| {
+            r.placement
+                .as_ref()
+                .and_then(|p| p.auro.as_ref())
+                .is_some_and(|a| a.mode == Some(PlacementMode::Room))
+        },
+    },
+    // The legacy generic-bed address stays in the catalogue for clients that
+    // predate `placement`; its mirror key tracks the generic entries.
+    LiveOptionRow {
+        key: "virtual_bed (legacy mirror)",
         control_addr: osc_contract::CONTROL_VIRTUAL_BED,
         snapshot_key: "virtualBed",
         set_non_default: |live| {
-            live.virtual_bed = Some(SpeakerLayout::preset("5.1").expect("5.1 preset"));
+            live.placement.family_mut(SourceFamily::Generic).layout =
+                Some(SpeakerLayout::preset("5.1").expect("5.1 preset"));
         },
         snapshot_reflects: |v| v.is_object(),
-        config_reflects: |r| r.virtual_bed.is_some(),
+        config_reflects: |r| {
+            r.placement
+                .as_ref()
+                .and_then(|p| p.generic.as_ref())
+                .is_some_and(|g| g.layout.is_some())
+        },
     },
 ];
 

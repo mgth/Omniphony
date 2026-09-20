@@ -218,10 +218,22 @@ pub const CONTROL_CROSSOVER_TYPE: &str = "/omniphony/control/crossover_type";
 pub const CONTROL_CROSSOVER_FIR_TRANSITION_RATIO: &str =
     "/omniphony/control/crossover_fir_transition_ratio";
 pub const CONTROL_UNKNOWN: &str = "/omniphony/control/unknown";
-/// Set the parametrable virtual bed for channel content. Argument is a YAML
-/// `SpeakerLayout` (one entry per channel label, `spatialize` = virtual/direct);
-/// an empty string resets to the built-in canonical poses (LFE direct).
+/// Legacy: the `generic` family's entries (see [`CONTROL_PLACEMENT_LAYOUT`]).
+/// Argument is a YAML `SpeakerLayout`; an empty string clears them.
 pub const CONTROL_VIRTUAL_BED: &str = "/omniphony/control/virtual_bed";
+/// Placement mode of one source family's fixed channels
+/// (`renderer::placement`): args `[family (string), mode (string)]`, family
+/// one of `generic`, `dolby`, `dts`, `auro`, `pcm`; mode `sphere`, `room`,
+/// `manual`, or `inherit` to clear the family's own choice (it then follows
+/// `generic`, or its built-in default). Persisted to config on save;
+/// re-plans the current stream.
+pub const CONTROL_PLACEMENT_MODE: &str = "/omniphony/control/placement/mode";
+/// One source family's own entries: args `[family (string), yaml (string)]`,
+/// a YAML `SpeakerLayout` — one entry per channel label, `spatialize` =
+/// virtual/direct and `gain_db` in every mode, the pose in manual mode. An
+/// empty string clears them (the family then uses `generic`'s). Persisted to
+/// config on save; re-plans the current stream.
+pub const CONTROL_PLACEMENT_LAYOUT: &str = "/omniphony/control/placement/layout";
 /// How finely an object must turn before its HRIR is rebuilt: `exact`
 /// (default, bit-identical output), `fine`, `balanced` or `coarse`. Coarser
 /// lattices skip more HRIR interpolation — and the crossfade that goes with it
@@ -568,6 +580,8 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_CROSSOVER_TYPE,
     CONTROL_CROSSOVER_FIR_TRANSITION_RATIO,
     CONTROL_VIRTUAL_BED,
+    CONTROL_PLACEMENT_MODE,
+    CONTROL_PLACEMENT_LAYOUT,
     CONTROL_CONFIG_AUDIO,
     CONTROL_CONFIG_AUDIO_APPLY,
     CONTROL_CONFIG_INPUT,

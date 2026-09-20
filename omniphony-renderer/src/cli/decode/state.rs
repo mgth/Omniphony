@@ -7,6 +7,7 @@ use audio_output::pipewire::PipewireBufferConfig;
 use bridge_api::{RChannelPose, RCoordinateFormat};
 use orender_engine::osc::OscSender;
 use renderer::metering::AudioMeter;
+use renderer::placement::SourceFamily;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -132,9 +133,11 @@ pub struct SpatialState {
     /// Cached object↔channel declaration from the bridge (sparse emission),
     /// sorted by channel.
     pub object_channels: Vec<(u32, usize)>,
-    /// The poses the bridge declared for the current labels, as last sent
-    /// by the decoder thread (`DecodedAudioData::declared_poses`). Kept
+    /// The bridge's declaration for the current labels, as last sent by the
+    /// decoder thread (`DecodedAudioData::declaration`): the family whose
+    /// placement policy applies, and the poses the format states. Kept
     /// across segment resets: the decoder thread re-sends on a label change.
+    pub source_family: SourceFamily,
     pub declared_poses: Vec<RChannelPose>,
     pub object_names: std::collections::HashMap<u32, String>,
     pub au_index: u64,
@@ -156,6 +159,7 @@ impl Default for SpatialState {
             bed_events: Vec::new(),
             channel_objects: orender_engine::channel_objects::ChannelObjectStages::new(),
             object_channels: Vec::new(),
+            source_family: SourceFamily::Generic,
             declared_poses: Vec::new(),
             object_names: std::collections::HashMap::new(),
             au_index: 0,

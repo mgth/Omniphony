@@ -65,6 +65,7 @@ impl<'a> SpatialMetadataCoordinator<'a> {
             if let Some(renderer) = self.spatial_renderer {
                 self.spatial.fixed_planner.plan_object_stream_fixed(
                     &frame.channel_labels,
+                    self.spatial.source_family,
                     &self.spatial.declared_poses,
                     renderer,
                     &mut self.spatial.frame_events,
@@ -137,6 +138,7 @@ impl<'a> SpatialMetadataCoordinator<'a> {
                     build_fixed_channel_objects(
                         renderer,
                         self.spatial.fixed_planner.fixed_labels(),
+                        self.spatial.source_family,
                         &self.spatial.declared_poses,
                     )
                 })

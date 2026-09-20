@@ -121,8 +121,9 @@ pub struct StudioSpike {
     /// A bulk delay tool waiting for its confirmation: both rewrite every
     /// speaker, so neither runs on a single click.
     pub(crate) delay_tool_confirm: Option<crate::panels::speaker_editor::DelayTool>,
-    /// "Reset channel layout" waiting for its confirmation.
-    pub(crate) virtual_bed_reset_confirm: bool,
+    /// "Reset channel layout" / "Use Generic entries" waiting for its
+    /// confirmation, for the family it would clear.
+    pub(crate) placement_reset_confirm: Option<crate::host::channels::Family>,
     /// Object injection: whether the test signal is playing, whether the list's
     /// M button silenced it, and what a sheet gesture is locked to.
     pub(crate) object_test_playing: bool,
@@ -456,7 +457,7 @@ impl StudioSpike {
             layout_transfer: Default::default(),
             profiles: Default::default(),
             delay_tool_confirm: None,
-            virtual_bed_reset_confirm: false,
+            placement_reset_confirm: None,
             object_test_playing: false,
             object_test_muted: false,
             object_test_drag: None,
@@ -876,7 +877,7 @@ impl StudioSpike {
         self.about_modal(ctx);
         self.info_modal(ctx);
         self.delay_tool_modal(ctx);
-        self.virtual_bed_reset_modal(ctx);
+        self.placement_reset_modal(ctx);
         crate::ui::help::end_frame(ctx);
         self.sofa_browser_modal(ctx);
         self.script_editor_modal(ctx);

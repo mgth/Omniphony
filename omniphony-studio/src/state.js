@@ -263,9 +263,18 @@ export const app = {
   // Speaker names that can't be routed by position in by_name mode (reported by
   // the renderer for the active backend); shown as a warning. Empty when none.
   outputChannelMappingUnroutable: [],
-  // Parametrable virtual bed for fixed-channel sources (a SpeakerLayout-shaped object, or
-  // null = built-in canonical poses). Edited by the virtual-bed editor.
+  // Legacy mirror of the generic family's channel entries (a
+  // SpeakerLayout-shaped object, or null). `placement` is the real thing.
   virtualBed: null,
+  // Per-family placement of fixed channels (the renderer's `placement`
+  // block): {generic: {mode, layout, effectiveMode, layoutSource}, dolby: …}.
+  // Null until the renderer reports it. Read through controls/virtual-bed.js.
+  placement: null,
+  // The family the channel editor and the at-rest markers show. Follows the
+  // family of a stream when one starts (`placementFollowed` remembers which,
+  // so a tab picked while it plays is not overridden on the next snapshot).
+  placementFamily: 'generic',
+  placementFollowed: null,
   // Declared live options (registry RFC): the renderer's `options` snapshot
   // block, keyed by canonical snake_case option key. THE single JS-side value
   // store for registry options — read through `getLiveOption`, never through
@@ -275,9 +284,6 @@ export const app = {
   // as [{key,kind,values?,default,flags,i18nKey,helpI18nKey?}]. Provides the
   // pre-snapshot defaults for `getLiveOption` and (later) control rendering.
   optionsSchema: [],
-  // One-shot guard: once we've materialised the canonical bed into the
-  // renderer/config (when none was saved), don't push it again this session.
-  virtualBedMaterialized: false,
   audioOutputDevice: null,
   audioOutputDeviceEffective: null,
   audioOutputDevices: [],

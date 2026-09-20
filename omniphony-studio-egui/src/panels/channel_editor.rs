@@ -8,14 +8,17 @@
 //!
 //! Editing reuses the speaker editor's mechanic: the channels appear in the
 //! objects list, and selecting one opens this editor under it. Every edit
-//! pushes the whole bed, because the renderer takes a layout and not a diff.
+//! pushes the whole layout of the family being edited, because the renderer
+//! takes a layout and not a diff. Positions are editable in manual mode
+//! only: in sphere and room mode the family's model places the channel, and
+//! the editor offers the switch.
 
 use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
 use crate::host::channels::{
-    Channel, CoordMode, adm_to_meters, adm_to_polar, build_layout_payload, effective_channels,
-    meters_to_adm, polar_to_adm,
+    Channel, CoordMode, PlacementMode, adm_to_meters, adm_to_polar, build_layout_payload,
+    effective_channels_for, family_placement, meters_to_adm, polar_to_adm,
 };
 use crate::host::commands::engine;
 use crate::i18n::t;
@@ -46,9 +49,10 @@ impl StudioSpike {
         let Some(name) = self.selected_channel() else {
             return;
         };
-        let (channel, room, scale_m, direct) = {
+        let (channel, room, scale_m, direct, family, mode) = {
             let live = self.host.read();
-            let channels = effective_channels(&live.channels, &live.app);
+            let family = live.editing_family;
+            let channels = effective_channels_for(&live.channels, &live.app, family);
             let Some(channel) = channels.into_iter().find(|c| c.name == name) else {
                 return;
             };
@@ -58,14 +62,21 @@ impl StudioSpike {
                 live.app.room_ratio.clone(),
                 live.app.room_ratio.scale_m.max(0.001),
                 direct,
+                family,
+                family_placement(&live.app, family).effective_mode,
             )
         };
         ui.add_space(theme::PANEL_GAP);
         ui.separator();
         ui.label(
-            RichText::new(format!("{} — {}", t("channelEdit.title"), name))
-                .size(theme::FONT_SIZE_SECTION)
-                .color(theme::TEXT_STRONG),
+            RichText::new(format!(
+                "{} — {} · {}",
+                t("channelEdit.title"),
+                name,
+                t(family.i18n_key())
+            ))
+            .size(theme::FONT_SIZE_SECTION)
+            .color(theme::TEXT_STRONG),
         );
 
         let mut gain = channel.gain_db as f32;
@@ -145,7 +156,22 @@ impl StudioSpike {
             let live = self.host.read();
             live.selected_speakers().get(index).cloned()
         });
-        let editable = channel.spatialize;
+        // A virtual channel is placed by hand in manual mode only; in the
+        // sphere and room modes its family's model places it, and the
+        // coordinates below are what that model gives.
+        let manual = mode == PlacementMode::Manual;
+        if channel.spatialize && !manual {
+            widgets::note(
+                ui,
+                &t("placement.positionsFollow").replace("{mode}", t(mode.i18n_key())),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if ui.button(t("placement.editManually")).clicked() {
+                    engine::switch_placement_to_manual(&self.host, family);
+                }
+            });
+        }
+        let editable = channel.spatialize && manual;
         let mode = match &speaker {
             Some(s) if s.coord_mode == "polar" => CoordMode::Polar,
             Some(_) => CoordMode::Cartesian,
@@ -391,7 +417,8 @@ impl StudioSpike {
         let distance = distance.max(0.01);
         let adm = polar_to_adm(&room, azimuth, elevation, distance);
         let live = self.host.read();
-        let mut channels = effective_channels(&live.channels, &live.app);
+        let family = live.editing_family;
+        let mut channels = effective_channels_for(&live.channels, &live.app, family);
         let Some(target) = channels.iter_mut().find(|c| c.name == name) else {
             return;
         };
@@ -404,7 +431,7 @@ impl StudioSpike {
         target.z = adm[2];
         let payload = build_layout_payload(&live.app, &channels);
         drop(live);
-        engine::preview_virtual_bed(&self.host, payload);
+        engine::preview_placement_layout(&self.host, family, payload);
     }
 
     fn set_channel_polar(&mut self, name: &str, azimuth: f64, elevation: f64, distance: f64) {
@@ -422,24 +449,21 @@ impl StudioSpike {
         });
     }
 
-    /// Mutate one channel, then push the whole bed: the renderer takes a layout,
-    /// not a diff. Optimistic, like the web — the renderer echoes `virtualBed`
-    /// back in the snapshot.
+    /// Mutate one channel, then push the family's whole layout: the renderer
+    /// takes a layout, not a diff. Optimistic, like the web — the renderer
+    /// echoes `placement` back in the snapshot.
     fn commit_channel(&mut self, name: &str, mutate: impl FnOnce(&mut Channel)) {
-        let payload = {
+        let (family, payload) = {
             let live = self.host.read();
-            let mut channels = effective_channels(&live.channels, &live.app);
+            let family = live.editing_family;
+            let mut channels = effective_channels_for(&live.channels, &live.app, family);
             let Some(target) = channels.iter_mut().find(|c| c.name == name) else {
                 return;
             };
             mutate(target);
-            build_layout_payload(&live.app, &channels)
+            (family, build_layout_payload(&live.app, &channels))
         };
-        self.send_virtual_bed(payload);
-    }
-
-    fn send_virtual_bed(&mut self, payload: serde_json::Value) {
-        engine::set_virtual_bed(&self.host, payload);
+        engine::set_placement_layout(&self.host, family, payload);
     }
 }
 

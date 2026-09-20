@@ -20,7 +20,7 @@ use runtime_control::osc::{
 use runtime_control::osc_contract;
 
 use super::client_registry::OscClientRegistry;
-use super::export::{build_live_state_bundle, export_current_layout, save_live_config};
+use super::export::{build_live_state, export_current_layout, save_live_config};
 use super::gaintable::GaintableCache;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
@@ -147,36 +147,89 @@ pub(crate) fn handle_control_message(
         return;
     }
 
-    // Parametrable virtual bed for channel content. Argument is a YAML
-    // `SpeakerLayout`; an empty string resets to the built-in canonical poses.
-    // Live-tunable from Studio's editor; persists to config on save.
-    if addr == osc_contract::CONTROL_VIRTUAL_BED {
-        if let Some(OscType::String(s)) = msg.args.first() {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                control.live.write().virtual_bed = None;
-                control.mark_dirty();
-                // The fixed-prefix planner caches on `(labels, options_epoch)`;
-                // without the bump an object stream keeps rendering the old bed
-                // until the next track switch. The channel-stream planner
-                // compares the bed by value and does not need it.
-                control.bump_options_epoch();
-                broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
-                control.bump_live_state();
-                log::info!("OSC virtual bed reset to defaults");
-            } else {
-                match renderer::speaker_layout::SpeakerLayout::from_yaml_str(trimmed) {
-                    Ok(layout) => {
-                        control.live.write().virtual_bed = Some(layout);
-                        control.mark_dirty();
-                        // Same replan trigger as the reset branch above.
-                        control.bump_options_epoch();
-                        broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
-                        control.bump_live_state();
-                        log::info!("OSC virtual bed updated");
-                    }
-                    Err(e) => log::warn!("OSC virtual bed: failed to parse layout: {}", e),
+    // Per-family placement of fixed channels (`renderer::placement`): the
+    // mode a family is placed with, and the family's own entries. Both
+    // live-tunable from Studio's editor; both persist to config on save.
+    // The legacy `virtual_bed` address is the generic family's entries.
+    if addr == osc_contract::CONTROL_PLACEMENT_MODE {
+        use renderer::placement::{PlacementMode, SourceFamily};
+        let (Some(OscType::String(family)), Some(OscType::String(mode))) =
+            (msg.args.first(), msg.args.get(1))
+        else {
+            return;
+        };
+        let Some(family) = SourceFamily::parse(family) else {
+            log::warn!("OSC placement mode: unknown family '{}'", family);
+            return;
+        };
+        let mode = if mode.trim().eq_ignore_ascii_case("inherit") {
+            None
+        } else {
+            match PlacementMode::parse(mode) {
+                Some(mode) => Some(mode),
+                None => {
+                    log::warn!("OSC placement mode: unknown mode '{}'", mode);
+                    return;
                 }
+            }
+        };
+        control.live.write().placement.family_mut(family).mode = mode;
+        control.mark_dirty();
+        control.bump_options_epoch();
+        broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
+        control.bump_live_state();
+        log::info!(
+            "OSC placement mode: {} → {}",
+            family.as_str(),
+            mode.map_or("inherit", |m| m.as_str())
+        );
+        return;
+    }
+    let placement_layout_family = if addr == osc_contract::CONTROL_PLACEMENT_LAYOUT {
+        match msg.args.first() {
+            Some(OscType::String(family)) => {
+                match renderer::placement::SourceFamily::parse(family) {
+                    Some(family) => Some((family, msg.args.get(1))),
+                    None => {
+                        log::warn!("OSC placement layout: unknown family '{}'", family);
+                        return;
+                    }
+                }
+            }
+            _ => return,
+        }
+    } else if addr == osc_contract::CONTROL_VIRTUAL_BED {
+        Some((renderer::placement::SourceFamily::Generic, msg.args.first()))
+    } else {
+        None
+    };
+    if let Some((family, arg)) = placement_layout_family {
+        if let Some(OscType::String(s)) = arg {
+            let trimmed = s.trim();
+            let layout = if trimmed.is_empty() {
+                None
+            } else {
+                match renderer::speaker_layout::SpeakerLayout::entries_from_yaml_str(trimmed) {
+                    Ok(layout) => Some(layout),
+                    Err(e) => {
+                        log::warn!("OSC placement layout: failed to parse entries: {}", e);
+                        return;
+                    }
+                }
+            };
+            let cleared = layout.is_none();
+            control.live.write().placement.family_mut(family).layout = layout;
+            control.mark_dirty();
+            // The fixed-prefix planner caches on the options epoch among
+            // other things; without the bump an object stream could keep the
+            // old plan until the next track switch.
+            control.bump_options_epoch();
+            broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
+            control.bump_live_state();
+            if cleared {
+                log::info!("OSC placement layout: {} cleared", family.as_str());
+            } else {
+                log::info!("OSC placement layout: {} updated", family.as_str());
             }
         }
         return;
@@ -395,8 +448,7 @@ pub(crate) fn handle_control_message(
     }
 
     if addr == osc_contract::CONTROL_INPUT_REFRESH {
-        let state_bytes = build_live_state_bundle(control, host);
-        super::transport::send_raw(socket, clients, &state_bytes);
+        build_live_state(control, host).broadcast(socket, clients);
         log::info!("OSC: input state refresh requested");
         return;
     }
@@ -701,8 +753,7 @@ fn apply_live_option(
         }
     }
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
-    let state_bytes = build_live_state_bundle(control, host);
-    super::transport::send_raw(socket, clients, &state_bytes);
+    build_live_state(control, host).broadcast(socket, clients);
     log::info!("OSC option {} set to '{}'", spec.key, canonical);
 }
 
@@ -779,8 +830,7 @@ fn apply_control_effects(
 ) {
     if effects.mark_dirty {
         set_dirty(control, socket, clients);
-        let state_bytes = build_live_state_bundle(control, host);
-        super::transport::send_raw(socket, clients, &state_bytes);
+        build_live_state(control, host).broadcast(socket, clients);
     }
     if let Some(reference_quat) = effects.persist_head_center {
         persist_head_center(control, reference_quat);

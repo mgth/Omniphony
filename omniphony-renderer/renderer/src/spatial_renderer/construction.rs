@@ -432,9 +432,10 @@ impl SpatialRenderer {
             crossover_type: crate::live_params::CrossoverType::default(),
             crossover_fir_transition_ratio:
                 crate::config_fields::crossover_fir_transition_ratio::DEFAULT,
-            // Seeded from `render.virtual_bed` by the same bootstrap; `None`
-            // uses the built-in canonical poses (LFE direct, rest virtualized).
-            virtual_bed: None,
+            // Seeded from `render.placement` by the same bootstrap; the
+            // default is every family at its built-in mode with no entries
+            // (LFE direct, the rest virtualized at the catalogue pose).
+            placement: crate::placement::PlacementState::default(),
             // Off by default; selects the bed→height object generator (2D upmix)
             // for channel content. Empty / "none" = disabled.
             object_generator_id: String::new(),
