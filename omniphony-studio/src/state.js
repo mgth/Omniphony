@@ -17,9 +17,6 @@ export const sourceLabels = new Map();
 export const sourceOutlines = new Map();
 export const sourceLevels = new Map();
 export const speakerLevels = new Map();
-export const sourcePeaks = new Map(); // { value: number, expires: number }
-export const speakerPeaks = new Map(); // { value: number, expires: number }
-export let masterPeak = { value: 0, expires: 0 };
 // Engine-reported master output meter { peakDbfs, rmsDbfs }, or null until the
 // first /omniphony/meter/master is received. Live ESM binding read by master.js.
 export let masterLevel = null;
@@ -221,15 +218,18 @@ export const app = {
   diagSchema: null,
   diagValues: null,
   decodeTimeMs: null,
-  decodeTimeWindow: [],
   renderTimeMs: null,
-  renderTimeWindow: [],
   crossoverTimeMs: null,
-  crossoverTimeWindow: [],
   writeTimeMs: null,
-  writeTimeWindow: [],
   frameDurationMs: null,
-  latencyRawWindow: [],
+  // Sliding-window aggregates of the timing telemetry, computed by the backend
+  // and delivered by `latency:stats` at 4 Hz. The frontend used to keep each
+  // series as an array of samples and reduce it here, which meant receiving
+  // every sample — up to a few kHz — purely to derive these few numbers.
+  //   { latency: {min,max,mean}|null,
+  //     decode|render|crossover|write: { avg: {...}|null, max: {...}|null } }
+  // A null series means "nothing in the window": hide the marker.
+  timingStats: null,
   resampleRatio: null,
   latencyTargetApplyTimer: null,
 
@@ -263,9 +263,18 @@ export const app = {
   // Speaker names that can't be routed by position in by_name mode (reported by
   // the renderer for the active backend); shown as a warning. Empty when none.
   outputChannelMappingUnroutable: [],
-  // Parametrable virtual bed for fixed-channel sources (a SpeakerLayout-shaped object, or
-  // null = built-in canonical poses). Edited by the virtual-bed editor.
+  // Legacy mirror of the generic family's channel entries (a
+  // SpeakerLayout-shaped object, or null). `placement` is the real thing.
   virtualBed: null,
+  // Per-family placement of fixed channels (the renderer's `placement`
+  // block): {generic: {mode, layout, effectiveMode, layoutSource}, dolby: …}.
+  // Null until the renderer reports it. Read through controls/virtual-bed.js.
+  placement: null,
+  // The family the channel editor and the at-rest markers show. Follows the
+  // family of a stream when one starts (`placementFollowed` remembers which,
+  // so a tab picked while it plays is not overridden on the next snapshot).
+  placementFamily: 'generic',
+  placementFollowed: null,
   // Declared live options (registry RFC): the renderer's `options` snapshot
   // block, keyed by canonical snake_case option key. THE single JS-side value
   // store for registry options — read through `getLiveOption`, never through
@@ -275,9 +284,6 @@ export const app = {
   // as [{key,kind,values?,default,flags,i18nKey,helpI18nKey?}]. Provides the
   // pre-snapshot defaults for `getLiveOption` and (later) control rendering.
   optionsSchema: [],
-  // One-shot guard: once we've materialised the canonical bed into the
-  // renderer/config (when none was saved), don't push it again this session.
-  virtualBedMaterialized: false,
   audioOutputDevice: null,
   audioOutputDeviceEffective: null,
   audioOutputDevices: [],
@@ -339,7 +345,6 @@ export const app = {
     clockMode: 'dac',
     channels: 2,
     sampleRate: 192000,
-    format: 'f32',
     map: '7.1-fixed',
     lfeMode: 'object'
   },
@@ -477,8 +482,12 @@ export const app = {
   // different bands only reads as confusion, so there is one selection.
   // `heatmapAllBands` switches each display to its own all-bands composite
   // (the readouts still use the numeric index).
+  // Default to the composite: band 0 alone is usually just the subwoofer band,
+  // which says little about the layout. On a single-band layout the flag stays
+  // set but no display acts on it (every composite is guarded on having more
+  // than one band) and the selector shows "Full band".
   heatmapBandIndex: 0,
-  heatmapAllBands: false,
+  heatmapAllBands: true,
   // Global energy heatmap: total energy over ALL speakers per grid cell, drawn
   // as a deviation from unit energy (see scene/global-energy-volume.js).
   // Transparent at 0 dB, red above, blue below. Shares the gain-table transport
@@ -563,6 +572,10 @@ export const app = {
   // Layout
   currentLayoutKey: null,
   currentLayoutSpeakers: [],
+  // Interior crossover edges for the live layout, from the backend. Set
+  // alongside currentLayoutSpeakers, and refreshed by the events that move
+  // them (speaker freq limits, spatialize).
+  currentLayoutCutoffs: [],
 
   // UI flush
   uiFlushScheduled: false,
@@ -610,9 +623,6 @@ export function supportsRealtimeKey(key) {
   return Array.isArray(realtime) && realtime.includes(key);
 }
 
-export function usesNumericSpatialPlaceholders() {
-  return (app.producerCapabilities?.producer || 'renderer') === 'renderer';
-}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -621,8 +631,9 @@ export function usesNumericSpatialPlaceholders() {
 export const METER_DECAY_START_MS = 250;
 export const METER_DECAY_DB_PER_SEC = 45;
 export const DEFAULT_SAMPLE_RATE_HZ = 48000;
-export const LATENCY_RAW_WINDOW_MS = 4000;
-export const RENDER_TIME_WINDOW_MS = 5000;
+// The timing-window spans moved to the backend that now owns the windows:
+// LATENCY_RAW_WINDOW_MS / RENDER_TIME_WINDOW_MS / RENDER_TIME_AVERAGE_WINDOW_MS
+// in `src-tauri/src/osc_listener.rs`.
 export const AUDIO_SAMPLE_RATE_PRESETS = [0, 32000, 44100, 48000, 88200, 96000, 176400, 192000];
 export const isLinux = typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('linux');
 

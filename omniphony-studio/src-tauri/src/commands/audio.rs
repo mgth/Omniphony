@@ -19,10 +19,42 @@ pub fn control_audio_sample_rate(state: State<SharedState>, sample_rate: i32) {
 }
 
 #[tauri::command]
-pub fn control_audio_config(state: State<SharedState>, payload: serde_json::Value) {
-    let text = match serde_json::to_string(&payload) {
+pub fn control_audio_config(
+    state: State<SharedState>,
+    payload: serde_json::Value,
+) -> Option<serde_json::Value> {
+    // The form sends what the user typed; the schema decides what it means.
+    // Returning the effective configuration is what lets the UI show the
+    // corrected value rather than the rejected one — the frontend used to
+    // apply these bounds itself on the way out, so a field that was pulled
+    // into range looked accepted as typed.
+    //
+    // Neither step below may fail quietly. `sendAudioConfig()` chains the
+    // apply call onto this one's promise, so a `None` here means the renderer
+    // is told to apply a configuration it was never sent: the switch flips on,
+    // nothing reaches the audio path, and the next state broadcast flips it
+    // back. That is a silent no-op that reads as a UI bug, and it is what the
+    // original `.ok()?` produced.
+    let raw: crate::audio_config::AudioConfig = match serde_json::from_value(payload.clone()) {
+        Ok(config) => config,
+        Err(err) => {
+            // `eprintln!`, not `log::error!`: this crate never installs a
+            // logger, so every `log::` macro in it writes to nowhere.
+            eprintln!(
+                "[audio config] rejected — not sent to the renderer: {err}; payload: {payload}"
+            );
+            return None;
+        }
+    };
+    let effective = raw.resolve();
+    let text = match serde_json::to_string(&effective) {
         Ok(text) => text,
-        Err(_) => return,
+        Err(err) => {
+            // serde_json refuses non-finite floats, so this is reachable if a
+            // resolved field ever comes out NaN or infinite.
+            eprintln!("[audio config] not serialisable — not sent: {err}; resolved: {effective:?}");
+            return None;
+        }
     };
     send_control(
         &state.osc_tx,
@@ -31,6 +63,7 @@ pub fn control_audio_config(state: State<SharedState>, payload: serde_json::Valu
             value: text,
         },
     );
+    serde_json::to_value(&effective).ok()
 }
 
 #[tauri::command]

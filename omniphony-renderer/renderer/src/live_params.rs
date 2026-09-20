@@ -399,21 +399,24 @@ impl BinauralMode {
 ///
 /// Interpolating a fresh HRIR pair is the most expensive per-block operation of
 /// the binaural stage, and it is repeated for a move of a hundredth of a degree
-/// — precision the measured grid (10° steps) does not contain. Snapping
+/// — precision the measured grid (5° steps) does not contain. Snapping
 /// directions onto a coarser lattice lets an object that barely turned keep its
 /// kernel, which also leaves no crossfade armed and so halves that block's tap
 /// loop.
 ///
 /// This is a **quality/cost trade, not a free optimisation**: every setting
 /// other than [`Exact`](Self::Exact) changes the rendered output. Measured on
-/// the `drifting` bench at 16 objects, against the binaural golden:
+/// the `drifting` bench at 16 objects, against the binaural golden, when the
+/// grid pitch was 10° (the lattice is a fraction of a cell, so each rung is
+/// now twice as fine in degrees; the residuals below are the 10° figures and
+/// have not been re-measured on the 5° grid):
 ///
-/// | setting    | lattice | peak residual | direct/16 |
-/// |------------|---------|---------------|-----------|
-/// | `exact`    | —       | bit-exact     | 49.3 µs   |
-/// | `fine`     | 0.020°  | −53.3 dBFS    | 47.5 µs   |
-/// | `balanced` | 0.078°  | −43.9 dBFS    | 35.1 µs   |
-/// | `coarse`   | 0.313°  | −30.9 dBFS    | 20.8 µs   |
+/// | setting    | lattice (5° grid) | peak residual (10° grid) | direct/16 |
+/// |------------|-------------------|--------------------------|-----------|
+/// | `exact`    | —                 | bit-exact                | 49.3 µs   |
+/// | `fine`     | 0.0098°           | −53.3 dBFS               | 47.5 µs   |
+/// | `balanced` | 0.039°            | −43.9 dBFS               | 35.1 µs   |
+/// | `coarse`   | 0.156°            | −30.9 dBFS               | 20.8 µs   |
 ///
 /// `exact` is the default: it still skips the rebuild whenever nothing moved
 /// (static objects, and every virtual speaker of the cascaded mode), which
@@ -495,8 +498,13 @@ pub struct BinauralReflections {
     pub enabled: bool,
     /// Room extents in metres: [width (x), depth (y), height (z)].
     pub room_size_m: [f32; 3],
-    /// Per-reflection wall gain (0..1) applied on top of the 1/d law.
+    /// Per-reflection wall gain (0..1) applied on top of the distance law
+    /// (`d_source / d_image`, the image's 1/d relative to the direct sound).
     pub level: f32,
+    /// High-frequency cutoff of the walls (Hz): each reflection is low-passed
+    /// here, combined with the air absorption along its own image path. 20 kHz
+    /// is bit-transparent (bare plaster); 6 kHz is a furnished room.
+    pub wall_cutoff_hz: f32,
 }
 
 impl Default for BinauralReflections {
@@ -507,6 +515,7 @@ impl Default for BinauralReflections {
             enabled: false,
             room_size_m: [4.0, 5.0, 2.7],
             level: 0.5,
+            wall_cutoff_hz: 6_000.0,
         }
     }
 }
@@ -514,8 +523,9 @@ impl Default for BinauralReflections {
 /// Late-reverb (FDN) settings for the binaural stage. Models the LISTENING
 /// room — a small, dry, constant space like the room around a loudspeaker
 /// setup — not the scene's acoustics (those are in the content and pass
-/// through). The reverberant field level is distance-independent while the
-/// direct falls as 1/d, so the direct/reverb ratio carries distance.
+/// through). The direct sound keeps its authored level at any distance, so
+/// the per-source send grows in proportion to the distance instead: the
+/// direct/reverb ratio carries distance the way it does in a room.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinauralReverb {
     /// Master enable for the late tail.
@@ -527,6 +537,18 @@ pub struct BinauralReverb {
     pub rt60_s: f32,
     /// Pre-delay (ms) between the direct sound and the start of the tail.
     pub predelay_ms: f32,
+    /// Scale on the network's delay-line lengths (0.5–2, 1 = nominal):
+    /// smaller is a denser, smaller-sounding room, larger a sparser, bigger
+    /// one. The decay time stays `rt60_s` at any size.
+    pub size: f32,
+    /// Decay time below ~250 Hz as a ratio of `rt60_s` (0.25–4, 1 = the same
+    /// decay everywhere): above 1 the bass lingers as in a hard-walled
+    /// room, below 1 it dies first.
+    pub rt60_low_ratio: f32,
+    /// Decay time above ~4 kHz as a ratio of `rt60_s` (0.25–4): below 1 the
+    /// treble dies first, as air and soft furnishings make it. Acts on top
+    /// of the network's fixed wall damping.
+    pub rt60_high_ratio: f32,
 }
 
 impl Default for BinauralReverb {
@@ -539,6 +561,9 @@ impl Default for BinauralReverb {
             level: 0.25,
             rt60_s: 0.35,
             predelay_ms: 20.0,
+            size: 1.0,
+            rt60_low_ratio: 1.0,
+            rt60_high_ratio: 1.0,
         }
     }
 }
@@ -558,8 +583,9 @@ pub struct BinauralLiveParams {
     pub mode: BinauralMode,
     /// Headphone L/R output gain/mute (dedicated — see [`EarLiveParams`]).
     pub ears: [EarLiveParams; 2],
-    /// Metres represented by one ADM unit; scales physical distance for the
-    /// 1/d gain and ITD/ILD without altering object directions.
+    /// Metres represented by one ADM unit; scales the physical distance the
+    /// distance cues see (reflections, reverb send, air absorption) without
+    /// altering object directions or the direct level.
     pub unit_scale_m: f32,
     /// Effective head radius (m) for the Woodworth ITD model — half the
     /// inter-ear distance. Per-listener fit; default is KEMAR-ish.
@@ -580,6 +606,10 @@ pub struct BinauralLiveParams {
     /// Distance low-pass on the direct path (air absorption): physically
     /// true indoors and outdoors, the natural "far sounds dull" cue.
     pub air_absorption: bool,
+    /// Divide the HRIR set by its own diffuse-field response at build time
+    /// (see `binaural::diffuse_field`): takes the measured head's tonal
+    /// signature out while keeping every interaural difference. Opt-in.
+    pub diffuse_field_eq: bool,
 }
 
 impl Default for BinauralLiveParams {
@@ -597,6 +627,7 @@ impl Default for BinauralLiveParams {
             reflections: BinauralReflections::default(),
             reverb: BinauralReverb::default(),
             air_absorption: true,
+            diffuse_field_eq: false,
         }
     }
 }
@@ -1264,14 +1295,12 @@ pub struct LiveParams {
     /// `/omniphony/control/crossover_fir_transition_ratio`.
     pub crossover_fir_transition_ratio: f32,
 
-    /// Parametrable virtual bed for channel-based content (consulted only when
-    /// `channel_render_mode == Spatial`). One entry per input-channel label
-    /// (`L`, `R`, `C`, `LFE`, `Ls`, `Rs`, `Lb`, `Rb`, …): `spatialize:true`
-    /// virtualizes the channel as an object at the entry's position, `false`
-    /// routes it direct to the matching output speaker (e.g. LFE → sub). `None`
-    /// falls back to the built-in canonical poses (LFE direct, the rest
-    /// virtualized). Live-tunable via the `virtual_bed` layout OSC controls.
-    pub virtual_bed: Option<SpeakerLayout>,
+    /// Where fixed channels go, per source family (consulted only when
+    /// `channel_render_mode == Spatial`): each family's mode — sphere, room
+    /// or manual — and its entries (`spatialize` virtual/direct, `gain_db`
+    /// trim, and the pose in manual mode). See `crate::placement`.
+    /// Live-tunable via the `placement` OSC controls.
+    pub placement: crate::placement::PlacementState,
 
     /// Selects the bed→height object generator (2D upmix): synthesizes height
     /// objects from channel-based content so a height-capable layout (7.1.4, …)
@@ -1512,6 +1541,12 @@ pub struct RendererControl {
     /// Reset to `false` by a successful `/omniphony/control/save_config`.
     pub config_dirty: AtomicBool,
 
+    /// What the last binaural HRIR grid build produced: the requested
+    /// source, the one actually in use, and the error when they differ (a
+    /// SOFA file that failed to load falls back to the embedded KEMAR set).
+    /// Written by the renderer's rebuild worker, read by the state snapshot.
+    pub binaural_hrir_status: ArcSwap<crate::binaural::HrirStatus>,
+
     /// Bumped whenever per-object live params change.
     /// Render sample rate, published so control-thread work that has to produce
     /// samples — loading a test clip, which is resampled once on the way in —
@@ -1683,6 +1718,7 @@ impl RendererControl {
             recomputing: AtomicBool::new(false),
             recompute_pending: AtomicBool::new(false),
             config_dirty: AtomicBool::new(false),
+            binaural_hrir_status: ArcSwap::from_pointee(crate::binaural::HrirStatus::default()),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
             live_state_generation: std::sync::atomic::AtomicU64::new(0),
@@ -2024,6 +2060,11 @@ impl RendererControl {
     pub fn mark_speaker_params_dirty(&self) {
         self.speaker_params_generation
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The last binaural HRIR build's outcome (see the field).
+    pub fn binaural_hrir_status(&self) -> Arc<crate::binaural::HrirStatus> {
+        self.binaural_hrir_status.load_full()
     }
 
     /// Signal that live state changed and should be re-broadcast to clients.

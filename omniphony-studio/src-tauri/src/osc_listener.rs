@@ -1,3 +1,4 @@
+use omniphony_geometry::f64 as geometry;
 use rosc::{decoder, OscPacket, OscType};
 use std::net::UdpSocket;
 use std::sync::{Arc, Mutex};
@@ -15,6 +16,8 @@ use crate::osc_parser::{
     is_heartbeat_address, parse_osc_message, CoordinateFormat, HeartbeatResponse, LogEntry,
     OscEvent,
 };
+use crate::peak_hold::PeakHolds;
+use crate::timing_stats::TimeWindow;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_ACK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -104,7 +107,6 @@ struct RequestedInputDomainState {
     clock_mode: Option<String>,
     channels: Option<u32>,
     sample_rate: Option<u32>,
-    format: Option<String>,
     map: Option<String>,
     lfe_mode: Option<String>,
 }
@@ -233,30 +235,10 @@ fn clamp_layout_value(value: f64, min: f64, max: f64) -> f64 {
     value.max(min).min(max)
 }
 
-fn cartesian_to_spherical(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
-    let distance = (x * x + y * y + z * z).sqrt();
-    let azimuth = z.atan2(x).to_degrees();
-    let elevation = if distance > 0.0 {
-        y.atan2((x * x + z * z).sqrt()).to_degrees()
-    } else {
-        0.0
-    };
-    (azimuth, elevation, distance)
-}
-
-fn spherical_to_cartesian(
-    azimuth_deg: f64,
-    elevation_deg: f64,
-    distance_m: f64,
-) -> (f64, f64, f64) {
-    let azimuth = azimuth_deg.to_radians();
-    let elevation = elevation_deg.to_radians();
-    (
-        distance_m * elevation.cos() * azimuth.cos(),
-        distance_m * elevation.sin(),
-        distance_m * elevation.cos() * azimuth.sin(),
-    )
-}
+// Conversions come from `omniphony-geometry`, shared with the renderer. The
+// copies that lived here read the ADM coordinates the renderer publishes as if
+// they were Three.js scene coordinates — the same missing axis swizzle as
+// `layouts.rs`, but on the LIVE layout rather than a file.
 
 fn scalar_string(value: Option<serde_json::Value>, fallback: &str) -> String {
     match value {
@@ -315,7 +297,7 @@ fn normalized_layout_domain_speaker(raw: LayoutDomainSpeakerState) -> Speaker {
         let y = clamp_layout_value(y, -1.0, 1.0);
         let z = clamp_layout_value(z, -1.0, 1.0);
         let (fallback_azimuth, fallback_elevation, fallback_distance) =
-            cartesian_to_spherical(x, y, z);
+            geometry::to_spherical(x, y, z);
         return Speaker {
             id,
             x,
@@ -339,12 +321,13 @@ fn normalized_layout_domain_speaker(raw: LayoutDomainSpeakerState) -> Speaker {
     let azimuth = raw.azimuth.unwrap_or(0.0);
     let elevation = raw.elevation.unwrap_or(0.0);
     let distance_m = raw.distance.unwrap_or(1.0).max(0.01);
-    let (x, y, z) = spherical_to_cartesian(azimuth, elevation, distance_m);
+    // hydrate_from_spherical already clamps to the normalised cube.
+    let (x, y, z) = geometry::hydrate_from_spherical(azimuth, elevation, distance_m);
     Speaker {
         id,
-        x: clamp_layout_value(x, -1.0, 1.0),
-        y: clamp_layout_value(y, -1.0, 1.0),
-        z: clamp_layout_value(z, -1.0, 1.0),
+        x,
+        y,
+        z,
         azimuth_deg: azimuth,
         elevation_deg: elevation,
         distance_m,
@@ -555,11 +538,18 @@ fn apply_input_domain_state(s: &mut AppState, value: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<InputDomainState>(value) else {
         return false;
     };
+    // Canonicalise before the state is stored, so what the frontend receives
+    // never carries a protocol alias. An unrecognised mode is dropped rather
+    // than stored: a mode nothing can act on is worse than the last good one.
     if let Some(mode) = parsed.mode {
-        s.input_mode = Some(mode);
+        if let Some(normalized) = crate::commands::input::normalize_input_mode(&mode) {
+            s.input_mode = Some(normalized.to_string());
+        }
     }
     if let Some(active_mode) = parsed.active_mode {
-        s.input_active_mode = Some(active_mode);
+        if let Some(normalized) = crate::commands::input::normalize_input_mode(&active_mode) {
+            s.input_active_mode = Some(normalized.to_string());
+        }
     }
     if let Some(apply_pending) = parsed.apply_pending {
         s.input_apply_pending = Some(if apply_pending { 1 } else { 0 });
@@ -581,7 +571,6 @@ fn apply_input_domain_state(s: &mut AppState, value: &str) -> bool {
         s.live_input.clock_mode = requested.clock_mode;
         s.live_input.channels = requested.channels;
         s.live_input.sample_rate = requested.sample_rate;
-        s.live_input.format = requested.format;
         s.live_input.map = requested.map;
         s.live_input.lfe_mode = requested.lfe_mode;
     }
@@ -652,7 +641,10 @@ fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
     if let Some(vbap_polar) = parsed.vbap_polar {
         s.vbap_polar = vbap_polar;
     }
-    if let Some(render_backend_state) = parsed.render_backend_state {
+    if let Some(mut render_backend_state) = parsed.render_backend_state {
+        // Validate before storing, so the snapshot the frontend receives is
+        // already correct rather than merely reported.
+        render_backend_state.sanitize();
         s.render_backend_state = render_backend_state;
     }
     if let Some(options) = parsed.options {
@@ -825,7 +817,10 @@ fn send_register(socket: &UdpSocket, host: &str, rx_port: u16, listen_port: u16)
         rx_port,
         listen_port as i32,
     );
-    log::info!("[osc] register sent → udp://{host}:{rx_port} listen_port={listen_port}");
+    // `debug`, not `info`: the snapshot-retry and heartbeat-timeout timers both
+    // re-register on a fixed cadence (1 s / 5 s), so at `info` this line alone
+    // streams for as long as no renderer answers — the normal standalone state.
+    log::debug!("[osc] register sent → udp://{host}:{rx_port} listen_port={listen_port}");
 }
 
 fn send_metering_enabled(socket: &UdpSocket, host: &str, rx_port: u16, enabled: bool) {
@@ -958,6 +953,8 @@ fn osc_thread(
 
     let mut buf = [0u8; 65536];
     let mut last_batch_flush = Instant::now();
+    let mut last_timing_stats = Instant::now();
+    let mut last_timing_stats_hash: Option<u64> = None;
     let mut last_watchdog_check = Instant::now();
     let mut disconnected_since: Option<Instant> = Some(Instant::now());
 
@@ -978,6 +975,14 @@ fn osc_thread(
         if last_batch_flush.elapsed() >= BATCH_FLUSH_INTERVAL {
             flush_emit_batch(&app);
             last_batch_flush = Instant::now();
+        }
+
+        // Reduce the timing telemetry to what the gauges actually draw, at
+        // 4 Hz. Also independent of the sample rate: the renderer reports per
+        // audio frame, which for a 40-sample TrueHD access unit is over 1 kHz.
+        if last_timing_stats.elapsed() >= TIMING_STATS_INTERVAL {
+            emit_timing_stats(&app, &mut last_timing_stats_hash);
+            last_timing_stats = Instant::now();
         }
 
         // drain control messages (non-blocking)
@@ -1042,10 +1047,15 @@ fn osc_thread(
             send_heartbeat(&socket, &host, osc_rx_port, listen_port);
 
             if last_ack_at.elapsed() >= HEARTBEAT_ACK_TIMEOUT {
-                log::warn!("[osc] heartbeat timeout, re-registering");
                 if is_connected {
+                    // Warn once per disconnect episode, on the transition. The
+                    // retry itself repeats every HEARTBEAT_INTERVAL and stays at
+                    // `debug` so a renderer-less Studio does not warn forever.
+                    log::warn!("[osc] heartbeat timeout, re-registering");
                     is_connected = false;
                     emit_osc_status(&app, &state, "reconnecting");
+                } else {
+                    log::debug!("[osc] still no heartbeat ack, re-registering");
                 }
                 send_register(&socket, &host, osc_rx_port, listen_port);
                 last_snapshot_request_at = Instant::now();
@@ -1285,13 +1295,18 @@ fn handle_packet(
                     return;
                 }
                 HeartbeatResponse::Unknown => {
-                    log::info!("[osc] heartbeat/unknown → re-registering");
                     send_register(socket, host, osc_rx_port, listen_port);
                     send_metering_enabled(socket, host, osc_rx_port, metering_enabled);
                     *last_ack_at = Instant::now();
                     if *is_connected {
+                        // Once per episode: an unrecognised heartbeat form keeps
+                        // arriving on the peer's own cadence, so logging every
+                        // one of them at `info` would repeat indefinitely.
+                        log::info!("[osc] heartbeat/unknown → re-registering");
                         *is_connected = false;
                         emit_osc_status(app, state, "reconnecting");
+                    } else {
+                        log::debug!("[osc] heartbeat/unknown → re-registering");
                     }
                     return;
                 }
@@ -1771,10 +1786,216 @@ thread_local! {
     static EMIT_BATCH: std::cell::RefCell<
         std::collections::HashMap<String, (&'static str, serde_json::Value)>,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
+
+    // Sliding windows over the renderer's timing telemetry. Same ownership rule
+    // as EMIT_BATCH: recorded and flushed only from the OSC thread, so no lock.
+    static TIMING_WINDOWS: std::cell::RefCell<TimingWindows> =
+        std::cell::RefCell::new(TimingWindows::new());
+    // Per-meter peak-hold. Same ownership rule as EMIT_BATCH: only the OSC
+    // thread touches it, so no lock.
+    static PEAK_HOLDS: std::cell::RefCell<PeakHolds> =
+        std::cell::RefCell::new(PeakHolds::new());
+}
+
+/// Advance a meter's peak-hold and return the cursor value, in dBFS.
+fn peak_hold(key: &str, peak_dbfs: f64) -> f64 {
+    PEAK_HOLDS.with(|h| h.borrow_mut().update(key, peak_dbfs, Instant::now()))
+}
+
+/// Drop a meter's hold state — a removed object must not leave a cursor
+/// behind for the next object to inherit its id.
+fn forget_peak_hold(key: &str) {
+    PEAK_HOLDS.with(|h| h.borrow_mut().forget(key));
+}
+
+/// Span the raw-latency min/max markers cover. Mirrors what the frontend used
+/// to keep as `LATENCY_RAW_WINDOW_MS`.
+const LATENCY_RAW_WINDOW_MS: u64 = 4000;
+/// Span the per-stage max markers cover (`RENDER_TIME_WINDOW_MS` in the JS).
+const RENDER_TIME_WINDOW_MS: u64 = 5000;
+/// Shorter span the per-stage bars average over, so the bars settle while the
+/// max markers still remember a spike.
+const RENDER_TIME_AVERAGE_WINDOW_MS: u64 = 1000;
+/// How often the consolidated stats event goes out. The underlying samples
+/// arrive far faster; the gauges cannot show more than this.
+const TIMING_STATS_INTERVAL: Duration = Duration::from_millis(250);
+
+/// The five series the Studio's latency and renderer-performance gauges draw.
+struct TimingWindows {
+    started: Option<Instant>,
+    latency: TimeWindow,
+    decode: TimeWindow,
+    render: TimeWindow,
+    crossover: TimeWindow,
+    write: TimeWindow,
+}
+
+impl TimingWindows {
+    fn new() -> Self {
+        Self {
+            started: None,
+            latency: TimeWindow::new(LATENCY_RAW_WINDOW_MS),
+            decode: TimeWindow::new(RENDER_TIME_WINDOW_MS),
+            render: TimeWindow::new(RENDER_TIME_WINDOW_MS),
+            crossover: TimeWindow::new(RENDER_TIME_WINDOW_MS),
+            write: TimeWindow::new(RENDER_TIME_WINDOW_MS),
+        }
+    }
+
+    /// Milliseconds since the first sample. A monotonic origin of our own, so
+    /// the buckets never depend on wall-clock adjustments.
+    fn now_ms(&mut self) -> u64 {
+        let started = *self.started.get_or_insert_with(Instant::now);
+        started.elapsed().as_millis() as u64
+    }
+}
+
+/// Which series a sample belongs to.
+#[derive(Clone, Copy)]
+enum TimingSeries {
+    Latency,
+    Decode,
+    Render,
+    Crossover,
+    Write,
+}
+
+/// Fold one telemetry sample into its window.
+///
+/// A non-finite value means the renderer has nothing to report for that stage
+/// (no output running yet, no crossover configured), and drops the series'
+/// history rather than being folded in — otherwise the max marker would keep
+/// showing a spike from a stage that has since gone quiet. This is what the
+/// frontend did when it owned the windows.
+fn record_timing(series: TimingSeries, value: f64) {
+    TIMING_WINDOWS.with(|w| {
+        let mut w = w.borrow_mut();
+        let now = w.now_ms();
+        let window = match series {
+            TimingSeries::Latency => &mut w.latency,
+            TimingSeries::Decode => &mut w.decode,
+            TimingSeries::Render => &mut w.render,
+            TimingSeries::Crossover => &mut w.crossover,
+            TimingSeries::Write => &mut w.write,
+        };
+        if value.is_finite() {
+            window.record(now, value);
+        } else {
+            window.clear();
+        }
+    });
+}
+
+/// `{ "min": .., "max": .., "mean": .. }`, or `null` when the span is empty.
+/// A null tells the frontend to hide the marker rather than draw a stale one.
+fn stats_json(stats: Option<crate::timing_stats::WindowStats>) -> serde_json::Value {
+    match stats {
+        Some(s) => serde_json::json!({ "min": s.min, "max": s.max, "mean": s.mean }),
+        None => serde_json::Value::Null,
+    }
+}
+
+/// Emit the consolidated timing snapshot the gauges draw from.
+///
+/// This replaces five per-message events with one at 4 Hz. The frontend used to
+/// receive every sample purely to reduce it to these numbers.
+///
+/// Identical payloads are dropped, so an idle or disconnected renderer costs
+/// nothing rather than four all-null events per second.
+fn emit_timing_stats(app: &AppHandle, last_hash: &mut Option<u64>) {
+    let payload = TIMING_WINDOWS.with(|w| {
+        let mut w = w.borrow_mut();
+        let now = w.now_ms();
+        // Per-stage bars average over the short span; their max markers reach
+        // back over the long one.
+        let stage = |window: &TimeWindow| {
+            serde_json::json!({
+                "avg": stats_json(window.stats(now, RENDER_TIME_AVERAGE_WINDOW_MS)),
+                "max": stats_json(window.stats(now, RENDER_TIME_WINDOW_MS)),
+            })
+        };
+        serde_json::json!({
+            "latency": stats_json(w.latency.stats(now, LATENCY_RAW_WINDOW_MS)),
+            "decode": stage(&w.decode),
+            "render": stage(&w.render),
+            "crossover": stage(&w.crossover),
+            "write": stage(&w.write),
+        })
+    });
+    if already_emitted(last_hash, &payload) {
+        return;
+    }
+    let _ = app.emit("latency:stats", payload);
+}
+
+/// Interior crossover edges of the live layout, for the events that change one.
+///
+/// The frontend edits its own copy of a speaker when one of these arrives, so
+/// it cannot re-derive the band edges from a layout it has not been re-sent.
+/// Shipping them alongside keeps the two in step without a full layout push.
+fn live_crossover_cutoffs(s: &AppState) -> Vec<f64> {
+    s.selected_layout_key
+        .as_ref()
+        .and_then(|key| s.layouts.iter().find(|l| &l.key == key))
+        .map(|layout| crate::layouts::crossover_cutoffs(&layout.speakers))
+        .unwrap_or_default()
 }
 
 fn is_batched_event(event: &str) -> bool {
     BATCHED_EVENTS.contains(&event)
+}
+
+/// Bottom of the meter scale, in dBFS. Mirrors `METER_DB_MIN` in
+/// `src/mute-solo.js`, which is where the frontend's meters bottom out — not
+/// the -100 floor the OSC parser clamps raw levels to. The two are different
+/// numbers doing different jobs, and the derived master meter wants this one.
+const METER_DB_MIN: f64 = -60.0;
+
+/// Reconstruct a master meter from the per-speaker meters.
+///
+/// Used only when the renderer does not publish `/omniphony/meter/master` —
+/// an older engine, or a backend that has not been rebuilt. Speakers are
+/// already metered post-master-gain, so:
+///
+/// - **peak** is the loudest speaker peak, which is exactly what the engine's
+///   own `max(spk_peak)` reports;
+/// - **RMS** is the combined speaker energy: sum the squared linear RMS values
+///   and take the root of the mean, since uncorrelated speaker signals add in
+///   power, not amplitude.
+///
+/// Returns `None` when no speaker has reported yet, which the frontend draws as
+/// an idle meter rather than a zero one.
+fn derived_master_meter(
+    speaker_levels: &std::collections::HashMap<String, Meter>,
+) -> Option<serde_json::Value> {
+    if speaker_levels.is_empty() {
+        return None;
+    }
+    let mut peak_dbfs = METER_DB_MIN;
+    let mut sum_squares = 0.0f64;
+    for meter in speaker_levels.values() {
+        if meter.peak_dbfs > peak_dbfs {
+            peak_dbfs = meter.peak_dbfs;
+        }
+        let rms_linear = 10f64.powf(meter.rms_dbfs / 20.0);
+        sum_squares += rms_linear * rms_linear;
+    }
+    let rms_linear = (sum_squares / speaker_levels.len() as f64).sqrt();
+    let rms_dbfs = if rms_linear > 0.0 {
+        20.0 * rms_linear.log10()
+    } else {
+        METER_DB_MIN
+    };
+    Some(serde_json::json!({
+        "meter": {
+            "peakDbfs": peak_dbfs,
+            "rmsDbfs": rms_dbfs,
+            "peakHoldDbfs": peak_hold("master", peak_dbfs),
+        },
+        // Lets the frontend tell a reconstructed meter from a reported one —
+        // for display or diagnosis, not for choosing a code path.
+        "derived": true,
+    }))
 }
 
 fn batch_dedup_key(event: &str, payload: &serde_json::Value) -> String {
@@ -1869,6 +2090,14 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 s.current_content_generation = Some(generation);
                 s.current_coordinate_format = coordinate_format;
 
+                // Compatibility path for renderers that predate
+                // `/omniphony/object/{id}/remove`: infer which slots are gone
+                // from the frame's object count. A current renderer sends the
+                // removal outright, so this only catches what it already did.
+                //
+                // Removable once no renderer older than that lifecycle message
+                // is in use — it is the inference the explicit signal replaces,
+                // and keeping it is what lets an old renderer still clean up.
                 let stale_ids: Vec<String> = if is_reset {
                     s.sources.keys().cloned().collect()
                 } else {
@@ -1960,6 +2189,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                             "directSpeakerIndex": entry.direct_speaker_index,
                             "fixed": entry.fixed,
                             "label": entry.label,
+                            "kind": entry.kind,
                             "sourceTag": entry.source_tag,
                             "name": entry.name
                         }
@@ -1972,11 +2202,13 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 fixed,
                 label,
                 generation,
+                kind,
             } => {
                 let current_generation = s.current_content_generation;
                 let entry = s.sources.entry(id.clone()).or_default();
                 entry.fixed = Some(fixed);
                 entry.label = label.clone();
+                entry.kind = kind.clone();
                 if entry.generation.is_none() {
                     entry.generation = generation.or(current_generation);
                 }
@@ -2018,6 +2250,10 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
 
             OscEvent::Remove { id } => {
+                // Drop the hold too: object ids are reused across tracks and
+                // seeks, and an inherited cursor would show a peak the new
+                // object never produced.
+                forget_peak_hold(&format!("src:{id}"));
                 s.sources.remove(&id);
                 s.source_levels.remove(&id);
                 s.object_speaker_gains.remove(&id);
@@ -2054,6 +2290,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                                 "peakDbfs": peak_dbfs,
                                 "rmsDbfs": rms_dbfs,
                                 "bandRmsDbfs": band_rms_dbfs,
+                                "peakHoldDbfs": peak_hold(&format!("src:{id}"), peak_dbfs),
                             }
                         }),
                     )),
@@ -2099,12 +2336,26 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         rms_dbfs,
                     },
                 );
+                // Older engines (and un-rebuilt backends) never send
+                // /omniphony/meter/master. Derive it here so the frontend gets
+                // a master meter either way and needs no fallback of its own.
+                // Both events are batched, so this adds one entry to the 16 ms
+                // window rather than an emit per message.
+                if s.master_level.is_none() {
+                    if let Some(derived) = derived_master_meter(&s.speaker_levels) {
+                        queue_batched_emit("master:meter", derived);
+                    }
+                }
                 (
                     Some((
                         "speaker:meter",
                         serde_json::json!({
                             "id": id,
-                            "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
+                            "meter": {
+                                "peakDbfs": peak_dbfs,
+                                "rmsDbfs": rms_dbfs,
+                                "peakHoldDbfs": peak_hold(&format!("spk:{id}"), peak_dbfs),
+                            }
                         }),
                     )),
                     removed_ids,
@@ -2120,7 +2371,11 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     "ear:meter",
                     serde_json::json!({
                         "id": id,
-                        "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
+                        "meter": {
+                            "peakDbfs": peak_dbfs,
+                            "rmsDbfs": rms_dbfs,
+                            "peakHoldDbfs": peak_hold(&format!("ear:{id}"), peak_dbfs),
+                        }
                     }),
                 )),
                 removed_ids,
@@ -2138,7 +2393,11 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     Some((
                         "master:meter",
                         serde_json::json!({
-                            "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
+                            "meter": {
+                                "peakDbfs": peak_dbfs,
+                                "rmsDbfs": rms_dbfs,
+                                "peakHoldDbfs": peak_hold("master", peak_dbfs),
+                            }
                         }),
                     )),
                     removed_ids,
@@ -2240,10 +2499,17 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         }
                     }
                 }
+                // Spatialize gates whether a speaker's cutoffs count as band
+                // edges at all, so toggling it moves them.
+                let crossover_cutoffs = live_crossover_cutoffs(&s);
                 (
                     Some((
                         "speaker:spatialize",
-                        serde_json::json!({ "id": id, "spatialize": if spatialize { 1 } else { 0 } }),
+                        serde_json::json!({
+                            "id": id,
+                            "spatialize": if spatialize { 1 } else { 0 },
+                            "crossoverCutoffs": crossover_cutoffs,
+                        }),
                     )),
                     removed_ids,
                 )
@@ -2277,10 +2543,15 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         }
                     }
                 }
+                let crossover_cutoffs = live_crossover_cutoffs(&s);
                 (
                     Some((
                         "speaker:freq_low",
-                        serde_json::json!({ "id": id, "freq_low": freq_low }),
+                        serde_json::json!({
+                            "id": id,
+                            "freq_low": freq_low,
+                            "crossoverCutoffs": crossover_cutoffs,
+                        }),
                     )),
                     removed_ids,
                 )
@@ -2296,10 +2567,15 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         }
                     }
                 }
+                let crossover_cutoffs = live_crossover_cutoffs(&s);
                 (
                     Some((
                         "speaker:freq_high",
-                        serde_json::json!({ "id": id, "freq_high": freq_high }),
+                        serde_json::json!({
+                            "id": id,
+                            "freq_high": freq_high,
+                            "crossoverCutoffs": crossover_cutoffs,
+                        }),
                     )),
                     removed_ids,
                 )
@@ -2494,6 +2770,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateLatencyInstant { value } => {
                 let rounded = s.set_latency_instant_value(value);
+                record_timing(TimingSeries::Latency, value);
                 (
                     Some(("latency:instant", serde_json::json!({ "value": rounded }))),
                     removed_ids,
@@ -2615,6 +2892,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateDecodeTimeMs { value } => {
                 s.decode_time_ms = Some(value);
+                record_timing(TimingSeries::Decode, value);
                 (
                     Some(("decode:time_ms", serde_json::json!({ "value": value }))),
                     removed_ids,
@@ -2636,6 +2914,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateRenderTimeMs { value } => {
                 s.render_time_ms = Some(value);
+                record_timing(TimingSeries::Render, value);
                 (
                     Some(("render:time_ms", serde_json::json!({ "value": value }))),
                     removed_ids,
@@ -2643,6 +2922,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateCrossoverTimeMs { value } => {
                 s.crossover_time_ms = Some(value);
+                record_timing(TimingSeries::Crossover, value);
                 (
                     Some(("crossover:time_ms", serde_json::json!({ "value": value }))),
                     removed_ids,
@@ -2650,6 +2930,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateWriteTimeMs { value } => {
                 s.write_time_ms = Some(value);
+                record_timing(TimingSeries::Write, value);
                 (
                     Some(("write:time_ms", serde_json::json!({ "value": value }))),
                     removed_ids,
@@ -2917,6 +3198,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 key,
                 name,
                 content,
+                ..
             } => (
                 Some((
                     "backend-file:content",
@@ -2939,6 +3221,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 backend,
                 key,
                 message,
+                ..
             } => (
                 Some((
                     "backend-file:error",
@@ -3137,6 +3420,9 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
     }; // mutex released here, before any emit
 
     for id in removed_ids {
+        // Same reason as the single-object removal above: a bulk wipe (reset,
+        // seek, track change) must not leave holds for ids that come back.
+        forget_peak_hold(&format!("src:{id}"));
         let _ = app.emit("source:remove", serde_json::json!({ "id": id }));
     }
 
@@ -3166,5 +3452,152 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 let _ = app.emit(event, payload);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalized_layout_domain_speaker, LayoutDomainSpeakerState};
+
+    /// The live layout the renderer publishes is in the ADM frame, same as a
+    /// layout file. This path used to read it as Three.js scene coordinates —
+    /// the same missing swizzle `layouts.rs` had, but on the running layout.
+    #[test]
+    fn derives_live_speaker_angles_in_the_adm_frame() {
+        let speaker = normalized_layout_domain_speaker(LayoutDomainSpeakerState {
+            name: Some(serde_json::json!("FR")),
+            x: Some(1.0),
+            y: Some(1.0),
+            z: Some(0.0),
+            ..LayoutDomainSpeakerState::default()
+        });
+        assert!(
+            (speaker.azimuth_deg - 45.0).abs() < 1e-6,
+            "azimuth {} should be 45° (front-right), not 0°",
+            speaker.azimuth_deg
+        );
+        assert!(
+            speaker.elevation_deg.abs() < 1e-6,
+            "elevation {} should be 0° (ear level), not 45°",
+            speaker.elevation_deg
+        );
+    }
+
+    /// Polar -> cartesian on the same path: hard right is +X, not +Z.
+    #[test]
+    fn derives_live_speaker_cartesian_in_the_adm_frame() {
+        let speaker = normalized_layout_domain_speaker(LayoutDomainSpeakerState {
+            name: Some(serde_json::json!("R")),
+            azimuth: Some(90.0),
+            elevation: Some(0.0),
+            distance: Some(1.0),
+            ..LayoutDomainSpeakerState::default()
+        });
+        assert!((speaker.x - 1.0).abs() < 1e-6, "x was {}", speaker.x);
+        assert!(speaker.y.abs() < 1e-6, "y was {}", speaker.y);
+        assert!(speaker.z.abs() < 1e-6, "z was {}", speaker.z);
+    }
+}
+
+#[cfg(test)]
+mod master_meter_tests {
+    use super::{derived_master_meter, METER_DB_MIN};
+    use crate::app_state::Meter;
+    use std::collections::HashMap;
+
+    fn speakers(levels: &[(f64, f64)]) -> HashMap<String, Meter> {
+        levels
+            .iter()
+            .enumerate()
+            .map(|(i, &(peak_dbfs, rms_dbfs))| {
+                (
+                    i.to_string(),
+                    Meter {
+                        peak_dbfs,
+                        rms_dbfs,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn field(value: &serde_json::Value, name: &str) -> f64 {
+        value["meter"][name].as_f64().unwrap()
+    }
+
+    #[test]
+    fn no_speakers_yields_no_meter() {
+        assert!(derived_master_meter(&HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn peak_is_the_loudest_speaker() {
+        let v = derived_master_meter(&speakers(&[(-20.0, -30.0), (-6.0, -40.0), (-12.0, -35.0)]))
+            .unwrap();
+        assert!((field(&v, "peakDbfs") - (-6.0)).abs() < 1e-9);
+    }
+
+    /// Uncorrelated speakers add in power: N speakers at the same level sum to
+    /// that level, since the mean of N equal squares is one square.
+    #[test]
+    fn equal_speakers_sum_to_their_own_level() {
+        for count in [1usize, 2, 8] {
+            let levels: Vec<(f64, f64)> = vec![(-10.0, -20.0); count];
+            let v = derived_master_meter(&speakers(&levels)).unwrap();
+            assert!(
+                (field(&v, "rmsDbfs") - (-20.0)).abs() < 1e-9,
+                "{count} speakers gave {}",
+                field(&v, "rmsDbfs")
+            );
+        }
+    }
+
+    /// One speaker twice the amplitude of another, averaged over the two:
+    /// sqrt((1^2 + 0.5^2)/2) = 0.7906 -> -2.04 dB.
+    #[test]
+    fn combines_unequal_speakers_in_power() {
+        let v = derived_master_meter(&speakers(&[(0.0, 0.0), (0.0, -6.0206)])).unwrap();
+        let expected = 20.0 * ((1.0f64 + 0.25) / 2.0).sqrt().log10();
+        assert!(
+            (field(&v, "rmsDbfs") - expected).abs() < 1e-3,
+            "got {}",
+            field(&v, "rmsDbfs")
+        );
+    }
+
+    /// The floor only comes into play once the summed linear energy underflows
+    /// to exactly zero — an ordinary "very quiet" level converts normally, and
+    /// must not be snapped up to the floor.
+    #[test]
+    fn a_quiet_level_converts_rather_than_hitting_the_floor() {
+        let v = derived_master_meter(&speakers(&[(-80.0, -80.0)])).unwrap();
+        assert!((field(&v, "rmsDbfs") - (-80.0)).abs() < 1e-6);
+    }
+
+    /// True zero energy would be -inf dB, which would saturate the scale.
+    #[test]
+    fn zero_energy_reads_as_the_floor_not_negative_infinity() {
+        // 10^(-20000/20) underflows to 0.0 in f64.
+        let v = derived_master_meter(&speakers(&[(-20000.0, -20000.0)])).unwrap();
+        let rms = field(&v, "rmsDbfs");
+        assert!(rms.is_finite(), "rms was {rms}");
+        assert_eq!(rms, METER_DB_MIN);
+    }
+
+    /// With every speaker below the meter's bottom, the peak stays at that
+    /// bottom (-60, `METER_DB_MIN` in mute-solo.js) rather than the -100 the
+    /// OSC parser clamps raw levels to. Confusing the two shows up as a wrong
+    /// number in the master readout whenever the room is quiet.
+    #[test]
+    fn the_peak_floor_is_the_meter_bottom_not_the_parser_clamp() {
+        assert_eq!(METER_DB_MIN, -60.0);
+        let v = derived_master_meter(&speakers(&[(-80.0, -80.0), (-90.0, -90.0)])).unwrap();
+        assert_eq!(field(&v, "peakDbfs"), -60.0);
+    }
+
+    #[test]
+    fn a_derived_meter_says_so() {
+        let v = derived_master_meter(&speakers(&[(-10.0, -20.0)])).unwrap();
+        assert_eq!(v["derived"], serde_json::json!(true));
     }
 }

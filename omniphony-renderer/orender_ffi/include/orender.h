@@ -24,7 +24,7 @@
 // C-ABI minor version: backwards-compatible additions only. Consumers should
 // gate optional features on symbol presence (dlsym), not on this value; it
 // exists for logging and diagnostics.
-#define ORENDER_ABI_MINOR 7
+#define ORENDER_ABI_MINOR 8
 
 // Speaker-position labels written by [`orender_channel_layout`] and
 // [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -57,6 +57,15 @@ enum OrenderChannelLabel {
     OrenderChannelLabel_Lfe2 = 23,
     // The channel carries dynamic-object audio (position driven by metadata).
     OrenderChannelLabel_Object = 24,
+    // Height tier: over the floor speaker of the same name at about 30° of
+    // elevation (BS.2051 `U+030`/`U-030`/`U+000`/`U+110`/`U-110`; DTS-HD
+    // `Lh`/`Rh`/`Ch`/`Lhs`/`Rhs`; Auro-3D's height layer). Distinct from the
+    // top tier (`Tfl`…), which means the ceiling corners.
+    OrenderChannelLabel_Lh = 25,
+    OrenderChannelLabel_Rh = 26,
+    OrenderChannelLabel_Ch = 27,
+    OrenderChannelLabel_Lhs = 28,
+    OrenderChannelLabel_Rhs = 29,
     OrenderChannelLabel_Unknown = 255,
 };
 typedef uint8_t OrenderChannelLabel;

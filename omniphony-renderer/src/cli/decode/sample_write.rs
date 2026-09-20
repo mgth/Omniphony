@@ -7,7 +7,7 @@ use audio_input::InputControl;
 use bridge_api::RChannelLabel;
 use bridge_api::RDecodedFrame;
 use orender_engine::render::fill_pcm_f32_drc;
-use orender_engine::virtual_bed::{BedPlanKind, build_virtual_bed_objects};
+use orender_engine::virtual_bed::{BedPlanKind, OwnedPlacement, build_virtual_bed_objects};
 use std::time::Instant;
 
 pub struct SampleWriteCoordinator<'a> {
@@ -415,7 +415,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                     // params, so the planner reuses it until one of them
                     // actually changes, instead of rebuilding a label→speaker
                     // map and re-solving the depth warp on every frame.
-                    match self.spatial.bed_planner.plan(renderer, labels) {
+                    match self.spatial.bed_planner.plan(
+                        renderer,
+                        labels,
+                        self.spatial.source_family,
+                        &self.spatial.declared_poses,
+                    ) {
                         BedPlanKind::Events => {
                             // Spatial mode mixes per channel: direct channels
                             // route one-hot by label, virtual channels render
@@ -665,7 +670,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                         // here rather than on every frame — with no client
                         // attached, never.
                         let (
-                            virtual_bed_layout,
+                            placement,
                             room_ratio,
                             room_ratio_rear,
                             room_ratio_lower,
@@ -674,7 +679,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             let control = renderer.renderer_control();
                             let live = control.live.read();
                             (
-                                live.virtual_bed.clone(),
+                                OwnedPlacement::from_live(&live, self.spatial.source_family),
                                 live.room_ratio,
                                 live.room_ratio_rear,
                                 live.room_ratio_lower,
@@ -685,7 +690,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             self.telemetry.osc_sender.as_mut(),
                             build_virtual_bed_objects(
                                 labels,
-                                virtual_bed_layout.as_ref(),
+                                &placement.policy(&self.spatial.declared_poses),
                                 Some(output_layout),
                                 room_ratio,
                                 room_ratio_rear,

@@ -158,7 +158,7 @@ export function createSpeakerBandBar() {
 
 // Redraw the gauge only when its appearance would actually change. The fill
 // colour depends on the layout's whole crossover split, so `edges` (from
-// computeCrossoverBandEdges) is part of the cache key — recolouring all gauges
+// crossoverBandEdges) is part of the cache key — recolouring all gauges
 // when any speaker's cutoffs change the band set.
 export function updateSpeakerBandBar(sprite, speaker, edges) {
   if (!sprite?.userData?.bandCtx) return;

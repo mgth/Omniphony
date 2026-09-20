@@ -100,7 +100,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let parsed = ParsedCli::parse_from(normalize_cli_args(std::env::args_os()))?;
+    // Exit through clap on parse failure so --help/--version print to stdout
+    // with status 0 and usage errors keep clap's formatting on stderr, instead
+    // of surfacing as an anyhow `Error:` with status 1.
+    let parsed = ParsedCli::parse_from(normalize_cli_args(std::env::args_os()))
+        .unwrap_or_else(|err| err.exit());
     let mut cli = parsed.cli.clone();
 
     // Load global config before initializing the logger so we can apply the

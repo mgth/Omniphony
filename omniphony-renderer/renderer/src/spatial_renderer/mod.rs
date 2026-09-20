@@ -78,7 +78,7 @@ mod components;
 mod construction;
 mod speaker_stage;
 use components::{ChannelState, evaluation_build_config};
-pub use components::{RenderedFrame, SpatialChannelEvent};
+pub use components::{GAIN_DB_NEG_INF, RenderedFrame, SpatialChannelEvent, gain_db_to_linear};
 use speaker_stage::SpeakerRenderStage;
 
 /// Snapshot of `LiveParams` taken at the start of each render frame.
@@ -314,8 +314,8 @@ pub struct SpatialRenderer {
     /// Scratch per-channel world positions for the binaural path (reused).
     binaural_pos_buf: Vec<[f64; 3]>,
 
-    /// Scratch per-channel gains for the binaural path (reused).
-    binaural_gain_buf: Vec<f32>,
+    /// Scratch per-channel gain ramps for the binaural path (reused).
+    binaural_gain_buf: Vec<crate::binaural::ChannelGain>,
 
     /// Scratch per-channel "direct" flags for the binaural path (reused):
     /// beds mapped to a `spatialize: false` speaker (the LFE) feed both ears
@@ -797,7 +797,11 @@ impl SpatialRenderer {
                 // Compare against the live source in place: no per-frame clone
                 // (the `Sofa` variant carries a heap path), and any rebuild is
                 // pushed to the worker inside `ensure_source`.
-                self.binaural.ensure_source(&g.binaural.hrir_source);
+                self.binaural.ensure_source(
+                    &g.binaural.hrir_source,
+                    g.binaural.head_radius_m,
+                    g.binaural.diffuse_field_eq,
+                );
                 (
                     crate::binaural::BinauralFrameParams {
                         head_pose: g.binaural.head_pose,
@@ -878,7 +882,8 @@ impl SpatialRenderer {
                 self.binaural_pos_buf
                     .resize(input_channel_count, [0.0, 1.0, 0.0]);
                 self.binaural_gain_buf.clear();
-                self.binaural_gain_buf.resize(input_channel_count, 0.0);
+                self.binaural_gain_buf
+                    .resize(input_channel_count, crate::binaural::ChannelGain::flat(0.0));
                 self.binaural_direct_buf.clear();
                 self.binaural_direct_buf.resize(input_channel_count, false);
                 let num_routed = channel_routing.len();
@@ -892,19 +897,16 @@ impl SpatialRenderer {
                             _ => 1.0,
                         };
                         // Stream metadata gain, same semantics as the VBAP path:
-                        // silent (-128 = -inf dB) until the first metadata arrives.
+                        // silent (−inf floor) until the first metadata arrives.
                         let gain_db = states
                             .get(c)
                             .filter(|s| s.initialized)
                             .map(|s| s.gain_db)
-                            .unwrap_or(-128);
-                        let gain_linear = if gain_db == -128 {
-                            0.0
-                        } else {
-                            10.0_f32.powf(gain_db as f32 / 20.0)
-                        };
-                        // Slewed like the VBAP path (block-end value: the binaural
-                        // stage updates per block anyway).
+                            .unwrap_or(components::GAIN_DB_NEG_INF);
+                        let gain_linear = components::gain_db_to_linear(gain_db);
+                        // Slewed like the VBAP path, and handed down as the
+                        // ramp so the binaural stage applies it per sample
+                        // rather than stepping the block-end value.
                         let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
                         if let Some(state) = states.get_mut(c) {
                             let (start, step) = state.slew_gain(
@@ -912,9 +914,10 @@ impl SpatialRenderer {
                                 sample_length,
                                 ramp_samples,
                             );
-                            self.binaural_gain_buf[c] = start + step * sample_length as f32;
+                            self.binaural_gain_buf[c] =
+                                crate::binaural::ChannelGain { start, step };
                         } else {
-                            self.binaural_gain_buf[c] = 0.0;
+                            self.binaural_gain_buf[c] = crate::binaural::ChannelGain::flat(0.0);
                         }
                         // Same direct/virtual split as the VBAP path.
                         let direct_label = match channel_routing.get(c) {

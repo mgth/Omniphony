@@ -10,6 +10,42 @@ use audio_output::pipewire::{
 #[cfg(target_os = "linux")]
 use std::sync::{Arc, atomic::AtomicI64};
 
+/// The downstream consumer of the `file` sink closed its end of the pipe or
+/// FIFO. Not a fault of the render: the output simply has nowhere to go any
+/// more, and the run ends the way it does at the end of its input. Raised by
+/// [`AudioWriter::write_pcm_samples`] in place of the `BrokenPipe` it maps
+/// from, so the session loop can tell it apart from a real write error.
+#[derive(Debug)]
+pub struct OutputClosed;
+
+impl std::fmt::Display for OutputClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("output consumer closed the pipe")
+    }
+}
+
+impl std::error::Error for OutputClosed {}
+
+/// Classify a `file` sink write failure: a reader that went away (`EPIPE`)
+/// is the end of the output, anything else is a genuine write error.
+fn file_sink_error(err: std::io::Error) -> anyhow::Error {
+    if err.kind() == std::io::ErrorKind::BrokenPipe {
+        anyhow::Error::new(OutputClosed)
+    } else {
+        err.into()
+    }
+}
+
+/// Flush the `file` sink, treating a consumer that already went away as
+/// nothing left to deliver: the final flush of a run that ended on
+/// [`OutputClosed`] must not turn back into an error.
+fn flush_file_sink(writer: &mut audio_output::FileAudioWriter) -> Result<()> {
+    match writer.flush() {
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other.map_err(anyhow::Error::from),
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct AudioLatencySnapshot {
     /// Current end-to-end latency observed by the listener.
@@ -212,13 +248,13 @@ impl AudioWriter {
                 Ok(())
             }
             AudioWriter::File(file_writer) => {
-                if let Some(f32_slice) = samples.as_f32() {
-                    file_writer.write_samples(f32_slice)?;
+                let written = if let Some(f32_slice) = samples.as_f32() {
+                    file_writer.write_samples(f32_slice)
                 } else {
                     let samples_f32 = samples.to_f32();
-                    file_writer.write_samples(&samples_f32)?;
-                }
-                Ok(())
+                    file_writer.write_samples(&samples_f32)
+                };
+                written.map_err(file_sink_error)
             }
             AudioWriter::Unsupported => Err(anyhow!("No supported realtime output backend")),
         }
@@ -256,7 +292,7 @@ impl AudioWriter {
                 Ok(())
             }
             AudioWriter::File(mut w) => {
-                w.flush()?;
+                flush_file_sink(&mut w)?;
                 drop(w);
                 Ok(())
             }
@@ -276,10 +312,7 @@ impl AudioWriter {
                 w.flush()?;
                 Ok(())
             }
-            AudioWriter::File(file_writer) => {
-                file_writer.flush()?;
-                Ok(())
-            }
+            AudioWriter::File(file_writer) => flush_file_sink(file_writer),
             AudioWriter::Unsupported => Err(anyhow!("No supported realtime output backend")),
         }
     }
@@ -553,5 +586,83 @@ impl AudioWriter {
             AudioWriter::Pipewire(pw) => Some(pw.pending_input_triggers()),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use audio_output::{FileAudioWriter, FileSinkFormat};
+    use std::io::{self, Write};
+
+    /// A destination whose reader has gone: every write fails with `EPIPE`.
+    struct GoneReader;
+
+    impl Write for GoneReader {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A destination that fails for a reason unrelated to its reader.
+    struct FullDisk;
+
+    impl Write for FullDisk {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("no space left on device"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn file_writer_over(sink: impl Write + Send + 'static) -> AudioWriter {
+        AudioWriter::File(
+            FileAudioWriter::with_writer(Box::new(sink), FileSinkFormat::RawF32, 48_000, 2, None)
+                .expect("a raw sink has no header to write"),
+        )
+    }
+
+    /// Larger than the sink's own buffer, so the write reaches the destination
+    /// at once instead of sitting in the buffer until a later flush.
+    fn unbuffered_block() -> AudioSamples {
+        AudioSamples::F32(vec![0.0; 32 * 1024])
+    }
+
+    #[test]
+    fn a_reader_that_went_away_is_reported_as_output_closed() {
+        let mut writer = file_writer_over(GoneReader);
+        let err = writer
+            .write_pcm_samples(&unbuffered_block(), 2)
+            .expect_err("the closed pipe must surface");
+        assert!(err.is::<OutputClosed>(), "unexpected error: {err:#}");
+    }
+
+    #[test]
+    fn other_write_failures_stay_errors() {
+        let mut writer = file_writer_over(FullDisk);
+        let err = writer
+            .write_pcm_samples(&unbuffered_block(), 2)
+            .expect_err("a failed write must surface");
+        assert!(
+            !err.is::<OutputClosed>(),
+            "misread as a closed pipe: {err:#}"
+        );
+        assert!(err.downcast_ref::<io::Error>().is_some());
+    }
+
+    #[test]
+    fn flushing_towards_a_gone_reader_is_not_an_error() {
+        let mut writer = file_writer_over(GoneReader);
+        writer
+            .write_pcm_samples(&AudioSamples::F32(vec![0.0; 16]), 2)
+            .expect("a small block is buffered, not yet written");
+        writer.finish().expect("nothing left to deliver");
+        writer.close_and_drop().expect("nothing left to deliver");
     }
 }

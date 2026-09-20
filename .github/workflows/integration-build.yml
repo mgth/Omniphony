@@ -156,6 +156,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: omniphony-studio
+          # Passed through to the cargo Tauri runs for src-tauri; see release.yml.
+          args: -- --locked
 
       # Rename to clear, version-less `integration` names so testers don't mistake
       # them for a stable release. Each platform emits a distinct set of extensions.

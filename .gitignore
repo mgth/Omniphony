@@ -10,3 +10,7 @@ dist/
 .idea/
 
 gsrd/.output.txt
+
+# The native Studio falls back to <layouts>/.studio-egui for its config when
+# OMNIPHONY_CONFIG_DIR is unset, so a plain `cargo run` writes into the tree.
+layouts/.studio-egui/

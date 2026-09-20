@@ -11,13 +11,12 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { app, dirty, LATENCY_RAW_WINDOW_MS, RENDER_TIME_WINDOW_MS } from '../state.js';
+import { app, dirty } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inAudioPanel, inRendererPanel } from '../ui/panel-roots.js';
 
-const RENDER_TIME_AVERAGE_WINDOW_MS = 1000;
 const RENDER_TIME_DISPLAY_HOLD_MS = 350;
 
 const rendererPerfDisplayState = {
@@ -77,74 +76,33 @@ function getRendererPerfFrameValueEl() { return inRendererPanel('rendererPerfFra
 
 // ── Latency / timing setters ──────────────────────────────────────────────
 
-export function setLatencyInstantMs(value) {
+// Plain setters. The sliding windows these used to maintain now live in the
+// backend (`src-tauri/src/timing_stats.rs`), which ships the aggregates through
+// `latency:stats` — see `app.timingStats`.
+
+function setTimingValue(key, value) {
   const next = Number(value);
-  if (!Number.isFinite(next)) {
-    return;
-  }
-  app.latencyInstantMs = next;
-  const now = performance.now();
-  app.latencyRawWindow.push({ t: now, v: next });
-  const cutoff = now - LATENCY_RAW_WINDOW_MS;
-  while (app.latencyRawWindow.length > 0 && app.latencyRawWindow[0].t < cutoff) {
-    app.latencyRawWindow.shift();
-  }
+  app[key] = Number.isFinite(next) ? next : null;
+}
+
+export function setLatencyInstantMs(value) {
+  setTimingValue('latencyInstantMs', value);
 }
 
 export function setRenderTimeMs(value) {
-  const next = Number(value);
-  if (!Number.isFinite(next)) {
-    return;
-  }
-  app.renderTimeMs = next;
-  const now = performance.now();
-  app.renderTimeWindow.push({ t: now, v: next });
-  const cutoff = now - RENDER_TIME_WINDOW_MS;
-  while (app.renderTimeWindow.length > 0 && app.renderTimeWindow[0].t < cutoff) {
-    app.renderTimeWindow.shift();
-  }
+  setTimingValue('renderTimeMs', value);
 }
 
 export function setDecodeTimeMs(value) {
-  const next = Number(value);
-  if (!Number.isFinite(next)) {
-    return;
-  }
-  app.decodeTimeMs = next;
-  const now = performance.now();
-  app.decodeTimeWindow.push({ t: now, v: next });
-  const cutoff = now - RENDER_TIME_WINDOW_MS;
-  while (app.decodeTimeWindow.length > 0 && app.decodeTimeWindow[0].t < cutoff) {
-    app.decodeTimeWindow.shift();
-  }
+  setTimingValue('decodeTimeMs', value);
 }
 
 export function setWriteTimeMs(value) {
-  const next = Number(value);
-  if (!Number.isFinite(next)) {
-    return;
-  }
-  app.writeTimeMs = next;
-  const now = performance.now();
-  app.writeTimeWindow.push({ t: now, v: next });
-  const cutoff = now - RENDER_TIME_WINDOW_MS;
-  while (app.writeTimeWindow.length > 0 && app.writeTimeWindow[0].t < cutoff) {
-    app.writeTimeWindow.shift();
-  }
+  setTimingValue('writeTimeMs', value);
 }
 
 export function setCrossoverTimeMs(value) {
-  const next = Number(value);
-  if (!Number.isFinite(next)) {
-    return;
-  }
-  app.crossoverTimeMs = next;
-  const now = performance.now();
-  app.crossoverTimeWindow.push({ t: now, v: next });
-  const cutoff = now - RENDER_TIME_WINDOW_MS;
-  while (app.crossoverTimeWindow.length > 0 && app.crossoverTimeWindow[0].t < cutoff) {
-    app.crossoverTimeWindow.shift();
-  }
+  setTimingValue('crossoverTimeMs', value);
 }
 
 export function setFrameDurationMs(value) {
@@ -153,15 +111,6 @@ export function setFrameDurationMs(value) {
     return;
   }
   app.frameDurationMs = next;
-}
-
-function averageRecent(window, now, spanMs) {
-  const entries = window.filter((entry) => now - entry.t <= spanMs);
-  if (entries.length === 0) {
-    return null;
-  }
-  const sum = entries.reduce((acc, entry) => acc + entry.v, 0);
-  return sum / entries.length;
 }
 
 function getStableRenderPerfValue(key, nextValue, now) {
@@ -349,10 +298,9 @@ export function renderLatencyMeterUI() {
       latencyMeterFillEl.style.setProperty('--level', `${percent.toFixed(1)}%`);
     }
   }
-  const rawMin =
-    app.latencyRawWindow.length > 0 ? Math.min(...app.latencyRawWindow.map((entry) => entry.v)) : null;
-  const rawMax =
-    app.latencyRawWindow.length > 0 ? Math.max(...app.latencyRawWindow.map((entry) => entry.v)) : null;
+  const latencyWindow = app.timingStats?.latency ?? null;
+  const rawMin = latencyWindow ? latencyWindow.min : null;
+  const rawMax = latencyWindow ? latencyWindow.max : null;
   if (latencyRawMinMaskEl) {
     if (rawMin === null || rawMax === null || rawMax < rawMin) {
       latencyRawMinMaskEl.style.display = 'none';
@@ -495,13 +443,17 @@ export function renderRenderTimeUI() {
   const cro = Math.min(rndTotal, Math.max(0, Number(app.crossoverTimeMs) || 0));
   const rnd = Math.max(0, rndTotal - cro);
   const wri = Math.max(0, Number(app.writeTimeMs) || 0);
-  const decMax = app.decodeTimeWindow.length > 0 ? Math.max(...app.decodeTimeWindow.map((entry) => entry.v)) : null;
-  const rndTotalMax = app.renderTimeWindow.length > 0 ? Math.max(...app.renderTimeWindow.map((entry) => entry.v)) : null;
-  const croMax = app.crossoverTimeWindow.length > 0
-    ? Math.min(rndTotalMax ?? Number.POSITIVE_INFINITY, Math.max(...app.crossoverTimeWindow.map((entry) => entry.v)))
-    : null;
+  // Backend aggregates (`latency:stats`); null means the window is empty.
+  const stageMax = (name) => app.timingStats?.[name]?.max?.max ?? null;
+  const stageAvg = (name) => app.timingStats?.[name]?.avg?.mean ?? null;
+  const decMax = stageMax('decode');
+  const rndTotalMax = stageMax('render');
+  const croMaxRaw = stageMax('crossover');
+  const croMax = croMaxRaw === null
+    ? null
+    : Math.min(rndTotalMax ?? Number.POSITIVE_INFINITY, croMaxRaw);
   const rndMax = rndTotalMax === null ? null : Math.max(0, rndTotalMax - (croMax ?? 0));
-  const wriMax = app.writeTimeWindow.length > 0 ? Math.max(...app.writeTimeWindow.map((entry) => entry.v)) : null;
+  const wriMax = stageMax('write');
   const frameBudgetMs = Number(app.frameDurationMs);
   const scaleMs = Number.isFinite(frameBudgetMs) && frameBudgetMs > 0
     ? frameBudgetMs
@@ -511,10 +463,10 @@ export function renderRenderTimeUI() {
       (decMax ?? 0) + (croMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0)
     );
   const now = performance.now();
-  const decAvg = averageRecent(app.decodeTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
-  const rndTotalAvg = averageRecent(app.renderTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
-  const croAvgRaw = averageRecent(app.crossoverTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
-  const wriAvg = averageRecent(app.writeTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
+  const decAvg = stageAvg('decode');
+  const rndTotalAvg = stageAvg('render');
+  const croAvgRaw = stageAvg('crossover');
+  const wriAvg = stageAvg('write');
   const croAvg = croAvgRaw === null
     ? null
     : Math.min(rndTotalAvg ?? Number.POSITIVE_INFINITY, croAvgRaw);

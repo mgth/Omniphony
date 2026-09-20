@@ -125,6 +125,7 @@ pub fn build_renderer_state_json(
     fixed_channel_catalog_json: &str,
     fixed_channel_processing_json: &str,
     crossover_info: Option<renderer::live_params::CrossoverInfo>,
+    hrir_status: &renderer::binaural::HrirStatus,
 ) -> String {
     let effective_backend = active_topology.backend.backend_id();
     let effective_evaluation_mode = active_topology.backend.evaluation_mode().as_str();
@@ -194,10 +195,13 @@ pub fn build_renderer_state_json(
         // their canonical (snake_case) keys. The flat camelCase keys above are
         // the legacy spellings, kept while clients migrate to this block.
         "options": renderer::options::options_json(live),
-        // Parametrable virtual bed for channel content (null = built-in
-        // canonical poses, LFE direct). Reuses the speaker-layout schema so the
-        // Studio 3D editor can target it.
-        "virtualBed": live.virtual_bed.as_ref()
+        // Per-family placement of fixed channels (`renderer::placement`):
+        // each family's own settings and what they resolve to.
+        "placement": placement_json(&live.placement),
+        // Legacy mirror of the generic family's own entries (null = none),
+        // for clients that predate `placement`.
+        "virtualBed": live.placement.family(renderer::placement::SourceFamily::Generic)
+            .layout.as_ref()
             .map(|bed| serde_json::to_value(bed).unwrap_or(serde_json::Value::Null)),
         "distanceModel": live.distance_model.to_string(),
         "distanceModelMetric": live.distance_model_metric.to_string(),
@@ -261,19 +265,29 @@ pub fn build_renderer_state_json(
                 "enabled": live.binaural.reflections.enabled,
                 "roomM": live.binaural.reflections.room_size_m,
                 "level": live.binaural.reflections.level,
+                "wallCutoffHz": live.binaural.reflections.wall_cutoff_hz,
             },
             "reverb": {
                 "enabled": live.binaural.reverb.enabled,
                 "level": live.binaural.reverb.level,
                 "rt60S": live.binaural.reverb.rt60_s,
                 "predelayMs": live.binaural.reverb.predelay_ms,
+                "size": live.binaural.reverb.size,
+                "rt60LowRatio": live.binaural.reverb.rt60_low_ratio,
+                "rt60HighRatio": live.binaural.reverb.rt60_high_ratio,
             },
             "airAbsorption": live.binaural.air_absorption,
+            "diffuseFieldEq": live.binaural.diffuse_field_eq,
             "hrirSource": live.binaural.hrir_source.as_str(),
             "hrtfSofaPath": match &live.binaural.hrir_source {
                 renderer::binaural::HrirSource::Sofa(p) => p.as_str(),
                 _ => "",
             },
+            // What is actually convolved: differs from `hrirSource` when the
+            // SOFA file failed to load and the build fell back to KEMAR, in
+            // which case `hrirError` says why.
+            "hrirEffective": hrir_status.effective.as_str(),
+            "hrirError": hrir_status.error,
             "headPose": {
                 "w": live.binaural.head_pose.w,
                 "x": live.binaural.head_pose.x,
@@ -284,7 +298,12 @@ pub fn build_renderer_state_json(
                 "address": live.binaural.tracking.address,
                 "format": live.binaural.tracking.format.as_str(),
                 "smoothing": live.binaural.tracking.smoothing,
-                "invert": live.binaural.tracking.invert
+                "invert": live.binaural.tracking.invert,
+                // Three-pose axis calibration: 0 idle, 1 = turn left next,
+                // 2 = look up next; and whether axes are calibrated at all.
+                "calibrationStep": live.binaural.tracking.calibration.step(),
+                "axesCalibrated": live.binaural.tracking.axes
+                    != renderer::binaural::HeadPose::identity()
             }
         }
     })
@@ -324,6 +343,7 @@ fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String 
         "realtime": ["master_gain", "speaker_gain"],
         "spatial": true,
         "metering": true,
+        "fileRequestIds": true,
         "controlConfig": control_config
     })
     .to_string()
@@ -342,6 +362,7 @@ mod capability_tests {
         let v = parse(&build_renderer_capabilities_json(true, true));
         assert_eq!(v["variant"], "standalone");
         assert_eq!(v["host"], "cli");
+        assert_eq!(v["fileRequestIds"], true);
         let domains = v["domains"].as_array().unwrap();
         assert!(domains.iter().any(|d| d == "audio"));
         assert!(domains.iter().any(|d| d == "input"));
@@ -356,6 +377,7 @@ mod capability_tests {
         let v = parse(&build_renderer_capabilities_json(false, false));
         assert_eq!(v["variant"], "embedded");
         assert_eq!(v["host"], "mpv");
+        assert_eq!(v["fileRequestIds"], true);
         let domains = v["domains"].as_array().unwrap();
         assert!(!domains.iter().any(|d| d == "audio"));
         assert!(!domains.iter().any(|d| d == "input"));
@@ -440,6 +462,7 @@ pub fn build_live_state_bundle(
         &control.fixed_channel_catalog(),
         &control.fixed_channel_processing(),
         control.crossover_info(),
+        &control.binaural_hrir_status(),
     );
 
     let mut messages = vec![
@@ -682,4 +705,34 @@ pub fn build_live_state_bundle(
     // The engine wrapper appends `HostControlHandler::extend_snapshot()` and
     // the `/state/snapshot_complete` marker, then bundles + encodes.
     all_messages
+}
+
+/// The `placement` block of the renderer snapshot: per family, its own
+/// `mode`/`layout` (null when unset, i.e. inherited) and the effective
+/// result — `effectiveMode`, and `layoutSource` saying whose entries apply
+/// (`own`, `generic` or `none`).
+fn placement_json(state: &renderer::placement::PlacementState) -> serde_json::Value {
+    use renderer::placement::SourceFamily;
+    let mut families = serde_json::Map::new();
+    for family in SourceFamily::ALL {
+        let own = state.family(family);
+        let layout_source = if own.layout.is_some() {
+            "own"
+        } else if state.family(SourceFamily::Generic).layout.is_some() {
+            "generic"
+        } else {
+            "none"
+        };
+        families.insert(
+            family.as_str().to_string(),
+            json!({
+                "mode": own.mode.map(|m| m.as_str()),
+                "layout": own.layout.as_ref()
+                    .map(|bed| serde_json::to_value(bed).unwrap_or(serde_json::Value::Null)),
+                "effectiveMode": state.effective_mode(family).as_str(),
+                "layoutSource": layout_source,
+            }),
+        );
+    }
+    serde_json::Value::Object(families)
 }

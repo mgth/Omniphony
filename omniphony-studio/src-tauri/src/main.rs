@@ -2,13 +2,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_state;
+pub(crate) use omniphony_studio_core::host::audio_config;
+pub(crate) use omniphony_studio_core::host::peak_hold;
+pub(crate) use omniphony_studio_core::host::runtime_env;
+pub(crate) use omniphony_studio_core::host::timing_stats;
+pub(crate) use omniphony_studio_core::model::layouts;
+mod auto_tune;
 mod commands;
 mod config;
 mod engine_deploy;
-mod layouts;
 mod osc_listener;
 mod osc_parser;
-mod runtime_env;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI32;
@@ -24,6 +28,7 @@ use tokio::sync::mpsc::UnboundedSender;
 // imported so `generate_handler!` can keep referring to them by bare name.
 use commands::app::*;
 use commands::audio::*;
+use commands::auto_tune::*;
 use commands::binaural::*;
 use commands::diag::*;
 use commands::engine::*;
@@ -77,6 +82,7 @@ pub(crate) struct SharedState {
     /// Local renderer process spawned by Studio (manual launch or watchdog).
     pub(crate) renderer_child: Arc<Mutex<Option<std::process::Child>>>,
     pub(crate) watchdog: Arc<Mutex<WatchdogControl>>,
+    pub(crate) auto_tune: crate::auto_tune::runner::AutoTuneRunner,
 }
 
 // ── helper ────────────────────────────────────────────────────────────────
@@ -124,6 +130,12 @@ pub(crate) fn send_distance_metric(state: &State<SharedState>, address: &str, va
 // ── main ─────────────────────────────────────────────────────────────────
 
 fn main() {
+    // Install the sink for this crate's `log::*` calls: without it they are
+    // silently discarded. `info` is the desktop-app default; RUST_LOG overrides
+    // it with the usual per-module syntax (e.g. `RUST_LOG=omniphony_studio=debug`).
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    log::info!("omniphony-studio {} starting", env!("CARGO_PKG_VERSION"));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -184,6 +196,7 @@ fn main() {
                 auto_tune_snapshot: Arc::new(Mutex::new(None)),
                 renderer_child: Arc::new(Mutex::new(None)),
                 watchdog: Arc::new(Mutex::new(WatchdogControl::default())),
+                auto_tune: Default::default(),
             };
             app.manage(shared);
 
@@ -204,6 +217,8 @@ fn main() {
             debug_state_sizes,
             debug_write_memory_csv,
             get_state,
+            get_vbap_grid_nodes,
+            sample_hybrid_curve,
             get_osc_config,
             renderer_is_local,
             expected_orender_path,
@@ -230,6 +245,7 @@ fn main() {
             pick_orender_path,
             pick_backend_file_path,
             export_layout_to_path,
+            default_layout_export_name,
             control_speaker_gain,
             control_object_mute,
             control_speaker_mute,
@@ -329,6 +345,8 @@ fn main() {
             control_object_generator_param,
             control_phantom_extract_param,
             control_virtual_bed,
+            control_placement_mode,
+            control_placement_layout,
             control_profile_switch,
             control_profile_create,
             control_profile_delete,
@@ -343,10 +361,15 @@ fn main() {
             control_binaural_reflections_enabled,
             control_binaural_reflections_level,
             control_binaural_reflections_room,
+            control_binaural_reflections_wall_cutoff,
             control_binaural_reverb_enabled,
             control_binaural_reverb_level,
             control_binaural_reverb_rt60,
+            control_binaural_reverb_size,
+            control_binaural_reverb_rt60_low_ratio,
+            control_binaural_reverb_rt60_high_ratio,
             control_binaural_air_absorption,
+            control_binaural_diffuse_field_eq,
             sofa_browse,
             sofa_download,
             sofa_list_local,
@@ -356,6 +379,7 @@ fn main() {
             sofa_upload_to_renderer,
             sofa_download_cancel,
             control_head_recenter,
+            control_head_calibrate,
             control_head_tracking_address,
             control_head_tracking_format,
             control_head_tracking_smoothing,
@@ -377,7 +401,6 @@ fn main() {
             import_input_layout_from_path,
             control_input_live_channels,
             control_input_live_sample_rate,
-            control_input_live_format,
             control_input_live_clock_mode,
             control_input_live_map,
             control_input_live_lfe_mode,
@@ -388,6 +411,13 @@ fn main() {
             control_audio_sample_rate,
             control_drc_mode,
             control_drc_weight,
+            auto_tune_backend_enabled,
+            auto_tune_start,
+            auto_tune_cancel,
+            auto_tune_accept,
+            auto_tune_ack,
+            auto_tune_abbreviate,
+            auto_tune_state,
             auto_tune_snapshot_save,
             auto_tune_snapshot_take,
             auto_tune_snapshot_peek,
@@ -411,6 +441,15 @@ fn main() {
             // resort. mpv-embedded renderers are unaffected (separate process).
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let state = app_handle.state::<SharedState>();
+                // A tuning run in progress has the renderer on half-swept
+                // values — a kp the sweep was about to reject, say. Put the
+                // originals back before anything else: the renderer may well
+                // outlive us (keep-alive, or an mpv-embedded one), and nothing
+                // would ever restore them otherwise.
+                if state.auto_tune.is_running() {
+                    log::info!("auto-tune still running at exit; restoring the previous values");
+                    state.auto_tune.cancel(app_handle, &state.osc_tx);
+                }
                 let keep_alive = load_config(&state.config_dir).keep_renderer_alive_on_quit;
                 let mut child_guard = state.renderer_child.lock().unwrap();
                 if let Some(child) = child_guard.as_mut() {

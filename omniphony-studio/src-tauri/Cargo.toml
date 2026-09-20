@@ -1,6 +1,6 @@
 [package]
 name = "omniphony-studio"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 
 [[bin]]
@@ -8,6 +8,15 @@ name = "omniphony-studio"
 path = "src/main.rs"
 
 [dependencies]
+# Single source of truth for coordinate frames, angle wrapping and the room
+# depth warp, shared with the renderer. Dependency-free by design — check the
+# crate's own Cargo.toml before adding anything to it, because whatever it
+# pulls in lands in the Studio build too.
+omniphony-geometry = { path = "../../omniphony-renderer/omniphony-geometry" }
+# The native Studio's core. Several modules here were copies of it, kept in
+# step by hand and drifting; they are re-exports now. Its own dependencies are
+# the ones this crate already had.
+omniphony-studio-core = { path = "../../omniphony-studio-egui/core" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -26,6 +35,10 @@ flate2 = "1"
 socket2 = "0.5"
 tokio = { version = "1", features = ["sync", "rt", "macros"] }
 log = "0.4"
+# Installs the actual sink for the `log` macros above; without it every `log::*`
+# call in this crate is discarded at runtime. Same backend as the renderer's
+# `sys::live_log`, so RUST_LOG behaves identically in both.
+env_logger = "0.11"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"
 # Cross-platform process RSS/virtual memory readout for the opt-in memory

@@ -136,6 +136,17 @@ pub fn control_binaural_reflections_level(state: State<SharedState>, value: f32)
 }
 
 #[tauri::command]
+pub fn control_binaural_reflections_wall_cutoff(state: State<SharedState>, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: "/omniphony/control/binaural/reflections/wall_cutoff".to_string(),
+            value: value.clamp(1_000.0, 20_000.0),
+        },
+    );
+}
+
+#[tauri::command]
 pub fn control_binaural_reflections_room(state: State<SharedState>, axis: String, value: f32) {
     // axis: "width" | "depth" | "height"; value in metres.
     let address = match axis.as_str() {
@@ -187,12 +198,68 @@ pub fn control_binaural_reverb_rt60(state: State<SharedState>, value: f32) {
 }
 
 #[tauri::command]
+pub fn control_binaural_reverb_size(state: State<SharedState>, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: "/omniphony/control/binaural/reverb/size".to_string(),
+            value: value.clamp(0.5, 2.0),
+        },
+    );
+}
+
+#[tauri::command]
+pub fn control_binaural_reverb_rt60_low_ratio(state: State<SharedState>, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: "/omniphony/control/binaural/reverb/rt60_low_ratio".to_string(),
+            value: value.clamp(0.25, 4.0),
+        },
+    );
+}
+
+#[tauri::command]
+pub fn control_binaural_reverb_rt60_high_ratio(state: State<SharedState>, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: "/omniphony/control/binaural/reverb/rt60_high_ratio".to_string(),
+            value: value.clamp(0.25, 4.0),
+        },
+    );
+}
+
+#[tauri::command]
+pub fn control_binaural_diffuse_field_eq(state: State<SharedState>, enable: i32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/binaural/diffuse_field_eq".to_string(),
+            value: if enable != 0 { 1 } else { 0 },
+        },
+    );
+}
+
+#[tauri::command]
 pub fn control_binaural_air_absorption(state: State<SharedState>, enable: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
             address: "/omniphony/control/binaural/air_absorption".to_string(),
             value: if enable != 0 { 1 } else { 0 },
+        },
+    );
+}
+
+#[tauri::command]
+pub fn control_head_calibrate(state: State<SharedState>, step: String) {
+    // step: "front" | "left" | "up" | "reset".
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/head/calibrate".to_string(),
+            value: step,
         },
     );
 }

@@ -22,7 +22,9 @@ import {
   VOLUME_REBUILD_INTERVAL_MS,
   clampVolumeGamma,
   colormapIndex,
+  makeCellIndexer,
   objectEnergyColor,
+  signaturesEqual,
 } from './object-energy-shared.js';
 import { getSpeakerGainTable } from './speaker-gaintable.js';
 
@@ -31,13 +33,6 @@ const volume = new EnergyVolume();
 // Signature of the last built field. The speaker field is static, so we skip the
 // whole rebuild while nothing that shapes it changes (see refreshSpeakerSoloVolume).
 let lastBuildSig = null;
-function sigEqual(a, b) {
-  if (!a || !b || a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
 
 // Audible-frequency span used to place each band on the colour gradient (log scale).
 const FMIN_HZ = 20;
@@ -51,26 +46,6 @@ export function hideSpeakerSoloVolume() {
 
 export function clearSpeakerSoloVolume() {
   volume.dispose();
-}
-
-function clampIdx(value, n) {
-  if (value < 0) return 0;
-  if (value > n - 1) return n - 1;
-  return value;
-}
-
-/** Nearest cell index in a (small) position array, by absolute distance. */
-function nearestIndex(positions, n, value) {
-  let best = 0;
-  let bestDist = Infinity;
-  for (let i = 0; i < n; i += 1) {
-    const d = Math.abs(positions[i] - value);
-    if (d < bestDist) {
-      bestDist = d;
-      best = i;
-    }
-  }
-  return best;
 }
 
 /** Position of a band on the [0,1] colour gradient from its log-frequency centre. */
@@ -120,7 +95,7 @@ export function refreshSpeakerSoloVolume(nowMs) {
     app.objectEnergyVolumeGammaMip,
     ratio.height, ratio.lower, ratio.width, ratio.rear, ratio.length,
   ];
-  if (sigEqual(sig, lastBuildSig)) return;
+  if (signaturesEqual(sig, lastBuildSig)) return;
 
   const now = Number.isFinite(nowMs) ? nowMs : performance.now();
   const refreshMs = Number(app.volumeRefreshMs) > 0 ? Number(app.volumeRefreshMs) : VOLUME_REBUILD_INTERVAL_MS;
@@ -130,30 +105,9 @@ export function refreshSpeakerSoloVolume(nowMs) {
   app.lastSpeakerSoloVolumeAt = now;
   lastBuildSig = sig;
 
-  const { nx, ny, nz, bands, zPositions } = table;
+  const { bands } = table;
   const nbands = bands.length;
-  const nxh = nx - 1;
-  const nyh = ny - 1;
-  const nzh = nz - 1;
-
-  // Height (z) axis is non-uniform → map omni height through the real cell-centre
-  // positions (see the cartesian_z_axis note); memoised across the inner depth loop.
-  let cachedOh = NaN;
-  let cachedZi = 0;
-  const lookupZi = (oh) => {
-    if (oh === cachedOh) return cachedZi;
-    cachedOh = oh;
-    cachedZi = zPositions
-      ? nearestIndex(zPositions, nz, oh)
-      : clampIdx(Math.round(((oh + 1) * 0.5) * nzh), nz);
-    return cachedZi;
-  };
-  const cellIndex = (ow, od, oh) => {
-    const xi = clampIdx(Math.round(((ow + 1) * 0.5) * nxh), nx);
-    const yi = clampIdx(Math.round(((od + 1) * 0.5) * nyh), ny);
-    const zi = lookupZi(oh);
-    return xi + nx * (yi + ny * zi);
-  };
+  const cellIndex = makeCellIndexer(table);
 
   const common = {
     resolution: app.objectEnergyHeatmapResolution,

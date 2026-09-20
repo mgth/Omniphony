@@ -12,6 +12,7 @@ pub mod live_params;
 pub mod metering;
 pub mod object_test;
 pub mod options;
+pub mod placement;
 pub mod ramp_strategy;
 pub mod render_backend;
 pub mod runtime_env;

@@ -41,9 +41,6 @@ pub struct IdleFeedInputs {
     /// A test is currently requested (`LiveParams::speaker_test` or
     /// `LiveParams::object_test`).
     pub test_active: bool,
-    /// The applied input mode delivers frames continuously on its own when
-    /// idle (PipeWire live capture) — feeding would double-drive the chain.
-    pub input_self_feeding: bool,
     /// Sample rate for fabricated frames (last stream's, or the default).
     pub sample_rate: u32,
 }
@@ -100,7 +97,7 @@ impl IdleFeeder {
             self.armed_until = (inputs.arm_gen != 0).then(|| now + KEEPALIVE);
         }
         let armed = inputs.test_active || self.armed_until.is_some_and(|deadline| now < deadline);
-        if !armed || inputs.input_self_feeding {
+        if !armed {
             self.stop_feeding();
             return None;
         }
@@ -146,7 +143,6 @@ mod tests {
         IdleFeedInputs {
             arm_gen,
             test_active: false,
-            input_self_feeding: false,
             sample_rate: 48_000,
         }
     }
@@ -256,20 +252,6 @@ mod tests {
             feeder
                 .poll(t0 + Duration::from_millis(50), &inputs)
                 .is_some()
-        );
-    }
-
-    #[test]
-    fn self_feeding_input_disables_the_feed() {
-        let mut feeder = IdleFeeder::default();
-        let t0 = Instant::now();
-        let mut inputs = inputs(1);
-        inputs.input_self_feeding = true;
-        assert!(feeder.poll(t0, &inputs).is_none());
-        assert!(
-            feeder
-                .poll(t0 + Duration::from_millis(50), &inputs)
-                .is_none()
         );
     }
 }

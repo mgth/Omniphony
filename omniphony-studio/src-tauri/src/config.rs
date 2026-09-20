@@ -20,6 +20,12 @@ pub struct OscConfig {
     /// first import so users can find the presets, then tracks their last pick.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_layout_import_dir: Option<String>,
+    /// Drive the PI auto-tune from the backend port instead of the frontend
+    /// state machine. Off until a full run has been done on real hardware.
+    /// Server-only, like `last_layout_import_dir`: the JS config form does not
+    /// carry it, so `save_osc_config` has to preserve it explicitly.
+    #[serde(default)]
+    pub rust_auto_tune: bool,
 }
 
 fn default_true() -> bool {
@@ -38,6 +44,7 @@ impl Default for OscConfig {
             auto_start_renderer: true,
             keep_renderer_alive_on_quit: false,
             last_layout_import_dir: None,
+            rust_auto_tune: false,
         }
     }
 }

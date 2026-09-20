@@ -11,11 +11,20 @@ Per channel, per block:
 ```
 position → rotate(head pose) → (azimuth, elevation, distance)
          → air-absorption low-pass (cutoff falls with distance)
-         → 1/d gain → per-ear ITD delay → per-ear HRIR convolution
-         → + 6 first-order shoebox reflections (delay + ILD pan per ear)
-         → + shared late-reverb tail (stereo FDN, distance-driven DRR)
+         → per-ear ITD delay → per-ear HRIR convolution   (authored level, no 1/d)
+         → + 6 first-order shoebox reflections (per-ear delay incl. the image's
+             ITD + ILD pan, level relative to the direct: d_source / d_image,
+             low-passed by the wall and by the air over the image path)
+         → + shared late-reverb tail (stereo FDN, send ∝ distance)
          → mix into [L, R]
 ```
+
+The direct path applies **no distance attenuation**: object and bed levels
+are authored by the mixer (Atmos object gain) and are respected as such.
+Distance is carried by the *cues* around the direct sound instead — the
+reflections and the reverb send are expressed relative to it, so their ratio
+to the direct sound falls with distance the way it does in a room, and the
+air absorption dulls far sources.
 
 Measured cost: ~0.09 ms per 40-sample block for a 16-channel Atmos stream
 (~11 % of the realtime budget), reflections included.
@@ -63,15 +72,20 @@ in Studio and over OSC (addresses listed at the end).
 | `head_tracking.osc_address` | — | OSC address carrying the orientation (empty disables tracking) |
 | `head_tracking.format` | `auto` | `auto` / `quat` / `rotvec` / `euler` |
 | `reflections.enabled` | `false` | shoebox early reflections (externalization) |
-| `reflections.room_width_m` | `4.0` | room extent, x (clamped 1–20 m) |
+| `reflections.room_width_m` | `4.0` | room extent, x (clamped 1–20 m). The three extents are minimums: the room grows to contain the scene (see *Scale* below) |
 | `reflections.room_depth_m` | `5.0` | room extent, y |
 | `reflections.room_height_m` | `2.7` | room extent, z |
 | `reflections.level` | `0.5` | per-reflection wall gain (0–1) |
+| `reflections.wall_cutoff_hz` | `6000` | high-frequency cutoff of the walls (1000–20000; 20000 = none). Each reflection is low-passed here, combined with the air absorption over its own image path |
 | `reverb.enabled` | `false` | late-reverb tail (stereo FDN) |
 | `reverb.level` | `0.25` | reverb return level (0–1) |
 | `reverb.rt60_s` | `0.35` | broadband decay time (s) — living-room-ish, not a hall |
 | `reverb.predelay_ms` | `20` | gap between direct sound and tail start |
+| `reverb.size` | `1.0` | scale on the network's delay lines (0.5–2): smaller is a denser, smaller-sounding room, larger a sparser, bigger one; the decay time stays `rt60_s` |
+| `reverb.rt60_low_ratio` | `1.0` | decay time below ~250 Hz as a ratio of `rt60_s` (0.25–4): above 1 the bass lingers (hard walls), below 1 it dies first |
+| `reverb.rt60_high_ratio` | `1.0` | decay time above ~4 kHz as a ratio of `rt60_s` (0.25–4): below 1 the treble dies first (air, soft furnishings), on top of the network's fixed wall damping |
 | `air_absorption` | `true` | distance low-pass on the direct path (HF dies with distance — true outdoors too) |
+| `diffuse_field_eq` | `false` | divide the HRIR set by its own diffuse-field response (third-octave smoothed, ±12 dB, 200 Hz–16 kHz) at build time: removes the measured head's tonal signature, keeps every interaural difference |
 
 ## Head tracking
 
@@ -93,8 +107,20 @@ the phone strapped to the headband:
    panel or `/omniphony/control/head/recenter`). That direction becomes
    "front".
 5. If the scene rotates the wrong way, toggle **Invert rotation**.
+6. If it rotates about the wrong axis — the phone is strapped on in some
+   other orientation than "screen up, top forward" — run the **axis
+   calibration** (Studio button **Calibrate axes**, or
+   `/omniphony/control/head/calibrate` with `front`, `left`, `up`): look
+   straight ahead and press, turn your head to the **left** and press, look
+   **up** and press. The turn gives the head's up axis in the sensor's frame,
+   the nod its right axis, and the result is stored next to the recenter
+   reference (`axes_quat`). `reset` forgets it. Three poses because a turn
+   alone cannot tell which horizontal direction is ahead, and this way
+   nothing is assumed about how the sensor is mounted.
 
-`smoothing` (0–0.99, default 0.2) trades a little latency for pose stability;
+`smoothing` (0–0.99, default 0.2) trades a little latency for pose stability.
+It is a time constant, defined for a 30 Hz source: a 100 Hz tracker settles in
+the same milliseconds for the same value, not three times slower;
 with Game Rotation Vector you can usually lower it.
 
 ### Other sources
@@ -128,15 +154,33 @@ directly instead.
   work, the early reflections add the room's geometry. Adjust **Reverb
   level** and **Reflection level** by ear — too high colours dialogue and
   sounds echoey, too low collapses back into the head.
+- **Tail character**: `reverb.size` sets how big the tail *sounds* at a
+  given RT60 (denser and smaller below 1, sparser and larger above), and
+  the two band ratios how it decays by band — a real room keeps its bass
+  longer than its treble, so a bass ratio a little above 1 and a treble
+  ratio below 1 (say 1.5 and 0.5) read as more natural than a flat decay.
+  All three are live in the **Late reverb** block of the panel.
 - **Distance**: past ~1 m the brain judges distance mostly from the
-  direct/reverb ratio, not loudness. The reverberant field is
-  distance-independent (like a real room) while the direct falls as 1/d, so
-  raising `unit_scale_m` makes far objects genuinely *sound* far. Air
-  absorption adds the matching "far sounds dull" high-frequency roll-off
-  (bypassed within 3 m, ~14 kHz cutoff at 10 m, ~5 kHz at 30 m).
+  direct/reverb ratio, not loudness. The direct sound keeps its authored
+  level at any distance (there is no 1/d on it — the mixer set that level),
+  so the renderer moves the ratio from the other side: the reverb send grows
+  in proportion to the distance (unity at 1.5 m, capped at 6 m) and each
+  early reflection is levelled relative to the direct sound
+  (`d_source / d_image`), exactly as if the direct had fallen as 1/d and
+  been brought back up. Raising `unit_scale_m` therefore makes far objects
+  genuinely *sound* far without making them quieter. Air absorption adds
+  the matching "far sounds dull" high-frequency roll-off (bypassed within
+  3 m, ~14 kHz cutoff at 10 m, ~5 kHz at 30 m).
 - **Scale**: `unit_scale_m` sets how far "1 ADM unit" is in metres. At the
   default 1.0 the far wall of the mix is one metre from your nose — try 3–4
-  for a room-sized stage.
+  for a room-sized stage. The reflection room grows on its own to contain
+  the scene: each half-extent is floored at `unit_scale_m + 0.35 m` (6.7 m
+  on every axis at a scale of 3, capped at 20 m), so the dimensions you set
+  are a minimum — a room smaller than the scene it holds has no physical
+  reading. Past the 20 m cap the image-source model pulls a source that
+  sits outside the room back inside before mirroring it, which keeps the
+  geometry valid but puts the reflections where the wall is, not where the
+  object is.
 - **ITD fit**: `head_radius_m` defaults to a KEMAR-ish 8.75 cm. If
   localisation feels smeared, measure ear-to-ear width and set half of it.
 - **HRTF**: the embedded measured KEMAR (`saf`) is the best generic default —
@@ -190,20 +234,29 @@ carry no license at all). Accordingly:
 | `/omniphony/control/binaural/reflections/room_width` | `f` (m) | room x |
 | `/omniphony/control/binaural/reflections/room_depth` | `f` (m) | room y |
 | `/omniphony/control/binaural/reflections/room_height` | `f` (m) | room z |
+| `/omniphony/control/binaural/reflections/wall_cutoff` | `f` (Hz) | wall high-frequency cutoff |
 | `/omniphony/control/binaural/reverb/enabled` | `i\|f` (bool) | late tail on/off |
 | `/omniphony/control/binaural/reverb/level` | `f` (0–1) | reverb return level |
 | `/omniphony/control/binaural/reverb/rt60` | `f` (s) | decay time |
 | `/omniphony/control/binaural/reverb/predelay` | `f` (ms) | pre-delay |
+| `/omniphony/control/binaural/reverb/size` | `f` (0.5–2) | delay-line length scale |
+| `/omniphony/control/binaural/reverb/rt60_low_ratio` | `f` (0.25–4) | bass decay, as a ratio of RT60 |
+| `/omniphony/control/binaural/reverb/rt60_high_ratio` | `f` (0.25–4) | treble decay, as a ratio of RT60 |
 | `/omniphony/control/binaural/air_absorption` | `i\|f` (bool) | distance HF roll-off |
+| `/omniphony/control/binaural/diffuse_field_eq` | `i\|f` (bool) | diffuse-field equalisation of the HRIR set |
 | `/omniphony/control/head/orientation` | `fff` (euler) | set pose directly |
 | `/omniphony/control/head/quat` | `ffff` | set pose directly |
 | `/omniphony/control/head/recenter` | — | current orientation becomes "front" |
+| `/omniphony/control/head/calibrate` | `s: front\|left\|up\|reset` | three-pose sensor axis calibration (`front` also recenters) |
 | `/omniphony/control/head/tracking/address` | `s` | tracking OSC address ("" disables) |
 | `/omniphony/control/head/tracking/format` | `s` | `auto\|quat\|rotvec\|euler` |
 | `/omniphony/control/head/tracking/smoothing` | `f` (0–0.99) | pose smoothing |
 | `/omniphony/control/head/tracking/invert` | `i` (bool) | mirror the rotation |
 
 State broadcast: the `binaural` object inside `/omniphony/state/renderer`
-(10 Hz when the pose moves), plus a dedicated lightweight
+(10 Hz when the pose moves) — including `hrirEffective`, the set actually
+being convolved, and `hrirError`: when a SOFA file cannot be loaded the
+renderer falls back to the embedded KEMAR set, and these two say so
+(`hrirSource` keeps the request) — plus a dedicated lightweight
 `/omniphony/state/head_pose` (`ffff` = w x y z, ~30 Hz) for low-latency pose
 consumers such as the Studio 3D head.

@@ -7,11 +7,19 @@
 // guarded so a missing node never throws.
 
 import { invoke } from '@tauri-apps/api/core';
+import { t, tf } from '../i18n.js';
 import { initSofaBrowser, setActiveSofaPath } from './sofa-browser.js';
 import { setSpeakersGhosted } from '../speakers.js';
 import { applyEarState, initHeadphoneChannels } from './headphone-meter.js';
 
 const el = (id) => document.getElementById(id);
+
+// Renderer-reported step of the three-pose axis calibration (see the button).
+let calibrationStep = 0;
+
+// Renderer source ids → i18n suffix of their option label.
+const HRTF_SOURCE_I18N = { saf: 'kemar', synthetic: 'synthetic', pinna: 'pinna', prtf: 'prtf', sofa: 'sofa' };
+const hrtfSourceLabel = (source) => t(`binaural.hrtfSource.${HRTF_SOURCE_I18N[source] ?? source}`);
 
 // Guard against re-binding listeners if the panel is initialised twice.
 let bound = false;
@@ -235,6 +243,17 @@ export function initBinauralPanel() {
     });
   }
 
+  const wallCutoff = el('binauralReflWallCutoff');
+  if (wallCutoff) {
+    wallCutoff.addEventListener('input', (e) => {
+      if (applying) return;
+      const khz = Number(e.target.value);
+      const out = el('binauralReflWallCutoffVal');
+      if (out) out.textContent = khz.toFixed(1);
+      send('control_binaural_reflections_wall_cutoff', { value: khz * 1000 });
+    });
+  }
+
   const updateRoomReadout = () => {
     const out = el('binauralReflRoomVal');
     if (!out) return;
@@ -288,6 +307,41 @@ export function initBinauralPanel() {
     });
   }
 
+  const revSize = el('binauralRevSize');
+  if (revSize) {
+    revSize.addEventListener('input', (e) => {
+      if (applying) return;
+      const v = Number(e.target.value);
+      const out = el('binauralRevSizeVal');
+      if (out) out.textContent = v.toFixed(2);
+      send('control_binaural_reverb_size', { value: v });
+    });
+  }
+
+  // The band decay ratios ride log2 sliders (−2…+2 → ×0.25…×4) so ×0.5 and
+  // ×2 sit symmetrically about the flat ×1.
+  const ratioSlider = (id, valId, command) => {
+    const slider = el(id);
+    if (!slider) return;
+    slider.addEventListener('input', (e) => {
+      if (applying) return;
+      const ratio = Math.pow(2, Number(e.target.value));
+      const out = el(valId);
+      if (out) out.textContent = ratio.toFixed(2);
+      send(command, { value: ratio });
+    });
+  };
+  ratioSlider('binauralRevLowRatio', 'binauralRevLowRatioVal', 'control_binaural_reverb_rt60_low_ratio');
+  ratioSlider('binauralRevHighRatio', 'binauralRevHighRatioVal', 'control_binaural_reverb_rt60_high_ratio');
+
+  const dfEq = el('binauralDiffuseFieldEq');
+  if (dfEq) {
+    dfEq.addEventListener('change', (e) => {
+      if (applying) return;
+      send('control_binaural_diffuse_field_eq', { enable: e.target.checked ? 1 : 0 });
+    });
+  }
+
   const airAbs = el('binauralAirAbsorption');
   if (airAbs) {
     airAbs.addEventListener('change', (e) => {
@@ -299,6 +353,16 @@ export function initBinauralPanel() {
   const recenter = el('binauralRecenter');
   if (recenter) {
     recenter.addEventListener('click', () => send('control_head_recenter', {}));
+  }
+
+  // Three-pose axis calibration: one button, the renderer's reported step
+  // says which pose comes next (0: look ahead, 1: turn left, 2: look up).
+  const calibrate = el('binauralCalibrate');
+  if (calibrate) {
+    calibrate.addEventListener('click', () => {
+      const step = ['front', 'left', 'up'][calibrationStep] ?? 'front';
+      send('control_head_calibrate', { step });
+    });
   }
 
   const addr = el('binauralTrackAddress');
@@ -394,12 +458,21 @@ export function applyBinauralState(b) {
       if (pinnaBox) pinnaBox.style.display = b.hrirSource === 'pinna' ? 'grid' : 'none';
       const prtfBox = el('binauralPrtfControls');
       if (prtfBox) prtfBox.style.display = b.hrirSource === 'prtf' ? 'grid' : 'none';
-      // Info line under the source zone: chosen file name, or the
-      // KEMAR-fallback notice while no file is selected yet.
+      // Info line under the source zone. First, the set actually in use when
+      // it is not the one selected: a SOFA file that failed to load falls
+      // back to KEMAR, and the renderer says so through `hrirEffective` /
+      // `hrirError` — without this line the panel claimed the file was
+      // playing. Otherwise the chosen file name, or the no-file notice.
       setActiveSofaPath(typeof b.hrtfSofaPath === 'string' ? b.hrtfSofaPath : '');
       const info = el('binauralSofaInfo');
       if (info) {
-        if (b.hrirSource !== 'sofa') {
+        const effective = typeof b.hrirEffective === 'string' ? b.hrirEffective : b.hrirSource;
+        if (effective !== b.hrirSource) {
+          info.style.display = '';
+          info.textContent = tf('binaural.hrtfFallback', { effective: hrtfSourceLabel(effective) });
+          info.title = typeof b.hrirError === 'string' ? b.hrirError : '';
+          info.style.color = '#e8c46a';
+        } else if (b.hrirSource !== 'sofa') {
           info.style.display = 'none';
         } else {
           const path = typeof b.hrtfSofaPath === 'string' ? b.hrtfSofaPath : '';
@@ -439,6 +512,12 @@ export function applyBinauralState(b) {
         const out = el('binauralReflLevelVal');
         if (out) out.textContent = Number(refl.level).toFixed(2);
       }
+      if (typeof refl.wallCutoffHz === 'number') {
+        const khz = refl.wallCutoffHz / 1000;
+        setVal('binauralReflWallCutoff', khz);
+        const out = el('binauralReflWallCutoffVal');
+        if (out) out.textContent = khz.toFixed(1);
+      }
       if (Array.isArray(refl.roomM) && refl.roomM.length === 3) {
         setVal('binauralReflRoomW', refl.roomM[0]);
         setVal('binauralReflRoomD', refl.roomM[1]);
@@ -464,9 +543,24 @@ export function applyBinauralState(b) {
         const out = el('binauralRevRt60Val');
         if (out) out.textContent = Number(rev.rt60S).toFixed(2);
       }
+      if (typeof rev.size === 'number') {
+        setVal('binauralRevSize', rev.size);
+        const out = el('binauralRevSizeVal');
+        if (out) out.textContent = Number(rev.size).toFixed(2);
+      }
+      const applyRatio = (ratio, id, valId) => {
+        if (typeof ratio !== 'number' || !(ratio > 0)) return;
+        setVal(id, Math.log2(ratio));
+        const out = el(valId);
+        if (out) out.textContent = Number(ratio).toFixed(2);
+      };
+      applyRatio(rev.rt60LowRatio, 'binauralRevLowRatio', 'binauralRevLowRatioVal');
+      applyRatio(rev.rt60HighRatio, 'binauralRevHighRatio', 'binauralRevHighRatioVal');
     }
     const air = el('binauralAirAbsorption');
     if (air && typeof b.airAbsorption === 'boolean') air.checked = b.airAbsorption;
+    const eq = el('binauralDiffuseFieldEq');
+    if (eq && typeof b.diffuseFieldEq === 'boolean') eq.checked = b.diffuseFieldEq;
 
     // The renderer's enabled state drives the param blocks' visibility.
     syncBinauralParamVisibility();
@@ -481,6 +575,22 @@ export function applyBinauralState(b) {
     }
     const inv = el('binauralTrackInvert');
     if (inv && typeof t.invert === 'boolean') inv.checked = t.invert;
+    if (typeof t.calibrationStep === 'number') calibrationStep = t.calibrationStep;
+    const prompt = el('binauralCalibratePrompt');
+    if (prompt) {
+      const key =
+        calibrationStep === 1
+          ? 'binaural.calibratePromptLeft'
+          : calibrationStep === 2
+            ? 'binaural.calibratePromptUp'
+            : t.axesCalibrated === true
+              ? 'binaural.calibrateDone'
+              : null;
+      prompt.style.display = key ? '' : 'none';
+      // `t` is the tracking object here; `tf` is the i18n lookup.
+      prompt.textContent = key ? tf(key) : '';
+      prompt.style.color = calibrationStep ? '#e8c46a' : '#8fa6bd';
+    }
 
     // Head-pose readout as yaw/pitch/roll degrees, derived from the quaternion.
     const pose = b.headPose;

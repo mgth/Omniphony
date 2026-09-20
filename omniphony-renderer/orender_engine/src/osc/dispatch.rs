@@ -20,7 +20,7 @@ use runtime_control::osc::{
 use runtime_control::osc_contract;
 
 use super::client_registry::OscClientRegistry;
-use super::export::{build_live_state_bundle, export_current_layout, save_live_config};
+use super::export::{build_live_state, export_current_layout, save_live_config};
 use super::gaintable::GaintableCache;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
@@ -86,13 +86,13 @@ pub(crate) fn handle_control_message(
             return;
         };
         if let Some(raw) = raw_option_value(msg.args.get(1)) {
-            apply_live_option(control, spec, &raw, socket, clients);
+            apply_live_option(control, spec, &raw, socket, clients, host);
         }
         return;
     }
     if let Some(spec) = renderer::options::find_by_legacy_addr(addr) {
         if let Some(raw) = raw_option_value(msg.args.first()) {
-            apply_live_option(control, spec, &raw, socket, clients);
+            apply_live_option(control, spec, &raw, socket, clients, host);
         }
         return;
     }
@@ -147,29 +147,89 @@ pub(crate) fn handle_control_message(
         return;
     }
 
-    // Parametrable virtual bed for channel content. Argument is a YAML
-    // `SpeakerLayout`; an empty string resets to the built-in canonical poses.
-    // Live-tunable from Studio's editor; persists to config on save.
-    if addr == osc_contract::CONTROL_VIRTUAL_BED {
-        if let Some(OscType::String(s)) = msg.args.first() {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                control.live.write().virtual_bed = None;
-                control.mark_dirty();
-                broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
-                control.bump_live_state();
-                log::info!("OSC virtual bed reset to defaults");
-            } else {
-                match renderer::speaker_layout::SpeakerLayout::from_yaml_str(trimmed) {
-                    Ok(layout) => {
-                        control.live.write().virtual_bed = Some(layout);
-                        control.mark_dirty();
-                        broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
-                        control.bump_live_state();
-                        log::info!("OSC virtual bed updated");
-                    }
-                    Err(e) => log::warn!("OSC virtual bed: failed to parse layout: {}", e),
+    // Per-family placement of fixed channels (`renderer::placement`): the
+    // mode a family is placed with, and the family's own entries. Both
+    // live-tunable from Studio's editor; both persist to config on save.
+    // The legacy `virtual_bed` address is the generic family's entries.
+    if addr == osc_contract::CONTROL_PLACEMENT_MODE {
+        use renderer::placement::{PlacementMode, SourceFamily};
+        let (Some(OscType::String(family)), Some(OscType::String(mode))) =
+            (msg.args.first(), msg.args.get(1))
+        else {
+            return;
+        };
+        let Some(family) = SourceFamily::parse(family) else {
+            log::warn!("OSC placement mode: unknown family '{}'", family);
+            return;
+        };
+        let mode = if mode.trim().eq_ignore_ascii_case("inherit") {
+            None
+        } else {
+            match PlacementMode::parse(mode) {
+                Some(mode) => Some(mode),
+                None => {
+                    log::warn!("OSC placement mode: unknown mode '{}'", mode);
+                    return;
                 }
+            }
+        };
+        control.live.write().placement.family_mut(family).mode = mode;
+        control.mark_dirty();
+        control.bump_options_epoch();
+        broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
+        control.bump_live_state();
+        log::info!(
+            "OSC placement mode: {} → {}",
+            family.as_str(),
+            mode.map_or("inherit", |m| m.as_str())
+        );
+        return;
+    }
+    let placement_layout_family = if addr == osc_contract::CONTROL_PLACEMENT_LAYOUT {
+        match msg.args.first() {
+            Some(OscType::String(family)) => {
+                match renderer::placement::SourceFamily::parse(family) {
+                    Some(family) => Some((family, msg.args.get(1))),
+                    None => {
+                        log::warn!("OSC placement layout: unknown family '{}'", family);
+                        return;
+                    }
+                }
+            }
+            _ => return,
+        }
+    } else if addr == osc_contract::CONTROL_VIRTUAL_BED {
+        Some((renderer::placement::SourceFamily::Generic, msg.args.first()))
+    } else {
+        None
+    };
+    if let Some((family, arg)) = placement_layout_family {
+        if let Some(OscType::String(s)) = arg {
+            let trimmed = s.trim();
+            let layout = if trimmed.is_empty() {
+                None
+            } else {
+                match renderer::speaker_layout::SpeakerLayout::entries_from_yaml_str(trimmed) {
+                    Ok(layout) => Some(layout),
+                    Err(e) => {
+                        log::warn!("OSC placement layout: failed to parse entries: {}", e);
+                        return;
+                    }
+                }
+            };
+            let cleared = layout.is_none();
+            control.live.write().placement.family_mut(family).layout = layout;
+            control.mark_dirty();
+            // The fixed-prefix planner caches on the options epoch among
+            // other things; without the bump an object stream could keep the
+            // old plan until the next track switch.
+            control.bump_options_epoch();
+            broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
+            control.bump_live_state();
+            if cleared {
+                log::info!("OSC placement layout: {} cleared", family.as_str());
+            } else {
+                log::info!("OSC placement layout: {} updated", family.as_str());
             }
         }
         return;
@@ -388,8 +448,7 @@ pub(crate) fn handle_control_message(
     }
 
     if addr == osc_contract::CONTROL_INPUT_REFRESH {
-        let state_bytes = build_live_state_bundle(control, host);
-        super::transport::send_raw(socket, clients, &state_bytes);
+        build_live_state(control, host).broadcast(socket, clients);
         log::info!("OSC: input state refresh requested");
         return;
     }
@@ -667,12 +726,19 @@ fn raw_option_value(arg: Option<&OscType>) -> Option<renderer::options::RawOptio
 /// `options::apply_to_control` (which marks dirty and bumps the replan epoch
 /// on a real change), then commit to config.yaml (`PERSIST`) and notify
 /// clients. Invalid values are dropped with a warning, per the OSC contract.
+///
+/// The live-state bundle goes out with the acknowledgement, exactly as
+/// `apply_control_effects` does for a dirty-marking dedicated handler. Without
+/// it a client that did not send the message never learns the value moved, and
+/// the one that did never learns what the setter made of it — an option clamped
+/// on arrival would keep displaying the number the user typed.
 fn apply_live_option(
     control: &Arc<RendererControl>,
     spec: &'static renderer::options::OptionSpec,
     raw: &renderer::options::RawOptionValue,
     socket: &Arc<UdpSocket>,
     clients: &Arc<OscClientRegistry>,
+    host: Option<&Arc<dyn HostControlHandler>>,
 ) {
     let Some(canonical) = renderer::options::apply_to_control(control, spec, raw) else {
         log::warn!("OSC option {}: rejected value", spec.key);
@@ -687,6 +753,7 @@ fn apply_live_option(
         }
     }
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
+    build_live_state(control, host).broadcast(socket, clients);
     log::info!("OSC option {} set to '{}'", spec.key, canonical);
 }
 
@@ -735,6 +802,24 @@ fn persist_head_center_to_path(path: &Path, reference_quat: [f32; 4]) {
     });
 }
 
+/// Persist the sensor-to-head axis calibration next to the recenter
+/// reference, with the same targeted write.
+fn persist_head_axes(control: &Arc<RendererControl>, axes_quat: [f32; 4]) {
+    let Some(path) = control.config_path() else {
+        return;
+    };
+    persist_head_axes_to_path(&path, axes_quat);
+}
+
+fn persist_head_axes_to_path(path: &Path, axes_quat: [f32; 4]) {
+    persist_render_field_to_path(path, "head axes", |render| {
+        let bin = render.binaural.get_or_insert_with(Default::default);
+        let ht = bin.head_tracking.get_or_insert_with(Default::default);
+        let identity = renderer::binaural::HeadPose::identity().to_quat_array();
+        ht.axes_quat = (axes_quat != identity).then_some(axes_quat);
+    });
+}
+
 fn apply_control_effects(
     effects: ControlEffects,
     control: &Arc<RendererControl>,
@@ -745,11 +830,13 @@ fn apply_control_effects(
 ) {
     if effects.mark_dirty {
         set_dirty(control, socket, clients);
-        let state_bytes = build_live_state_bundle(control, host);
-        super::transport::send_raw(socket, clients, &state_bytes);
+        build_live_state(control, host).broadcast(socket, clients);
     }
     if let Some(reference_quat) = effects.persist_head_center {
         persist_head_center(control, reference_quat);
+    }
+    if let Some(axes_quat) = effects.persist_head_axes {
+        persist_head_axes(control, axes_quat);
     }
     for update in effects.broadcasts {
         match update.value {
@@ -798,11 +885,24 @@ fn backend_file_config_dir(control: &RendererControl) -> Option<PathBuf> {
         .and_then(|path| path.parent().map(|dir| dir.to_path_buf()))
 }
 
+/// Optional opaque request tag. Older clients omit it; malformed tags never
+/// grow a reply unboundedly and are treated as absent.
+fn backend_file_request_id(msg: &OscMessage, index: usize) -> Option<String> {
+    str_arg(msg, index).filter(|id| !id.is_empty() && id.len() <= 64)
+}
+fn backend_file_reply(mut args: Vec<OscType>, request_id: Option<&str>) -> Vec<OscType> {
+    if let Some(id) = request_id {
+        args.push(OscType::String(id.to_owned()));
+    }
+    args
+}
+
 fn send_backend_file_error(
     socket: &UdpSocket,
     src: SocketAddr,
     backend_id: &str,
     key: &str,
+    request_id: Option<&str>,
     message: impl Into<String>,
 ) {
     let message = message.into();
@@ -811,11 +911,14 @@ fn send_backend_file_error(
         socket,
         src,
         osc_contract::STATE_BACKEND_FILE_ERROR,
-        vec![
-            OscType::String(backend_id.to_string()),
-            OscType::String(key.to_string()),
-            OscType::String(message),
-        ],
+        backend_file_reply(
+            vec![
+                OscType::String(backend_id.to_string()),
+                OscType::String(key.to_string()),
+                OscType::String(message),
+            ],
+            request_id,
+        ),
     );
 }
 
@@ -833,6 +936,8 @@ fn handle_backend_file_get(
     let (Some(backend_id), Some(key)) = (str_arg(msg, 0), str_arg(msg, 1)) else {
         return;
     };
+    let request_id = backend_file_request_id(msg, 3);
+    let request_id = request_id.as_deref();
     let handle = match str_arg(msg, 2) {
         Some(name) if !name.trim().is_empty() => name,
         _ => control
@@ -846,7 +951,14 @@ fn handle_backend_file_get(
     let Some(path) =
         backend_files::resolve(config_dir.as_deref(), &backend_id, &handle, allow_absolute)
     else {
-        send_backend_file_error(socket, src, &backend_id, &key, "no file selected");
+        send_backend_file_error(
+            socket,
+            src,
+            &backend_id,
+            &key,
+            request_id,
+            "no file selected",
+        );
         return;
     };
     match std::fs::read_to_string(&path) {
@@ -854,16 +966,24 @@ fn handle_backend_file_get(
             socket,
             src,
             osc_contract::STATE_BACKEND_FILE_CONTENT,
-            vec![
-                OscType::String(backend_id),
-                OscType::String(key),
-                OscType::String(handle),
-                OscType::String(content),
-            ],
+            backend_file_reply(
+                vec![
+                    OscType::String(backend_id),
+                    OscType::String(key),
+                    OscType::String(handle),
+                    OscType::String(content),
+                ],
+                request_id,
+            ),
         ),
-        Err(e) => {
-            send_backend_file_error(socket, src, &backend_id, &key, format!("read failed: {e}"))
-        }
+        Err(e) => send_backend_file_error(
+            socket,
+            src,
+            &backend_id,
+            &key,
+            request_id,
+            format!("read failed: {e}"),
+        ),
     }
 }
 
@@ -908,6 +1028,8 @@ fn handle_backend_file_put(
     else {
         return;
     };
+    let request_id = backend_file_request_id(msg, 4);
+    let request_id = request_id.as_deref();
     let content = str_arg(msg, 3).unwrap_or_default();
     if content.len() > BACKEND_FILE_MAX_BYTES {
         send_backend_file_error(
@@ -915,6 +1037,7 @@ fn handle_backend_file_put(
             src,
             &backend_id,
             &key,
+            request_id,
             format!(
                 "file too large ({} bytes, max {BACKEND_FILE_MAX_BYTES})",
                 content.len()
@@ -927,7 +1050,14 @@ fn handle_backend_file_put(
     let Some(path) =
         backend_files::resolve(config_dir.as_deref(), &backend_id, &name, allow_absolute)
     else {
-        send_backend_file_error(socket, src, &backend_id, &key, "invalid file name");
+        send_backend_file_error(
+            socket,
+            src,
+            &backend_id,
+            &key,
+            request_id,
+            "invalid file name",
+        );
         return;
     };
     // The handle we persist must resolve back to `path` at build time (which
@@ -939,7 +1069,14 @@ fn handle_backend_file_put(
         match backend_files::sanitize_name(&name) {
             Some(basename) => basename,
             None => {
-                send_backend_file_error(socket, src, &backend_id, &key, "invalid file name");
+                send_backend_file_error(
+                    socket,
+                    src,
+                    &backend_id,
+                    &key,
+                    request_id,
+                    "invalid file name",
+                );
                 return;
             }
         }
@@ -951,13 +1088,21 @@ fn handle_backend_file_put(
                 src,
                 &backend_id,
                 &key,
+                request_id,
                 format!("cannot create store dir: {e}"),
             );
             return;
         }
     }
     if let Err(e) = std::fs::write(&path, content.as_bytes()) {
-        send_backend_file_error(socket, src, &backend_id, &key, format!("write failed: {e}"));
+        send_backend_file_error(
+            socket,
+            src,
+            &backend_id,
+            &key,
+            request_id,
+            format!("write failed: {e}"),
+        );
         return;
     }
     control.set_backend_param(&backend_id, &key, ParamValue::Text(stored_handle.clone()));
@@ -966,12 +1111,15 @@ fn handle_backend_file_put(
         socket,
         src,
         osc_contract::STATE_BACKEND_FILE_CONTENT,
-        vec![
-            OscType::String(backend_id.clone()),
-            OscType::String(key.clone()),
-            OscType::String(stored_handle),
-            OscType::String(content),
-        ],
+        backend_file_reply(
+            vec![
+                OscType::String(backend_id.clone()),
+                OscType::String(key.clone()),
+                OscType::String(stored_handle),
+                OscType::String(content),
+            ],
+            request_id,
+        ),
     );
     // Republish state and rebuild the backend with the new content; a bad script
     // surfaces via the recompute-error path like any other build failure.
@@ -1241,5 +1389,62 @@ mod tests {
         assert_eq!(placement, SurroundPlacement::Side);
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod backend_file_request_tests {
+    use super::*;
+    #[test]
+    fn request_ids_are_optional_bounded_and_echoed_on_error() {
+        let msg = OscMessage {
+            addr: String::new(),
+            args: vec![OscType::String("id-a".into())],
+        };
+        assert_eq!(backend_file_request_id(&msg, 0).as_deref(), Some("id-a"));
+        assert!(backend_file_request_id(&msg, 1).is_none());
+        let too_long = OscMessage {
+            addr: String::new(),
+            args: vec![OscType::String("x".repeat(65))],
+        };
+        assert!(backend_file_request_id(&too_long, 0).is_none());
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        for id in [None, Some("id-a")] {
+            send_backend_file_error(
+                &socket,
+                receiver.local_addr().unwrap(),
+                "script",
+                "file",
+                id,
+                "test failure",
+            );
+            let mut bytes = [0; 1024];
+            let count = receiver.recv(&mut bytes).unwrap();
+            let (_, rosc::OscPacket::Message(reply)) =
+                rosc::decoder::decode_udp(&bytes[..count]).unwrap()
+            else {
+                panic!("expected message");
+            };
+            assert_eq!(reply.addr, osc_contract::STATE_BACKEND_FILE_ERROR);
+            assert_eq!(reply.args.len(), if id.is_some() { 4 } else { 3 });
+            if let Some(id) = id {
+                assert_eq!(reply.args[3], OscType::String(id.into()));
+            }
+        }
+        let content = vec![
+            OscType::String("script".into()),
+            OscType::String("file".into()),
+            OscType::String("file.lua".into()),
+            OscType::String("return 1".into()),
+        ];
+        assert_eq!(backend_file_reply(content.clone(), None), content);
+        assert_eq!(
+            backend_file_reply(content, Some("id-b"))[4],
+            OscType::String("id-b".into())
+        );
     }
 }

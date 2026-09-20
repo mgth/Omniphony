@@ -19,7 +19,6 @@ import {
   speakerGainCache,
   speakerDelays,
   layoutsByKey,
-  usesNumericSpatialPlaceholders
 } from './state.js';
 
 import { setObjectTestReportedPosition, setObjectTestClipState } from './controls/object-test.js';
@@ -256,23 +255,16 @@ export function setupTauriBridge() {
       }
     }
 
-    if (usesNumericSpatialPlaceholders()) {
-      // Ensure IDs [0..objectCount-1] exist for renderer snapshots that use numeric IDs.
-      for (let i = 0; i < objectCount; i += 1) {
-        const id = String(i);
-        if (!sourceMeshes.has(id)) {
-          updateSource(id, { x: 0, y: 0, z: 0, name: `Object_${i}`, _noTrail: true });
-        }
-      }
-
-      // Safety purge in case stale objects remain locally.
-      for (const id of Array.from(sourceMeshes.keys())) {
-        const idx = Number(id);
-        if (Number.isInteger(idx) && idx >= objectCount) {
-          removeSource(id);
-        }
-      }
-    }
+    // Objects are no longer synthesised from `objectCount` and purged by
+    // comparing indices against it. The renderer says which slots exist: a
+    // position update creates one, `/omniphony/object/{id}/remove` drops it
+    // (handled by `source:remove` above). Inferring it from the count is what
+    // left ghosts after a seek — the count can stay the same while the objects
+    // behind it change, so no index ever crossed the purge threshold.
+    //
+    // A client that registers gets a full object snapshot (`force_full_next`
+    // in the engine's OSC listener), so nothing depends on having watched the
+    // stream from the start.
 
     // The stream is now active again → drop any synthetic at-rest bed markers so
     // they don't coexist with the live objects.
@@ -329,6 +321,11 @@ export function setupTauriBridge() {
     }
     const next = Number(payload.spatialize) === 0 ? 0 : 1;
     setSpeakerSpatializeLocal(index, next);
+    // Spatialize gates whether this speaker's cutoffs are band edges at all.
+    if (Array.isArray(payload.crossoverCutoffs)) {
+      app.currentLayoutCutoffs = payload.crossoverCutoffs;
+      syncCrossoverBandSelects();
+    }
     updateSpeakerControlsUI();
   });
 
@@ -353,6 +350,9 @@ export function setupTauriBridge() {
     if (!speaker) return;
     const fl = payload.freq_low;
     speaker.freqLow = fl != null && fl > 0 ? fl : null;
+    if (Array.isArray(payload.crossoverCutoffs)) {
+      app.currentLayoutCutoffs = payload.crossoverCutoffs;
+    }
     syncCrossoverBandSelects();
     if (app.selectedSpeakerIndex === index) renderSpeakerEditor();
   });
@@ -364,6 +364,9 @@ export function setupTauriBridge() {
     if (!speaker) return;
     const fh = payload.freq_high;
     speaker.freqHigh = fh != null && fh > 0 ? fh : null;
+    if (Array.isArray(payload.crossoverCutoffs)) {
+      app.currentLayoutCutoffs = payload.crossoverCutoffs;
+    }
     syncCrossoverBandSelects();
     if (app.selectedSpeakerIndex === index) renderSpeakerEditor();
   });
@@ -414,11 +417,8 @@ export function setupTauriBridge() {
     if (oscMeteringToggleEl) oscMeteringToggleEl.checked = app.oscMeteringEnabled;
     if (!app.oscMeteringEnabled) {
       app.decodeTimeMs = null;
-      app.decodeTimeWindow = [];
       app.renderTimeMs = null;
-      app.renderTimeWindow = [];
       app.writeTimeMs = null;
-      app.writeTimeWindow = [];
     }
     updateRenderTimeUI();
   });
@@ -572,7 +572,6 @@ export function setupTauriBridge() {
       setDecodeTimeMs(value);
     } else {
       app.decodeTimeMs = null;
-      app.decodeTimeWindow = [];
     }
     updateRenderTimeUI();
   });
@@ -583,7 +582,6 @@ export function setupTauriBridge() {
       setRenderTimeMs(value);
     } else {
       app.renderTimeMs = null;
-      app.renderTimeWindow = [];
     }
     updateRenderTimeUI();
   });
@@ -594,7 +592,6 @@ export function setupTauriBridge() {
       setCrossoverTimeMs(value);
     } else {
       app.crossoverTimeMs = null;
-      app.crossoverTimeWindow = [];
     }
     updateRenderTimeUI();
   });
@@ -605,8 +602,17 @@ export function setupTauriBridge() {
       setWriteTimeMs(value);
     } else {
       app.writeTimeMs = null;
-      app.writeTimeWindow = [];
     }
+    updateRenderTimeUI();
+  });
+
+  // Sliding-window aggregates for the latency and renderer-performance gauges,
+  // computed in the backend (`timing_stats.rs`) and delivered at 4 Hz. The
+  // per-message events above still carry the instantaneous values the readouts
+  // show; only the windowing moved.
+  listen('latency:stats', ({ payload }) => {
+    app.timingStats = payload ?? null;
+    updateLatencyMeterUI();
     updateRenderTimeUI();
   });
 

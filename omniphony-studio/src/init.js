@@ -48,7 +48,7 @@ import {
   renderVbapStatus
 } from './controls/vbap.js';
 import { updateAudioFormatDisplay, updateOutputChannelMappingUI } from './controls/audio.js';
-import { materializeDefaultVirtualBed } from './controls/virtual-bed.js';
+import { followPlayingFamily } from './controls/virtual-bed.js';
 import { updateInputControlUI } from './controls/input.js';
 import { updateAdaptiveResamplingUI } from './controls/adaptive.js';
 import { syncMeterRateFromRenderer } from './controls/osc.js';
@@ -167,19 +167,14 @@ export function applyInitState(payload) {
   }
   updateVbapCartesian();
   if (payload.renderBackendState && typeof payload.renderBackendState === 'object') {
-    // Accept any backend id the engine reports (built-in or contributor-
-    // registered); the engine already validated it against its registry.
+    // Ids, evaluation modes, the hybrid inner backends, its curve, smoothing
+    // and metric all arrive validated: `RenderBackendState::sanitize` runs in
+    // the backend before the state is stored, so this is hydration only.
     if (typeof payload.renderBackendState.selection === 'string') {
-      const selection = payload.renderBackendState.selection.trim().toLowerCase();
-      if (selection) {
-        app.renderBackendState.selection = selection;
-      }
+      app.renderBackendState.selection = payload.renderBackendState.selection;
     }
     if (typeof payload.renderBackendState.effective === 'string') {
-      const effective = payload.renderBackendState.effective.trim().toLowerCase();
-      if (effective) {
-        app.renderBackendState.effective = effective;
-      }
+      app.renderBackendState.effective = payload.renderBackendState.effective;
     }
     app.renderBackendState.effectiveLabel = typeof payload.renderBackendState.effectiveLabel === 'string'
       ? payload.renderBackendState.effectiveLabel
@@ -189,8 +184,6 @@ export function applyInitState(payload) {
       : null;
     app.renderBackendState.allowedEvaluationModes = Array.isArray(payload.renderBackendState.allowedEvaluationModes)
       ? payload.renderBackendState.allowedEvaluationModes
-        .map((value) => String(value ?? '').trim().toLowerCase())
-        .filter((value) => value.length > 0)
       : [];
     app.renderBackendState.frozenRoomRatio = payload.renderBackendState.frozenRoomRatio === true;
     app.renderBackendState.frozenSpeakers = payload.renderBackendState.frozenSpeakers === true;
@@ -207,42 +200,14 @@ export function applyInitState(payload) {
       : {};
     const hybrid = payload.renderBackendState.hybrid;
     if (hybrid && typeof hybrid === 'object') {
-      // Any registered backend can be a hybrid inner model, except a nested
-      // hybrid. The dropdown is populated from `availableBackends`; accept an id
-      // present in that list (or any non-hybrid id if the list isn't published).
-      const available = app.renderBackendState.availableBackends;
-      const validInner = (id) =>
-        typeof id === 'string'
-        && id.length > 0
-        && id !== 'hybrid'
-        && (!Array.isArray(available)
-          || available.length === 0
-          || available.some((b) => String(b.id) === id));
-      const external = typeof hybrid.externalBackend === 'string'
-        ? hybrid.externalBackend.trim().toLowerCase()
-        : null;
-      const internal = typeof hybrid.internalBackend === 'string'
-        ? hybrid.internalBackend.trim().toLowerCase()
-        : null;
-      app.renderBackendState.hybrid.externalBackend = validInner(external) ? external : null;
-      app.renderBackendState.hybrid.internalBackend = validInner(internal) ? internal : null;
-      app.renderBackendState.hybrid.curve = Array.isArray(hybrid.curve)
-        ? hybrid.curve
-          .filter((point) => Array.isArray(point) && point.length === 2
-            && Number.isFinite(point[0]) && Number.isFinite(point[1]))
-          .map((point) => [
-            Math.min(1, Math.max(0, point[0])),
-            Math.min(1, Math.max(0, point[1]))
-          ])
-        : null;
+      app.renderBackendState.hybrid.externalBackend = hybrid.externalBackend ?? null;
+      app.renderBackendState.hybrid.internalBackend = hybrid.internalBackend ?? null;
+      app.renderBackendState.hybrid.curve = Array.isArray(hybrid.curve) ? hybrid.curve : null;
       if (typeof hybrid.metric === 'string') {
-        const metric = hybrid.metric.trim().toLowerCase();
-        if (['spherical', 'chebyshev'].includes(metric)) {
-          app.renderBackendState.hybrid.metric = metric;
-        }
+        app.renderBackendState.hybrid.metric = hybrid.metric;
       }
       if (Number.isFinite(hybrid.curveSmoothing)) {
-        app.renderBackendState.hybrid.curveSmoothing = Math.min(1, Math.max(0, hybrid.curveSmoothing));
+        app.renderBackendState.hybrid.curveSmoothing = hybrid.curveSmoothing;
       }
     }
   }
@@ -540,22 +505,17 @@ export function applyInitState(payload) {
     updateAudioFormatDisplay();
   }
   if (Object.prototype.hasOwnProperty.call(payload, 'virtualBed')) {
-    // null = renderer is on the built-in canonical poses; an object is the
-    // configured/live bed. The editor seeds defaults when this is null.
+    // Legacy mirror of the generic family's entries (null = none); a renderer
+    // from before `placement` reports only this.
     app.virtualBed =
       payload.virtualBed && typeof payload.virtualBed === 'object' ? payload.virtualBed : null;
-    // First authoritative snapshot reporting no saved bed:
-    // materialise the canonical cartesian bed so the editor's values persist to
-    // config.yaml (like `current_layout`) and are used in priority, instead of
-    // relying on a built-in default. One-shot; once a bed exists this is skipped.
-    if (
-      !app.virtualBed &&
-      !app.virtualBedMaterialized
-    ) {
-      app.virtualBedMaterialized = true;
-      materializeDefaultVirtualBed();
-    }
   }
+  if (Object.prototype.hasOwnProperty.call(payload, 'placement')) {
+    app.placement =
+      payload.placement && typeof payload.placement === 'object' ? payload.placement : null;
+  }
+  // A new stream's family becomes the one being edited, once.
+  followPlayingFamily();
   if (typeof payload.audioOutputDevice === 'string') {
     app.audioOutputDevice = payload.audioOutputDevice.trim() || null;
   }
@@ -576,21 +536,19 @@ export function applyInitState(payload) {
   if (typeof payload.audioError === 'string') {
     app.audioError = payload.audioError.trim() || null;
   }
+  // The protocol's historical aliases (`bridge` for `pipe_bridge`;
+  // `pipewire_bridge`, the sink's former name, and `live`, the removed
+  // PCM-only mode, for `pipewire`) are resolved by `normalize_input_mode` in
+  // the backend, on the way in as well as the way out. An unrecognised mode
+  // never reaches the snapshot, so there is nothing to test for here.
   if (typeof payload.inputMode === 'string') {
-    const value = payload.inputMode.trim().toLowerCase();
-    if (value === 'bridge' || value === 'pipe_bridge' || value === 'live' || value === 'pipewire' || value === 'pipewire_bridge') {
-      const normalized = value === 'bridge' ? 'pipe_bridge' : (value === 'live' ? 'pipewire' : value);
-      if (!app.inputModeDirty || normalized === app.inputMode) {
-        app.inputMode = normalized;
-        app.inputModeDirty = false;
-      }
+    if (!app.inputModeDirty || payload.inputMode === app.inputMode) {
+      app.inputMode = payload.inputMode;
+      app.inputModeDirty = false;
     }
   }
   if (typeof payload.inputActiveMode === 'string') {
-    const value = payload.inputActiveMode.trim().toLowerCase();
-    if (value === 'bridge' || value === 'pipe_bridge' || value === 'live' || value === 'pipewire' || value === 'pipewire_bridge') {
-      app.inputActiveMode = value === 'bridge' ? 'pipe_bridge' : (value === 'live' ? 'pipewire' : value);
-    }
+    app.inputActiveMode = payload.inputActiveMode;
   }
   if (typeof payload.inputApplyPending === 'number') {
     const pending = payload.inputApplyPending !== 0;
@@ -688,9 +646,6 @@ export function applyInitState(payload) {
     if (typeof payload.liveInput.sampleRate === 'number' && payload.liveInput.sampleRate > 0) {
       app.liveInput.sampleRate = payload.liveInput.sampleRate;
     }
-    if (typeof payload.liveInput.format === 'string') {
-      app.liveInput.format = payload.liveInput.format.trim().toLowerCase() || app.liveInput.format;
-    }
     if (typeof payload.liveInput.map === 'string') {
       app.liveInput.map = payload.liveInput.map.trim().toLowerCase() || app.liveInput.map;
     }
@@ -725,13 +680,15 @@ export function applyInitState(payload) {
   updateOutputChannelMappingUI();
   updateInputControlUI();
   renderDrcUI();
-  // Auto-surface the Audio Input section on a bridge-class error, but only on
-  // the error's rising edge: this runs on EVERY state snapshot, and while the
-  // error persists it would otherwise reopen the panel each time the user
-  // closes it (re-armed per connection in setOscStatus).
+  // Auto-surface the Audio Input section on a bridge-class error or on a
+  // duplicate live-input sink (another renderer already publishing the node
+  // name), but only on the error's rising edge: this runs on EVERY state
+  // snapshot, and while the error persists it would otherwise reopen the
+  // panel each time the user closes it (re-armed per connection in
+  // setOscStatus).
   if (
     app.inputError
-    && /bridge path missing|no bridge plugin found|render\.bridge_path/i.test(app.inputError)
+    && /bridge path missing|no bridge plugin found|render\.bridge_path|duplicate PipeWire sink/i.test(app.inputError)
   ) {
     if (app.lastAutoOpenedInputError !== app.inputError) {
       app.lastAutoOpenedInputError = app.inputError;

@@ -6,7 +6,13 @@ pub mod command;
 pub mod context;
 pub mod host_control;
 pub mod osc;
-pub mod osc_contract;
+/// The OSC address contract, shared with the Studio.
+///
+/// Re-exported under its old name so the engine's call sites keep reading
+/// `osc_contract::CONTROL_…`; the crate lives outside this workspace because
+/// the other end of the wire needs it too, and must not drag the engine in to
+/// get it.
+pub use omniphony_osc_contract as osc_contract;
 pub mod persist;
 pub mod snapshot;
 

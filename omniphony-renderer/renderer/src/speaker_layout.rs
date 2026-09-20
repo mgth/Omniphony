@@ -36,33 +36,12 @@
 //! ```
 
 use anyhow::{Context, Result};
+use omniphony_geometry::f32 as geometry;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-
-fn map_depth_with_room_ratios(
-    depth: f32,
-    front_ratio: f32,
-    rear_ratio: f32,
-    center_blend: f32,
-) -> f32 {
-    let d = depth.clamp(-1.0, 1.0);
-    let blend = center_blend.clamp(0.0, 1.0);
-    let center_ratio = rear_ratio + (front_ratio - rear_ratio) * blend;
-    if d >= 0.0 {
-        let t = d;
-        let a = center_ratio - front_ratio;
-        let b = 2.0 * (front_ratio - center_ratio);
-        a * t * t * t + b * t * t + center_ratio * t
-    } else {
-        let t = -d;
-        let a = center_ratio - rear_ratio;
-        let b = 2.0 * (rear_ratio - center_ratio);
-        -(a * t * t * t + b * t * t + center_ratio * t)
-    }
-}
 
 /// Legacy 0-9 bed id for a channel label. The renderer no longer routes by
 /// bed id — the only remaining consumer is the CLI file-export bed
@@ -81,6 +60,11 @@ pub fn legacy_bed_id(label: bridge_api::RChannelLabel) -> Option<usize> {
         Label::Rb => Some(7),
         Label::Tfl => Some(8),
         Label::Tfr => Some(9),
+        // The height tier's front pair fills the same two height slots: the
+        // export shape has room for one front-height pair, whichever tier
+        // the presentation names it from.
+        Label::Lh => Some(8),
+        Label::Rh => Some(9),
         _ => None,
     }
 }
@@ -115,9 +99,10 @@ pub struct Speaker {
     /// Set to false for LFE/subwoofers (default: true)
     pub spatialize: bool,
 
-    /// Per-entry gain in dB (default: 0 = unity). Used by the virtual bed to set
-    /// `ObjectMeta.gain` per input channel; ignored for output-layout speakers.
-    pub gain_db: i32,
+    /// Per-entry gain in dB (default: 0 = unity). Used by the virtual bed as
+    /// the per-input-channel trim (0.1 dB resolution, like the per-speaker
+    /// output gain); ignored for output-layout speakers.
+    pub gain_db: f32,
 
     /// Per-speaker output delay in milliseconds (default: 0.0).
     pub delay_ms: f32,
@@ -145,29 +130,6 @@ fn default_radius_m() -> f32 {
     1.0
 }
 
-fn spherical_to_cartesian(azimuth: f32, elevation: f32, distance: f32) -> (f32, f32, f32) {
-    let az = azimuth.to_radians();
-    let el = elevation.to_radians();
-    // Keep speaker cartesian persistence aligned with the renderer ADM convention:
-    // x = right, y = front, z = up.
-    let horizontal = distance * el.cos();
-    let x = horizontal * az.sin();
-    let y = horizontal * az.cos();
-    let z = distance * el.sin();
-    (x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0), z.clamp(-1.0, 1.0))
-}
-
-fn cartesian_to_spherical(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
-    let dist = (x * x + y * y + z * z).sqrt();
-    let az = x.atan2(y).to_degrees();
-    let el = if dist > 0.0 {
-        z.atan2((x * x + y * y).sqrt()).to_degrees()
-    } else {
-        0.0
-    };
-    (az, el, dist.max(0.01))
-}
-
 fn speaker_with_distance(
     name: impl Into<String>,
     azimuth: f32,
@@ -191,7 +153,7 @@ struct RawSpeaker {
     #[serde(default = "default_spatialize")]
     spatialize: bool,
     #[serde(default)]
-    gain_db: i32,
+    gain_db: f32,
     #[serde(default = "default_delay_ms")]
     delay_ms: f32,
     #[serde(default)]
@@ -216,7 +178,7 @@ impl<'de> Deserialize<'de> for Speaker {
                 let x = x.clamp(-1.0, 1.0);
                 let y = y.clamp(-1.0, 1.0);
                 let z = z.clamp(-1.0, 1.0);
-                let (az, el, dist) = cartesian_to_spherical(x, y, z);
+                let (az, el, dist) = geometry::to_spherical(x, y, z);
                 (
                     raw.azimuth.unwrap_or(az),
                     raw.elevation.unwrap_or(el),
@@ -229,7 +191,7 @@ impl<'de> Deserialize<'de> for Speaker {
                 let az = raw.azimuth.unwrap_or(0.0);
                 let el = raw.elevation.unwrap_or(0.0);
                 let dist = raw.distance.unwrap_or(1.0).max(0.01);
-                let (x, y, z) = spherical_to_cartesian(az, el, dist);
+                let (x, y, z) = geometry::hydrate_from_spherical(az, el, dist);
                 (az, el, dist, x, y, z)
             };
         Ok(Self {
@@ -270,7 +232,9 @@ impl Serialize for Speaker {
             state.serialize_field("distance", &self.distance)?;
         }
         state.serialize_field("spatialize", &self.spatialize)?;
-        if self.gain_db != 0 {
+        // Same 0.01 dB write tolerance as the render-config gains: below that
+        // is inaudible and must not re-add a key the user never set.
+        if self.gain_db.abs() > 0.01 {
             state.serialize_field("gain_db", &self.gain_db)?;
         }
         state.serialize_field("delay_ms", &self.delay_ms)?;
@@ -294,7 +258,7 @@ impl Speaker {
         delay_ms: f32,
     ) -> Self {
         let distance = distance.max(0.01);
-        let (x, y, z) = spherical_to_cartesian(azimuth, elevation, distance);
+        let (x, y, z) = geometry::hydrate_from_spherical(azimuth, elevation, distance);
         Self {
             name: name.into(),
             azimuth,
@@ -305,7 +269,7 @@ impl Speaker {
             y,
             z,
             spatialize,
-            gain_db: 0,
+            gain_db: 0.0,
             delay_ms: delay_ms.max(0.0),
             freq_low: None,
             freq_high: None,
@@ -326,7 +290,7 @@ impl Speaker {
         let x = x.clamp(-1.0, 1.0);
         let y = y.clamp(-1.0, 1.0);
         let z = z.clamp(-1.0, 1.0);
-        let (azimuth, elevation, distance) = cartesian_to_spherical(x, y, z);
+        let (azimuth, elevation, distance) = geometry::to_spherical(x, y, z);
         Self {
             name: name.into(),
             azimuth,
@@ -337,7 +301,7 @@ impl Speaker {
             y,
             z,
             spatialize,
-            gain_db: 0,
+            gain_db: 0.0,
             delay_ms: delay_ms.max(0.0),
             freq_low: None,
             freq_high: None,
@@ -432,6 +396,26 @@ impl SpeakerLayout {
         Ok(layout)
     }
 
+    /// Parse a set of placement entries from a YAML string: the same schema
+    /// as a layout, but a family's entries are a partial set — one channel
+    /// is a legitimate list, and so is none — so only each entry and the
+    /// names' uniqueness are validated, not the VBAP minimum an *output*
+    /// layout needs.
+    pub fn entries_from_yaml_str(yaml: &str) -> Result<Self> {
+        let layout: SpeakerLayout =
+            serde_yaml_ng::from_str(yaml).context("Failed to parse channel entries YAML")?;
+        for speaker in &layout.speakers {
+            speaker.validate()?;
+        }
+        let mut names = std::collections::HashSet::new();
+        for speaker in &layout.speakers {
+            if !names.insert(speaker.name.as_str()) {
+                anyhow::bail!("Duplicate channel entry: '{}'", speaker.name);
+            }
+        }
+        Ok(layout)
+    }
+
     /// Create a speaker layout from a vector of speakers
     pub fn from_speakers(speakers: Vec<Speaker>) -> Result<Self> {
         let layout = Self {
@@ -489,7 +473,7 @@ impl SpeakerLayout {
             }
             let pos = if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
                 let scaled_x = speaker.x * room_ratio[0];
-                let scaled_y = map_depth_with_room_ratios(
+                let scaled_y = geometry::map_depth(
                     speaker.y,
                     room_ratio[1],
                     room_ratio_rear,
@@ -706,6 +690,33 @@ impl SpeakerLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placement_entries_accept_a_partial_set_and_reject_duplicates() {
+        // One channel is a legitimate set of entries: only its trim and
+        // routing are meant, the rest of the channels keep their defaults.
+        let one = SpeakerLayout::entries_from_yaml_str(
+            "speakers:\n  - { name: LFE, coord_mode: cartesian, x: 0, y: 1, z: 0, spatialize: false, gain_db: -6 }\n",
+        )
+        .expect("one entry parses");
+        assert_eq!(one.speakers.len(), 1);
+        assert!(!one.speakers[0].spatialize);
+        assert!(
+            SpeakerLayout::from_yaml_str(
+                "speakers:\n  - { name: LFE, coord_mode: cartesian, x: 0, y: 1, z: 0 }\n"
+            )
+            .is_err(),
+            "an output layout still needs its VBAP minimum"
+        );
+        assert!(SpeakerLayout::entries_from_yaml_str("speakers: []\n").is_ok());
+        assert!(
+            SpeakerLayout::entries_from_yaml_str(
+                "speakers:\n  - { name: Ls, coord_mode: polar, azimuth: -110, elevation: 0, distance: 1 }\n  - { name: Ls, coord_mode: polar, azimuth: -90, elevation: 0, distance: 1 }\n"
+            )
+            .is_err(),
+            "the same channel twice is a mistake, not a choice"
+        );
+    }
 
     #[test]
     fn label_mapping_accepts_every_legacy_alias() {

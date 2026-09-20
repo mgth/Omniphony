@@ -8,7 +8,8 @@ amend this file whenever a release teaches something new.
 
 | Component | Repo | Tag namespace | Version line |
 |---|---|---|---|
-| Omniphony Studio bundle | `mgth/Omniphony` | `v*` (e.g. `v0.5.1`) | stack version |
+| Omniphony Studio bundle (Tauri host) | `mgth/Omniphony` | `v*` (e.g. `v0.5.1`) | stack version |
+| Omniphony Studio, native host (egui/wgpu) | `mgth/Omniphony` | same `v*` tag, one archive per platform on the same release | stack version (`omniphony-studio-egui/Cargo.toml`, `[workspace.package]`) |
 | Standalone liborender | `mgth/Omniphony` | `liborender-v*` | `orender_ffi` crate version (kept in step with the stack since 0.5.0) |
 | mpv player bundle | assets on `mgth/Omniphony`, source in `mgth/mpv-omniphony` | `mpv-v*` | stack version |
 | mpv fork branches | `mgth/mpv` | `orender-v*` | stack version (plain `v*` collides with upstream mpv's ancient tags) |
@@ -47,9 +48,20 @@ Never push to `main` directly — open a PR. Six files change (verified at
    `cargo update -p omniphony-studio --offline` (from `src-tauri/`)
 5. `omniphony-studio/src-tauri/tauri.conf.json` — `"version"`
 6. `omniphony-renderer/orender_ffi/Cargo.toml` — `version` (in step with the
-   stack since 0.5.0)
+   stack since 0.5.0), then regenerate `omniphony-renderer/Cargo.lock` with
+   `cargo update -p orender_ffi --offline` (from `omniphony-renderer/`). The
+   lockfile is tracked since #481 and names the crate's version; CI builds
+   with `--locked` and rejects a stale entry within a minute (it did at 0.6.0)
+7. `omniphony-studio-egui/Cargo.toml` — `[workspace.package] version`, which
+   the three native Studio crates share (it is the About box's version and
+   what the update check compares against the release tags — a native Studio
+   left at an older number would offer its own release as an update)
+8. `omniphony-studio-egui/Cargo.lock` — regenerate with
+   `cargo update -w --offline` (from `omniphony-studio-egui/`; the three
+   workspace entries move, nothing else)
 
-`omniphony-renderer/Cargo.lock` is gitignored — nothing to commit there.
+The renderer's root crate keeps its own number: it is not user-visible
+(`orender --version` prints the release tag or the commit).
 
 Merge the PR once CI is green.
 
@@ -81,8 +93,17 @@ The tag push triggers `release.yml`:
 - **build-studio** — Linux (`.deb`/`.rpm`/`.AppImage`), Windows
   (`.msi`/`.exe`), macOS arm64 (`.dmg`/`.app.tar.gz`, ad-hoc signed, not
   notarized). tauri-action creates a **draft** release named
-  "Omniphony vX.Y.Z". Seven assets expected; whole run took ~17 min at 0.5.1
-  (Linux is the slowest job at ~11 min).
+  "Omniphony vX.Y.Z". Seven Tauri assets expected; whole run took ~17 min at
+  0.5.1 (Linux is the slowest job at ~11 min).
+- **native Studio**, same job, after tauri-action: builds
+  `omniphony-studio-egui` on its pinned toolchain and attaches
+  `omniphony-studio-egui-vX.Y.Z-{linux-x86_64.tar.gz,windows-x86_64.zip,macos-arm64.zip}`
+  to the draft with `gh release upload` — the Studio, the `orender` sidecar
+  the Tauri build just prepared (same commit), `layouts/`, `assets/` and the
+  licence, in one directory. Three more assets, **ten** in all. The Studio
+  finds those files next to its executable (`core/src/host/bundle.rs`); no
+  installer, no engine deploy for mpv (that stays the Tauri bundle's job, or
+  the `orender` package's).
 
 The draft's URL is `releases/tag/untagged-<hash>` until it is published —
 that is normal, not a broken tag association; it becomes `releases/tag/vX.Y.Z`
@@ -149,20 +170,60 @@ publishes the bundles as a **draft on `mgth/Omniphony` under `mpv-vX.Y.Z`**
 3. PR to its `main`; merge when its CI is green. Pushing workflow-file
    changes needs the SSH remote (`git@github.com-mgth:mgth/mpv-omniphony.git`);
    the HTTPS token lacks the `workflow` scope.
-4. After the Omniphony tag exists: `git tag vX.Y.Z && git push origin vX.Y.Z`
-   in `mpv-omniphony`. Publish the resulting `mpv-vX.Y.Z` draft on
-   `mgth/Omniphony` **not-latest**, notes in the established style.
-5. The local FEL build (`mpvo-fel`, `patches-master/`,
+4. After the Omniphony tag exists, tag **from `origin/main`, never from a
+   local `main` checkout**: a squash merge diverges any local `main`, and at
+   0.5.2 a `git pull --ff-only` failure was swallowed by a `| tail` pipeline
+   — the tag landed on the stale pre-PR commit and the build ran with the old
+   `OMNIPHONY_REF` (cancel the run, delete the tag, retag). Use:
+   `git fetch origin main && git tag vX.Y.Z origin/main && git push origin vX.Y.Z`.
+   Publish the resulting `mpv-vX.Y.Z` draft on `mgth/Omniphony`
+   **not-latest**, notes in the established style.
+5. Don't trust `gh run watch --exit-status` for the verdict — at 0.5.2 it
+   returned success while `build-windows` had failed and `release` was
+   skipped. Read `gh run view <id> --json conclusion,jobs` instead.
+6. The Windows job's "Verify staged DLL imports resolve" step guards the
+   ownstuff ffmpeg↔x265 pairing in both directions. It fired at 0.5.2
+   because the old x265 4.1 pin outlived its reason (ffmpeg had been rebuilt
+   against the current x265) — the pin is gone; if the pairing breaks again
+   the fix is a new pin or its removal, per the step's message.
+7. The local FEL build (`mpvo-fel`, `patches-master/`,
    `scripts/build-fel-local.sh`) is a dev-only artifact, never released;
    regenerate it locally whenever the fork's `orender` branch moves
    (`FEL_RENDERER_DIR` selects which renderer checkout provides the
    link-time liborender).
 
-## 8. Post-release checks
+## 8. AUR packages — systematic, part of the release
+
+Every release bumps the AUR packages before the release is considered done.
+Local clones live in `aur/<pkg>/` at the workspace root (PKGBUILD sources of
+truth: `packaging/arch/` in this repo, `packaging/` in mpv-omniphony).
+
+| Package | Bump when |
+|---|---|
+| `orender` | every `v*` release |
+| `omniphony-studio` | every `v*` release |
+| `omniphony-studio-egui` | every `v*` release (from 0.6.0; template in `packaging/arch/omniphony-studio-egui`, depends on `orender` and links its layouts) |
+| `mpv-omniphony` | when an `mpv-v*` bundle was cut: `_tag`, `depends=('orender>=X.Y.Z')` (the release-train couple) |
+| `mpv-omniphony-fel` | with mpv-omniphony; also refresh `_mpvcommit` to the mpv master SHA the local FEL build verified (`scripts/build-fel-local.sh`) |
+| `harletty-bridge` | on its own line only (0.7.x, 0.8.x…) — never the stack number. Its `_omniver` names the Omniphony source tag the bridge's path-deps (`bridge_api`/`spdif`/`sys`) are taken from: the current Studio `v*` tag (the `liborender-v*` one is optional and may not exist for the release) |
+
+The templates in `packaging/arch/` are kept in step with the AUR clones (the
+clones had drifted ahead — licence fix, engine resource — until 0.6.0 synced
+them back). Per package: bump `pkgver` (+ `_tag`/pins), reset `pkgrel=1`, `updpkgsums`,
+build-test with `makepkg -fCd` (`-d` because the runtime `orender` dep need
+not be installed locally), `makepkg --printsrcinfo > .SRCINFO`, commit
+`upgpkg: <pkg> X.Y.Z-1`, push `master`.
+
+Check the ssh agent holds the AUR key first
+(`SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket ssh-add -l`) and only ask for
+an `ssh-add` when it is empty. The AUR web site blocks robots (Anubis):
+verify with `ssh aur@aur.archlinux.org list-repos` or the RPC API
+(`aur.archlinux.org/rpc/v5/…`), never by scraping the site.
+
+## 9. Post-release checks
 
 - macOS: verify the signed bundle still decodes (the 0.5.0 hardened-runtime
   regression, #260/#261) — check `codesign -d --entitlements` on the shipped
   app and confirm the bridge `dlopen` works on a real machine.
 - First download on macOS: Gatekeeper behaviour (#201).
-- Update the AUR packages if they track the release.
 - Amend **this document** with anything the release taught.

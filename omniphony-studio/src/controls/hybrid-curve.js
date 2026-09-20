@@ -37,79 +37,48 @@ function clamp01(value) {
   return Math.min(1, Math.max(0, value));
 }
 
-/** Piecewise-linear interpolation through the control points. */
-function linearY(points, x) {
-  const last = points.length - 1;
-  for (let i = 0; i < last; i += 1) {
-    const [x0, y0] = points[i];
-    const [x1, y1] = points[i + 1];
-    if (x <= x1) {
-      const span = Math.max(x1 - x0, 1e-6);
-      return y0 + (y1 - y0) * clamp01((x - x0) / span);
-    }
-  }
-  return points[last][1];
+// The curve is sampled by the backend (`sample_hybrid_curve`), which evaluates
+// it with the same `blend_curve_y` the renderer's `BlendCurve::eval` uses. The
+// preview used to be drawn by a second implementation living here; two
+// implementations of one function is two chances to disagree, and a preview
+// that disagrees with the audio path is worse than none — it says the crossfade
+// is somewhere it is not.
+//
+// Samples are cached because drawing is synchronous. A drag changes the curve
+// per mousemove, so the redraw trails the fetch by one round-trip and then
+// catches up; `pendingKey` drops responses that a newer edit has already
+// superseded, which is what keeps an out-of-order reply from flashing a stale
+// curve back onto the canvas.
+const CURVE_SAMPLES = 96;
+let cachedSamples = null;
+let cachedKey = null;
+let pendingKey = null;
+
+function curveKey(points, smoothing) {
+  return `${smoothing}|${points.map((p) => `${p[0]},${p[1]}`).join(';')}`;
 }
 
-function midpoint(a, b) {
-  return [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])];
-}
-
-/** Quadratic Bézier (start, control, end) evaluated as y at the given x. */
-function bezierYatX(start, control, end, x) {
-  const a = start[0] - 2 * control[0] + end[0];
-  const b = 2 * (control[0] - start[0]);
-  const c = start[0] - x;
-  let u;
-  if (Math.abs(a) < 1e-6) {
-    u = Math.abs(b) < 1e-9 ? 0 : -c / b;
-  } else {
-    const disc = Math.sqrt(Math.max(0, b * b - 4 * a * c));
-    const u1 = (-b + disc) / (2 * a);
-    u = u1 >= 0 && u1 <= 1 ? u1 : (-b - disc) / (2 * a);
-  }
-  u = clamp01(u);
-  const omu = 1 - u;
-  return omu * omu * start[1] + 2 * omu * u * control[1] + u * u * end[1];
-}
-
-/** Approximating quadratic B-spline (corner cutting), as y(x). */
-function bsplineY(points, x) {
-  const last = points.length - 1;
-  if (last <= 1) return linearY(points, x);
-  const mFirst = midpoint(points[0], points[1]);
-  if (x <= mFirst[0]) {
-    const span = Math.max(mFirst[0] - points[0][0], 1e-6);
-    return points[0][1] + (mFirst[1] - points[0][1]) * clamp01((x - points[0][0]) / span);
-  }
-  const mLast = midpoint(points[last - 1], points[last]);
-  if (x >= mLast[0]) {
-    const span = Math.max(points[last][0] - mLast[0], 1e-6);
-    return mLast[1] + (points[last][1] - mLast[1]) * clamp01((x - mLast[0]) / span);
-  }
-  for (let i = 1; i < last; i += 1) {
-    const end = midpoint(points[i], points[i + 1]);
-    if (x <= end[0]) {
-      return bezierYatX(midpoint(points[i - 1], points[i]), points[i], end, x);
-    }
-  }
-  return points[last][1];
-}
-
-/**
- * Evaluate the blend curve at normalised x — mirror of the renderer's
- * BlendCurve::eval so the displayed curve matches the audio. `smoothing` blends
- * piecewise-linear (0, through the points) with an approximating quadratic
- * B-spline (1, corner cutting / tangent to segment midpoints).
- */
-function evalCurve(points, smoothing, x) {
-  if (!points.length) return 0;
-  if (x <= points[0][0]) return points[0][1];
-  const last = points.length - 1;
-  if (x >= points[last][0]) return points[last][1];
-  const linear = linearY(points, x);
-  if (smoothing <= 0) return linear;
-  return clamp01(linear + (bsplineY(points, x) - linear) * smoothing);
+/** Fetch samples for this curve unless they are already cached or in flight. */
+function ensureCurveSamples(points, smoothing, redraw) {
+  const key = curveKey(points, smoothing);
+  if (key === cachedKey || key === pendingKey) return;
+  pendingKey = key;
+  invoke('sample_hybrid_curve', {
+    points: points.map((p) => [p[0], p[1]]),
+    smoothing,
+    count: CURVE_SAMPLES
+  })
+    .then((samples) => {
+      // A newer edit already asked for something else: this answer is stale.
+      if (pendingKey !== key) return;
+      cachedSamples = Array.isArray(samples) ? samples : null;
+      cachedKey = key;
+      pendingKey = null;
+      redraw();
+    })
+    .catch(() => {
+      if (pendingKey === key) pendingKey = null;
+    });
 }
 
 function currentCurve() {
@@ -421,21 +390,25 @@ export function renderHybridCurve() {
   const curve = currentCurve();
   const smoothing = Math.min(1, Math.max(0, app.renderBackendState.hybrid?.curveSmoothing || 0));
 
-  // Curve (sampled so the spline smoothing is visible).
-  ctx.strokeStyle = '#9fdcff';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  const samples = 96;
-  for (let s = 0; s <= samples; s += 1) {
-    const x = s / samples;
-    const pixel = toPixel([x, evalCurve(curve, smoothing, x)]);
-    if (s === 0) {
-      ctx.moveTo(pixel.x, pixel.y);
-    } else {
-      ctx.lineTo(pixel.x, pixel.y);
+  // Curve (sampled so the spline smoothing is visible). Samples come from the
+  // backend; until the first answer arrives there is nothing to draw, which is
+  // a blank curve for one round-trip rather than a wrong one.
+  ensureCurveSamples(curve, smoothing, renderHybridCurve);
+  if (cachedSamples && cachedSamples.length > 1) {
+    ctx.strokeStyle = '#9fdcff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const last = cachedSamples.length - 1;
+    for (let s = 0; s <= last; s += 1) {
+      const pixel = toPixel([s / last, clamp01(cachedSamples[s])]);
+      if (s === 0) {
+        ctx.moveTo(pixel.x, pixel.y);
+      } else {
+        ctx.lineTo(pixel.x, pixel.y);
+      }
     }
+    ctx.stroke();
   }
-  ctx.stroke();
 
   // Control points.
   curve.forEach((point, index) => {

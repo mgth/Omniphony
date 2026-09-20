@@ -1,5 +1,6 @@
 use crate::context::RuntimeControlContext;
 use crate::osc_contract;
+use omniphony_geometry::f32 as geometry;
 use renderer::live_params::LiveEvaluationMode;
 use renderer::render_backend::canonical_builtin_backend_id;
 use rosc::{OscMessage, OscType};
@@ -59,6 +60,9 @@ pub struct ControlEffects {
     /// `config.yaml` (systematic save, like `surround_placement`). The engine
     /// layer performs the I/O in `apply_control_effects`.
     pub persist_head_center: Option<[f32; 4]>,
+    /// Sensor-to-head axis calibration `[w, x, y, z]` to write straight to
+    /// `config.yaml`, same mechanism (identity = drop the key).
+    pub persist_head_axes: Option<[f32; 4]>,
 }
 
 // AdaptiveResamplingPatch / AudioConfigPatch / LiveInputPatch / InputConfigPatch
@@ -305,27 +309,6 @@ pub fn parse_input_layout_arg(
     serde_yaml_ng::from_str::<renderer::speaker_layout::SpeakerLayout>(&raw).ok()
 }
 
-fn spherical_to_cartesian(azimuth: f32, elevation: f32, distance: f32) -> (f32, f32, f32) {
-    let az = azimuth.to_radians();
-    let el = elevation.to_radians();
-    let horizontal = distance * el.cos();
-    let x = horizontal * az.sin();
-    let y = horizontal * az.cos();
-    let z = distance * el.sin();
-    (x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0), z.clamp(-1.0, 1.0))
-}
-
-fn cartesian_to_spherical(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
-    let dist = (x * x + y * y + z * z).sqrt();
-    let az = x.atan2(y).to_degrees();
-    let el = if dist > 0.0 {
-        z.atan2((x * x + y * y).sqrt()).to_degrees()
-    } else {
-        0.0
-    };
-    (az, el, dist.max(0.01))
-}
-
 fn remap_live_speakers_remove(
     speakers: &mut std::collections::HashMap<usize, renderer::live_params::SpeakerLiveParams>,
     remove_idx: usize,
@@ -450,7 +433,7 @@ fn apply_layout_speaker_patch(
         let x = patch.x.unwrap_or(speaker.x).clamp(-1.0, 1.0);
         let y = patch.y.unwrap_or(speaker.y).clamp(-1.0, 1.0);
         let z = patch.z.unwrap_or(speaker.z).clamp(-1.0, 1.0);
-        let (azimuth, elevation, distance) = cartesian_to_spherical(x, y, z);
+        let (azimuth, elevation, distance) = geometry::hydrate_from_cartesian(x, y, z);
         if speaker.x != x
             || speaker.y != y
             || speaker.z != z
@@ -476,7 +459,7 @@ fn apply_layout_speaker_patch(
             .unwrap_or(speaker.elevation)
             .clamp(-90.0, 90.0);
         let distance = patch.distance.unwrap_or(speaker.distance).max(0.01);
-        let (x, y, z) = spherical_to_cartesian(azimuth, elevation, distance);
+        let (x, y, z) = geometry::hydrate_from_spherical(azimuth, elevation, distance);
         if speaker.azimuth != azimuth
             || speaker.elevation != elevation
             || speaker.distance != distance
@@ -540,7 +523,7 @@ fn build_layout_speaker_from_patch(
         let x = patch.x.unwrap_or(speaker.x).clamp(-1.0, 1.0);
         let y = patch.y.unwrap_or(speaker.y).clamp(-1.0, 1.0);
         let z = patch.z.unwrap_or(speaker.z).clamp(-1.0, 1.0);
-        let (azimuth, elevation, distance) = cartesian_to_spherical(x, y, z);
+        let (azimuth, elevation, distance) = geometry::hydrate_from_cartesian(x, y, z);
         speaker.x = x;
         speaker.y = y;
         speaker.z = z;
@@ -1298,6 +1281,24 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == osc_contract::CONTROL_BINAURAL_REFLECTIONS_WALL_CUTOFF {
+        if let Some(v) = parse_f32_arg(msg.args.first()) {
+            if v.is_finite() {
+                ctx.renderer
+                    .live
+                    .write()
+                    .binaural
+                    .reflections
+                    .wall_cutoff_hz = v.clamp(
+                    renderer::binaural::reflections::MIN_WALL_CUTOFF_HZ,
+                    renderer::binaural::reflections::MAX_WALL_CUTOFF_HZ,
+                );
+                effects.mark_dirty = true;
+            }
+        }
+        return Some(effects);
+    }
+
     if let Some(axis) = match addr {
         osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_WIDTH => Some(0usize),
         osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_DEPTH => Some(1),
@@ -1356,11 +1357,93 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == osc_contract::CONTROL_BINAURAL_REVERB_SIZE {
+        if let Some(v) = parse_f32_arg(msg.args.first()) {
+            if v.is_finite() && v > 0.0 {
+                ctx.renderer.live.write().binaural.reverb.size = v.clamp(
+                    renderer::binaural::reverb::SIZE_MIN,
+                    renderer::binaural::reverb::SIZE_MAX,
+                );
+                effects.mark_dirty = true;
+            }
+        }
+        return Some(effects);
+    }
+
+    if let Some(low) = match addr {
+        osc_contract::CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO => Some(true),
+        osc_contract::CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO => Some(false),
+        _ => None,
+    } {
+        if let Some(v) = parse_f32_arg(msg.args.first()) {
+            if v.is_finite() && v > 0.0 {
+                let v = v.clamp(
+                    renderer::binaural::reverb::RT60_RATIO_MIN,
+                    renderer::binaural::reverb::RT60_RATIO_MAX,
+                );
+                let mut live = ctx.renderer.live.write();
+                if low {
+                    live.binaural.reverb.rt60_low_ratio = v;
+                } else {
+                    live.binaural.reverb.rt60_high_ratio = v;
+                }
+                effects.mark_dirty = true;
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == osc_contract::CONTROL_BINAURAL_DIFFUSE_FIELD_EQ {
+        if let Some(v) = parse_bool_arg(msg.args.first()) {
+            ctx.renderer.live.write().binaural.diffuse_field_eq = v;
+            effects.mark_dirty = true;
+            effects.log_message = Some(format!("OSC: binaural/diffuse_field_eq -> {v}"));
+        }
+        return Some(effects);
+    }
+
     if addr == osc_contract::CONTROL_BINAURAL_AIR_ABSORPTION {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().binaural.air_absorption = v;
             effects.mark_dirty = true;
             effects.log_message = Some(format!("OSC: binaural/air_absorption -> {v}"));
+        }
+        return Some(effects);
+    }
+
+    if addr == osc_contract::CONTROL_HEAD_CALIBRATE {
+        let step = msg.args.first().and_then(|a| match a {
+            rosc::OscType::String(s) => renderer::binaural::CalibrationStep::from_str(s),
+            _ => None,
+        });
+        let Some(step) = step else {
+            effects.log_message =
+                Some("OSC: head/calibrate expects front | left | up | reset".to_string());
+            return Some(effects);
+        };
+        let mut live = ctx.renderer.live.write();
+        match live.binaural.tracking.calibrate(step) {
+            Ok(done) => {
+                if step == renderer::binaural::CalibrationStep::Front {
+                    // Looking ahead is the recenter: snap and persist it.
+                    live.binaural.head_pose = renderer::binaural::HeadPose::identity();
+                    effects.persist_head_center =
+                        Some(live.binaural.tracking.reference.to_quat_array());
+                }
+                if done || step == renderer::binaural::CalibrationStep::Reset {
+                    effects.persist_head_axes = Some(live.binaural.tracking.axes.to_quat_array());
+                }
+                effects.mark_dirty = true;
+                effects.log_message = Some(format!(
+                    "OSC: head/calibrate {step:?}{}",
+                    if done { " — axes calibrated" } else { "" }
+                ));
+            }
+            Err(reason) => {
+                effects.mark_dirty = true;
+                effects.log_message =
+                    Some(format!("OSC: head/calibrate {step:?} refused: {reason}"));
+            }
         }
         return Some(effects);
     }
@@ -1663,7 +1746,8 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/render_evaluation/cartesian/") {
+    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX)
+    {
         let size = match msg.args.first() {
             Some(OscType::Int(i)) => Some((*i).max(1) as usize),
             Some(OscType::Float(f)) => Some((*f).round().max(1.0) as usize),
@@ -1742,7 +1826,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/render_evaluation/polar/") {
+    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX) {
         match rest {
             "azimuth_resolution" | "elevation_resolution" => {
                 let res = match msg.args.first() {
@@ -1843,7 +1927,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/hybrid/") {
+    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_HYBRID_PREFIX) {
         let mut live = ctx.renderer.live.write();
         let mut changed = false;
         match rest {
@@ -1966,7 +2050,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/distance_diffuse/") {
+    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX) {
         match rest {
             "enabled" => {
                 if let Some(v) = parse_bool_arg(msg.args.first()) {

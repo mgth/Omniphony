@@ -182,8 +182,21 @@
           <!-- Phantom-extraction parameter sliders, built dynamically from the
                declared schema (/omniphony/state/phantom). -->
           <div id="phantomParamsRow" style="display:none;flex-direction:column;gap:0.3rem;padding-left:0.5rem"></div>
-          <div id="virtualBedActions" style="display:flex;justify-content:flex-end;margin-top:0.25rem">
-            <button id="virtualBedResetBtn" type="button" class="ui-btn ui-btn-compact" style="white-space:nowrap" data-i18n="virtualBed.reset">Reset channel layout</button>
+          <!-- Where the fixed channels go, per source family (docs/placement.md):
+               the family being edited, its mode, whose entries it uses, and the
+               way back to the generic entries. Built by controls/virtual-bed.js. -->
+          <div id="placementBlock" style="display:flex;flex-direction:column;gap:0.3rem;margin-top:0.35rem;padding-top:0.35rem;border-top:1px solid rgba(255,255,255,0.08)">
+            <span style="font-size:12px" data-i18n="placement.title" data-help-i18n="help.placement" data-help-anchor="#placementBlock">Placement</span>
+            <div id="placementFamilyTabs" style="display:flex;gap:0.25rem;flex-wrap:wrap"></div>
+            <div id="placementModeRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+              <span style="font-size:12px" data-i18n="placement.mode" data-help-i18n="help.placement.mode" data-help-anchor="#placementModeRow">Mode</span>
+              <span id="placementModeButtons" style="display:flex;gap:0.25rem"></span>
+            </div>
+            <div id="placementModeNote" class="option-status-note" style="font-size:10px;opacity:0.8;padding-left:0.5rem"></div>
+            <div id="placementLayoutNote" class="option-status-note" style="font-size:10px;opacity:0.8;padding-left:0.5rem"></div>
+            <div id="virtualBedActions" style="display:flex;justify-content:flex-end;margin-top:0.25rem">
+              <button id="virtualBedResetBtn" type="button" class="ui-btn ui-btn-compact" style="white-space:nowrap" data-i18n="virtualBed.reset">Reset channel layout</button>
+            </div>
           </div>
         </div>
       </div>
@@ -704,6 +717,14 @@
       <div class="info-section" id="channelEditSection" style="display:none">
         <div class="info-title" id="channelEditTitle" data-i18n="channelEdit.title">Channel Editor</div>
         <div id="channelEditBody" class="editor-body">
+          <!-- Gain sits above the Virtual/Direct choice: it is an input trim
+               that applies in both placements, so it must not read as a
+               setting of one of them. -->
+          <div class="editor-row gain-row" style="margin-bottom:0.35rem">
+            <label for="channelEditGainSlider" data-i18n="channelEdit.gain" data-help-i18n="help.channelEdit.gain">Gain</label>
+            <input id="channelEditGainSlider" class="gain-slider" type="range" min="-24" max="12" step="0.1" value="0" />
+            <div id="channelEditGainBox" class="gain-box">0 dB</div>
+          </div>
           <label class="switch-row" style="cursor:pointer;margin-bottom:0.35rem">
             <span id="channelEditSpatializeText" data-i18n="virtualBed.virtual">Virtual</span>
             <input id="channelEditSpatializeToggle" type="checkbox" />
@@ -712,6 +733,12 @@
             <span data-i18n="channelEdit.destinationSpeaker">Destination speaker</span>
             <strong id="channelEditDirectTargetName">—</strong>
             <small data-i18n="channelEdit.destinationPosition">The coordinates below are the speaker's actual position.</small>
+          </div>
+          <!-- Sphere and room mode: the family's model places the channel; the
+               editor shows what it gives and offers the switch to manual. -->
+          <div id="channelEditModeNote" class="option-status-note" style="display:none;font-size:10px;opacity:0.8"></div>
+          <div id="channelEditModeActions" style="display:none;justify-content:flex-end;margin-bottom:0.35rem">
+            <button id="channelEditManualBtn" type="button" class="ui-btn ui-btn-compact" style="white-space:nowrap" data-i18n="placement.editManually">Edit positions</button>
           </div>
           <div class="editor-meta">
             <div class="coord-mode-row">
@@ -760,11 +787,6 @@
               </div>
               <button id="channelEditPolarGizmoBtn" type="button" class="toggle-btn" data-i18n="speaker.edit3d">3D Edit</button>
             </div>
-          </div>
-          <div class="editor-row gain-row">
-            <label for="channelEditGainSlider" data-i18n="channelEdit.gain" data-help-i18n="help.channelEdit.gain">Gain</label>
-            <input id="channelEditGainSlider" class="gain-slider" type="range" min="-24" max="12" step="1" value="0" />
-            <div id="channelEditGainBox" class="gain-box">0 dB</div>
           </div>
         </div>
       </div>

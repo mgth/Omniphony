@@ -127,6 +127,23 @@ pub(super) fn evaluation_build_config(
     }
 }
 
+/// Event/channel gain floor: at or below this the channel is −inf dB (silent).
+///
+/// Inherited from the decoder side's `i8` convention where −128 is the mute
+/// sentinel; sums that land below it clamp to exactly this value, so a plain
+/// `<=` comparison is the whole test.
+pub const GAIN_DB_NEG_INF: f32 = -128.0;
+
+/// Linear gain for an event/channel dB value, honouring the −inf floor.
+#[inline]
+pub fn gain_db_to_linear(gain_db: f32) -> f32 {
+    if gain_db <= GAIN_DB_NEG_INF {
+        0.0
+    } else {
+        10.0_f32.powf(gain_db / 20.0)
+    }
+}
+
 /// Format-agnostic spatial metadata for one audio channel (bed or object).
 ///
 /// The renderer accepts this type instead of any format-specific event type
@@ -141,8 +158,11 @@ pub struct SpatialChannelEvent {
     pub channel_idx: usize,
     /// `true` → direct speaker routing (bed); `false` → VBAP spatialization (object).
     pub is_bed: bool,
-    /// Channel gain in dB (`None` = unchanged).
-    pub gain_db: Option<i8>,
+    /// Channel gain in dB (`None` = unchanged). Values at or below
+    /// [`GAIN_DB_NEG_INF`] mean −inf (silent); stream metadata arrives in
+    /// whole dB (the decoder side is `i8`), fractional values come from the
+    /// virtual bed's 0.1 dB trim.
+    pub gain_db: Option<f32>,
     /// Ramp duration in audio frames (`None` = unchanged).
     pub ramp_length: Option<u32>,
     /// Object spatial extent per axis (w, d, h), each in [0.0, 1.0]
@@ -168,8 +188,8 @@ pub(super) struct ChannelState {
     /// silent.
     pub(super) initialized: bool,
 
-    /// Gain in dB
-    pub(super) gain_db: i8,
+    /// Gain in dB. At or below [`GAIN_DB_NEG_INF`] the channel is silent.
+    pub(super) gain_db: f32,
 
     /// Linear gain actually applied at the end of the last rendered block.
     /// Every gain step (metadata jump, mute toggle, plan transition, stream
@@ -217,7 +237,7 @@ impl Default for ChannelState {
     fn default() -> Self {
         Self {
             initialized: false,
-            gain_db: -128, // -inf dB (muted)
+            gain_db: GAIN_DB_NEG_INF, // -inf dB (muted)
             slewed_gain: 0.0,
             ramp: ChannelRampState::default(),
             interp_prev_gains: Vec::new(),

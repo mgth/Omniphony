@@ -1,0 +1,75 @@
+# The native Studio is two crates: `core/` (omniphony-studio-core: the
+# protocol, the state and the behaviour, with no UI crate) and this one, the
+# egui frontend that draws it. See ARCHITECTURE.md.
+[workspace]
+members = [".", "core", "scene"]
+
+[workspace.package]
+# Shared, so the core's `CARGO_PKG_VERSION` (the About box) is the app's.
+version = "0.6.0"
+
+[package]
+name = "omniphony-studio-egui"
+version.workspace = true
+edition = "2024"
+# egui 0.36 requires 1.95; the repo's default toolchain may be older, see
+# rust-toolchain.toml next to this file.
+rust-version = "1.95"
+license = "GPL-3.0-or-later"
+description = "Omniphony Studio, the native egui/wgpu host"
+publish = false
+
+[[bin]]
+name = "omniphony-studio-egui"
+path = "src/main.rs"
+
+[dependencies]
+# Protocol, state and behaviour. Everything below it is for drawing.
+omniphony-studio-core = { path = "core" }
+omniphony-studio-scene = { path = "scene" }
+# Canonical coordinate math shared with the renderer; dependency-free by design.
+omniphony-geometry = { path = "../omniphony-renderer/omniphony-geometry" }
+
+# UI + windowing. wgpu is the only backend the spike supports: the whole point
+# is the wgpu paint callback that hosts the 3D viewport.
+eframe = { version = "0.36.2", default-features = false, features = [
+    "wgpu",
+    "default_fonts",
+    "x11",
+    "wayland",
+    "accesskit",
+] }
+egui = "0.36.2"
+egui-wgpu = "0.36.2"
+# Must match egui-wgpu's wgpu major.
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+glam = { version = "0.30", features = ["bytemuck"] }
+
+# OSC transport, same crate/version as the Tauri Studio.
+rosc = "0.11"
+
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+# Native file dialogs (layout import/export), same crate as the Tauri host.
+rfd = "0.16"
+# The UI's HTTP client, for the GitHub release check (the core has its own
+# for the SOFA catalogue). Same crate and major as
+# the Tauri host's; `rustls` rather than a system TLS stack so the three CI
+# targets build the same way.
+ureq = { version = "2", default-features = false, features = ["tls", "json", "gzip"] }
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
+
+[dev-dependencies]
+# The architecture ratchet (tests/architecture.rs) matches its rules with it.
+# Already in the tree through env_logger, so it costs no new download.
+regex = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true

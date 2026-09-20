@@ -74,6 +74,10 @@ export function rendererPanelMarkup() {
             </div>
             <div class="renderer-subpanel-body" style="margin-top:0.25rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.3rem">
               <div id="binauralSofaInfo" style="display:none;font-size:0.65rem;word-break:break-all;"></div>
+              <div class="inline-toggle" style="margin-top:0">
+                <div data-i18n="binaural.diffuseFieldEq" data-help-i18n="help.binaural.diffuseFieldEq">Diffuse-field EQ</div>
+                <input id="binauralDiffuseFieldEq" type="checkbox" />
+              </div>
               <div class="binaural-help-row">
                 <div style="font-size:0.65rem;color:#888;margin-bottom:0.15rem;display:flex;justify-content:space-between;">
                   <span data-i18n="binaural.headRadius" data-help-i18n="help.binaural.headRadius" data-help-anchor=".binaural-help-row">Head radius (cm)</span>
@@ -175,6 +179,13 @@ export function rendererPanelMarkup() {
                 <input id="binauralReflRoomD" type="range" min="1" max="20" step="0.1" value="5" style="width:100%;" />
                 <input id="binauralReflRoomH" type="range" min="1" max="20" step="0.1" value="2.7" style="width:100%;" />
               </div>
+              <div class="binaural-help-row">
+                <div style="font-size:0.65rem;color:#888;margin-bottom:0.15rem;display:flex;justify-content:space-between;">
+                  <span data-i18n="binaural.wallDamping" data-help-i18n="help.binaural.wallDamping" data-help-anchor=".binaural-help-row">Wall damping (kHz)</span>
+                  <span id="binauralReflWallCutoffVal">6.0</span>
+                </div>
+                <input id="binauralReflWallCutoff" type="range" min="1" max="20" step="0.5" value="6" style="width:100%;" />
+              </div>
               </div>
               <div class="switch-row" style="font-size:0.7rem;color:#8fa6bd;margin-top:0.2rem;border-top:1px solid rgba(255,255,255,0.05);padding-top:0.3rem;">
                 <span data-i18n="binaural.lateReverb" data-help-i18n="help.binaural.lateReverb">Late reverb</span>
@@ -195,6 +206,27 @@ export function rendererPanelMarkup() {
                 </div>
                 <input id="binauralRevRt60" type="range" min="0.1" max="1.5" step="0.05" value="0.35" style="width:100%;" />
               </div>
+              <div class="binaural-help-row">
+                <div style="font-size:0.65rem;color:#888;margin-bottom:0.15rem;display:flex;justify-content:space-between;">
+                  <span data-i18n="binaural.reverbSize" data-help-i18n="help.binaural.reverbSize" data-help-anchor=".binaural-help-row">Room size (×)</span>
+                  <span id="binauralRevSizeVal">1.00</span>
+                </div>
+                <input id="binauralRevSize" type="range" min="0.5" max="2" step="0.05" value="1" style="width:100%;" />
+              </div>
+              <div class="binaural-help-row">
+                <div style="font-size:0.65rem;color:#888;margin-bottom:0.15rem;display:flex;justify-content:space-between;">
+                  <span data-i18n="binaural.reverbBassDecay" data-help-i18n="help.binaural.reverbBassDecay" data-help-anchor=".binaural-help-row">Bass decay (× RT60)</span>
+                  <span id="binauralRevLowRatioVal">1.00</span>
+                </div>
+                <input id="binauralRevLowRatio" type="range" min="-2" max="2" step="0.1" value="0" style="width:100%;" />
+              </div>
+              <div class="binaural-help-row">
+                <div style="font-size:0.65rem;color:#888;margin-bottom:0.15rem;display:flex;justify-content:space-between;">
+                  <span data-i18n="binaural.reverbTrebleDecay" data-help-i18n="help.binaural.reverbTrebleDecay" data-help-anchor=".binaural-help-row">Treble decay (× RT60)</span>
+                  <span id="binauralRevHighRatioVal">1.00</span>
+                </div>
+                <input id="binauralRevHighRatio" type="range" min="-2" max="2" step="0.1" value="0" style="width:100%;" />
+              </div>
               </div>
             </div>
           </div>
@@ -203,9 +235,11 @@ export function rendererPanelMarkup() {
               <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff" data-i18n="binaural.headTrackingTitle" data-help-i18n="help.binaural.headTracking">Head tracking (Sensors2OSC)</div>
               <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
                 <button id="binauralRecenter" type="button" class="form-button" data-i18n="binaural.recenter">Recenter</button>
+                <button id="binauralCalibrate" type="button" class="form-button" data-i18n="binaural.calibrateAxes" data-i18n-title="help.binaural.calibrateAxes" title="">Calibrate axes</button>
               </div>
             </div>
             <div class="renderer-subpanel-body" style="margin-top:0.25rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.3rem">
+              <div id="binauralCalibratePrompt" style="display:none;font-size:0.65rem;color:#e8c46a;"></div>
               <div class="inline-toggle" style="margin-top:0">
                 <div data-i18n="binaural.oscAddressLabel" data-help-i18n="help.binaural.oscAddress">OSC address</div>
                 <input id="binauralTrackAddress" type="text" class="form-input" placeholder="/android/rotationvector" style="font-size:0.7rem;width:11rem;" />

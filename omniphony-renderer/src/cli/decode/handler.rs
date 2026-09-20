@@ -176,8 +176,7 @@ impl DecodeHandler {
             .as_ref()
             .map(|control| {
                 let requested = control.requested_snapshot();
-                requested.mode == InputMode::PipewireBridge
-                    && requested.clock_mode == InputClockMode::Dac
+                requested.mode == InputMode::Pipewire && requested.clock_mode == InputClockMode::Dac
             })
             .unwrap_or(false)
     }
@@ -194,7 +193,7 @@ impl DecodeHandler {
         if matches!(source, DecodedSource::Bridge)
             && matches!(
                 applied_before.active_mode,
-                InputMode::Bridge | InputMode::PipewireBridge
+                InputMode::Bridge | InputMode::Pipewire
             )
         {
             let channels = Some(frame.channel_count as u16);
@@ -230,11 +229,10 @@ impl DecodeHandler {
         matches!(
             (active_mode, source),
             (InputMode::Bridge, DecodedSource::Bridge)
-                | (InputMode::Live, DecodedSource::Live)
                 // The PipeWire sink advertises PCM alongside IEC 61937, so this
                 // mode legitimately produces either source depending on what the
                 // client negotiated.
-                | (InputMode::PipewireBridge, DecodedSource::Bridge | DecodedSource::Live)
+                | (InputMode::Pipewire, DecodedSource::Bridge | DecodedSource::Live)
         )
     }
 
@@ -252,6 +250,7 @@ impl DecodeHandler {
             &mut self.output,
             &mut self.runtime,
             self.audio_control.as_deref(),
+            self.input_control.as_deref(),
         )
         .sync_all()?;
         if self.output.audio_writer.is_none() {
@@ -553,7 +552,7 @@ impl DecodeHandler {
                 self.output.audio_writer_channels.unwrap_or(0),
                 effective_channel_count,
             );
-            if let Some(mut writer) = self.output.invalidate_writer() {
+            if let Some(mut writer) = self.output.invalidate_writer(self.input_control.as_deref()) {
                 let _ = writer.flush();
             }
             self.output.reset_realtime_output_tracking();
@@ -563,6 +562,7 @@ impl DecodeHandler {
             &mut self.output,
             &mut self.runtime,
             self.audio_control.as_deref(),
+            self.input_control.as_deref(),
         )
         .sync_all()?;
         // `sync_all` may have switched the active backend live (e.g. Studio
@@ -635,7 +635,7 @@ impl DecodeHandler {
             self.spatial.au_index
         );
 
-        if let Some(mut writer) = self.output.invalidate_writer() {
+        if let Some(mut writer) = self.output.invalidate_writer(self.input_control.as_deref()) {
             writer.flush()?;
         }
         self.reset_direct_trigger_wiring();
@@ -680,7 +680,7 @@ impl DecodeHandler {
 
     pub fn handle_decoder_flush_request(&mut self) {
         log::info!("Received flush request after decoder reset");
-        if let Some(mut writer) = self.output.invalidate_writer() {
+        if let Some(mut writer) = self.output.invalidate_writer(self.input_control.as_deref()) {
             if let Err(err) = writer.flush() {
                 log::warn!("Error flushing realtime output during decoder reset: {err}");
             }

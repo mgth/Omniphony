@@ -478,6 +478,13 @@
         align-items: center;
         justify-content: center;
         text-align: center;
+        /* WebKitGTK first-click reliability: a button whose label can be
+           selected turns the first press into a text selection and swallows
+           the click. Same rule as the profile rows above — applied here to
+           every shared button rather than one row at a time. Invisible in a
+           Chrome preview; only the real WebView shows it. */
+        -webkit-user-select: none;
+        user-select: none;
       }
 
       .ui-btn-primary {

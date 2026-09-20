@@ -21,7 +21,7 @@ mod transport;
 
 use self::client_registry::OscClientRegistry;
 use self::dispatch::{RealtimeSeqState, handle_control_message};
-use self::export::build_live_state_bundle;
+use self::export::build_live_state;
 use self::gaintable::GaintableCache;
 use self::transport::{
     flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client, send_metering_state,
@@ -248,7 +248,7 @@ pub struct ObjectMeta {
     pub coord_mode: String,
     pub direct_speaker_index: Option<u32>,
     /// Gain in dB (integer, -128 = silent).
-    pub gain: i32,
+    pub gain: f32,
     pub priority: f32,
     /// Per-axis object spatial extent (w, d, h), each in [0.0, 1.0].
     /// `[0.0, 0.0, 0.0]` denotes a point source.
@@ -261,6 +261,10 @@ pub struct ObjectMeta {
     /// Canonical channel-label name for a fixed channel (`"L"`, `"TFL"`…);
     /// empty for dynamic objects.
     pub label: String,
+    /// What this object is, as the generator that made it knows. Explicit for
+    /// the same reason as `fixed`: clients used to read it off the name with a
+    /// regular expression, so a rename silently reclassified everything.
+    pub kind: crate::object_gen::ObjectKind,
 }
 
 /// Epsilon for position/float comparison in delta OSC sending.
@@ -277,7 +281,7 @@ struct ObjectSnapshot {
     z: f32,
     coord_mode: String,
     direct_speaker_index: Option<u32>,
-    gain: i32,
+    gain: f32,
     priority: f32,
     size: [f32; 3],
 }
@@ -520,8 +524,7 @@ impl OscSender {
                         if last_host_state_generation != Some(generation) {
                             last_host_state_generation = Some(generation);
                             if let Some(ref ctrl) = control {
-                                let state_bytes = build_live_state_bundle(ctrl, Some(host));
-                                send_raw_filtered(&socket, &clients, &state_bytes, |_| true);
+                                build_live_state(ctrl, Some(host)).broadcast(&socket, &clients);
                             }
                         }
                     }
@@ -548,8 +551,8 @@ impl OscSender {
                         let generation = ctrl.live_state_generation();
                         if last_live_state_generation != Some(generation) {
                             last_live_state_generation = Some(generation);
-                            let state_bytes = build_live_state_bundle(ctrl, host_handler.as_ref());
-                            send_raw_filtered(&socket, &clients, &state_bytes, |_| true);
+                            build_live_state(ctrl, host_handler.as_ref())
+                                .broadcast(&socket, &clients);
                         }
                         // One-shot clip notification carrying the offending speaker
                         // index (set on the audio thread on any detected clip,
@@ -581,15 +584,8 @@ impl OscSender {
                                     force_full_next.store(true, Ordering::Relaxed);
                                     // Send the current state bundle, including layout and speakers.
                                     if let Some(ref ctrl) = control {
-                                        let state_bytes =
-                                            build_live_state_bundle(ctrl, host_handler.as_ref());
-                                        if let Err(e) = socket.send_to(&state_bytes, client) {
-                                            log::warn!(
-                                                "Failed to send live state to {}: {}",
-                                                client,
-                                                e
-                                            );
-                                        }
+                                        build_live_state(ctrl, host_handler.as_ref())
+                                            .send_to(&socket, client);
                                     }
                                     send_buffered_logs_to_client(&socket, client, 0);
                                     send_metering_state(&socket, client, metering_enabled);
@@ -939,7 +935,10 @@ fn apply_head_tracking_packet(packet: &OscPacket, ctrl: &RendererControl) -> boo
                 {
                     let mut live = ctrl.live.write();
                     let current = live.binaural.head_pose;
-                    live.binaural.head_pose = live.binaural.tracking.ingest(raw, current);
+                    live.binaural.head_pose =
+                        live.binaural
+                            .tracking
+                            .ingest(raw, current, std::time::Instant::now());
                 }
                 // The moving pose rides the dedicated ~30 Hz `/state/head_pose`
                 // channel (see `maybe_broadcast_head_pose`); the full live-state

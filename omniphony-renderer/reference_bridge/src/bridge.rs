@@ -11,8 +11,8 @@
 
 use abi_stable::std_types::{RSlice, RStr, RString, RVec};
 use bridge_api::{
-    FormatBridge, RChannelLabel, RCoordinateFormat, RDecodedFrame, RInputTransport, RMetadataFrame,
-    RPushResult, RVbapCartesianDefaults, RVbapTableMode,
+    FormatBridge, RChannelLabel, RChannelPose, RCoordinateFormat, RDecodedFrame, RInputTransport,
+    RMetadataFrame, RPushResult, RVbapCartesianDefaults, RVbapTableMode,
 };
 
 use crate::logging::bridge_diag_log;
@@ -276,6 +276,16 @@ impl FormatBridge for WavBridge {
 
     fn set_drc_mode(&mut self, _mode: RStr<'_>) -> bool {
         false
+    }
+
+    fn fixed_channel_poses(&self) -> RVec<RChannelPose> {
+        // A WAV file states no angle for its channels: every one takes the
+        // renderer's own pose for its label.
+        RVec::new()
+    }
+
+    fn source_family(&self) -> RString {
+        RString::from("pcm")
     }
 }
 

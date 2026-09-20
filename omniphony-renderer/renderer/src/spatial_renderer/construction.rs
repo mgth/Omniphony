@@ -432,9 +432,10 @@ impl SpatialRenderer {
             crossover_type: crate::live_params::CrossoverType::default(),
             crossover_fir_transition_ratio:
                 crate::config_fields::crossover_fir_transition_ratio::DEFAULT,
-            // Seeded from `render.virtual_bed` by the same bootstrap; `None`
-            // uses the built-in canonical poses (LFE direct, rest virtualized).
-            virtual_bed: None,
+            // Seeded from `render.placement` by the same bootstrap; the
+            // default is every family at its built-in mode with no entries
+            // (LFE direct, the rest virtualized at the catalogue pose).
+            placement: crate::placement::PlacementState::default(),
             // Off by default; selects the bed→height object generator (2D upmix)
             // for channel content. Empty / "none" = disabled.
             object_generator_id: String::new(),
@@ -483,6 +484,21 @@ impl SpatialRenderer {
 
         let initial_output_mode = control.live.read().binaural.output_mode;
 
+        // The binaural stage reports each HRIR build to the control, where
+        // the state snapshot picks it up; the bump gets it broadcast.
+        let binaural = {
+            let status_control = std::sync::Arc::clone(&control);
+            crate::binaural::BinauralRenderer::with_status_sink(
+                sample_rate,
+                std::sync::Arc::new(move |status| {
+                    status_control
+                        .binaural_hrir_status
+                        .store(std::sync::Arc::new(status));
+                    status_control.bump_live_state();
+                }),
+            )
+        };
+
         Ok(Self {
             num_speakers,
             active_output_mode: initial_output_mode,
@@ -514,7 +530,7 @@ impl SpatialRenderer {
             object_params_generation_seen: 0,
             speaker_params_generation_seen: 0,
             ramp_strategy_override: None,
-            binaural: crate::binaural::BinauralRenderer::new(sample_rate),
+            binaural,
             cascade: None,
             last_mix_num_speakers: 0,
             last_output_latency: 0,

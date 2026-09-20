@@ -221,15 +221,18 @@ pub struct RenderConfig {
     /// `passes` / `lift`). Absent = the stage's declared defaults.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phantom_params: Option<std::collections::HashMap<String, f32>>,
-    /// Parametrable virtual bed for channel-based (non-object) content. One
-    /// entry per input-channel label (`L`, `R`, `C`, `LFE`, `Ls`, `Rs`, …):
-    /// `spatialize:true` virtualizes the channel as an object at the entry's
-    /// position; `spatialize:false` routes it direct to the matching output
-    /// speaker (e.g. LFE → sub). Absent = built-in canonical poses (LFE direct,
-    /// the rest virtualized). Reuses the speaker-layout schema so the Studio 3D
-    /// editor can edit it.
+    /// Legacy single virtual bed for channel-based content, read for
+    /// migration only: it becomes `placement.generic` in manual mode with
+    /// these entries, and is dropped on the next save. See `placement`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub virtual_bed: Option<crate::speaker_layout::SpeakerLayout>,
+    /// Where fixed channels go, per source family: a mode (`sphere`, `room`,
+    /// `manual`) and the family's entries (`spatialize`, `gain_db`, and the
+    /// pose in manual mode), families inheriting from `generic`. Absent =
+    /// every family at its built-in default (Auro-3D a sphere, the rest the
+    /// room model, LFE direct). See `renderer::placement`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement: Option<crate::placement::PlacementConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spread_from_distance: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -410,6 +413,9 @@ pub struct BinauralConfig {
     /// Distance low-pass on the direct path (air absorption). Default true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub air_absorption: Option<bool>,
+    /// Diffuse-field equalisation of the HRIR set. Default false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diffuse_field_eq: Option<bool>,
     /// How finely a direction must change before its HRIR is rebuilt:
     /// `"exact"` (default, bit-exact) | `"fine"` | `"balanced"` | `"coarse"`.
     /// Anything but `exact` trades fidelity for speed — see
@@ -439,6 +445,15 @@ pub struct ReverbConfig {
     /// Pre-delay (ms).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub predelay_ms: Option<f32>,
+    /// Scale on the delay-line lengths (0.5–2, 1 = nominal).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<f32>,
+    /// Decay time below ~250 Hz as a ratio of `rt60_s` (0.25–4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rt60_low_ratio: Option<f32>,
+    /// Decay time above ~4 kHz as a ratio of `rt60_s` (0.25–4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rt60_high_ratio: Option<f32>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,
@@ -463,6 +478,9 @@ pub struct ReflectionsConfig {
     /// Per-reflection wall gain (0..1).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<f32>,
+    /// High-frequency cutoff of the walls (Hz, 1000–20000; 20000 = none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wall_cutoff_hz: Option<f32>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,
@@ -482,6 +500,12 @@ pub struct HeadTrackingConfig {
     /// Absent until the tracker has been recentered (identity = uncentered).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_quat: Option<[f32; 4]>,
+    /// Sensor-to-head axis calibration quaternion `[w, x, y, z]` (see the
+    /// three-pose calibration in `BINAURAL.md`), persisted like the
+    /// reference. Absent until calibrated (identity = sensor axes are the
+    /// head's).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub axes_quat: Option<[f32; 4]>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,
@@ -491,10 +515,12 @@ pub struct HeadTrackingConfig {
 pub enum InputModeConfig {
     #[serde(rename = "pipe_bridge", alias = "bridge")]
     Bridge,
-    #[serde(rename = "pipewire", alias = "live")]
-    Live,
-    #[serde(rename = "pipewire_bridge")]
-    PipewireBridge,
+    /// The PipeWire sink. `pipewire_bridge` was its name while a PCM-only
+    /// sink held `pipewire` / `live`; all three still deserialize here, so a
+    /// config saved under any of them keeps loading instead of falling back
+    /// to defaults.
+    #[serde(rename = "pipewire", alias = "pipewire_bridge", alias = "live")]
+    Pipewire,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -545,8 +571,6 @@ pub struct LiveInputConfig {
     pub channels: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample_rate: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sample_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub map: Option<InputMapModeConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -1,0 +1,15 @@
+# Architecture ratchet baseline: the violations of each rule, per file,
+# that the boundary refactor has not removed yet. See tests/architecture.rs,
+# ARCHITECTURE.md and docs/studio-egui-boundary-plan.md.
+#
+# Counts only ever go down. After removing a violation, regenerate with
+#   UPDATE_ARCHITECTURE_BASELINE=1 cargo test --test architecture
+# and commit this file with the change.
+#
+# Totals:
+#   osc-address      0
+#   raw-send         0
+#   side-effect      0
+#   frame-tick       0
+#
+# rule            file                                      count

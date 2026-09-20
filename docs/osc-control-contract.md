@@ -289,9 +289,14 @@ exhaustive machine-readable list.
   `capabilities`, `config/saved`, `config/save_error`, `shutdown` (goodbye
   broadcast on graceful engine teardown, one string arg with the reason;
   clients should treat the connection as gone and re-register with the next
-  instance).
+  instance). The snapshot travels as one OSC bundle, or as several
+  consecutive bundles when it would not fit a UDP datagram (65 000 bytes);
+  `snapshot_complete` is always its last message, so a client acts on that
+  marker, never on the bundle boundary.
 - **Render** — `render/version`, `render/config_path`, `render/config_status`,
-  `render/bridge_path`, `render/bridge_error`, `vbap/allow_negative_z`,
+  `render/bridge_path`, `render/bridge_error` (bounded to 2 KB: the first
+  line and the distinct verdicts of a plugin load failure, the full report
+  stays in the renderer log), `vbap/allow_negative_z`,
   `render_evaluation/*` (mirrors of the control resolutions), `speakers`,
   `speakers/recomputing`, `speakers/recompute_error`, `layout`.
 - **Head tracking** — `head_pose` (4-float quaternion `w,x,y,z`, broadcast at

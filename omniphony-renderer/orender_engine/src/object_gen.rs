@@ -52,10 +52,51 @@ pub struct ObjectGenParamSpec {
     pub unit: &'static str,
 }
 
+/// What a synthesized object *is*, as the generator that made it knows.
+///
+/// Clients used to read this off the object's name with a regular expression
+/// (`^Ambience_`, `^Phantom_`, …), which meant the classification lived in the
+/// consumer and a rename silently reclassified everything. Same reasoning as
+/// `ObjectMeta::fixed` — see `docs/channel-object-contract.md`.
+///
+/// This is the *kind*, not the badge: turning `Phantom_L_C` into the label
+/// `L·C` stays a display concern and stays in the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjectKind {
+    /// An ordinary object carried by the stream.
+    #[default]
+    Dynamic,
+    /// Synthesized to fill the height layer from a 2-D bed.
+    Height,
+    /// Extracted from between channels, or relocalized from one.
+    Phantom,
+}
+
+impl ObjectKind {
+    /// Spelling on the wire. Empty for `Dynamic`, so the common case costs
+    /// nothing and an older client reading an absent field sees the same.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            ObjectKind::Dynamic => "",
+            ObjectKind::Height => "height",
+            ObjectKind::Phantom => "phantom",
+        }
+    }
+
+    /// Parse the wire spelling; anything unrecognised is `Dynamic`.
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "height" => ObjectKind::Height,
+            "phantom" => ObjectKind::Phantom,
+            _ => ObjectKind::Dynamic,
+        }
+    }
+}
+
 /// One synthesized object the generator emits. Position/name are static for a
 /// given layout+input (planned in [`ObjectGenerator::prepare`]); only the audio
 /// content varies per frame.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SynthObjectSpec {
     /// Display name, surfaced over OSC to Studio (3D view + object list).
     pub name: String,
@@ -66,6 +107,9 @@ pub struct SynthObjectSpec {
     pub gain_db: i8,
     /// Object spatial extent `(w, d, h)` ∈ [0, 1]³.
     pub size: [f32; 3],
+    /// What this object is. Defaults to [`ObjectKind::Dynamic`], so a
+    /// generator that does not set it behaves as before.
+    pub kind: ObjectKind,
 }
 
 /// Read-only environment for [`ObjectGenerator::prepare`].
@@ -251,6 +295,11 @@ pub fn input_has_height(labels: &[RChannelLabel]) -> bool {
                 | RChannelLabel::Tbr
                 | RChannelLabel::Tc
                 | RChannelLabel::Tfc
+                | RChannelLabel::Lh
+                | RChannelLabel::Rh
+                | RChannelLabel::Ch
+                | RChannelLabel::Lhs
+                | RChannelLabel::Rhs
         )
     })
 }
@@ -322,6 +371,14 @@ pub(crate) fn channel_3d_position(
     placement: SurroundPlacement,
 ) -> Option<[f64; 3]> {
     use RChannelLabel::*;
+    // The height tier is on the wall above its floor speaker (the room
+    // model's corner for it), following the surround pair's Side/Back choice.
+    if matches!(label, Lh | Rh | Ch | Lhs | Rhs) {
+        let (_, x, y, z) = crate::virtual_bed::fallback_virtual_bed_pose(label, use_7_1)?;
+        let (x, y, z) = crate::virtual_bed::surround_placement_override(label, use_7_1, placement)
+            .unwrap_or((x, y, z));
+        return Some([x as f64, y as f64, z as f64]);
+    }
     let top = match label {
         Tfl => [-1.0, 1.0, 1.0],
         Tfr => [1.0, 1.0, 1.0],
@@ -403,6 +460,7 @@ impl ObjectGenerator for CopyUpGenerator {
                 position,
                 gain_db: GAIN_DB,
                 size: SIZE,
+                kind: ObjectKind::Height,
             });
         }
         specs
@@ -729,12 +787,14 @@ impl ObjectGenerator for PadGenerator {
                 position: pos_l,
                 gain_db: PAD_GAIN_DB,
                 size: SIZE,
+                kind: ObjectKind::Height,
             });
             specs.push(SynthObjectSpec {
                 name: name_r.to_string(),
                 position: pos_r,
                 gain_db: PAD_GAIN_DB,
                 size: SIZE,
+                kind: ObjectKind::Height,
             });
         }
 
@@ -756,6 +816,7 @@ impl ObjectGenerator for PadGenerator {
                 position,
                 gain_db: PAD_GAIN_DB,
                 size: SIZE,
+                kind: ObjectKind::Height,
             });
         }
         specs
@@ -1304,6 +1365,7 @@ impl ObjectGenerator for DiracGenerator {
                 position: *pos,
                 gain_db: DIRAC_GAIN_DB,
                 size: DIRAC_SIZE,
+                kind: ObjectKind::Height,
             })
             .collect();
         self.objects = specs.len();

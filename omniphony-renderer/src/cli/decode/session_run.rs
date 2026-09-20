@@ -7,6 +7,7 @@ use super::decoder_thread::{
 use super::handler::DecodeHandler;
 use super::idle_feed::{IdleFeedInputs, IdleFeeder};
 use super::live_input::{LiveBridgeRuntimeConfig, spawn_live_input_manager};
+use super::output::OutputClosed;
 use super::state::FrameHandlerContext;
 use crate::cli::command::{Cli, EvaluationModeArg, OutputBackend, RenderArgSources, RenderArgs};
 use anyhow::Result;
@@ -450,6 +451,11 @@ fn handle_audio_message(
         return handler.poll_runtime_state();
     }
     let frame = decoded.frame;
+    if let Some(declaration) = decoded.declaration {
+        handler.spatial.source_family =
+            renderer::placement::SourceFamily::from_declared(&declaration.family);
+        handler.spatial.declared_poses = declaration.poses;
+    }
     if frame.is_new_segment {
         handler.spatial.segment_start_samples = handler.session.decoded_samples;
         // Use the live-active backend (not the launch one) so a segment
@@ -482,7 +488,9 @@ fn run_standby_until_resume(
     handler: &mut DecodeHandler,
 ) {
     sys::shutdown::take_standby_request();
-    handler.output.audio_writer = None;
+    let _ = handler
+        .output
+        .invalidate_writer(handler.input_control.as_deref());
     // Discard any frames the decoder rendered while standing by so the decoder
     // thread never blocks on a full channel and no stale audio is played on
     // resume.
@@ -568,17 +576,9 @@ fn pump_idle_feed(
             live.speaker_test.is_some() || live.object_test.is_some(),
         )
     };
-    // PipeWire live capture delivers silence frames on the graph clock all by
-    // itself when idle — that mode never needs (or wants) a second driver.
-    let input_self_feeding = handler
-        .input_control
-        .as_ref()
-        .map(|control| control.applied_snapshot().active_mode == audio_input::InputMode::Live)
-        .unwrap_or(false);
     let inputs = IdleFeedInputs {
         arm_gen,
         test_active,
-        input_self_feeding,
         sample_rate: handler.session.final_sample_rate,
     };
     let Some(chunk) = feeder.poll(std::time::Instant::now(), &inputs) else {
@@ -608,6 +608,7 @@ fn pump_idle_feed(
         DecodedAudioData {
             source: DecodedSource::Bridge,
             frame,
+            declaration: None,
             decode_time_ms: 0.0,
             sent_at: std::time::Instant::now(),
         },
@@ -635,7 +636,12 @@ fn process_decoder_messages(
                     break;
                 }
                 handler.poll_runtime_state()?;
-                pump_idle_feed(&mut idle_feeder, handler, ctx, drain_tx)?;
+                if let Err(err) = pump_idle_feed(&mut idle_feeder, handler, ctx, drain_tx) {
+                    if end_run_if_output_closed(&err) {
+                        break;
+                    }
+                    return Err(err);
+                }
                 continue;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -648,7 +654,12 @@ fn process_decoder_messages(
                 if handler.should_accept_source(frame.source) {
                     idle_feeder.note_real_frame(std::time::Instant::now());
                 }
-                handle_audio_message(handler, frame, ctx)?
+                if let Err(err) = handle_audio_message(handler, frame, ctx) {
+                    if end_run_if_output_closed(&err) {
+                        break;
+                    }
+                    return Err(err);
+                }
             }
             Ok(DecoderMessage::FlushRequest(source)) => {
                 if handler.should_accept_source(source) {
@@ -669,6 +680,19 @@ fn process_decoder_messages(
     }
 
     Ok(())
+}
+
+/// A downstream consumer closing the `file` sink is the end of the output,
+/// not a fault: log it once, ask for a clean shutdown (the decoder thread is
+/// still reading its input and needs waking) and let the caller leave the
+/// loop. Any other error is left to propagate.
+fn end_run_if_output_closed(err: &anyhow::Error) -> bool {
+    if !err.is::<OutputClosed>() {
+        return false;
+    }
+    log::info!("Output consumer closed the pipe; stopping the render loop");
+    sys::shutdown::request_shutdown();
+    true
 }
 
 fn begin_shutdown_if_requested() -> bool {
@@ -697,7 +721,16 @@ fn complete_render_run(
     args: &RenderArgs,
     is_shutdown: bool,
 ) -> Result<()> {
-    match prepared.decode_thread.join() {
+    // Close the frame channel before joining. It is bounded, and the decoder
+    // may be blocked in `send` on a full one (file-sink backpressure at the
+    // moment the run stopped); with nothing receiving any more that send would
+    // never return, and neither would the join. A closed channel makes it
+    // fail, and the decoder stops on that.
+    let PreparedDecodeRun {
+        rx, decode_thread, ..
+    } = prepared;
+    drop(rx);
+    match decode_thread.join() {
         Ok(Ok(())) => {
             if is_shutdown {
                 log::info!("Decoder stopped cleanly");
@@ -750,7 +783,7 @@ fn finalize_render_run(
 ///
 /// Only one component may own the FIFO drain at a time, so this thread acts
 /// only when pacing is enabled AND the active input mode is `Bridge`; in
-/// Live / PipewireBridge the input RT callback owns it and tokens are dropped.
+/// `Pipewire` the input RT callback owns it and tokens are dropped.
 fn spawn_pacer_drain_thread(
     input_control: std::sync::Arc<audio_input::InputControl>,
     drain_rx: mpsc::Receiver<u64>,

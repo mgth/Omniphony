@@ -1,11 +1,13 @@
 use super::output::AudioWriter;
 use crate::cli::command::{OutputBackend, OutputFileFormatArg};
+use audio_input::InputControl;
 use audio_output::AdaptiveResamplingConfig;
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::PipewireBufferConfig;
-use bridge_api::RCoordinateFormat;
+use bridge_api::{RChannelPose, RCoordinateFormat};
 use orender_engine::osc::OscSender;
 use renderer::metering::AudioMeter;
+use renderer::placement::SourceFamily;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -131,6 +133,12 @@ pub struct SpatialState {
     /// Cached object↔channel declaration from the bridge (sparse emission),
     /// sorted by channel.
     pub object_channels: Vec<(u32, usize)>,
+    /// The bridge's declaration for the current labels, as last sent by the
+    /// decoder thread (`DecodedAudioData::declaration`): the family whose
+    /// placement policy applies, and the poses the format states. Kept
+    /// across segment resets: the decoder thread re-sends on a label change.
+    pub source_family: SourceFamily,
+    pub declared_poses: Vec<RChannelPose>,
     pub object_names: std::collections::HashMap<u32, String>,
     pub au_index: u64,
     pub segment_index: u32,
@@ -151,6 +159,8 @@ impl Default for SpatialState {
             bed_events: Vec::new(),
             channel_objects: orender_engine::channel_objects::ChannelObjectStages::new(),
             object_channels: Vec::new(),
+            source_family: SourceFamily::Generic,
+            declared_poses: Vec::new(),
             object_names: std::collections::HashMap::new(),
             au_index: 0,
             segment_index: 0,
@@ -212,9 +222,22 @@ impl Default for OutputState {
 }
 
 impl OutputState {
-    pub fn invalidate_writer(&mut self) -> Option<AudioWriter> {
+    /// Retire the audio writer so the next frame builds a fresh one.
+    ///
+    /// The writer's cross-crate wiring goes with it: a PipeWire writer leaves
+    /// its pacer handle on the `InputControl`, and the input thread keeps
+    /// draining that handle on every chunk until something replaces it. The
+    /// control is taken here so the handle is cleared in the same step; the
+    /// next writer installs its own when it is built.
+    pub fn invalidate_writer(
+        &mut self,
+        input_control: Option<&InputControl>,
+    ) -> Option<AudioWriter> {
         self.output_init_failed = false;
         self.audio_writer_channels = None;
+        if let Some(control) = input_control {
+            control.clear_output_pacer();
+        }
         self.audio_writer.take()
     }
 

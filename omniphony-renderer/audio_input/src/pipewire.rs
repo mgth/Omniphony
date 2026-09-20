@@ -1,3 +1,4 @@
+use crate::pipewire_node_conflict::warn_on_duplicate_live_input_node;
 use crate::pipewire_pods::{
     IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ, IEC958_CODECS_PROP, IEC958_DTS_CHANNELS,
     IEC958_DTS_RATE_HZ, IEC958_DTSHD_CHANNELS, IEC958_DTSHD_RATE_HZ,
@@ -405,6 +406,12 @@ where
     let core = context
         .connect_rc(None)
         .map_err(|e| anyhow!("Failed to connect to PipeWire core: {e:?}"))?;
+
+    // Another client already holding this name wins the default-sink
+    // resolution and takes every player with it, while this renderer looks
+    // healthy. One registry round trip before publishing, on this main loop,
+    // off the realtime path; it warns, it never renames the node.
+    warn_on_duplicate_live_input_node(&mainloop, &core, input_control.as_ref(), &config.node_name);
 
     let requested_latency_frames =
         ((config.target_latency_ms as u64 * config.sample_rate_hz as u64) / 1000).max(1) as u32;

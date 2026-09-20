@@ -1,6 +1,7 @@
 use super::state::{OutputState, RuntimeOutputState};
 use crate::cli::command::{OutputBackend, OutputFileFormatArg};
 use anyhow::Result;
+use audio_input::InputControl;
 use audio_output::{AdaptiveResamplingConfig, AudioControl};
 use std::str::FromStr;
 
@@ -17,6 +18,9 @@ pub struct OutputRuntimeCoordinator<'a> {
     output: &'a mut OutputState,
     runtime: &'a mut RuntimeOutputState,
     audio_control: Option<&'a AudioControl>,
+    /// Loses its pacer handle whenever the writer is retired here; see
+    /// [`OutputState::invalidate_writer`].
+    input_control: Option<&'a InputControl>,
 }
 
 impl<'a> OutputRuntimeCoordinator<'a> {
@@ -24,11 +28,13 @@ impl<'a> OutputRuntimeCoordinator<'a> {
         output: &'a mut OutputState,
         runtime: &'a mut RuntimeOutputState,
         audio_control: Option<&'a AudioControl>,
+        input_control: Option<&'a InputControl>,
     ) -> Self {
         Self {
             output,
             runtime,
             audio_control,
+            input_control,
         }
     }
 
@@ -94,7 +100,7 @@ impl<'a> OutputRuntimeCoordinator<'a> {
     fn flush_and_invalidate_writer(&mut self) {
         match output_backend_supported_for_runtime_reset() {
             true => {
-                if let Some(mut writer) = self.output.invalidate_writer() {
+                if let Some(mut writer) = self.output.invalidate_writer(self.input_control) {
                     let _ = writer.flush();
                 }
                 self.output.reset_realtime_output_tracking();

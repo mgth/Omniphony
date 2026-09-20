@@ -4,12 +4,16 @@ Thanks for your interest in Omniphony! This guide covers how to build, test, and
 contribute to the suite — with a focus on the most common contribution:
 **adding your own spatial render backend**.
 
-Omniphony is two main components:
+Omniphony has a renderer and two Studio frontends:
 
 - **`omniphony-renderer/`** — the real-time decoding, spatial rendering, and OSC
   control engine (a Cargo workspace of several crates).
 - **`omniphony-studio/`** — the supervision / 3D-visualization / live-control
   desktop app (Tauri + web frontend).
+
+- **`omniphony-studio-egui/`** — native Studio, with separate core, scene and UI crates.
+  Start with its [contributor guide](omniphony-studio-egui/CONTRIBUTING.md) for
+  a first panel change or a toolkit upgrade.
 
 Most of this guide is about the renderer, since that is where rendering backends
 live and where the realtime contract matters.
@@ -45,13 +49,11 @@ cargo test                       # run the full test suite (incl. doctests)
 cargo fmt --all -- --check       # formatting must be clean
 ```
 
-CI (`.github/workflows/ci.yml`) is the Linux integration gate on pushes/PRs to
-`main` and `release`. It runs exactly the three commands above (formatting,
-build, full tests including doctests) and also builds the Studio frontend.
-It deliberately does **not** bundle the Tauri app or build the Windows/ASIO
-target. `clippy` is **not** gated yet (there is a known backlog of warnings,
-some in hot audio loops); please don't introduce new ones, but a green build
-does not require clippy.
+CI (`.github/workflows/ci.yml`) checks formatting, builds and tests the renderer
+and native Studio, checks the Studio frontend and contracts, and compiles the
+platform targets. Consult the workflow for the exact current matrix; release
+bundling is separate. Clippy is not gated yet because of an existing warning
+backlog; avoid introducing new warnings.
 
 Before opening a PR, make sure `cargo fmt --all -- --check`, `cargo build`, and
 `cargo test` all pass locally.
@@ -170,6 +172,10 @@ for the full contract, the wide matrix, and how deferred thresholds are tracked.
 - Target `main`.
 - Keep PRs focused; describe what changed and why.
 - Make sure the three CI commands (fmt check, build, test) pass locally first.
+- **Changed a `Cargo.toml`? Commit the regenerated `Cargo.lock` with it.** CI
+  builds with `--locked`, so it fails rather than resolving a dependency the
+  repository has not recorded. Each workspace has its own lock:
+  `omniphony-renderer/`, `omniphony-studio-egui/`, `omniphony-studio/src-tauri/`.
 
 By contributing, you agree that your contributions are licensed under the
 project's `GPL-3.0-or-later` license.

@@ -94,6 +94,63 @@ impl HeadPose {
         qz.mul(qx).mul(qy).normalized()
     }
 
+    /// The rotation that maps a vector's coordinates in the frame whose axes
+    /// are `right`, `front`, `up` (given in the source frame, orthonormal)
+    /// onto the source frame's own axes — i.e. `rotate(v)` returns
+    /// `[right·v, front·v, up·v]`. Standard rotation-matrix-to-quaternion
+    /// conversion of the matrix whose rows are the three axes.
+    pub fn from_rows(right: [f32; 3], front: [f32; 3], up: [f32; 3]) -> Self {
+        let m = [right, front, up];
+        let tr = m[0][0] + m[1][1] + m[2][2];
+        let (w, x, y, z) = if tr > 0.0 {
+            let s = (tr + 1.0).sqrt() * 2.0;
+            (
+                0.25 * s,
+                (m[2][1] - m[1][2]) / s,
+                (m[0][2] - m[2][0]) / s,
+                (m[1][0] - m[0][1]) / s,
+            )
+        } else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
+            let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+            (
+                (m[2][1] - m[1][2]) / s,
+                0.25 * s,
+                (m[0][1] + m[1][0]) / s,
+                (m[0][2] + m[2][0]) / s,
+            )
+        } else if m[1][1] > m[2][2] {
+            let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+            (
+                (m[0][2] - m[2][0]) / s,
+                (m[0][1] + m[1][0]) / s,
+                0.25 * s,
+                (m[1][2] + m[2][1]) / s,
+            )
+        } else {
+            let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+            (
+                (m[1][0] - m[0][1]) / s,
+                (m[0][2] + m[2][0]) / s,
+                (m[1][2] + m[2][1]) / s,
+                0.25 * s,
+            )
+        };
+        Self::from_quat(w, x, y, z)
+    }
+
+    /// Unit rotation axis of this rotation, for a positive angle in
+    /// `(0, π]` (the sign of `w` is normalised first: `q` and `−q` are one
+    /// rotation). `None` for a rotation too small to have an axis.
+    pub fn axis(self) -> Option<[f32; 3]> {
+        let sign = if self.w < 0.0 { -1.0 } else { 1.0 };
+        let (x, y, z) = (self.x * sign, self.y * sign, self.z * sign);
+        let n = (x * x + y * y + z * z).sqrt();
+        if n < 1e-4 {
+            return None;
+        }
+        Some([x / n, y / n, z / n])
+    }
+
     /// Hamilton product `self * rhs`.
     pub fn mul(self, r: HeadPose) -> HeadPose {
         HeadPose {
@@ -188,6 +245,35 @@ mod tests {
         let p = HeadPose::from_euler_deg(37.0, -12.0, 5.0);
         let v = [0.3, -0.7, 0.5];
         approx(p.conjugate().rotate(p.rotate(v)), v);
+    }
+
+    /// `from_rows` inverts `rotate`: the rows of a rotation's matrix give
+    /// back the rotation, and the identity frame gives the identity.
+    #[test]
+    fn from_rows_is_the_inverse_of_rotate() {
+        let q = HeadPose::from_euler_deg(37.0, -12.0, 5.0);
+        // Rows of R(q): R·e_i are the columns, so the rows are R^T's columns;
+        // build them by rotating the unit vectors with the conjugate.
+        let inv = q.conjugate();
+        let row = |e: [f64; 3]| {
+            let v = inv.rotate(e);
+            [v[0] as f32, v[1] as f32, v[2] as f32]
+        };
+        let back = HeadPose::from_rows(
+            row([1.0, 0.0, 0.0]),
+            row([0.0, 1.0, 0.0]),
+            row([0.0, 0.0, 1.0]),
+        );
+        let v = [0.3, -0.7, 0.5];
+        approx(back.rotate(v), q.rotate(v));
+        let id = HeadPose::from_rows([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+        approx(id.rotate(v), v);
+        // Axis of a yaw is up; of a nod, the right axis.
+        let up = HeadPose::from_euler_deg(60.0, 0.0, 0.0).axis().unwrap();
+        assert!((up[2] - 1.0).abs() < 1e-5, "{up:?}");
+        let right = HeadPose::from_euler_deg(0.0, 40.0, 0.0).axis().unwrap();
+        assert!((right[0] - 1.0).abs() < 1e-5, "{right:?}");
+        assert!(HeadPose::identity().axis().is_none());
     }
 
     #[test]

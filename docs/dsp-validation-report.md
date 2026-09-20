@@ -212,6 +212,16 @@ interpolating it.
 deferred against the bundled set. This is a genuine finding, and it is the one
 the false ITD alarm was standing in front of.
 
+*Addendum, 2026-09-02.* Resolved by storing every measured response as its
+minimum-phase reconstruction (`binaural/measured.rs`): the magnitude is kept
+exactly and the onset of every response sits at the origin by construction, so
+the blend no longer combs. The gate is live again, restated on the property
+the contract actually names — the onset of each ear's response, per direction
+— rather than the cross-correlation lag between the two ears. That lag was
+never the right instrument: between a bright and a heavily shadowed response
+its peak sits at their group-delay difference (still −4.3 samples at +90° with
+both onsets at tap 0), which is part of the head shadow, not a bulk delay.
+
 ## VBAP: one root cause, two symptoms, and a trade-off
 
 Both VBAP deferrals come from the same place. Every shipped layout is a stack of

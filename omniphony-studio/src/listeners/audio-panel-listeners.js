@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
-import { t } from '../i18n.js';
+import { t, tf } from '../i18n.js';
 import { updateMasterGainUI, updateLoudnessDisplay, updateAutoGainUI, updateAutoGainCeilingUI } from '../controls/master.js';
 import { updateAdaptiveResamplingUI, resetAdaptiveResamplingAdvancedDirtyState } from '../controls/adaptive.js';
 import {
@@ -11,7 +11,13 @@ import {
   applyAudioOutputNamedPipeNow
 } from '../controls/audio.js';
 import { bindOptionControls } from '../options-binder.js';
-import { resetVirtualBed } from '../controls/virtual-bed.js';
+import {
+  clearPlacementLayout,
+  editingFamily,
+  setPlacementFamily,
+  setPlacementMode,
+  switchPlacementToManual
+} from '../controls/virtual-bed.js';
 import { applyLatencyTargetNow, updateLatencyDisplay } from '../controls/latency.js';
 import { openAutoTuneWizard } from '../auto-tune/wizard-ui.js';
 import { toggleResamplePlot } from '../controls/resample-plot.js';
@@ -573,11 +579,39 @@ export function setupAudioPanelListeners() {
   // declared schemas; their listeners are wired at creation.
   bindOptionControls();
 
+  // Placement of the fixed channels, per source family: the tabs pick the
+  // family being edited, the mode buttons its policy (Manual seeds the
+  // family's entries with what it renders now), the reset clears its own
+  // entries after a confirmation.
+  const placementTabsEl = document.getElementById('placementFamilyTabs');
+  if (placementTabsEl) {
+    placementTabsEl.addEventListener('click', (event) => {
+      const button = event.target instanceof Element
+        ? event.target.closest('button[data-placement-family]')
+        : null;
+      if (button) setPlacementFamily(button.dataset.placementFamily);
+    });
+  }
+  const placementModesEl = document.getElementById('placementModeButtons');
+  if (placementModesEl) {
+    placementModesEl.addEventListener('click', (event) => {
+      const button = event.target instanceof Element
+        ? event.target.closest('button[data-placement-mode]')
+        : null;
+      if (!button) return;
+      const mode = button.dataset.placementMode;
+      const family = editingFamily();
+      if (mode === 'manual') switchPlacementToManual(family);
+      else setPlacementMode(family, mode === 'inherit' ? null : mode);
+    });
+  }
   const virtualBedResetBtnEl = document.getElementById('virtualBedResetBtn');
   if (virtualBedResetBtnEl) {
     virtualBedResetBtnEl.addEventListener('click', () => {
-      if (!window.confirm(t('confirm.resetVirtualBed'))) return;
-      resetVirtualBed();
+      const family = editingFamily();
+      const prompt = tf('confirm.resetPlacement', { family: t(`placement.family.${family}`) });
+      if (!window.confirm(prompt)) return;
+      clearPlacementLayout(family);
     });
   }
 

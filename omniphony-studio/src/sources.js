@@ -13,6 +13,7 @@
  * getObjectDisplayName, formatObjectLabel.
  */
 
+import { linearToDb } from './audio-math.js';
 import * as THREE from 'three';
 import {
   sourceMeshes,
@@ -75,14 +76,14 @@ import { disposeSpeakerBandBar, bandColor } from './scene/speaker-band-bars.js';
 import { createTrailRenderable } from './trails.js';
 import { shouldAppendTrailPoint, recordTrailPoint, shouldRebuildTrailGeometry } from './trails.js';
 import {
-  linearToDb,
+  formatLinearAsDb,
   meterToPercent,
   getSoloTarget,
   sendObjectMute
 } from './mute-solo.js';
 import { formatNumber } from './coordinates.js';
 import { t, tf } from './i18n.js';
-import { computeCrossoverBandLabels } from './crossover-bands.js';
+import { crossoverBandLabels } from './crossover-bands.js';
 
 // ---------------------------------------------------------------------------
 // Callbacks that other modules populate to avoid circular imports.
@@ -119,41 +120,56 @@ export function getObjectDisplayName(id) {
   return name;
 }
 
-// Classify a (possibly synthesized) object from its name into a compact badge:
-// a `type` for the list's fixed type-icon ('height' for the bed→height upmix
-// objects, 'phantom' for the phantom-extraction objects, '' otherwise) and a
-// short position `code` (e.g. FL, Ls, L·C, L). Keeps the long technical name off
-// the vertical strip so list rows don't grow tall.
+// A compact badge for the list: a `type` for the fixed type-icon, and a short
+// position `code` (FL, Ls, L·C, L) that keeps the long technical name off the
+// vertical strip.
+//
+// The `type` is the renderer's — it arrives on the object's meta as `kind`
+// (`docs/channel-object-contract.md`), the way `fixed` does. It used to be read
+// off the name here with a regular expression, which meant renaming a generator's
+// output silently reclassified it.
+//
+// The `code` stays here on purpose: turning `Phantom_L_C` into `L·C` or marking
+// the high ring with `↑` is display formatting, not something the protocol
+// should carry. The patterns below survive for that alone — they no longer
+// decide what an object *is*.
+/** The renderer's classification of an object, or '' when it says nothing. */
+function objectKind(id) {
+  const kind = sourcePositionsRaw.get(String(id))?.kind;
+  return kind === 'height' || kind === 'phantom' ? kind : '';
+}
+
 export function objectBadge(id) {
   // The injected source's name is a sentence ("Test object"), which the list's
   // vertical strip cannot carry — it is sized for codes like FL or TBR. Give it
   // one. Not translated, like every other code in that strip.
   if (String(id) === OBJECT_TEST_SOURCE_ID) return { type: '', code: 'INJ' };
+  const kind = objectKind(id);
   const name = getObjectDisplayName(id);
   // Bed→height synth objects: PAD "Ambience_FL", copy_up "Height_Ls_synth",
   // DirAC diffuse "Diffuse_TFL".
   let m = name.match(/^Ambience_(.+)$/i);
-  if (m) return { type: 'height', code: m[1] };
+  if (m) return { type: kind, code: m[1] };
   m = name.match(/^Height_(.+)_synth$/i);
-  if (m) return { type: 'height', code: m[1] };
+  if (m) return { type: kind, code: m[1] };
   m = name.match(/^Diffuse_(.+)$/i);
-  if (m) return { type: 'height', code: m[1] };
+  if (m) return { type: kind, code: m[1] };
   // Phantom extraction "Phantom_L_C" → a source localized between two channels;
   // single-label "Phantom_C" → a relocalized channel.
   m = name.match(/^Phantom_([^_]+)_(.+)$/i);
-  if (m) return { type: 'phantom', code: `${m[1]}·${m[2]}` };
+  if (m) return { type: kind, code: `${m[1]}·${m[2]}` };
   m = name.match(/^Phantom_([^_]+)$/i);
-  if (m) return { type: 'phantom', code: m[1] };
+  if (m) return { type: kind, code: m[1] };
   // Spectral extraction sectors: high ring "DirectH_FL" (marked ↑ to keep the
   // code distinct from the floor ring's), floor ring "Direct_FL".
   m = name.match(/^DirectH_(.+)$/i);
-  if (m) return { type: 'phantom', code: `${m[1]}↑` };
+  if (m) return { type: kind, code: `${m[1]}↑` };
   m = name.match(/^Direct_(.+)$/i);
-  if (m) return { type: 'phantom', code: m[1] };
+  if (m) return { type: kind, code: m[1] };
   // Default: strip a single technical prefix word, as before.
   const u = name.indexOf('_');
   const code = u >= 0 ? name.slice(u + 1) : name;
-  return { type: '', code: code || name };
+  return { type: kind, code: code || name };
 }
 
 export function formatObjectLabel(id) {
@@ -608,11 +624,11 @@ export function getSelectedSourceContribution(index) {
     if (!Number.isFinite(sourceRms) || rawGain <= 0) {
       return null;
     }
-    return sourceRms + (20 * Math.log10(rawGain));
+    return sourceRms + linearToDb(rawGain);
   })();
   return {
     gain: rawGain,
-    gainDb: linearToDb(rawGain),
+    gainDb: formatLinearAsDb(rawGain),
     resultDbfs,
     resultText: resultDbfs === null ? '\u2014 dBFS' : `${formatNumber(resultDbfs, 1)} dBFS`,
     percent: resultDbfs === null ? 0 : meterToPercent({ rmsDbfs: resultDbfs })
@@ -656,10 +672,10 @@ export function getSelectedSpeakerContributionForObject(id) {
   const sourceRms = Number(sourceMeter?.rmsDbfs);
   const resultDbfs = (!Number.isFinite(sourceRms) || rawGain <= 0)
     ? null
-    : sourceRms + (20 * Math.log10(rawGain));
+    : sourceRms + linearToDb(rawGain);
   return {
     gain: rawGain,
-    gainDb: linearToDb(rawGain),
+    gainDb: formatLinearAsDb(rawGain),
     resultDbfs,
     resultText: resultDbfs === null ? '\u2014 dBFS' : `${formatNumber(resultDbfs, 1)} dBFS`,
     percent: resultDbfs === null ? 0 : meterToPercent({ rmsDbfs: resultDbfs })
@@ -667,7 +683,7 @@ export function getSelectedSpeakerContributionForObject(id) {
 }
 
 function getCrossoverBandLabels() {
-  return computeCrossoverBandLabels(app.currentLayoutSpeakers);
+  return crossoverBandLabels(app.currentLayoutCutoffs);
 }
 
 function getSelectedSpeakerBandContributionsForObject(id) {
@@ -727,7 +743,7 @@ function updateObjectBandBars(entry, id) {
       // of crossover bands gets a colour. Same palette as the 3D speaker gauges.
       bar.style.setProperty('--band-color', bandColor(b, contributions.length));
     }
-    if (dbEl) dbEl.textContent = linearToDb(gain);
+    if (dbEl) dbEl.textContent = formatLinearAsDb(gain);
   });
 
   for (let b = 0; b < entry.bandBarsContainer.children.length; b += 1) {
@@ -1064,6 +1080,8 @@ export function updateSource(id, position) {
     // channel and its canonical label — never inferred from directSpeakerIndex.
     fixed: position?.fixed === true ? true : undefined,
     label: typeof position?.label === 'string' && position.label ? position.label : undefined,
+    // What the object is, per the renderer. See objectBadge().
+    kind: typeof position?.kind === 'string' && position.kind ? position.kind : undefined,
     t: now
   });
   sourcePositionsRaw.set(String(id), raw);

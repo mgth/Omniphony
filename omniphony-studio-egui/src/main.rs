@@ -1,0 +1,205 @@
+//! Native egui/wgpu host for Omniphony Studio.
+//!
+//! Started as phase 0 of the frontend replacement study (see README.md) to
+//! answer measurable questions — frame rate under OSC load, idle CPU, resident
+//! memory, CJK text, IME — and grown into the Studio itself. It listens to the
+//! same OSC addresses as the Tauri Studio, draws objects and speakers in a
+//! wgpu viewport hosted by an egui paint callback, and floats fixed-extent
+//! panels over the viewport so panel expansion can never resize the scene.
+
+mod app;
+mod panels;
+mod prefs;
+mod ui;
+
+// The core's modules, bound at the crate root so the UI keeps reading them as
+// `crate::model`, `crate::osc`, … . Everything they hold is the core's; this
+// crate only draws it.
+use omniphony_studio_core::{auto_tune, host, i18n, model, osc, stats};
+// The 3D scene is its own crate, for the same reason the core is: a crate
+// cannot name a toolkit it does not depend on. Bound here so the app's modules
+// keep writing `crate::view::…` and `crate::render::…`.
+use omniphony_studio_scene::{render, view};
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use clap::Parser;
+
+#[derive(Parser, Debug, Clone)]
+#[command(
+    name = "omniphony-studio-egui",
+    about = "Omniphony Studio, the native egui/wgpu host"
+)]
+pub struct Args {
+    /// UDP port to listen on for OSC (0 = OS-assigned, printed at startup).
+    #[arg(long)]
+    pub listen_port: Option<u16>,
+
+    /// Listen without registering or automatically launching a renderer.
+    #[arg(long, conflicts_with = "register")]
+    pub listen_only: bool,
+
+    /// Register with a live renderer at host:port (e.g. 127.0.0.1:9000) and
+    /// keep the heartbeat alive. Defaults to the saved renderer. Controls
+    /// modify that renderer; use --listen-only for passive inspection.
+    #[arg(long, conflicts_with = "synthetic")]
+    pub register: Option<String>,
+
+    /// Number of synthetic moving objects fed over UDP loopback (0 = off).
+    /// They travel through the real socket and parser, not a shortcut.
+    #[arg(long, default_value_t = 0)]
+    pub synthetic: u32,
+
+    /// Synthetic feed rate in Hz.
+    #[arg(long, default_value_t = 100.0)]
+    pub rate: f32,
+
+    /// Stop the synthetic feed after N seconds (0 = never). Used for the
+    /// idle-CPU gate: the window must go quiet once updates stop.
+    #[arg(long, default_value_t = 0.0)]
+    pub synthetic_stop_after: f32,
+
+    /// Directory of Studio layout files (`layouts/*.yaml`), loaded with the
+    /// host's layout loader. A live renderer replaces the selection with its
+    /// own `/state/layout`. Default: the `layouts/` shipped with this
+    /// executable, else the checkout's.
+    #[arg(long, default_value_os_t = default_layouts_dir())]
+    pub layouts_dir: PathBuf,
+
+    /// Layout key to show before a renderer sends its own (default: 7.1.4).
+    #[arg(long)]
+    pub layout_key: Option<String>,
+
+    /// CJK-capable font file appended as a fallback face. Without it egui's
+    /// bundled fonts render CJK as boxes. Default: probe common system paths.
+    #[arg(long)]
+    pub cjk_font: Option<PathBuf>,
+
+    /// Print a stats line to stdout every N seconds while frames run (0 = off).
+    #[arg(long, default_value_t = 0.0)]
+    pub stats_interval: f32,
+
+    /// Present without vsync, so the frame rate measures rendering headroom
+    /// instead of the monitor's refresh rate.
+    #[arg(long, default_value_t = false)]
+    pub no_vsync: bool,
+
+    /// Listener head model (glTF binary). Missing file → placeholder sphere.
+    /// Default: the one shipped in `assets/` with this executable, else the
+    /// checkout's.
+    #[arg(long, default_value_os_t = default_head_model())]
+    pub head_model: PathBuf,
+
+    /// Start with trails disabled (measurements).
+    #[arg(long, default_value_t = false)]
+    pub no_trails: bool,
+
+    /// Start with the object energy field volume enabled (for tests and
+    /// measurements; it is off by default like in the Studio).
+    #[arg(long, default_value_t = false)]
+    pub object_field: bool,
+}
+
+/// The head model file, under `assets/` wherever the assets are.
+const HEAD_MODEL_FILE: &str = "la_dame_de_brassempouy_centered.glb";
+
+/// The checkout this binary was built from, for a run from the source tree:
+/// the layouts and the head model are read from it when nothing ships next to
+/// the executable. Resolved at build time, so the run's working directory
+/// does not matter.
+fn checkout_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate directory has a parent")
+}
+
+fn default_layouts_dir() -> PathBuf {
+    host::bundle::resource_dir()
+        .map(|dir| dir.join("layouts"))
+        .unwrap_or_else(|| checkout_root().join("layouts"))
+}
+
+fn default_head_model() -> PathBuf {
+    host::bundle::resource_dir()
+        .map(|dir| dir.join("assets"))
+        .unwrap_or_else(|| checkout_root().join("omniphony-studio").join("assets"))
+        .join(HEAD_MODEL_FILE)
+}
+
+/// Probed in order when `--cjk-font` is not given.
+const CJK_FONT_CANDIDATES: &[&str] = &[
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJKjp-Regular.otf",
+    "/usr/share/fonts/droid/DroidSansFallbackFull.ttf",
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "C:\\Windows\\Fonts\\msgothic.ttc",
+];
+
+fn main() -> eframe::Result {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    log::info!(
+        "omniphony-studio-egui {} starting",
+        env!("CARGO_PKG_VERSION")
+    );
+    let args = Args::parse();
+
+    let mut wgpu_options = egui_wgpu::WgpuConfiguration::default();
+    if args.no_vsync {
+        wgpu_options.surface.present_mode = wgpu::PresentMode::AutoNoVsync;
+    }
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1400.0, 900.0])
+            .with_title("Omniphony Studio"),
+        renderer: eframe::Renderer::Wgpu,
+        wgpu_options,
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "omniphony-studio-egui",
+        options,
+        Box::new(move |cc| {
+            install_fonts(&cc.egui_ctx, args.cjk_font.as_deref());
+            ui::theme::install(&cc.egui_ctx);
+            Ok(Box::new(app::StudioSpike::new(cc, args)?))
+        }),
+    )
+}
+
+/// Append one CJK-capable face to both font families. egui has no system
+/// font fallback in 0.36 (it landed on `main` in September 2026), so the spike
+/// bundles nothing and borrows a system font instead.
+fn install_fonts(ctx: &egui::Context, explicit: Option<&Path>) {
+    let mut fonts = egui::FontDefinitions::default();
+    let candidates: Vec<PathBuf> = match explicit {
+        Some(p) => vec![p.to_path_buf()],
+        None => CJK_FONT_CANDIDATES.iter().map(PathBuf::from).collect(),
+    };
+    let mut installed = None;
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(&path) {
+            fonts.font_data.insert(
+                "cjk-fallback".to_owned(),
+                Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts
+                    .families
+                    .entry(family)
+                    .or_default()
+                    .push("cjk-fallback".to_owned());
+            }
+            installed = Some(path);
+            break;
+        }
+    }
+    match &installed {
+        Some(p) => log::info!("[fonts] CJK fallback face: {}", p.display()),
+        None => log::warn!("[fonts] no CJK font found; CJK labels will render as boxes"),
+    }
+    ctx.set_fonts(fonts);
+}

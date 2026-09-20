@@ -3,7 +3,7 @@ use crate::cli::command::{EvaluationModeArg, OutputBackend, RenderArgs};
 use anyhow::Result;
 use audio_input::{
     InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode, InputMode,
-    InputSampleFormat, RequestedAudioInputConfig,
+    RequestedAudioInputConfig,
 };
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::{PipewireBufferConfig, list_pipewire_output_devices};
@@ -171,8 +171,7 @@ fn build_requested_input_config(
 
     if let Some(render_cfg) = render_cfg {
         requested.mode = match render_cfg.input_mode {
-            Some(renderer::config::InputModeConfig::Live) => InputMode::Live,
-            Some(renderer::config::InputModeConfig::PipewireBridge) => InputMode::PipewireBridge,
+            Some(renderer::config::InputModeConfig::Pipewire) => InputMode::Pipewire,
             _ => InputMode::Bridge,
         };
 
@@ -189,18 +188,11 @@ fn build_requested_input_config(
                 Some(renderer::config::InputClockModeConfig::Pipewire) => InputClockMode::Pipewire,
                 Some(renderer::config::InputClockModeConfig::Upstream) => InputClockMode::Upstream,
                 Some(renderer::config::InputClockModeConfig::Dac) => InputClockMode::Dac,
-                None if requested.mode == InputMode::PipewireBridge => InputClockMode::Upstream,
+                None if requested.mode == InputMode::Pipewire => InputClockMode::Upstream,
                 None => InputClockMode::Dac,
             };
             requested.channels = live_input.channels;
             requested.sample_rate_hz = live_input.sample_rate;
-            requested.sample_format = live_input.sample_format.as_deref().and_then(|format| {
-                match format.trim().to_ascii_lowercase().as_str() {
-                    "f32" => Some(InputSampleFormat::F32),
-                    "s16" => Some(InputSampleFormat::S16),
-                    _ => None,
-                }
-            });
             requested.map_mode = match live_input.map {
                 Some(renderer::config::InputMapModeConfig::SevenOneFixed) | None => {
                     InputMapMode::SevenOneFixed
@@ -385,6 +377,15 @@ fn init_osc_runtime(
 
     if let Some(renderer) = &handler.spatial_renderer {
         let ctrl = renderer.renderer_control();
+        // The channel-object stages' schemas, as the engine's `enable_osc`
+        // publishes them. Without them this host sent Studio two empty lists:
+        // no height generator to pick and no phantom-extraction parameters.
+        ctrl.set_object_generators_schema(
+            handler.spatial.channel_objects.generator_listings_json(),
+        );
+        ctrl.set_phantom_schema(
+            orender_engine::channel_objects::ChannelObjectStages::phantom_schema_json(),
+        );
         ctrl.set_input_path(Some(input_path.display().to_string()));
         ctrl.set_bridge_path(args.bridge_path.clone());
         let persisted_bridge_path = render_cfg.as_ref().and_then(|cfg| cfg.bridge_path.clone());
@@ -486,10 +487,7 @@ fn init_osc_runtime(
             input_requested.sample_rate_hz,
             input_requested.node_name.clone(),
             input_requested.node_description.clone(),
-            input_requested.sample_format.map(|format| match format {
-                InputSampleFormat::F32 => "f32".to_string(),
-                InputSampleFormat::S16 => "s16".to_string(),
-            }),
+            None,
         );
 
         handler.audio_control = Some(Arc::clone(&audio_control));

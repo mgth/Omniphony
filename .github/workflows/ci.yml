@@ -1,10 +1,9 @@
 name: CI
 
 # Integration gate for the `main` (integration) and `release` branches.
-# Fast, Linux-only validation that formatting is clean, the renderer workspace
-# builds + all its tests pass (including doctests), and the Studio frontend
-# builds. Deliberately does NOT bundle Tauri or build the Windows/ASIO target —
-# those are covered by the heavier tag-triggered release.yml.
+# Linux validates formatting, tests, native Studio, the web frontend and the
+# Tauri host. macOS and Windows compile the renderer and native Studio; Windows
+# also checks the shared core on stable. Release archives are built by release.yml.
 #
 # NOTE on scope: `clippy` is NOT gated yet — the workspace currently has ~70
 # clippy warnings plus a couple of deny-level lints, several inside hot audio
@@ -54,9 +53,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             omniphony-renderer/target
-          # omniphony-renderer/Cargo.lock is gitignored, so key off the tracked
-          # manifests instead (cache invalidates when a dependency changes).
-          key: ${{ runner.os }}-ci-cargo-${{ hashFiles('omniphony-renderer/**/Cargo.toml') }}
+          # Keyed off the lockfile: it names the exact versions the build will
+          # use, so the cache turns over when they do and not before.
+          key: ${{ runner.os }}-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-ci-cargo-
 
       # Fast fail before the heavy build if formatting drifts.
@@ -108,6 +107,8 @@ jobs:
               libayatana-appindicator3-dev \
               librsvg2-dev \
               libpipewire-0.3-dev \
+              libxkbcommon-dev \
+              libwayland-dev \
               pkg-config; then
               break
             fi
@@ -119,15 +120,19 @@ jobs:
           done
 
       # ── Rust: build + test (strict gate) ──────────────────────────────────
-      # No --locked: omniphony-renderer/Cargo.lock is gitignored (matches
-      # release.yml, which also resolves dependencies fresh).
+      # Every cargo invocation below passes --locked. Two things follow from it:
+      # the versions built are the ones the lockfile names, so a fresh upstream
+      # release cannot change what CI compiles (a broken `jiff 0.2.36` did
+      # exactly that, on all three platforms, with no commit moving); and a
+      # lockfile left stale by a manifest edit fails the build instead of being
+      # updated in place and forgotten.
       - name: Build renderer workspace
         working-directory: omniphony-renderer
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
 
       - name: Test renderer workspace
         working-directory: omniphony-renderer
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       # Compile-only gate for the release-only perf tests. The perf-gate
       # feature is off in the normal test run and its module is compiled out
@@ -137,7 +142,15 @@ jobs:
       # PR gate (see renderer/src/spatial_renderer/perf_gate.rs module doc).
       - name: Check perf-gate feature compiles (release)
         working-directory: omniphony-renderer
-        run: cargo check --release -p renderer --features perf-gate --tests
+        run: cargo check --release -p renderer --features perf-gate --tests --locked
+
+      # The OSC contract is a crate of its own, shared by the engine and the
+      # Studio and a member of neither workspace, so `--workspace` above does
+      # not reach it. Its tests are the guard that both ends name addresses
+      # instead of spelling them — the failure it catches is a typo that
+      # compiles, matches nothing and silently disables a control.
+      - name: Test the OSC contract
+        run: cargo test --locked --manifest-path osc-contract/Cargo.toml
 
       # ── C ABI smoke test (liborender) ──────────────────────────────────────
       # Compile and run the header/link smoke test against the debug cdylib
@@ -151,6 +164,87 @@ jobs:
              -L target/debug -lorender -o target/debug/orender_smoke
           LD_LIBRARY_PATH=target/debug target/debug/orender_smoke
 
+      # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
+      # The phase-2 replacement of the web frontend. It is a separate workspace
+      # (the egui app and its toolkit-free core, omniphony-studio-core)
+      # with its own toolchain pin (egui 0.36 needs a newer rustc than the
+      # renderer workspace uses), so it gets its own steps rather than joining
+      # the workspace build above. Without them the whole port would have no
+      # gate at all: the renderer steps do not compile a line of it.
+      #
+      # The tests are pure — coordinate round-trips, formatting rules, layout
+      # arithmetic — so no display is needed. Nothing here opens a window.
+      # The crate's toolchain pin is auto-installed by rustup when cargo runs
+      # here, but a pinned toolchain comes without components: rustfmt has to
+      # be asked for by name. The version is read from the pin file so the two
+      # cannot drift apart.
+      # The native Studio's own build tree, cached separately from the
+      # renderer's. It is a different toolchain and a disjoint dependency set —
+      # egui, wgpu and their graphics stack are nobody else's — and one entry
+      # holding both would be evicted by whichever changed last. Its Cargo.lock
+      # is tracked, so the key can be exact rather than a guess from manifests.
+      - name: Cache the native Studio build
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: omniphony-studio-egui/target
+          key: ${{ runner.os }}-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-studio-egui-
+
+      - name: Install rustfmt for the native Studio toolchain
+        working-directory: omniphony-studio-egui
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install --profile minimal --component rustfmt "$channel"
+
+      - name: Check native Studio formatting
+        working-directory: omniphony-studio-egui
+        run: cargo fmt --all --check
+
+      - name: Build native Studio
+        working-directory: omniphony-studio-egui
+        run: cargo build --workspace --locked
+
+      # The core must stay drawable by any UI toolkit (ARCHITECTURE.md): no
+      # egui, eframe, wgpu, winit, accesskit or rfd anywhere in its dependency
+      # graph. The compiler already stops it importing the app; this stops a UI
+      # crate from being added to its manifest.
+      - name: Check the native Studio core has no UI dependency
+        working-directory: omniphony-studio-egui
+        run: |
+          tree=$(cargo tree -p omniphony-studio-core -e normal --prefix none --format '{p}' --locked)
+          ui=$(printf '%s\n' "$tree" \
+            | grep -E '^(egui|eframe|egui-wgpu|egui_wgpu|epaint|emath|ecolor|wgpu|wgpu-[a-z]+|winit|rfd|accesskit[a-z_-]*) ' \
+            | sort -u || true)
+          if [ -n "$ui" ]; then
+            echo "::error::omniphony-studio-core depends on UI crates (see omniphony-studio-egui/ARCHITECTURE.md):"
+            echo "$ui"
+            exit 1
+          fi
+
+      # The scene is the other half a migration carries over. wgpu is allowed
+      # here and nowhere else — it is the renderer, not a toolkit — but a
+      # toolkit in this graph would mean the 3D engine had been tied to one
+      # again, which is what phase 4 undid.
+      - name: Check the native Studio scene has no toolkit dependency
+        working-directory: omniphony-studio-egui
+        run: |
+          tree=$(cargo tree -p omniphony-studio-scene -e normal --prefix none --format '{p}' --locked)
+          ui=$(printf '%s\n' "$tree" \
+            | grep -E '^(egui|eframe|egui-wgpu|egui_wgpu|epaint|emath|ecolor|winit|rfd|accesskit[a-z_-]*) ' \
+            | sort -u || true)
+          if [ -n "$ui" ]; then
+            echo "::error::omniphony-studio-scene depends on a UI toolkit (see omniphony-studio-egui/ARCHITECTURE.md):"
+            echo "$ui"
+            exit 1
+          fi
+
+      # Includes the architecture ratchet (tests/architecture.rs), which keeps
+      # protocol, model writes, I/O and timers out of the UI crate.
+      - name: Test native Studio
+        working-directory: omniphony-studio-egui
+        run: cargo test --workspace --locked
+
       # ── Studio frontend build (no Tauri bundling / no sidecar) ─────────────
       - name: Install Studio npm dependencies
         working-directory: omniphony-studio
@@ -159,6 +253,34 @@ jobs:
       - name: Build Studio frontend
         working-directory: omniphony-studio
         run: npm run build
+
+      # This host has a separate build tree from both the renderer and native
+      # Studio. Cache it too so core changes do not rebuild GTK/WebKit every PR.
+      - name: Cache the Tauri host build
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: omniphony-studio/src-tauri/target
+          key: ${{ runner.os }}-studio-tauri-${{ hashFiles('omniphony-studio/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-studio-tauri-
+
+      # Type-check the web host as a consumer of the shared native core. No
+      # sidecar/resource bundle is needed for this compatibility gate.
+      - name: Check Tauri host against the shared core
+        working-directory: omniphony-studio/src-tauri
+        env:
+          TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":null}}'
+        run: cargo check --locked
+
+      # Drift pins for the renderer<->Studio mirrors (channel-spelling
+      # normalisation, geometry golden vectors) — hard gates, like knip below.
+      - name: Channel-alias parity tests
+        working-directory: omniphony-studio
+        run: npm run test:labels
+
+      - name: Math golden-vector tests
+        working-directory: omniphony-studio
+        run: npm run test:math
 
       # Translation parity is reported but never blocks a merge: incomplete
       # locales fall back to English at runtime, so this is a heads-up, not a
@@ -182,7 +304,7 @@ jobs:
       # silent-omission class the registry exists to kill.
       - name: Check options-schema ↔ Studio contract
         run: |
-          cargo run -q -p renderer --example dump_options_schema \
+          cargo run -q -p renderer --example dump_options_schema --locked \
             --manifest-path omniphony-renderer/Cargo.toml > /tmp/options-schema.json
           node omniphony-studio/scripts/check-options-schema.mjs /tmp/options-schema.json
 
@@ -210,12 +332,29 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             omniphony-renderer/target
-          key: macos-ci-cargo-${{ hashFiles('omniphony-renderer/**/Cargo.toml') }}
+          key: macos-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: macos-ci-cargo-
 
       - name: Build renderer workspace (macOS arm64)
         working-directory: omniphony-renderer
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
+
+      # The native Studio ships on macOS too (release.yml attaches an archive
+      # per platform). Until this step existed only the Linux job compiled it,
+      # so a platform-specific break — wgpu's Metal path, winit, the file
+      # dialogs — surfaced at release time. Same toolchain pin and build tree
+      # as the Linux job.
+      - name: Cache the native Studio build
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: omniphony-studio-egui/target
+          key: macos-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
+          restore-keys: macos-studio-egui-
+
+      - name: Build native Studio (macOS arm64)
+        working-directory: omniphony-studio-egui
+        run: cargo build --workspace --locked
 
   build-windows:
     # Windows x64 compile gate. On Windows cpal always pulls its ASIO backend
@@ -245,7 +384,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             omniphony-renderer/target
-          key: windows-ci-cargo-${{ hashFiles('omniphony-renderer/**/Cargo.toml') }}
+          key: windows-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: windows-ci-cargo-
 
       - name: Setup ASIO SDK
@@ -253,4 +392,32 @@ jobs:
 
       - name: Build renderer workspace (Windows x64)
         working-directory: omniphony-renderer
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
+
+      # The native Studio's core, which the Tauri host depends on. Its Windows
+      # path — the process-tree working-set readout — had never been compiled
+      # for Windows by anything: the Linux job builds the whole egui workspace,
+      # this job built only the renderer, and the Tauri host carried its own
+      # copy of the module. It did not compile, and nothing said so.
+      #
+      # Run from the repository root on purpose. `omniphony-studio-egui` pins a
+      # toolchain for egui's sake; the core does not need it, and the Tauri host
+      # builds it on stable, which is what this checks.
+      - name: Build the native Studio core (Windows x64)
+        run: cargo build --locked --manifest-path omniphony-studio-egui/core/Cargo.toml
+
+      # The whole native Studio, on its pinned toolchain this time: it ships
+      # on Windows (release.yml attaches an archive per platform), and the
+      # step above only proves the core. Run from inside the directory so the
+      # pin applies.
+      - name: Cache the native Studio build
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: omniphony-studio-egui/target
+          key: windows-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
+          restore-keys: windows-studio-egui-
+
+      - name: Build native Studio (Windows x64)
+        working-directory: omniphony-studio-egui
+        run: cargo build --workspace --locked

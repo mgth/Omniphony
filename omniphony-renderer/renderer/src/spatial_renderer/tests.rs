@@ -75,7 +75,7 @@ fn unified_crossover_matches_per_band() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -160,7 +160,7 @@ fn unified_polar_matches_per_band() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -263,7 +263,7 @@ fn unified_table_with_two_speaker_fallback_band() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -498,7 +498,7 @@ fn virtual_bed_mixes_direct_and_virtualized_channels() {
         SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: Some([0.0, 0.0, 0.0]),
             position: Some([0.0, 1.0, 0.0]), // front-centre object
@@ -507,7 +507,7 @@ fn virtual_bed_mixes_direct_and_virtualized_channels() {
         SpatialChannelEvent {
             channel_idx: 1,
             is_bed: true,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: None,
             position: None,
@@ -638,7 +638,7 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
         let events = vec![SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: Some([0.0, 0.0, 0.0]),
             position: Some([0.0, 1.0, 0.0]),
@@ -705,7 +705,7 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
         SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: Some([0.0, 0.0, 0.0]),
             position: Some([0.0, 1.0, 0.0]),
@@ -714,7 +714,7 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
         SpatialChannelEvent {
             channel_idx: 1,
             is_bed: true,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: None,
             position: None,
@@ -804,7 +804,7 @@ fn all_four_ramp_modes_render_distinctly() {
         vec![SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(40),
             size: Some([0.0, 0.0, 0.0]),
             position: Some(position),
@@ -936,7 +936,7 @@ fn binaural_object_ramp_advances_and_lateralizes() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([1.0, 0.0, 0.0]),
@@ -1034,7 +1034,7 @@ fn binaural_output_follows_master_gain() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.5, 1.0, 0.0]),
@@ -1127,7 +1127,7 @@ fn binaural_ear_mute_uses_dedicated_ear_params() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.0, 1.0, 0.0]),
@@ -1201,7 +1201,7 @@ fn binaural_clipping_flags_ear_and_auto_gain_reduces_master() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.5, 1.0, 0.0]),
@@ -1309,7 +1309,7 @@ fn binaural_lfe_bed_feeds_both_ears_equally_and_dry() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: true,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(0),
         size: None,
         position: None,
@@ -1430,7 +1430,7 @@ speakers:
         let event = vec![SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: None,
             position: Some(pos),
@@ -1559,7 +1559,7 @@ fn cascaded_binaural_builds_stage_and_lateralizes() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([1.0, 0.0, 0.0]),
@@ -1632,7 +1632,7 @@ fn cascaded_matches_direct_at_virtual_speaker_direction() {
         let event = vec![SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: Some([0.0, 0.0, 0.0]),
             position: Some(pos),
@@ -1685,7 +1685,7 @@ fn cascaded_binaural_follows_master_gain() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.5, 1.0, 0.0]),
@@ -1737,7 +1737,7 @@ fn cascaded_lfe_routes_direct_to_both_ears() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: true,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(0),
         size: None,
         position: None,
@@ -1790,7 +1790,7 @@ fn interp_survives_speaker_cascade_width_switch() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.4, 0.6, 0.2]),
@@ -1908,7 +1908,7 @@ fn rendered_frame_reports_the_geometry_it_produced() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(frames as u32),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -2009,7 +2009,7 @@ fn an_output_mode_change_is_ramped_not_stepped() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(frames as u32),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -2076,6 +2076,12 @@ fn crossover_renderer() -> SpatialRenderer {
     layout.speakers[1].freq_high = Some(2000.0);
     layout.speakers[2].freq_low = Some(2000.0);
     layout.speakers[2].freq_high = None;
+    renderer_for_layout(layout)
+}
+
+/// Build a renderer over an arbitrary layout with the same defaults as
+/// [`crossover_renderer`].
+fn renderer_for_layout(layout: SpeakerLayout) -> SpatialRenderer {
     SpatialRenderer::new(
         layout,
         48_000,
@@ -2195,6 +2201,122 @@ fn speaker_test_is_limited_to_the_speakers_bands() {
         sub < top * 0.25,
         "the sub's band must move far more slowly than the tweeter's \
          (sub {sub:.4}, top {top:.4})"
+    );
+}
+
+/// A direct (non-spatialized) speaker must still produce a test signal when a
+/// crossover is active.
+///
+/// Band membership is computed over spatialized speakers only, so a direct
+/// speaker appears in no band; the original band-summing injection summed
+/// nothing for it and the test was silent. A direct speaker that declares no
+/// frequency range plays the test unfiltered (programme audio reaches it by
+/// bypassing the filter bank, and nothing says what to cut) — asserted by
+/// comparing its slew ratio against the sub's: identical low-passed noise on
+/// both would mean the fallback did not engage.
+#[test]
+fn speaker_test_reaches_a_direct_speaker_despite_the_crossover() {
+    let frames = 4096;
+    let pcm = vec![0.0f32; frames];
+
+    // The fixture is the 7.1.4 preset: speaker 3 is the LFE, the preset's one
+    // non-spatialized speaker.
+    assert!(!SpeakerLayout::preset("7.1.4").unwrap().speakers[3].spatialize);
+
+    let mut channel_for = |idx: usize| -> Vec<f32> {
+        let mut r = crossover_renderer();
+        r.control.live.write().speaker_test = Some(crate::live_params::SpeakerTest {
+            speaker_idx: idx,
+            level: 0.1,
+            isolation: crate::live_params::TestIsolation::TestOnly,
+        });
+        let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+        let n = out.n_channels;
+        (0..frames).map(|f| out.samples[f * n + idx]).collect()
+    };
+
+    let direct = channel_for(3);
+    let amp: f32 = direct.iter().map(|s| s.abs()).sum::<f32>() / frames as f32;
+    assert!(
+        amp > 0.0,
+        "the direct (non-spatialized) speaker must produce a test signal"
+    );
+
+    // Unfiltered, not accidentally low-passed: full-range noise slews far
+    // faster than the sub's 80 Hz band.
+    let sub = channel_for(0);
+    let slew = |ch: &[f32]| -> f32 {
+        let amp: f32 = ch.iter().map(|s| s.abs()).sum::<f32>() / ch.len() as f32;
+        let step: f32 =
+            ch.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f32>() / (ch.len() - 1) as f32;
+        step / amp
+    };
+    assert!(
+        slew(&direct) > slew(&sub) * 4.0,
+        "the direct speaker's test must be full-range, not band-limited \
+         (direct {:.4}, sub {:.4})",
+        slew(&direct),
+        slew(&sub)
+    );
+}
+
+/// A direct speaker that declares a frequency range gets a band-limited test,
+/// even though it belongs to no crossover band.
+///
+/// Programme audio bypasses the filter bank on its way to a direct speaker,
+/// but `freq_low`/`freq_high` still describe what it can reproduce — a
+/// direct-routed sub must not be fed full-range noise. The injection builds a
+/// dedicated LR4 split at the speaker's own edges instead. Asserted like
+/// `speaker_test_is_limited_to_the_speakers_bands`: a direct sub cut at 80 Hz
+/// must slew like the spatialized sub's band, far below the tweeter's.
+#[test]
+fn a_direct_speakers_test_honours_its_declared_frequency_range() {
+    let frames = 4096;
+    let pcm = vec![0.0f32; frames];
+
+    let mut channel_for = |idx: usize, freq_high: Option<f32>| -> Vec<f32> {
+        let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
+        layout.speakers[0].freq_low = None;
+        layout.speakers[0].freq_high = Some(80.0);
+        layout.speakers[1].freq_low = Some(80.0);
+        layout.speakers[1].freq_high = Some(2000.0);
+        layout.speakers[2].freq_low = Some(2000.0);
+        layout.speakers[2].freq_high = None;
+        // Speaker 3 is the LFE, the preset's one non-spatialized speaker.
+        assert!(!layout.speakers[3].spatialize);
+        layout.speakers[3].freq_high = freq_high;
+        let mut r = renderer_for_layout(layout);
+        r.control.live.write().speaker_test = Some(crate::live_params::SpeakerTest {
+            speaker_idx: idx,
+            level: 0.1,
+            isolation: crate::live_params::TestIsolation::TestOnly,
+        });
+        let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+        let n = out.n_channels;
+        (0..frames).map(|f| out.samples[f * n + idx]).collect()
+    };
+
+    let slew = |ch: &[f32]| -> f32 {
+        let amp: f32 = ch.iter().map(|s| s.abs()).sum::<f32>() / ch.len() as f32;
+        assert!(amp > 0.0, "speaker produced no test signal");
+        let step: f32 =
+            ch.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f32>() / (ch.len() - 1) as f32;
+        step / amp
+    };
+
+    let direct_sub = slew(&channel_for(3, Some(80.0)));
+    let spatial_sub = slew(&channel_for(0, None));
+    let top = slew(&channel_for(2, None));
+
+    assert!(
+        direct_sub < top * 0.25,
+        "a direct speaker cut at 80 Hz must be band-limited, not full-range \
+         (direct sub {direct_sub:.4}, top {top:.4})"
+    );
+    assert!(
+        direct_sub < spatial_sub * 2.0 && spatial_sub < direct_sub * 2.0,
+        "the direct sub's band must move like the spatialized sub's \
+         (direct sub {direct_sub:.4}, spatialized sub {spatial_sub:.4})"
     );
 }
 
@@ -2409,7 +2531,7 @@ fn a_recycled_output_buffer_renders_identically_to_a_fresh_one() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -2455,7 +2577,7 @@ fn fir_crossover_keeps_beds_aligned_with_objects() {
         SpatialChannelEvent {
             channel_idx: 0,
             is_bed: true,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: None,
             position: None,
@@ -2464,7 +2586,7 @@ fn fir_crossover_keeps_beds_aligned_with_objects() {
         SpatialChannelEvent {
             channel_idx: 1,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: Some([0.0, 0.0, 0.0]),
             position: Some([0.0, 1.0, 0.0]),

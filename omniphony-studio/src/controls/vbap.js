@@ -4,6 +4,7 @@
  * Extracted from app.js (lines 3711-3852).
  */
 
+import { refreshVbapGridNodes } from './object-test.js';
 import { invoke } from '@tauri-apps/api/core';
 import { app, dirty } from '../state.js';
 import { t, tf, i18nState } from '../i18n.js';
@@ -801,6 +802,9 @@ export function renderVbapCartesian() {
 
 export function updateVbapCartesian() {
   dirty.vbapCartesian = true;
+  // The snap grid is served by the backend and cached, so it has to be
+  // re-fetched whenever the grid's shape changes.
+  refreshVbapGridNodes();
   scheduleUIFlush();
 }
 

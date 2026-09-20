@@ -176,6 +176,86 @@ export function objectEnergyLinear(rmsDbfs) {
   return Math.pow(10, db / 10);
 }
 
+// ---------------------------------------------------------------------------
+// Static-field plumbing, shared by the three gain-table volume providers
+// (speaker solo, global energy, discontinuity)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compare two build signatures element-wise.
+ *
+ * The gain-table fields are STATIC (a precomputed table, no live levels), so a
+ * provider skips the whole n³ resample + texture upload while nothing that
+ * shapes the field changes. Signatures are flat arrays of scalars plus the
+ * table identity, so `===` per element is the whole comparison.
+ */
+export function signaturesEqual(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function clampIdx(value, n) {
+  if (value < 0) return 0;
+  if (value > n - 1) return n - 1;
+  return value;
+}
+
+/** Nearest cell index in a (small) position array, by absolute distance. */
+function nearestIndex(positions, n, value) {
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < n; i += 1) {
+    const d = Math.abs(positions[i] - value);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/**
+ * Build the Omniphony-position → gain-table cell lookup for one decoded table.
+ *
+ * Returns `(ow, od, oh) => cellIndex`, matching the volume core's sampler
+ * signature (width, depth, height), where
+ * `gain = bands[band].gains[cellIndex]`.
+ *
+ * The width (x) and depth (y) axes are regular, so their index is a direct
+ * computation. The height (z) axis is not: `cartesian_z_axis`
+ * (`renderer/src/render_backend.rs`) lays a negative half below a positive
+ * half, so the index has to come from the real cell-centre positions the table
+ * ships. That lookup is memoised on the last height asked for — the volume core
+ * walks depth innermost with the height held constant, so one lookup serves a
+ * whole row.
+ */
+export function makeCellIndexer(table) {
+  const { nx, ny, nz, zPositions } = table;
+  const nxh = nx - 1;
+  const nyh = ny - 1;
+  const nzh = nz - 1;
+
+  let cachedOh = NaN;
+  let cachedZi = 0;
+  const lookupZi = (oh) => {
+    if (oh === cachedOh) return cachedZi;
+    cachedOh = oh;
+    cachedZi = zPositions
+      ? nearestIndex(zPositions, nz, oh)
+      : clampIdx(Math.round(((oh + 1) * 0.5) * nzh), nz);
+    return cachedZi;
+  };
+
+  return (ow, od, oh) => {
+    const xi = clampIdx(Math.round(((ow + 1) * 0.5) * nxh), nx);
+    const yi = clampIdx(Math.round(((od + 1) * 0.5) * nyh), ny);
+    return xi + nx * (yi + ny * lookupZi(oh));
+  };
+}
+
 // Reusable scratch list of active objects, refilled each tick (no per-tick alloc
 // once the array has grown to its working size). Shared across both renderers —
 // only one runs per frame, so there is no contention.

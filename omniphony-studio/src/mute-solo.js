@@ -1,7 +1,7 @@
 /**
  * Audio level utilities and mute/solo/gain logic.
  *
- * Extracted from app.js — formatLevel, meterToPercent, linearToDb, dbToLinear,
+ * Extracted from app.js — formatLevel, meterToPercent, formatLinearAsDb,
  * updateMeterUI, send*Gain, send*Mute, solo helpers, applyGroupGains,
  * getBaseGain, toggleMute, toggleSolo.
  */
@@ -10,6 +10,7 @@ import { OBJECT_TEST_SOURCE_ID } from './object-test-id.js';
 import { setObjectTestMuted } from './controls/object-test.js';
 import { invoke } from '@tauri-apps/api/core';
 import { formatNumber } from './coordinates.js';
+import { linearToDb } from './audio-math.js';
 import {
   speakerMuted,
   objectMuted,
@@ -17,8 +18,6 @@ import {
   objectManualMuted,
   speakerGainCache,
   speakerBaseGains,
-  speakerPeaks,
-  sourcePeaks,
   speakerItems,
   objectItems,
   sourceMeshes,
@@ -64,42 +63,29 @@ export function meterToPercent(meter) {
   return dbToMeterPercent(db);
 }
 
-export function linearToDb(value) {
+/**
+ * Amplitude ratio → display string, e.g. `"-12.3 dB"`.
+ *
+ * Named for what it returns: a label, not a number. For the value, use
+ * `linearToDb` in `audio-math.js`.
+ */
+export function formatLinearAsDb(value) {
   const v = Number(value);
   if (!Number.isFinite(v) || v <= 0) {
     return '-∞ dB';
   }
-  return `${(20 * Math.log10(v)).toFixed(1)} dB`;
-}
-
-export function dbToLinear(db) {
-  const v = Number(db);
-  if (!Number.isFinite(v)) {
-    return 0;
-  }
-  return Math.pow(10, v / 20);
+  return `${linearToDb(v).toFixed(1)} dB`;
 }
 
 // ---------------------------------------------------------------------------
 // Meter UI
 // ---------------------------------------------------------------------------
 
-// Shared peak-hold for the level meters: the bar (meterFill) follows the RMS,
-// while the cursor holds the engine-reported true sample peak (peakDbfs) with a
-// 1 s hold then decay. The cursor turns red (`.over`) once the held peak crosses
-// 0 dBFS, into the headroom zone.
-export function updatePeakHold(peaksMap, id, peakDb, levelPercent, now) {
-  let peak = id !== null ? peaksMap.get(id) : null;
-  if (!peak || peakDb >= (peak.db ?? METER_DB_MIN)) {
-    peak = { value: dbToMeterPercent(peakDb), db: peakDb, expires: now + 1000 };
-    if (id !== null) peaksMap.set(id, peak);
-  } else if (now > peak.expires) {
-    peak.db = Math.max(peakDb, peak.db - 2.0); // Decay DB value
-    peak.value = dbToMeterPercent(peak.db);
-    if (peak.value <= levelPercent + 0.1) peak.expires = now + 1000;
-  }
-  return peak;
-}
+// The peak cursor holds the engine-reported true sample peak so a transient
+// stays readable after it has passed. The hold and its decay are computed in
+// the backend (`src-tauri/src/peak_hold.rs`) and arrive as `peakHoldDbfs` on
+// every meter payload; the cursor turns red (`.over`) once the held peak
+// crosses 0 dBFS, into the headroom zone.
 
 export function updateMeterUI(entry, meter, type = null, id = null) {
   if (!entry) return;
@@ -111,15 +97,14 @@ export function updateMeterUI(entry, meter, type = null, id = null) {
   const levelPercent = dbToMeterPercent(peakDb);
 
   if (entry.peakCursor) {
-    const now = Date.now();
-    const peaksMap = type === 'speaker' ? speakerPeaks : sourcePeaks;
-    const peak = updatePeakHold(peaksMap, id, peakDb, levelPercent, now);
+    const holdDb = typeof meter?.peakHoldDbfs === 'number' ? meter.peakHoldDbfs : peakDb;
+    const holdPercent = dbToMeterPercent(holdDb);
 
     entry.levelText.textContent = `${formatNumber(rmsDb, 1)} dB`;
     entry.meterFill.style.setProperty('--level', `${levelPercent.toFixed(1)}%`);
-    entry.peakCursor.style.setProperty('--level', `${peak.value.toFixed(1)}%`);
-    entry.peakCursor.style.opacity = peak.value > 0.1 ? '1' : '0';
-    entry.peakCursor.classList.toggle('over', (peak.db ?? METER_DB_MIN) >= 0);
+    entry.peakCursor.style.setProperty('--level', `${holdPercent.toFixed(1)}%`);
+    entry.peakCursor.style.opacity = holdPercent > 0.1 ? '1' : '0';
+    entry.peakCursor.classList.toggle('over', holdDb >= 0);
   } else {
     entry.levelText.textContent = formatLevel(meter);
     entry.meterFill.style.setProperty('--level', `${levelPercent.toFixed(1)}%`);

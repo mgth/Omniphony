@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bridge_api::{FormatBridgeBox, RInputTransport};
+use bridge_api::{FormatBridgeBox, RChannelLabel, RChannelPose, RInputTransport};
 use spdif::SpdifParser;
 use std::io;
 use std::sync::Arc;
@@ -37,8 +37,20 @@ pub enum DecodedSource {
 pub struct DecodedAudioData {
     pub source: DecodedSource,
     pub frame: bridge_api::RDecodedFrame,
+    /// The bridge's declaration, sent with the first frame whose labels
+    /// differ from the previous frame's (the bridge lives on the decoder
+    /// thread; the handler keeps the last value it received).
+    pub declaration: Option<StreamDeclaration>,
     pub decode_time_ms: f32,
     pub sent_at: Instant,
+}
+
+/// What a bridge declares about a presentation beyond its labels: the
+/// source family (`FormatBridge::source_family`) and the poses the format
+/// states for its channels (`FormatBridge::fixed_channel_poses`).
+pub struct StreamDeclaration {
+    pub family: String,
+    pub poses: Vec<RChannelPose>,
 }
 
 pub enum DecoderMessage {
@@ -101,6 +113,8 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
         } = config;
 
         let mut frame_count: u64 = 0;
+        // Labels the bridge's declared poses were last read for.
+        let mut declared_labels: Vec<RChannelLabel> = Vec::new();
         loop {
             // Check for shutdown — do not restart after SIGTERM/SIGINT.
             if sys::ShutdownHandle::is_requested() {
@@ -343,11 +357,23 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     }
                     for frame in result.frames {
                         frame_count += 1;
+                        let declaration =
+                            if frame.channel_labels.as_slice() != declared_labels.as_slice() {
+                                declared_labels.clear();
+                                declared_labels.extend_from_slice(frame.channel_labels.as_slice());
+                                Some(StreamDeclaration {
+                                    family: bridge.source_family().to_string(),
+                                    poses: bridge.fixed_channel_poses().into_iter().collect(),
+                                })
+                            } else {
+                                None
+                            };
                         let sent_at = Instant::now();
                         if tx
                             .send(Ok(DecoderMessage::AudioData(DecodedAudioData {
                                 source: DecodedSource::Bridge,
                                 frame,
+                                declaration,
                                 decode_time_ms: per_frame_decode_time_ms,
                                 sent_at,
                             })))
@@ -500,6 +526,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             // Reset bridge for next stream.
             log::info!("Continuous mode: resetting bridge and waiting for new data...");
             bridge.reset();
+            declared_labels.clear();
 
             std::thread::sleep(std::time::Duration::from_millis(100));
         }

@@ -264,6 +264,10 @@ pub fn store_live_into_config(
                 let r = live.binaural.tracking.reference;
                 (r != renderer::binaural::HeadPose::identity()).then(|| r.to_quat_array())
             },
+            axes_quat: {
+                let a = live.binaural.tracking.axes;
+                (a != renderer::binaural::HeadPose::identity()).then(|| a.to_quat_array())
+            },
             extra: Default::default(),
         }),
         reflections: Some(renderer::config::ReflectionsConfig {
@@ -272,6 +276,7 @@ pub fn store_live_into_config(
             room_depth_m: Some(live.binaural.reflections.room_size_m[1]),
             room_height_m: Some(live.binaural.reflections.room_size_m[2]),
             level: Some(live.binaural.reflections.level),
+            wall_cutoff_hz: Some(live.binaural.reflections.wall_cutoff_hz),
             extra: Default::default(),
         }),
         reverb: Some(renderer::config::ReverbConfig {
@@ -279,9 +284,13 @@ pub fn store_live_into_config(
             level: Some(live.binaural.reverb.level),
             rt60_s: Some(live.binaural.reverb.rt60_s),
             predelay_ms: Some(live.binaural.reverb.predelay_ms),
+            size: Some(live.binaural.reverb.size),
+            rt60_low_ratio: Some(live.binaural.reverb.rt60_low_ratio),
+            rt60_high_ratio: Some(live.binaural.reverb.rt60_high_ratio),
             extra: Default::default(),
         }),
         air_absorption: Some(live.binaural.air_absorption),
+        diffuse_field_eq: Some(live.binaural.diffuse_field_eq),
         // Written just below through its descriptor, so the skip-if-default
         // rule lives in one place — this wholesale rebuild of the section runs
         // *after* `store_live_to_config` and would otherwise clobber it.

@@ -670,6 +670,14 @@ pub fn seed_control_from_render_config(
                             r.level = level.clamp(0.0, 1.0);
                         }
                     }
+                    if let Some(fc) = refl.wall_cutoff_hz {
+                        if fc.is_finite() {
+                            r.wall_cutoff_hz = fc.clamp(
+                                renderer::binaural::reflections::MIN_WALL_CUTOFF_HZ,
+                                renderer::binaural::reflections::MAX_WALL_CUTOFF_HZ,
+                            );
+                        }
+                    }
                 }
                 if let Some(rev) = bin.reverb.as_ref() {
                     let r = &mut live.binaural.reverb;
@@ -691,9 +699,30 @@ pub fn seed_control_from_render_config(
                             r.predelay_ms = pd.clamp(0.0, 100.0);
                         }
                     }
+                    use renderer::binaural::reverb::{
+                        RT60_RATIO_MAX, RT60_RATIO_MIN, SIZE_MAX, SIZE_MIN,
+                    };
+                    if let Some(size) = rev.size {
+                        if size.is_finite() && size > 0.0 {
+                            r.size = size.clamp(SIZE_MIN, SIZE_MAX);
+                        }
+                    }
+                    if let Some(ratio) = rev.rt60_low_ratio {
+                        if ratio.is_finite() && ratio > 0.0 {
+                            r.rt60_low_ratio = ratio.clamp(RT60_RATIO_MIN, RT60_RATIO_MAX);
+                        }
+                    }
+                    if let Some(ratio) = rev.rt60_high_ratio {
+                        if ratio.is_finite() && ratio > 0.0 {
+                            r.rt60_high_ratio = ratio.clamp(RT60_RATIO_MIN, RT60_RATIO_MAX);
+                        }
+                    }
                 }
                 if let Some(air) = bin.air_absorption {
                     live.binaural.air_absorption = air;
+                }
+                if let Some(eq) = bin.diffuse_field_eq {
+                    live.binaural.diffuse_field_eq = eq;
                 }
                 if let Some(ht) = bin.head_tracking.as_ref() {
                     if let Some(addr) = ht.osc_address.as_ref() {
@@ -712,6 +741,10 @@ pub fn seed_control_from_render_config(
                     // incoming OSC packet re-derives the centered pose.
                     if let Some(q) = ht.reference_quat {
                         live.binaural.tracking.reference =
+                            renderer::binaural::HeadPose::from_quat_array(q);
+                    }
+                    if let Some(q) = ht.axes_quat {
+                        live.binaural.tracking.axes =
                             renderer::binaural::HeadPose::from_quat_array(q);
                     }
                 }

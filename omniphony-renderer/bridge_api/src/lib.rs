@@ -97,6 +97,22 @@ pub enum RChannelLabel {
     /// The channel carries dynamic-object audio; its position comes from the
     /// metadata events of the object bound to it via `RObjectChannel`.
     Object = 24,
+    /// Front-left height: over the left front speaker at about 30° of
+    /// elevation (ITU-R BS.2051 `U+030`, DTS-HD `Lh`, Auro-3D `HL`). The
+    /// height tier, as distinct from the top tier above it (`Tfl`, at the
+    /// ceiling corner): a format that places speakers on both tiers names
+    /// them apart, and so does the renderer.
+    Lh = 25,
+    /// Front-right height (`U-030`, DTS-HD `Rh`, Auro-3D `HR`).
+    Rh = 26,
+    /// Centre height, over the centre speaker (`U+000`, DTS-HD `Ch`,
+    /// Auro-3D `HC`).
+    Ch = 27,
+    /// Left surround height, over the left surround at ±110° (`U+110`,
+    /// DTS-HD `Lhs`, Auro-3D `HLs`).
+    Lhs = 28,
+    /// Right surround height (`U-110`, DTS-HD `Rhs`, Auro-3D `HRs`).
+    Rhs = 29,
     Unknown = 255,
 }
 
@@ -118,6 +134,31 @@ pub struct RObjectChannel {
 pub struct RChannelGain {
     pub channel: u32,
     pub gain_db: i8,
+}
+
+/// Where a format says one of its fixed channels sits, as an absolute
+/// direction from the listener.
+///
+/// A label names a speaker; this states the angle the format puts it at,
+/// for formats that state one (Auro-3D's setup table, an ITU layout). The
+/// renderer treats it as a *default* for that label — below the user's own
+/// placement entry, above its built-in catalogue — and converts it so the
+/// channel renders at exactly that angle whatever the room ratio is, the
+/// way a polar entry of the placement layout does. It is never a per-frame
+/// value: a bridge reports poses with its channel declaration, and the
+/// host reads them only when the labels change. See
+/// [`FormatBridge::fixed_channel_poses`].
+///
+/// Angles follow the polar convention of [`REvent::pos`]: azimuth 0° =
+/// front, negative = left, positive = right, wrapped in [-180°, +180°];
+/// elevation -90° = down, +90° = up. Distance is implied: the listener's
+/// sphere.
+#[repr(C)]
+#[derive(StableAbi, Clone, Copy, Debug, PartialEq)]
+pub struct RChannelPose {
+    pub label: RChannelLabel,
+    pub azimuth_deg: f32,
+    pub elevation_deg: f32,
 }
 
 /// Spatial metadata for one payload within a decoded frame.
@@ -274,6 +315,38 @@ pub trait FormatBridge: Send + Sync + 'static {
     ///
     /// Returns `true` if the mode was successfully applied.
     fn set_drc_mode(&mut self, mode: RStr<'_>) -> bool;
+
+    /// The angles the current presentation's format states for its fixed
+    /// channels, one entry per channel it states one for (see
+    /// [`RChannelPose`]). Empty when the format states none, which is the
+    /// common case: every fixed channel then takes the renderer's own
+    /// catalogue pose for its label.
+    ///
+    /// Declaration-level, like the channel labels: the host reads it when
+    /// [`RDecodedFrame::channel_labels`] change and after [`reset`], never
+    /// per frame, so a bridge may build the list on each call. Entries whose
+    /// label is not in the current frame's labels are ignored.
+    ///
+    /// Marks the end of the `bridge_api` 0.4 method prefix: methods added
+    /// after this one in later 0.4.x releases must carry a default body, so a
+    /// bridge built against 0.4.0 keeps loading.
+    ///
+    /// [`reset`]: FormatBridge::reset
+    #[sabi(last_prefix_field)]
+    fn fixed_channel_poses(&self) -> RVec<RChannelPose>;
+
+    /// The family the current presentation's format belongs to, for the
+    /// renderer's per-family placement policy: `dolby` (AC-3, E-AC-3,
+    /// TrueHD), `dts` (DTS, DTS-HD, DTS:X), `auro` (an unfolded Auro-3D
+    /// carrier), `pcm` (plain multichannel PCM). Empty, the default, or a
+    /// name the renderer does not know, means its generic family.
+    ///
+    /// Declaration-level like the labels: read when they change, never per
+    /// frame. Added after the 0.4 prefix with a default body, so a bridge
+    /// built before it keeps loading and reads as generic.
+    fn source_family(&self) -> RString {
+        RString::new()
+    }
 }
 
 /// Owned, heap-allocated bridge trait object.
