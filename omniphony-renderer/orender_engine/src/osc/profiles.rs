@@ -19,7 +19,7 @@ use super::client_registry::OscClientRegistry;
 use super::export::build_live_state;
 use super::gaintable::GaintableCache;
 use super::recompute::trigger_layout_recompute;
-use super::transport::{broadcast_int, broadcast_string, send_raw};
+use super::transport::{broadcast_int, broadcast_string};
 
 pub(crate) fn broadcast_profiles_state(
     control: &Arc<RendererControl>,
