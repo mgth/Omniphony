@@ -191,6 +191,55 @@ mid-stream, and must not be latched by callers. (During phase 2 the old
 method remains as a deprecated alias so the trait change and the call-site
 migration can land separately.)
 
+#### Declared poses (`bridge_api` 0.4)
+
+Amendment: "a bridge never fabricates positions" was written for objects.
+Some formats *state* where their fixed channels sit — Auro-3D's setup table
+gives an angle for every speaker and asks for them equidistant from the
+listener — and a label alone cannot carry that: the renderer's default for a
+label is a corner of its room model, which moves with the room ratio, while
+the format's angle does not. So the declaration gains a second, optional
+part:
+
+```rust
+/// Where the format says a fixed channel sits: an absolute direction.
+pub struct RChannelPose { label: RChannelLabel, azimuth_deg: f32, elevation_deg: f32 }
+
+trait FormatBridge {
+    /// One entry per fixed channel the format states an angle for; empty
+    /// (the common case) when it states none.
+    fn fixed_channel_poses(&self) -> RVec<RChannelPose>;
+}
+```
+
+Rules:
+
+- Declaration-level, like the labels: the host reads it when
+  `channel_labels` change and after `reset()`, never per frame. A bridge may
+  build the list on each call. Entries whose label is not in the frame are
+  ignored.
+- The bridge describes, the renderer decides: a declared pose is the
+  format's **default** for that label. The renderer resolves a fixed
+  channel's pose from, most specific first, the user's placement layout
+  entry, the declared pose, the bundled layout, its own catalogue. The
+  surround-placement setting still applies to a 4.x/5.x source's `Ls`/`Rs`
+  after that, as it does to every other source.
+- Angles follow `REvent::pos`'s polar convention (0° front, negative left,
+  elevation up positive) and are converted so the channel renders at that
+  angle under the room in force — the same conversion a polar placement
+  entry gets — rather than being carried around by the room warp.
+- `RChannelLabel` gains the height tier `Lh`/`Rh`/`Ch`/`Lhs`/`Rhs` (30°
+  over the floor speaker of the same name: BS.2051 `U+030`/`U+000`/`U+110`,
+  Auro-3D's height layer, DTS-HD's names), distinct from the top tier
+  (`Tfl`…), which means the ceiling corners. Their catalogue pose is an
+  angle, not a corner, and the published fixed-channel catalogue says so
+  (`coord_mode: "polar"` + `azimuth`/`elevation`), so an editor defaults
+  them to polar entries.
+- 0.3 → 0.4 is an ABI break for bridges (the enum grew, the trait grew; a
+  0.3 bridge is refused at load). `fixed_channel_poses` marks the end of the
+  0.4 method prefix: methods added after it in later 0.4.x releases must
+  carry a default body.
+
 ### Rendering (engine/CLI)
 
 One render path. Per stream, the engine builds a **channel plan** from
@@ -202,7 +251,7 @@ plan and rendered from their events, exactly as the spatial path does today.
 - The plan is cached; per-frame work is table lookups only. No allocation,
   no hashmap access, no re-derivation of static data in the audio path.
 - The plan is recomputed only on a **declaration change** (labels changed,
-  object set changed, mode/layout changed). Every plan transition is ramped
+  declared poses changed, object set changed, mode/layout changed). Every plan transition is ramped
   (`PLAN_TRANSITION_RAMP`, proposed 20 ms) — this covers stream start
   (pre-metadata frames), an extension appearing/disappearing mid-stream
   (the DTS:X fold/unfold click), and live mode switches, with one mechanism.

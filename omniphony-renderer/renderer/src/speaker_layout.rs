@@ -60,6 +60,11 @@ pub fn legacy_bed_id(label: bridge_api::RChannelLabel) -> Option<usize> {
         Label::Rb => Some(7),
         Label::Tfl => Some(8),
         Label::Tfr => Some(9),
+        // The height tier's front pair fills the same two height slots: the
+        // export shape has room for one front-height pair, whichever tier
+        // the presentation names it from.
+        Label::Lh => Some(8),
+        Label::Rh => Some(9),
         _ => None,
     }
 }

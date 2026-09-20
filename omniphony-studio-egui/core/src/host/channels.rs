@@ -18,32 +18,40 @@ use crate::model::app_state::{AppState, RoomRatio};
 /// Editable fixed-channel set with its default ADM cartesian poses (X
 /// left/right, Y rear/front, Z down/up; ear level Z = 0), used until the
 /// renderer publishes its catalogue. LFE channels default to direct because
-/// they cannot be VBAP-panned.
-const FALLBACK_BED: &[(&str, f64, f64, f64, bool)] = &[
-    ("L", -1.0, 1.0, 0.0, true),
-    ("R", 1.0, 1.0, 0.0, true),
-    ("C", 0.0, 1.0, 0.0, true),
-    ("LFE", 0.0, 1.0, 0.0, false),
-    ("Ls", -1.0, 0.0, 0.0, true),
-    ("Rs", 1.0, 0.0, 0.0, true),
-    ("Lb", -1.0, -1.0, 0.0, true),
-    ("Rb", 1.0, -1.0, 0.0, true),
-    ("TFL", -1.0, 1.0, 1.0, true),
-    ("TFR", 1.0, 1.0, 1.0, true),
-    ("TBL", -1.0, -1.0, 1.0, true),
-    ("TBR", 1.0, -1.0, 1.0, true),
-    ("Lsc", -0.5, 1.0, 0.0, true),
-    ("Rsc", 0.5, 1.0, 0.0, true),
-    ("Cb", 0.0, -1.0, 0.0, true),
-    ("Lsd", -1.0, -0.5, 0.0, true),
-    ("Rsd", 1.0, -0.5, 0.0, true),
-    ("Lw", -1.0, 0.5, 0.0, true),
-    ("Rw", 1.0, 0.5, 0.0, true),
-    ("LFE2", 0.0, 1.0, 0.0, false),
-    ("TSL", -1.0, 0.0, 1.0, true),
-    ("TSR", 1.0, 0.0, 1.0, true),
-    ("TC", 0.0, 0.0, 1.0, true),
-    ("TFC", 0.0, 1.0, 1.0, true),
+/// they cannot be VBAP-panned. The last field is the polar default of a
+/// channel the renderer defines by an angle rather than a corner (the height
+/// tier, 30° over the floor speaker of the same name): its x/y/z are that
+/// angle on the unit sphere, for display only.
+const FALLBACK_BED: &[(&str, f64, f64, f64, bool, Option<(f64, f64)>)] = &[
+    ("L", -1.0, 1.0, 0.0, true, None),
+    ("R", 1.0, 1.0, 0.0, true, None),
+    ("C", 0.0, 1.0, 0.0, true, None),
+    ("LFE", 0.0, 1.0, 0.0, false, None),
+    ("Ls", -1.0, 0.0, 0.0, true, None),
+    ("Rs", 1.0, 0.0, 0.0, true, None),
+    ("Lb", -1.0, -1.0, 0.0, true, None),
+    ("Rb", 1.0, -1.0, 0.0, true, None),
+    ("TFL", -1.0, 1.0, 1.0, true, None),
+    ("TFR", 1.0, 1.0, 1.0, true, None),
+    ("TBL", -1.0, -1.0, 1.0, true, None),
+    ("TBR", 1.0, -1.0, 1.0, true, None),
+    ("Lsc", -0.5, 1.0, 0.0, true, None),
+    ("Rsc", 0.5, 1.0, 0.0, true, None),
+    ("Cb", 0.0, -1.0, 0.0, true, None),
+    ("Lsd", -1.0, -0.5, 0.0, true, None),
+    ("Rsd", 1.0, -0.5, 0.0, true, None),
+    ("Lw", -1.0, 0.5, 0.0, true, None),
+    ("Rw", 1.0, 0.5, 0.0, true, None),
+    ("LFE2", 0.0, 1.0, 0.0, false, None),
+    ("TSL", -1.0, 0.0, 1.0, true, None),
+    ("TSR", 1.0, 0.0, 1.0, true, None),
+    ("TC", 0.0, 0.0, 1.0, true, None),
+    ("TFC", 0.0, 1.0, 1.0, true, None),
+    ("Lh", -0.433, 0.75, 0.5, true, Some((-30.0, 30.0))),
+    ("Rh", 0.433, 0.75, 0.5, true, Some((30.0, 30.0))),
+    ("Ch", 0.0, 0.866, 0.5, true, Some((0.0, 30.0))),
+    ("Lhs", -0.8138, -0.2962, 0.5, true, Some((-110.0, 30.0))),
+    ("Rhs", 0.8138, -0.2962, 0.5, true, Some((110.0, 30.0))),
 ];
 
 /// Normalise a channel name exactly like `bridge_api::labels`: drop whitespace,
@@ -64,6 +72,11 @@ pub struct Base {
     pub y: f64,
     pub z: f64,
     pub spatialize: bool,
+    /// `(azimuth, elevation)` when the renderer defines the channel by an
+    /// angle: the default entry is then polar, so the channel renders at that
+    /// angle whatever the room is, instead of freezing x/y/z — the angle on
+    /// the unit sphere — into a corner the room warp would carry around.
+    pub polar: Option<(f64, f64)>,
 }
 
 /// The renderer-published fixed-channel catalogue, digested once.
@@ -240,6 +253,21 @@ pub fn meters_to_adm(room: &RoomRatio, meters: [f64; 3], scale_m: f64) -> [f64; 
 }
 
 pub fn default_entry(room: &RoomRatio, base: &Base) -> Channel {
+    if let Some((azimuth, elevation)) = base.polar {
+        let [x, y, z] = polar_to_adm(room, azimuth, elevation, 1.0);
+        return Channel {
+            name: base.name.clone(),
+            coord_mode: CoordMode::Polar,
+            x,
+            y,
+            z,
+            azimuth,
+            elevation,
+            distance: 1.0,
+            spatialize: base.spatialize,
+            gain_db: 0.0,
+        };
+    }
     let (azimuth, elevation, distance) = adm_to_polar(room, [base.x, base.y, base.z]);
     Channel {
         name: base.name.clone(),
@@ -339,6 +367,7 @@ pub fn effective_channels(catalog: &ChannelCatalog, app: &AppState) -> Vec<Chann
                 .and_then(|s| s.get("spatialize"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true),
+            polar: None,
         });
     };
     if let Some(speakers) = bed_speakers(app) {
@@ -481,6 +510,18 @@ impl ChannelCatalog {
                     .and_then(serde_json::Value::as_f64)
                     .unwrap_or(0.0)
             };
+            let polar = entry
+                .get("coord_mode")
+                .and_then(|m| m.as_str())
+                .filter(|m| m.eq_ignore_ascii_case("polar"))
+                .and_then(|_| {
+                    let azimuth = entry.get("azimuth")?.as_f64()?;
+                    let elevation = entry
+                        .get("elevation")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0);
+                    Some((azimuth, elevation))
+                });
             bases.push(Base {
                 name: label.to_owned(),
                 x: number("x"),
@@ -490,17 +531,19 @@ impl ChannelCatalog {
                     .get("spatialize")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true),
+                polar,
             });
         }
         if bases.is_empty() {
             bases = FALLBACK_BED
                 .iter()
-                .map(|(name, x, y, z, spatialize)| Base {
+                .map(|(name, x, y, z, spatialize, polar)| Base {
                     name: (*name).to_owned(),
                     x: *x,
                     y: *y,
                     z: *z,
                     spatialize: *spatialize,
+                    polar: *polar,
                 })
                 .collect();
             order = bases.iter().map(|b| b.name.clone()).collect();
@@ -602,6 +645,7 @@ mod tests {
                 y: 1.0,
                 z: 0.0,
                 spatialize: true,
+                polar: None,
             },
         );
         cartesian.gain_db = 0.04; // rounds to 0.0 and is then omitted
@@ -613,6 +657,7 @@ mod tests {
                 y: 1.0,
                 z: 0.0,
                 spatialize: true,
+                polar: None,
             },
         );
         polar.coord_mode = CoordMode::Polar;
@@ -638,6 +683,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
             spatialize: true,
+            polar: None,
         };
         let configured = serde_json::json!({
             "name": "Ls", "coord_mode": "cartesian",

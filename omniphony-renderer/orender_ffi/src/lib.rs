@@ -202,7 +202,11 @@ pub const ORENDER_ABI_MAJOR: u32 = 0;
 // 7: added orender_output_latency_samples (constant DSP latency of the
 //    rendered output, for host A/V sync compensation — non-zero when the
 //    linear-phase FIR crossover is active).
-pub const ORENDER_ABI_MINOR: u32 = 7;
+// 8: appended the height-tier labels Lh/Rh/Ch/Lhs/Rhs to OrenderChannelLabel
+//    (30° over the floor speaker of the same name — Auro-3D's height layer,
+//    BS.2051 U+030/U+000/U+110). A host that predates them reads unknown
+//    bytes for those channels; nothing existing moved.
+pub const ORENDER_ABI_MINOR: u32 = 8;
 
 /// Speaker-position labels written by [`orender_channel_layout`] and
 /// [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -237,6 +241,15 @@ pub enum OrenderChannelLabel {
     Lfe2 = 23,
     /// The channel carries dynamic-object audio (position driven by metadata).
     Object = 24,
+    /// Height tier: over the floor speaker of the same name at about 30° of
+    /// elevation (BS.2051 `U+030`/`U-030`/`U+000`/`U+110`/`U-110`; DTS-HD
+    /// `Lh`/`Rh`/`Ch`/`Lhs`/`Rhs`; Auro-3D's height layer). Distinct from the
+    /// top tier (`Tfl`…), which means the ceiling corners.
+    Lh = 25,
+    Rh = 26,
+    Ch = 27,
+    Lhs = 28,
+    Rhs = 29,
     Unknown = 255,
 }
 
@@ -984,6 +997,11 @@ mod tests {
             RChannelLabel::Tfc => OrenderChannelLabel::Tfc,
             RChannelLabel::LFE2 => OrenderChannelLabel::Lfe2,
             RChannelLabel::Object => OrenderChannelLabel::Object,
+            RChannelLabel::Lh => OrenderChannelLabel::Lh,
+            RChannelLabel::Rh => OrenderChannelLabel::Rh,
+            RChannelLabel::Ch => OrenderChannelLabel::Ch,
+            RChannelLabel::Lhs => OrenderChannelLabel::Lhs,
+            RChannelLabel::Rhs => OrenderChannelLabel::Rhs,
             RChannelLabel::Unknown => OrenderChannelLabel::Unknown,
         }
     }
@@ -1015,6 +1033,11 @@ mod tests {
             RChannelLabel::Rw,
             RChannelLabel::Tfc,
             RChannelLabel::LFE2,
+            RChannelLabel::Lh,
+            RChannelLabel::Rh,
+            RChannelLabel::Ch,
+            RChannelLabel::Lhs,
+            RChannelLabel::Rhs,
             RChannelLabel::Unknown,
         ];
         for label in all {
