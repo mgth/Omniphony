@@ -201,6 +201,7 @@ impl StudioSpike {
         self.host_operations.poll();
         let listen_port = self.osc_stats.listen_port.load(Ordering::Relaxed);
         let shown = Section::new("oscSection", "osc.configTitle")
+            .icon(&crate::ui::icons::SECTION_CONNECTION)
             .info("osc")
             .summary(format!("{}:{}", self.osc_host, self.osc_port))
             .show(ui, |ui| {

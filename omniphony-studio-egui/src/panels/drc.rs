@@ -47,6 +47,7 @@ impl StudioSpike {
             if loudness { "ON" } else { "OFF" }
         );
         let mut section = Section::new("drcSection", "section.drc")
+            .icon(&crate::ui::icons::SECTION_DRC)
             .info("drc")
             .summary(summary);
         // The gauge sits in the header, as `#drcGaugeRow` does, so it stays

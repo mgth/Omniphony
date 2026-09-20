@@ -86,6 +86,7 @@ impl StudioSpike {
         // The guides exist to be read while these numbers are being edited,
         // so they follow the panel rather than a switch of their own.
         let open = Section::new("roomGeometrySection", "room.title")
+            .icon(&crate::ui::icons::SECTION_ROOM)
             .info("room")
             .summary(summary)
             .show(ui, |ui| {

@@ -65,6 +65,7 @@ impl StudioSpike {
             }
         );
         Section::new("twoDSourcesSection", "section.twoDSources")
+            .icon(&crate::ui::icons::SECTION_SOURCES_2D)
             .help("help.twoDSources")
             .summary(summary)
             .show(ui, |ui| {
