@@ -84,6 +84,7 @@ impl StudioSpike {
             // objects, the trails and the speakers, its "show" switch in
             // the bar and how it looks in the inset.
             Section::new("displaySection", "section.display")
+                .icon(&crate::ui::icons::SETTINGS)
                 .default_open(true)
                 .show(ui, |ui| {
                     if widgets::switch_row_help(
@@ -269,6 +270,7 @@ impl StudioSpike {
         // One group per heatmap (the web's sub-cards), its switch in the bar
         // and its own parameters in the inset, then the parameters they share.
         Section::new("heatmapsSection", "display.heatmaps")
+            .icon(&crate::ui::icons::HEATMAP)
             .info("heatmap")
             .show(ui, |ui| {
                 // The one crossover-band selector: every heatmap below, the

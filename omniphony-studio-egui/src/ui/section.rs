@@ -11,7 +11,11 @@
 
 use egui::Ui;
 
-use super::theme;
+use super::{icons, theme};
+
+/// The header icon's box. Smaller than the bar's buttons: it sits beside an
+/// 11 pt title and must read as part of the line, not as a button on it.
+const ICON_SIZE: f32 = 13.0;
 
 /// The header's disclosure triangle, rotated by `openness` (0 = closed).
 fn paint_chevron(ui: &Ui, rect: egui::Rect, openness: f32) {
@@ -37,6 +41,15 @@ fn paint_chevron(ui: &Ui, rect: egui::Rect, openness: f32) {
     ));
 }
 
+/// The icon's colour at a given openness: `TEXT_MUTED` folded, the title's
+/// `TEXT_STRONG` open, and the animation between the two as the chevron turns.
+fn icon_colour(openness: f32) -> egui::Color32 {
+    let t = openness.clamp(0.0, 1.0);
+    let folded = egui::Rgba::from(theme::TEXT_MUTED);
+    let open = egui::Rgba::from(theme::TEXT_STRONG);
+    egui::Color32::from(folded * (1.0 - t) + open * t)
+}
+
 /// What a section's "i" opens, built only when the glyph is hovered or
 /// clicked.
 #[derive(Clone, Copy)]
@@ -50,6 +63,8 @@ enum Explains<'a> {
 pub struct Section<'a> {
     id: &'a str,
     title: String,
+    /// The glyph before the title, one per section, from [`icons`].
+    icon: Option<&'static icons::Icon>,
     summary: Option<String>,
     explains: Option<Explains<'a>>,
     default_open: bool,
@@ -79,12 +94,22 @@ impl<'a> Section<'a> {
         Self {
             id,
             title: crate::i18n::t(title_key).to_owned(),
+            icon: None,
             summary: None,
             explains: None,
             default_open: false,
             header_toggle: None,
             header_widget: None,
         }
+    }
+
+    /// The header's glyph, drawn between the chevron and the title: what the
+    /// section is about, readable before its title is, and the same whether
+    /// the section is open or folded. Muted while folded, the title's colour
+    /// once open, as the chevron turns.
+    pub fn icon(mut self, icon: &'static icons::Icon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     /// The collapsed header's one-line summary (`.panel-summary`).
@@ -142,6 +167,7 @@ impl<'a> Section<'a> {
         let Section {
             id: section_id,
             title,
+            icon,
             summary,
             explains,
             default_open,
@@ -161,6 +187,12 @@ impl<'a> Section<'a> {
             let (rect, chevron) =
                 ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
             paint_chevron(ui, rect, openness);
+            let icon_response = icon.map(|icon| {
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(ICON_SIZE, ICON_SIZE), egui::Sense::click());
+                icons::paint(ui.painter(), rect, icon, icon_colour(openness));
+                response
+            });
             let text = egui::RichText::new(&title)
                 .size(theme::FONT_SIZE_SECTION)
                 .color(theme::TEXT_STRONG);
@@ -229,9 +261,13 @@ impl<'a> Section<'a> {
                     );
                 });
             }
-            // The title opens the section, as a title is expected to; the
-            // help has its own glyph.
-            chevron.union(title_response)
+            // The title opens the section, as a title is expected to, and so
+            // does its icon; the help has its own glyph.
+            let header = chevron.union(title_response);
+            match icon_response {
+                Some(icon) => header.union(icon),
+                None => header,
+            }
         });
         ui.ctx()
             .data_mut(|d| d.insert_temp(row_id(section_id), header.response.rect));
@@ -244,7 +280,34 @@ impl<'a> Section<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::Section;
+    use super::{Section, icon_colour};
+    use crate::ui::{icons, theme};
+
+    /// A section's icon paints in its header — folded, so it is what tells a
+    /// closed section apart — and it takes the header's colours at both ends.
+    #[test]
+    fn the_icon_paints_in_the_folded_header() {
+        let ctx = egui::Context::default();
+        let shapes = |with_icon: bool| {
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                let section = Section::new("iconed", "section.display").default_open(false);
+                let section = if with_icon {
+                    section.icon(&icons::GRID)
+                } else {
+                    section
+                };
+                section.show(ui, |_| {});
+            });
+            output.textures_delta.clear();
+            output.shapes.len()
+        };
+        assert!(
+            shapes(true) > shapes(false),
+            "the icon added nothing to the header"
+        );
+        assert_eq!(icon_colour(0.0), theme::TEXT_MUTED);
+        assert_eq!(icon_colour(1.0), theme::TEXT_STRONG);
+    }
 
     /// The header widget draws while the section is closed; the body does
     /// not. That is what keeps a gauge in view with its section folded.

@@ -246,6 +246,7 @@ impl StudioSpike {
         // the bar from one frame to the next.
         let reading = reading(state.instant);
         Section::new("latencySection", "section.latency")
+            .icon(&crate::ui::icons::SECTION_LATENCY)
             .info("adaptive")
             .header_widget(|ui| {
                 crate::ui::meter::row_with_readout(ui, READOUT_ADVANCES, &reading, |ui, width| {

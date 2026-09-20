@@ -45,6 +45,7 @@ impl StudioSpike {
         };
         let file_backend = audio.audio_output_backend.as_deref() == Some("file");
         Section::new("audioOutputSection", "section.audioOutput")
+            .icon(&crate::ui::icons::SECTION_AUDIO_OUTPUT)
             .summary(summary(&audio, &devices, ready))
             .show(ui, |ui| {
                 // The format line: what the engine actually opened.

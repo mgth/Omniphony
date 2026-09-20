@@ -362,6 +362,188 @@ icon!(
     [stroke(Path("M3 18Q9 4 12 11T21 6"))]
 );
 
+// Section headers (`Section::icon`): the same 24-unit, 1.8-stroke family as
+// the bar, one glyph per collapsible section, so a folded panel is told
+// apart at a glance. Display, Objects and Heatmaps reuse the bar's own
+// icons for the same things; the rest are lucide's, or drawn to match.
+// Master: lucide `volume-2`.
+icon!(
+    SECTION_MASTER,
+    24.0,
+    1.8,
+    [
+        stroke(Path("M11 5 6 9H2v6h4l5 4V5z")),
+        stroke(Path("M15.54 8.46a5 5 0 0 1 0 7.07")),
+        stroke(Path("M19.07 4.93a10 10 0 0 1 0 14.14")),
+    ]
+);
+// Speakers: lucide `speaker`.
+icon!(
+    SECTION_SPEAKERS,
+    24.0,
+    1.8,
+    [
+        stroke(R {
+            x: 4.0,
+            y: 2.0,
+            w: 16.0,
+            h: 20.0,
+            rx: 2.0
+        }),
+        stroke(Circle {
+            cx: 12.0,
+            cy: 14.0,
+            r: 4.0
+        }),
+        fill(Circle {
+            cx: 12.0,
+            cy: 6.0,
+            r: 1.2
+        }),
+    ]
+);
+// Renderer: lucide `cpu`.
+icon!(
+    SECTION_RENDERER,
+    24.0,
+    1.8,
+    [
+        stroke(R {
+            x: 4.0,
+            y: 4.0,
+            w: 16.0,
+            h: 16.0,
+            rx: 2.0
+        }),
+        stroke(R {
+            x: 9.0,
+            y: 9.0,
+            w: 6.0,
+            h: 6.0,
+            rx: 0.5
+        }),
+        stroke(Path(
+            "M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"
+        )),
+    ]
+);
+// Latency: lucide `clock`.
+icon!(
+    SECTION_LATENCY,
+    24.0,
+    1.8,
+    [
+        stroke(Circle {
+            cx: 12.0,
+            cy: 12.0,
+            r: 9.5
+        }),
+        stroke(Path("M12 7v5l3.5 2")),
+    ]
+);
+// Diagnostics: lucide `activity`.
+icon!(
+    SECTION_DIAGNOSTICS,
+    24.0,
+    1.8,
+    [stroke(Path("M22 12h-4l-3 9L9 3l-3 9H2"))]
+);
+// DRC: a compressor's transfer curve, its knee marked.
+icon!(
+    SECTION_DRC,
+    24.0,
+    1.8,
+    [
+        stroke(Path("M3 21L12 12L21 8.5")),
+        fill(Circle {
+            cx: 12.0,
+            cy: 12.0,
+            r: 1.8
+        }),
+    ]
+);
+// 2D sources: lucide `locate`, a fix on the plan.
+icon!(
+    SECTION_SOURCES_2D,
+    24.0,
+    1.8,
+    [
+        stroke(Path("M2 12h3M19 12h3M12 2v3M12 19v3")),
+        stroke(Circle {
+            cx: 12.0,
+            cy: 12.0,
+            r: 7.0
+        }),
+        fill(Circle {
+            cx: 12.0,
+            cy: 12.0,
+            r: 2.0
+        }),
+    ]
+);
+// Room geometry: a cube, the room model's box.
+icon!(
+    SECTION_ROOM,
+    24.0,
+    1.8,
+    [
+        stroke(Path("M12 2.5L20.5 7.25V16.75L12 21.5L3.5 16.75V7.25Z")),
+        stroke(Path("M3.5 7.25L12 12L20.5 7.25M12 12V21.5")),
+    ]
+);
+// Audio output: lucide `log-out`.
+icon!(
+    SECTION_AUDIO_OUTPUT,
+    24.0,
+    1.8,
+    [
+        stroke(Path("M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4")),
+        stroke(Path("M16 17l5-5-5-5")),
+        stroke(Path("M21 12H9")),
+    ]
+);
+// Audio input: lucide `log-in`.
+icon!(
+    SECTION_AUDIO_INPUT,
+    24.0,
+    1.8,
+    [
+        stroke(Path("M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4")),
+        stroke(Path("M10 17l5-5-5-5")),
+        stroke(Path("M15 12H3")),
+    ]
+);
+// OSC / connection: lucide `network`.
+icon!(
+    SECTION_CONNECTION,
+    24.0,
+    1.8,
+    [
+        stroke(R {
+            x: 9.0,
+            y: 2.0,
+            w: 6.0,
+            h: 6.0,
+            rx: 1.0
+        }),
+        stroke(R {
+            x: 16.0,
+            y: 16.0,
+            w: 6.0,
+            h: 6.0,
+            rx: 1.0
+        }),
+        stroke(R {
+            x: 2.0,
+            y: 16.0,
+            w: 6.0,
+            h: 6.0,
+            rx: 1.0
+        }),
+        stroke(Path("M12 8v4M5 16v-2a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2")),
+    ]
+);
+
 /// A flattened element: its sub-paths, each a polyline and whether it closes.
 type Flat = Vec<(Vec<Pos2>, bool)>;
 
@@ -919,7 +1101,8 @@ mod tests {
         assert!(cos > 0.95, "the curve kinks at the join: cos {cos}");
     }
 
-    /// Every icon the bar uses flattens to something drawable.
+    /// Every icon the bar and the section headers use flattens to something
+    /// drawable.
     #[test]
     fn every_icon_has_geometry() {
         for icon in [
@@ -936,6 +1119,18 @@ mod tests {
             &MODE_DIFFUSE,
             &TRAIL_DIFFUSE,
             &TRAIL_LINE,
+            &SETTINGS,
+            &SECTION_MASTER,
+            &SECTION_SPEAKERS,
+            &SECTION_RENDERER,
+            &SECTION_LATENCY,
+            &SECTION_DIAGNOSTICS,
+            &SECTION_DRC,
+            &SECTION_SOURCES_2D,
+            &SECTION_ROOM,
+            &SECTION_AUDIO_OUTPUT,
+            &SECTION_AUDIO_INPUT,
+            &SECTION_CONNECTION,
         ] {
             for flat in geometry(icon) {
                 assert!(!flat.is_empty());

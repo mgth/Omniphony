@@ -472,6 +472,7 @@ impl StudioSpike {
             format!("{}", self.prefs.diag_plot.selected.len())
         };
         let open = Section::new("diagSection", "section.diagnostics")
+            .icon(&crate::ui::icons::SECTION_DIAGNOSTICS)
             .info("telemetry")
             .summary(summary)
             .show(ui, |ui| {
