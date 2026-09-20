@@ -760,6 +760,7 @@
   "speaker.freqLow": "Min. Frequenz (Hz)",
   "speaker.freqHigh": "Max. Frequenz (Hz)",
   "speaker.output": "Ausgang",
+  "speaker.band": "Band",
   "telemetry.diagPlotToggle": "Diagnose-Metrik-Diagramm umschalten",
   "log.stateLoaded": "Anfangszustand geladen.",
   "log.stateLoadFailed": "Anfangszustand konnte nicht geladen werden: {error}",

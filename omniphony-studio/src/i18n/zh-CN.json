@@ -760,6 +760,7 @@
   "speaker.freqLow": "最低频率 (Hz)",
   "speaker.freqHigh": "最高频率 (Hz)",
   "speaker.output": "输出",
+  "speaker.band": "频段",
   "telemetry.diagPlotToggle": "切换诊断指标图",
   "log.stateLoaded": "已加载初始状态。",
   "log.stateLoadFailed": "加载初始状态失败：{error}",

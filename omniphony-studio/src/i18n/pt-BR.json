@@ -760,6 +760,7 @@
   "speaker.freqLow": "Freq. mín. (Hz)",
   "speaker.freqHigh": "Freq. máx. (Hz)",
   "speaker.output": "Saída",
+  "speaker.band": "Banda",
   "telemetry.diagPlotToggle": "Alternar gráfico de métricas de diagnóstico",
   "log.stateLoaded": "Estado inicial carregado.",
   "log.stateLoadFailed": "Falha ao carregar o estado inicial: {error}",
