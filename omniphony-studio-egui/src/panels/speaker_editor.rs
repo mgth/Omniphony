@@ -280,16 +280,8 @@ impl StudioSpike {
             // Output: the gain — realtime, like the master and the list rows —
             // then the delay, which belongs to the speakers document rather
             // than the layout, in milliseconds and in samples with the two
-            // kept in step, the bulk tools under them, and the band limits.
-            // Empty limits mean full range, which is why they are optional in
-            // the model and sent as zero to clear; the bar names the shape the
-            // two make, when they make one.
-            let filter = Filter::of(speaker.freq_low, speaker.freq_high);
-            let mut output = Group::new(t("speaker.output"));
-            if filter != Filter::Full {
-                output = output.status(t(filter.title()), theme::TEXT_MUTED);
-            }
-            output.show(ui, |ui| {
+            // kept in step, and the bulk tools under them.
+            Group::new(t("speaker.output")).show(ui, |ui| {
                 let gain = {
                     let live = self.host.read();
                     live.app
@@ -339,13 +331,29 @@ impl StudioSpike {
                     },
                 );
                 self.delay_tools_row(ui);
+            });
+
+            // Band: the two limits the crossover gives this speaker. Empty
+            // limits mean full range, which is why they are optional in the
+            // model and sent as zero to clear. The bar names the shape the two
+            // make, when they make one, and draws it as the glyph the speaker
+            // list carries, cutoffs and all, so the editor and the row read
+            // the same.
+            let (freq_low, freq_high) = (speaker.freq_low, speaker.freq_high);
+            let mut band = Group::new(t("speaker.band")).actions(move |ui| {
+                super::row_glyphs::filter_icon(ui, freq_low, freq_high);
+            });
+            if let Some(shape) = band_status(freq_low, freq_high) {
+                band = band.status(t(shape), theme::TEXT_MUTED);
+            }
+            band.show(ui, |ui| {
                 self.frequency_row(
                     ui,
                     id,
                     t("speaker.freqLow"),
                     "help.speaker.freqLow",
                     "freqLow",
-                    speaker.freq_low,
+                    freq_low,
                 );
                 self.frequency_row(
                     ui,
@@ -353,7 +361,7 @@ impl StudioSpike {
                     t("speaker.freqHigh"),
                     "help.speaker.freqHigh",
                     "freqHigh",
-                    speaker.freq_high,
+                    freq_high,
                 );
             });
         });
@@ -864,9 +872,29 @@ fn select_row(
     (chosen != current).then_some(chosen)
 }
 
+/// The status the Band group shows: the crossover shape its two limits make,
+/// or nothing while the speaker is full range — a bar reading "Full band" on
+/// every speaker would say nothing.
+fn band_status(freq_low: Option<f32>, freq_high: Option<f32>) -> Option<&'static str> {
+    let filter = Filter::of(freq_low, freq_high);
+    (filter != Filter::Full).then(|| filter.title())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{aligned_delays_ms, distances_from_delays};
+    use super::{aligned_delays_ms, band_status, distances_from_delays};
+
+    #[test]
+    fn the_band_group_names_the_shape_only_when_limited() {
+        assert_eq!(band_status(None, None), None);
+        assert_eq!(band_status(Some(0.0), None), None);
+        assert_eq!(band_status(Some(80.0), None), Some("speaker.filter.high"));
+        assert_eq!(band_status(None, Some(120.0)), Some("speaker.filter.low"));
+        assert_eq!(
+            band_status(Some(80.0), Some(2000.0)),
+            Some("speaker.filter.band")
+        );
+    }
 
     #[test]
     fn nearer_speakers_wait_for_the_farthest() {
