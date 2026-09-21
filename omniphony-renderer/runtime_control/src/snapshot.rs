@@ -126,6 +126,7 @@ pub fn build_renderer_state_json(
     fixed_channel_processing_json: &str,
     crossover_info: Option<renderer::live_params::CrossoverInfo>,
     hrir_status: &renderer::binaural::HrirStatus,
+    brir_status: &renderer::binaural::BrirStatus,
 ) -> String {
     let effective_backend = active_topology.backend.backend_id();
     let effective_evaluation_mode = active_topology.backend.evaluation_mode().as_str();
@@ -288,6 +289,31 @@ pub fn build_renderer_state_json(
             // which case `hrirError` says why.
             "hrirEffective": hrir_status.effective.as_str(),
             "hrirError": hrir_status.error,
+            "brirSofaPath": match &live.binaural.hrir_source {
+                renderer::binaural::HrirSource::Brir(p) => p.as_str(),
+                _ => "",
+            },
+            // A room response (`brir` source): its load options, and what
+            // the renderer holds of it — or why it holds nothing, in which
+            // case the virtual room is binauralised by the HRTF stage.
+            "brir": {
+                "headTracking": match live.binaural.brir.head_tracking {
+                    None => json!("auto"),
+                    Some(b) => json!(b),
+                },
+                "maxLengthS": live.binaural.brir.max_length_s,
+                "tailFloorDb": live.binaural.brir.tail_floor_db,
+                "path": brir_status.path,
+                "loaded": brir_status.loaded.as_ref().map(|s| json!({
+                    "conventions": s.conventions,
+                    "emitters": s.emitters,
+                    "orientations": s.orientations,
+                    "maxTaps": s.max_taps,
+                    "sampleRate": s.sample_rate,
+                    "bytes": s.bytes,
+                })),
+                "error": brir_status.error,
+            },
             "headPose": {
                 "w": live.binaural.head_pose.w,
                 "x": live.binaural.head_pose.x,
@@ -463,6 +489,7 @@ pub fn build_live_state_bundle(
         &control.fixed_channel_processing(),
         control.crossover_info(),
         &control.binaural_hrir_status(),
+        &control.binaural_brir_status(),
     );
 
     let mut messages = vec![

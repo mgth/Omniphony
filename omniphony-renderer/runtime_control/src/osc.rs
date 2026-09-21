@@ -1402,6 +1402,54 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    // ── BRIR load options (a `brir:<path>` HRIR source) ─────────────────────
+    // A change reloads the set on the renderer's worker.
+    if addr == osc_contract::CONTROL_BINAURAL_BRIR_HEAD_TRACKING {
+        // Which measured head orientations stay resident: "auto" follows the
+        // head-tracking address, a bool forces all (true) or front only.
+        let value = match msg.args.first() {
+            Some(OscType::String(s)) if s.eq_ignore_ascii_case("auto") => Some(None),
+            other => parse_bool_arg(other).map(Some),
+        };
+        if let Some(v) = value {
+            ctx.renderer.live.write().binaural.brir.head_tracking = v;
+            effects.mark_dirty = true;
+            effects.log_message = Some(format!(
+                "OSC: binaural/brir/head_tracking -> {}",
+                v.map_or("auto".to_string(), |b| b.to_string())
+            ));
+        }
+        return Some(effects);
+    }
+
+    if addr == osc_contract::CONTROL_BINAURAL_BRIR_MAX_LENGTH {
+        // Longest response kept, seconds (0 = whole responses).
+        if let Some(v) = parse_f32_arg(msg.args.first())
+            && v.is_finite()
+            && v >= 0.0
+        {
+            let v = v.clamp(0.0, 10.0);
+            ctx.renderer.live.write().binaural.brir.max_length_s = v;
+            effects.mark_dirty = true;
+            effects.log_message = Some(format!("OSC: binaural/brir/max_length -> {v}"));
+        }
+        return Some(effects);
+    }
+
+    if addr == osc_contract::CONTROL_BINAURAL_BRIR_TAIL_FLOOR {
+        // Decibels below a response's total energy at which its tail is cut.
+        if let Some(v) = parse_f32_arg(msg.args.first())
+            && v.is_finite()
+            && v > 0.0
+        {
+            let v = v.clamp(20.0, 120.0);
+            ctx.renderer.live.write().binaural.brir.tail_floor_db = v;
+            effects.mark_dirty = true;
+            effects.log_message = Some(format!("OSC: binaural/brir/tail_floor -> {v}"));
+        }
+        return Some(effects);
+    }
+
     if addr == osc_contract::CONTROL_BINAURAL_AIR_ABSORPTION {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().binaural.air_absorption = v;
