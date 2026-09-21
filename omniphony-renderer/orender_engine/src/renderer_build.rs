@@ -764,8 +764,33 @@ pub fn seed_control_from_render_config(
                                 None => renderer::binaural::HrirSource::SafKemar,
                             }
                         }
+                        // Likewise "brir" resolves its file from
+                        // `brir_sofa_path` (or an inline "brir:<path>").
+                        renderer::binaural::HrirSource::Brir(p) if p.is_empty() => {
+                            match bin.brir_sofa_path.as_ref() {
+                                Some(path) => renderer::binaural::HrirSource::Brir(
+                                    path.to_string_lossy().into_owned(),
+                                ),
+                                None => renderer::binaural::HrirSource::SafKemar,
+                            }
+                        }
                         other => other,
                     };
+                }
+                if let Some(v) = bin.brir_head_tracking {
+                    live.binaural.brir.head_tracking = Some(v);
+                }
+                if let Some(v) = bin.brir_max_length_s
+                    && v.is_finite()
+                    && v >= 0.0
+                {
+                    live.binaural.brir.max_length_s = v;
+                }
+                if let Some(v) = bin.brir_tail_floor_db
+                    && v.is_finite()
+                    && v > 0.0
+                {
+                    live.binaural.brir.tail_floor_db = v.clamp(20.0, 120.0);
                 }
             }
         }

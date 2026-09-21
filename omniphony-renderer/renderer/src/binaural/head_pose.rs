@@ -62,6 +62,17 @@ impl HeadPose {
         Self::from_quat(a[0], a[1], a[2], a[3])
     }
 
+    /// Where the listener looks, as `(yaw, pitch)` degrees in the world
+    /// frame: the head's front axis mapped back into world coordinates
+    /// (the inverse of [`Self::rotate`]), yaw positive to the right, pitch
+    /// positive up. The convention a BRIR set's orientations use.
+    pub fn yaw_pitch_deg(self) -> (f32, f32) {
+        let v = self.conjugate().rotate([0.0, 1.0, 0.0]);
+        let yaw = v[0].atan2(v[1]).to_degrees();
+        let pitch = v[2].atan2((v[0] * v[0] + v[1] * v[1]).sqrt()).to_degrees();
+        (yaw as f32, pitch as f32)
+    }
+
     /// Build from intrinsic yaw→pitch→roll Euler angles in degrees.
     ///
     /// Axis convention (ADM): yaw about +Z (turn left/right), pitch about +X
@@ -231,6 +242,24 @@ mod tests {
             HeadPose::identity().rotate([0.0, 1.0, 0.0]),
             [0.0, 1.0, 0.0],
         );
+    }
+
+    /// `yaw_pitch_deg` reads the view back: a right turn is a positive yaw,
+    /// and a pose built from explicit axes looking 20° up reports +20.
+    #[test]
+    fn yaw_pitch_reads_the_view_direction() {
+        let (yaw, pitch) = HeadPose::from_euler_deg(30.0, 0.0, 0.0).yaw_pitch_deg();
+        assert!((yaw - 30.0).abs() < 1e-3, "{yaw}");
+        assert!(pitch.abs() < 1e-3, "{pitch}");
+        let (yaw, pitch) = HeadPose::from_euler_deg(-135.0, 0.0, 0.0).yaw_pitch_deg();
+        assert!((yaw + 135.0).abs() < 1e-3, "{yaw}");
+        assert!(pitch.abs() < 1e-3);
+        let (c, s) = (20f32.to_radians().cos(), 20f32.to_radians().sin());
+        let up20 = HeadPose::from_rows([1.0, 0.0, 0.0], [0.0, c, s], [0.0, -s, c]);
+        let (yaw, pitch) = up20.yaw_pitch_deg();
+        assert!(yaw.abs() < 1e-3, "{yaw}");
+        assert!((pitch - 20.0).abs() < 1e-3, "{pitch}");
+        assert_eq!(HeadPose::identity().yaw_pitch_deg(), (0.0, 0.0));
     }
 
     #[test]

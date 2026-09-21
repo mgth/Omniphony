@@ -499,6 +499,21 @@ impl SpatialRenderer {
             )
         };
 
+        // The BRIR stage of the cascaded path reports each set load the
+        // same way.
+        let brir = {
+            let status_control = std::sync::Arc::clone(&control);
+            crate::binaural::BrirStage::with_status_sink(
+                sample_rate,
+                std::sync::Arc::new(move |status| {
+                    status_control
+                        .binaural_brir_status
+                        .store(std::sync::Arc::new(status));
+                    status_control.bump_live_state();
+                }),
+            )
+        };
+
         Ok(Self {
             num_speakers,
             active_output_mode: initial_output_mode,
@@ -531,6 +546,7 @@ impl SpatialRenderer {
             speaker_params_generation_seen: 0,
             ramp_strategy_override: None,
             binaural,
+            brir,
             cascade: None,
             last_mix_num_speakers: 0,
             last_output_latency: 0,
