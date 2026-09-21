@@ -284,6 +284,9 @@ carry no license at all). Accordingly:
 |---|---|---|
 | `/omniphony/control/output_mode` | `s: speaker\|binaural` | select the output stage |
 | `/omniphony/control/binaural/hrir_source` | `s: synthetic\|saf\|sofa:<path>\|brir:<path>` | HRIR set, or a room response (see *Room responses*) |
+| `/omniphony/control/binaural/brir/head_tracking` | `s: auto` or `i\|f` (bool) | which head orientations of a BRIR stay resident: `auto` follows the tracking address, true = all, false = front only |
+| `/omniphony/control/binaural/brir/max_length` | `f` (s) | longest response kept (0 = whole) |
+| `/omniphony/control/binaural/brir/tail_floor` | `f` (dB) | tail cut, decibels below the response's total energy |
 | `/omniphony/control/binaural/unit_scale` | `f` (m/unit) | distance scale |
 | `/omniphony/control/binaural/head_radius` | `f` (m) | ITD head radius |
 | `/omniphony/control/binaural/reflections/enabled` | `i\|f` (bool) | reflections on/off |

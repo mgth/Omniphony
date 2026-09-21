@@ -23,6 +23,15 @@ const HRIR_SOURCES: &[(&str, &str)] = &[
     ("pinna", "binaural.hrtfSource.pinna"),
     ("prtf", "binaural.hrtfSource.prtf"),
     ("sofa", "binaural.hrtfSource.sofa"),
+    ("brir", "binaural.hrtfSource.brir"),
+];
+
+/// Which measured head orientations of a BRIR stay resident, as the
+/// renderer reports it (`auto` follows the head-tracking address).
+const BRIR_TRACKING: &[(&str, &str)] = &[
+    ("auto", "binaural.brirHeadTracking.auto"),
+    ("on", "binaural.brirHeadTracking.on"),
+    ("off", "binaural.brirHeadTracking.off"),
 ];
 
 const TRACK_FORMATS: &[(&str, &str)] = &[
@@ -84,6 +93,7 @@ impl StudioSpike {
         // one otherwise would download a file nothing plays.
         let mut chosen = source.clone();
         let mut browse = false;
+        let mut browse_brir = false;
         Group::new("HRTF")
             .help("help.binaural.hrtf")
             .actions(|ui| {
@@ -91,6 +101,14 @@ impl StudioSpike {
                     browse = ui
                         .button(t("backend.file.browse"))
                         .on_hover_text(t("binaural.sofaBrowseTitle"))
+                        .clicked();
+                }
+                if source == "brir" {
+                    // A room response is a local file of the renderer's:
+                    // the native picker, not the HRTF database browser.
+                    browse_brir = ui
+                        .button(t("backend.file.browse"))
+                        .on_hover_text(t("binaural.brirBrowseTitle"))
                         .clicked();
                 }
                 widgets::bounded_combo(ui, 160.0, |ui, w| {
@@ -118,6 +136,13 @@ impl StudioSpike {
         if browse {
             self.open_sofa_browser();
         }
+        if browse_brir {
+            self.pick_files(
+                ui.ctx(),
+                crate::ui::file_dialogs::Purpose::Brir,
+                &["sofa".to_owned()],
+            );
+        }
     }
 
     /// The HRTF group's inset: what was loaded, the EQ, the head, the update
@@ -131,7 +156,11 @@ impl StudioSpike {
     ) {
         // The renderer says what it actually loaded; a fallback means the
         // requested source did not work.
-        if let Some(effective) = effective
+        if source == "brir" {
+            // A room response has its own status: the HRIR grid's effective
+            // source is the direct path's KEMAR meanwhile, not a fallback.
+            self.brir_rows(ui, doc);
+        } else if let Some(effective) = effective
             && effective != source
         {
             let line = tf("binaural.hrtfFallback", &[("effective", effective)]);
@@ -319,6 +348,138 @@ impl StudioSpike {
             if changed {
                 self.send_hrir_source("prtf");
             }
+        }
+    }
+
+    /// The BRIR source's inset: the file, what the renderer holds of it (or
+    /// why it holds nothing), and the load options.
+    fn brir_rows(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
+        let small = |line: String, color: egui::Color32| {
+            RichText::new(line)
+                .size(theme::FONT_SIZE_SMALL)
+                .color(color)
+        };
+        let path = text(doc, &["brirSofaPath"]);
+        match &path {
+            Some(path) => {
+                let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
+                ui.label(small(format!("File: {name}"), theme::TEXT_MUTED))
+                    .on_hover_text(path);
+            }
+            None => {
+                ui.label(small(t("binaural.brirNoFile").to_owned(), theme::WARN));
+            }
+        }
+        let status = doc.and_then(|d| d.get("brir"));
+        let loaded = status
+            .and_then(|b| b.get("loaded"))
+            .filter(|v| !v.is_null());
+        if let Some(error) = text(doc, &["brir", "error"]) {
+            ui.label(small(t("binaural.brirError").to_owned(), theme::WARN))
+                .on_hover_text(error);
+        } else if let Some(loaded) = loaded {
+            let count = |key: &str| loaded.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+            let conventions = loaded
+                .get("conventions")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("BRIR")
+                .to_owned();
+            let (taps, rate) = (count("maxTaps"), count("sampleRate"));
+            let seconds = if rate > 0 {
+                taps as f64 / rate as f64
+            } else {
+                0.0
+            };
+            let line = tf(
+                "binaural.brirLoaded",
+                &[
+                    ("conventions", conventions.as_str()),
+                    ("emitters", &count("emitters").to_string()),
+                    ("orientations", &count("orientations").to_string()),
+                    ("seconds", &format!("{seconds:.2}")),
+                    (
+                        "mb",
+                        &format!("{:.0}", count("bytes") as f64 / (1024.0 * 1024.0)),
+                    ),
+                ],
+            );
+            ui.label(small(line, theme::TEXT_MUTED));
+        } else if path.is_some() {
+            ui.label(small(
+                t("binaural.brirLoading").to_owned(),
+                theme::TEXT_MUTED,
+            ));
+        }
+
+        // Load options: a change reloads the set on the renderer.
+        let tracking = match status.and_then(|b| b.get("headTracking")) {
+            Some(serde_json::Value::Bool(true)) => "on",
+            Some(serde_json::Value::Bool(false)) => "off",
+            _ => "auto",
+        };
+        let mut chosen = tracking;
+        widgets::label_row_help(
+            ui,
+            t("binaural.brirHeadTracking"),
+            "help.binaural.brirHeadTracking",
+            |ui| {
+                widgets::bounded_combo(ui, 160.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("brir-head-tracking")
+                        .selected_text(t(BRIR_TRACKING
+                            .iter()
+                            .find(|(id, _)| *id == tracking)
+                            .map(|(_, key)| *key)
+                            .unwrap_or("binaural.brirHeadTracking.auto")))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, key) in BRIR_TRACKING {
+                                ui.selectable_value(&mut chosen, *id, t(key));
+                            }
+                        })
+                });
+            },
+        );
+        if chosen != tracking {
+            cmd::control_brir_head_tracking(
+                &self.host,
+                match chosen {
+                    "on" => Some(true),
+                    "off" => Some(false),
+                    _ => None,
+                },
+            );
+        }
+        let mut max_length = number(doc, &["brir", "maxLengthS"], 2.0) as f32;
+        if widgets::value_slider_help(
+            ui,
+            t("binaural.brirMaxLength"),
+            "help.binaural.brirMaxLength",
+            &mut max_length,
+            0.0..=5.0,
+            0.1,
+            |v| {
+                if v <= 0.0 {
+                    t("binaural.brirWhole").to_owned()
+                } else {
+                    format!("{v:.1} s")
+                }
+            },
+        ) {
+            cmd::control_brir_max_length(&self.host, max_length);
+        }
+        let mut floor = number(doc, &["brir", "tailFloorDb"], 60.0) as f32;
+        if widgets::value_slider_help(
+            ui,
+            t("binaural.brirTailFloor"),
+            "help.binaural.brirTailFloor",
+            &mut floor,
+            30.0..=90.0,
+            1.0,
+            |v| format!("{v:.0} dB"),
+        ) {
+            cmd::control_brir_tail_floor(&self.host, floor);
         }
     }
 

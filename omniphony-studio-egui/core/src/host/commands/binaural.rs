@@ -84,6 +84,50 @@ pub fn control_hrir_source(state: &SharedState, value: String) {
     );
 }
 
+pub fn control_brir_file(state: &SharedState, path: &str) {
+    // A room response: the source string carries the file, like "sofa:".
+    control_hrir_source(state, format!("brir:{}", path.trim()));
+}
+
+pub fn control_brir_head_tracking(state: &SharedState, keep_all: Option<bool>) {
+    // Which measured head orientations of the room stay resident: `None`
+    // ("auto") follows the head-tracking address, `Some` forces all / front.
+    let address = osc_contract::CONTROL_BINAURAL_BRIR_HEAD_TRACKING.to_string();
+    let msg = match keep_all {
+        None => OscControlMsg::SendString {
+            address,
+            value: "auto".to_string(),
+        },
+        Some(all) => OscControlMsg::SendArgs {
+            address,
+            args: vec![rosc::OscType::Int(i32::from(all))],
+        },
+    };
+    send_control(&state.osc_tx, msg);
+}
+
+pub fn control_brir_max_length(state: &SharedState, seconds: f32) {
+    // Longest room response kept, seconds (0 = whole responses).
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: osc_contract::CONTROL_BINAURAL_BRIR_MAX_LENGTH.to_string(),
+            value: seconds.clamp(0.0, 10.0),
+        },
+    );
+}
+
+pub fn control_brir_tail_floor(state: &SharedState, db: f32) {
+    // Decibels below a response's total energy at which its tail is cut.
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: osc_contract::CONTROL_BINAURAL_BRIR_TAIL_FLOOR.to_string(),
+            value: db.clamp(20.0, 120.0),
+        },
+    );
+}
+
 pub fn control_binaural_unit_scale(state: &SharedState, value: f32) {
     // Metres per ADM unit (isotropic distance scale).
     send_control(

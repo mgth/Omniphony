@@ -95,6 +95,10 @@ pub const CONTROL_BACKEND_FILE_LIST: &str = "/omniphony/control/backend/file/lis
 pub const CONTROL_BACKEND_FILE_PUT: &str = "/omniphony/control/backend/file/put";
 pub const CONTROL_BACKEND_PARAM: &str = "/omniphony/control/backend/param";
 pub const CONTROL_BINAURAL_AIR_ABSORPTION: &str = "/omniphony/control/binaural/air_absorption";
+pub const CONTROL_BINAURAL_BRIR_HEAD_TRACKING: &str =
+    "/omniphony/control/binaural/brir/head_tracking";
+pub const CONTROL_BINAURAL_BRIR_MAX_LENGTH: &str = "/omniphony/control/binaural/brir/max_length";
+pub const CONTROL_BINAURAL_BRIR_TAIL_FLOOR: &str = "/omniphony/control/binaural/brir/tail_floor";
 pub const CONTROL_BINAURAL_DIFFUSE_FIELD_EQ: &str = "/omniphony/control/binaural/diffuse_field_eq";
 pub const CONTROL_BINAURAL_EAR_GAIN: &str = "/omniphony/control/binaural/ear_gain";
 pub const CONTROL_BINAURAL_EAR_MUTE: &str = "/omniphony/control/binaural/ear_mute";
@@ -658,6 +662,9 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_SPREAD_SIZE_TO_SPREAD_MODE,
     CONTROL_YIELD_PORT,
     CONTROL_BINAURAL_AIR_ABSORPTION,
+    CONTROL_BINAURAL_BRIR_HEAD_TRACKING,
+    CONTROL_BINAURAL_BRIR_MAX_LENGTH,
+    CONTROL_BINAURAL_BRIR_TAIL_FLOOR,
     CONTROL_BINAURAL_DIFFUSE_FIELD_EQ,
     CONTROL_BINAURAL_EAR_GAIN,
     CONTROL_BINAURAL_EAR_MUTE,

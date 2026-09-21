@@ -21,6 +21,8 @@ pub enum Purpose {
     },
     ObjectClip,
     Sofa,
+    /// A room-response SOFA file for the `brir` HRIR source.
+    Brir,
 }
 pub struct PendingPicker {
     purpose: Purpose,
@@ -115,6 +117,9 @@ impl StudioSpike {
                         }
                         Purpose::ObjectClip => {
                             crate::host::commands::gain::control_object_test_clip(&self.host, path)
+                        }
+                        Purpose::Brir => {
+                            crate::host::commands::binaural::control_brir_file(&self.host, &path)
                         }
                         _ => {}
                     });
