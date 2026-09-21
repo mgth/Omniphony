@@ -2198,7 +2198,7 @@ checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 [[package]]
 name = "sofar"
 version = "0.3.0"
-source = "git+https://github.com/mgth/sofar?rev=c03ff5cfd997d316ae330e2735e82311769b45a3#c03ff5cfd997d316ae330e2735e82311769b45a3"
+source = "git+https://github.com/mgth/sofar?rev=4c91bea0b752c6d2b2bde4e8954c2e114182c297#4c91bea0b752c6d2b2bde4e8954c2e114182c297"
 dependencies = [
  "arrayvec",
  "audioadapter-buffers",

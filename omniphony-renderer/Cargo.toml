@@ -97,7 +97,9 @@ asio = []
 pipewire = []
 
 # sofar 0.3.0 drops variables from netCDF4-written SOFA files (ASH Toolset
-# exports, issue #185). Drop once https://github.com/andreiltd/sofar/pull/29
-# ships in a release.
+# exports, issue #185; upstream merged the fix in f99153f) and its chunk
+# reader stops at three dimensions, one B-tree level and 256 MiB — a
+# MultiSpeakerBRIR as netCDF4 writes it (issue #219, the BBC R&D set) needs
+# the fork's fix/chunked-nd-datasets. Drop once upstream carries both.
 [patch.crates-io]
-sofar = { git = "https://github.com/mgth/sofar", rev = "c03ff5cfd997d316ae330e2735e82311769b45a3" }
+sofar = { git = "https://github.com/mgth/sofar", rev = "4c91bea0b752c6d2b2bde4e8954c2e114182c297" }
