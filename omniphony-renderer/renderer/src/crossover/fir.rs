@@ -22,20 +22,17 @@
 //! stopband rejection equals the lowpass's passband ripple (≈ the design
 //! stopband attenuation).
 //!
-//! Runtime: uniform-partitioned overlap-save convolution. The input is
-//! blocked into `BLOCK`-sample hops; one forward FFT per hop is shared by all
-//! bands, then each of the N−1 lowpasses costs one spectrum
-//! multiply-accumulate over the partition delay line plus one inverse FFT.
-//! Steady state performs no allocations. Latency is
-//! `(taps−1)/2 + BLOCK − 1` samples — constant, reported by
+//! Runtime: uniform-partitioned overlap-save convolution from
+//! [`crate::partitioned_conv`]. The input is blocked into `BLOCK`-sample
+//! hops; one forward FFT per hop is shared by all bands, then each of the N−1
+//! lowpasses costs one spectrum multiply-accumulate over the partition delay
+//! line plus one inverse FFT. Steady state performs no allocations. Latency
+//! is `(taps−1)/2 + BLOCK − 1` samples — constant, reported by
 //! [`FirCrossoverBank::latency_samples`] so other signal paths can be
 //! delay-compensated against the filtered ones.
 
-use realfft::num_complex::Complex;
-use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
-use std::sync::Arc;
-
 use super::filter::SmallBands;
+use crate::partitioned_conv::{ConvolutionPlan, InputHistory, OutputScratch, PartitionedKernel};
 
 /// Internal hop size (samples). Each hop triggers one forward FFT of
 /// `2 * BLOCK`; the filter kernels are partitioned into `BLOCK`-sized chunks.
@@ -132,24 +129,19 @@ pub struct FirCrossoverBank {
     kernel_delay: usize,
     /// Kernel partitions per lowpass: `ceil(taps / BLOCK)`.
     partitions: usize,
-    fft: Arc<dyn RealToComplex<f32>>,
-    ifft: Arc<dyn ComplexToReal<f32>>,
-    /// Partitioned kernel spectra, `[lowpass][partition][bin]`,
-    /// `BLOCK + 1` bins each (unnormalized; the inverse FFT applies 1/(2·BLOCK)).
-    kernel_spectra: Vec<Vec<Vec<Complex<f32>>>>,
+    /// FFT plans for `BLOCK`-sample partitions, shared by every state.
+    plan: ConvolutionPlan,
+    /// Partitioned lowpass kernels, one per cutoff.
+    lowpasses: Vec<PartitionedKernel>,
 }
 
 /// Per-channel streaming state for [`FirCrossoverBank`]. All buffers are
 /// allocated up front; processing never allocates.
 pub struct FirCrossoverState {
-    /// Incoming samples not yet processed (fills up to `BLOCK`).
-    pending: Vec<f32>,
-    /// Previous input block (overlap-save history for the forward FFT).
-    prev_block: Vec<f32>,
-    /// Frequency-domain delay line: the last `partitions` input spectra.
-    fdl: Vec<Vec<Complex<f32>>>,
-    /// Index of the most recent spectrum in `fdl`.
-    fdl_pos: usize,
+    /// Pending block + overlap-save history + spectrum ring of the input.
+    input: InputHistory,
+    /// MAC / inverse-FFT scratch shared by the lowpasses.
+    scratch: OutputScratch,
     /// Last `kernel_delay` input samples, feeding the top band's delayed-input
     /// term (`δ_D − LP`).
     delay_hist: Vec<f32>,
@@ -160,11 +152,6 @@ pub struct FirCrossoverState {
     /// Current band output blocks, `[band][sample]`, read by `read_idx`.
     out: Vec<Vec<f32>>,
     read_idx: usize,
-    fft_in: Vec<f32>,
-    spec_acc: Vec<Complex<f32>>,
-    ifft_out: Vec<f32>,
-    fft_scratch: Vec<Complex<f32>>,
-    ifft_scratch: Vec<Complex<f32>>,
 }
 
 impl FirCrossoverBank {
@@ -215,34 +202,12 @@ impl FirCrossoverBank {
         let taps = taps.max(63) | 1;
         let nyquist = sample_rate as f64 / 2.0;
         let beta = kaiser_beta(stopband_atten_db as f64);
-        let lowpasses: Vec<Vec<f32>> = cutoffs
+        let plan = ConvolutionPlan::new(BLOCK);
+        let lowpasses: Vec<PartitionedKernel> = cutoffs
             .iter()
             .map(|&fc| {
                 let fc = (fc as f64).clamp(1.0, nyquist - 1.0);
-                design_lowpass(fc, sample_rate as f64, taps, beta)
-            })
-            .collect();
-
-        let fft_len = 2 * BLOCK;
-        let partitions = taps.div_ceil(BLOCK);
-        let mut planner = RealFftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(fft_len);
-        let ifft = planner.plan_fft_inverse(fft_len);
-        let mut scratch = fft.make_scratch_vec();
-        let kernel_spectra = lowpasses
-            .iter()
-            .map(|h| {
-                (0..partitions)
-                    .map(|p| {
-                        let chunk = &h[p * BLOCK..taps.min((p + 1) * BLOCK)];
-                        let mut time = vec![0.0f32; fft_len];
-                        time[..chunk.len()].copy_from_slice(chunk);
-                        let mut spec = fft.make_output_vec();
-                        fft.process_with_scratch(&mut time, &mut spec, &mut scratch)
-                            .expect("kernel FFT sizes are fixed by construction");
-                        spec
-                    })
-                    .collect()
+                plan.partition(&design_lowpass(fc, sample_rate as f64, taps, beta))
             })
             .collect();
 
@@ -250,10 +215,9 @@ impl FirCrossoverBank {
             num_bands: cutoffs.len() + 1,
             taps,
             kernel_delay: (taps - 1) / 2,
-            partitions,
-            fft,
-            ifft,
-            kernel_spectra,
+            partitions: plan.partitions_for(taps),
+            plan,
+            lowpasses,
         }
     }
 
@@ -266,28 +230,19 @@ impl FirCrossoverBank {
     /// buffering. Identical for every band; unfiltered signal paths must be
     /// delayed by this amount to stay time-aligned.
     pub fn latency_samples(&self) -> usize {
-        self.kernel_delay + BLOCK - 1
+        self.kernel_delay + self.plan.latency_samples()
     }
 
     /// Allocate the streaming state for one channel.
     pub fn make_state(&self) -> FirCrossoverState {
         FirCrossoverState {
-            pending: Vec::with_capacity(BLOCK),
-            prev_block: vec![0.0; BLOCK],
-            fdl: (0..self.partitions)
-                .map(|_| self.fft.make_output_vec())
-                .collect(),
-            fdl_pos: 0,
+            input: self.plan.make_input(self.partitions),
+            scratch: self.plan.make_scratch(),
             delay_hist: vec![0.0; self.kernel_delay],
             delay_work: vec![0.0; self.kernel_delay + BLOCK],
             lp_out: vec![vec![0.0; BLOCK]; self.num_bands - 1],
             out: vec![vec![0.0; BLOCK]; self.num_bands],
             read_idx: 0,
-            fft_in: vec![0.0; 2 * BLOCK],
-            spec_acc: self.fft.make_output_vec(),
-            ifft_out: vec![0.0; 2 * BLOCK],
-            fft_scratch: self.fft.make_scratch_vec(),
-            ifft_scratch: self.ifft.make_scratch_vec(),
         }
     }
 
@@ -295,8 +250,7 @@ impl FirCrossoverBank {
     /// `state`. Output lags input by [`Self::latency_samples`] (zeros are
     /// emitted until the pipeline fills).
     pub fn process_sample(&self, input: f32, state: &mut FirCrossoverState) -> SmallBands {
-        state.pending.push(input);
-        if state.pending.len() == BLOCK {
+        if state.input.push(input) {
             self.process_pending(state);
         }
         let mut bands = SmallBands::new(self.num_bands);
@@ -333,64 +287,41 @@ impl FirCrossoverBank {
     /// Consume the pending block: one shared forward FFT, one partitioned
     /// convolution per lowpass, then band outputs by telescoping differences.
     fn process_pending(&self, state: &mut FirCrossoverState) {
-        let scale = 1.0 / (2 * BLOCK) as f32;
+        let FirCrossoverState {
+            input,
+            scratch,
+            delay_hist,
+            delay_work,
+            lp_out,
+            out,
+            read_idx,
+        } = state;
 
         // Overlap-save forward transform of [previous block | new block].
-        state.fft_in[..BLOCK].copy_from_slice(&state.prev_block);
-        state.fft_in[BLOCK..].copy_from_slice(&state.pending);
-        state.prev_block.copy_from_slice(&state.pending);
-        state.fdl_pos = (state.fdl_pos + 1) % self.partitions;
-        let pos = state.fdl_pos;
-        self.fft
-            .process_with_scratch(
-                &mut state.fft_in,
-                &mut state.fdl[pos],
-                &mut state.fft_scratch,
-            )
-            .expect("streaming FFT sizes are fixed by construction");
-
-        for (lp, lp_out) in state.lp_out.iter_mut().enumerate() {
-            state.spec_acc.fill(Complex::default());
-            for p in 0..self.partitions {
-                let src = &state.fdl[(pos + self.partitions - p) % self.partitions];
-                let ker = &self.kernel_spectra[lp][p];
-                for bin in 0..state.spec_acc.len() {
-                    state.spec_acc[bin] += src[bin] * ker[bin];
-                }
-            }
-            self.ifft
-                .process_with_scratch(
-                    &mut state.spec_acc,
-                    &mut state.ifft_out,
-                    &mut state.ifft_scratch,
-                )
-                .expect("streaming FFT sizes are fixed by construction");
-            // Overlap-save: the first BLOCK samples are circular garbage.
-            for (o, &v) in lp_out.iter_mut().zip(&state.ifft_out[BLOCK..]) {
-                *o = v * scale;
-            }
+        self.plan.analyze(input);
+        for (kernel, lp_out) in self.lowpasses.iter().zip(lp_out.iter_mut()) {
+            self.plan.synthesize(input, kernel, scratch, lp_out);
         }
 
         // Input delayed by the kernel group delay, for the top band.
         let d = self.kernel_delay;
-        state.delay_work[..d].copy_from_slice(&state.delay_hist);
-        state.delay_work[d..].copy_from_slice(&state.pending);
-        state.delay_hist.copy_from_slice(&state.delay_work[BLOCK..]);
+        delay_work[..d].copy_from_slice(delay_hist);
+        delay_work[d..].copy_from_slice(input.last_block());
+        delay_hist.copy_from_slice(&delay_work[BLOCK..]);
 
         // Band outputs telescope so their sum is exactly the delayed input.
         let n = self.num_bands;
-        state.out[0].copy_from_slice(&state.lp_out[0]);
+        out[0].copy_from_slice(&lp_out[0]);
         for k in 1..n - 1 {
             for i in 0..BLOCK {
-                state.out[k][i] = state.lp_out[k][i] - state.lp_out[k - 1][i];
+                out[k][i] = lp_out[k][i] - lp_out[k - 1][i];
             }
         }
         for i in 0..BLOCK {
-            state.out[n - 1][i] = state.delay_work[i] - state.lp_out[n - 2][i];
+            out[n - 1][i] = delay_work[i] - lp_out[n - 2][i];
         }
 
-        state.pending.clear();
-        state.read_idx = 0;
+        *read_idx = 0;
     }
 }
 
@@ -398,7 +329,7 @@ impl FirCrossoverBank {
     /// Was `state` allocated by [`Self::make_state`] on a bank of this exact
     /// shape? Used to invalidate per-channel states when the bank is rebuilt.
     pub(crate) fn state_compatible(&self, state: &FirCrossoverState) -> bool {
-        state.fdl.len() == self.partitions
+        state.input.capacity() == self.partitions
             && state.delay_hist.len() == self.kernel_delay
             && state.out.len() == self.num_bands
     }
@@ -408,12 +339,7 @@ impl FirCrossoverState {
     /// Zero all filter memory in place (no reallocation), so a new signal
     /// never splices into the previous one's tail.
     pub fn reset(&mut self) {
-        self.pending.clear();
-        self.prev_block.fill(0.0);
-        for spectrum in &mut self.fdl {
-            spectrum.fill(Complex::default());
-        }
-        self.fdl_pos = 0;
+        self.input.reset();
         self.delay_hist.fill(0.0);
         for band in &mut self.out {
             band.fill(0.0);
