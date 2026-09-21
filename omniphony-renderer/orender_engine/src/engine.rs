@@ -78,6 +78,10 @@ pub struct Engine {
     /// (`FormatBridge::source_family`), read with the poses: it selects the
     /// placement policy the fixed channels are planned with.
     source_family: SourceFamily,
+    /// The name the bridge gives the current presentation's format
+    /// (`FormatBridge::source_label`), read with the family; empty when it
+    /// states none. For the host's track info display.
+    source_label: String,
     has_objects: bool,
     loudness_applied: bool,
     decoded_samples: u64,
@@ -277,6 +281,7 @@ impl Engine {
             declared_poses: Vec::new(),
             declared_poses_labels: Vec::new(),
             source_family: SourceFamily::Generic,
+            source_label: String::new(),
             has_objects: false,
             loudness_applied: false,
             decoded_samples: 0,
@@ -595,6 +600,14 @@ impl Engine {
         &self.last_bed_labels
     }
 
+    /// The name the bridge gives the current presentation's format
+    /// (`DTS-HD MA + DTS:X 7.1.4`, `Dolby TrueHD + Dolby Atmos`, …), empty
+    /// when it states none. Declaration-level: refreshed with the channel
+    /// labels, never per frame. For the host's track info display.
+    pub fn source_label(&self) -> &str {
+        &self.source_label
+    }
+
     /// Constant DSP latency of the rendered output, in samples at the engine
     /// sample rate (see [`SpatialRenderer::output_latency_samples`]). 0 for
     /// the default filters; non-zero when the linear-phase FIR crossover sits
@@ -700,6 +713,7 @@ impl Engine {
         self.declared_poses.clear();
         self.declared_poses_labels.clear();
         self.source_family = SourceFamily::Generic;
+        self.source_label.clear();
         self.frame_events.clear();
         self.loudness_applied = false;
         self.object_names.clear();
@@ -784,6 +798,7 @@ impl Engine {
         let state = serde_json::json!({
             "stream": if stream_has_objects { "objects" } else { "fixed" },
             "family": self.source_family.as_str(),
+            "label": self.source_label,
             "labels": names,
             "inputHasHeight": input_has_height,
             "outputHasHeight": output_has_height,
@@ -808,6 +823,9 @@ impl Engine {
             .extend(self.bridge.bridge.fixed_channel_poses().into_iter());
         self.source_family =
             SourceFamily::from_declared(self.bridge.bridge.source_family().as_str());
+        self.source_label.clear();
+        self.source_label
+            .push_str(self.bridge.bridge.source_label().as_str());
         self.declared_poses_labels.clear();
         self.declared_poses_labels.extend_from_slice(labels);
     }

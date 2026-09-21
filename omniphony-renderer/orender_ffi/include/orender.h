@@ -24,7 +24,7 @@
 // C-ABI minor version: backwards-compatible additions only. Consumers should
 // gate optional features on symbol presence (dlsym), not on this value; it
 // exists for logging and diagnostics.
-#define ORENDER_ABI_MINOR 8
+#define ORENDER_ABI_MINOR 9
 
 // Speaker-position labels written by [`orender_channel_layout`] and
 // [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -162,6 +162,21 @@ int orender_dialnorm_db(const struct OrenderRenderer *r);
 // bytes are filled (else nothing is written — call with `out_labels = NULL` to
 // query `N`). `0` for plain multichannel / no bed / NULL handle / error.
 uint32_t orender_bed_layout(const struct OrenderRenderer *r, uint8_t *out_labels, uint32_t cap);
+
+// Write the name the bridge gives the current presentation's format, as a
+// NUL-terminated UTF-8 string — `DTS-HD MA + DTS:X 7.1.4`,
+// `DTS-HD MA + Auro-3D 11.1`, `Dolby TrueHD + Dolby Atmos`, `Dolby Digital
+// Plus` — for the host's track info display. Declaration-level: it follows
+// the channel labels (a lossy carrier whose spatial layer the bridge cannot
+// read is named as the carrier alone), so poll it with the other track-info
+// queries rather than latching it.
+//
+// Query/fill convention: returns the label's length `N` in bytes (without the
+// terminator); if `out` is non-NULL and `cap > N`, the label and its NUL are
+// written (else nothing is written — call with `out = NULL` to query `N`).
+// `0` when the bridge states no name (the host composes its own), and on a
+// NULL handle / error.
+uint32_t orender_source_label(const struct OrenderRenderer *r, char *out, uint32_t cap);
 
 // Constant DSP latency of the rendered output, in samples at the engine
 // sample rate: PCM fed to [`orender_process`] emerges this many samples later

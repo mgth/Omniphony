@@ -249,6 +249,17 @@ Rules:
   in sphere mode only; a user's entry is never overridden by the
   Side/Back surround placement any more, nor is a declared angle. See
   [placement.md](placement.md).
+- `FormatBridge::source_label` (0.4.x, after the prefix, default body:
+  empty) names the presentation's format for the host's track information —
+  `DTS-HD MA + DTS:X 7.1.4`, `DTS-HD MA + Auro-3D 11.1`, `Dolby TrueHD +
+  Dolby Atmos` — read with the family when the labels change, never per
+  frame, and naming what is actually decoded (a lossy carrier whose spatial
+  layer the bridge cannot read is the carrier alone). The engine keeps it
+  (`Engine::source_label`), publishes it with the fixed-channel state
+  (`label`) and exports it as `orender_source_label` (ABI 0.9), so a host
+  such as mpv shows the format the engine decoded instead of what it could
+  infer from the codec id and the object count; empty means the bridge
+  states none and the host composes its own.
 
 ### Rendering (engine/CLI)
 
