@@ -89,15 +89,29 @@ jobs:
             fi
             sleep 10
           done
-          for attempt in 1 2 3; do
+          # `apt-get update` exits 0 when the PPA answers 503 (it only warns
+          # and keeps the stock index), and the install then picks Ubuntu's
+          # 0.3.48, which libspa refuses ("no field `flags`") long after this
+          # step passed. Launchpad does answer 503 intermittently (2026-09-21:
+          # two probes in six), so the update is retried until the candidate
+          # version actually comes from the PPA.
+          pipewire_candidate() {
+            apt-cache policy libpipewire-0.3-dev | awk '/Candidate:/ { print $2 }'
+          }
+          for attempt in 1 2 3 4 5 6 7 8; do
             if sudo timeout 180 apt-get update; then
-              break
+              candidate="$(pipewire_candidate)"
+              if [ -n "$candidate" ] && dpkg --compare-versions "$candidate" ge 0.3.65; then
+                echo "PipeWire candidate from the PPA: $candidate"
+                break
+              fi
+              echo "PipeWire candidate is '$candidate' (the PPA index was not fetched); retrying" >&2
             fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "apt-get update failed after $attempt attempts" >&2
+            if [ "$attempt" -eq 8 ]; then
+              echo "apt-get update never fetched the PipeWire PPA after $attempt attempts" >&2
               exit 1
             fi
-            sleep 10
+            sleep 20
           done
           for attempt in 1 2 3; do
             if sudo apt-get install -y \
@@ -118,6 +132,12 @@ jobs:
             fi
             sleep 10
           done
+          installed="$(dpkg-query -W -f='${Version}' libpipewire-0.3-dev)"
+          if ! dpkg --compare-versions "$installed" ge 0.3.65; then
+            echo "libpipewire-0.3-dev $installed installed; pipewire-rs 0.9 needs >= 0.3.65" >&2
+            exit 1
+          fi
+          echo "libpipewire-0.3-dev $installed"
 
       # ── Rust: build + test (strict gate) ──────────────────────────────────
       # Every cargo invocation below passes --locked. Two things follow from it:
