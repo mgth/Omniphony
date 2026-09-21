@@ -631,7 +631,7 @@ const KERNEL_WIDTH: usize = 2 * HALF_WIDTH as usize;
 /// tabulated once here instead of at every output sample, which is what made a
 /// rebuild evaluate tens of millions of `sin`/`cos` (32 taps × 3 transcendentals
 /// per output sample, for 1672 responses).
-struct ResampleKernel {
+pub(crate) struct ResampleKernel {
     from: u32,
     to: u32,
     /// Distinct fractional positions, `to / gcd(from, to)`.
@@ -641,7 +641,7 @@ struct ResampleKernel {
 }
 
 impl ResampleKernel {
-    fn new(from: u32, to: u32) -> Self {
+    pub(crate) fn new(from: u32, to: u32) -> Self {
         let ratio = to as f64 / from as f64;
         let cutoff = ratio.min(1.0);
         let phases = (to / gcd(from, to)) as usize;
@@ -668,12 +668,12 @@ impl ResampleKernel {
     }
 
     /// Length of the resampled response for an input of `in_len` samples.
-    fn out_len(&self, in_len: usize) -> usize {
+    pub(crate) fn out_len(&self, in_len: usize) -> usize {
         ((in_len as f64) * (self.to as f64 / self.from as f64)).round() as usize
     }
 
     /// Resample `x` into `out`, reusing whatever `out` already holds.
-    fn resample_into(&self, x: &[f32], out: &mut Vec<f32>) {
+    pub(crate) fn resample_into(&self, x: &[f32], out: &mut Vec<f32>) {
         let out_len = self.out_len(x.len());
         out.clear();
         out.reserve(out_len);
