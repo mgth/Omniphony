@@ -400,6 +400,23 @@ pub struct BinauralConfig {
     /// Path to a SOFA HRTF file, used when `hrir_source = "sofa"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hrtf_sofa_path: Option<PathBuf>,
+    /// Path to a SOFA room-response file (`MultiSpeakerBRIR`, or a
+    /// per-direction set with room-length responses), used when
+    /// `hrir_source = "brir"`. Rendered through the virtual-speaker path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brir_sofa_path: Option<PathBuf>,
+    /// Keep every measured head orientation of the BRIR resident (head
+    /// tracking). Default: only when `head_tracking.osc_address` is set;
+    /// otherwise the single orientation nearest straight ahead is loaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brir_head_tracking: Option<bool>,
+    /// Longest BRIR kept, in seconds (default 2.0; 0 = whole responses).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brir_max_length_s: Option<f32>,
+    /// Decibels below a response's total energy at which its tail is cut
+    /// (default 60).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brir_tail_floor_db: Option<f32>,
     /// Head-tracking input wiring (SensorsOSC). Consumed from M2; stored now so
     /// the section round-trips.
     #[serde(skip_serializing_if = "Option::is_none")]

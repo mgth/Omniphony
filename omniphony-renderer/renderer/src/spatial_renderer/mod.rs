@@ -283,6 +283,9 @@ pub struct SpatialRenderer {
     /// `LiveParams::binaural.output_mode == OutputMode::Binaural`; otherwise the
     /// classic VBAP path runs and this holds no live state.
     binaural: crate::binaural::BinauralRenderer,
+    /// The BRIR stage of the cascaded path, used while the HRIR source is a
+    /// room response ([`crate::binaural::HrirSource::Brir`]).
+    brir: crate::binaural::BrirStage,
 
     /// Cascaded binaural geometry (`binaural.mode == Cascaded`): binaural
     /// input positions/flags derived from the app layout + the virtual bus
@@ -598,11 +601,18 @@ impl SpatialRenderer {
         // after `update_metadata` has applied the pending events (new ramp
         // targets); the branch itself advances each object's position ramp for
         // the block. Flag it here.
-        let (requested_output_mode, cascade_active) = {
+        let (requested_output_mode, cascade_active, brir_source) = {
             let g = self.control.live.read();
+            // A room response is rendered through the virtual-speaker path
+            // whatever the binaural mode says: the set only knows its
+            // loudspeakers, so anything else has to be panned onto them.
+            let brir_source =
+                matches!(g.binaural.hrir_source, crate::binaural::HrirSource::Brir(_));
             (
                 g.binaural.output_mode,
-                matches!(g.binaural.mode, crate::live_params::BinauralMode::Cascaded),
+                matches!(g.binaural.mode, crate::live_params::BinauralMode::Cascaded)
+                    || brir_source,
+                brir_source,
             )
         };
         // A mode change does not take effect here: it arms a cross-fade and the
@@ -644,10 +654,28 @@ impl SpatialRenderer {
             self.refresh_cascade_for_topology(topology, topology_identity);
         }
 
+        // BRIR source: track the file and options (one compare per frame;
+        // the load itself runs on the stage's worker) and find out whether a
+        // set is resident. Until it is — or if it failed — the cascade runs
+        // on the HRTF stage, so the listener hears the room-less fallback
+        // rather than silence, and the status says why.
+        let brir_in_use = if binaural_active && brir_source {
+            let g = self.control.live.read();
+            if let crate::binaural::HrirSource::Brir(path) = &g.binaural.hrir_source {
+                let opts = cascade::brir_load_options(&g.binaural);
+                self.brir
+                    .ensure_loaded(path, &opts, topology.speaker_layout.num_speakers());
+            }
+            self.brir.is_ready()
+        } else {
+            false
+        };
+
         // Latency of the path this frame takes: the speaker path and the
         // cascaded binaural path both mix through the main speaker stage
         // (crossover included); the plain binaural path bypasses the
-        // crossover entirely. Cached for [`Self::output_latency_samples`].
+        // crossover entirely; the BRIR stage adds its own block. Cached for
+        // [`Self::output_latency_samples`].
         self.last_output_latency = if binaural_active && !(cascade_active && self.cascade.is_some())
         {
             0
@@ -656,6 +684,11 @@ impl SpatialRenderer {
                 .crossover_filter_bank
                 .as_ref()
                 .map_or(0, |b| b.latency_samples())
+                + if brir_in_use {
+                    self.brir.latency_samples()
+                } else {
+                    0
+                }
         };
 
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
@@ -854,6 +887,7 @@ impl SpatialRenderer {
                     &mut self.speaker_stage,
                     &mut self.channel_states,
                     &mut self.binaural,
+                    brir_in_use.then_some(&mut self.brir),
                     speaker_stage::SpeakerStageFrame {
                         input_pcm,
                         input_channel_count,
@@ -1295,7 +1329,8 @@ impl SpatialRenderer {
     /// Constant DSP latency of the rendered output, in samples at the engine
     /// sample rate: input PCM fed to [`Self::render_frame`] emerges this many
     /// samples later in the rendered stream. 0 for the default filters;
-    /// non-zero when the linear-phase FIR crossover sits on the rendered path.
+    /// non-zero when the linear-phase FIR crossover sits on the rendered path
+    /// or the cascaded binaural path convolves a BRIR set.
     /// Reflects the path the LAST rendered frame took (0 before the first
     /// frame) and may change mid-stream when the crossover engine or the
     /// output mode is switched live. Hosts subtract `latency / sample_rate`

@@ -28,7 +28,9 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 
 /// FFT plans and geometry for one partition size. Build once per partition
-/// size and share it between every input and kernel of that size.
+/// size and share it between every input and kernel of that size (cloning
+/// shares the plans).
+#[derive(Clone)]
 pub struct ConvolutionPlan {
     /// Hop / partition size in samples.
     block: usize,
@@ -186,9 +188,12 @@ impl ConvolutionPlan {
         input.pending.clear();
     }
 
-    /// Multiply-accumulate `kernel` over the spectrum ring of `input` into
-    /// `scratch.spec_acc`, then inverse-transform into `scratch.ifft_out`.
-    fn accumulate(
+    /// Add `kernel` applied to the spectrum ring of `input` into `scratch`,
+    /// without inverse-transforming: several inputs and kernels can be
+    /// summed in the frequency domain and inverse-transformed once by
+    /// [`Self::finish`] — one IFFT per output however many sources feed it.
+    /// Call [`OutputScratch::clear`] before the first term of a block.
+    pub fn accumulate(
         &self,
         input: &InputHistory,
         kernel: &PartitionedKernel,
@@ -206,7 +211,6 @@ impl ConvolutionPlan {
         );
         let bins = self.bins;
         let cap = input.capacity;
-        scratch.spec_acc.fill(Complex::default());
         for p in 0..partitions {
             let idx = (input.fdl_pos + cap - p) % cap;
             let src = &input.fdl[idx * bins..(idx + 1) * bins];
@@ -215,6 +219,10 @@ impl ConvolutionPlan {
                 *acc += s * k;
             }
         }
+    }
+
+    /// Inverse-transform the accumulated spectrum into `scratch.ifft_out`.
+    fn inverse(&self, scratch: &mut OutputScratch) {
         self.ifft
             .process_with_scratch(
                 &mut scratch.spec_acc,
@@ -231,18 +239,11 @@ impl ConvolutionPlan {
         1.0 / (2 * self.block) as f32
     }
 
-    /// Write the current output block of `input` convolved with `kernel` into
-    /// `out` (`out.len() == block`). Call once per [`Self::analyze`] and per
-    /// kernel; the input must have been analysed at least once.
-    pub fn synthesize(
-        &self,
-        input: &InputHistory,
-        kernel: &PartitionedKernel,
-        scratch: &mut OutputScratch,
-        out: &mut [f32],
-    ) {
+    /// Inverse-transform what [`Self::accumulate`] summed into `scratch` and
+    /// write the output block into `out` (`out.len() == block`).
+    pub fn finish(&self, scratch: &mut OutputScratch, out: &mut [f32]) {
         debug_assert_eq!(out.len(), self.block);
-        self.accumulate(input, kernel, scratch);
+        self.inverse(scratch);
         let scale = self.scale();
         // Overlap-save: the first `block` samples are circular garbage.
         for (o, &v) in out.iter_mut().zip(&scratch.ifft_out[self.block..]) {
@@ -250,21 +251,14 @@ impl ConvolutionPlan {
         }
     }
 
-    /// Like [`Self::synthesize`], but blending linearly from the output of
-    /// `from` to the output of `to` across the block (weight `(i + 1) / block`
-    /// at sample `i`, so the last sample is `to` exactly). Both kernels are
-    /// run: use it for the single block in which a kernel changes, then
-    /// continue with [`Self::synthesize`] on `to`.
-    pub fn synthesize_blend(
-        &self,
-        input: &InputHistory,
-        from: &PartitionedKernel,
-        to: &PartitionedKernel,
-        scratch: &mut OutputScratch,
-        out: &mut [f32],
-    ) {
-        self.synthesize(input, from, scratch, out);
-        self.accumulate(input, to, scratch);
+    /// Like [`Self::finish`], but ramping `out` — which holds the block of an
+    /// outgoing kernel set — linearly toward the accumulated result across
+    /// the block (weight `(i + 1) / block` at sample `i`, so the last sample
+    /// is the new result exactly). The click-free swap of a kernel set: both
+    /// sets are run for that one block only.
+    pub fn finish_blend(&self, scratch: &mut OutputScratch, out: &mut [f32]) {
+        debug_assert_eq!(out.len(), self.block);
+        self.inverse(scratch);
         let scale = self.scale();
         let step = 1.0 / self.block as f32;
         for (i, (o, &v)) in out
@@ -276,6 +270,47 @@ impl ConvolutionPlan {
             let target = v * scale;
             *o += (target - *o) * w;
         }
+    }
+
+    /// Write the current output block of `input` convolved with `kernel` into
+    /// `out` (`out.len() == block`). Call once per [`Self::analyze`] and per
+    /// kernel; the input must have been analysed at least once.
+    pub fn synthesize(
+        &self,
+        input: &InputHistory,
+        kernel: &PartitionedKernel,
+        scratch: &mut OutputScratch,
+        out: &mut [f32],
+    ) {
+        scratch.clear();
+        self.accumulate(input, kernel, scratch);
+        self.finish(scratch, out);
+    }
+
+    /// Like [`Self::synthesize`], but blending linearly from the output of
+    /// `from` to the output of `to` across the block (see
+    /// [`Self::finish_blend`]). Use it for the single block in which a kernel
+    /// changes, then continue with [`Self::synthesize`] on `to`.
+    pub fn synthesize_blend(
+        &self,
+        input: &InputHistory,
+        from: &PartitionedKernel,
+        to: &PartitionedKernel,
+        scratch: &mut OutputScratch,
+        out: &mut [f32],
+    ) {
+        self.synthesize(input, from, scratch, out);
+        scratch.clear();
+        self.accumulate(input, to, scratch);
+        self.finish_blend(scratch, out);
+    }
+}
+
+impl OutputScratch {
+    /// Zero the accumulator ahead of a block's first [`ConvolutionPlan::accumulate`].
+    #[inline]
+    pub fn clear(&mut self) {
+        self.spec_acc.fill(Complex::default());
     }
 }
 
@@ -524,6 +559,44 @@ mod tests {
         input.reset();
         let y = stream(&plan, &mut input, &kernel, &vec![0.0f32; 80]);
         assert!(y.iter().all(|&v| v == 0.0), "tail survived reset: {y:?}");
+    }
+
+    /// Summing two sources in the frequency domain and inverse-transforming
+    /// once equals the sum of their separately synthesized blocks.
+    #[test]
+    fn accumulate_sums_sources_before_one_inverse() {
+        let plan = ConvolutionPlan::new(64);
+        let ka = plan.partition(&noise(150, 31));
+        let kb = plan.partition(&noise(90, 37));
+        let xa = noise(640, 41);
+        let xb = noise(640, 43);
+        let mut ia = plan.make_input(ka.partitions());
+        let mut ib = plan.make_input(kb.partitions());
+        let mut scratch = plan.make_scratch();
+        let (mut oa, mut ob, mut sum) = (vec![0.0f32; 64], vec![0.0f32; 64], vec![0.0f32; 64]);
+        for (&a, &b) in xa.iter().zip(&xb) {
+            let done = ia.push(a);
+            let done_b = ib.push(b);
+            assert_eq!(done, done_b);
+            if done {
+                plan.analyze(&mut ia);
+                plan.analyze(&mut ib);
+                plan.synthesize(&ia, &ka, &mut scratch, &mut oa);
+                plan.synthesize(&ib, &kb, &mut scratch, &mut ob);
+                scratch.clear();
+                plan.accumulate(&ia, &ka, &mut scratch);
+                plan.accumulate(&ib, &kb, &mut scratch);
+                plan.finish(&mut scratch, &mut sum);
+                for i in 0..64 {
+                    assert!(
+                        (sum[i] - (oa[i] + ob[i])).abs() < 1e-5,
+                        "sample {i}: {} vs {}",
+                        sum[i],
+                        oa[i] + ob[i]
+                    );
+                }
+            }
+        }
     }
 
     /// `repartition` into a previously larger kernel yields exactly what a

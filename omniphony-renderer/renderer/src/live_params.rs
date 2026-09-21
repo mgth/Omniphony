@@ -568,6 +568,33 @@ impl Default for BinauralReverb {
     }
 }
 
+/// Load-time choices for a BRIR source ([`crate::binaural::HrirSource::Brir`]):
+/// what the loader keeps resident. A change reloads the set.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BrirLiveParams {
+    /// Keep every measured head orientation resident (head tracking) rather
+    /// than only the one nearest straight ahead. `None` follows the
+    /// head-tracking input: orientations are loaded when an OSC address is
+    /// configured, otherwise a single one — the memory difference is the
+    /// whole set versus one orientation of it.
+    pub head_tracking: Option<bool>,
+    /// Longest response kept, seconds (`0` = whole responses).
+    pub max_length_s: f32,
+    /// Decibels below a response's total energy at which its tail is cut.
+    pub tail_floor_db: f32,
+}
+
+impl Default for BrirLiveParams {
+    fn default() -> Self {
+        let d = crate::binaural::brir::BrirLoadOptions::default();
+        Self {
+            head_tracking: None,
+            max_length_s: d.max_length_s,
+            tail_floor_db: d.tail_floor_db,
+        }
+    }
+}
+
 /// Live-tunable parameters for the binaural (headphone) output stage.
 ///
 /// `unit_scale_m` is an **isotropic** metres-per-ADM-unit factor for distance
@@ -610,6 +637,8 @@ pub struct BinauralLiveParams {
     /// (see `binaural::diffuse_field`): takes the measured head's tonal
     /// signature out while keeping every interaural difference. Opt-in.
     pub diffuse_field_eq: bool,
+    /// Load-time choices for a BRIR source (see [`BrirLiveParams`]).
+    pub brir: BrirLiveParams,
 }
 
 impl Default for BinauralLiveParams {
@@ -628,6 +657,7 @@ impl Default for BinauralLiveParams {
             reverb: BinauralReverb::default(),
             air_absorption: true,
             diffuse_field_eq: false,
+            brir: BrirLiveParams::default(),
         }
     }
 }
@@ -1547,6 +1577,11 @@ pub struct RendererControl {
     /// Written by the renderer's rebuild worker, read by the state snapshot.
     pub binaural_hrir_status: ArcSwap<crate::binaural::HrirStatus>,
 
+    /// What the last BRIR set load produced (the `brir` HRIR source): the
+    /// file asked for, what is resident, or why it failed. Written by the
+    /// BRIR stage's worker, read by the state snapshot.
+    pub binaural_brir_status: ArcSwap<crate::binaural::BrirStatus>,
+
     /// Bumped whenever per-object live params change.
     /// Render sample rate, published so control-thread work that has to produce
     /// samples — loading a test clip, which is resampled once on the way in —
@@ -1719,6 +1754,7 @@ impl RendererControl {
             recompute_pending: AtomicBool::new(false),
             config_dirty: AtomicBool::new(false),
             binaural_hrir_status: ArcSwap::from_pointee(crate::binaural::HrirStatus::default()),
+            binaural_brir_status: ArcSwap::from_pointee(crate::binaural::BrirStatus::default()),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
             live_state_generation: std::sync::atomic::AtomicU64::new(0),
@@ -2065,6 +2101,11 @@ impl RendererControl {
     /// The last binaural HRIR build's outcome (see the field).
     pub fn binaural_hrir_status(&self) -> Arc<crate::binaural::HrirStatus> {
         self.binaural_hrir_status.load_full()
+    }
+
+    /// The last BRIR set load's outcome (see the field).
+    pub fn binaural_brir_status(&self) -> Arc<crate::binaural::BrirStatus> {
+        self.binaural_brir_status.load_full()
     }
 
     /// Signal that live state changed and should be re-broadcast to clients.

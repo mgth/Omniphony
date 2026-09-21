@@ -21,6 +21,7 @@
 //! [`OutputMode`]: crate::live_params::OutputMode
 
 pub mod brir;
+pub mod brir_stage;
 pub mod convolver;
 pub mod diffuse_field;
 pub mod head_pose;
@@ -35,6 +36,7 @@ pub mod tracking;
 #[cfg(test)]
 mod validation;
 
+pub use brir_stage::{BrirStage, BrirStatus};
 pub use head_pose::HeadPose;
 pub use tracking::{CalibrationStep, HeadTracking, HeadTrackingFormat};
 
@@ -90,6 +92,12 @@ pub enum HrirSource {
     SafKemar,
     /// A SOFA file loaded from disk (requires the `sofa` build feature).
     Sofa(String),
+    /// A binaural room impulse response set from a SOFA file
+    /// (`MultiSpeakerBRIR`, or a per-direction set carrying room-length
+    /// responses). Rendered by the cascaded virtual-speaker path
+    /// ([`brir_stage`]); the direct path has no use for a room response, so
+    /// its grid is the embedded KEMAR set while this source is selected.
+    Brir(String),
     /// Parametric structural model: analytic head shadow + the Brown-Duda pinna
     /// echo train (exact Table I coefficients). `preset` picks a published `D_n`
     /// column (the only per-listener parameter), `d_scale_pct` fine-tunes it,
@@ -123,6 +131,7 @@ impl HrirSource {
             Self::Synthetic => "synthetic",
             Self::SafKemar => "saf",
             Self::Sofa(_) => "sofa",
+            Self::Brir(_) => "brir",
             Self::Pinna { .. } => "pinna",
             Self::Prtf { .. } => "prtf",
         }
@@ -134,6 +143,9 @@ impl HrirSource {
         let s = s.trim();
         if let Some(path) = s.strip_prefix("sofa:") {
             return Some(Self::Sofa(path.to_string()));
+        }
+        if let Some(path) = s.strip_prefix("brir:") {
+            return Some(Self::Brir(path.to_string()));
         }
         let lower = s.to_ascii_lowercase();
         // "pinna" | "pinna:<preset>:<dscale>:<depth>" (preset = pbnh|rd,
@@ -175,6 +187,7 @@ impl HrirSource {
             "synthetic" | "synth" => Some(Self::Synthetic),
             "saf" | "kemar" | "saf_kemar" => Some(Self::SafKemar),
             "sofa" => Some(Self::Sofa(String::new())),
+            "brir" => Some(Self::Brir(String::new())),
             "pinna" | "parametric" => Some(Self::Pinna {
                 preset: PinnaPreset::PbNh,
                 d_scale_pct: 100,
@@ -602,6 +615,19 @@ impl BinauralRenderer {
                     )
                 }
             },
+            // A room response is rendered by the cascaded BRIR stage, which
+            // reports its own load status; the direct path's grid is the
+            // embedded set meanwhile, and that is not an error.
+            HrirSource::Brir(_) => (
+                Self::build_hrir(
+                    &HrirSource::SafKemar,
+                    head_radius_m,
+                    diffuse_field_eq,
+                    sample_rate,
+                ),
+                HrirSource::SafKemar,
+                None,
+            ),
             other => (
                 Self::build_hrir(other, head_radius_m, diffuse_field_eq, sample_rate),
                 other.clone(),
@@ -648,7 +674,9 @@ impl BinauralRenderer {
                 freq_scale: *freq_scale_pct as f32 / 100.0,
                 head_radius_m,
             }),
-            HrirSource::SafKemar => build(&*MeasuredHrirData::saf_kemar_shared(sample_rate)),
+            HrirSource::SafKemar | HrirSource::Brir(_) => {
+                build(&*MeasuredHrirData::saf_kemar_shared(sample_rate))
+            }
             // Handled by `build_grid`, which owns the fallback; reaching
             // here means a caller asked for the raw build, so no fallback.
             HrirSource::Sofa(path) => Self::load_sofa(path, diffuse_field_eq, sample_rate)

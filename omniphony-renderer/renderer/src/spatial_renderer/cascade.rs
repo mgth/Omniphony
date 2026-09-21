@@ -25,8 +25,16 @@
 //! Headphone L/R gain/mute deliberately do NOT ride the first two per-speaker
 //! slots anymore (they would collide with the virtual FL/FR rows): the ears
 //! have dedicated live params ([`crate::live_params::EarLiveParams`]).
+//!
+//! With a room impulse response set selected
+//! ([`crate::binaural::HrirSource::Brir`]) the buses go to the BRIR stage
+//! ([`crate::binaural::BrirStage`]) instead of the HRTF stage: each virtual
+//! speaker is convolved with the pair measured from the set's nearest
+//! loudspeaker, and the mode is implied by the source — a room response only
+//! knows its loudspeakers, so it is the virtual room whatever `mode` says.
 
-use crate::live_params::RenderTopology;
+use crate::binaural::brir::{BrirLoadOptions, OrientationSelection};
+use crate::live_params::{BinauralLiveParams, RenderTopology};
 
 use super::speaker_stage::{SpeakerRenderStage, SpeakerStageDiagnostics, SpeakerStageFrame};
 use super::{ChannelState, SpatialRenderer};
@@ -111,10 +119,33 @@ pub(super) fn reseed_interp_on_width_change(
     *last_mix_num_speakers = mix_width;
 }
 
+/// What the BRIR loader keeps resident for the live selection: every
+/// measured head orientation when the listener is tracked (an explicit
+/// choice, else whether a head-tracking OSC address is configured), a
+/// single one otherwise — the whole set's memory versus one orientation's.
+pub(super) fn brir_load_options(b: &BinauralLiveParams) -> BrirLoadOptions {
+    let tracked = b.brir.head_tracking.unwrap_or_else(|| {
+        b.tracking
+            .address
+            .as_deref()
+            .is_some_and(|a| !a.trim().is_empty())
+    });
+    BrirLoadOptions {
+        orientations: if tracked {
+            OrientationSelection::All
+        } else {
+            OrientationSelection::FrontOnly
+        },
+        max_length_s: b.brir.max_length_s,
+        tail_floor_db: b.brir.tail_floor_db,
+    }
+}
+
 /// Run the virtual pipeline for one frame: the MAIN speaker stage mixes onto
 /// the cascade buses, the output stage applies the per-speaker live params
-/// (the same rows that drive physical speakers), then the binaural stage
-/// renders the fixed virtual sources into `output` (interleaved stereo).
+/// (the same rows that drive physical speakers), then the binaural stage —
+/// or the BRIR stage when `brir` is given — renders the fixed virtual
+/// sources into `output` (interleaved stereo).
 /// Returns the mix diagnostics — valid for the app layout, so object meters
 /// keep working in cascade mode.
 ///
@@ -127,6 +158,7 @@ pub(super) fn render_cascade_frame(
     stage: &mut SpeakerRenderStage,
     channel_states: &mut Vec<ChannelState>,
     binaural: &mut crate::binaural::BinauralRenderer,
+    brir: Option<&mut crate::binaural::BrirStage>,
     frame: SpeakerStageFrame<'_>,
     speaker_params: &[crate::live_params::SpeakerLiveParams],
     binaural_params: &crate::binaural::BinauralFrameParams,
@@ -159,20 +191,39 @@ pub(super) fn render_cascade_frame(
     // never react to virtual buses.
     let _ = stage.finalize_output(speaker_params, 1.0, &mut cascade.bus);
 
-    // The buses are the binaural stage's PCM input; the virtual speakers are
-    // its fixed sources. With a static head the per-source HRIR update no-ops
-    // and only `total` convolver pairs run, whatever the object count.
-    binaural.render_frame(
-        &cascade.bus,
-        total,
-        sample_length,
-        binaural_params,
-        &cascade.bin_pos,
-        &cascade.bin_gain,
-        &cascade.bin_direct,
-        // No extra source: the test is already on the buses above.
-        None,
-        output,
-    );
+    match brir {
+        // The buses are the BRIR stage's input: one measured pair per
+        // virtual speaker, the head following the set's orientations.
+        Some(brir) => {
+            brir.configure_buses(
+                &cascade.bin_pos,
+                &cascade.bin_direct,
+                cascade.topology_identity,
+            );
+            brir.render_frame(
+                &cascade.bus,
+                total,
+                sample_length,
+                binaural_params.head_pose,
+                output,
+            );
+        }
+        // The buses are the binaural stage's PCM input; the virtual speakers
+        // are its fixed sources. With a static head the per-source HRIR
+        // update no-ops and only `total` convolver pairs run, whatever the
+        // object count.
+        None => binaural.render_frame(
+            &cascade.bus,
+            total,
+            sample_length,
+            binaural_params,
+            &cascade.bin_pos,
+            &cascade.bin_gain,
+            &cascade.bin_direct,
+            // No extra source: the test is already on the buses above.
+            None,
+            output,
+        ),
+    }
     diag
 }

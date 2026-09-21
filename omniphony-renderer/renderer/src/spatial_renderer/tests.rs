@@ -2682,3 +2682,79 @@ fn fir_crossover_keeps_beds_aligned_with_objects() {
         "bed impulse must survive the compensation delay at unity gain, got {v}"
     );
 }
+
+/// A `brir` HRIR source forces the virtual-speaker path whatever the binaural
+/// mode says, renders the buses through the set — a hard-right object lands
+/// on right-side emitters, whose synthetic pairs favour the right ear — and
+/// adds the BRIR stage's block to the reported latency.
+#[test]
+fn brir_source_forces_the_cascade_and_convolves_the_set() {
+    use crate::binaural::brir_stage::{BRIR_BLOCK, test_support::synth_set};
+
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+    {
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        // Direct mode: the source alone must select the cascade.
+        live.binaural.mode = crate::live_params::BinauralMode::Direct;
+        live.binaural.hrir_source =
+            crate::binaural::HrirSource::Brir("synthetic (installed below)".into());
+    }
+    // The 7.1 horizontal loudspeakers as emitters (SOFA azimuths, left
+    // positive); the app's 7.1.4 heights map onto their nearest ones.
+    let set = synth_set(&[30.0, -30.0, 0.0, 90.0, -90.0, 150.0, -150.0], &[0.0], 400);
+    r.brir.install_set(set, 12);
+
+    let mut lcg: u32 = 0x1234_5678;
+    let mut noise_block = move || -> Vec<f32> {
+        (0..40)
+            .map(|_| {
+                lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                (lcg >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            })
+            .collect()
+    };
+    let pcm = noise_block();
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(40),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([1.0, 0.0, 0.0]),
+        sample_pos: Some(0),
+    }];
+    let first = r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
+    assert_eq!(first.samples.len(), 40 * 2, "stereo out");
+    assert!(
+        r.cascade.is_some(),
+        "a BRIR source runs the virtual-speaker path"
+    );
+    assert_eq!(
+        r.output_latency_samples(),
+        BRIR_BLOCK - 1,
+        "the BRIR stage's block is reported as latency"
+    );
+    assert_eq!(
+        r.brir.bus_emitters().iter().filter(|e| e.is_none()).count(),
+        1,
+        "the LFE bus is direct"
+    );
+
+    let (mut e_l, mut e_r) = (0.0f32, 0.0f32);
+    for i in 0..60 {
+        let pcm = noise_block();
+        let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+        if i >= 30 {
+            for s in out.samples.chunks_exact(2) {
+                e_l += s[0] * s[0];
+                e_r += s[1] * s[1];
+            }
+        }
+    }
+    assert!(e_r > 0.0, "the set is convolved");
+    assert!(
+        e_r > 1.5 * e_l,
+        "a hard-right object favours the right ear through the set: L {e_l:.4} R {e_r:.4}"
+    );
+}

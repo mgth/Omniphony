@@ -227,9 +227,12 @@ pub fn store_live_into_config(
     // Binaural (headphone) stage: persist the live selection so it survives a
     // restart — output mode, HRIR source (+ SOFA path), isotropic scale, and the
     // head-tracking OSC address/format.
-    let (hrir_source, hrtf_sofa_path) = match &live.binaural.hrir_source {
+    let (hrir_source, hrtf_sofa_path, brir_sofa_path) = match &live.binaural.hrir_source {
         renderer::binaural::HrirSource::Sofa(p) if !p.is_empty() => {
-            ("sofa".to_string(), Some(std::path::PathBuf::from(p)))
+            ("sofa".to_string(), Some(std::path::PathBuf::from(p)), None)
+        }
+        renderer::binaural::HrirSource::Brir(p) if !p.is_empty() => {
+            ("brir".to_string(), None, Some(std::path::PathBuf::from(p)))
         }
         renderer::binaural::HrirSource::Pinna {
             preset,
@@ -238,12 +241,13 @@ pub fn store_live_into_config(
         } => (
             format!("pinna:{}:{d_scale_pct}:{depth_pct}", preset.as_str()),
             None,
+            None,
         ),
         renderer::binaural::HrirSource::Prtf {
             freq_scale_pct,
             depth_pct,
-        } => (format!("prtf:{freq_scale_pct}:{depth_pct}"), None),
-        other => (other.as_str().to_string(), None),
+        } => (format!("prtf:{freq_scale_pct}:{depth_pct}"), None, None),
+        other => (other.as_str().to_string(), None, None),
     };
     render.binaural = Some(renderer::config::BinauralConfig {
         output_mode: Some(live.binaural.output_mode.as_str().to_string()),
@@ -254,6 +258,10 @@ pub fn store_live_into_config(
         head_radius_m: Some(live.binaural.head_radius_m),
         hrir_source: Some(hrir_source),
         hrtf_sofa_path,
+        brir_sofa_path,
+        brir_head_tracking: live.binaural.brir.head_tracking,
+        brir_max_length_s: Some(live.binaural.brir.max_length_s),
+        brir_tail_floor_db: Some(live.binaural.brir.tail_floor_db),
         head_tracking: Some(renderer::config::HeadTrackingConfig {
             osc_address: live.binaural.tracking.address.clone(),
             format: Some(live.binaural.tracking.format.as_str().to_string()),

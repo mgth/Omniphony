@@ -67,8 +67,12 @@ in Studio and over OSC (addresses listed at the end).
 | `output_mode` | `speaker` | `binaural` enables the headphone stage |
 | `unit_scale_m` | `1.0` | metres per ADM unit — isotropic distance scale (the anisotropic `room_ratio` is deliberately not used here) |
 | `head_radius_m` | `0.0875` | effective head radius (half the inter-ear distance) for the Woodworth ITD model; fit it to the listener (clamped 0.05–0.15) |
-| `hrir_source` | `saf` | `saf`/`kemar` (embedded measured KEMAR), `synthetic` (analytic head shadow), `sofa` (personalised set, needs the `sofa` build feature) |
+| `hrir_source` | `saf` | `saf`/`kemar` (embedded measured KEMAR), `synthetic` (analytic head shadow), `sofa` (personalised set, needs the `sofa` build feature), `brir` (a measured room, see *Room responses* below; same build feature) |
 | `hrtf_sofa_path` | — | SOFA file used when `hrir_source: sofa` |
+| `brir_sofa_path` | — | SOFA room-response file used when `hrir_source: brir` |
+| `brir_head_tracking` | — | keep every measured head orientation of the BRIR resident. Unset: follows `head_tracking.osc_address` (orientations are loaded when it is set, a single one otherwise) |
+| `brir_max_length_s` | `2.0` | longest response kept, seconds (`0` = whole responses) |
+| `brir_tail_floor_db` | `60` | decibels below a response's total energy at which its tail is cut |
 | `head_tracking.osc_address` | — | OSC address carrying the orientation (empty disables tracking) |
 | `head_tracking.format` | `auto` | `auto` / `quat` / `rotvec` / `euler` |
 | `reflections.enabled` | `false` | shoebox early reflections (externalization) |
@@ -138,6 +142,59 @@ nxosc run --profile omniphony --osc-address /gamerotationvector --osc-target 127
 Keep `head_tracking.osc_address: /gamerotationvector` and `format: auto`.
 `nxosc` also has a `--profile scenerotator` mode to drive an IEM SceneRotator
 directly instead.
+
+## Room responses (BRIR)
+
+A **binaural room impulse response** set is a measured listening room:
+for each loudspeaker of a real array and each orientation of a dummy head,
+the response at the two ears — propagation, interaural delay, early
+reflections and tail included. Selecting one as the HRIR source
+(`hrir_source: brir` + `brir_sofa_path`, or `brir:<path>` over OSC) renders
+the programme through that room instead of the HRTF stage's synthetic one.
+
+```yaml
+render:
+  binaural:
+    output_mode: binaural
+    hrir_source: brir
+    brir_sofa_path: /path/to/room.sofa
+```
+
+How it renders:
+
+- **The virtual-speaker path is implied.** A room response only knows its
+  loudspeakers, so the programme is first mixed onto the app's speaker layout
+  as a virtual room (the cascaded mode, whatever `mode` says), then each
+  virtual speaker is convolved with the pair measured from the set's nearest
+  loudspeaker. A channel whose label matches a virtual speaker is routed to
+  it directly, without panning: a 7.1.4 stream on a BRIR measured on a 7.1.4
+  array reaches the ears exactly as the measurement did. Configure the
+  speaker layout to match the set's loudspeakers for that; mismatches beyond
+  10° and loudspeakers shared by several virtual speakers are logged.
+- **Nothing else is added**: no ITD model, air absorption, reflections or
+  reverb — they are in the measurement. The LFE keeps its direct feed to
+  both ears.
+- **Head tracking** selects, per loudspeaker, the response measured at the
+  head orientation nearest to the tracked one (yaw and pitch; the sets
+  measure yaw), blended over a few milliseconds. Without a tracking address
+  only the orientation nearest straight ahead is loaded: the memory
+  difference is the whole set versus one orientation of it (a 12-loudspeaker
+  set at 2° steps over 360° and half a second of response is some 400 MB
+  resident with tracking, a few MB without).
+- **Latency**: the convolution adds 127 samples (2.6 ms at 48 kHz),
+  reported to the host with the crossover's for A/V sync.
+- **Conventions**: `MultiSpeakerBRIR` (loudspeakers × head orientations, the
+  BBC and Huddersfield databases), and the one-loudspeaker conventions
+  (`SingleRoomSRIR`, `SingleRoomDRIR`, or a `SimpleFreeFieldHRIR` carrying
+  room-length responses as the ASH Toolset exports) where each measured
+  source position becomes a loudspeaker. Every loudspeaker must have been
+  measured at every kept orientation. Responses are resampled to the engine
+  rate and normalised to unit mean direct-sound energy — the HRIR scale — so
+  switching between an HRTF and a BRIR keeps the level.
+- **While the file loads, or if it cannot be read**, the virtual room is
+  binauralised by the HRTF stage on the embedded KEMAR set instead, and the
+  load status (file, shape, or the error) is published to the control
+  surface.
 
 ## Usage tips
 
@@ -226,7 +283,7 @@ carry no license at all). Accordingly:
 | Address | Args | Meaning |
 |---|---|---|
 | `/omniphony/control/output_mode` | `s: speaker\|binaural` | select the output stage |
-| `/omniphony/control/binaural/hrir_source` | `s: synthetic\|saf\|sofa:<path>` | HRIR set |
+| `/omniphony/control/binaural/hrir_source` | `s: synthetic\|saf\|sofa:<path>\|brir:<path>` | HRIR set, or a room response (see *Room responses*) |
 | `/omniphony/control/binaural/unit_scale` | `f` (m/unit) | distance scale |
 | `/omniphony/control/binaural/head_radius` | `f` (m) | ITD head radius |
 | `/omniphony/control/binaural/reflections/enabled` | `i\|f` (bool) | reflections on/off |
