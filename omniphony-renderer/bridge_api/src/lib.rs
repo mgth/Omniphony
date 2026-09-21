@@ -347,6 +347,23 @@ pub trait FormatBridge: Send + Sync + 'static {
     fn source_family(&self) -> RString {
         RString::new()
     }
+
+    /// What the current presentation's format is called, for the host's
+    /// track information: the carrier and the spatial layer decoded over
+    /// it, as a listener would name them — `DTS-HD MA + DTS:X 7.1.4`,
+    /// `DTS-HD MA + Auro-3D 11.1`, `Dolby TrueHD + Dolby Atmos`, `Dolby
+    /// Digital Plus`. Empty, the default, means the bridge states none and
+    /// the host composes its own from what it knows (its codec id, the
+    /// object count).
+    ///
+    /// Declaration-level like the family: read when the labels change,
+    /// never per frame, and naming what is actually decoded — a lossy
+    /// carrier whose spatial layer the bridge cannot read is named as the
+    /// carrier alone. Added after the 0.4 prefix with a default body, so a
+    /// bridge built before it keeps loading and reads as stating none.
+    fn source_label(&self) -> RString {
+        RString::new()
+    }
 }
 
 /// Owned, heap-allocated bridge trait object.

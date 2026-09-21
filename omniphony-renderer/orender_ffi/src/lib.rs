@@ -206,7 +206,10 @@ pub const ORENDER_ABI_MAJOR: u32 = 0;
 //    (30° over the floor speaker of the same name — Auro-3D's height layer,
 //    BS.2051 U+030/U+000/U+110). A host that predates them reads unknown
 //    bytes for those channels; nothing existing moved.
-pub const ORENDER_ABI_MINOR: u32 = 8;
+// 9: added orender_source_label (the bridge's name for the presentation's
+//    format — "DTS-HD MA + DTS:X 7.1.4", "Dolby TrueHD + Dolby Atmos" — for
+//    the host's track info; 0/empty when the bridge states none).
+pub const ORENDER_ABI_MINOR: u32 = 9;
 
 /// Speaker-position labels written by [`orender_channel_layout`] and
 /// [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -531,6 +534,41 @@ pub unsafe extern "C" fn orender_bed_layout(
             for (dst, lbl) in out.iter_mut().zip(labels.iter()) {
                 *dst = *lbl as u8;
             }
+        }
+        n
+    }))
+    .unwrap_or(0)
+}
+
+/// Write the name the bridge gives the current presentation's format, as a
+/// NUL-terminated UTF-8 string — `DTS-HD MA + DTS:X 7.1.4`,
+/// `DTS-HD MA + Auro-3D 11.1`, `Dolby TrueHD + Dolby Atmos`, `Dolby Digital
+/// Plus` — for the host's track info display. Declaration-level: it follows
+/// the channel labels (a lossy carrier whose spatial layer the bridge cannot
+/// read is named as the carrier alone), so poll it with the other track-info
+/// queries rather than latching it.
+///
+/// Query/fill convention: returns the label's length `N` in bytes (without the
+/// terminator); if `out` is non-NULL and `cap > N`, the label and its NUL are
+/// written (else nothing is written — call with `out = NULL` to query `N`).
+/// `0` when the bridge states no name (the host composes its own), and on a
+/// NULL handle / error.
+#[no_mangle]
+pub unsafe extern "C" fn orender_source_label(
+    r: *const OrenderRenderer,
+    out: *mut c_char,
+    cap: u32,
+) -> u32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if r.is_null() {
+            return 0;
+        }
+        let label = (*(r as *const Engine)).source_label().as_bytes();
+        let n = label.len() as u32;
+        if !out.is_null() && cap > n {
+            let out = std::slice::from_raw_parts_mut(out as *mut u8, label.len() + 1);
+            out[..label.len()].copy_from_slice(label);
+            out[label.len()] = 0;
         }
         n
     }))
@@ -1205,4 +1243,19 @@ pub unsafe extern "C" fn orender_set_option(
         -1
     }))
     .unwrap_or(-3)
+}
+
+#[cfg(test)]
+mod source_label_tests {
+    use super::*;
+
+    #[test]
+    fn source_label_reports_nothing_without_a_session() {
+        let mut buf = [0x7fu8 as c_char; 8];
+        unsafe {
+            assert_eq!(orender_source_label(ptr::null(), ptr::null_mut(), 0), 0);
+            assert_eq!(orender_source_label(ptr::null(), buf.as_mut_ptr(), 8), 0);
+        }
+        assert_eq!(buf[0], 0x7f, "nothing written for a NULL handle");
+    }
 }
