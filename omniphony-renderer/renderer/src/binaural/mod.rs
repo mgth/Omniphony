@@ -20,6 +20,7 @@
 //! [`GainModel`]: crate::render_backend::GainModel
 //! [`OutputMode`]: crate::live_params::OutputMode
 
+pub mod brir;
 pub mod convolver;
 pub mod diffuse_field;
 pub mod head_pose;
