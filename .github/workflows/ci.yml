@@ -69,9 +69,9 @@ jobs:
       # whole workspace links exactly as in the release build (cheap, robust).
       - name: Install Linux system dependencies
         run: |
-          # The two metadata calls below reach Launchpad and can hang rather
-          # than fail when it is unwell, so each is bounded: a retry loop is
-          # useless against a command that never returns.
+          # `apt-get update` reaches Launchpad and can hang rather than fail
+          # when it is unwell, so it is bounded: a retry loop is useless
+          # against a command that never returns.
           #
           # The install is NOT capped, deliberately. The archive mirror is
           # often merely slow — a 27 MB webkit fetch crawling at a few hundred
@@ -79,16 +79,20 @@ jobs:
           # failed one (it did: exit 124 mid-download). `timeout-minutes` on
           # the job is the right backstop for a genuine stall; here we only
           # retry, so a dropped download gets another go.
-          for attempt in 1 2 3; do
-            if sudo timeout 180 add-apt-repository ppa:pipewire-debian/pipewire-upstream -y; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "Failed to add PipeWire PPA after $attempt attempts" >&2
-              exit 1
-            fi
-            sleep 10
-          done
+          # The PPA is added by hand, not with add-apt-repository: that tool
+          # fetches the archive's signing key through Launchpad's API, which
+          # answers 500 (GPGKeyTemporarilyNotFoundError) whenever Launchpad
+          # is unwell — as it was on 2026-09-21, for hours. The key is
+          # vendored instead (.github/keys/pipewire-upstream-ppa.asc,
+          # fingerprint FC43B7352BCC0EC8AF2EEB8B25088A0359807596, the one the
+          # API reports for the PPA and the one its InRelease is signed
+          # with), so only the archive host itself is needed.
+          sudo install -d -m 755 /etc/apt/keyrings
+          gpg --dearmor < .github/keys/pipewire-upstream-ppa.asc \
+            | sudo tee /etc/apt/keyrings/pipewire-upstream-ppa.gpg > /dev/null
+          suite="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          echo "deb [signed-by=/etc/apt/keyrings/pipewire-upstream-ppa.gpg] https://ppa.launchpadcontent.net/pipewire-debian/pipewire-upstream/ubuntu $suite main" \
+            | sudo tee /etc/apt/sources.list.d/pipewire-upstream.list > /dev/null
           # `apt-get update` exits 0 when the PPA answers 503 (it only warns
           # and keeps the stock index), and the install then picks Ubuntu's
           # 0.3.48, which libspa refuses ("no field `flags`") long after this

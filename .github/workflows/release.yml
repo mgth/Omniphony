@@ -84,16 +84,20 @@ jobs:
           # PPA required: ubuntu-22.04 ships PipeWire 0.3.48 but pipewire-rs 0.9.x
           # needs >= 0.3.65. PipeWire 1.0.x (ubuntu-24.04) removed some constants
           # the crate relies on. This PPA provides a compatible 0.3.85+ build.
-          for attempt in 1 2 3; do
-            if sudo add-apt-repository ppa:pipewire-debian/pipewire-upstream -y; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "Failed to add PipeWire PPA after $attempt attempts" >&2
-              exit 1
-            fi
-            sleep 10
-          done
+          # The PPA is added by hand, not with add-apt-repository: that tool
+          # fetches the archive's signing key through Launchpad's API, which
+          # answers 500 (GPGKeyTemporarilyNotFoundError) whenever Launchpad
+          # is unwell — as it was on 2026-09-21, for hours. The key is
+          # vendored instead (.github/keys/pipewire-upstream-ppa.asc,
+          # fingerprint FC43B7352BCC0EC8AF2EEB8B25088A0359807596, the one the
+          # API reports for the PPA and the one its InRelease is signed
+          # with), so only the archive host itself is needed.
+          sudo install -d -m 755 /etc/apt/keyrings
+          gpg --dearmor < .github/keys/pipewire-upstream-ppa.asc \
+            | sudo tee /etc/apt/keyrings/pipewire-upstream-ppa.gpg > /dev/null
+          suite="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          echo "deb [signed-by=/etc/apt/keyrings/pipewire-upstream-ppa.gpg] https://ppa.launchpadcontent.net/pipewire-debian/pipewire-upstream/ubuntu $suite main" \
+            | sudo tee /etc/apt/sources.list.d/pipewire-upstream.list > /dev/null
           # `apt-get update` exits 0 when the PPA answers 503 (it only warns
           # and keeps the stock index), and the install then picks Ubuntu's
           # 0.3.48, which libspa refuses long after this step passed. Launchpad
