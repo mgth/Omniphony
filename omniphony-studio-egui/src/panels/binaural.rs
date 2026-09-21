@@ -61,6 +61,34 @@ fn flag(doc: Option<&serde_json::Value>, path: &[&str], fallback: bool) -> bool 
     cursor.and_then(|v| v.as_bool()).unwrap_or(fallback)
 }
 
+/// Which binaural path the renderer runs, as the state describes it. Each
+/// path consumes a different set of the tab's fields (see `binaural_tab`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BinauralPath {
+    /// Every object through its own HRTF pair.
+    Direct,
+    /// The virtual speaker layout, each speaker through an HRTF pair.
+    Cascaded,
+    /// The virtual speaker layout through a measured room (a `brir` source,
+    /// which forces the virtual-speaker path).
+    Brir,
+}
+
+impl BinauralPath {
+    fn of(doc: Option<&serde_json::Value>) -> Self {
+        if text(doc, &["hrirSource"]).as_deref() == Some("brir") {
+            return Self::Brir;
+        }
+        match text(doc, &["modeEffective"])
+            .or_else(|| text(doc, &["mode"]))
+            .as_deref()
+        {
+            Some("cascaded") => Self::Cascaded,
+            _ => Self::Direct,
+        }
+    }
+}
+
 fn text(doc: Option<&serde_json::Value>, path: &[&str]) -> Option<String> {
     let mut cursor = doc;
     for key in path {
@@ -79,13 +107,28 @@ impl StudioSpike {
             live.app.binaural.clone()
         };
         let doc = doc.as_ref();
-        self.hrtf_block(ui, doc);
-        self.distance_block(ui, doc);
-        self.room_block(ui, doc);
+        // What each group feeds, from the renderer's binaural stage:
+        // - Direct and Cascaded run the HRTF stage, which reads every group
+        //   (the source and its shaping, the distance cues, the synthetic
+        //   room, the head pose);
+        // - a measured room (BRIR) reads its own file options and the head
+        //   pose only — the measurement is the distance, the reflections and
+        //   the tail, so those groups are not drawn;
+        // - with the output on the speakers nothing here renders: the tab
+        //   stays editable, with a note saying so.
+        let path = BinauralPath::of(doc);
+        if text(doc, &["outputMode"]).as_deref() != Some("binaural") {
+            widgets::note(ui, t("binaural.speakerOutputNote"));
+        }
+        self.hrtf_block(ui, doc, path);
+        if path != BinauralPath::Brir {
+            self.distance_block(ui, doc);
+            self.room_block(ui, doc);
+        }
         self.tracking_block(ui, doc);
     }
 
-    fn hrtf_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
+    fn hrtf_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>, path: BinauralPath) {
         let source = text(doc, &["hrirSource"]).unwrap_or_else(|| "saf".to_owned());
         let effective = text(doc, &["hrirEffective"]);
         // The source select and, for a SOFA file, its Browse button: only
@@ -128,7 +171,7 @@ impl StudioSpike {
                 });
             })
             .show(ui, |ui| {
-                self.hrtf_rows(ui, doc, &source, effective.as_deref())
+                self.hrtf_rows(ui, doc, path, &source, effective.as_deref())
             });
         if chosen != source {
             self.send_hrir_source(&chosen);
@@ -146,21 +189,27 @@ impl StudioSpike {
     }
 
     /// The HRTF group's inset: what was loaded, the EQ, the head, the update
-    /// lattice, and the parametric sources' own settings.
+    /// lattice, and the parametric sources' own settings — or, for a measured
+    /// room, its file, status and options alone: the EQ, the head radius and
+    /// the lattice shape the HRTF stage, which a room response bypasses.
     fn hrtf_rows(
         &mut self,
         ui: &mut Ui,
         doc: Option<&serde_json::Value>,
+        path: BinauralPath,
         source: &str,
         effective: Option<&str>,
     ) {
-        // The renderer says what it actually loaded; a fallback means the
-        // requested source did not work.
-        if source == "brir" {
+        if path == BinauralPath::Brir {
             // A room response has its own status: the HRIR grid's effective
             // source is the direct path's KEMAR meanwhile, not a fallback.
             self.brir_rows(ui, doc);
-        } else if let Some(effective) = effective
+            widgets::note(ui, t("binaural.brirMeasuredNote"));
+            return;
+        }
+        // The renderer says what it actually loaded; a fallback means the
+        // requested source did not work.
+        if let Some(effective) = effective
             && effective != source
         {
             let line = tf("binaural.hrtfFallback", &[("effective", effective)]);

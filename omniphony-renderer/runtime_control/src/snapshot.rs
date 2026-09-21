@@ -256,6 +256,17 @@ pub fn build_renderer_state_json(
         "binaural": {
             "outputMode": live.binaural.output_mode.as_str(),
             "mode": live.binaural.mode.as_str(),
+            // What actually renders: a room response (`brir` source) only
+            // knows its loudspeakers, so it forces the virtual-speaker path
+            // whatever `mode` says.
+            "modeEffective": if matches!(
+                live.binaural.hrir_source,
+                renderer::binaural::HrirSource::Brir(_)
+            ) {
+                "cascaded"
+            } else {
+                live.binaural.mode.as_str()
+            },
             "ears": live.binaural.ears.iter().map(|e| json!({
                 "gain": e.gain,
                 "muted": e.muted,

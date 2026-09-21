@@ -195,6 +195,12 @@ How it renders:
   binauralised by the HRTF stage on the embedded KEMAR set instead, and the
   load status (file, shape, or the error) is published to the control
   surface.
+- **What still applies**: the head tracking, the headphone ear gains and the
+  BRIR options above. The diffuse-field EQ, head radius, update lattice,
+  distance scale, air absorption, reflections and reverb shape the HRTF
+  stage, which a room response bypasses; Studio does not show them for a
+  room, and the output-mode select offers only the virtual room. The state
+  snapshot's `binaural.modeEffective` says which path renders.
 
 ### Where to get one
 
