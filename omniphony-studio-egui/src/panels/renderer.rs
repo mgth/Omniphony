@@ -111,7 +111,8 @@ impl OutputMode {
     }
 
     /// `applyBinauralState`: read the flattened value out of the binaural
-    /// document.
+    /// document. The mode shown is the one that renders (`modeEffective`): a
+    /// measured room forces the virtual-speaker path whatever was chosen.
     pub(crate) fn from_state(binaural: Option<&serde_json::Value>) -> Self {
         let output = binaural
             .and_then(|b| b.get("outputMode"))
@@ -119,13 +120,22 @@ impl OutputMode {
         if output != Some("binaural") {
             return OutputMode::Speaker;
         }
-        match binaural
-            .and_then(|b| b.get("mode"))
-            .and_then(|v| v.as_str())
-        {
+        let mode = binaural
+            .and_then(|b| b.get("modeEffective").or_else(|| b.get("mode")))
+            .and_then(|v| v.as_str());
+        match mode {
             Some("cascaded") => OutputMode::BinauralCascaded,
             _ => OutputMode::BinauralDirect,
         }
+    }
+
+    /// Whether the HRTF source is a measured room, which leaves only the
+    /// virtual-speaker path to choose.
+    fn room_forces_virtual(binaural: Option<&serde_json::Value>) -> bool {
+        binaural
+            .and_then(|b| b.get("hrirSource"))
+            .and_then(|v| v.as_str())
+            == Some("brir")
     }
 }
 
@@ -255,14 +265,18 @@ impl StudioSpike {
     }
 
     fn output_mode_row(&mut self, ui: &mut Ui) {
-        let current = {
+        let (current, room) = {
             let live = self.host.read();
-            OutputMode::from_state(live.app.binaural.as_ref())
+            let binaural = live.app.binaural.as_ref();
+            (
+                OutputMode::from_state(binaural),
+                OutputMode::room_forces_virtual(binaural),
+            )
         };
         let mut chosen = current;
         widgets::label_row_help(ui, t("outputMode.selectTitle"), "help.outputMode", |ui| {
             widgets::bounded_combo(ui, 160.0, |ui, w| {
-                egui::ComboBox::from_id_salt("output-mode")
+                let combo = egui::ComboBox::from_id_salt("output-mode")
                     .selected_text(current.label())
                     .width(w)
                     .truncate()
@@ -272,9 +286,19 @@ impl StudioSpike {
                             OutputMode::BinauralDirect,
                             OutputMode::BinauralCascaded,
                         ] {
+                            // A measured room renders through the virtual
+                            // room only: offering Direct would just snap back.
+                            if room && mode == OutputMode::BinauralDirect {
+                                continue;
+                            }
                             ui.selectable_value(&mut chosen, mode, mode.label());
                         }
-                    })
+                    });
+                if room {
+                    combo
+                        .response
+                        .on_hover_text(t("outputMode.brirForcesVirtual"));
+                }
             });
         });
         if chosen == current {
