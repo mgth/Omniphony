@@ -37,6 +37,13 @@ dsp_fixtures = { path = "../dsp_fixtures" }
 name = "render_frame"
 harness = false
 
+# Loads a room-response SOFA file through the BRIR loader and prints what it
+# holds (`cargo run --release -p renderer --features sofa --example brir_probe
+# -- <file> [all|front|raw M R E N]`).
+[[example]]
+name = "brir_probe"
+required-features = ["sofa"]
+
 [features]
 # Worst-case block-time gate. Opt-in and run alone: a timing measurement must
 # not share the machine with the rest of the suite running in parallel, or its

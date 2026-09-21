@@ -196,6 +196,30 @@ How it renders:
   load status (file, shape, or the error) is published to the control
   surface.
 
+### Where to get one
+
+- **BBC R&D listening room** ([bbcrd-brirs](https://github.com/bbc/bbcrd-brirs),
+  CC BY-SA 4.0): a Neumann KU100 in an ITU-R BS.1116 room, 32 loudspeakers
+  covering every ITU-R BS.2051 layout, 180 head orientations at 2°, 48 kHz.
+  One `MultiSpeakerBRIR` file per BS.2051 system at
+  <https://data.bbcarp.org.uk/bbcrd-brirs/sofa/>: `bbcrdlr_systemG.sofa`
+  (4+9+0: 0, ±30, ±45, ±90, ±135° at ear height, ±45 and ±110° at 40° up —
+  every 7.1.4 position and more, 274 MB) is the one for a 7.1.4 or 9.1.4
+  layout; `systemD` (4+5+0, 190 MB) for 5.1.4, `systemB` (0+5+0) for 5.1,
+  `all_speakers` (674 MB) for anything else. Loaded with head tracking it
+  holds about 280 MB of responses (0.33 s each after the tail cut), 1.6 MB
+  without; the reader needs about 1.1 GB while parsing the file.
+- **IoSR listening room** ([IoSR_ListeningRoom_BRIRs](https://github.com/IoSR-Surrey/IoSR_ListeningRoom_BRIRs),
+  CC BY 4.0): 24 loudspeakers in the 22.2 positions, head orientations at
+  2.5°, one 1.5 GB `MultiSpeakerBRIR`.
+- **ASH Toolset** ([ASH-Toolset](https://github.com/ShanonPearce/ASH-Toolset),
+  AGPL-3.0): exports a set for the directions you choose from its measured
+  rooms, as `SimpleFreeFieldHRIR`/`GeneralFIR` carrying room-length
+  responses — the per-direction shape above.
+- The University of Salford's SBSBRIR (12 loudspeakers at ear height) and
+  the Huddersfield 360° concert-hall set (one source on stage) are not
+  layouts: the first has no height layer, the second one loudspeaker.
+
 ## Usage tips
 
 - **The room is YOUR room, not the scene's.** The reflections and the reverb
