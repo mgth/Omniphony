@@ -250,6 +250,44 @@ pub(crate) fn adopt_handoff_live_state(
     );
 }
 
+/// `reload_config` for a host that cannot restart its pipeline (the embedded
+/// FFI renderer: mpv owns its lifecycle, so the CLI's restart-from-config loop
+/// has no counterpart there and the request used to be dropped on the floor).
+///
+/// Same contract as the CLI restart — discard live state, re-read the config —
+/// through the profile-switch application path: forget any handoff overlay,
+/// load `config.yaml`, re-seed the live params, stage its layout and rebuild
+/// the topology while audio keeps playing. Host-owned fields (output device,
+/// live input, bridge path) only take effect at engine start, as with a
+/// profile switch.
+pub(crate) fn reload_config_in_place(
+    control: &Arc<RendererControl>,
+    host: Option<&Arc<dyn HostControlHandler>>,
+    socket: &Arc<UdpSocket>,
+    clients: &Arc<OscClientRegistry>,
+    gaintable_cache: &Arc<GaintableCache>,
+) {
+    let Some(path) = control.config_path() else {
+        log::warn!("OSC reload_config: no config path available");
+        return;
+    };
+    renderer::config::discard_live_sidecar(&path);
+    let config = renderer::config::Config::load_or_default(&path);
+    control.set_profiles_info(config.profiles_info());
+    apply_switched_profile(&config, control, socket, clients, gaintable_cache);
+    // The live state now is the file: nothing left to save.
+    control.mark_clean();
+    broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
+    broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
+    broadcast_profiles_state(control, socket, clients);
+    build_live_state(control, host).broadcast(socket, clients);
+    log::info!(
+        "OSC reload_config: reloaded {} in place (active profile '{}')",
+        path.display(),
+        config.active_profile_name()
+    );
+}
+
 /// Apply the freshly switched-in `render:` section to the running engine:
 /// stage the profile's layout, re-seed the live params through the shared
 /// construction seeds, and kick the background topology rebuild. Audio keeps
@@ -297,4 +335,107 @@ fn apply_switched_profile(
     control.bump_options_epoch();
     control.bump_geometry_generation();
     trigger_layout_recompute(control, socket, clients, gaintable_cache);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renderer::config::{Config, RenderConfig};
+    use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
+    use renderer::spatial_renderer::SpatialRenderer;
+    use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
+    use renderer::speaker_layout::SpeakerLayout;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    /// A real `RendererControl` on a 7.1.4 layout, small grid so the table
+    /// build stays trivial (same fixture as the live-options conformance net).
+    fn fixture_control() -> Arc<RendererControl> {
+        let layout = SpeakerLayout::preset("7.1.4").expect("7.1.4 preset");
+        SpatialRenderer::new(
+            layout,
+            48_000,
+            1,
+            1,
+            0.0,
+            2.0,
+            VbapTableMode::Cartesian {
+                x_size: 5,
+                y_size: 5,
+                z_size: 3,
+                z_neg_size: 3,
+            },
+            false,
+            true,
+            DistanceModel::Linear,
+            false,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            false,
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            false,
+            false,
+            false,
+            1.0,
+            1.0,
+            PreferredEvaluationMode::PrecomputedCartesian,
+            LiveEvaluationMode::PrecomputedCartesian,
+            5,
+            5,
+            3,
+            3,
+        )
+        .expect("fixture renderer")
+        .renderer_control()
+    }
+
+    fn config_with_layout(preset: &str) -> Config {
+        Config {
+            render: Some(RenderConfig {
+                current_layout: Some(SpeakerLayout::preset(preset).unwrap()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// An embedded host cannot restart, so `reload_config` must re-read the
+    /// saved config in place: the stale handoff sidecar (here a 7.1.4 live
+    /// state, as carried from instance to instance) is discarded, the saved
+    /// layout is staged, and the state is clean.
+    #[test]
+    fn reload_in_place_restores_saved_layout_and_drops_sidecar() {
+        let dir =
+            std::env::temp_dir().join(format!("orender-reload-in-place-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        config_with_layout("9.1.6").save(&path).unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        config_with_layout("7.1.4").save(&sidecar).unwrap();
+
+        let control = fixture_control();
+        control.set_config_path(path.clone());
+        control.mark_dirty();
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
+        let gaintable_cache = Arc::new(GaintableCache::new());
+
+        reload_config_in_place(&control, None, &socket, &clients, &gaintable_cache);
+
+        let expected = SpeakerLayout::preset("9.1.6").unwrap();
+        assert_eq!(
+            control.editable_layout().speaker_names(),
+            expected.speaker_names()
+        );
+        assert!(!sidecar.exists(), "stale sidecar not discarded");
+        assert!(!control.config_dirty.load(Ordering::Relaxed));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

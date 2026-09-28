@@ -22,6 +22,9 @@ static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RESTART_FROM_CONFIG_REQUESTED: AtomicBool = AtomicBool::new(false);
 static YIELDABLE: AtomicBool = AtomicBool::new(false);
+/// Whether the host runs a restart loop that honours
+/// [`request_restart_from_config`]. See [`set_restartable`].
+static RESTARTABLE: AtomicBool = AtomicBool::new(false);
 /// Set by the yield handler on a `--osc-yield` instance: the render loop should
 /// drop its OSC port + audio output and idle in **standby** (without exiting),
 /// so an mpv-embedded renderer can take the port over. See `request_standby`.
@@ -41,6 +44,19 @@ pub fn set_yieldable(yieldable: bool) {
 /// Whether this instance honours `/omniphony/control/yield_port`.
 pub fn is_yieldable() -> bool {
     YIELDABLE.load(Ordering::Relaxed)
+}
+
+/// Mark this process as able to restart its render pipeline from config. Set
+/// by the CLI render loop, which consumes [`request_restart_from_config`];
+/// never set by embedded (FFI) hosts, whose lifecycle belongs to the host
+/// application — they must reload the config in place instead.
+pub fn set_restartable(restartable: bool) {
+    RESTARTABLE.store(restartable, Ordering::Relaxed);
+}
+
+/// Whether a [`request_restart_from_config`] would actually be acted on.
+pub fn is_restartable() -> bool {
+    RESTARTABLE.load(Ordering::Relaxed)
 }
 
 /// Take (and clear) a pending standby request. The render loop checks this and,

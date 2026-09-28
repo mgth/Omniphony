@@ -151,8 +151,17 @@ pub(crate) fn save_live_config(
             build_live_state(control, host).broadcast(socket, clients);
             log::info!("OSC: config saved to {}", result.path.display());
             if result.restart_required {
-                log::info!("OSC: render.bridge_path changed, requesting reload_config");
-                sys::shutdown::request_restart_from_config();
+                if sys::shutdown::is_restartable() {
+                    log::info!("OSC: render.bridge_path changed, requesting reload_config");
+                    sys::shutdown::request_restart_from_config();
+                } else {
+                    // An embedded host cannot swap its bridge in place, and a
+                    // restart request nobody consumes would stay latched and
+                    // suppress the live handoff at teardown.
+                    log::info!(
+                        "OSC: render.bridge_path changed; takes effect when the host restarts the renderer"
+                    );
+                }
             }
         }
         Err(e) => {

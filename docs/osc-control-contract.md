@@ -389,7 +389,7 @@ and heatmap configuration.
 | `/control/ramp_mode` | s | Object-transition ramp: `off` \| `frame` \| `interp` \| `sample`. Registry option alias. |
 | `/control/option` | s key, value | Generic setter for any declared live option — see [Live options](#live-options). |
 | `/control/save_config` | — | Persist the current config. |
-| `/control/reload_config` | — | Reload config from disk. |
+| `/control/reload_config` | — | Discard the live state (including a handoff sidecar) and reload config from disk. The CLI renderer restarts its pipeline; an embedded (mpv) renderer re-applies the config in place — layout, live params, active profile — while host-owned fields (output device, live input, bridge path) wait for the next engine start. |
 | `/control/quit` | — | Shut the engine down. |
 | `/control/yield_port` | — | Ask this instance to free the OSC RX port. Honoured only by instances started with `--osc-yield` (a Studio-launched standby renderer); ignored otherwise, so an embedded (mpv) renderer can never be evicted. Sent automatically by a starting instance that finds the port busy. The instance replies `/omniphony/yield/resume_port [port]` and stands by. |
 | `/control/resume` | — | Sent to a standing-by instance, on the resume port it advertised, to re-acquire the OSC port and audio. |
