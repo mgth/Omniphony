@@ -24,7 +24,7 @@
 // C-ABI minor version: backwards-compatible additions only. Consumers should
 // gate optional features on symbol presence (dlsym), not on this value; it
 // exists for logging and diagnostics.
-#define ORENDER_ABI_MINOR 9
+#define ORENDER_ABI_MINOR 10
 
 // Speaker-position labels written by [`orender_channel_layout`] and
 // [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -243,6 +243,11 @@ void orender_reset(struct OrenderRenderer *r);
 // rendered audio and the retry hands it back without decoding the packet a
 // second time. A host that moves on to the next packet instead loses this
 // packet's audio, but the stream stays in step.
+//
+// With the `decode_thread` option on (see [`orender_set_option`]) a packet's
+// audio comes back from a later call - one packet's per call, about 30 ms of
+// audio behind, or one packet if that is longer - or from [`orender_drain`]:
+// take the timestamps from `*out_pts_us`, and drain at end of stream.
 int orender_process(struct OrenderRenderer *r,
                     const uint8_t *pkt,
                     uintptr_t pkt_len,
@@ -252,6 +257,28 @@ int orender_process(struct OrenderRenderer *r,
                     uintptr_t *out_frames,
                     uint32_t *out_channels,
                     int64_t *out_pts_us);
+
+// Render what the engine still holds, because the stream is over: with the
+// `decode_thread` option on, the packets it has been handed and not returned
+// yet. One packet's audio per call, as [`orender_process`] returns it, so a
+// buffer that fits one packet's audio fits a drain too: after the last packet,
+// call it until it returns 0 frames, and play what each call returns.
+//
+// Not a reset: the renderer keeps its state, because this audio continues
+// what came before. Once it has returned 0 frames it keeps returning 0 until
+// new input. `out` and the out-parameters are as for [`orender_process`].
+//
+// Returns: 0 = OK (0 frames: nothing is left), >0 = output buffer too small
+// (nothing written; call drain again with a larger buffer before sending
+// more input — the audio is kept for it, and [`orender_process`] refuses
+// input until it has been collected), <0 = error. [`orender_reset`]
+// discards it.
+int orender_drain(struct OrenderRenderer *r,
+                  float *out,
+                  uintptr_t out_cap_samples,
+                  uintptr_t *out_frames,
+                  uint32_t *out_channels,
+                  int64_t *out_pts_us);
 
 // Render the spatial overlay for the given OSD resolution and copy the ASS
 // `osd-overlay` payload into `out` (UTF-8, not nul-terminated).
@@ -359,8 +386,18 @@ const char *orender_build_id(void);
 // whether this build supports a key), -2 for an invalid value, -3 on a NULL
 // handle/argument or internal error.
 //
-// No keys are defined at ABI 0.5 — every call returns -1. The mechanism ships
-// ahead of the first key so consumers can adopt the probe pattern now.
+// Keys:
+//
+// - `decode_thread` = `on` | `off` (ABI 0.10; default `off`): decode on a
+//   thread of its own, overlapping the render, so the two share the work
+//   across two cores. With it on, a packet's audio comes back from a later
+//   [`orender_process`] call (one packet's per call, about 30 ms of audio
+//   behind, or one packet if that is longer) or from [`orender_drain`], so
+//   only a host that takes its timestamps from `*out_pts_us` and drains at
+//   end of stream should turn it on. Switch it while nothing is in flight:
+//   right after [`orender_create`], after [`orender_reset`], or once
+//   [`orender_drain`] has returned 0 frames; turning it off with packets
+//   still on the thread returns -2.
 int orender_set_option(struct OrenderRenderer *r, const char *key, const char *value);
 
 #endif  /* ORENDER_H */

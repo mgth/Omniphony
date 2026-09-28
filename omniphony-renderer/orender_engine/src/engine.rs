@@ -12,7 +12,9 @@ use crate::overlay;
 use crate::renderer_build::{SpatialRendererParams, build_spatial_renderer};
 use crate::{channel_objects, object_gen, render, spatial, virtual_bed};
 use anyhow::{Result, anyhow, bail};
-use bridge_api::{RChannelLabel, RChannelPose, RCoordinateFormat, RDecodedFrame, RInputTransport};
+use bridge_api::{
+    RChannelLabel, RChannelPose, RCoordinateFormat, RDecodedFrame, RInputTransport, RPushResult,
+};
 use renderer::config::Config;
 use renderer::metering::AudioMeter;
 use renderer::placement::SourceFamily;
@@ -20,6 +22,8 @@ use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
 use renderer::speaker_layout::SpeakerLayout;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 
 /// Monitoring cadences this host falls back to when the config declares none.
 ///
@@ -55,7 +59,20 @@ pub struct RenderedAudio {
 
 /// A decode→render session: bridge plugin + spatial renderer + per-stream state.
 pub struct Engine {
-    bridge: LoadedBridge,
+    /// Shared with the decode thread when there is one. Only that thread locks
+    /// it per packet; everything else here is rare (a label change, a DRC-mode
+    /// change, reset, drain).
+    bridge: Arc<Mutex<LoadedBridge>>,
+    /// Decodes packet N+1 on its own thread while this one renders packet N.
+    /// Off unless the host asks for it: see [`Engine::set_decode_thread`].
+    decode_worker: Option<DecodeWorker>,
+    /// The bridge's `has_objects`, stored by whoever last held the lock. Hosts
+    /// poll it after every packet; with the decode thread on, reading it here
+    /// keeps that poll from waiting on the thread's decode.
+    bridge_has_objects: Arc<AtomicBool>,
+    /// The bridge's declaration captured with the packet being rendered, so
+    /// a frame is matched with its own packet's, not the thread's latest.
+    packet_declaration: Option<Declaration>,
     renderer: SpatialRenderer,
     sample_rate: u32,
     coordinate_format: RCoordinateFormat,
@@ -125,6 +142,8 @@ pub struct Engine {
     /// gets this back instead of decoding the packet a second time.
     held_output: Option<Vec<RenderedAudio>>,
     held_packet: Vec<u8>,
+    /// Drained output retained until a bounded host buffer can receive it.
+    pending_drain_output: Vec<RenderedAudio>,
     /// Duty-cycle EMA of the render cost, for the meter bundle: raw per-frame
     /// timings alias with 40-sample TrueHD access units (the FIR crossover's
     /// burst lands on one frame in ~26), so the emitted figure is smoothed to
@@ -263,6 +282,9 @@ impl Drop for Engine {
         // teardown window where a worker could read state mid-free. Explicit so
         // it can't regress if the field order changes.
         drop(self.osc.take());
+        // Join the decode thread the same way, so the bridge it shares is
+        // released here, by the engine's own thread, and not by that one.
+        drop(self.decode_worker.take());
         if let Some(perf) = self.perf.as_mut() {
             perf.flush();
         }
@@ -275,8 +297,12 @@ impl Engine {
     /// before the first [`process`](Self::process) call.
     pub fn new(bridge: LoadedBridge, renderer: SpatialRenderer, sample_rate: u32) -> Self {
         let coordinate_format = bridge.bridge.coordinate_format();
+        let bridge_has_objects = Arc::new(AtomicBool::new(bridge.bridge.has_objects()));
         let engine = Self {
-            bridge,
+            bridge: Arc::new(Mutex::new(bridge)),
+            decode_worker: None,
+            bridge_has_objects,
+            packet_declaration: None,
             renderer,
             sample_rate,
             coordinate_format,
@@ -302,6 +328,7 @@ impl Engine {
             output_pool: Vec::new(),
             held_output: None,
             held_packet: Vec::new(),
+            pending_drain_output: Vec::new(),
             render_duty: Default::default(),
             osc: None,
             audio_meter: None,
@@ -584,8 +611,15 @@ impl Engine {
 
     /// Whether the current presentation carries dynamic objects. A live fact
     /// about the stream (it may flip mid-stream); hosts must not latch it.
+    ///
+    /// With the decode thread on, it is as of the latest packet the thread has
+    /// decoded, which can be ahead of the audio returned so far by what is in
+    /// flight: about 30 ms of audio, or one packet if that is longer.
     pub fn has_objects(&self) -> bool {
-        self.bridge.bridge.has_objects()
+        if self.decode_worker.is_some() {
+            return self.bridge_has_objects.load(Ordering::Relaxed);
+        }
+        self.lock_bridge().bridge.has_objects()
     }
 
     /// Dynamic object count of the last rendered frame (decoded `channel_count`
@@ -699,7 +733,16 @@ impl Engine {
         if let Some(held) = self.held_output.take() {
             self.recycle(held);
         }
-        self.bridge.bridge.reset();
+        let pending = std::mem::take(&mut self.pending_drain_output);
+        self.recycle(pending);
+        // So is whatever the decode thread is still working on.
+        self.discard_in_flight();
+        {
+            let mut bridge = self.lock_bridge();
+            bridge.bridge.reset();
+            self.bridge_has_objects
+                .store(bridge.bridge.has_objects(), Ordering::Relaxed);
+        }
         self.renderer.reset_runtime_state();
         self.reset_segment_state();
         // Object frames are delta-encoded; after a seek the (static) virtual-bed
@@ -717,6 +760,9 @@ impl Engine {
     }
 
     fn reset_segment_state(&mut self) {
+        if let Some(worker) = self.decode_worker.as_mut() {
+            worker.fresh = true;
+        }
         self.has_objects = false;
         self.fixed_planner.reset();
         self.bed_planner.reset();
@@ -829,14 +875,14 @@ impl Engine {
         if self.declared_poses_labels.as_slice() == labels {
             return;
         }
+        let captured = self.packet_declaration.take();
+        let declaration = captured.unwrap_or_else(|| Declaration::read(&self.lock_bridge()));
         self.declared_poses.clear();
-        self.declared_poses
-            .extend(self.bridge.bridge.fixed_channel_poses().into_iter());
-        self.source_family =
-            SourceFamily::from_declared(self.bridge.bridge.source_family().as_str());
+        self.declared_poses.extend_from_slice(&declaration.poses);
+        self.source_family = SourceFamily::from_declared(&declaration.family);
         self.source_label.clear();
-        self.source_label
-            .push_str(self.bridge.bridge.source_label().as_str());
+        self.source_label.push_str(&declaration.label);
+        self.packet_declaration = Some(declaration);
         self.declared_poses_labels.clear();
         self.declared_poses_labels.extend_from_slice(labels);
     }
@@ -854,7 +900,9 @@ impl Engine {
             }
             live.drc_mode.clone()
         };
-        self.bridge.bridge.set_drc_mode(live_mode.as_str().into());
+        self.lock_bridge()
+            .bridge
+            .set_drc_mode(live_mode.as_str().into());
         self.applied_drc_mode = live_mode;
     }
 
@@ -868,17 +916,35 @@ impl Engine {
         transport: RInputTransport,
         data_type: u8,
     ) -> Result<Vec<RenderedAudio>> {
+        if !self.pending_drain_output.is_empty() {
+            bail!("drain output is pending; retry drain with a larger buffer before new input");
+        }
         // Push any DRC-mode change (config-seeded or OSC-driven) to the decoder
         // before it decodes this packet.
         self.sync_drc_mode();
 
+        if self.decode_worker.is_some() {
+            return self.process_pipelined(data, transport, data_type);
+        }
+
         let decode_started = std::time::Instant::now();
         let result = self
-            .bridge
+            .lock_bridge()
             .bridge
             .push_packet(data.into(), transport, data_type);
         let decode_time_ms = decode_started.elapsed().as_secs_f32() * 1000.0;
+        self.render_decoded(result, decode_time_ms, None)
+    }
 
+    /// Render one packet's worth of decoded frames: the second half of
+    /// [`process`](Self::process), shared by the inline and threaded paths.
+    fn render_decoded(
+        &mut self,
+        result: RPushResult,
+        decode_time_ms: f32,
+        declaration: Option<Declaration>,
+    ) -> Result<Vec<RenderedAudio>> {
+        self.packet_declaration = declaration;
         if !result.error_message.is_empty() {
             bail!("bridge decode error: {}", result.error_message);
         }
@@ -912,6 +978,7 @@ impl Engine {
                 out.push(chunk);
             }
         }
+        self.packet_declaration = None;
         Ok(out)
     }
 
@@ -955,6 +1022,153 @@ impl Engine {
             return Ok(None);
         }
         Ok(Some(chunks))
+    }
+
+    /// Render what the engine still holds, because the stream is over: with the
+    /// decode thread on, the packets it has been handed and not returned yet.
+    /// One packet's audio per call, oldest first, as [`process`](Self::process)
+    /// returns it, so a buffer that fits one packet's audio fits a drain too:
+    /// the host calls this at end of stream until it returns nothing, and plays
+    /// what comes back.
+    ///
+    /// Not a [`reset`](Self::reset): the renderer keeps its per-object and ramp
+    /// state, because these frames are the continuation of the ones before them.
+    /// Safe to call on an idle engine, and safe to call again once it has
+    /// returned nothing — it returns nothing again.
+    pub fn drain(&mut self) -> Result<Vec<RenderedAudio>> {
+        if !self.pending_drain_output.is_empty() {
+            return Ok(std::mem::take(&mut self.pending_drain_output));
+        }
+        // A retry that never came: the host has moved on, as with a new packet.
+        if let Some(held) = self.held_output.take() {
+            self.recycle(held);
+        }
+        self.next_in_flight()
+    }
+
+    /// Drain for a host with bounded output capacity. None means retry this
+    /// method with more space, before pushing further input. Keep the rendered
+    /// audio on a short buffer: calling the decoder again cannot recreate it.
+    pub fn drain_with_capacity(
+        &mut self,
+        max_samples: usize,
+    ) -> Result<Option<Vec<RenderedAudio>>> {
+        let chunks = self.drain()?;
+        if chunks.iter().map(|c| c.samples.len()).sum::<usize>() > max_samples {
+            self.pending_drain_output = chunks;
+            Ok(None)
+        } else {
+            Ok(Some(chunks))
+        }
+    }
+
+    /// Decode on a thread of its own, overlapping the render, so the two share
+    /// the work across two cores. Off by default, because a packet's audio then
+    /// comes back from a later [`process`](Self::process) call - one packet's
+    /// per call, as inline, only about 30 ms of audio behind, or one packet if
+    /// that is longer - or from [`drain`](Self::drain), and not every host
+    /// allows for that: one that turns it on takes its timestamps from the
+    /// blocks' `sample_pos` and drains at end of stream.
+    ///
+    /// Switch it while nothing is in flight: before the first packet, after
+    /// [`reset`](Self::reset), or once [`drain`](Self::drain) has returned
+    /// nothing. Turning it off with packets still on the thread is refused
+    /// rather than losing them.
+    pub fn set_decode_thread(&mut self, on: bool) -> Result<()> {
+        match (on, self.decode_worker.is_some()) {
+            (true, false) => {
+                let has_objects = self.lock_bridge().bridge.has_objects();
+                self.bridge_has_objects
+                    .store(has_objects, Ordering::Relaxed);
+                self.decode_worker = Some(DecodeWorker::spawn(
+                    &self.bridge,
+                    &self.bridge_has_objects,
+                    PIPELINE_DEPTH,
+                )?);
+            }
+            (false, true) => {
+                if self.decode_worker.as_ref().is_some_and(|w| w.in_flight > 0) {
+                    bail!("packets are still on the decode thread; drain or reset first");
+                }
+                self.decode_worker = None;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Whether [`set_decode_thread`](Self::set_decode_thread) turned it on.
+    pub fn decode_thread(&self) -> bool {
+        self.decode_worker.is_some()
+    }
+
+    fn lock_bridge(&self) -> MutexGuard<'_, LoadedBridge> {
+        self.bridge.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn process_pipelined(
+        &mut self,
+        data: &[u8],
+        transport: RInputTransport,
+        data_type: u8,
+    ) -> Result<Vec<RenderedAudio>> {
+        let worker = self
+            .decode_worker
+            .as_mut()
+            .expect("pipelined without a worker");
+        worker.submit(data, transport, data_type)?;
+        // One packet's audio per call, as inline, only later: a host that paces
+        // its feeding by the blocks it gets back - Kodi hands over a packet for
+        // each empty answer - would otherwise be given several packets' audio in
+        // one block and feed less than it plays. Past the limit, wait for the
+        // oldest; otherwise take it only if it is ready.
+        let limit = worker.limit();
+        let done = if worker.in_flight > limit {
+            worker.wait()?
+        } else {
+            match worker.poll()? {
+                Some(done) => done,
+                None => return Ok(Vec::new()),
+            }
+        };
+        let mut out = self.render_decoded(done.result, done.decode_ms, done.declaration)?;
+        // Still past the limit, because it has just come down: give back one
+        // more, so the queue shrinks to it a packet per call. Waited for, not
+        // polled: when decoding is the slower half the next one is never ready
+        // yet, and the queue would stay where it was.
+        let worker = self
+            .decode_worker
+            .as_mut()
+            .expect("pipelined without a worker");
+        if worker.in_flight > limit {
+            let extra = worker.wait()?;
+            out.extend(self.render_decoded(extra.result, extra.decode_ms, extra.declaration)?);
+        }
+        Ok(out)
+    }
+
+    /// The oldest packet the decode thread still holds that renders to any
+    /// audio, rendered; nothing once it holds none.
+    fn next_in_flight(&mut self) -> Result<Vec<RenderedAudio>> {
+        while self.decode_worker.as_ref().is_some_and(|w| w.in_flight > 0) {
+            let done = self.decode_worker.as_mut().unwrap().wait()?;
+            let out = self.render_decoded(done.result, done.decode_ms, done.declaration)?;
+            if !out.is_empty() {
+                return Ok(out);
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    /// Wait for everything the decode thread still holds and throw it away.
+    fn discard_in_flight(&mut self) {
+        if let Some(worker) = self.decode_worker.as_mut() {
+            while worker.in_flight > 0 {
+                if worker.wait().is_err() {
+                    break;
+                }
+            }
+        }
     }
 
     /// Hand the sample buffers of a consumed [`process`](Self::process) result
@@ -1543,4 +1757,218 @@ fn overlay_positions(objects: &[ObjectMeta]) -> Vec<(u32, f64, f64, f64, String)
             (idx as u32, x, y, z, o.name.clone())
         })
         .collect()
+}
+
+/// Audio the decode thread may hold before the renderer waits for a packet.
+/// Its job is to let the thread run ahead through cheap packets so a dear one
+/// (a major sync) does not stall the renderer. Counted in audio, not packets,
+/// because a packet is 0.8 ms of TrueHD but 32 ms of E-AC-3: this is 36 TrueHD
+/// access units, capped at [`PIPELINE_DEPTH`], and one E-AC-3 syncframe - never
+/// fewer than one packet, or nothing would overlap.
+const PIPELINE_LAG_SECS: f64 = 0.030;
+
+/// Packets the decode thread may hold at most, whatever their length. On a
+/// real TrueHD Atmos track 2, 32 and 128 came within about 5% of each other.
+const PIPELINE_DEPTH: usize = 32;
+
+struct DecodeJob {
+    data: Vec<u8>,
+    transport: RInputTransport,
+    data_type: u8,
+    /// First packet since the thread started or the engine forgot the bridge's
+    /// declaration: capture it with this one whatever its labels.
+    fresh: bool,
+}
+
+struct DecodeDone {
+    /// The job's buffer, handed back to copy a later packet into.
+    data: Vec<u8>,
+    result: RPushResult,
+    decode_ms: f32,
+    /// The bridge's declaration as it stood right after this packet, read
+    /// under the same lock as the decode; `None` when no frame in it can make
+    /// the engine re-read it.
+    declaration: Option<Declaration>,
+}
+
+/// What [`Engine::refresh_declared_poses`] reads from the bridge. The decode
+/// thread may already be decoding later packets when a frame is rendered, so
+/// it is captured with the packet instead of read live.
+struct Declaration {
+    poses: Vec<RChannelPose>,
+    family: String,
+    label: String,
+}
+
+impl Declaration {
+    fn read(bridge: &LoadedBridge) -> Self {
+        Self {
+            poses: bridge.bridge.fixed_channel_poses().into_iter().collect(),
+            family: bridge.bridge.source_family().as_str().to_owned(),
+            label: bridge.bridge.source_label().as_str().to_owned(),
+        }
+    }
+}
+
+/// The bridge's decode, one packet at a time, on a thread of its own.
+struct DecodeWorker {
+    jobs: Option<mpsc::SyncSender<DecodeJob>>,
+    done: mpsc::Receiver<DecodeDone>,
+    in_flight: usize,
+    depth: usize,
+    /// Audio per packet handed back, averaged over about the last `depth`
+    /// of them: it turns [`PIPELINE_LAG_SECS`] into packets. Recent ones, so
+    /// a host feeding fixed-size chunks gets a quiet passage's chunks measured
+    /// by their own length. Zero until one has had any audio.
+    packet_secs: f64,
+    /// Buffers of returned jobs, so a packet is copied, not allocated.
+    spare: Vec<Vec<u8>>,
+    /// The next packet is the first since the thread started or a reset.
+    fresh: bool,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DecodeWorker {
+    fn spawn(
+        bridge: &Arc<Mutex<LoadedBridge>>,
+        has_objects: &Arc<AtomicBool>,
+        depth: usize,
+    ) -> Result<Self> {
+        let (jobs, job_rx) = mpsc::sync_channel::<DecodeJob>(depth + 1);
+        let (done_tx, done) = mpsc::channel::<DecodeDone>();
+        let bridge = Arc::clone(bridge);
+        let has_objects = Arc::clone(has_objects);
+        let thread = std::thread::Builder::new()
+            .name("orender-decode".into())
+            .spawn(move || {
+                // The engine re-reads the declaration whenever a frame's labels
+                // differ from the previous frame's, and after anything that
+                // clears its segment state; capture it on the same triggers.
+                let mut last_labels: Vec<RChannelLabel> = Vec::new();
+                for job in job_rx {
+                    let started = std::time::Instant::now();
+                    let mut guard = bridge.lock().unwrap_or_else(|e| e.into_inner());
+                    let result = guard.bridge.push_packet(
+                        job.data.as_slice().into(),
+                        job.transport,
+                        job.data_type,
+                    );
+                    let mut changed = job.fresh || result.did_reset;
+                    if changed {
+                        // The engine has forgotten the labels it read the
+                        // declaration for, so the next frame's are new to it
+                        // even when they are the ones before: this packet may
+                        // have none, and the declaration it carries is dropped
+                        // with it.
+                        last_labels.clear();
+                    }
+                    for frame in result.frames.iter() {
+                        if frame.is_new_segment || frame.channel_labels[..] != last_labels[..] {
+                            changed = true;
+                            last_labels.clear();
+                            last_labels.extend_from_slice(&frame.channel_labels);
+                        }
+                    }
+                    let declaration = changed.then(|| Declaration::read(&guard));
+                    has_objects.store(guard.bridge.has_objects(), Ordering::Relaxed);
+                    drop(guard);
+                    let decode_ms = started.elapsed().as_secs_f32() * 1000.0;
+                    if done_tx
+                        .send(DecodeDone {
+                            data: job.data,
+                            result,
+                            decode_ms,
+                            declaration,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            })
+            .map_err(|e| anyhow!("cannot start the decode thread: {e}"))?;
+        Ok(Self {
+            jobs: Some(jobs),
+            done,
+            in_flight: 0,
+            depth,
+            packet_secs: 0.0,
+            spare: Vec::new(),
+            fresh: true,
+            thread: Some(thread),
+        })
+    }
+
+    /// Packets that may be in flight: as many as make up [`PIPELINE_LAG_SECS`]
+    /// at the length of those returned lately, at least one, at most `depth`.
+    /// One until a packet has returned any audio to measure by.
+    fn limit(&self) -> usize {
+        if self.packet_secs <= 0.0 {
+            return 1;
+        }
+        ((PIPELINE_LAG_SECS / self.packet_secs).ceil() as usize).clamp(1, self.depth)
+    }
+
+    fn submit(&mut self, data: &[u8], transport: RInputTransport, data_type: u8) -> Result<()> {
+        let fresh = std::mem::take(&mut self.fresh);
+        let mut buf = self.spare.pop().unwrap_or_default();
+        buf.clear();
+        buf.extend_from_slice(data);
+        self.jobs
+            .as_ref()
+            .ok_or_else(|| anyhow!("decode thread closed"))?
+            .send(DecodeJob {
+                data: buf,
+                transport,
+                data_type,
+                fresh,
+            })
+            .map_err(|_| anyhow!("decode thread stopped"))?;
+        self.in_flight += 1;
+        Ok(())
+    }
+
+    fn wait(&mut self) -> Result<DecodeDone> {
+        let done = self
+            .done
+            .recv()
+            .map_err(|_| anyhow!("decode thread stopped"))?;
+        Ok(self.returned(done))
+    }
+
+    fn poll(&mut self) -> Result<Option<DecodeDone>> {
+        match self.done.try_recv() {
+            Ok(done) => Ok(Some(self.returned(done))),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => bail!("decode thread stopped"),
+        }
+    }
+
+    /// Count a packet out: its audio towards the average, its buffer to reuse.
+    fn returned(&mut self, mut done: DecodeDone) -> DecodeDone {
+        self.in_flight -= 1;
+        let secs: f64 = done
+            .result
+            .frames
+            .iter()
+            .filter(|f| f.sampling_frequency > 0)
+            .map(|f| f64::from(f.sample_count) / f64::from(f.sampling_frequency))
+            .sum();
+        self.packet_secs = if self.packet_secs > 0.0 {
+            self.packet_secs + (secs - self.packet_secs) / self.depth as f64
+        } else {
+            secs
+        };
+        self.spare.push(std::mem::take(&mut done.data));
+        done
+    }
+}
+
+impl Drop for DecodeWorker {
+    fn drop(&mut self) {
+        drop(self.jobs.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
