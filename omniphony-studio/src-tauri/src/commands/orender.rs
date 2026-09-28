@@ -47,13 +47,6 @@ fn bundled_orender_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
     candidates
 }
 
-fn bundled_layouts_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path()
-        .resource_dir()
-        .ok()
-        .map(|dir| dir.join("layouts"))
-}
-
 fn default_orender_input_path() -> PathBuf {
     // An environment that carved out its own runtime namespace pins the pipe,
     // so two renderers never end up reading the same FIFO.
@@ -158,14 +151,6 @@ fn resolve_orender_launch_spec(
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<OrenderLaunchSpec, String> {
-    let studio_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "failed to resolve studio directory".to_string())?
-        .to_path_buf();
-    let repo_root = studio_dir
-        .parent()
-        .ok_or_else(|| "failed to resolve Omniphony repository root".to_string())?
-        .to_path_buf();
     let orender_path = resolve_orender_binary(app, orender_path)?;
 
     let input_path = default_orender_input_path();
@@ -201,29 +186,11 @@ fn resolve_orender_launch_spec(
         args.push(level.to_string());
     }
 
-    if let Some(selected_layout) = state.inner.lock().unwrap().selected_layout_key.clone() {
-        let layout_file = format!("{selected_layout}.yaml");
-        // The presets dir holds the immersive (with-height) layouts; the older
-        // no-height layouts now live in a `legacy/` subfolder. Look in both,
-        // bundle first then the repo (dev) fallback.
-        let layout_path = bundled_layouts_dir(app)
-            .into_iter()
-            .flat_map(|dir| {
-                [
-                    dir.join(&layout_file),
-                    dir.join("legacy").join(&layout_file),
-                ]
-            })
-            .chain([
-                repo_root.join("layouts").join(&layout_file),
-                repo_root.join("layouts").join("legacy").join(&layout_file),
-            ])
-            .find(|path| path.exists());
-        if let Some(layout_path) = layout_path {
-            args.push("--speaker-layout".to_string());
-            args.push(layout_path.display().to_string());
-        }
-    }
+    // No `--speaker-layout`: the renderer's config (`current_layout` of the
+    // active profile) is the one source of truth for the speaker layout. The
+    // Studio's selection before a renderer connects is only a display default
+    // (7.1.4); forwarding it overrode the saved layout, and the live-state
+    // handoff then carried that override from instance to instance.
 
     // Persist the connection settings used for this launch, preserving the
     // fields this function doesn't manage (auto-start / keep-alive toggles).
