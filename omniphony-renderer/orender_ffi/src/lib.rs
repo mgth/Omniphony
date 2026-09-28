@@ -714,7 +714,13 @@ pub unsafe extern "C" fn orender_reset(r: *mut OrenderRenderer) {
 /// `*out_channels` / `*out_pts_us` are set.
 ///
 /// Returns: 0 = OK (may be 0 frames — need more data), >0 = output buffer too
-/// small (nothing written; retry with a larger buffer), <0 = error.
+/// small (nothing written; call again with the same packet and a larger
+/// buffer), <0 = error.
+///
+/// The packet is decoded before its size is known, so a >0 return keeps the
+/// rendered audio and the retry hands it back without decoding the packet a
+/// second time. A host that moves on to the next packet instead loses this
+/// packet's audio, but the stream stays in step.
 #[no_mangle]
 pub unsafe extern "C" fn orender_process(
     r: *mut OrenderRenderer,
@@ -734,24 +740,19 @@ pub unsafe extern "C" fn orender_process(
         let engine = &mut *(r as *mut Engine);
         let data = std::slice::from_raw_parts(pkt, pkt_len);
 
-        let chunks = match engine.process_raw(data) {
-            Ok(c) => c,
+        let chunks = match engine.process_raw_within(data, out_cap_samples) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                if !out_frames.is_null() {
+                    *out_frames = 0;
+                }
+                return 1; // buffer too small; the engine holds the audio for the retry
+            }
             Err(e) => {
                 eprintln!("orender_process error: {e:#}");
                 return -2;
             }
         };
-
-        let total_samples: usize = chunks.iter().map(|c| c.samples.len()).sum();
-        if total_samples > out_cap_samples {
-            if !out_frames.is_null() {
-                *out_frames = 0;
-            }
-            // Nothing was copied, but the buffers are still worth keeping: the
-            // caller is about to retry with a larger `out` and render again.
-            engine.recycle(chunks);
-            return 1; // buffer too small; caller retries larger
-        }
 
         let out_slice = std::slice::from_raw_parts_mut(out, out_cap_samples);
         let mut written = 0usize;

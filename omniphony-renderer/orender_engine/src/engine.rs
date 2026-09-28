@@ -120,6 +120,11 @@ pub struct Engine {
     /// that never recycles allocates exactly as before; it is an optimisation,
     /// not a contract.
     output_pool: Vec<Vec<f32>>,
+    /// Output of a packet the host had no room for, with a copy of that packet
+    /// (see [`Engine::process_raw_within`]): the retry with a larger buffer
+    /// gets this back instead of decoding the packet a second time.
+    held_output: Option<Vec<RenderedAudio>>,
+    held_packet: Vec<u8>,
     /// Duty-cycle EMA of the render cost, for the meter bundle: raw per-frame
     /// timings alias with 40-sample TrueHD access units (the FIR crossover's
     /// burst lands on one frame in ~26), so the emitted figure is smoothed to
@@ -295,6 +300,8 @@ impl Engine {
             frame_events: Vec::new(),
             pcm_f32_buf: Vec::new(),
             output_pool: Vec::new(),
+            held_output: None,
+            held_packet: Vec::new(),
             render_duty: Default::default(),
             osc: None,
             audio_meter: None,
@@ -688,6 +695,10 @@ impl Engine {
     /// per-stream spatial state. Live parameters (gains, layout, OSC-applied
     /// settings) are preserved — a seek must not lose live adjustments.
     pub fn reset(&mut self) {
+        // Audio held for a retry belongs to the stream being flushed.
+        if let Some(held) = self.held_output.take() {
+            self.recycle(held);
+        }
         self.bridge.bridge.reset();
         self.renderer.reset_runtime_state();
         self.reset_segment_state();
@@ -907,6 +918,43 @@ impl Engine {
     /// Convenience wrapper for hosts that always feed raw access units.
     pub fn process_raw(&mut self, data: &[u8]) -> Result<Vec<RenderedAudio>> {
         self.process(data, RInputTransport::Raw, 0)
+    }
+
+    /// [`process_raw`](Self::process_raw) for a host whose output buffer holds
+    /// `capacity` interleaved samples.
+    ///
+    /// Returns `Ok(Some(blocks))` when they fit, and `Ok(None)` when they do
+    /// not: the host is expected to call again with the **same packet** and a
+    /// larger buffer. The packet has already been decoded by then, and
+    /// decoding it again would advance the bridge a second time — the stream
+    /// would jump ahead and this packet's audio would be lost. So the blocks
+    /// are held, and the retry returns them without touching the decoder.
+    ///
+    /// A host that moves on to a different packet instead of retrying gets
+    /// that packet decoded normally; the held audio is dropped, as it was
+    /// before retries were possible.
+    pub fn process_raw_within(
+        &mut self,
+        data: &[u8],
+        capacity: usize,
+    ) -> Result<Option<Vec<RenderedAudio>>> {
+        let chunks = match self.held_output.take() {
+            Some(held) if self.held_packet == data => held,
+            held => {
+                if let Some(stale) = held {
+                    self.recycle(stale);
+                }
+                self.process_raw(data)?
+            }
+        };
+        let samples: usize = chunks.iter().map(|c| c.samples.len()).sum();
+        if samples > capacity {
+            self.held_packet.clear();
+            self.held_packet.extend_from_slice(data);
+            self.held_output = Some(chunks);
+            return Ok(None);
+        }
+        Ok(Some(chunks))
     }
 
     /// Hand the sample buffers of a consumed [`process`](Self::process) result
