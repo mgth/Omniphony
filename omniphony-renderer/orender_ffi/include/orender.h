@@ -236,7 +236,13 @@ void orender_reset(struct OrenderRenderer *r);
 // `*out_channels` / `*out_pts_us` are set.
 //
 // Returns: 0 = OK (may be 0 frames — need more data), >0 = output buffer too
-// small (nothing written; retry with a larger buffer), <0 = error.
+// small (nothing written; call again with the same packet and a larger
+// buffer), <0 = error.
+//
+// The packet is decoded before its size is known, so a >0 return keeps the
+// rendered audio and the retry hands it back without decoding the packet a
+// second time. A host that moves on to the next packet instead loses this
+// packet's audio, but the stream stays in step.
 int orender_process(struct OrenderRenderer *r,
                     const uint8_t *pkt,
                     uintptr_t pkt_len,
