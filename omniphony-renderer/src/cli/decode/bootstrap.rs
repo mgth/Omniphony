@@ -319,11 +319,14 @@ fn init_osc_runtime(
         // parameters and no channel catalogue for the bed editor.
         handler.spatial.channel_objects.publish_static_state(&ctrl);
         ctrl.set_input_path(Some(input_path.display().to_string()));
-        ctrl.set_bridge_path(args.bridge_path.clone());
-        let persisted_bridge_path = render_cfg.bridge_path.clone();
-        if persisted_bridge_path != args.bridge_path {
-            ctrl.mark_dirty();
-        }
+        // `args.bridge_path` is the flag, else the config's (or the path a
+        // live reload switched to): recorded as asked, dirty when it is not
+        // the config's — the shared rule (`record_bridge_path`).
+        orender_engine::renderer_build::record_bridge_path(
+            &ctrl,
+            args.bridge_path.as_deref(),
+            render_cfg.bridge_path.as_deref(),
+        );
         // State restored from a live-handoff sidecar is by definition unsaved.
         if config_path
             .as_deref()

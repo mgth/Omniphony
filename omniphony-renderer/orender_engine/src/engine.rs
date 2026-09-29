@@ -576,7 +576,10 @@ impl Engine {
             overlay::load_prefs(&p);
         }
 
-        control.set_bridge_path(Some(resolved_bridge.clone()));
+        // The path asked for (host override, else the config's), not the
+        // resolved one: an auto-discovered bridge next to the host binary must
+        // not end up in the shared config on the next save.
+        crate::renderer_build::record_bridge_path(&control, bridge_path, config_bridge.as_deref());
         if let Some(info) = profiles_info {
             control.set_profiles_info(info);
         }
@@ -1068,9 +1071,10 @@ impl Engine {
 
     /// Decode on a thread of its own, overlapping the render, so the two share
     /// the work across two cores. Off by default, because a packet's audio then
-    /// comes back from a later [`process`](Self::process) call - one packet's
-    /// per call, as inline, only about 30 ms of audio behind, or one packet if
-    /// that is longer - or from [`drain`](Self::drain), and not every host
+    /// comes back from a later [`process`](Self::process) call - about 30 ms
+    /// of audio behind, or one packet if that is longer; one packet's audio
+    /// per call, as inline, except while the queue shrinks back to its limit,
+    /// when a call returns two - or from [`drain`](Self::drain), and not every host
     /// allows for that: one that turns it on takes its timestamps from the
     /// blocks it gets back ([`RenderedAudio::sample_pos`] for its place in the
     /// stream, [`RenderedAudio::input_pts_us`] for the host's own timestamp)
@@ -1600,10 +1604,7 @@ impl Engine {
         }
         if want_metering {
             if let Some(meter) = self.audio_meter.as_mut() {
-                meter.update_channel_count(render_channels);
-                for chunk in render_pcm.chunks_exact(render_channels) {
-                    meter.process_objects(chunk, render_channels);
-                }
+                crate::render_metering::meter_render_input(meter, render_pcm, render_channels);
             }
         }
 
@@ -1677,20 +1678,9 @@ impl Engine {
             let frame_duration_ms = sample_count as f32 / sample_rate as f32 * 1000.0;
             let drc_gain = self.drc_gain;
             if let Some(meter) = self.audio_meter.as_mut() {
-                // Binaural modes meter the stereo output on the dedicated ear
-                // accumulators; the cascaded mode additionally meters the
-                // virtual buses on the speaker accumulators, so Studio's
-                // speaker gauges show the virtual room.
-                if let Some((bus, n_bus)) = self.renderer.virtual_bus() {
-                    meter.process_speakers(bus, n_bus);
-                    meter.process_ears(&rendered.samples);
-                } else if self.renderer.output_is_binaural() {
-                    meter.process_ears(&rendered.samples);
-                } else {
-                    meter.process_speakers(&rendered.samples, n_channels as usize);
-                }
-                meter.process_object_bands(&rendered.object_band_sq);
-                if let Some(snapshot) = meter.poll() {
+                if let Some(snapshot) =
+                    crate::render_metering::meter_render_output(meter, &self.renderer, &rendered)
+                {
                     if overlay_active {
                         let levels: Vec<(u32, f64)> = snapshot
                             .object_levels

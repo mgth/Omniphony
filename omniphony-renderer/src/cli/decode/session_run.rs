@@ -13,7 +13,7 @@ use super::live_input::{LiveBridgeRuntimeConfig, spawn_live_input_manager};
 use super::output::OutputClosed;
 use super::state::FrameHandlerContext;
 use crate::cli::command::{Cli, OutputBackend, RenderArgSources, RenderArgs};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use orender_engine::bridge_loader::{LoadedBridge, resolve_bridge_path};
 use orender_engine::renderer_build::SpatialRendererParams;
 use std::sync::mpsc;
@@ -25,18 +25,6 @@ const DEFAULT_DECODE_QUEUE_LATENCY_MS: u32 = 220;
 const DECODE_QUEUE_MESSAGES_PER_MS: usize = 2;
 const MIN_DECODE_QUEUE_CAPACITY: usize = 512;
 const MAX_DECODE_QUEUE_CAPACITY: usize = 8192;
-
-const IDLE_BRIDGE_COORDINATE_FORMAT: bridge_api::RCoordinateFormat =
-    bridge_api::RCoordinateFormat::Cartesian;
-const IDLE_BRIDGE_VBAP_DEFAULTS: bridge_api::RVbapCartesianDefaults =
-    bridge_api::RVbapCartesianDefaults {
-        x_size: 62,
-        y_size: 62,
-        z_size: 15,
-        allow_negative_z: false,
-    };
-const IDLE_BRIDGE_PREFERRED_EVALUATION_MODE: bridge_api::RVbapTableMode =
-    bridge_api::RVbapTableMode::Cartesian;
 
 struct PreparedDecodeRun {
     tx: mpsc::SyncSender<Result<DecoderMessage>>,
@@ -176,18 +164,21 @@ fn decode_queue_capacity(latency_target_ms: Option<u32>) -> usize {
         .clamp(MIN_DECODE_QUEUE_CAPACITY, MAX_DECODE_QUEUE_CAPACITY)
 }
 
+/// The format bridge could not be resolved or loaded. Attached as context to
+/// those errors (and only those), so the caller tells them apart by type — it
+/// used to match the loader's message texts, and a reworded message silently
+/// turned "idle until a working bridge is set" into a hard exit.
+#[derive(Debug)]
+struct BridgeUnavailable;
+
+impl std::fmt::Display for BridgeUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("format bridge unavailable")
+    }
+}
+
 fn is_bridge_unavailable_error(err: &anyhow::Error) -> bool {
-    err.chain().any(|cause| {
-        let text = cause.to_string();
-        text.contains("No bridge plugin found")
-            // Matches both `resolve_bridge_path` messages: "bridge path '…'" (CLI)
-            // and "render.bridge_path '…' (from config)". The previous
-            // "Bridge path '" (capital B) matched neither, so a bad/missing
-            // bridge path hard-exited instead of entering the idle OSC runtime.
-            || text.contains("does not exist or is not a file")
-            || text.contains("Failed to load bridge plugin from")
-            || text.contains("Bridge plugin is missing the `new_bridge` export")
-    })
+    err.downcast_ref::<BridgeUnavailable>().is_some()
 }
 
 fn maybe_save_effective_config(
@@ -232,10 +223,14 @@ fn prepare_render_run(args: &RenderArgs) -> Result<PreparedDecodeRun> {
         ));
     }
 
-    let bridge_path = resolve_bridge_path(args.bridge_path.as_deref())?;
+    let bridge_path =
+        resolve_bridge_path(args.bridge_path.as_deref()).context(BridgeUnavailable)?;
     log::info!("Loading format bridge: {}", bridge_path.display());
-    let LoadedBridge { lib, bridge } =
-        LoadedBridge::load_for_presentation(&bridge_path, &args.presentation)?;
+    // Only the load is "bridge unavailable"; a bridge that loads but
+    // refuses the presentation is a configuration error, not a reason to idle.
+    let LoadedBridge { lib, mut bridge } =
+        LoadedBridge::load_with_params(&bridge_path).context(BridgeUnavailable)?;
+    orender_engine::bridge_loader::configure_presentation(&mut bridge, &args.presentation)?;
     let is_spatial_presentation = bridge.has_objects();
     let coordinate_format = bridge.coordinate_format();
     let vbap_cartesian_defaults = bridge.vbap_cartesian_defaults();
@@ -339,14 +334,24 @@ fn run_idle_runtime(
         idle_input_path(args),
         &run.config_path,
         run.current_layout.clone(),
-        IDLE_BRIDGE_VBAP_DEFAULTS,
-        IDLE_BRIDGE_PREFERRED_EVALUATION_MODE,
+        orender_engine::degraded::NO_BRIDGE_VBAP_DEFAULTS,
+        orender_engine::degraded::NO_BRIDGE_PREFERRED_MODE,
     )?;
-    handler.spatial.coordinate_format = IDLE_BRIDGE_COORDINATE_FORMAT;
+    handler.spatial.coordinate_format = orender_engine::degraded::NO_BRIDGE_COORDINATE_FORMAT;
+    // Tell Studio why, as the embedded host's degraded reporter does: the
+    // bridge error in the live state (Studio's banner), shortened to what a UI
+    // can show, instead of a generic "path missing" for every failure (an ABI
+    // mismatch included).
+    let summary = orender_engine::degraded::summarize_bridge_error(&format!("{bridge_error:#}"));
+    if let Some(renderer) = handler.spatial_renderer.as_ref() {
+        renderer
+            .renderer_control()
+            .set_bridge_error(Some(summary.clone()));
+    }
     if let Some(input_control) = handler.input_control.as_ref() {
-        input_control.set_input_error(Some(
-            "Bridge path missing. Set a bridge binary path and Apply.".to_string(),
-        ));
+        input_control.set_input_error(Some(format!(
+            "Bridge unavailable ({summary}). Set a working bridge binary path and Apply."
+        )));
     }
 
     log::warn!(
@@ -953,10 +958,17 @@ fn run_prepared_render(
         }
     }
 
+    // An offline render — a file in, a file out, no continuous input — has no
+    // use for the live input: starting it would publish the PipeWire bridge
+    // input sink (a config with `input_mode: pipewire`), a second "omniphony"
+    // node beside the running renderer's, and feed its capture into the render.
+    let offline =
+        effective_args.output_backend == Some(OutputBackend::File) && !effective_args.continuous;
     let live_input_manager = handler
         .input_control
         .as_ref()
         .zip(handler.audio_control.as_ref())
+        .filter(|_| !offline)
         .map(|(input_control, audio_control)| {
             spawn_live_input_manager(
                 prepared.tx.clone(),
@@ -1059,5 +1071,37 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
         }
 
         return Ok(());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::command::{Commands, ParsedCli};
+
+    fn render_args(extra: &[&str]) -> RenderArgs {
+        let argv = ["orender", "render", "--output-backend", "file"]
+            .iter()
+            .chain(extra)
+            .copied();
+        let parsed = ParsedCli::parse_from(argv).expect("parse render args");
+        match parsed.cli.command {
+            Commands::Render(args) => args,
+            _ => unreachable!("render subcommand"),
+        }
+    }
+
+    /// A bridge that cannot be found or loaded is recognised by type — the
+    /// idle runtime depends on it — whatever the loader's message says; any
+    /// other startup error is not mistaken for it.
+    #[test]
+    fn only_bridge_failures_count_as_bridge_unavailable() {
+        let missing = render_args(&["--bridge-path", "/nonexistent/libnone_bridge.so", "in.thd"]);
+        let err = prepare_render_run(&missing).err().expect("missing bridge");
+        assert!(is_bridge_unavailable_error(&err), "{err:#}");
+
+        let no_input = render_args(&["--bridge-path", "/nonexistent/libnone_bridge.so"]);
+        let err = prepare_render_run(&no_input).err().expect("missing input");
+        assert!(!is_bridge_unavailable_error(&err), "{err:#}");
     }
 }
