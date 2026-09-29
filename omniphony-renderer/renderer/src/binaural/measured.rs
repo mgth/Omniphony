@@ -547,9 +547,9 @@ impl MeasuredHrirData {
             if !keep(p) {
                 continue;
             }
-            let (x, y, z) = (p[0], p[1], p[2]);
             // SOFA +y is the listener's left; the renderer's +az is right.
-            let az = (-y).atan2(x).to_degrees().rem_euclid(360.0);
+            let [x, y, z] = omniphony_geometry::f32::sofa_to_adm(*p);
+            let az = x.atan2(y).to_degrees().rem_euclid(360.0);
             let el = z.atan2((x * x + y * y).sqrt()).to_degrees();
             dirs.push((az, el));
             kept.push(pair);
@@ -610,10 +610,8 @@ fn check_loaded_set(
 
 /// Unit vector for a direction (az 0 = front/+Y, +az = right/+X; el up = +Z).
 fn dir_vec(az_deg: f32, el_deg: f32) -> [f32; 3] {
-    let az = az_deg.to_radians();
-    let el = el_deg.to_radians();
-    let ce = el.cos();
-    [ce * az.sin(), ce * az.cos(), el.sin()]
+    let (x, y, z) = omniphony_geometry::f32::from_spherical(az_deg, el_deg, 1.0);
+    [x, y, z]
 }
 
 /// Half-width of the resampling kernel, in input samples.

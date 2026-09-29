@@ -2,20 +2,11 @@
 //!
 //! Used when the `saf_vbap` feature is disabled (no C FFI, no external library).
 
-use super::Gains;
+use super::{Gains, normalized_spread_to_degrees};
 use crate::spatial_vbap::vbap_native::{
     DummyRing, OutOfHullMode, compute_dummy_rings, find_ls_triplets, invert_ls_mtx_3d,
     prepare_effective_speaker_dirs, vbap3d,
 };
-
-/// Maximum spread in degrees accepted by `vbap3d`.
-/// Matches `SpartaVbapLayout::NORMALIZED_SPREAD_MAX_DEG` for parity.
-const NORMALIZED_SPREAD_MAX_DEG: f32 = 180.0;
-
-#[inline]
-fn normalized_spread_to_degrees(spread: f32) -> f32 {
-    spread.clamp(0.0, 1.0) * NORMALIZED_SPREAD_MAX_DEG
-}
 
 /// Pure-Rust equivalent of `SpartaVbapLayout`.
 ///

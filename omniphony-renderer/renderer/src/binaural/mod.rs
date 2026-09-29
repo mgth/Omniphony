@@ -1047,7 +1047,7 @@ impl BinauralRenderer {
                     .sqrt()
                     .max(MIN_DISTANCE_M);
                 let images = reflections::first_order_images(src_m, room_m);
-                let c_sound = reflections::speed_of_sound();
+                let c_sound = itd::SPEED_OF_SOUND;
                 for (i, img) in images.iter().enumerate() {
                     let d_img = (img[0] * img[0] + img[1] * img[1] + img[2] * img[2])
                         .sqrt()

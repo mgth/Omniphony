@@ -8,6 +8,8 @@
 //! keeps all grid FIRs time-aligned so they can be linearly interpolated without
 //! comb-filtering.
 
+use super::itd::{SPEED_OF_SOUND, lateral_sine};
+
 /// Kernel **capacity** per ear, in taps: the fixed size of every
 /// [`HrirPair`] and of the convolver state. The number of taps actually
 /// convolved is [`hrir_len`], which scales with the sample rate so the
@@ -103,7 +105,6 @@ impl SyntheticHrir {
     /// `θ_min`: angle of the deepest shadow, past which the bright spot
     /// behind the head brings the level back up.
     const THETA_MIN_DEG: f32 = 150.0;
-    const SPEED_OF_SOUND: f32 = 343.0;
 
     /// `α(θ)`, with `cos_theta` the cosine of the angle from the ear's axis.
     #[inline]
@@ -119,7 +120,7 @@ impl SyntheticHrir {
     /// the DC gain so the total is exactly 1; at high frequency only the
     /// impulse survives, leaving `α`.
     fn shelf_ir(&self, alpha: f32, sample_rate: u32, out: &mut [f32; HRIR_LEN]) {
-        let w0 = Self::SPEED_OF_SOUND / self.head_radius_m.clamp(0.05, 0.15);
+        let w0 = SPEED_OF_SOUND / self.head_radius_m.clamp(0.05, 0.15);
         let p = (-2.0 * w0 / sample_rate as f32).exp();
         let mut tail = (1.0 - alpha) * (1.0 - p);
         for (n, slot) in out.iter_mut().enumerate() {
@@ -134,7 +135,7 @@ impl SyntheticHrir {
 /// the sine of the lateral angle. 0.5 for both ears anywhere in the median
 /// plane, 1 for the ear on the source's side of the interaural axis.
 pub fn ear_exposure(az_deg: f32, el_deg: f32) -> (f32, f32) {
-    let lateral = (az_deg.to_radians().sin() * el_deg.to_radians().cos()).clamp(-1.0, 1.0);
+    let lateral = lateral_sine(az_deg.to_radians(), el_deg.to_radians()).clamp(-1.0, 1.0);
     (0.5 * (1.0 - lateral), 0.5 * (1.0 + lateral))
 }
 
@@ -163,7 +164,7 @@ impl HrirProvider for SyntheticHrir {
         let el = el_deg.to_radians();
         // Cosine of the angle from the right ear's axis (+X): the lateral
         // sine. The left ear sees the supplementary angle.
-        let lateral = (az.sin() * el.cos()).clamp(-1.0, 1.0);
+        let lateral = lateral_sine(az, el).clamp(-1.0, 1.0);
         let mut pair = HrirPair::zeroed();
         self.shelf_ir(Self::alpha(-lateral), sample_rate, &mut pair.left);
         self.shelf_ir(Self::alpha(lateral), sample_rate, &mut pair.right);
@@ -271,7 +272,7 @@ impl ParametricPinnaHrir {
     /// amplitude factor.
     fn echo_train(az_deg: f32, el_deg: f32, sample_rate: u32, d: &[f32; 5]) -> ([f32; 5], f32) {
         let (az, el) = (az_deg.to_radians(), el_deg.to_radians());
-        let lateral = (az.sin() * el.cos()).clamp(-1.0, 1.0);
+        let lateral = lateral_sine(az, el).clamp(-1.0, 1.0);
         let theta = lateral.asin();
         // Angle around the interaural axis, from the front, in (−180°, 180°].
         let phi = el.sin().atan2(az.cos() * el.cos());

@@ -223,6 +223,17 @@ pub struct VbapPanner {
     speaker_dirs_deg: Vec<[f32; 2]>,
 }
 
+/// Maximum spread in degrees the VBAP spreading accepts (SAF's `vbap3D` and
+/// its native port alike). The public API is normalised to `[0, 1]`; this
+/// maps 1.0 → 180°.
+const NORMALIZED_SPREAD_MAX_DEG: f32 = 180.0;
+
+/// Normalised spread `[0, 1]` → the degrees `vbap3D` takes.
+#[inline]
+fn normalized_spread_to_degrees(spread: f32) -> f32 {
+    spread.clamp(0.0, 1.0) * NORMALIZED_SPREAD_MAX_DEG
+}
+
 #[cfg(not(feature = "saf_vbap"))]
 pub(crate) mod native_backend;
 #[cfg(feature = "saf_vbap")]
