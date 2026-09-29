@@ -23,30 +23,63 @@ fn packet(frames: u16, decode_ms: u8) -> [u8; 3] {
     [lo, hi, decode_ms]
 }
 
+/// [`packet`] with its layout (`0`: stereo, `1`: L R C) and, with `restart`,
+/// a second frame of it that starts a segment.
+fn packet_in(frames: u16, layout: u8, restart: bool) -> [u8; 5] {
+    let [lo, hi, ms] = packet(frames, 0);
+    [lo, hi, ms, layout, u8::from(restart)]
+}
+
+/// [`packet_in`] that the bridge decodes but reports an error for.
+fn failing_packet_in(frames: u16, layout: u8) -> [u8; 5] {
+    let [lo, hi, ms] = packet(frames, 0);
+    [lo, hi, ms, layout, 2]
+}
+
 struct ScriptedBridge {
     /// The name of the thread each read of the declaration came from.
     declaration_reads: Arc<Mutex<Vec<String>>>,
+    /// Channel labels of the last frame decoded.
+    labels: Vec<RChannelLabel>,
 }
 
 impl FormatBridge for ScriptedBridge {
     fn push_packet(&mut self, data: RSlice<'_, u8>, _: RInputTransport, _: u8) -> RPushResult {
+        use RChannelLabel::{C, L, R};
         std::thread::sleep(Duration::from_millis(u64::from(data[2])));
         let frames = u16::from_le_bytes([data[0], data[1]]) as u32;
-        let frame = (frames > 0).then(|| RDecodedFrame {
+        self.labels = match data.get(3) {
+            Some(1) => vec![L, R, C],
+            _ => vec![L, R],
+        };
+        let restart = data.get(4) == Some(&1);
+        let channels = self.labels.len() as u32;
+        let frame = |is_new_segment| RDecodedFrame {
             sampling_frequency: 48_000,
             sample_count: frames,
-            channel_count: 2,
-            pcm: RVec::from(vec![1_000_000; 2 * frames as usize]),
-            channel_labels: RVec::from(vec![RChannelLabel::L, RChannelLabel::R]),
+            channel_count: channels,
+            pcm: RVec::from(vec![1_000_000; (channels * frames) as usize]),
+            channel_labels: self.labels.iter().copied().collect(),
             metadata: RVec::new(),
             drc_gain: 1.0,
             drc_ramp_duration: 0,
             dialogue_level: ROption::RNone,
-            is_new_segment: false,
-        });
+            is_new_segment,
+        };
+        let mut out = Vec::new();
+        if frames > 0 {
+            out.push(frame(false));
+            if restart {
+                out.push(frame(true));
+            }
+        }
         RPushResult {
-            frames: frame.into_iter().collect(),
-            error_message: RString::new(),
+            frames: RVec::from(out),
+            error_message: RString::from(if data.get(4) == Some(&2) {
+                "scripted error"
+            } else {
+                ""
+            }),
             did_reset: false,
         }
     }
@@ -88,12 +121,16 @@ impl FormatBridge for ScriptedBridge {
             .push(thread.name().unwrap_or_default().to_owned());
         RVec::new()
     }
+    fn source_label(&self) -> RString {
+        RString::from(format!("{} channels", self.labels.len()))
+    }
 }
 
 extern "C" fn new_bridge(_: bool) -> FormatBridgeBox {
     FormatBridge_TO::from_value(
         ScriptedBridge {
             declaration_reads: Arc::default(),
+            labels: Vec::new(),
         },
         TD_Opaque,
     )
@@ -115,6 +152,7 @@ fn engine_with_control() -> (Engine, Arc<Mutex<Vec<String>>>, Arc<RendererContro
     let bridge = FormatBridge_TO::from_value(
         ScriptedBridge {
             declaration_reads: Arc::clone(&declaration_reads),
+            labels: Vec::new(),
         },
         TD_Opaque,
     );
@@ -143,7 +181,7 @@ fn frames(engine: &mut Engine, chunks: Vec<RenderedAudio>) -> usize {
     frames
 }
 
-fn feed(engine: &mut Engine, packets: impl IntoIterator<Item = [u8; 3]>) -> usize {
+fn feed<const N: usize>(engine: &mut Engine, packets: impl IntoIterator<Item = [u8; N]>) -> usize {
     packets
         .into_iter()
         .map(|p| {
@@ -269,6 +307,90 @@ fn after_a_seek_the_declaration_is_read_with_the_packet() {
         reads.iter().all(|t| t == "orender-decode"),
         "read off the decode thread: {reads:?}"
     );
+}
+
+/// The bridge's declaration goes with the frames it was read for: after each
+/// call, the engine names the format of the last audio it handed back, not
+/// the one of the packet the decode thread has reached. A segment start keeps
+/// it (the bridge declares it again with that frame), where the engine used to
+/// clear it and read the bridge live, ahead of the audio.
+#[test]
+fn the_declaration_follows_the_audio_handed_back() {
+    // Packet i is 40 samples; layouts change every 5 packets, and the first
+    // packet of each run has a second frame that starts a segment.
+    let layout = |i: usize| ((i / 5) % 2) as u8;
+    let label = |layout: u8| {
+        if layout == 0 {
+            "2 channels"
+        } else {
+            "3 channels"
+        }
+    };
+    for threaded in [false, true] {
+        let (mut engine, _, _) = engine_with_control();
+        engine.set_decode_thread(threaded).unwrap();
+        let mut checked = 0;
+        for i in 0..40 {
+            let restart = i % 5 == 0;
+            let chunks = engine
+                .process_raw(&packet_in(40, layout(i), restart))
+                .unwrap();
+            if let Some(last) = chunks.last() {
+                // Each restart packet renders two frames of 40 samples.
+                let rendered = (0..).scan(0u64, |pos, p: usize| {
+                    let start = *pos;
+                    *pos += if p % 5 == 0 { 80 } else { 40 };
+                    Some((p, start))
+                });
+                let (p, _) = rendered
+                    .take_while(|&(_, start)| start <= last.sample_pos)
+                    .last()
+                    .unwrap();
+                assert_eq!(
+                    engine.source_label(),
+                    label(layout(p)),
+                    "threaded={threaded}: after packet {p}'s audio"
+                );
+                checked += 1;
+            }
+            engine.recycle(chunks);
+        }
+        assert!(checked > 30, "threaded={threaded}: {checked} calls checked");
+    }
+}
+
+/// A packet the bridge reports an error for is refused, but what the bridge
+/// declared with it is kept: the frames after it have the same labels, so no
+/// new declaration comes with them.
+#[test]
+fn a_failed_packets_declaration_is_not_lost() {
+    for threaded in [false, true] {
+        let (mut engine, _, _) = engine_with_control();
+        engine.set_decode_thread(threaded).unwrap();
+        feed(&mut engine, (0..4).map(|_| packet_in(40, 0, false)));
+        drain(&mut engine);
+        assert_eq!(engine.source_label(), "2 channels");
+        let failed = engine.process_raw(&failing_packet_in(40, 1));
+        let failed = match failed {
+            Ok(chunks) if threaded => {
+                // The thread hands the error back with the packet's result.
+                frames(&mut engine, chunks);
+                engine.drain().map(|c| frames(&mut engine, c))
+            }
+            other => other.map(|c| frames(&mut engine, c)),
+        };
+        assert!(
+            failed.is_err(),
+            "threaded={threaded}: the error reaches the host"
+        );
+        feed(&mut engine, (0..4).map(|_| packet_in(40, 1, false)));
+        drain(&mut engine);
+        assert_eq!(
+            engine.source_label(),
+            "3 channels",
+            "threaded={threaded}: declared with the failed packet"
+        );
+    }
 }
 
 /// Each packet's audio carries the timestamp the host gave that packet, even

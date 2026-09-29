@@ -39,8 +39,9 @@ pub struct DecodedAudioData {
     pub source: DecodedSource,
     pub frame: bridge_api::RDecodedFrame,
     /// The bridge's declaration, sent with the frame a
-    /// [`DeclarationTracker`] says needs it (the bridge lives on the decoder
-    /// thread; the handler keeps the last value it received).
+    /// [`DeclarationTracker`] says needs it (the bridge lives on the decoding
+    /// thread, this one or the PipeWire sink's; the handler keeps the last
+    /// value it received). Never set on the sink's plain PCM.
     pub declaration: Option<Declaration>,
     pub decode_time_ms: f32,
     pub sent_at: Instant,
@@ -109,7 +110,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
 
         let mut frame_count: u64 = 0;
         // When a frame carries the bridge's declaration: the same rule as the
-        // embedded engine's decode thread.
+        // embedded engine and the PipeWire sink's bridge decoder.
         let mut declarations = DeclarationTracker::new();
         loop {
             // Check for shutdown — do not restart after SIGTERM/SIGINT.
@@ -198,10 +199,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     last_chunk_at = Some(now);
                 }
 
-                let chunk_contains_spdif_sync = chunk.windows(4).any(|w| {
-                    u16::from_le_bytes([w[0], w[1]]) == 0xF872
-                        && u16::from_le_bytes([w[2], w[3]]) == 0x4E1F
-                });
+                let chunk_contains_spdif_sync = spdif::contains_sync(chunk);
 
                 // Detect transport format on the first chunk. Do not require the
                 // syncword to be at offset 0: named pipes can reconnect or resume
@@ -235,10 +233,8 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                 };
 
                 let mut frames_emitted = 0usize;
-                // Accumulate (samples, sample_rate) per frame so that emitted_duration_ms
-                // uses the input sample rate rather than a hardcoded 48 kHz constant.
-                // Different frames within a chunk should share the same rate, but we
-                // compute the sum correctly even if they don't.
+                // Audio emitted by this chunk, each frame at its own rate
+                // (`DecodedPacket::duration_secs`).
                 let mut emitted_duration_ms = 0.0f64;
                 let packet_count = packets.len();
                 for (transport, data_type, payload) in packets {
@@ -247,7 +243,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                         &payload,
                         transport,
                         data_type,
-                        Some(&mut declarations),
+                        &mut declarations,
                     );
                     let per_frame_decode_time_ms = packet.decode_ms_per_frame();
                     let packet_emitted_ms = packet.duration_secs() * 1000.0;

@@ -214,13 +214,8 @@ fn prepare_render_run(args: &RenderArgs) -> Result<PreparedDecodeRun> {
 
     let bridge_path = resolve_bridge_path(args.bridge_path.as_deref())?;
     log::info!("Loading format bridge: {}", bridge_path.display());
-    let LoadedBridge { lib, mut bridge } = LoadedBridge::load_with_params(&bridge_path)?;
-    if !bridge.configure("presentation".into(), args.presentation.as_str().into()) {
-        return Err(anyhow::anyhow!(
-            "Bridge rejected presentation value '{}'",
-            args.presentation
-        ));
-    }
+    let LoadedBridge { lib, bridge } =
+        LoadedBridge::load_for_presentation(&bridge_path, &args.presentation)?;
     let is_spatial_presentation = bridge.has_objects();
     let coordinate_format = bridge.coordinate_format();
     let vbap_cartesian_defaults = bridge.vbap_cartesian_defaults();
@@ -416,6 +411,9 @@ fn handle_stream_end(handler: &mut DecodeHandler, args: &RenderArgs) -> Result<(
     let spatial_renderer = handler.spatial_renderer.take();
     let audio_control = handler.audio_control.take();
     let input_control = handler.input_control.take();
+    // The decoders outlive the stream: without their DRC links, a mode picked
+    // after the first stream end never reached them.
+    let drc = std::mem::take(&mut handler.drc);
     let osc_sender = handler.telemetry.osc_sender.take();
     let audio_meter = handler.telemetry.audio_meter.take();
     let runtime = handler.runtime.clone();
@@ -425,6 +423,7 @@ fn handle_stream_end(handler: &mut DecodeHandler, args: &RenderArgs) -> Result<(
     handler.spatial_renderer = spatial_renderer;
     handler.audio_control = audio_control;
     handler.input_control = input_control;
+    handler.drc = drc;
     handler.telemetry.osc_sender = osc_sender;
     handler.telemetry.audio_meter = audio_meter;
     handler.runtime = runtime;
@@ -881,10 +880,10 @@ fn run_prepared_render(
         evaluation_mode_explicit,
     )?;
     handler.spatial.coordinate_format = prepared.coordinate_format;
-    handler.drc_mode_cmd_tx = Some(prepared.cmd_tx.clone());
+    handler.drc.cmd_tx = Some(prepared.cmd_tx.clone());
 
     let live_drc_mode = std::sync::Arc::new(std::sync::RwLock::new(String::new()));
-    handler.live_drc_mode = Some(live_drc_mode.clone());
+    handler.drc.shared = Some(live_drc_mode.clone());
 
     if let Some(renderer) = &handler.spatial_renderer {
         let ctrl = renderer.renderer_control();

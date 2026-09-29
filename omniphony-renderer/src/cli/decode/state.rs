@@ -133,10 +133,11 @@ pub struct SpatialState {
     /// Cached object↔channel declaration from the bridge (sparse emission),
     /// sorted by channel.
     pub object_channels: Vec<(u32, usize)>,
-    /// The bridge's declaration for the current labels, as last sent by the
-    /// decoder thread (`DecodedAudioData::declaration`): the family whose
-    /// placement policy applies, and the poses the format states. Kept
-    /// across segment resets: the decoder thread re-sends on a label change.
+    /// The bridge's declaration for the current labels, as last sent with a
+    /// decoded frame (`DecodedAudioData::declaration`, from the pipe decoder
+    /// thread or the PipeWire sink's bridge decoder): the family whose
+    /// placement policy applies, and the poses the format states. Kept across
+    /// segment resets: a segment start or a label change comes with a new one.
     pub source_family: SourceFamily,
     pub declared_poses: Vec<RChannelPose>,
     pub object_names: std::collections::HashMap<u32, String>,

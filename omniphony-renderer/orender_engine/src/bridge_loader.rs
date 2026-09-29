@@ -26,12 +26,16 @@ impl LoadedBridge {
     pub fn load_with_params(path: &Path) -> Result<Self> {
         let lib = BridgeLibRef::load_from_file(path)
             .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
-        install_bridge_host_log_sink(&lib);
-        let new_bridge = lib.new_bridge();
-        // strict mode removed from the host; bridges ignore the flag. The ABI
-        // parameter is kept for compatibility and always passed as `false`.
-        let bridge = new_bridge(false);
+        let bridge = open_bridge(&lib);
         Ok(Self { lib, bridge })
+    }
+
+    /// [`load_with_params`](Self::load_with_params), then ask the bridge for
+    /// `presentation`: an error when it refuses (see [`configure_presentation`]).
+    pub fn load_for_presentation(path: &Path, presentation: &str) -> Result<Self> {
+        let mut loaded = Self::load_with_params(path)?;
+        configure_presentation(&mut loaded.bridge, presentation)?;
+        Ok(loaded)
     }
 
     /// Set a bridge configuration option. Must be called before the first packet.
@@ -48,6 +52,27 @@ impl LoadedBridge {
     pub fn preferred_vbap_table_mode(&self) -> RVbapTableMode {
         self.bridge.preferred_vbap_table_mode()
     }
+}
+
+/// One more bridge instance from an already-loaded plugin, its logs routed to
+/// the host's: how every host opens one, from a path ([`LoadedBridge`]) or
+/// from the plugin a session already holds (the PipeWire sink's own bridge).
+pub fn open_bridge(lib: &BridgeLibRef) -> FormatBridgeBox {
+    install_bridge_host_log_sink(lib);
+    let new_bridge = lib.new_bridge();
+    // strict mode removed from the host; bridges ignore the flag. The ABI
+    // parameter is kept for compatibility and always passed as `false`.
+    new_bridge(false)
+}
+
+/// Ask `bridge` for `presentation` (before its first packet); an error naming
+/// the value when the bridge refuses it. Whether that is fatal is the host's
+/// call: the CLI stops, a player keeps the bridge's default.
+pub fn configure_presentation(bridge: &mut FormatBridgeBox, presentation: &str) -> Result<()> {
+    if !bridge.configure("presentation".into(), presentation.into()) {
+        bail!("Bridge rejected presentation value '{presentation}'");
+    }
+    Ok(())
 }
 
 pub fn install_bridge_host_log_sink(lib: &BridgeLibRef) {

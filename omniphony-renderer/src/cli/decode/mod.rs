@@ -3,6 +3,8 @@ mod config_resolution;
 pub mod decoder_thread;
 pub mod handler;
 mod idle_feed;
+#[cfg(target_os = "linux")]
+mod live_bridge;
 mod live_input;
 pub mod output;
 mod output_runtime_sync;
