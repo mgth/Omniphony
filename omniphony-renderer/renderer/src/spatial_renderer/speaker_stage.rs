@@ -17,9 +17,9 @@
 //! the cascade must give the virtual stage its own slew/interp storage.
 
 use crate::crossover::{
-    CrossoverBank, CrossoverStates, FirCrossoverBank, FreqBand, IntegerDelay, LR4CrossoverBank,
-    compute_bands,
+    CrossoverBank, CrossoverStates, FirCrossoverBank, FreqBand, LR4CrossoverBank, compute_bands,
 };
+use crate::delay_line::IntegerDelay;
 use crate::live_params::{CrossoverType, ObjectLiveParams, RampMode, RendererControl};
 use crate::ramp_strategy::{RampContext, RampStrategy};
 use crate::render_backend::MultiBandTable;

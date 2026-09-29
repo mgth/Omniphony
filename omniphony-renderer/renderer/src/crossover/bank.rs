@@ -141,51 +141,9 @@ impl CrossoverStates {
     }
 }
 
-/// Fixed whole-sample delay line — compensates unfiltered paths for the FIR
-/// crossover's constant latency. Zero steady-state allocations.
-pub struct IntegerDelay {
-    buf: Vec<f32>,
-    pos: usize,
-}
-
-impl IntegerDelay {
-    /// A delay of exactly `delay` samples (`delay ≥ 1`; use no delay line at
-    /// all for zero).
-    pub fn new(delay: usize) -> Self {
-        Self {
-            buf: vec![0.0; delay.max(1)],
-            pos: 0,
-        }
-    }
-
-    /// The configured delay in samples.
-    pub fn delay(&self) -> usize {
-        self.buf.len()
-    }
-
-    /// Push one sample in, take the sample from `delay()` samples ago out.
-    #[inline]
-    pub fn push(&mut self, input: f32) -> f32 {
-        let out = self.buf[self.pos];
-        self.buf[self.pos] = input;
-        self.pos += 1;
-        if self.pos == self.buf.len() {
-            self.pos = 0;
-        }
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn integer_delay_delays_by_exactly_n() {
-        let mut d = IntegerDelay::new(3);
-        let out: Vec<f32> = (1..=6).map(|v| d.push(v as f32)).collect();
-        assert_eq!(out, vec![0.0, 0.0, 0.0, 1.0, 2.0, 3.0]);
-    }
 
     #[test]
     fn ensure_states_recreates_on_engine_switch() {

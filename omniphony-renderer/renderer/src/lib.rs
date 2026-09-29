@@ -8,6 +8,7 @@ pub mod config;
 pub mod config_fields;
 pub mod crossover;
 pub mod delay_line;
+pub mod dsp;
 pub mod live_params;
 pub mod metering;
 pub mod object_test;

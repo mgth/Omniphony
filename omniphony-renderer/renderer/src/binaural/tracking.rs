@@ -329,7 +329,7 @@ impl HeadTracking {
         }
         // τ = −1 / (f_ref · ln s), so that 1 − exp(−(1/f_ref)/τ) = 1 − s.
         let tau = -1.0 / (SMOOTHING_REFERENCE_HZ * s.ln());
-        (1.0 - (-dt / tau).exp()).clamp(0.0, 1.0)
+        crate::dsp::iir::one_pole_smoothing(dt, tau).clamp(0.0, 1.0)
     }
 
     /// Capture the current raw orientation as the new "forward" reference.
