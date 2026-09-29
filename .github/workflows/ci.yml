@@ -188,6 +188,18 @@ jobs:
              -L target/debug -lorender -o target/debug/orender_smoke
           LD_LIBRARY_PATH=target/debug target/debug/orender_smoke
 
+      # orender_ffi's build.rs regenerates include/orender.h with cbindgen on
+      # every build (and fails the build in CI if it cannot), so after the
+      # builds above the checked-out header is what this commit's source
+      # generates. Any difference is a header that was not regenerated and
+      # committed with its source change — the file mpv compiles against.
+      - name: Check the committed C header is up to date
+        run: |
+          if ! git diff --exit-code -- omniphony-renderer/orender_ffi/include/orender.h; then
+            echo "orender_ffi/include/orender.h is stale: run 'cargo build -p orender_ffi' in omniphony-renderer and commit the regenerated header." >&2
+            exit 1
+          fi
+
       # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
       # The phase-2 replacement of the web frontend. It is a separate workspace
       # (the egui app and its toolkit-free core, omniphony-studio-core)

@@ -217,7 +217,12 @@ pub struct RDecodedFrame {
 pub struct RPushResult {
     /// Decoded frames produced from this chunk (may be empty).
     pub frames: RVec<RDecodedFrame>,
-    /// Non-empty if a fatal error occurred (strict mode only).
+    /// Non-empty when the bridge could not decode this chunk and did not
+    /// recover. The engine treats it as a decode error for the call (its
+    /// `process` fails); the live PipeWire input only logs it. Hosts create
+    /// bridges with `strict = false` (see [`BridgeLib::new_bridge`]), where a
+    /// bridge that recovers by resetting leaves this empty and sets
+    /// `did_reset` instead.
     pub error_message: RString,
     /// True when the internal pipeline was reset (seek/sync loss recovery).
     pub did_reset: bool,
@@ -376,8 +381,11 @@ pub type FormatBridgeBox = FormatBridge_TO<RBox<()>>;
 pub struct BridgeLib {
     /// Create a fresh bridge instance.
     ///
-    /// - `strict`: when true, parse/decode errors set `error_message` instead of
-    ///   silently resetting.
+    /// - `strict`: legacy flag, kept for ABI compatibility. The hosts in this
+    ///   repository always pass `false`, and a bridge may ignore it. A bridge
+    ///   that honours it reports parse/decode errors through
+    ///   [`RPushResult::error_message`] when it is `true`, instead of
+    ///   recovering silently.
     ///
     /// Format-specific options (e.g. substream selection) are set afterwards
     /// via [`FormatBridge::configure`] before the first [`FormatBridge::push_packet`].

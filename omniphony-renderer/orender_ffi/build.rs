@@ -30,6 +30,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=cbindgen.toml");
+    println!("cargo:rerun-if-env-changed=CI");
 
     // On Linux, stamp the release cdylib with a SemVer soname
     // (`liborender.so.<ABI major>`) so the packaged library participates in
@@ -71,9 +72,12 @@ fn main() {
             bindings.write_to_file(&out);
         }
         // Don't fail the cdylib build if header generation hits a snag during
-        // development; surface it as a warning instead.
-        Err(e) => {
+        // development; surface it as a warning instead. In CI it is an error:
+        // a stale committed header would otherwise pass the drift check that
+        // compares it against this build's output.
+        Err(e) if std::env::var_os("CI").is_none() => {
             println!("cargo:warning=cbindgen failed to generate orender.h: {e}");
         }
+        Err(e) => panic!("cbindgen failed to generate orender.h: {e}"),
     }
 }

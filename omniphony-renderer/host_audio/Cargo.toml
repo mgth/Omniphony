@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Host audio layer (output/input device I/O + their OSC control) layered above the orender engine; never a dependency of the engine or liborender"
+description = "OSC control surface for the host-owned audio output/input, layered above the orender engine; never a dependency of the engine or liborender"
 
 [dependencies]
 runtime_control.workspace = true
