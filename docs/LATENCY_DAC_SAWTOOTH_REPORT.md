@@ -370,7 +370,8 @@ To narrow down where the oscillation enters the pipeline, a generic
 diagnostic registry was added so any producer can publish a named metric
 to the Studio diag plot in 2 lines of Rust with no other plumbing change.
 
-- `sys/src/diag.rs` defines `DiagRegistry` (name → `Arc<AtomicU64>` of
+- `sys/src/diag.rs` (since moved to its own `diag` crate,
+  `diag/src/lib.rs`) defines `DiagRegistry` (name → `Arc<AtomicU64>` of
   `f64` bits) and `DiagAtomicHandle` (bundle a pre-allocated atomic with
   its schema for `register_external`).
 - `register_external` repoints the entry when the supplied `Arc` differs

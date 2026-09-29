@@ -300,7 +300,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                                 })
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            sys::live_log::emit_external_record(
+                            live_log::emit_external_record(
                                 log::Level::Warn,
                                 "orender::bridge",
                                 &format!(
@@ -409,7 +409,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     let sustained_input_deficit =
                         session_elapsed_secs >= 5.0 && session_rate < 0.98;
                     if pathological_gap && sustained_input_deficit {
-                        sys::live_log::emit_external_record(
+                        live_log::emit_external_record(
                             log::Level::Warn,
                             "orender::cli::decode::decoder_thread",
                             &format!(
@@ -454,7 +454,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     } else {
                         log::Level::Trace
                     };
-                    sys::live_log::emit_external_record(
+                    live_log::emit_external_record(
                         throughput_level,
                         "orender::cli::decode::decoder_thread",
                         &format!(

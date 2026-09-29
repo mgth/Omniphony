@@ -221,6 +221,7 @@ version = "0.2.4"
 dependencies = [
  "anyhow",
  "audio_output",
+ "diag",
  "libc",
  "log",
  "pipewire",
@@ -237,12 +238,12 @@ dependencies = [
  "anyhow",
  "cpal",
  "crossbeam",
+ "diag",
  "log",
  "parking_lot",
  "pipewire",
  "rubato 0.14.1",
  "serde",
- "sys",
 ]
 
 [[package]]
@@ -859,6 +860,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "diag"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dsp_fixtures"
 version = "0.1.0"
 dependencies = [
@@ -1302,6 +1311,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
+name = "live_log"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "log",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1576,8 +1593,10 @@ dependencies = [
  "bridge_api",
  "chrono",
  "clap",
+ "diag",
  "host_audio",
  "libc",
+ "live_log",
  "log",
  "orender_engine",
  "renderer",
@@ -1617,6 +1636,7 @@ dependencies = [
  "anyhow",
  "bridge_api",
  "example_backend",
+ "live_log",
  "log",
  "omniphony_geometry",
  "realfft",
@@ -1974,6 +1994,7 @@ version = "0.2.4"
 dependencies = [
  "anyhow",
  "chrono",
+ "live_log",
  "log",
  "omniphony-osc-contract",
  "omniphony_geometry",
@@ -1982,7 +2003,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "sys",
  "vergen-gitcl",
 ]
 
@@ -2253,11 +2273,8 @@ name = "sys"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "env_logger",
  "libc",
  "log",
- "serde",
- "serde_json",
  "windows",
  "windows-service",
 ]

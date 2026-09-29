@@ -483,7 +483,7 @@ impl OscSender {
                 // recompute threads this loop spawns, so it's re-serialized only
                 // when the topology actually changes (not per push/heartbeat).
                 let gaintable_cache = Arc::new(GaintableCache::new());
-                let mut last_log_seq = sys::live_log::records_since(0)
+                let mut last_log_seq = live_log::records_since(0)
                     .last()
                     .map(|record| record.seq)
                     .unwrap_or(0);

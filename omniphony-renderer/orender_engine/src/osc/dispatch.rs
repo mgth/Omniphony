@@ -484,16 +484,16 @@ pub(crate) fn handle_control_message(
                 sys::shutdown::request_resume();
             }
             RuntimeCommand::SetLogLevel(requested) => {
-                sys::live_log::set_runtime_level(requested);
+                live_log::set_runtime_level(requested);
                 broadcast_string(
                     socket,
                     clients,
                     osc_contract::STATE_LOG_LEVEL,
-                    sys::live_log::current_runtime_level_name(),
+                    live_log::current_runtime_level_name(),
                 );
                 log::info!(
                     "OSC: log_level → {}",
-                    sys::live_log::current_runtime_level_name()
+                    live_log::current_runtime_level_name()
                 );
             }
         }

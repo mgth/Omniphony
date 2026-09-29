@@ -21,6 +21,8 @@ The repository also contains the supporting runtime stack:
 - `bridge_api`: ABI-stable interface for external bridge plugins
 - `reference_bridge`: a reference WAV/PCM bridge that powers the bundled demo
 - `sys`: platform integration, including Windows service support
+- `diag`: diagnostic-metric registry published to the Studio diag plot
+- `live_log`: process logger with a runtime-adjustable level and a buffer of recent records streamed over OSC
 
 ## Status
 

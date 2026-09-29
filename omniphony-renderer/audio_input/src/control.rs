@@ -1,9 +1,9 @@
+use diag::DiagRegistry;
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
 };
-use sys::diag::DiagRegistry;
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum InputMode {

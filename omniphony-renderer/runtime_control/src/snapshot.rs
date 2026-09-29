@@ -596,7 +596,7 @@ pub fn build_live_state_bundle(
         OscPacket::Message(OscMessage {
             addr: crate::osc_contract::STATE_LOG_LEVEL.to_string(),
             args: vec![OscType::String(
-                sys::live_log::current_runtime_level_name().to_string(),
+                live_log::current_runtime_level_name().to_string(),
             )],
         }),
         OscPacket::Message(OscMessage {

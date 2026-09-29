@@ -15,8 +15,8 @@ log.workspace = true
 crossbeam = "0.8"
 parking_lot.workspace = true
 rubato = "0.14"
+diag.workspace = true
 serde.workspace = true
-sys.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire.workspace = true
