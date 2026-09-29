@@ -27,6 +27,18 @@ that module in sync.
 - Larger structured payloads (layout / speakers / audio / input config) are sent
   as a single **JSON string** argument.
 
+## Notification
+
+A write that changes state the config file holds marks the config dirty and
+tells **every** registered client, not only the sender: `/state/config/saved`
+drops to `0` at once, and the new value reaches everyone through the
+live-state snapshot (`/state/renderer`, `/state/speakers`, …). Discrete edits
+send the snapshot right away; slider-driven ones (generator / phantom params,
+placement entries, realtime gains) let it ride the OSC loop's poll, at most one
+snapshot per 200 ms tick. Registry options, head recenter / calibration and
+profile operations are also written to `config.yaml` immediately; everything
+else waits for `/control/save_config`.
+
 ---
 
 ## Control — client → engine
