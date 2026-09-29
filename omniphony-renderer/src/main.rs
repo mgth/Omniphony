@@ -12,8 +12,6 @@ use log::{error, info};
 use std::ffi::OsString;
 
 mod cli;
-mod input;
-pub(crate) mod timestamp;
 
 fn normalize_cli_args<I>(args: I) -> Vec<OsString>
 where
