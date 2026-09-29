@@ -126,7 +126,9 @@ pub(crate) fn handle_profile_message(
         return true;
     }
 
-    if let Err(e) = config.save(&path) {
+    // A deliberate profile mutation supersedes any pending live-handoff
+    // overlay: the shared commit writes the file and drops the sidecar.
+    if let Err(e) = runtime_control::persist::commit_config(&path, &config) {
         let message = format!("profile operation failed to save config: {e}");
         log::error!("OSC {addr} '{name}': {message}");
         broadcast_string(
@@ -137,8 +139,6 @@ pub(crate) fn handle_profile_message(
         );
         return true;
     }
-    // A deliberate profile mutation supersedes any pending live-handoff overlay.
-    renderer::config::discard_live_sidecar(&path);
 
     control.set_profiles_info(config.profiles_info());
 

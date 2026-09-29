@@ -1781,7 +1781,6 @@ fn interp_survives_speaker_cascade_width_switch() {
     let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
     {
         let ctrl = r.control.clone();
-        ctrl.set_requested_ramp_mode(crate::live_params::RampMode::Interp);
         let mut live = ctrl.live.write();
         live.ramp_mode = crate::live_params::RampMode::Interp;
         live.binaural.mode = crate::live_params::BinauralMode::Cascaded;

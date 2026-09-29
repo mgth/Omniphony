@@ -350,7 +350,6 @@ fn init_osc_runtime(
         );
         // Then the flag-backed settings, which the resolved args already fold
         // through flag > config > default.
-        ctrl.set_requested_ramp_mode(args.ramp_mode.into());
         {
             let mut live = ctrl.live.write();
             live.ramp_mode = args.ramp_mode.into();

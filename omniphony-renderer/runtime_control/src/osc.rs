@@ -85,13 +85,11 @@ pub struct ControlEffects {
     pub evaluation_only: bool,
     pub broadcasts: Vec<BroadcastUpdate>,
     pub log_message: Option<String>,
-    /// Head-tracking recenter reference `[w, x, y, z]` to write straight to
-    /// `config.yaml` (systematic save, like `surround_placement`). The engine
-    /// layer performs the I/O in `apply_control_effects`.
-    pub persist_head_center: Option<[f32; 4]>,
-    /// Sensor-to-head axis calibration `[w, x, y, z]` to write straight to
-    /// `config.yaml`, same mechanism (identity = drop the key).
-    pub persist_head_axes: Option<[f32; 4]>,
+    /// Config fields to write straight to `config.yaml` (a targeted,
+    /// sidecar-clearing write, see [`crate::persist::persist_ops`]) instead of
+    /// waiting for an explicit Save. The engine layer performs the I/O in
+    /// `apply_control_effects`.
+    pub persist: Vec<crate::persist::PersistOp>,
 }
 
 impl ControlEffects {
@@ -1532,11 +1530,10 @@ pub fn apply_simple_osc_control(
                 if step == renderer::binaural::CalibrationStep::Front {
                     // Looking ahead is the recenter: snap and persist it.
                     live.binaural.head_pose = renderer::binaural::HeadPose::identity();
-                    effects.persist_head_center =
-                        Some(live.binaural.tracking.reference.to_quat_array());
+                    effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
                 }
                 if done || step == renderer::binaural::CalibrationStep::Reset {
-                    effects.persist_head_axes = Some(live.binaural.tracking.axes.to_quat_array());
+                    effects.persist.push(crate::persist::PersistOp::HEAD_AXES);
                 }
                 effects.mark_dirty = true;
                 effects.log_message = Some(format!(
@@ -1561,7 +1558,7 @@ pub fn apply_simple_osc_control(
         live.binaural.head_pose = renderer::binaural::HeadPose::identity();
         // Persist the new reference to config right away so the centering survives
         // an engine rebuild (mpv track change) and a restart.
-        effects.persist_head_center = Some(live.binaural.tracking.reference.to_quat_array());
+        effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
         effects.mark_dirty = true;
         effects.log_message = Some("OSC: head/recenter".to_string());
         return Some(effects);
@@ -1742,7 +1739,6 @@ pub fn apply_simple_osc_control(
         }) else {
             return Some(effects);
         };
-        ctx.renderer.set_requested_ramp_mode(mode);
         ctx.renderer.live.write().ramp_mode = mode;
         effects.mark_dirty = true;
         effects.log_message = Some(format!("OSC: ramp_mode → {}", mode.as_str()));

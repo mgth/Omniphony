@@ -836,7 +836,6 @@ pub fn seed_runtime_state_from_render_config(
         .as_deref()
         .and_then(renderer::live_params::RampMode::from_str)
         .unwrap_or(renderer::live_params::RampMode::Frame);
-    control.set_requested_ramp_mode(ramp_mode);
     control.live.write().ramp_mode = ramp_mode;
 
     // Declared live options (registry rows) plus their param bags and the

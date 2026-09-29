@@ -1,7 +1,11 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode, RendererControl};
+use renderer::config::RenderConfig;
+use renderer::live_params::{
+    LiveEvaluationMode, LiveParams, PreferredEvaluationMode, RendererControl,
+};
 
 use crate::HostControlHandler;
 
@@ -32,10 +36,11 @@ pub fn save_live_config(
             .ok_or_else(|| anyhow!("no config path available"))?
     };
 
-    save_live_config_to_path(control, host, &path, &path)?;
-    control.mark_clean();
+    let mut config = renderer::config::Config::load_or_default(&path);
+    store_live_into_config(control, host, &mut config);
     // A deliberate save supersedes any pending live-handoff overlay.
-    renderer::config::discard_live_sidecar(&path);
+    commit_config(&path, &config)?;
+    control.mark_clean();
 
     Ok(SaveLiveConfigResult {
         path,
@@ -339,7 +344,7 @@ pub fn store_live_into_config(
         None
     };
     render.barycenter_localize = None;
-    renderer::config_fields::ramp_mode::store(render, control.requested_ramp_mode().as_str());
+    renderer::config_fields::ramp_mode::store(render, live.ramp_mode.as_str());
 
     drop(live);
 
@@ -348,5 +353,326 @@ pub fn store_live_into_config(
     // core never references those fields directly.
     if let Some(h) = host {
         h.amend_saved_config(render);
+    }
+}
+
+/// Write `config` to `path` as the new persistent config, then drop the
+/// live-handoff sidecar and overlay cache next to it.
+///
+/// Every deliberate write of `config.yaml` goes through here — the full save,
+/// a profile operation, a targeted per-field persist — because each one
+/// supersedes whatever a previous instance left in the sidecar when it fell
+/// back and tore down: a stale sidecar must not override the file on the next
+/// boot. (The shutdown handoff, which *writes* the sidecar, is the one writer
+/// that does not.)
+pub fn commit_config(path: &Path, config: &renderer::config::Config) -> Result<()> {
+    config.save(path)?;
+    renderer::config::discard_live_sidecar(path);
+    Ok(())
+}
+
+/// One targeted write-back: the config field(s) a live change must reach the
+/// file right away, instead of waiting for an explicit Save.
+///
+/// `store` reads the live value and writes it into the render section; like
+/// the registry's `OptionSpec::config_store`, a skip-if-default writer keeps a
+/// default value out of the file entirely. Carried in
+/// [`crate::osc::ControlEffects::persist`] by the handlers and performed by the
+/// engine, which owns the I/O.
+#[derive(Debug, Clone, Copy)]
+pub struct PersistOp {
+    /// What is written, for the log.
+    pub what: &'static str,
+    pub store: fn(&mut RenderConfig, &LiveParams),
+}
+
+impl PersistOp {
+    /// A declared live option (`renderer::options` registry row).
+    pub fn option(spec: &'static renderer::options::OptionSpec) -> Self {
+        Self {
+            what: spec.key,
+            store: spec.config_store,
+        }
+    }
+
+    /// The head-tracking recenter reference, so the chosen "forward" survives
+    /// an engine rebuild (mpv track change) and a restart.
+    pub const HEAD_CENTER: Self = Self {
+        what: "head recenter",
+        store: |render, live| {
+            let ht = head_tracking_config(render);
+            ht.reference_quat = non_identity_quat(live.binaural.tracking.reference);
+        },
+    };
+
+    /// The sensor-to-head axis calibration, next to the recenter reference.
+    pub const HEAD_AXES: Self = Self {
+        what: "head axes",
+        store: |render, live| {
+            let ht = head_tracking_config(render);
+            ht.axes_quat = non_identity_quat(live.binaural.tracking.axes);
+        },
+    };
+}
+
+fn head_tracking_config(render: &mut RenderConfig) -> &mut renderer::config::HeadTrackingConfig {
+    render
+        .binaural
+        .get_or_insert_with(Default::default)
+        .head_tracking
+        .get_or_insert_with(Default::default)
+}
+
+/// `None` at identity, so an "uncentered" / uncalibrated tracker leaves a
+/// clean config rather than persisting a no-op quaternion.
+fn non_identity_quat(pose: renderer::binaural::HeadPose) -> Option<[f32; 4]> {
+    (pose != renderer::binaural::HeadPose::identity()).then(|| pose.to_quat_array())
+}
+
+/// Perform targeted write-backs against the control's config file, if it has
+/// one. Best-effort: a failure is logged, never raised — the live change has
+/// already been applied, and the explicit Save still covers it.
+pub fn persist_ops(control: &RendererControl, ops: &[PersistOp]) {
+    if ops.is_empty() {
+        return;
+    }
+    let Some(path) = control.config_path() else {
+        return;
+    };
+    persist_render_fields_to_path(&path, |render| {
+        let live = control.live.read();
+        for op in ops {
+            (op.store)(render, &live);
+        }
+    });
+    let what: Vec<&str> = ops.iter().map(|op| op.what).collect();
+    log::debug!("persisted {} to {}", what.join(", "), path.display());
+}
+
+/// Targeted, sidecar-clearing config write: load the existing config, let
+/// `store` set *only* its fields (every other key survives, unknown ones
+/// included via the config's flattened `extra`), then [`commit_config`].
+/// Best-effort; logs on error.
+pub fn persist_render_fields_to_path(path: &Path, store: impl FnOnce(&mut RenderConfig)) {
+    let mut config = renderer::config::Config::load_or_default(path);
+    store(config.render.get_or_insert_with(Default::default));
+    if let Err(e) = commit_config(path, &config) {
+        log::warn!("failed to persist a live change to {}: {e}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renderer::live_params::ChannelRenderMode;
+    use std::path::PathBuf;
+
+    fn temp_config_path(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "orender-crm-persist-{}-{}",
+            std::process::id(),
+            tag
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("config.yaml")
+    }
+
+    #[test]
+    fn persist_channel_render_mode_writes_host_and_clears_sidecar() {
+        let path = temp_config_path("host");
+        // A config with an unknown render key and a known one, both must survive.
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  some_future_key: 42\n",
+        )
+        .unwrap();
+        // A stale host/live sidecar that must be removed by the persist.
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(&sidecar, "render:\n  channel_render_mode: host\n").unwrap();
+
+        persist_render_fields_to_path(&path, |render| {
+            renderer::config_fields::channel_render_mode::store(render, ChannelRenderMode::Host)
+        });
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("channel_render_mode: host"),
+            "host not written: {written}"
+        );
+        assert!(
+            written.contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost: {written}"
+        );
+        assert!(
+            written.contains("some_future_key: 42"),
+            "unknown key lost: {written}"
+        );
+        assert!(!sidecar.exists(), "live sidecar not removed");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_channel_render_mode_spatial_omits_key_and_clears_sidecar() {
+        let path = temp_config_path("spatial");
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  channel_render_mode: host\n",
+        )
+        .unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(&sidecar, "render:\n  channel_render_mode: host\n").unwrap();
+
+        persist_render_fields_to_path(&path, |render| {
+            renderer::config_fields::channel_render_mode::store(render, ChannelRenderMode::Spatial)
+        });
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        // Spatial is the default → skip-if-default omits the key entirely.
+        assert!(
+            !written.contains("channel_render_mode"),
+            "default spatial should omit the key: {written}"
+        );
+        assert!(
+            written.contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost: {written}"
+        );
+        assert!(!sidecar.exists(), "live sidecar not removed");
+
+        // Reloading yields the default (Spatial).
+        let cfg = renderer::config::Config::load_or_default(&path);
+        let mode = cfg
+            .render
+            .as_ref()
+            .and_then(renderer::config_fields::channel_render_mode::get)
+            .unwrap_or(ChannelRenderMode::Spatial);
+        assert_eq!(mode, ChannelRenderMode::Spatial);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_surround_placement_writes_back_and_clears_sidecar() {
+        use renderer::live_params::SurroundPlacement;
+        let path = temp_config_path("surround-back");
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  some_future_key: 42\n",
+        )
+        .unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(&sidecar, "render:\n  surround_placement: back\n").unwrap();
+
+        persist_render_fields_to_path(&path, |render| {
+            renderer::config_fields::surround_placement::store(render, SurroundPlacement::Back)
+        });
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("surround_placement: back"),
+            "back not written: {written}"
+        );
+        assert!(
+            written.contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost: {written}"
+        );
+        assert!(
+            written.contains("some_future_key: 42"),
+            "unknown key lost: {written}"
+        );
+        assert!(!sidecar.exists(), "live sidecar not removed");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_head_center_writes_reference_and_clears_sidecar() {
+        let path = temp_config_path("head-center");
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  binaural:\n    head_tracking:\n      osc_address: /android/rotationvector\n",
+        )
+        .unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(&sidecar, "render:\n  surround_placement: back\n").unwrap();
+
+        let control = crate::test_support::fixture_control();
+        let reference = [0.5, 0.5, 0.5, 0.5];
+        control.live.write().binaural.tracking.reference =
+            renderer::binaural::HeadPose::from_quat_array(reference);
+        control.set_config_path(path.clone());
+        persist_ops(&control, &[PersistOp::HEAD_CENTER]);
+
+        // Written under binaural.head_tracking, the existing osc_address kept,
+        // bridge_path preserved, and the stale sidecar removed.
+        let cfg = renderer::config::Config::load_or_default(&path);
+        let ht = cfg
+            .render
+            .as_ref()
+            .and_then(|r| r.binaural.as_ref())
+            .and_then(|b| b.head_tracking.as_ref())
+            .expect("head_tracking present");
+        assert_eq!(ht.reference_quat, Some(reference));
+        assert_eq!(ht.osc_address.as_deref(), Some("/android/rotationvector"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost"
+        );
+        assert!(!sidecar.exists(), "live sidecar not removed");
+
+        // Recentering back to identity drops the key entirely.
+        control.live.write().binaural.tracking.reference = renderer::binaural::HeadPose::identity();
+        persist_ops(&control, &[PersistOp::HEAD_CENTER]);
+        let cfg = renderer::config::Config::load_or_default(&path);
+        let ht = cfg
+            .render
+            .as_ref()
+            .and_then(|r| r.binaural.as_ref())
+            .and_then(|b| b.head_tracking.as_ref())
+            .expect("head_tracking present");
+        assert_eq!(ht.reference_quat, None, "identity should omit the key");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_surround_placement_side_omits_key_and_clears_sidecar() {
+        use renderer::live_params::SurroundPlacement;
+        let path = temp_config_path("surround-side");
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  surround_placement: back\n",
+        )
+        .unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(&sidecar, "render:\n  surround_placement: back\n").unwrap();
+
+        persist_render_fields_to_path(&path, |render| {
+            renderer::config_fields::surround_placement::store(render, SurroundPlacement::Side)
+        });
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        // Side is the default → skip-if-default omits the key entirely.
+        assert!(
+            !written.contains("surround_placement"),
+            "default side should omit the key: {written}"
+        );
+        assert!(
+            written.contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost: {written}"
+        );
+        assert!(!sidecar.exists(), "live sidecar not removed");
+
+        let cfg = renderer::config::Config::load_or_default(&path);
+        let placement = cfg
+            .render
+            .as_ref()
+            .and_then(renderer::config_fields::surround_placement::get)
+            .unwrap_or(SurroundPlacement::Side);
+        assert_eq!(placement, SurroundPlacement::Side);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

@@ -14,12 +14,35 @@ use rosc::{OscMessage, OscType};
 use crate::context::RuntimeControlContext;
 use crate::osc::{ControlEffects, Notify, parse_f32_arg};
 use crate::osc_contract;
+use crate::persist::PersistOp;
 
 /// Handle the live-state writes this module owns. `None` when `msg` is not one
 /// of them, so the dispatcher moves on.
 pub fn apply_live_control(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
     let addr = msg.addr.as_str();
     let control = &ctx.renderer;
+
+    // Declared live options (renderer::options registry): the generic setter
+    // `/control/option [key, value]` and the legacy per-option addresses both
+    // land on the same registry-driven path — validate, apply, mark dirty,
+    // bump the replan epoch, and commit PERSIST-flagged options to config.yaml
+    // right away (not only mark_dirty): a host fallback can route the next
+    // toggle to a *different* orender instance (the standby renderer that
+    // resumes on the port), so the file — written by whichever instance got
+    // the toggle — is what the next boot reads.
+    if addr == osc_contract::CONTROL_OPTION {
+        let Some(OscType::String(key)) = msg.args.first() else {
+            return Some(ControlEffects::default());
+        };
+        let Some(spec) = renderer::options::find(key) else {
+            log::warn!("OSC option: unknown key '{}'", key);
+            return Some(ControlEffects::default());
+        };
+        return Some(apply_option(ctx, spec, msg.args.get(1)));
+    }
+    if let Some(spec) = renderer::options::find_by_legacy_addr(addr) {
+        return Some(apply_option(ctx, spec, msg.args.first()));
+    }
 
     // Monitoring cadences live on RendererControl (the source of truth): both
     // CLI and embedded engine read them, they persist to config, and they are
@@ -85,6 +108,50 @@ pub fn apply_live_control(msg: &OscMessage, ctx: &RuntimeControlContext) -> Opti
     }
 
     None
+}
+
+/// Map a client-supplied OSC argument onto the registry's transport-agnostic
+/// raw value. `None` for shapes no option accepts (blobs, arrays, …).
+fn raw_option_value(arg: Option<&OscType>) -> Option<renderer::options::RawOptionValue<'_>> {
+    use renderer::options::RawOptionValue;
+    match arg? {
+        OscType::String(s) => Some(RawOptionValue::Str(s)),
+        OscType::Int(i) => Some(RawOptionValue::Number(*i as f64)),
+        OscType::Long(l) => Some(RawOptionValue::Number(*l as f64)),
+        OscType::Float(f) => Some(RawOptionValue::Number(*f as f64)),
+        OscType::Double(d) => Some(RawOptionValue::Number(*d)),
+        OscType::Bool(b) => Some(RawOptionValue::Bool(*b)),
+        _ => None,
+    }
+}
+
+/// Registry-driven application of a declared live option: validate + apply via
+/// `options::apply_to_control` (which marks dirty and bumps the replan epoch
+/// on a real change), then ask for the config write (`PERSIST`) and a
+/// live-state bundle. Invalid values are dropped with a warning, per the OSC
+/// contract.
+///
+/// The bundle goes out with the acknowledgement: without it a client that did
+/// not send the message never learns the value moved, and the one that did
+/// never learns what the setter made of it — an option clamped on arrival
+/// would keep displaying the number the user typed.
+fn apply_option(
+    ctx: &RuntimeControlContext,
+    spec: &'static renderer::options::OptionSpec,
+    arg: Option<&OscType>,
+) -> ControlEffects {
+    let Some(canonical) = raw_option_value(arg)
+        .and_then(|raw| renderer::options::apply_to_control(&ctx.renderer, spec, &raw))
+    else {
+        log::warn!("OSC option {}: rejected value", spec.key);
+        return ControlEffects::default();
+    };
+    let mut effects = ControlEffects::dirty(Notify::Snapshot);
+    if spec.flags.contains(renderer::options::OptionFlags::PERSIST) {
+        effects.persist.push(PersistOp::option(spec));
+    }
+    effects.log_message = Some(format!("OSC option {} set to '{}'", spec.key, canonical));
+    effects
 }
 
 fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> ControlEffects {
