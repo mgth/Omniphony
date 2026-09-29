@@ -214,6 +214,12 @@ pub struct StudioSpike {
     /// A close was asked for while a run was going; the run itself is the
     /// core's.
     pub(crate) auto_tune_quit_asked: bool,
+    /// The prompt held up by a close while the renderer has unsaved edits.
+    pub(crate) unsaved_quit: crate::panels::unsaved_quit::UnsavedQuit,
+    /// Why the last "save and quit" did not save, shown in the prompt.
+    pub(crate) unsaved_quit_error: Option<String>,
+    /// Reload was pressed with unsaved edits: the confirmation is open.
+    pub(crate) reload_confirm_open: bool,
     /// The host's own `SharedState`, kept for the whole session because the
     /// watchdog and the tracked child live in it: a fresh one per call would
     /// forget the renderer it just started.
@@ -503,6 +509,9 @@ impl StudioSpike {
             sofa_browser: None,
             script_editor: None,
             auto_tune_quit_asked: false,
+            unsaved_quit: Default::default(),
+            unsaved_quit_error: None,
+            reload_confirm_open: false,
         })
     }
 
@@ -883,6 +892,8 @@ impl StudioSpike {
         self.script_editor_modal(ctx);
         self.auto_tune_modal(ctx);
         self.auto_tune_quit_guard(ctx);
+        self.unsaved_quit_modal(ctx);
+        self.reload_confirm_modal(ctx);
         if !layout_eq(&layout, &self.layout) {
             self.layout = layout;
             self.prefs.side_panels = layout;
