@@ -8,9 +8,9 @@
 //!
 //! Supported input: RIFF/WAVE with PCM 16/24/32-bit integer or 32-bit float
 //! samples (including `WAVE_FORMAT_EXTENSIBLE`). An extensible header's
-//! `dwChannelMask` gives each channel its speaker; without one, channel counts
-//! 1/2/6/8/12 are mapped to canonical speaker labels and other counts are
-//! labelled best-effort.
+//! `dwChannelMask` gives each channel its speaker; without one, the channels are
+//! read in the same WAVE order, using the standard layout of counts 1/2/6/8/12
+//! and a best-effort 7.1.4 prefix for other counts.
 
 #![allow(non_local_definitions)]
 

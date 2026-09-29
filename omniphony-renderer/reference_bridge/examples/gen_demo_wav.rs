@@ -26,8 +26,11 @@ const AMP_RING: f32 = 0.5;
 const AMP_HEIGHT: f32 = 0.22;
 const FADE_S: f32 = 0.05;
 
-// 7.1.4 interleave order / canonical labels:
-// 0=L 1=R 2=C 3=LFE 4=Ls 5=Rs 6=Lb 7=Rb 8=Tfl 9=Tfr 10=Tbl 11=Tbr
+// 7.1.4 in the WAVE order (the `dwChannelMask` bit order: backs before sides):
+// 0=L 1=R 2=C 3=LFE 4=Lb 5=Rb 6=Ls 7=Rs 8=Tfl 9=Tfr 10=Tbl 11=Tbr
+/// FL FR FC LFE BL BR SL SR TFL TFR TBL TBR, written in the header so the file
+/// says which speaker each channel feeds (any tool reads it the same way).
+const CHANNEL_MASK: u32 = 0x2D63F;
 const CH_TFL: usize = 8;
 const CH_TFR: usize = 9;
 
@@ -36,10 +39,10 @@ const CH_TFR: usize = 9;
 const RING: &[(usize, f32)] = &[
     (2, 0.0),   // C   front
     (1, 30.0),  // R   front-right
-    (5, 90.0),  // Rs  side-right
-    (7, 150.0), // Rb  back-right
-    (6, 210.0), // Lb  back-left
-    (4, 270.0), // Ls  side-left
+    (7, 90.0),  // Rs  side-right
+    (5, 150.0), // Rb  back-right
+    (4, 210.0), // Lb  back-left
+    (6, 270.0), // Ls  side-left
     (0, 330.0), // L   front-left
 ];
 
@@ -82,10 +85,16 @@ fn main() {
         samples[n * CHANNELS + CH_TFR] += h;
     }
 
-    write_wav16(&out_path, SAMPLE_RATE, CHANNELS as u16, &samples)
-        .unwrap_or_else(|e| panic!("failed to write {}: {e}", out_path.display()));
+    write_wav16(
+        &out_path,
+        SAMPLE_RATE,
+        CHANNELS as u16,
+        CHANNEL_MASK,
+        &samples,
+    )
+    .unwrap_or_else(|e| panic!("failed to write {}: {e}", out_path.display()));
 
-    let bytes = 44 + samples.len() * 2;
+    let bytes = HEADER_BYTES + samples.len() * 2;
     println!(
         "wrote {} ({} frames, {} ch, {} Hz, {:.2}s, {} bytes)",
         out_path.display(),
@@ -119,11 +128,21 @@ fn ring_segment(theta: f32) -> (usize, f32, usize, f32) {
     (ch, az, ch, az + 360.0)
 }
 
-/// Write interleaved `f32` samples (range ~[-1,1]) as a canonical 16-bit PCM WAV.
+/// RIFF + `fmt ` (40-byte `WAVE_FORMAT_EXTENSIBLE` body) + `data` headers.
+const HEADER_BYTES: usize = 12 + 8 + 40 + 8;
+
+/// `KSDATAFORMAT_SUBTYPE_PCM`, the `SubFormat` GUID of integer PCM.
+const SUBFORMAT_PCM: [u8; 16] = [
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+];
+
+/// Write interleaved `f32` samples (range ~[-1,1]) as a 16-bit PCM
+/// `WAVE_FORMAT_EXTENSIBLE` WAV carrying `channel_mask`.
 fn write_wav16(
     path: &PathBuf,
     sample_rate: u32,
     channels: u16,
+    channel_mask: u32,
     samples: &[f32],
 ) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
@@ -135,16 +154,20 @@ fn write_wav16(
 
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
     f.write_all(b"RIFF")?;
-    f.write_all(&(36 + data_len).to_le_bytes())?;
+    f.write_all(&(HEADER_BYTES as u32 - 8 + data_len).to_le_bytes())?;
     f.write_all(b"WAVE")?;
     f.write_all(b"fmt ")?;
-    f.write_all(&16u32.to_le_bytes())?;
-    f.write_all(&1u16.to_le_bytes())?; // PCM
+    f.write_all(&40u32.to_le_bytes())?;
+    f.write_all(&0xFFFEu16.to_le_bytes())?; // WAVE_FORMAT_EXTENSIBLE
     f.write_all(&channels.to_le_bytes())?;
     f.write_all(&sample_rate.to_le_bytes())?;
     f.write_all(&byte_rate.to_le_bytes())?;
     f.write_all(&block_align.to_le_bytes())?;
-    f.write_all(&16u16.to_le_bytes())?;
+    f.write_all(&16u16.to_le_bytes())?; // bits per sample
+    f.write_all(&22u16.to_le_bytes())?; // extension size
+    f.write_all(&16u16.to_le_bytes())?; // valid bits per sample
+    f.write_all(&channel_mask.to_le_bytes())?;
+    f.write_all(&SUBFORMAT_PCM)?;
     f.write_all(b"data")?;
     f.write_all(&data_len.to_le_bytes())?;
     for &s in samples {
