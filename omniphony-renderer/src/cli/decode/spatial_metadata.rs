@@ -97,6 +97,9 @@ impl<'a> SpatialMetadataCoordinator<'a> {
         self.spatial.loudness_applied = false;
         if let Some(renderer) = self.spatial_renderer {
             orender_engine::spatial::begin_segment(renderer, self.osc_sender.as_deref_mut());
+            self.spatial
+                .fixed_processing
+                .reset(&renderer.renderer_control());
         }
     }
 

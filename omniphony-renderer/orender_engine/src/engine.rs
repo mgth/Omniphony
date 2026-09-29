@@ -214,19 +214,9 @@ pub struct Engine {
     /// with the CLI host — see [`crate::channel_objects`].
     stages: channel_objects::ChannelObjectStages,
 
-    /// Signature of the last published fixed-channel applicability state. The
-    /// JSON snapshot is rebuilt only when this changes, never every frame.
-    fixed_processing_sig: Option<FixedProcessingSig>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct FixedProcessingSig {
-    stream_has_objects: bool,
-    labels: Vec<RChannelLabel>,
-    options_epoch: u64,
-    output_has_height: bool,
-    phantom_count: usize,
-    height_count: usize,
+    /// The fixed-channel processing diagnostic, shared with the CLI host. The
+    /// JSON snapshot is rebuilt only when what it reports changes.
+    fixed_processing: channel_objects::FixedProcessingState,
 }
 
 /// Throttled (~1 Hz) aggregate of per-frame render/decode cost, correlated with
@@ -386,12 +376,11 @@ impl Engine {
                 .is_some()
                 .then(PerfLog::new),
             stages: channel_objects::ChannelObjectStages::new(),
-            fixed_processing_sig: None,
+            fixed_processing: Default::default(),
         };
         engine
-            .renderer
-            .renderer_control()
-            .set_fixed_channel_catalog(virtual_bed::fixed_channel_catalog_json());
+            .stages
+            .publish_static_state(&engine.renderer.renderer_control());
         engine
     }
 
@@ -403,9 +392,8 @@ impl Engine {
         factory: Box<dyn object_gen::ObjectGeneratorFactory>,
     ) {
         self.stages.register_generator(factory);
-        self.renderer
-            .renderer_control()
-            .set_object_generators_schema(self.stages.generator_listings_json());
+        self.stages
+            .publish_static_state(&self.renderer.renderer_control());
     }
 
     /// Record the hosting FFI shim's C-ABI version so the live-state snapshot
@@ -428,16 +416,11 @@ impl Engine {
         use std::net::SocketAddrV4;
         use std::str::FromStr;
 
-        // Publish the object-generator schema (built-ins + any host-registered
-        // out-of-tree generators) into RendererControl so the live-state bundle
-        // carries it to Studio.
-        self.renderer
-            .renderer_control()
-            .set_object_generators_schema(self.stages.generator_listings_json());
-        // Publish the phantom-extraction param schema for Studio's sliders.
-        self.renderer
-            .renderer_control()
-            .set_phantom_schema(channel_objects::ChannelObjectStages::phantom_schema_json());
+        // The generator catalogue (built-ins + any host-registered out-of-tree
+        // generators), the phantom-extraction schema and the fixed-channel
+        // catalogue, so the live-state bundle carries them to Studio.
+        self.stages
+            .publish_static_state(&self.renderer.renderer_control());
 
         let target = SocketAddrV4::from_str(&format!("{}:{}", opts.host, opts.port_out))
             .map_err(|e| anyhow!("invalid OSC target {}:{}: {e}", opts.host, opts.port_out))?;
@@ -827,93 +810,30 @@ impl Engine {
         self.last_object_count = 0;
         self.last_dialnorm = None;
         self.last_bed_labels.clear();
-        self.fixed_processing_sig = None;
-        self.renderer
-            .renderer_control()
-            .set_fixed_channel_processing(
-                r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
-                    .to_string(),
-            );
+        self.fixed_processing
+            .reset(&self.renderer.renderer_control());
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Publish the fixed-channel processing diagnostic for this frame's fixed
+    /// channels ([`channel_objects::FixedProcessingState`]).
     fn publish_fixed_processing_state(
         &mut self,
         stream_has_objects: bool,
         labels: &[RChannelLabel],
-        options_epoch: u64,
         output_has_height: bool,
-        phantom_count: usize,
-        height_count: usize,
-        synthetic_objects_enabled: bool,
-        phantom_mode: renderer::live_params::PhantomExtractMode,
-        height_generator_enabled: bool,
+        stages: channel_objects::StageSync,
     ) {
-        let unchanged = self.fixed_processing_sig.as_ref().is_some_and(|sig| {
-            sig.stream_has_objects == stream_has_objects
-                && sig.labels.as_slice() == labels
-                && sig.options_epoch == options_epoch
-                && sig.output_has_height == output_has_height
-                && sig.phantom_count == phantom_count
-                && sig.height_count == height_count
-        });
-        if unchanged {
-            return;
-        }
-
-        self.fixed_processing_sig = Some(FixedProcessingSig {
-            stream_has_objects,
-            labels: labels.to_vec(),
-            options_epoch,
-            output_has_height,
-            phantom_count,
-            height_count,
-        });
-
-        let phantom = if phantom_mode == renderer::live_params::PhantomExtractMode::Off {
-            "off"
-        } else if !synthetic_objects_enabled {
-            "master_off"
-        } else if stream_has_objects {
-            "object_stream"
-        } else if phantom_count > 0 {
-            "active"
-        } else {
-            "insufficient_channels"
-        };
-        let input_has_height = object_gen::input_has_height(labels);
-        let height = if !height_generator_enabled {
-            "off"
-        } else if !synthetic_objects_enabled {
-            "master_off"
-        } else if stream_has_objects {
-            "object_stream"
-        } else if input_has_height {
-            "input_has_height"
-        } else if !output_has_height {
-            "output_has_no_height"
-        } else if height_count > 0 {
-            "active"
-        } else {
-            "insufficient_channels"
-        };
-        let names: Vec<&str> = labels
-            .iter()
-            .map(|&label| bridge_api::labels::canonical_name(label))
-            .collect();
-        let state = serde_json::json!({
-            "stream": if stream_has_objects { "objects" } else { "fixed" },
-            "family": self.source_family.as_str(),
-            "label": self.source_label,
-            "labels": names,
-            "inputHasHeight": input_has_height,
-            "outputHasHeight": output_has_height,
-            "phantom": phantom,
-            "height": height,
-        });
-        self.renderer
-            .renderer_control()
-            .set_fixed_channel_processing(state.to_string());
+        self.fixed_processing.publish(
+            &self.renderer.renderer_control(),
+            &channel_objects::FixedProcessingReport {
+                stream_has_objects,
+                family: self.source_family,
+                source_label: &self.source_label,
+                labels,
+                output_has_height,
+                stages,
+            },
+        );
     }
 
     /// Take on the bridge's declaration — its source family, the poses it
@@ -1481,18 +1401,10 @@ impl Engine {
         }
 
         if self.has_objects {
-            let (master, phantom_mode, height_generator_enabled, options_epoch, output_has_height) = {
-                let control = self.renderer.renderer_control();
-                let live = control.live.read();
-                (
-                    live.synthetic_objects_enabled,
-                    live.phantom_extract_mode,
-                    !live.object_generator_id.trim().is_empty()
-                        && !live.object_generator_id.eq_ignore_ascii_case("none"),
-                    control.options_epoch(),
-                    object_gen::layout_has_height(&control.active_topology().speaker_layout),
-                )
-            };
+            let control = self.renderer.renderer_control();
+            let stages = channel_objects::ChannelObjectStages::selection_from_control(&control);
+            let output_has_height =
+                object_gen::layout_has_height(&control.active_topology().speaker_layout);
             let fixed_end = frame
                 .channel_labels
                 .iter()
@@ -1501,13 +1413,8 @@ impl Engine {
             self.publish_fixed_processing_state(
                 true,
                 &frame.channel_labels[..fixed_end],
-                options_epoch,
                 output_has_height,
-                0,
-                0,
-                master,
-                phantom_mode,
-                height_generator_enabled,
+                stages,
             );
         }
 
@@ -1591,13 +1498,8 @@ impl Engine {
             self.publish_fixed_processing_state(
                 false,
                 labels,
-                sync.options_epoch,
                 object_gen::layout_has_height(output_layout),
-                phantom_count,
-                synth_count,
-                sync.synthetic_objects_enabled,
-                sync.phantom_mode,
-                sync.generator_selected,
+                sync,
             );
             // Phantom objects first (channels [channel_count ..]), then the height
             // objects offset past them.

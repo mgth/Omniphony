@@ -476,6 +476,7 @@ fn handle_audio_message(
         handler.spatial.source_family =
             renderer::placement::SourceFamily::from_declared(&declaration.family);
         handler.spatial.declared_poses = declaration.poses;
+        handler.spatial.source_label = declaration.label;
     }
     if frame.is_new_segment {
         // Use the live-active backend (not the launch one) so a segment
