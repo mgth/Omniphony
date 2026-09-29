@@ -1,5 +1,6 @@
 use anyhow::Result;
-use bridge_api::{FormatBridgeBox, RChannelLabel, RChannelPose, RInputTransport};
+use bridge_api::{FormatBridgeBox, RInputTransport};
+use orender_engine::decode_step::{DeclarationTracker, DecodedPacket, decode_packet};
 use spdif::SpdifParser;
 use std::io;
 use std::sync::Arc;
@@ -37,21 +38,15 @@ pub enum DecodedSource {
 pub struct DecodedAudioData {
     pub source: DecodedSource,
     pub frame: bridge_api::RDecodedFrame,
-    /// The bridge's declaration, sent with the first frame whose labels
-    /// differ from the previous frame's (the bridge lives on the decoder
+    /// The bridge's declaration, sent with the frame a
+    /// [`DeclarationTracker`] says needs it (the bridge lives on the decoder
     /// thread; the handler keeps the last value it received).
-    pub declaration: Option<StreamDeclaration>,
+    pub declaration: Option<Declaration>,
     pub decode_time_ms: f32,
     pub sent_at: Instant,
 }
 
-/// What a bridge declares about a presentation beyond its labels: the
-/// source family (`FormatBridge::source_family`) and the poses the format
-/// states for its channels (`FormatBridge::fixed_channel_poses`).
-pub struct StreamDeclaration {
-    pub family: String,
-    pub poses: Vec<RChannelPose>,
-}
+pub use orender_engine::decode_step::Declaration;
 
 pub enum DecoderMessage {
     /// A fully decoded audio frame (PCM + metadata + dialogue level).
@@ -113,8 +108,9 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
         } = config;
 
         let mut frame_count: u64 = 0;
-        // Labels the bridge's declared poses were last read for.
-        let mut declared_labels: Vec<RChannelLabel> = Vec::new();
+        // When a frame carries the bridge's declaration: the same rule as the
+        // embedded engine's decode thread.
+        let mut declarations = DeclarationTracker::new();
         loop {
             // Check for shutdown — do not restart after SIGTERM/SIGINT.
             if sys::ShutdownHandle::is_requested() {
@@ -246,22 +242,25 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                 let mut emitted_duration_ms = 0.0f64;
                 let packet_count = packets.len();
                 for (transport, data_type, payload) in packets {
-                    let decode_started_at = Instant::now();
-                    let result =
-                        bridge.push_packet(payload.as_slice().into(), transport, data_type);
-                    let decode_time_ms = decode_started_at.elapsed().as_secs_f32() * 1000.0;
+                    let packet = decode_packet(
+                        &mut bridge,
+                        &payload,
+                        transport,
+                        data_type,
+                        Some(&mut declarations),
+                    );
+                    let per_frame_decode_time_ms = packet.decode_ms_per_frame();
+                    let packet_emitted_ms = packet.duration_secs() * 1000.0;
+                    let DecodedPacket {
+                        result,
+                        mut declaration,
+                        declaration_frame,
+                        ..
+                    } = packet;
                     let payload_len = payload.len();
                     let emitted_frames = result.frames.len();
                     let emitted_samples: u32 =
                         result.frames.iter().map(|frame| frame.sample_count).sum();
-                    let packet_emitted_ms: f64 = result
-                        .frames
-                        .iter()
-                        .map(|frame| {
-                            let rate = frame.sampling_frequency.max(1) as f64;
-                            frame.sample_count as f64 / rate * 1000.0
-                        })
-                        .sum();
                     emitted_duration_ms += packet_emitted_ms;
                     let metadata_frames = result
                         .frames
@@ -342,8 +341,6 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                         log::debug!("Bridge reset; keeping audio buffers intact");
                     }
 
-                    let frame_count_in_packet = result.frames.len().max(1) as f32;
-                    let per_frame_decode_time_ms = decode_time_ms / frame_count_in_packet;
                     let frames_in_packet = result.frames.len();
                     frames_emitted += frames_in_packet;
                     // Drive the output-pacer drain at the source clock: post this
@@ -355,19 +352,13 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                             let _ = drain_tx.send((packet_emitted_ms * 1000.0).round() as u64);
                         }
                     }
-                    for frame in result.frames {
+                    for (i, frame) in result.frames.into_iter().enumerate() {
                         frame_count += 1;
-                        let declaration =
-                            if frame.channel_labels.as_slice() != declared_labels.as_slice() {
-                                declared_labels.clear();
-                                declared_labels.extend_from_slice(frame.channel_labels.as_slice());
-                                Some(StreamDeclaration {
-                                    family: bridge.source_family().to_string(),
-                                    poses: bridge.fixed_channel_poses().into_iter().collect(),
-                                })
-                            } else {
-                                None
-                            };
+                        let declaration = if i == declaration_frame {
+                            declaration.take()
+                        } else {
+                            None
+                        };
                         let sent_at = Instant::now();
                         if tx
                             .send(Ok(DecoderMessage::AudioData(DecodedAudioData {
@@ -526,7 +517,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             // Reset bridge for next stream.
             log::info!("Continuous mode: resetting bridge and waiting for new data...");
             bridge.reset();
-            declared_labels.clear();
+            declarations.forget();
 
             std::thread::sleep(std::time::Duration::from_millis(100));
         }

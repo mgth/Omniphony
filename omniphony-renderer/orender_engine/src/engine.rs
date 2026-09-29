@@ -6,15 +6,14 @@
 //! inside mpv) feeds packets in and consumes rendered samples.
 
 use crate::bridge_loader::{LoadedBridge, resolve_bridge};
+use crate::decode_step::{Declaration, DeclarationTracker, DecodedPacket, decode_packet};
 use crate::events::Configuration;
 use crate::osc::{ObjectMeta, OscSender};
 use crate::overlay;
 use crate::renderer_build::{SpatialRendererParams, build_spatial_renderer};
 use crate::{channel_objects, object_gen, render, spatial, virtual_bed};
 use anyhow::{Result, anyhow, bail};
-use bridge_api::{
-    RChannelLabel, RChannelPose, RCoordinateFormat, RDecodedFrame, RInputTransport, RPushResult,
-};
+use bridge_api::{RChannelLabel, RChannelPose, RCoordinateFormat, RDecodedFrame, RInputTransport};
 use renderer::config::Config;
 use renderer::metering::AudioMeter;
 use renderer::placement::SourceFamily;
@@ -918,7 +917,7 @@ impl Engine {
             return;
         }
         let captured = self.packet_declaration.take();
-        let declaration = captured.unwrap_or_else(|| Declaration::read(&self.lock_bridge()));
+        let declaration = captured.unwrap_or_else(|| Declaration::read(&self.lock_bridge().bridge));
         self.declared_poses.clear();
         self.declared_poses.extend_from_slice(&declaration.poses);
         self.source_family = SourceFamily::from_declared(&declaration.family);
@@ -971,16 +970,16 @@ impl Engine {
             return self.process_pipelined(data, transport, data_type, pts);
         }
 
-        let decode_started = std::time::Instant::now();
-        let result = {
+        // Inline, the bridge is not on a later packet when a frame is rendered,
+        // so the declaration is read live when needed: no tracker.
+        let packet = {
             let mut bridge = self.lock_bridge();
-            let result = bridge.bridge.push_packet(data.into(), transport, data_type);
+            let packet = decode_packet(&mut bridge.bridge, data, transport, data_type, None);
             self.bridge_has_objects
                 .store(bridge.bridge.has_objects(), Ordering::Relaxed);
-            result
+            packet
         };
-        let decode_time_ms = decode_started.elapsed().as_secs_f32() * 1000.0;
-        self.render_decoded(result, decode_time_ms, None, pts)
+        self.render_decoded(packet, pts)
     }
 
     /// The host's timestamp for the next packet it pushes, carried with that
@@ -1002,11 +1001,15 @@ impl Engine {
     /// [`process`](Self::process), shared by the inline and threaded paths.
     fn render_decoded(
         &mut self,
-        result: RPushResult,
-        decode_time_ms: f32,
-        declaration: Option<Declaration>,
+        packet: DecodedPacket,
         pts: Option<i64>,
     ) -> Result<Vec<RenderedAudio>> {
+        let per_frame_decode_time_ms = packet.decode_ms_per_frame();
+        let DecodedPacket {
+            result,
+            declaration,
+            ..
+        } = packet;
         self.packet_declaration = declaration;
         if !result.error_message.is_empty() {
             bail!("bridge decode error: {}", result.error_message);
@@ -1025,15 +1028,6 @@ impl Engine {
             }
             overlay::clear();
         }
-
-        // The bridge decodes one packet into N frames synchronously; attribute the
-        // packet's decode cost evenly across its frames so the per-frame meter
-        // bundle reports a comparable figure to the CLI decoder thread.
-        let per_frame_decode_time_ms = if result.frames.is_empty() {
-            decode_time_ms
-        } else {
-            decode_time_ms / result.frames.len() as f32
-        };
 
         let mut out = Vec::with_capacity(result.frames.len());
         for frame in result.frames.iter() {
@@ -1278,8 +1272,7 @@ impl Engine {
                 None => return Ok(Vec::new()),
             }
         };
-        let mut out =
-            self.render_decoded(done.result, done.decode_ms, done.declaration, done.pts)?;
+        let mut out = self.render_decoded(done.packet, done.pts)?;
         // Still past the limit, because it has just come down: give back one
         // more, so the queue shrinks to it a packet per call. Waited for, not
         // polled: when decoding is the slower half the next one is never ready
@@ -1290,12 +1283,7 @@ impl Engine {
             .expect("pipelined without a worker");
         if worker.in_flight > limit {
             let extra = worker.wait()?;
-            out.extend(self.render_decoded(
-                extra.result,
-                extra.decode_ms,
-                extra.declaration,
-                extra.pts,
-            )?);
+            out.extend(self.render_decoded(extra.packet, extra.pts)?);
         }
         Ok(out)
     }
@@ -1305,8 +1293,7 @@ impl Engine {
     fn next_in_flight(&mut self) -> Result<Vec<RenderedAudio>> {
         while self.decode_worker.as_ref().is_some_and(|w| w.in_flight > 0) {
             let done = self.decode_worker.as_mut().unwrap().wait()?;
-            let out =
-                self.render_decoded(done.result, done.decode_ms, done.declaration, done.pts)?;
+            let out = self.render_decoded(done.packet, done.pts)?;
             if !out.is_empty() {
                 return Ok(out);
             }
@@ -1941,33 +1928,11 @@ struct DecodeJob {
 struct DecodeDone {
     /// The job's buffer, handed back to copy a later packet into.
     data: Vec<u8>,
-    result: RPushResult,
-    decode_ms: f32,
-    /// The bridge's declaration as it stood right after this packet, read
-    /// under the same lock as the decode; `None` when no frame in it can make
-    /// the engine re-read it.
-    declaration: Option<Declaration>,
+    /// With the bridge's declaration read under the same lock as the decode,
+    /// when a frame in it can make the engine re-read it.
+    packet: DecodedPacket,
     /// The job's [`DecodeJob::pts`].
     pts: Option<i64>,
-}
-
-/// What [`Engine::refresh_declared_poses`] reads from the bridge. The decode
-/// thread may already be decoding later packets when a frame is rendered, so
-/// it is captured with the packet instead of read live.
-struct Declaration {
-    poses: Vec<RChannelPose>,
-    family: String,
-    label: String,
-}
-
-impl Declaration {
-    fn read(bridge: &LoadedBridge) -> Self {
-        Self {
-            poses: bridge.bridge.fixed_channel_poses().into_iter().collect(),
-            family: bridge.bridge.source_family().as_str().to_owned(),
-            label: bridge.bridge.source_label().as_str().to_owned(),
-        }
-    }
 }
 
 /// The bridge's decode, one packet at a time, on a thread of its own.
@@ -2008,41 +1973,25 @@ impl DecodeWorker {
                 // The engine re-reads the declaration whenever a frame's labels
                 // differ from the previous frame's, and after anything that
                 // clears its segment state; capture it on the same triggers.
-                let mut last_labels: Vec<RChannelLabel> = Vec::new();
+                let mut declarations = DeclarationTracker::new();
                 for job in job_rx {
-                    let started = std::time::Instant::now();
+                    if job.fresh {
+                        declarations.forget();
+                    }
                     let mut guard = bridge.lock().unwrap_or_else(|e| e.into_inner());
-                    let result = guard.bridge.push_packet(
-                        job.data.as_slice().into(),
+                    let packet = decode_packet(
+                        &mut guard.bridge,
+                        &job.data,
                         job.transport,
                         job.data_type,
+                        Some(&mut declarations),
                     );
-                    let mut changed = job.fresh || result.did_reset;
-                    if changed {
-                        // The engine has forgotten the labels it read the
-                        // declaration for, so the next frame's are new to it
-                        // even when they are the ones before: this packet may
-                        // have none, and the declaration it carries is dropped
-                        // with it.
-                        last_labels.clear();
-                    }
-                    for frame in result.frames.iter() {
-                        if frame.is_new_segment || frame.channel_labels[..] != last_labels[..] {
-                            changed = true;
-                            last_labels.clear();
-                            last_labels.extend_from_slice(&frame.channel_labels);
-                        }
-                    }
-                    let declaration = changed.then(|| Declaration::read(&guard));
                     has_objects.store(guard.bridge.has_objects(), Ordering::Relaxed);
                     drop(guard);
-                    let decode_ms = started.elapsed().as_secs_f32() * 1000.0;
                     if done_tx
                         .send(DecodeDone {
                             data: job.data,
-                            result,
-                            decode_ms,
-                            declaration,
+                            packet,
                             pts: job.pts,
                         })
                         .is_err()
@@ -2124,13 +2073,7 @@ impl DecodeWorker {
     /// Count a packet out: its audio towards the average, its buffer to reuse.
     fn returned(&mut self, mut done: DecodeDone) -> DecodeDone {
         self.in_flight -= 1;
-        let secs: f64 = done
-            .result
-            .frames
-            .iter()
-            .filter(|f| f.sampling_frequency > 0)
-            .map(|f| f64::from(f.sample_count) / f64::from(f.sampling_frequency))
-            .sum();
+        let secs = done.packet.duration_secs();
         self.packet_secs = if self.packet_secs > 0.0 {
             self.packet_secs + (secs - self.packet_secs) / self.depth as f64
         } else {
