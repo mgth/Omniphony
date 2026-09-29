@@ -183,37 +183,38 @@ impl WavBridge {
 /// more than two channels, in the WAVE order, where a 7.1 is
 /// `FL FR FC LFE BL BR SL SR` — backs before sides.
 ///
-/// Without a mask, known counts use this bridge's own interleave order (the
-/// one `examples/gen_demo_wav.rs` writes, sides before backs); any
-/// unrecognised count labels as many leading channels as it can and marks the
-/// rest `Unknown` (still rendered, just without a canonical position).
+/// Without a mask, the channels are read in that same WAVE order: known counts
+/// take their standard layout's mask (see [`default_channel_mask`]), so a file
+/// means the same thing with or without one. Any other count labels its leading
+/// channels in the 7.1.4 WAVE order and marks the rest `Unknown` (still
+/// rendered, just without a canonical position).
 fn channel_labels(channel_count: u16, channel_mask: u32) -> Vec<RChannelLabel> {
-    use RChannelLabel::*;
-    if channel_mask != 0 {
-        return labels_from_mask(channel_count, channel_mask);
-    }
-    let canonical: &[RChannelLabel] = match channel_count {
-        1 => &[C],
-        2 => &[L, R],
-        6 => &[L, R, C, LFE, Ls, Rs],
-        8 => &[L, R, C, LFE, Ls, Rs, Lb, Rb],
-        12 => &[L, R, C, LFE, Ls, Rs, Lb, Rb, Tfl, Tfr, Tbl, Tbr],
-        _ => &[],
+    let mask = match channel_mask {
+        0 => default_channel_mask(channel_count),
+        mask => mask,
     };
-    if !canonical.is_empty() {
-        return canonical.to_vec();
-    }
-    // Best-effort fallback for unsupported counts.
-    const BEST_EFFORT: &[RChannelLabel] = &[L, R, C, LFE, Ls, Rs, Lb, Rb, Tfl, Tfr, Tbl, Tbr];
-    (0..channel_count as usize)
-        .map(|i| {
-            BEST_EFFORT
-                .get(i)
-                .copied()
-                .unwrap_or(RChannelLabel::Unknown)
-        })
-        .collect()
+    labels_from_mask(channel_count, mask)
 }
+
+/// `dwChannelMask` of the standard layout for a channel count, for files that
+/// carry none: mono, stereo, 5.1 (sides), 7.1 and 7.1.4 in the WAVE order.
+/// Other counts fall back to the 7.1.4 mask, whose positions label as many
+/// leading channels as there are.
+fn default_channel_mask(channel_count: u16) -> u32 {
+    match channel_count {
+        1 => MASK_MONO,
+        2 => MASK_STEREO,
+        6 => MASK_5_1_SIDE,
+        8 => MASK_7_1,
+        _ => MASK_7_1_4,
+    }
+}
+
+const MASK_MONO: u32 = 0x4; // FC
+const MASK_STEREO: u32 = 0x3; // FL FR
+const MASK_5_1_SIDE: u32 = 0x60F; // FL FR FC LFE SL SR
+const MASK_7_1: u32 = 0x63F; // FL FR FC LFE BL BR SL SR
+const MASK_7_1_4: u32 = 0x2D63F; // 7.1 + TFL TFR TBL TBR
 
 /// Speaker positions of the `dwChannelMask` bits, lowest bit first (the order
 /// the channels are interleaved in). `SPEAKER_TOP_BACK_CENTER` has no
@@ -388,15 +389,20 @@ mod tests {
         use RChannelLabel::*;
         assert_eq!(channel_labels(2, 0), vec![L, R]);
         assert_eq!(channel_labels(6, 0), vec![L, R, C, LFE, Ls, Rs]);
+        // Without a mask, 7.1 and 7.1.4 read in the WAVE order (backs
+        // before sides), exactly like the same file with its mask.
+        assert_eq!(channel_labels(8, 0), vec![L, R, C, LFE, Lb, Rb, Ls, Rs]);
+        assert_eq!(channel_labels(8, 0), channel_labels(8, 0x63F));
         assert_eq!(
             channel_labels(12, 0),
-            vec![L, R, C, LFE, Ls, Rs, Lb, Rb, Tfl, Tfr, Tbl, Tbr]
+            vec![L, R, C, LFE, Lb, Rb, Ls, Rs, Tfl, Tfr, Tbl, Tbr]
         );
-        // Unsupported count: best-effort prefix then Unknown.
-        let three = channel_labels(3, 0);
-        assert_eq!(three, vec![L, R, C]);
-        let seven = channel_labels(7, 0);
-        assert_eq!(&seven[..6], &[L, R, C, LFE, Ls, Rs]);
+        assert_eq!(channel_labels(12, 0), channel_labels(12, 0x2D63F));
+        assert_eq!(channel_labels(1, 0), vec![C]);
+        // Unsupported count: 7.1.4 WAVE-order prefix, then Unknown.
+        assert_eq!(channel_labels(3, 0), vec![L, R, C]);
+        assert_eq!(channel_labels(7, 0), vec![L, R, C, LFE, Lb, Rb, Ls]);
+        assert_eq!(&channel_labels(14, 0)[12..], &[Unknown, Unknown]);
     }
 
     #[test]
