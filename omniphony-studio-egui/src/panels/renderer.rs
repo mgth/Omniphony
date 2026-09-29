@@ -180,7 +180,7 @@ const METRICS: &[(&str, &str)] = &[
 
 impl StudioSpike {
     pub(crate) fn renderer_section(&mut self, ui: &mut Ui) {
-        let (summary, embedded) = {
+        let (summary, embedded, decode_thread) = {
             let live = self.host.read();
             let mode = live
                 .app
@@ -215,6 +215,7 @@ impl StudioSpike {
                     tf("renderer.summary", &[("mode", evaluation_label(&mode))])
                 ),
                 embedded,
+                live.option_bool("decode_thread").unwrap_or(false),
             )
         };
         // The gauge's bar sits in the header, as `#rendererPerfWrap` does, so
@@ -234,6 +235,22 @@ impl StudioSpike {
             // The embedded host applies the output mode at player start.
             if embedded {
                 widgets::note(ui, t("outputMode.mpvNote"));
+            }
+            // Where decoding runs: a choice for the player's embedded engine
+            // only, since the standalone renderer always decodes on a thread
+            // of its own.
+            if embedded {
+                let mut on = decode_thread;
+                if widgets::switch_row_help(
+                    ui,
+                    t("renderer.decodeThreadLabel"),
+                    "help.decodeThread",
+                    &mut on,
+                ) {
+                    self.set_option("decode_thread", serde_json::json!(on));
+                }
+            } else {
+                widgets::note(ui, t("renderer.decodeThreadStandaloneNote"));
             }
             ui.add_space(2.0);
             if let Some(tab) = widgets::tab_bar(

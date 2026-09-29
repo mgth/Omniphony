@@ -61,7 +61,16 @@ not know that key" — treat it as feature-unavailable, not as an error.
 
 | Key | Values | Since | Meaning |
 |---|---|---|---|
-| `decode_thread` | `on`, `off` (default) | 0.10 | Decode on a thread of its own, overlapping the render, so the two share the work across two cores. A packet's audio then comes back from a later `orender_process` call — one packet's per call, about 30 ms of audio behind, or one packet if that is longer — or from `orender_drain`, so only a host that takes its timestamps from `out_pts_us` and drains at end of stream should turn it on. Switch it while nothing is in flight — right after `orender_create`, after `orender_reset`, or once `orender_drain` has returned 0 frames; turning it off with packets still on the thread returns -2. |
+| `decode_thread` | `on`, `off` (default), `live` (0.11) | 0.10 | Decode on a thread of its own, overlapping the render, so the two share the work across two cores. A packet's audio then comes back from a later `orender_process` call — one packet's per call, about 30 ms of audio behind, or one packet if that is longer; occasionally two while the queue shrinks, so size the buffer for two — or from `orender_drain`, so only a host that stamps its output from `orender_output_packet_pts` (or `out_pts_us`) and drains at end of stream should turn it on. `on`/`off` force it: switch them while nothing is in flight — right after `orender_create`, after `orender_reset`, or once `orender_drain` has returned 0 frames; turning it off with packets still on the thread returns -2. `live` hands the choice to the user's `render.decode_thread` option (config.yaml, Studio, OSC); the engine follows it at packet boundaries, and when it is turned off mid-stream the thread winds down a packet per call before decoding goes back inline. |
+
+## Output timestamps
+
+`orender_process` carries its `pts_us` argument (read since 0.11) with the
+packet's audio. `orender_output_packet_pts` then gives the `pts_us` of the
+packet whose audio the last `orender_process` or `orender_drain` call returned
+(the first one's, when a call returns two), or 0 when it returned none. Inline
+that is the packet just passed in; with `decode_thread` on it is an older one,
+which is what a host that stamps its output with its input timestamps needs.
 
 ## End of stream
 

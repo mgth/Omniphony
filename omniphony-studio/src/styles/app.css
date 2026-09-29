@@ -2753,7 +2753,11 @@ body:not(.speaker-tab-test) #speakerEditTabTest {
   display: none;
 }
 
-/* The mode is locked at player start only under the embedded (mpv) host. */
+/* The mode is locked at player start only under the embedded (mpv) host, and
+   only that host's engine lets the user choose where decoding runs: the
+   standalone renderer always decodes on a thread of its own. */
+body:not(.cap-embedded) .decode-thread-embedded,
+body.cap-embedded .decode-thread-standalone-note,
 body:not(.cap-embedded) .output-mode-mpv-note {
   display: none;
 }

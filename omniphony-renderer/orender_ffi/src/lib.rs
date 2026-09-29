@@ -10,7 +10,9 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-use orender_engine::{start_degraded_reporter, DegradedReporter, Engine, OscOptions};
+use orender_engine::{
+    start_degraded_reporter, DecodeThreadMode, DegradedReporter, Engine, OscOptions,
+};
 
 use anyhow::Result;
 use std::ffi::CStr;
@@ -213,7 +215,11 @@ pub const ORENDER_ABI_MAJOR: u32 = 0;
 //     of its own, overlapping the render; a packet's audio may then come back
 //     from a later call) and orender_drain (render what the engine still holds
 //     at end of stream, one packet's audio per call).
-pub const ORENDER_ABI_MINOR: u32 = 10;
+// 11: added the `live` value of the `decode_thread` key (follow the live
+//     option — config.yaml, Studio, OSC — switching at packet boundaries) and
+//     orender_output_packet_pts (the host timestamp of the packet whose audio
+//     the last call returned); orender_process now reads its pts_us argument.
+pub const ORENDER_ABI_MINOR: u32 = 11;
 
 /// Speaker-position labels written by [`orender_channel_layout`] and
 /// [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -735,7 +741,7 @@ pub unsafe extern "C" fn orender_process(
     r: *mut OrenderRenderer,
     pkt: *const u8,
     pkt_len: usize,
-    _pts_us: i64,
+    pts_us: i64,
     out: *mut f32,
     out_cap_samples: usize,
     out_frames: *mut usize,
@@ -749,6 +755,7 @@ pub unsafe extern "C" fn orender_process(
         let engine = &mut *(r as *mut Engine);
         let data = std::slice::from_raw_parts(pkt, pkt_len);
 
+        engine.set_input_pts(Some(pts_us));
         let chunks = match engine.process_raw_within(data, out_cap_samples) {
             Ok(Some(c)) => c,
             Ok(None) => {
@@ -886,6 +893,39 @@ unsafe fn emit_chunks(
             .unwrap_or(0);
     }
     0
+}
+
+/// The `pts_us` the host passed to [`orender_process`] with the packet whose
+/// audio the last [`orender_process`] or [`orender_drain`] call returned.
+///
+/// Inline, that is the packet the call was given. With the `decode_thread`
+/// option on, a packet's audio comes back a few calls later, and this says
+/// which packet it was, so a host that stamps its output with its input
+/// timestamps stamps it right. When a call returns two packets' audio, it is
+/// the first one's.
+///
+/// Returns 1 and writes `*pts_us` when the last call returned audio; 0 when it
+/// returned none (nothing ready yet, a short buffer, end of drain) and after
+/// [`orender_reset`]; -1 on a NULL argument.
+#[no_mangle]
+pub unsafe extern "C" fn orender_output_packet_pts(
+    r: *const OrenderRenderer,
+    pts_us: *mut i64,
+) -> c_int {
+    catch_unwind(AssertUnwindSafe(|| {
+        if r.is_null() || pts_us.is_null() {
+            return -1;
+        }
+        let engine = &*(r as *const Engine);
+        match engine.last_output_input_pts() {
+            Some(pts) => {
+                *pts_us = pts;
+                1
+            }
+            None => 0,
+        }
+    }))
+    .unwrap_or(-1)
 }
 
 /// Render the spatial overlay for the given OSD resolution and copy the ASS
@@ -1317,16 +1357,20 @@ pub extern "C" fn orender_build_id() -> *const c_char {
 ///
 /// Keys:
 ///
-/// - `decode_thread` = `on` | `off` (ABI 0.10; default `off`): decode on a
-///   thread of its own, overlapping the render, so the two share the work
-///   across two cores. With it on, a packet's audio comes back from a later
-///   [`orender_process`] call (one packet's per call, about 30 ms of audio
-///   behind, or one packet if that is longer) or from [`orender_drain`], so
-///   only a host that takes its timestamps from `*out_pts_us` and drains at
-///   end of stream should turn it on. Switch it while nothing is in flight:
-///   right after [`orender_create`], after [`orender_reset`], or once
-///   [`orender_drain`] has returned 0 frames; turning it off with packets
-///   still on the thread returns -2.
+/// - `decode_thread` = `on` | `off` | `live` (ABI 0.10, `live` since 0.11;
+///   default `off`): decode on a thread of its own, overlapping the render, so
+///   the two share the work across two cores. With it on, a packet's audio
+///   comes back from a later [`orender_process`] call (one packet's per call,
+///   about 30 ms of audio behind, or one packet if that is longer) or from
+///   [`orender_drain`], so only a host that takes its timestamps from
+///   `*out_pts_us` or [`orender_output_packet_pts`] and drains at end of
+///   stream should turn it on. `on` and `off` force it: switch them while
+///   nothing is in flight — right after [`orender_create`], after
+///   [`orender_reset`], or once [`orender_drain`] has returned 0 frames;
+///   turning it off with packets still on the thread returns -2. `live` hands
+///   the choice to the user's `render.decode_thread` option (config.yaml,
+///   Studio, OSC), which the engine then follows at packet boundaries, winding
+///   the thread down a packet per call when it is turned off mid-stream.
 #[no_mangle]
 pub unsafe extern "C" fn orender_set_option(
     r: *mut OrenderRenderer,
@@ -1343,12 +1387,13 @@ pub unsafe extern "C" fn orender_set_option(
         let engine = &mut *(r as *mut Engine);
         match key {
             "decode_thread" => {
-                let on = match value {
-                    "on" => true,
-                    "off" => false,
+                let mode = match value {
+                    "on" => DecodeThreadMode::On,
+                    "off" => DecodeThreadMode::Off,
+                    "live" => DecodeThreadMode::Live,
                     _ => return -2,
                 };
-                match engine.set_decode_thread(on) {
+                match engine.set_decode_thread_mode(mode) {
                     Ok(()) => 0,
                     Err(e) => {
                         eprintln!("orender_set_option decode_thread={value}: {e:#}");

@@ -11,7 +11,8 @@ use abi_stable::{prefix_type::PrefixTypeTrait, sabi_trait::prelude::TD_Opaque};
 use bridge_api::*;
 use orender_engine::bridge_loader::LoadedBridge;
 use orender_engine::renderer_build::{SpatialRendererParams, build_spatial_renderer};
-use orender_engine::{Engine, RenderedAudio};
+use orender_engine::{DecodeThreadMode, Engine, RenderedAudio};
+use renderer::live_params::RendererControl;
 use renderer::speaker_layout::SpeakerLayout;
 
 /// A packet is `[frames lo, frames hi, decode ms]`: one stereo frame of that
@@ -102,6 +103,14 @@ extern "C" fn log_sink(_: usize) {}
 /// An engine on a [`ScriptedBridge`] with the decode thread on, and the log of
 /// the bridge's declaration reads.
 fn engine() -> (Engine, Arc<Mutex<Vec<String>>>) {
+    let (mut engine, reads, _) = engine_with_control();
+    engine.set_decode_thread(true).unwrap();
+    (engine, reads)
+}
+
+/// An engine on a [`ScriptedBridge`], decode thread off, with its live
+/// parameters' control.
+fn engine_with_control() -> (Engine, Arc<Mutex<Vec<String>>>, Arc<RendererControl>) {
     let declaration_reads = Arc::<Mutex<Vec<String>>>::default();
     let bridge = FormatBridge_TO::from_value(
         ScriptedBridge {
@@ -118,14 +127,14 @@ fn engine() -> (Engine, Arc<Mutex<Vec<String>>>) {
         None,
     )
     .unwrap();
+    let control = renderer.renderer_control();
     let lib = BridgeLib {
         new_bridge,
         set_host_log_sink: log_sink,
     }
     .leak_into_prefix();
-    let mut engine = Engine::new(LoadedBridge { lib, bridge }, renderer, 48_000);
-    engine.set_decode_thread(true).unwrap();
-    (engine, declaration_reads)
+    let engine = Engine::new(LoadedBridge { lib, bridge }, renderer, 48_000);
+    (engine, declaration_reads, control)
 }
 
 fn frames(engine: &mut Engine, chunks: Vec<RenderedAudio>) -> usize {
@@ -235,5 +244,108 @@ fn after_a_seek_the_declaration_is_read_with_the_packet() {
     assert!(
         reads.iter().all(|t| t == "orender-decode"),
         "read off the decode thread: {reads:?}"
+    );
+}
+
+/// Each packet's audio carries the timestamp the host gave that packet, even
+/// when it comes out several calls later: the first block of a packet has it,
+/// and a packet of `n` samples starts `n` samples after the one before.
+#[test]
+fn a_packets_audio_carries_its_own_timestamp() {
+    let (mut engine, _) = engine();
+    let mut stamped = Vec::new();
+    let mut collect = |engine: &mut Engine, chunks: Vec<RenderedAudio>| {
+        for c in &chunks {
+            if let Some(pts) = c.input_pts_us {
+                stamped.push((pts, c.sample_pos));
+            }
+        }
+        engine.recycle(chunks);
+    };
+    for i in 0..60i64 {
+        engine.set_input_pts(Some(i * 1000));
+        let chunks = engine.process_raw(&packet(40, 1)).unwrap();
+        collect(&mut engine, chunks);
+    }
+    loop {
+        let chunks = engine.drain().unwrap();
+        if chunks.is_empty() {
+            break;
+        }
+        collect(&mut engine, chunks);
+    }
+    assert_eq!(stamped.len(), 60, "one stamp per packet");
+    for (pts, sample_pos) in stamped {
+        assert_eq!(sample_pos, (pts / 1000) as u64 * 40, "packet {pts}");
+    }
+}
+
+/// With the host leaving it to the live option, the engine starts the thread
+/// when the option turns on and, when it turns off with packets in flight,
+/// winds the thread down a packet per call and goes back inline — losing no
+/// audio and reordering none.
+#[test]
+fn the_live_option_switches_the_thread_both_ways_mid_stream() {
+    let (mut engine, _, control) = engine_with_control();
+    engine
+        .set_decode_thread_mode(DecodeThreadMode::Live)
+        .unwrap();
+    assert!(
+        !engine.decode_thread(),
+        "off until the option says otherwise"
+    );
+
+    let mut positions = Vec::new();
+    let mut run = |engine: &mut Engine, n: usize| {
+        for _ in 0..n {
+            let chunks = engine.process_raw(&packet(40, 1)).unwrap();
+            positions.extend(chunks.iter().map(|c| (c.sample_pos, c.n_frames)));
+            engine.recycle(chunks);
+        }
+    };
+    run(&mut engine, 20);
+    assert!(!engine.decode_thread());
+
+    control.live.write().decode_thread = true;
+    run(&mut engine, 60);
+    assert!(engine.decode_thread(), "on at the next packet");
+
+    control.live.write().decode_thread = false;
+    run(&mut engine, 1);
+    assert!(
+        engine.decode_thread(),
+        "still winding down with packets in flight"
+    );
+    run(&mut engine, 80);
+    assert!(
+        !engine.decode_thread(),
+        "inline again once the queue emptied"
+    );
+    assert!(
+        engine.drain().unwrap().is_empty(),
+        "nothing left on a thread"
+    );
+
+    // 161 packets of 40 samples, in order, none missing or repeated.
+    let expected: Vec<(u64, usize)> = (0..161).map(|i| (i * 40, 40)).collect();
+    assert_eq!(positions, expected);
+}
+
+/// The host keeps the last word: forcing the thread off ignores the option.
+#[test]
+fn a_host_that_forces_the_thread_ignores_the_option() {
+    let (mut engine, _, control) = engine_with_control();
+    control.live.write().decode_thread = true;
+    engine
+        .set_decode_thread_mode(DecodeThreadMode::Off)
+        .unwrap();
+    feed(&mut engine, (0..10).map(|_| packet(40, 0)));
+    assert!(!engine.decode_thread());
+    engine
+        .set_decode_thread_mode(DecodeThreadMode::Live)
+        .unwrap();
+    assert!(
+        engine.decode_thread(),
+        "live mode picks the option up at once"
     );
 }

@@ -29,7 +29,7 @@ pub mod virtual_bed;
 
 pub use channel_layout::label_for_speaker_name;
 pub use degraded::{DegradedReporter, start_degraded_reporter};
-pub use engine::{Engine, OscOptions, RenderedAudio};
+pub use engine::{DecodeThreadMode, Engine, OscOptions, RenderedAudio};
 pub use osc::{ObjectMeta, OscSender};
 /// The shared omniphony config (`~/.config/omniphony/config.yaml`) + its path,
 /// re-exported so hosts default to the SAME config as the `orender` CLI + studio

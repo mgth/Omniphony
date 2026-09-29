@@ -221,6 +221,10 @@ pub const CONTROL_CROSSOVER_TYPE: &str = "/omniphony/control/crossover_type";
 /// taps/latency. Persisted to config.
 pub const CONTROL_CROSSOVER_FIR_TRANSITION_RATIO: &str =
     "/omniphony/control/crossover_fir_transition_ratio";
+/// Decode on a thread of its own in the liborender engine (int 0/1), when
+/// its host lets the option decide; the standalone renderer always does.
+/// Persisted to config.
+pub const CONTROL_DECODE_THREAD: &str = "/omniphony/control/decode_thread";
 pub const CONTROL_UNKNOWN: &str = "/omniphony/control/unknown";
 /// Legacy: the `generic` family's entries (see [`CONTROL_PLACEMENT_LAYOUT`]).
 /// Argument is a YAML `SpeakerLayout`; an empty string clears them.
@@ -583,6 +587,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_OUTPUT_CHANNEL_MAPPING,
     CONTROL_CROSSOVER_TYPE,
     CONTROL_CROSSOVER_FIR_TRANSITION_RATIO,
+    CONTROL_DECODE_THREAD,
     CONTROL_VIRTUAL_BED,
     CONTROL_PLACEMENT_MODE,
     CONTROL_PLACEMENT_LAYOUT,

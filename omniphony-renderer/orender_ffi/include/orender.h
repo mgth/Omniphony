@@ -24,7 +24,7 @@
 // C-ABI minor version: backwards-compatible additions only. Consumers should
 // gate optional features on symbol presence (dlsym), not on this value; it
 // exists for logging and diagnostics.
-#define ORENDER_ABI_MINOR 10
+#define ORENDER_ABI_MINOR 11
 
 // Speaker-position labels written by [`orender_channel_layout`] and
 // [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -251,7 +251,7 @@ void orender_reset(struct OrenderRenderer *r);
 int orender_process(struct OrenderRenderer *r,
                     const uint8_t *pkt,
                     uintptr_t pkt_len,
-                    int64_t _pts_us,
+                    int64_t pts_us,
                     float *out,
                     uintptr_t out_cap_samples,
                     uintptr_t *out_frames,
@@ -279,6 +279,20 @@ int orender_drain(struct OrenderRenderer *r,
                   uintptr_t *out_frames,
                   uint32_t *out_channels,
                   int64_t *out_pts_us);
+
+// The `pts_us` the host passed to [`orender_process`] with the packet whose
+// audio the last [`orender_process`] or [`orender_drain`] call returned.
+//
+// Inline, that is the packet the call was given. With the `decode_thread`
+// option on, a packet's audio comes back a few calls later, and this says
+// which packet it was, so a host that stamps its output with its input
+// timestamps stamps it right. When a call returns two packets' audio, it is
+// the first one's.
+//
+// Returns 1 and writes `*pts_us` when the last call returned audio; 0 when it
+// returned none (nothing ready yet, a short buffer, end of drain) and after
+// [`orender_reset`]; -1 on a NULL argument.
+int orender_output_packet_pts(const struct OrenderRenderer *r, int64_t *pts_us);
 
 // Render the spatial overlay for the given OSD resolution and copy the ASS
 // `osd-overlay` payload into `out` (UTF-8, not nul-terminated).
@@ -388,16 +402,20 @@ const char *orender_build_id(void);
 //
 // Keys:
 //
-// - `decode_thread` = `on` | `off` (ABI 0.10; default `off`): decode on a
-//   thread of its own, overlapping the render, so the two share the work
-//   across two cores. With it on, a packet's audio comes back from a later
-//   [`orender_process`] call (one packet's per call, about 30 ms of audio
-//   behind, or one packet if that is longer) or from [`orender_drain`], so
-//   only a host that takes its timestamps from `*out_pts_us` and drains at
-//   end of stream should turn it on. Switch it while nothing is in flight:
-//   right after [`orender_create`], after [`orender_reset`], or once
-//   [`orender_drain`] has returned 0 frames; turning it off with packets
-//   still on the thread returns -2.
+// - `decode_thread` = `on` | `off` | `live` (ABI 0.10, `live` since 0.11;
+//   default `off`): decode on a thread of its own, overlapping the render, so
+//   the two share the work across two cores. With it on, a packet's audio
+//   comes back from a later [`orender_process`] call (one packet's per call,
+//   about 30 ms of audio behind, or one packet if that is longer) or from
+//   [`orender_drain`], so only a host that takes its timestamps from
+//   `*out_pts_us` or [`orender_output_packet_pts`] and drains at end of
+//   stream should turn it on. `on` and `off` force it: switch them while
+//   nothing is in flight — right after [`orender_create`], after
+//   [`orender_reset`], or once [`orender_drain`] has returned 0 frames;
+//   turning it off with packets still on the thread returns -2. `live` hands
+//   the choice to the user's `render.decode_thread` option (config.yaml,
+//   Studio, OSC), which the engine then follows at packet boundaries, winding
+//   the thread down a packet per call when it is turned off mid-stream.
 int orender_set_option(struct OrenderRenderer *r, const char *key, const char *value);
 
 #endif  /* ORENDER_H */
