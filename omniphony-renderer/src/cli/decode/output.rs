@@ -70,11 +70,9 @@ pub struct AudioLatencySnapshot {
     pub resampler_pending_latency_ms: Option<f32>,
 }
 
-/// Full scale of the integer sample domain: decoders hand out 24-bit samples
-/// sign-extended into an `i32`, so unity is 2^23 and not `i32::MAX`. Anything
-/// producing frames for the renderer has to scale to this, or it arrives 256x
-/// too loud.
-pub const I32_PCM_FULL_SCALE: i32 = 1 << 23;
+/// Full scale of the integer sample domain (2^23), defined next to the frame
+/// type it describes.
+pub use bridge_api::I32_PCM_FULL_SCALE;
 
 /// Audio sample data in different formats
 pub enum AudioSamples {
@@ -243,8 +241,14 @@ impl AudioWriter {
             }
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             AudioWriter::Cpal(w) => {
-                let samples_f32 = samples.to_f32();
-                w.write_samples(&samples_f32)?;
+                // Rendered output is already f32: borrow it rather than
+                // cloning the whole block every frame.
+                if let Some(f32_slice) = samples.as_f32() {
+                    w.write_samples(f32_slice)?;
+                } else {
+                    let samples_f32 = samples.to_f32();
+                    w.write_samples(&samples_f32)?;
+                }
                 Ok(())
             }
             AudioWriter::File(file_writer) => {

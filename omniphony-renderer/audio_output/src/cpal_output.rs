@@ -7,15 +7,14 @@ use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
-use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-};
+use rubato::{Resampler, SincFixedIn};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering},
 };
 use std::time::Duration;
 
+use crate::output_telemetry::{interleaved_samples_to_ms, samples_to_ms};
 use crate::{
     AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, adaptive_band_name,
     adaptive_runtime::{
@@ -28,12 +27,9 @@ use crate::{
     },
     adaptive_runtime_state_code, adaptive_runtime_state_name_from_code,
     clamp_ratio_for_local_resampler, local_resampler_ratio_bounds,
-    resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
-    ring_buffer_io::{flush_ring_buffer, push_samples_with_backpressure},
+    resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine, output_resampler_params},
+    ring_buffer_io::{OUTPUT_RING_CAPACITY, flush_ring_buffer, push_samples_with_backpressure},
 };
-
-// Buffer size: 4 seconds of audio at 48kHz, 16 channels
-const BUFFER_SIZE: usize = 48000 * 16 * 4;
 
 // Adaptive rate matching constants (time-domain targets).
 const MIN_BUFFER_MS: u32 = 25;
@@ -66,7 +62,7 @@ pub struct CpalWriter {
     input_sample_rate: u32,
     _output_sample_rate: u32,
     channel_count: u32,         // Number of audio channels we're producing
-    _device_channel_count: u32, // Number of channels the {BACKEND} device expects
+    _device_channel_count: u32, // Number of channels the output device expects
     _stream_ready: Arc<AtomicBool>,
     enable_adaptive_resampling: bool, // Enable PI controller for buffer stability
     max_buffer_fill: usize,
@@ -144,7 +140,7 @@ impl CpalWriter {
         // Local resampling ratio is output_rate / input_rate.
         let resample_ratio = output_sample_rate as f64 / input_sample_rate as f64;
 
-        let sample_buffer = Arc::new(ArrayQueue::new(BUFFER_SIZE));
+        let sample_buffer = Arc::new(ArrayQueue::new(OUTPUT_RING_CAPACITY));
         let buffer_clone = sample_buffer.clone();
         let stream_ready = Arc::new(AtomicBool::new(false));
         let ready_clone = stream_ready.clone();
@@ -311,13 +307,7 @@ impl CpalWriter {
         // Initialize Resampler (High quality Sinc)
         // Base ratio for upsampling (e.g., 2.0 for 48kHz -> 96kHz)
         // Adaptive rate matching will make small adjustments around this base ratio
-        let params = SincInterpolationParameters {
-            sinc_len: 256,
-            f_cutoff: 0.95,
-            interpolation: SincInterpolationType::Linear,
-            oversampling_factor: 256,
-            window: WindowFunction::BlackmanHarris2,
-        };
+        let params = output_resampler_params();
 
         let live_config = Arc::new(Mutex::new(adaptive_config));
         let live_config_for_callback = Arc::clone(&live_config);
@@ -403,7 +393,7 @@ impl CpalWriter {
                 let callback_frames = data.len() / device_channel_count_for_callback as usize;
                 let callback_audio_samples = callback_frames * channel_count as usize;
                 // Ring-buffer occupancy is tracked in input-domain samples, while the
-                // {BACKEND} callback consumes output-domain samples after local resampling.
+                // The device callback consumes output-domain samples after local resampling.
                 // Convert the callback midpoint estimate back to input-domain samples
                 // before comparing against the input-domain fill level.
                 let callback_input_domain_samples = if effective_resample_ratio > 0.0 {
@@ -422,7 +412,7 @@ impl CpalWriter {
                 pipeline_latency_ms_bits_clone
                     .store(callback_midpoint_ms.to_bits(), Ordering::Relaxed);
                 let current_asio_cfg = live_config_for_callback.lock().clone();
-                // {BACKEND} callback dt comes from the nominal frame size of
+                // The device callback dt comes from the nominal frame size of
                 // the active buffer. We don't have an atomic-published dt
                 // here as on the PipeWire path; the configured value is
                 // accurate enough for the cutoff math.
@@ -436,7 +426,7 @@ impl CpalWriter {
                     available_samples,
                     output_fifo_input_domain_samples,
                     pending_resampler_input_samples,
-                    0, // {BACKEND} backend has no output pacer stage
+                    0, // cpal backends have no output pacer stage
                     callback_input_domain_samples,
                     channel_count as usize,
                     input_sample_rate,
@@ -452,21 +442,17 @@ impl CpalWriter {
                 // Publish the three components of `control_available` as ms so they
                 // can be plotted independently in the Studio control plot.
                 {
-                    let samples_to_ms = |samples: usize| -> f32 {
-                        if channel_count > 0 && input_sample_rate > 0 {
-                            samples as f32 / channel_count as f32 / input_sample_rate as f32 * 1000.0
-                        } else {
-                            0.0
-                        }
+                    let to_ms = |samples: usize| -> f32 {
+                        samples_to_ms(samples, channel_count as usize, input_sample_rate)
                     };
                     avail_input_latency_ms_bits_clone
-                        .store(samples_to_ms(available_samples).to_bits(), Ordering::Relaxed);
+                        .store(to_ms(available_samples).to_bits(), Ordering::Relaxed);
                     output_fifo_latency_ms_bits_clone.store(
-                        samples_to_ms(output_fifo_input_domain_samples).to_bits(),
+                        to_ms(output_fifo_input_domain_samples).to_bits(),
                         Ordering::Relaxed,
                     );
                     resampler_pending_latency_ms_bits_clone.store(
-                        samples_to_ms(pending_resampler_input_samples).to_bits(),
+                        to_ms(pending_resampler_input_samples).to_bits(),
                         Ordering::Relaxed,
                     );
                 }
@@ -686,7 +672,7 @@ impl CpalWriter {
                     }
                 }
 
-                // 3. Fill {BACKEND} callback buffer from FIFO
+                // 3. Fill the device callback buffer from FIFO
                 if far_decision.hard_recover_high {
                     let plan = compute_hard_recover_high_plan(
                         callback_input_domain_samples,
@@ -830,14 +816,16 @@ impl CpalWriter {
     }
 
     pub fn total_audio_delay_ms(&self) -> f32 {
-        (self.target_buffer_fill as f32 / self.channel_count as f32 / self.input_sample_rate as f32)
-            * 1000.0
+        self.target_control_latency_ms()
             + f32::from_bits(self.pipeline_latency_ms_bits.load(Ordering::Relaxed))
     }
 
     pub fn target_control_latency_ms(&self) -> f32 {
-        (self.target_buffer_fill as f32 / self.channel_count as f32 / self.input_sample_rate as f32)
-            * 1000.0
+        interleaved_samples_to_ms(
+            self.target_buffer_fill,
+            self.channel_count as usize,
+            self.input_sample_rate,
+        )
     }
 
     pub fn measured_audio_delay_ms(&self) -> f32 {
@@ -848,8 +836,9 @@ impl CpalWriter {
         f32::from_bits(self.control_latency_ms_bits.load(Ordering::Relaxed))
     }
 
-    /// EMA-smoothed control latency. The {BACKEND} backend does not yet maintain a
-    /// separate smoothed metric, so it falls back to the raw control latency.
+    /// EMA-smoothed control latency. The cpal backends (ASIO, CoreAudio) do not
+    /// yet maintain a separate smoothed metric, so this falls back to the raw
+    /// control latency.
     pub fn smoothed_control_audio_delay_ms(&self) -> f32 {
         self.control_audio_delay_ms()
     }

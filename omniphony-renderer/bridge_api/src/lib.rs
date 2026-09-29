@@ -188,6 +188,13 @@ pub struct RMetadataFrame {
     pub ramp_duration: u32,
 }
 
+/// Full scale of [`RDecodedFrame::pcm`]: bridges hand out 24-bit samples
+/// sign-extended into an `i32`, so unity is 2^23 and not `i32::MAX`. Anything
+/// producing frames for the renderer has to scale to this, or it arrives 256×
+/// too loud; anything reading them divides by it. A plain constant — no type
+/// layout involved.
+pub const I32_PCM_FULL_SCALE: i32 = 1 << 23;
+
 /// A fully decoded audio frame: interleaved PCM + metadata.
 #[repr(C)]
 #[derive(StableAbi)]
@@ -195,7 +202,8 @@ pub struct RDecodedFrame {
     pub sampling_frequency: u32,
     pub sample_count: u32,
     pub channel_count: u32,
-    /// PCM samples, interleaved: `[s0c0, s0c1, …, s0c(N-1), s1c0, …]`.
+    /// PCM samples, interleaved: `[s0c0, s0c1, …, s0c(N-1), s1c0, …]`,
+    /// 24-bit scaled (see [`I32_PCM_FULL_SCALE`]).
     pub pcm: RVec<i32>,
     /// One label per channel (length == channel_count).
     pub channel_labels: RVec<RChannelLabel>,

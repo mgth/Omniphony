@@ -2,6 +2,11 @@ use crossbeam::queue::ArrayQueue;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Capacity of the renderer → device ring, in interleaved samples: 4 s of
+/// 16 channels at 48 kHz. Shared by every realtime backend; the back-pressure
+/// threshold (`max_buffer_fill`) keeps the working fill far below it.
+pub const OUTPUT_RING_CAPACITY: usize = 48000 * 16 * 4;
+
 pub struct WriteSamplesReport {
     pub pushed_samples: usize,
     pub wait_count: u32,

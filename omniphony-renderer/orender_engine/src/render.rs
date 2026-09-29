@@ -16,7 +16,7 @@ pub fn fill_pcm_f32_drc(
     target_gain: f32,
     ramp_remaining: &mut u32,
 ) {
-    const SCALE: f32 = 8_388_608.0; // 2^23 — decoded samples are 24-bit in i32
+    const SCALE: f32 = bridge_api::I32_PCM_FULL_SCALE as f32;
 
     out.clear();
     out.reserve(pcm.len().saturating_sub(out.capacity()));

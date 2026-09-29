@@ -4,9 +4,7 @@ use anyhow::{Result, anyhow};
 use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
 use pipewire as pw;
-use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-};
+use rubato::{Resampler, SincFixedIn};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{
@@ -21,6 +19,7 @@ use crate::callback_state::CallbackState;
 use crate::output_telemetry::{LatencySample, OutputTelemetry};
 use crate::{
     ADAPTIVE_BAND_FAR, AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO,
+    adaptive_band_name,
     adaptive_runtime::{
         FarModeStepCtx, FarModeStepInputs, LatencyMetricTargets, LowRecoverPhase,
         MAX_INTEGRAL_TERM, PRE_BRIDGE_CALIBRATION_CALLBACKS, compute_hard_recover_high_plan,
@@ -31,9 +30,10 @@ use crate::{
     },
     adaptive_runtime_state_name_from_code, clamp_ratio_for_local_resampler,
     local_resampler_ratio_bounds,
-    resampler_fifo::RESAMPLER_CHUNK_SIZE,
+    resampler_fifo::{RESAMPLER_CHUNK_SIZE, output_resampler_params},
     ring_buffer_io::{
-        flush_ring_buffer, push_samples_drop_overflow, push_samples_with_backpressure,
+        OUTPUT_RING_CAPACITY, flush_ring_buffer, push_samples_drop_overflow,
+        push_samples_with_backpressure,
     },
 };
 
@@ -137,9 +137,6 @@ fn output_target_properties(target: &str) -> [(&'static str, &str); 4] {
         ("node.dont-fallback", "true"),
     ]
 }
-
-// Buffer size: 4 seconds of audio at 48kHz, 16 channels
-const BUFFER_SIZE: usize = 48000 * 16 * 4;
 
 /// Runtime configuration for PipeWire buffer sizes and quantum.
 ///
@@ -374,12 +371,12 @@ impl PipewireWriter {
             buffer_config.max_latency_ms = corrected;
         }
 
-        let sample_buffer = Arc::new(ArrayQueue::new(BUFFER_SIZE));
+        let sample_buffer = Arc::new(ArrayQueue::new(OUTPUT_RING_CAPACITY));
         let buffer_clone = sample_buffer.clone();
         // Pacer FIFO: capacity matches the ring so worst-case can buffer
         // the same amount of audio. It only fills meaningfully when the
         // input-thread drain lags or is paused (eg. during pre-roll).
-        let pacer_fifo = Arc::new(ArrayQueue::new(BUFFER_SIZE));
+        let pacer_fifo = Arc::new(ArrayQueue::new(OUTPUT_RING_CAPACITY));
         let pacer_enabled = adaptive_config.use_output_pacing;
         let backpressure_disabled = Arc::new(AtomicBool::new(adaptive_config.disable_backpressure));
         let pacer_pre_roll_complete = Arc::new(AtomicBool::new(false));
@@ -712,12 +709,7 @@ impl PipewireWriter {
     }
 
     pub fn adaptive_band(&self) -> Option<&'static str> {
-        match self.current_adaptive_band.load(Ordering::Relaxed) {
-            1 => Some("near"),
-            2 => Some("far"),
-            3 => Some("hard"),
-            _ => None,
-        }
+        adaptive_band_name(self.current_adaptive_band.load(Ordering::Relaxed))
     }
 
     pub fn adaptive_runtime_state(&self) -> Option<&'static str> {
@@ -987,13 +979,7 @@ fn run_pipewire_loop(
 
     // Initialize resampler for true rate conversion and for adaptive 1:1 operation.
     let resampler_opt = if use_local_resampler {
-        let params = SincInterpolationParameters {
-            sinc_len: 256,
-            f_cutoff: 0.95,
-            interpolation: SincInterpolationType::Linear,
-            oversampling_factor: 256,
-            window: WindowFunction::BlackmanHarris2,
-        };
+        let params = output_resampler_params();
 
         // Rubato expects a relative ratio bound (>= 1.0), not an absolute ratio.
         let max_resample_ratio_relative = LOCAL_RESAMPLER_MAX_RELATIVE_RATIO;

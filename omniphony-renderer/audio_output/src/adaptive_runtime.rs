@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
+use crate::output_telemetry::{interleaved_samples_to_ms, samples_to_ms};
 use crate::{ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_NEAR, ADAPTIVE_BAND_NONE};
 use crate::{
     AdaptiveControlStep, AdaptiveControllerState, AdaptiveResamplingConfig, compute_adaptive_step,
@@ -148,7 +149,7 @@ pub fn store_latency_metrics_from_control_available(
     targets: LatencyMetricTargets<'_>,
 ) {
     let control_latency_ms =
-        (control_available as f32 / channel_count as f32 / sample_rate as f32) * 1000.0;
+        interleaved_samples_to_ms(control_available, channel_count, sample_rate);
     let measured_latency_ms = control_latency_ms + graph_latency_ms;
     targets
         .measured_latency_ms_bits
@@ -233,7 +234,7 @@ pub fn update_latency_metrics(
         targets,
     );
     let control_latency_ms =
-        (display_control_available as f32 / channel_count as f32 / sample_rate as f32) * 1000.0;
+        interleaved_samples_to_ms(display_control_available, channel_count, sample_rate);
     let measured_latency_ms = control_latency_ms + graph_latency_ms;
 
     LatencyMetrics {
@@ -450,12 +451,11 @@ pub fn update_far_mode_state(
     };
     let previous_low_recover_phase = state.low_recover_phase;
     let previous_hard_recover_high = state.hard_recover_high_active;
-    let settle_callback_ms = if channel_count > 0 && input_sample_rate > 0 {
-        (callback_input_domain_samples as f32 / channel_count as f32 / input_sample_rate as f32)
-            * 1000.0
-    } else {
-        0.0
-    };
+    let settle_callback_ms = samples_to_ms(
+        callback_input_domain_samples,
+        channel_count,
+        input_sample_rate,
+    );
     let samples_per_ms = if channel_count > 0 && input_sample_rate > 0 {
         (input_sample_rate as usize).saturating_mul(channel_count) / 1000
     } else {

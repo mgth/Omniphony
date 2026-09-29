@@ -17,6 +17,20 @@ use rubato::Resampler;
 
 pub const RESAMPLER_CHUNK_SIZE: usize = 1024;
 
+/// Sinc design of the local output resampler, the same for every backend
+/// (PipeWire, cpal): 256 taps, 256× oversampled with linear interpolation
+/// between the oversampled points, Blackman-Harris² window, cutoff at 95 %
+/// of the lower Nyquist.
+pub fn output_resampler_params() -> rubato::SincInterpolationParameters {
+    rubato::SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        interpolation: rubato::SincInterpolationType::Linear,
+        oversampling_factor: 256,
+        window: rubato::WindowFunction::BlackmanHarris2,
+    }
+}
+
 pub struct ResamplerFifoEngine {
     channel_count: usize,
     resampler_input: Vec<Vec<f32>>,
