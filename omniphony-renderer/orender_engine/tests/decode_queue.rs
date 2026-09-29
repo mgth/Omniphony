@@ -326,36 +326,50 @@ fn the_declaration_follows_the_audio_handed_back() {
             "3 channels"
         }
     };
+    // Where each packet's audio starts: a restart packet renders two frames.
+    let packet_at = |sample_pos: u64| {
+        (0..)
+            .scan(0u64, |pos, p: usize| {
+                let start = *pos;
+                *pos += if p % 5 == 0 { 80 } else { 40 };
+                Some((p, start))
+            })
+            .take_while(|&(_, start)| start <= sample_pos)
+            .last()
+            .unwrap()
+            .0
+    };
     for threaded in [false, true] {
         let (mut engine, _, _) = engine_with_control();
         engine.set_decode_thread(threaded).unwrap();
-        let mut checked = 0;
-        for i in 0..40 {
-            let restart = i % 5 == 0;
-            let chunks = engine
-                .process_raw(&packet_in(40, layout(i), restart))
-                .unwrap();
+        let mut rendered = 0;
+        let mut check = |engine: &mut Engine, chunks: Vec<RenderedAudio>| {
             if let Some(last) = chunks.last() {
-                // Each restart packet renders two frames of 40 samples.
-                let rendered = (0..).scan(0u64, |pos, p: usize| {
-                    let start = *pos;
-                    *pos += if p % 5 == 0 { 80 } else { 40 };
-                    Some((p, start))
-                });
-                let (p, _) = rendered
-                    .take_while(|&(_, start)| start <= last.sample_pos)
-                    .last()
-                    .unwrap();
+                let p = packet_at(last.sample_pos);
                 assert_eq!(
                     engine.source_label(),
                     label(layout(p)),
                     "threaded={threaded}: after packet {p}'s audio"
                 );
-                checked += 1;
             }
-            engine.recycle(chunks);
+            rendered += frames(engine, chunks);
+        };
+        for i in 0..40 {
+            let chunks = engine
+                .process_raw(&packet_in(40, layout(i), i % 5 == 0))
+                .unwrap();
+            check(&mut engine, chunks);
         }
-        assert!(checked > 30, "threaded={threaded}: {checked} calls checked");
+        // Whatever the thread still held: checked the same way, so a slow
+        // machine that hands most of it back here tests just as much.
+        loop {
+            let chunks = engine.drain().unwrap();
+            if chunks.is_empty() {
+                break;
+            }
+            check(&mut engine, chunks);
+        }
+        assert_eq!(rendered, 48 * 40, "threaded={threaded}: every frame");
     }
 }
 
