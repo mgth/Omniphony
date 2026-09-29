@@ -556,7 +556,37 @@ pub enum InputModeConfig {
 #[serde(rename_all = "snake_case")]
 pub enum InputBackendConfig {
     Pipewire,
-    Asio,
+}
+
+/// Wire value of the retired ASIO live-input backend. It was accepted here
+/// while a Windows capture path was planned, but that path was never
+/// implemented and the value has been removed.
+const RETIRED_ASIO_INPUT_BACKEND: &str = "asio";
+
+/// `live_input.backend`, tolerant of the retired `asio` value: a config saved
+/// with it still loads, with the key dropped (the platform default applies)
+/// and a warning, instead of the whole file failing to parse. Any other
+/// unknown value is still an error, as before.
+fn deserialize_live_input_backend<'de, D>(
+    deserializer: D,
+) -> Result<Option<InputBackendConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        "pipewire" => Ok(Some(InputBackendConfig::Pipewire)),
+        RETIRED_ASIO_INPUT_BACKEND => {
+            log::warn!(
+                "config: live_input.backend 'asio' is no longer supported (the ASIO live-input \
+                 backend was never implemented); ignoring it and using the platform default"
+            );
+            Ok(None)
+        }
+        other => Err(serde::de::Error::unknown_variant(other, &["pipewire"])),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -583,7 +613,11 @@ pub enum InputClockModeConfig {
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct LiveInputConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_live_input_backend",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub backend: Option<InputBackendConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
@@ -1128,6 +1162,50 @@ mod tests {
         rc.normalize_room_meters();
         assert_eq!(rc.room_ratio.as_deref(), Some("1.0,2.0,1.0"));
         assert_eq!(rc.room_ratio_rear, Some(1.0));
+    }
+
+    #[test]
+    fn retired_asio_live_input_backend_still_loads_as_the_default() {
+        let yaml = "\
+render:
+  input_mode: pipewire
+  live_input:
+    backend: asio
+    node: omniphony-in
+";
+        let cfg: Config = serde_yaml_ng::from_str(yaml).expect("a legacy asio backend must parse");
+        let render = cfg.render.as_ref().unwrap();
+        let live_input = render.live_input.as_ref().unwrap();
+        assert_eq!(live_input.backend, None, "asio falls back to the default");
+        // The rest of the section is untouched.
+        assert_eq!(live_input.node.as_deref(), Some("omniphony-in"));
+        assert_eq!(render.input_mode, Some(InputModeConfig::Pipewire));
+        // The retired value is dropped, not carried back to disk as unknown.
+        let out = serde_yaml_ng::to_string(&cfg).expect("serialize");
+        assert!(
+            !out.contains("asio"),
+            "retired backend re-serialized:\n{out}"
+        );
+    }
+
+    #[test]
+    fn live_input_backend_round_trips_and_rejects_unknown_values() {
+        let cfg: Config =
+            serde_yaml_ng::from_str("render:\n  live_input:\n    backend: pipewire\n")
+                .expect("parse");
+        let live_input = cfg.render.as_ref().unwrap().live_input.as_ref().unwrap();
+        assert_eq!(live_input.backend, Some(InputBackendConfig::Pipewire));
+        let out = serde_yaml_ng::to_string(&cfg).expect("serialize");
+        assert!(out.contains("backend: pipewire"), "{out}");
+
+        let cfg: Config =
+            serde_yaml_ng::from_str("render:\n  live_input:\n    node: x\n").expect("parse");
+        let live_input = cfg.render.as_ref().unwrap().live_input.as_ref().unwrap();
+        assert_eq!(live_input.backend, None, "an absent key stays absent");
+
+        let err = serde_yaml_ng::from_str::<LiveInputConfig>("backend: coreaudio\n")
+            .expect_err("an unknown backend is still an error");
+        assert!(err.to_string().contains("coreaudio"), "{err}");
     }
 
     #[test]

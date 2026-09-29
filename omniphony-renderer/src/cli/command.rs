@@ -918,8 +918,6 @@ pub enum OutputFileFormatArg {
 pub enum InputBackend {
     #[cfg(target_os = "linux")]
     Pipewire,
-    #[cfg(target_os = "windows")]
-    Asio,
     #[value(skip)]
     Unsupported,
 }
@@ -1157,8 +1155,6 @@ impl std::str::FromStr for InputBackend {
         match s.to_lowercase().as_str() {
             #[cfg(target_os = "linux")]
             "pipewire" => Ok(Self::Pipewire),
-            #[cfg(target_os = "windows")]
-            "asio" => Ok(Self::Asio),
             _ => Err(format!("Unknown input backend: {s}")),
         }
     }

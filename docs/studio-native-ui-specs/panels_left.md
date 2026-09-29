@@ -499,7 +499,7 @@ Content `#inputSectionContent > .input-panel-shell`, in DOM order:
 | 5 | `#oscBridgePathStatus` | inline red status (`.input-panel-inline-status`, `#ff7d7d`) | — | — | text `"Bridge path missing"` (hard-coded English) when `app.inputError` matches `/bridge path missing|no bridge plugin found|render\.bridge_path/i` and `renderBridgePath` is empty; else hidden | |
 | 6 | `#pipeStatus` | text, placeholder `input.autoDetect` | `input.pipe` "Pipe" | `help.input.pipe` | `app.orenderInputPipe` (not rewritten while focused); row visible only when `hasInputDomain && mode === 'pipe_bridge'` | change → `persistInputPipeNow()`: `app.orenderInputPipe = v||null; control_render_input_pipe {value}` |
 | 7 | `#inputLiveFields` subtitle | `input.liveSource` "Live Source" | | | block visible only when `hasInputDomain && mode === 'pipewire_bridge'` (opacity 0.55 otherwise, but hidden anyway) | |
-| 8 | `#inputBackendSelect` | `pipewire`/`asio` (`input.backend.*`) | `input.backend` | `help.input.backend` | **row permanently hidden and control disabled** (`input.js:226–249`, legacy PCM mode) | change → `liveInput.backend`, `sendInputConfig()` |
+| 8 | ~~`#inputBackendSelect`~~ | **removed** — PipeWire is the only live-input backend (the never-implemented `asio` value was retired), so there is nothing to select; `liveInput.backend` stays `pipewire` | | | | |
 | 9 | `#inputNodeInput` | text, placeholder `omniphony` | `input.node` "Node" | `help.input.node` | `liveInput.node || inputNode`; enabled iff `hasInputDomain && pipewire_bridge` | change → `liveInput.node`, `sendInputConfig()` |
 | 10 | `#inputDescriptionInput` | text, placeholder `Omniphony Bridge Input` | `input.description` | `help.input.description` | `liveInput.description || inputDescription` | same pattern |
 | 11 | `#inputClockModeSelect` (+ `#inputClockInfoBtn` → `#inputClockInfoModal`, title `input.clockInfoTitle`, body `input.clockInfoBody`) | `dac` "DAC" / `pipewire` "PipeWire" / `upstream` "Upstream (advanced)" (`input.clock.*`; the baked option text says "(advanced)", the en.json string is "Upstream") | `input.clock` "Clock" | — (modal instead) | `liveInput.clockMode` (adopted from snapshot only when `!liveInputClockModeDirty`) | change → `liveInput.clockMode = v; liveInputClockModeDirty = true` **(not sent until Apply)** |
@@ -509,8 +509,8 @@ Content `#inputSectionContent > .input-panel-shell`, in DOM order:
 | 15 | `#inputApplyBtn` | `.ui-btn.ui-btn-primary` | text `input.apply` "Apply", or `input.applyPending` "Apply pending..." while `showApplyPending` | — | hidden when embedded | see Apply below |
 
 Effective visible layout today: **Mode**, **Bridge (+Browse)**, then either **Pipe** (pipe_bridge)
-or **Node / Description / Clock** (pipewire_bridge), then **Apply**. Rows 8, 12, 13, 14 are dead
-markup kept for a future rework — port them as hidden or omit.
+or **Node / Description / Clock** (pipewire_bridge), then **Apply**. Rows 12, 13, 14 are dead
+markup kept for a future rework — port them as hidden or omit. Row 8 is gone.
 
 Status line `#inputStatusInfo` = `tf('input.status.bridge', {requested, active, pipe, sync})`
 ("requested {requested} • active {active} • pipe {pipe} • {sync}") + (pipewire_bridge ?

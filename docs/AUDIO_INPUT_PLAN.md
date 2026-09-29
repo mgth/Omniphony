@@ -1,5 +1,13 @@
 # Audio Input Plan
 
+> **Status (2026-09):** the ASIO live-input backend sketched below was never
+> implemented and has been removed. PipeWire is the only live-input backend:
+> `live_input.backend` / `--input-backend` / `/omniphony/control/input/live/backend`
+> accept only `pipewire`. A config that still says `backend: asio` loads with the
+> key ignored (and a warning); the OSC value is rejected with a warning. ASIO
+> *output* (`--output-backend asio`) is unaffected. The rest of this document is
+> the historical plan and is kept as written.
+
 This document tracks the implementation plan for adding realtime audio input to
 `omniphony-renderer`, starting with:
 

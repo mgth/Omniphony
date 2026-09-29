@@ -63,8 +63,10 @@ pub fn control_input_mode(state: &SharedState, value: String) {
 }
 
 pub fn control_input_live_backend(state: &SharedState, value: String) {
+    // PipeWire is the only live-input backend; the renderer rejects the
+    // retired `asio` value (and anything else), so do not send it.
     let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "pipewire" | "asio") {
+    if trimmed != "pipewire" {
         return;
     }
     send_control(

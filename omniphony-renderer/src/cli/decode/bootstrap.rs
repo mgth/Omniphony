@@ -160,7 +160,6 @@ fn build_requested_input_config(
         if let Some(live_input) = render_cfg.live_input.as_ref() {
             requested.backend = live_input.backend.as_ref().map(|backend| match backend {
                 renderer::config::InputBackendConfig::Pipewire => InputBackend::Pipewire,
-                renderer::config::InputBackendConfig::Asio => InputBackend::Asio,
             });
             requested.node_name = live_input.node.clone();
             requested.node_description = live_input.description.clone();
