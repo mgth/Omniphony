@@ -222,6 +222,30 @@ fn a_drain_returns_nothing_only_when_nothing_is_left() {
     );
 }
 
+/// A drain call with too small a buffer keeps that audio for its retry, and
+/// input is refused until the retry has collected it - also through the
+/// bounded-buffer call, which must not take it for a packet's held audio.
+#[test]
+fn a_short_drain_buffer_keeps_the_audio_for_its_retry() {
+    let (mut engine, _) = engine();
+    let fed = feed(&mut engine, (0..10).map(|_| packet(512, 5)));
+    assert!(engine.drain_with_capacity(16).unwrap().is_none());
+    assert!(engine.process_raw(&packet(512, 0)).is_err());
+    assert!(
+        engine
+            .process_raw_within(&packet(512, 0), usize::MAX)
+            .is_err()
+    );
+    let chunks = engine
+        .drain_with_capacity(usize::MAX)
+        .unwrap()
+        .expect("an unbounded buffer always fits");
+    let first = frames(&mut engine, chunks);
+    assert_eq!(first, 512, "the held packet comes back whole");
+    let rest: usize = drain(&mut engine).iter().sum();
+    assert_eq!(fed + first + rest, 10 * 512, "nothing lost, nothing twice");
+}
+
 /// After a seek whose first packet decodes to nothing, the declaration still
 /// comes with the first frames, read on the decode thread under the decode's
 /// lock - not live from the engine's thread, which would wait for a decode.

@@ -10,36 +10,16 @@
 //! cargo test --release -p orender_engine --test decode_thread -- --nocapture
 //! ```
 
-use orender_engine::{Engine, RenderedAudio};
-use std::path::Path;
+mod common;
 
-/// Raw bytes per call: several access units, so one call returns many blocks.
-const PACKET: usize = 4096;
-
-/// Every block that came out, in order: its position and samples.
-type Stream = Vec<(u64, Vec<f32>)>;
+use common::{Blocks as Stream, PACKET, collect};
+use orender_engine::Engine;
 
 fn setup(thread: bool) -> Option<(Engine, Vec<u8>)> {
-    let (Ok(bridge), Ok(sample)) = (
-        std::env::var("ORENDER_BRIDGE"),
-        std::env::var("ORENDER_SAMPLE"),
-    ) else {
-        eprintln!("skipping: set ORENDER_BRIDGE and ORENDER_SAMPLE");
-        return None;
-    };
-    let data = std::fs::read(&sample).expect("read sample file");
-    let mut engine = Engine::from_paths(None, None, Some(Path::new(&bridge)), None, 48_000)
-        .expect("build engine");
+    let (mut engine, data) = common::real_engine()?;
     engine.set_decode_thread(thread).expect("set_decode_thread");
     assert_eq!(engine.decode_thread(), thread);
     Some((engine, data))
-}
-
-fn collect(engine: &mut Engine, chunks: Vec<RenderedAudio>, into: &mut Stream) -> usize {
-    let frames = chunks.iter().map(|c| c.n_frames).sum();
-    into.extend(chunks.iter().map(|c| (c.sample_pos, c.samples.clone())));
-    engine.recycle(chunks);
-    frames
 }
 
 /// Feed `packets` with a buffer that always fits, then drain until nothing is

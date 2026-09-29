@@ -64,6 +64,16 @@ pub struct RenderedAudio {
     pub input_pts_us: Option<i64>,
 }
 
+/// Which bounded-buffer call held output is kept for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeldFor {
+    /// [`Engine::process_raw_within`] with the same packet; moving on to
+    /// another packet drops it.
+    Packet,
+    /// [`Engine::drain_with_capacity`]; `process` refuses input until then.
+    Drain,
+}
+
 /// Who decides whether the engine decodes on a thread of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodeThreadMode {
@@ -158,13 +168,13 @@ pub struct Engine {
     /// that never recycles allocates exactly as before; it is an optimisation,
     /// not a contract.
     output_pool: Vec<Vec<f32>>,
-    /// Output of a packet the host had no room for, with a copy of that packet
-    /// (see [`Engine::process_raw_within`]): the retry with a larger buffer
-    /// gets this back instead of decoding the packet a second time.
-    held_output: Option<Vec<RenderedAudio>>,
+    /// Output a bounded-buffer call had no room for, and which call it is for
+    /// (see [`Engine::process_raw_within`], [`Engine::drain_with_capacity`]):
+    /// the retry with a larger buffer gets it back, since decoding again
+    /// cannot recreate it.
+    held: Option<(HeldFor, Vec<RenderedAudio>)>,
+    /// The packet [`HeldFor::Packet`] output was rendered from.
     held_packet: Vec<u8>,
-    /// Drained output retained until a bounded host buffer can receive it.
-    pending_drain_output: Vec<RenderedAudio>,
     /// Whether the host or the live option decides on the decode thread.
     decode_thread_mode: DecodeThreadMode,
     /// The host's timestamp for the packet about to be pushed, from
@@ -355,9 +365,8 @@ impl Engine {
             frame_events: Vec::new(),
             pcm_f32_buf: Vec::new(),
             output_pool: Vec::new(),
-            held_output: None,
+            held: None,
             held_packet: Vec::new(),
-            pending_drain_output: Vec::new(),
             decode_thread_mode: DecodeThreadMode::Off,
             input_pts_us: None,
             last_output_input_pts: None,
@@ -596,7 +605,7 @@ impl Engine {
 
         // Publish the bridge's supported DRC modes (so studio shows the DRC
         // control). The decode-side mode itself is pushed to the bridge lazily
-        // in `process` (see `sync_drc_mode`), mirroring the CLI's decoder thread.
+        // in `process` (see `sync_live_options`), mirroring the CLI's decoder thread.
         let supported_drc: Vec<String> = bridge
             .bridge
             .supported_drc_modes()
@@ -644,14 +653,11 @@ impl Engine {
     /// Whether the current presentation carries dynamic objects. A live fact
     /// about the stream (it may flip mid-stream); hosts must not latch it.
     ///
-    /// With the decode thread on, it is as of the latest packet the thread has
-    /// decoded, which can be ahead of the audio returned so far by what is in
-    /// flight: about 30 ms of audio, or one packet if that is longer.
+    /// As of the latest packet decoded: with the decode thread on, that can be
+    /// ahead of the audio returned so far by what is in flight: about 30 ms of
+    /// audio, or one packet if that is longer. Never waits on the bridge.
     pub fn has_objects(&self) -> bool {
-        if self.decode_worker.is_some() {
-            return self.bridge_has_objects.load(Ordering::Relaxed);
-        }
-        self.lock_bridge().bridge.has_objects()
+        self.bridge_has_objects.load(Ordering::Relaxed)
     }
 
     /// Dynamic object count of the last rendered frame (decoded `channel_count`
@@ -762,18 +768,17 @@ impl Engine {
     /// settings) are preserved — a seek must not lose live adjustments.
     pub fn reset(&mut self) {
         // Audio held for a retry belongs to the stream being flushed.
-        if let Some(held) = self.held_output.take() {
+        if let Some((_, held)) = self.held.take() {
             self.recycle(held);
         }
-        let pending = std::mem::take(&mut self.pending_drain_output);
-        self.recycle(pending);
         // So is whatever the decode thread is still working on.
         self.discard_in_flight();
         self.input_pts_us = None;
         self.last_output_input_pts = None;
         // Nothing is in flight now: a switch the live option asked for while
         // packets were on the thread can land here instead of winding down.
-        self.sync_decode_thread();
+        let want_thread = self.live_decode_thread();
+        self.follow_live_decode_thread(want_thread);
         {
             let mut bridge = self.lock_bridge();
             bridge.bridge.reset();
@@ -924,23 +929,24 @@ impl Engine {
         self.declared_poses_labels.extend_from_slice(labels);
     }
 
-    /// Push the live DRC mode to the bridge when it changes (selects which DRC
-    /// words the decoder extracts). Cheap no-op when unchanged. Mirrors the
-    /// CLI's `DecoderCommand::SetDrcMode` handling. The bridge preserves the
-    /// mode across `reset`, so a seek keeps the current DRC setting.
-    fn sync_drc_mode(&mut self) {
-        let live_mode = {
+    /// Bring the decoder in line with the live options it follows, before the
+    /// next packet: the DRC mode (which DRC words the decoder extracts; mirrors
+    /// the CLI's `DecoderCommand::SetDrcMode`) and, in
+    /// [`DecodeThreadMode::Live`], the decode thread. One read of the live
+    /// params per packet; the bridge is locked only when the DRC mode changed.
+    /// The bridge preserves the mode across `reset`, so a seek keeps it.
+    fn sync_live_options(&mut self) {
+        let (drc_mode, want_thread) = {
             let control = self.renderer.renderer_control();
             let live = control.live.read();
-            if live.drc_mode == self.applied_drc_mode {
-                return;
-            }
-            live.drc_mode.clone()
+            let drc_mode = (live.drc_mode != self.applied_drc_mode).then(|| live.drc_mode.clone());
+            (drc_mode, live.decode_thread)
         };
-        self.lock_bridge()
-            .bridge
-            .set_drc_mode(live_mode.as_str().into());
-        self.applied_drc_mode = live_mode;
+        if let Some(mode) = drc_mode {
+            self.lock_bridge().bridge.set_drc_mode(mode.as_str().into());
+            self.applied_drc_mode = mode;
+        }
+        self.follow_live_decode_thread(want_thread);
     }
 
     /// Push one raw compressed packet and render any frames it produces.
@@ -953,13 +959,12 @@ impl Engine {
         transport: RInputTransport,
         data_type: u8,
     ) -> Result<Vec<RenderedAudio>> {
-        if !self.pending_drain_output.is_empty() {
+        if matches!(self.held, Some((HeldFor::Drain, _))) {
             bail!("drain output is pending; retry drain with a larger buffer before new input");
         }
-        // Push any DRC-mode change (config-seeded or OSC-driven) to the decoder
-        // before it decodes this packet.
-        self.sync_drc_mode();
-        self.sync_decode_thread();
+        // Push any DRC-mode or decode-thread change (config-seeded or
+        // OSC-driven) to the decoder before it decodes this packet.
+        self.sync_live_options();
         let pts = self.input_pts_us.take();
 
         if self.decode_worker.is_some() {
@@ -967,10 +972,13 @@ impl Engine {
         }
 
         let decode_started = std::time::Instant::now();
-        let result = self
-            .lock_bridge()
-            .bridge
-            .push_packet(data.into(), transport, data_type);
+        let result = {
+            let mut bridge = self.lock_bridge();
+            let result = bridge.bridge.push_packet(data.into(), transport, data_type);
+            self.bridge_has_objects
+                .store(bridge.bridge.has_objects(), Ordering::Relaxed);
+            result
+        };
         let decode_time_ms = decode_started.elapsed().as_secs_f32() * 1000.0;
         self.render_decoded(result, decode_time_ms, None, pts)
     }
@@ -1063,25 +1071,43 @@ impl Engine {
         data: &[u8],
         capacity: usize,
     ) -> Result<Option<Vec<RenderedAudio>>> {
-        let chunks = match self.held_output.take() {
-            Some(held) if self.held_packet == data => held,
+        let chunks = match self.held.take() {
+            Some((HeldFor::Packet, held)) if self.held_packet == data => held,
+            Some((HeldFor::Packet, stale)) => {
+                self.recycle(stale);
+                self.process_raw(data)?
+            }
+            // Held drain output stays held: `process` refuses the packet.
             held => {
-                if let Some(stale) = held {
-                    self.recycle(stale);
-                }
+                self.held = held;
                 self.process_raw(data)?
             }
         };
-        let samples: usize = chunks.iter().map(|c| c.samples.len()).sum();
-        if samples > capacity {
+        let out = self.fit_or_hold(chunks, capacity, HeldFor::Packet);
+        if out.is_none() {
             self.held_packet.clear();
             self.held_packet.extend_from_slice(data);
-            self.held_output = Some(chunks);
+        }
+        Ok(out)
+    }
+
+    /// `chunks` when they fit in `capacity` interleaved samples; otherwise
+    /// `None`, and they are held for the retry `held_for` names. Either way it
+    /// records the timestamp [`last_output_input_pts`](Self::last_output_input_pts)
+    /// reports.
+    fn fit_or_hold(
+        &mut self,
+        chunks: Vec<RenderedAudio>,
+        capacity: usize,
+        held_for: HeldFor,
+    ) -> Option<Vec<RenderedAudio>> {
+        if chunks.iter().map(|c| c.samples.len()).sum::<usize>() > capacity {
+            self.held = Some((held_for, chunks));
             self.last_output_input_pts = None;
-            return Ok(None);
+            return None;
         }
         self.last_output_input_pts = chunks.first().and_then(|c| c.input_pts_us);
-        Ok(Some(chunks))
+        Some(chunks)
     }
 
     /// Render what the engine still holds, because the stream is over: with the
@@ -1096,12 +1122,11 @@ impl Engine {
     /// Safe to call on an idle engine, and safe to call again once it has
     /// returned nothing — it returns nothing again.
     pub fn drain(&mut self) -> Result<Vec<RenderedAudio>> {
-        if !self.pending_drain_output.is_empty() {
-            return Ok(std::mem::take(&mut self.pending_drain_output));
-        }
-        // A retry that never came: the host has moved on, as with a new packet.
-        if let Some(held) = self.held_output.take() {
-            self.recycle(held);
+        match self.held.take() {
+            Some((HeldFor::Drain, held)) => return Ok(held),
+            // A retry that never came: the host has moved on, as with a new packet.
+            Some((HeldFor::Packet, held)) => self.recycle(held),
+            None => {}
         }
         self.next_in_flight()
     }
@@ -1114,14 +1139,7 @@ impl Engine {
         max_samples: usize,
     ) -> Result<Option<Vec<RenderedAudio>>> {
         let chunks = self.drain()?;
-        if chunks.iter().map(|c| c.samples.len()).sum::<usize>() > max_samples {
-            self.pending_drain_output = chunks;
-            self.last_output_input_pts = None;
-            Ok(None)
-        } else {
-            self.last_output_input_pts = chunks.first().and_then(|c| c.input_pts_us);
-            Ok(Some(chunks))
-        }
+        Ok(self.fit_or_hold(chunks, max_samples, HeldFor::Drain))
     }
 
     /// Decode on a thread of its own, overlapping the render, so the two share
@@ -1130,28 +1148,16 @@ impl Engine {
     /// per call, as inline, only about 30 ms of audio behind, or one packet if
     /// that is longer - or from [`drain`](Self::drain), and not every host
     /// allows for that: one that turns it on takes its timestamps from the
-    /// blocks' `sample_pos` and drains at end of stream.
+    /// blocks it gets back ([`RenderedAudio::sample_pos`] for its place in the
+    /// stream, [`RenderedAudio::input_pts_us`] for the host's own timestamp)
+    /// and drains at end of stream.
     ///
     /// Switch it while nothing is in flight: before the first packet, after
     /// [`reset`](Self::reset), or once [`drain`](Self::drain) has returned
     /// nothing. Turning it off with packets still on the thread is refused
     /// rather than losing them.
     pub fn set_decode_thread(&mut self, on: bool) -> Result<()> {
-        match (on, self.decode_worker.is_some()) {
-            (true, false) => self.start_decode_worker()?,
-            (false, true) => {
-                if self.decode_worker.as_ref().is_some_and(|w| w.in_flight > 0) {
-                    bail!("packets are still on the decode thread; drain or reset first");
-                }
-                self.decode_worker = None;
-            }
-            (true, true) => {
-                if let Some(worker) = self.decode_worker.as_mut() {
-                    worker.winding_down = false;
-                }
-            }
-            (false, false) => {}
-        }
+        self.switch_decode_thread(on, false)?;
         self.decode_thread_mode = if on {
             DecodeThreadMode::On
         } else {
@@ -1173,7 +1179,8 @@ impl Engine {
             DecodeThreadMode::Off => self.set_decode_thread(false),
             DecodeThreadMode::Live => {
                 self.decode_thread_mode = DecodeThreadMode::Live;
-                self.sync_decode_thread();
+                let want = self.live_decode_thread();
+                self.follow_live_decode_thread(want);
                 Ok(())
             }
         }
@@ -1202,36 +1209,42 @@ impl Engine {
         Ok(())
     }
 
+    /// Start, keep or stop the decode thread, at a packet boundary. Starting
+    /// it is immediate. Stopping it with packets in flight would lose them or
+    /// return them all at once, so either the thread winds down (`wind_down`,
+    /// the live option: its limit drops to zero, each call hands back up to two
+    /// packets while taking one, and once it is empty the next call decodes
+    /// inline) or the switch is refused (a host forcing it off).
+    fn switch_decode_thread(&mut self, on: bool, wind_down: bool) -> Result<()> {
+        match (on, self.decode_worker.as_ref().map(|w| w.in_flight)) {
+            (true, None) => self.start_decode_worker()?,
+            (false, None) => {}
+            (false, Some(0)) => self.decode_worker = None,
+            (false, Some(_)) if !wind_down => {
+                bail!("packets are still on the decode thread; drain or reset first")
+            }
+            (_, Some(_)) => {
+                if let Some(worker) = self.decode_worker.as_mut() {
+                    worker.winding_down = !on;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The live `decode_thread` option.
+    fn live_decode_thread(&self) -> bool {
+        self.renderer.renderer_control().live.read().decode_thread
+    }
+
     /// In [`DecodeThreadMode::Live`], bring the decode thread in line with the
-    /// live option, at a packet boundary. Starting it is immediate. Stopping it
-    /// with packets in flight would lose them or return them all at once, so
-    /// the thread winds down instead: its limit drops to zero, each call hands
-    /// back up to two packets while taking one, and once it is empty the next
-    /// call finds nothing in flight and decodes inline.
-    fn sync_decode_thread(&mut self) {
+    /// live option `want` (see [`switch_decode_thread`](Self::switch_decode_thread)).
+    fn follow_live_decode_thread(&mut self, want: bool) {
         if self.decode_thread_mode != DecodeThreadMode::Live {
             return;
         }
-        let want = self.renderer.renderer_control().live.read().decode_thread;
-        let in_flight = self.decode_worker.as_ref().map(|w| w.in_flight);
-        match (want, in_flight) {
-            (true, None) => {
-                if let Err(e) = self.start_decode_worker() {
-                    log::warn!("decode thread requested but not started, decoding inline: {e:#}");
-                }
-            }
-            (true, Some(_)) => {
-                if let Some(worker) = self.decode_worker.as_mut() {
-                    worker.winding_down = false;
-                }
-            }
-            (false, Some(0)) => self.decode_worker = None,
-            (false, Some(_)) => {
-                if let Some(worker) = self.decode_worker.as_mut() {
-                    worker.winding_down = true;
-                }
-            }
-            (false, None) => {}
+        if let Err(e) = self.switch_decode_thread(want, true) {
+            log::warn!("decode thread requested but not started, decoding inline: {e:#}");
         }
     }
 

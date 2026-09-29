@@ -244,10 +244,16 @@ void orender_reset(struct OrenderRenderer *r);
 // second time. A host that moves on to the next packet instead loses this
 // packet's audio, but the stream stays in step.
 //
+// `*out_pts_us` is where the returned audio sits in the stream, from the
+// samples decoded since [`orender_create`] or the last [`orender_reset`];
+// [`orender_output_packet_pts`] gives the `pts_us` passed with the packet it
+// was decoded from, carried through untouched (ABI.md, "Output timestamps").
+//
 // With the `decode_thread` option on (see [`orender_set_option`]) a packet's
 // audio comes back from a later call - one packet's per call, about 30 ms of
 // audio behind, or one packet if that is longer - or from [`orender_drain`]:
-// take the timestamps from `*out_pts_us`, and drain at end of stream.
+// take the timestamps from one of those two, not from the packet just passed
+// in, and drain at end of stream.
 int orender_process(struct OrenderRenderer *r,
                     const uint8_t *pkt,
                     uintptr_t pkt_len,
@@ -407,15 +413,16 @@ const char *orender_build_id(void);
 //   the two share the work across two cores. With it on, a packet's audio
 //   comes back from a later [`orender_process`] call (one packet's per call,
 //   about 30 ms of audio behind, or one packet if that is longer) or from
-//   [`orender_drain`], so only a host that takes its timestamps from
-//   `*out_pts_us` or [`orender_output_packet_pts`] and drains at end of
-//   stream should turn it on. `on` and `off` force it: switch them while
-//   nothing is in flight — right after [`orender_create`], after
-//   [`orender_reset`], or once [`orender_drain`] has returned 0 frames;
-//   turning it off with packets still on the thread returns -2. `live` hands
-//   the choice to the user's `render.decode_thread` option (config.yaml,
-//   Studio, OSC), which the engine then follows at packet boundaries, winding
-//   the thread down a packet per call when it is turned off mid-stream.
+//   [`orender_drain`], so only a host that takes its timestamps from what the
+//   call returns (`*out_pts_us` or [`orender_output_packet_pts`], see
+//   [`orender_process`]) and drains at end of stream should turn it on.
+//   `on` and `off` force it: switch them while nothing is in flight — right
+//   after [`orender_create`], after [`orender_reset`], or once
+//   [`orender_drain`] has returned 0 frames; turning it off with packets
+//   still on the thread returns -2. `live` hands the choice to the user's
+//   `render.decode_thread` option (config.yaml, Studio, OSC), which the
+//   engine then follows at packet boundaries, winding the thread down a
+//   packet per call when it is turned off mid-stream.
 int orender_set_option(struct OrenderRenderer *r, const char *key, const char *value);
 
 #endif  /* ORENDER_H */
