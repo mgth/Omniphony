@@ -2303,12 +2303,15 @@ impl RendererControl {
         })
     }
 
-    /// Mark live params as dirty (changed since last save) and return the new state.
+    /// Mark live params as dirty: changed since they were last saved to (or
+    /// loaded from) the config file. Clients learn it from
+    /// `/state/config/saved`.
     pub fn mark_dirty(&self) {
         self.config_dirty.store(true, Ordering::Relaxed);
     }
 
-    /// Mark live params as clean (just saved) and return the new state.
+    /// Mark live params as clean: they match the config file (just saved, or
+    /// just adopted from it).
     pub fn mark_clean(&self) {
         self.config_dirty.store(false, Ordering::Relaxed);
     }

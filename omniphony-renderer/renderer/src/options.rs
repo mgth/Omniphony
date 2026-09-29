@@ -33,6 +33,7 @@ use crate::live_params::{
     CrossoverType, HrirUpdateLattice, LiveParams, OutputChannelMapping, PhantomExtractMode,
     SurroundPlacement,
 };
+use omniphony_osc_contract as osc_contract;
 
 /// What kind of value an option takes. Drives wire validation, the published
 /// schema, and (later) which Studio control the binder renders.
@@ -143,7 +144,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         flags: OptionFlags::PERSIST.or(OptionFlags::REPLAN),
         i18n_key: "twoDSources.surroundLabel",
         help_i18n_key: None,
-        legacy_control_addr: "/omniphony/control/surround_placement",
+        legacy_control_addr: osc_contract::CONTROL_SURROUND_PLACEMENT,
         set: |live, raw| match raw {
             RawOptionValue::Str(s) => {
                 let placement = SurroundPlacement::from_str(s)?;
@@ -169,7 +170,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         flags: OptionFlags::PERSIST.or(OptionFlags::REPLAN),
         i18n_key: "twoDSources.syntheticObjectsLabel",
         help_i18n_key: Some("help.syntheticObjects"),
-        legacy_control_addr: "/omniphony/control/synthetic_objects",
+        legacy_control_addr: osc_contract::CONTROL_SYNTHETIC_OBJECTS,
         set: |live, raw| {
             let enabled = match raw {
                 RawOptionValue::Number(n) => *n != 0.0,
@@ -199,7 +200,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         flags: OptionFlags::PERSIST,
         i18n_key: "renderer.decodeThreadLabel",
         help_i18n_key: Some("help.decodeThread"),
-        legacy_control_addr: "/omniphony/control/decode_thread",
+        legacy_control_addr: osc_contract::CONTROL_DECODE_THREAD,
         set: |live, raw| {
             let enabled = match raw {
                 RawOptionValue::Number(n) => *n != 0.0,
@@ -226,7 +227,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         flags: OptionFlags::PERSIST,
         i18n_key: "audio.channelMapping",
         help_i18n_key: None,
-        legacy_control_addr: "/omniphony/control/output_channel_mapping",
+        legacy_control_addr: osc_contract::CONTROL_OUTPUT_CHANNEL_MAPPING,
         set: |live, raw| match raw {
             RawOptionValue::Str(s) => {
                 let mapping = OutputChannelMapping::from_str(s)?;
@@ -252,7 +253,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         flags: OptionFlags::PERSIST.or(OptionFlags::REPLAN),
         i18n_key: "twoDSources.objectGeneratorLabel",
         help_i18n_key: Some("help.objectGenerator"),
-        legacy_control_addr: "/omniphony/control/object_generator",
+        legacy_control_addr: osc_contract::CONTROL_OBJECT_GENERATOR,
         set: |live, raw| match raw {
             RawOptionValue::Str(s) => {
                 if live.object_generator_id != *s {
@@ -282,7 +283,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         flags: OptionFlags::PERSIST.or(OptionFlags::REPLAN),
         i18n_key: "twoDSources.phantomLabel",
         help_i18n_key: Some("help.phantomExtract"),
-        legacy_control_addr: "/omniphony/control/phantom_extract",
+        legacy_control_addr: osc_contract::CONTROL_PHANTOM_EXTRACT,
         set: |live, raw| {
             let mode = match raw {
                 RawOptionValue::Str(s) => PhantomExtractMode::from_str(s)?,
@@ -328,7 +329,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         flags: OptionFlags::PERSIST,
         i18n_key: "renderer.crossoverTypeLabel",
         help_i18n_key: Some("help.crossoverType"),
-        legacy_control_addr: "/omniphony/control/crossover_type",
+        legacy_control_addr: osc_contract::CONTROL_CROSSOVER_TYPE,
         set: |live, raw| match raw {
             RawOptionValue::Str(s) => {
                 let crossover_type = CrossoverType::from_str(s)?;
@@ -361,7 +362,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         flags: OptionFlags::PERSIST,
         i18n_key: "renderer.crossoverTransitionLabel",
         help_i18n_key: Some("help.crossoverFirTransition"),
-        legacy_control_addr: "/omniphony/control/crossover_fir_transition_ratio",
+        legacy_control_addr: osc_contract::CONTROL_CROSSOVER_FIR_TRANSITION_RATIO,
         set: |live, raw| {
             let v = match raw {
                 RawOptionValue::Number(n) => *n as f32,
@@ -397,7 +398,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         flags: OptionFlags::PERSIST,
         i18n_key: "binaural.hrirUpdateLatticeLabel",
         help_i18n_key: Some("help.hrirUpdateLattice"),
-        legacy_control_addr: "/omniphony/control/binaural/hrir_update_lattice",
+        legacy_control_addr: osc_contract::CONTROL_BINAURAL_HRIR_UPDATE_LATTICE,
         set: |live, raw| match raw {
             RawOptionValue::Str(s) => {
                 let lattice = HrirUpdateLattice::from_str(s)?;
