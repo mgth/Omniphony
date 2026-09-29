@@ -21,6 +21,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RESTART_FROM_CONFIG_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Set with [`RESTART_FROM_CONFIG_REQUESTED`] by
+/// [`request_restart_keeping_live`]: the restart hands the unsaved live state
+/// over to the new pipeline, the way a shutdown hands it to the next instance,
+/// instead of discarding it.
+static RESTART_KEEPS_LIVE: AtomicBool = AtomicBool::new(false);
 static YIELDABLE: AtomicBool = AtomicBool::new(false);
 /// Whether the host runs a restart loop that honours
 /// [`request_restart_from_config`]. See [`set_restartable`].
@@ -344,6 +349,14 @@ impl ShutdownHandle {
     #[inline]
     pub fn clear_restart_from_config() {
         RESTART_FROM_CONFIG_REQUESTED.store(false, Ordering::Relaxed);
+        RESTART_KEEPS_LIVE.store(false, Ordering::Relaxed);
+    }
+
+    /// Returns `true` if the pending restart keeps the unsaved live state
+    /// (see [`request_restart_keeping_live`]).
+    #[inline]
+    pub fn is_restart_keeping_live() -> bool {
+        RESTART_KEEPS_LIVE.load(Ordering::Relaxed)
     }
 
     /// Return a platform-agnostic shutdown signal suitable for passing to
@@ -465,6 +478,15 @@ pub fn request_reload() {
 pub fn request_restart_from_config() {
     RESTART_FROM_CONFIG_REQUESTED.store(true, Ordering::Relaxed);
     wake(WAKE_RESTART_FROM_CONFIG);
+}
+
+/// Restart the render pipeline like [`request_restart_from_config`], but hand
+/// the unsaved live state over to it (the live-handoff sidecar) rather than
+/// discarding it: for a change only a restart applies, such as a new bridge,
+/// which must not force a Save of everything else.
+pub fn request_restart_keeping_live() {
+    RESTART_KEEPS_LIVE.store(true, Ordering::Relaxed);
+    request_restart_from_config();
 }
 
 // ─── systemd integration (Unix only) ─────────────────────────────────────────

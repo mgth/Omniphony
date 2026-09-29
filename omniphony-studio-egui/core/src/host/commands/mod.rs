@@ -299,10 +299,19 @@ pub(crate) mod tests {
     /// The same, with a waker a test can watch: what a command announces to the
     /// clock is part of its contract, since the clock is asleep otherwise.
     pub(crate) fn state_with_waker(waker: crate::osc::Waker) -> SharedState {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (state, rx) = state_with_outbox(waker);
         // Kept alive, so a send does not fail and change what is under test.
         std::mem::forget(rx);
-        SharedState {
+        state
+    }
+
+    /// The same, keeping the other end of the control channel, for a test
+    /// whose contract is what gets sent.
+    pub(crate) fn state_with_outbox(
+        waker: crate::osc::Waker,
+    ) -> (SharedState, std::sync::mpsc::Receiver<crate::osc::Control>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let state = SharedState {
             jobs: Default::default(),
             config: crate::host::config::RuntimeConfig::memory(),
             inner: Arc::new(Mutex::new(crate::osc::dispatch::Live::new(
@@ -319,6 +328,19 @@ pub(crate) mod tests {
             paths: HostPaths::default(),
             stats: crate::osc::OscStats::new(),
             waker,
-        }
+        };
+        (state, rx)
+    }
+
+    /// The addresses of every message sent so far, in order.
+    pub(crate) fn sent_addresses(
+        rx: &std::sync::mpsc::Receiver<crate::osc::Control>,
+    ) -> Vec<String> {
+        rx.try_iter()
+            .filter_map(|control| match control {
+                crate::osc::Control::Send { address, .. } => Some(address),
+                _ => None,
+            })
+            .collect()
     }
 }

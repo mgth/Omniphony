@@ -49,8 +49,9 @@ pub struct BroadcastUpdate {
 /// in the engine (`notify_changed` in `orender_engine::osc::dispatch`): mark
 /// the config dirty, broadcast `/state/config/saved = 0` so the Save button
 /// lights, then publish the new value to *every* registered client — not just
-/// the one that sent it, which already knows. The variants only differ in how
-/// the value travels.
+/// the one that sent it, which already knows. A change no Save is for
+/// ([`ControlEffects::view`], [`ControlEffects::transient`]) takes the same
+/// publication without the first two steps. The variants only differ in how the value travels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Notify {
     /// Broadcast the full live-state bundle right away. For discrete edits (a
@@ -73,7 +74,14 @@ pub struct ControlEffects {
     /// The write changed state the config file holds: mark it dirty and notify
     /// the clients, the way [`ControlEffects::notify`] says.
     pub mark_dirty: bool,
-    /// How clients learn about a `mark_dirty` change. Ignored otherwise.
+    /// The write changed live state that no Save is for
+    /// (docs/persistence-policy.md): view state, which `persist` writes right
+    /// away, or transient state, which is never written (a mute, a manual head
+    /// pose). Publish it the way [`ControlEffects::notify`] says and leave the
+    /// config clean.
+    pub publish_only: bool,
+    /// How clients learn about a `mark_dirty` or `publish_only` change.
+    /// Ignored otherwise.
     pub notify: Notify,
     pub trigger_layout_recompute: bool,
     /// When `trigger_layout_recompute` is set, whether this change is
@@ -85,9 +93,9 @@ pub struct ControlEffects {
     pub evaluation_only: bool,
     pub broadcasts: Vec<BroadcastUpdate>,
     pub log_message: Option<String>,
-    /// Config fields to write straight to `config.yaml` (a targeted,
-    /// sidecar-clearing write, see [`crate::persist::persist_ops`]) instead of
-    /// waiting for an explicit Save. The engine layer performs the I/O in
+    /// Config fields to write straight to `config.yaml` (a targeted write, see
+    /// [`crate::persist::persist_ops`]) instead of waiting for an explicit
+    /// Save. The engine layer performs the I/O in
     /// `apply_control_effects`.
     pub persist: Vec<crate::persist::PersistOp>,
 }
@@ -97,6 +105,27 @@ impl ControlEffects {
     pub fn dirty(notify: Notify) -> Self {
         Self {
             mark_dirty: true,
+            notify,
+            ..Self::default()
+        }
+    }
+
+    /// A view change announced the way `notify` says, persisted right away by
+    /// `persist` and never marking the config dirty.
+    pub fn view(notify: Notify, persist: crate::persist::PersistOp) -> Self {
+        Self {
+            publish_only: true,
+            notify,
+            persist: vec![persist],
+            ..Self::default()
+        }
+    }
+
+    /// A transient change announced the way `notify` says: never persisted,
+    /// never marking the config dirty.
+    pub fn transient(notify: Notify) -> Self {
+        Self {
+            publish_only: true,
             notify,
             ..Self::default()
         }
@@ -172,6 +201,8 @@ struct LayoutAddSpeakerPatch {
     distance: Option<f32>,
     spatialize: Option<bool>,
     delay_ms: Option<f32>,
+    /// The speaker's saved output gain, when the layout carries one.
+    gain_db: Option<f32>,
     #[serde(default, deserialize_with = "double_option")]
     freq_low: Option<Option<f32>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -564,6 +595,9 @@ fn build_layout_speaker_from_patch(
     if let Some(freq_high) = patch.freq_high {
         speaker.freq_high = freq_high.filter(|value| *value > 0.0);
     }
+    if let Some(gain_db) = patch.gain_db.filter(|value| value.is_finite()) {
+        speaker.gain_db = gain_db.max(renderer::live_params::SPEAKER_GAIN_FLOOR_DB);
+    }
     if patch.coord_mode.as_deref().is_some() {
         speaker.coord_mode = normalize_coord_mode(patch.coord_mode.as_deref()).to_string();
     }
@@ -614,27 +648,18 @@ pub fn apply_simple_osc_control(
                     .map(|(idx, sp)| build_layout_speaker_from_patch(sp, format!("spk-{idx}")))
                     .collect();
                 // Per-speaker live params are keyed by position, so a wholesale
-                // swap invalidates every entry — capture the new delays before
-                // moving the speakers into the layout.
-                let delays: Vec<(usize, f32)> = new_speakers
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, spk)| spk.delay_ms > 0.0)
-                    .map(|(idx, spk)| (idx, spk.delay_ms))
-                    .collect();
-                ctx.renderer.with_editable_layout(|layout| {
+                // swap invalidates every entry: reseed them from the new
+                // speakers' delays and gains.
+                // (The live lock is taken after the layout's is released: the
+                // save path holds the live lock while it reads the layout.)
+                let speakers = ctx.renderer.with_editable_layout(|layout| {
                     if let Some(radius_m) = replace.radius_m {
                         layout.radius_m = radius_m.max(0.01);
                     }
                     layout.speakers = new_speakers;
+                    renderer::live_params::speaker_live_from_layout(layout)
                 });
-                {
-                    let mut live = ctx.renderer.live.write();
-                    live.speakers.clear();
-                    for (idx, delay_ms) in delays {
-                        live.speakers.entry(idx).or_default().delay_ms = delay_ms;
-                    }
-                }
+                ctx.renderer.live.write().speakers = speakers;
                 ctx.renderer.mark_speaker_params_dirty();
                 changed = true;
             }
@@ -770,6 +795,8 @@ pub fn apply_simple_osc_control(
                         ctx.renderer.mark_speaker_params_dirty();
                         changed = true;
                     }
+                    // A mute is a listening gesture, not a setting: it is
+                    // published, never saved (docs/persistence-policy.md).
                     if let Some(muted) = speaker_patch.muted {
                         ctx.renderer
                             .live
@@ -779,7 +806,7 @@ pub fn apply_simple_osc_control(
                             .or_default()
                             .muted = muted;
                         ctx.renderer.mark_speaker_params_dirty();
-                        changed = true;
+                        effects.publish_only = true;
                     }
                 }
             }
@@ -790,9 +817,9 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    // metering/rate_hz and diag/rate_hz are handled by the OSC layer
-    // (orender_engine::osc::dispatch) against RendererControl — the single
-    // source of truth for both, persisted to config.
+    // metering/rate_hz and diag/rate_hz are handled by `live_control` against
+    // RendererControl — the single source of truth for both, persisted to
+    // config as view state.
 
     if addr == osc_contract::CONTROL_RENDER_BACKEND {
         // Accept built-in ids/aliases (e.g. "distance") and any registered backend
@@ -1153,7 +1180,8 @@ pub fn apply_simple_osc_control(
         let roll = parse_f32_arg(msg.args.get(2)).unwrap_or(0.0);
         let mut live = ctx.renderer.live.write();
         live.binaural.head_pose = renderer::binaural::HeadPose::from_euler_deg(yaw, pitch, roll);
-        effects.mark_dirty = true;
+        // A manual pose, like the tracker's, is transient: never saved.
+        effects.publish_only = true;
         effects.log_message = Some(format!("OSC: head/orientation -> {yaw},{pitch},{roll}"));
         return Some(effects);
     }
@@ -1166,7 +1194,8 @@ pub fn apply_simple_osc_control(
         let z = parse_f32_arg(msg.args.get(3)).unwrap_or(0.0);
         let mut live = ctx.renderer.live.write();
         live.binaural.head_pose = renderer::binaural::HeadPose::from_quat(w, x, y, z);
-        effects.mark_dirty = true;
+        // A manual pose, like the tracker's, is transient: never saved.
+        effects.publish_only = true;
         effects.log_message = Some("OSC: head/quat".to_string());
         return Some(effects);
     }
@@ -1535,14 +1564,18 @@ pub fn apply_simple_osc_control(
                 if done || step == renderer::binaural::CalibrationStep::Reset {
                     effects.persist.push(crate::persist::PersistOp::HEAD_AXES);
                 }
-                effects.mark_dirty = true;
+                // A calibration of the sensor on the listener's head: written
+                // at once, never behind the Save button
+                // (docs/persistence-policy.md).
+                effects.publish_only = true;
                 effects.log_message = Some(format!(
                     "OSC: head/calibrate {step:?}{}",
                     if done { " — axes calibrated" } else { "" }
                 ));
             }
             Err(reason) => {
-                effects.mark_dirty = true;
+                // Nothing changed, but the step's state is published.
+                effects.publish_only = true;
                 effects.log_message =
                     Some(format!("OSC: head/calibrate {step:?} refused: {reason}"));
             }
@@ -1559,7 +1592,7 @@ pub fn apply_simple_osc_control(
         // Persist the new reference to config right away so the centering survives
         // an engine rebuild (mpv track change) and a restart.
         effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
-        effects.mark_dirty = true;
+        effects.publish_only = true;
         effects.log_message = Some("OSC: head/recenter".to_string());
         return Some(effects);
     }
@@ -2151,7 +2184,8 @@ pub fn apply_simple_osc_control(
                         .or_default()
                         .muted = muted;
                     ctx.renderer.mark_object_params_dirty();
-                    effects.mark_dirty = true;
+                    // Transient, like a speaker mute: its own state address
+                    // publishes it, and no Save is for it.
                     effects.broadcasts.push(BroadcastUpdate {
                         addr: format!("/omniphony/state/object/{}/mute", idx),
                         value: BroadcastValue::Int(if muted { 1 } else { 0 }),
@@ -2319,5 +2353,87 @@ mod freq_cutoff_clear_tests {
         }
         assert_eq!(parse_f32_arg(None), None);
         assert_eq!(parse_bool_arg(None), None);
+    }
+}
+
+/// What a write does to the Save button (docs/persistence-policy.md).
+#[cfg(test)]
+mod persistence_class_tests {
+    use super::*;
+
+    fn apply(addr: &str, args: Vec<OscType>) -> (ControlEffects, RuntimeControlContext) {
+        let ctx = RuntimeControlContext::new(crate::test_support::fixture_control());
+        let msg = OscMessage {
+            addr: addr.to_string(),
+            args,
+        };
+        let effects = apply_simple_osc_control(&msg, &ctx).expect("handled");
+        (effects, ctx)
+    }
+
+    /// Mutes and a manual head pose are listening gestures: published to
+    /// every client, never saved, so they must not light the Save button.
+    #[test]
+    fn transient_writes_leave_the_config_clean() {
+        let (effects, ctx) = apply(
+            osc_contract::CONTROL_CONFIG_SPEAKERS,
+            vec![OscType::String(
+                r#"{"speakerEdits":[{"id":0,"muted":true}]}"#.into(),
+            )],
+        );
+        assert!(!effects.mark_dirty, "speaker mute");
+        assert!(effects.publish_only, "speaker mute is still published");
+        assert!(ctx.renderer.live.read().speakers[&0].muted);
+
+        let (effects, _) = apply(
+            osc_contract::CONTROL_HEAD_ORIENTATION,
+            vec![
+                OscType::Float(30.0),
+                OscType::Float(0.0),
+                OscType::Float(0.0),
+            ],
+        );
+        assert!(!effects.mark_dirty, "head orientation");
+        assert!(effects.publish_only);
+
+        let (effects, ctx) = apply(
+            &format!("{}3/mute", osc_contract::CONTROL_OBJECT_PREFIX),
+            vec![OscType::Int(1)],
+        );
+        assert!(!effects.mark_dirty, "object mute");
+        assert_eq!(
+            effects.broadcasts.len(),
+            1,
+            "object mute is still published"
+        );
+        assert!(ctx.renderer.live.read().objects[&3].muted);
+    }
+
+    /// A delay in the same patch as a mute is a setting: the patch dirties.
+    #[test]
+    fn a_delay_next_to_a_mute_still_waits_for_save() {
+        let (effects, _) = apply(
+            osc_contract::CONTROL_CONFIG_SPEAKERS,
+            vec![OscType::String(
+                r#"{"speakerEdits":[{"id":0,"muted":true,"delayMs":2.5}]}"#.into(),
+            )],
+        );
+        assert!(effects.mark_dirty);
+    }
+
+    /// A replaced layout seeds the live output gains from the speakers it
+    /// carries, as a boot does.
+    #[test]
+    fn a_replaced_layout_seeds_its_speaker_gains() {
+        let (_, ctx) = apply(
+            osc_contract::CONTROL_CONFIG_LAYOUT,
+            vec![OscType::String(
+                r#"{"replaceLayout":{"speakers":[{"name":"L","azimuth":30,"gainDb":-6},{"name":"R","azimuth":-30}]}}"#
+                    .into(),
+            )],
+        );
+        let live = ctx.renderer.live.read();
+        assert!((live.speakers[&0].gain - 0.501).abs() < 1e-3);
+        assert!(!live.speakers.contains_key(&1), "unity needs no entry");
     }
 }

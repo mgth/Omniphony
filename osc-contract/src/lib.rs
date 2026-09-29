@@ -282,6 +282,10 @@ pub const CONTROL_RAMP_MODE: &str = "/omniphony/control/ramp_mode";
 pub const CONTROL_REALTIME_MASTER_GAIN: &str = "/omniphony/control/realtime/master_gain";
 pub const CONTROL_REALTIME_SPEAKER_GAIN: &str = "/omniphony/control/realtime/speaker_gain";
 pub const CONTROL_RELOAD_CONFIG: &str = "/omniphony/control/reload_config";
+/// Restart the render pipeline, keeping the unsaved live state (it comes back
+/// unsaved). For a change only a restart applies, such as a new bridge.
+/// Honoured by a restartable (CLI) instance only.
+pub const CONTROL_RESTART: &str = "/omniphony/control/restart";
 /// Start or stop the per-speaker test signal (band-limited pink noise).
 ///
 /// Args: `[speaker_idx: Int, level: Float, isolation: String]`. A negative
@@ -642,6 +646,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_REALTIME_MASTER_GAIN,
     CONTROL_REALTIME_SPEAKER_GAIN,
     CONTROL_RELOAD_CONFIG,
+    CONTROL_RESTART,
     CONTROL_SPEAKER_TEST,
     CONTROL_SPEAKER_TEST_IDLE_FEED,
     CONTROL_RENDER_BACKEND,

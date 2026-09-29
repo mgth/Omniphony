@@ -448,7 +448,10 @@ pub fn build_speakers_state_json(
             let live_state = live.speakers.get(&idx);
             json!({
                 "id": idx,
-                "gain": live_state.map(|state| state.gain).unwrap_or(1.0),
+                "gain": live_state.map_or_else(
+                    || renderer::live_params::speaker_gain_linear(speaker.gain_db),
+                    |state| state.gain
+                ),
                 "delayMs": live_state
                     .map(|state| state.delay_ms)
                     .unwrap_or(speaker.delay_ms)

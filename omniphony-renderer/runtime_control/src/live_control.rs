@@ -45,21 +45,34 @@ pub fn apply_live_control(msg: &OscMessage, ctx: &RuntimeControlContext) -> Opti
     }
 
     // Monitoring cadences live on RendererControl (the source of truth): both
-    // CLI and embedded engine read them, they persist to config, and they are
-    // broadcast in the live-state bundle.
+    // CLI and embedded engine read them, and they are broadcast in the
+    // live-state bundle. They shape what clients display, not what anyone
+    // hears, so they are view state: written to config at once, never behind
+    // the Save button. Studio re-sends the diag rate every second while its
+    // plot is open, so an unchanged value must cost nothing.
     if addr == osc_contract::CONTROL_METERING_RATE_HZ || addr == osc_contract::CONTROL_DIAG_RATE_HZ
     {
         let Some(hz) = parse_f32_arg(msg.args.first()).filter(|hz| hz.is_finite()) else {
             return Some(ControlEffects::default());
         };
-        let (what, applied) = if addr == osc_contract::CONTROL_METERING_RATE_HZ {
+        let (what, before, applied, persist) = if addr == osc_contract::CONTROL_METERING_RATE_HZ {
+            let before = control.meter_rate_hz();
             control.set_meter_rate_hz(hz);
-            ("metering", control.meter_rate_hz())
+            (
+                "metering",
+                before,
+                control.meter_rate_hz(),
+                PersistOp::METER_RATE,
+            )
         } else {
+            let before = control.diag_rate_hz();
             control.set_diag_rate_hz(hz);
-            ("diag", control.diag_rate_hz())
+            ("diag", before, control.diag_rate_hz(), PersistOp::DIAG_RATE)
         };
-        let mut effects = ControlEffects::dirty(Notify::Snapshot);
+        if applied == before {
+            return Some(ControlEffects::default());
+        }
+        let mut effects = ControlEffects::view(Notify::Snapshot, persist);
         effects.log_message = Some(format!("OSC {what} rate set to {applied:.1} Hz"));
         return Some(effects);
     }
@@ -358,8 +371,30 @@ mod tests {
             &ctx,
         )
         .expect("handled");
-        assert!(effects.mark_dirty);
+        assert!(!effects.mark_dirty, "a cadence is view state, not a Save");
+        assert!(effects.publish_only);
         assert_eq!(effects.notify, Notify::Snapshot);
+        assert_eq!(effects.persist.len(), 1);
         assert_eq!(ctx.renderer.diag_rate_hz(), 12.0);
+    }
+
+    /// Studio re-sends the diag rate every second while its plot is open: the
+    /// same value again must neither publish, nor write, nor dirty anything.
+    #[test]
+    fn an_unchanged_monitoring_rate_is_a_no_op() {
+        let ctx = ctx();
+        for addr in [
+            osc_contract::CONTROL_METERING_RATE_HZ,
+            osc_contract::CONTROL_DIAG_RATE_HZ,
+        ] {
+            let set = || {
+                apply_live_control(&msg(addr, vec![OscType::Float(25.0)]), &ctx).expect("handled")
+            };
+            assert!(set().publish_only, "{addr}: the first write is a change");
+            let again = set();
+            assert!(!again.mark_dirty, "{addr}");
+            assert!(!again.publish_only, "{addr}");
+            assert!(again.persist.is_empty(), "{addr}");
+        }
     }
 }

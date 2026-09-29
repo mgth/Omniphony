@@ -1002,25 +1002,50 @@ impl ObjectTestRotation {
     }
 }
 
-/// Per-speaker live params seeded from a layout: only the configured delays
-/// (gains/mutes are runtime-only and start at defaults). Shared by renderer
-/// construction and the live profile switch so the two cannot drift.
+/// Per-speaker live params seeded from a layout: the configured delays and
+/// output gains (mutes are transient and start unmuted). Shared by renderer
+/// construction, a layout replacement and the live profile switch so they
+/// cannot drift.
 pub fn speaker_live_from_layout(
     layout: &crate::speaker_layout::SpeakerLayout,
 ) -> std::collections::HashMap<usize, SpeakerLiveParams> {
     let mut speakers = std::collections::HashMap::new();
     for (idx, spk) in layout.speakers.iter().enumerate() {
-        if spk.delay_ms != 0.0 {
+        if spk.delay_ms != 0.0 || spk.gain_db != 0.0 {
             speakers.insert(
                 idx,
                 SpeakerLiveParams {
                     delay_ms: spk.delay_ms.max(0.0),
+                    gain: speaker_gain_linear(spk.gain_db),
                     ..Default::default()
                 },
             );
         }
     }
     speakers
+}
+
+/// Quietest output gain a layout stores, in dB: a speaker turned fully down
+/// saves as this rather than as negative infinity.
+pub const SPEAKER_GAIN_FLOOR_DB: f32 = -120.0;
+
+/// A live linear speaker gain as the layout's `gain_db`, to 0.1 dB (the
+/// resolution Studio edits it at).
+pub fn speaker_gain_db(gain: f32) -> f32 {
+    if gain <= 0.0 || !gain.is_finite() {
+        return SPEAKER_GAIN_FLOOR_DB;
+    }
+    let db = (20.0 * gain.log10()).max(SPEAKER_GAIN_FLOOR_DB);
+    (db * 10.0).round() / 10.0
+}
+
+/// A layout's `gain_db` as the live linear speaker gain.
+pub fn speaker_gain_linear(gain_db: f32) -> f32 {
+    if gain_db <= SPEAKER_GAIN_FLOOR_DB {
+        0.0
+    } else {
+        10.0_f32.powf(gain_db / 20.0)
+    }
 }
 
 #[derive(Clone, Copy)]

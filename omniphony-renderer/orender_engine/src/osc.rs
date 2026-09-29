@@ -870,10 +870,13 @@ impl Drop for OscSender {
         // Graceful-shutdown handoff, done while the RX port is still held so a
         // successor polling for the port is guaranteed to see the sidecar by
         // the time the port frees up. Skipped on reload_config, whose contract
-        // is "discard live state and re-read the config".
+        // is "discard live state and re-read the config"; kept on a restart
+        // that hands the live state over to the next pipeline.
         let reloading = sys::ShutdownHandle::is_restart_from_config_requested();
-        if !reloading {
+        if !reloading || sys::ShutdownHandle::is_restart_keeping_live() {
             self.write_live_handoff_sidecar();
+        }
+        if !reloading {
             // Goodbye broadcast: lets clients reconnect to the next instance
             // immediately instead of waiting out their heartbeat timeout.
             let goodbye = OscMessage {
