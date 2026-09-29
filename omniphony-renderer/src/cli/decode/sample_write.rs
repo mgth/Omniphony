@@ -6,6 +6,8 @@ use anyhow::Result;
 use audio_input::InputControl;
 use bridge_api::RChannelLabel;
 use bridge_api::RDecodedFrame;
+use orender_engine::channel_objects::{ChannelObjectStages, FixedProcessingReport};
+use orender_engine::object_gen::layout_has_height;
 use orender_engine::render::fill_pcm_f32_drc;
 use orender_engine::virtual_bed::{
     BedPlanKind, OwnedPlacement, RoomRatios, build_virtual_bed_objects,
@@ -258,6 +260,25 @@ impl<'a> SampleWriteCoordinator<'a> {
                             "current frame"
                         }
                     );
+                    {
+                        let control = renderer.renderer_control();
+                        let fixed_end = frame
+                            .channel_labels
+                            .iter()
+                            .position(|label| *label == RChannelLabel::Object)
+                            .unwrap_or(frame.channel_labels.len());
+                        let report = FixedProcessingReport {
+                            stream_has_objects: true,
+                            family: self.spatial.source_family,
+                            source_label: &self.spatial.source_label,
+                            labels: &frame.channel_labels[..fixed_end],
+                            output_has_height: layout_has_height(
+                                &control.active_topology().speaker_layout,
+                            ),
+                            stages: ChannelObjectStages::selection_from_control(&control),
+                        };
+                        self.spatial.fixed_processing.publish(&control, &report);
+                    }
 
                     fill_pcm_f32_drc(
                         &mut pcm_f32_scratch,
@@ -477,7 +498,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                     let control = renderer.renderer_control();
                     let topology = control.active_topology();
                     let output_layout = &topology.speaker_layout;
-                    let stage_counts = {
+                    let stage_sync = {
                         let ctx = orender_engine::object_gen::PrepareCtx {
                             input_labels: labels,
                             output_layout,
@@ -487,8 +508,19 @@ impl<'a> SampleWriteCoordinator<'a> {
                         self.spatial
                             .channel_objects
                             .sync_from_control(&control, &ctx)
-                            .counts
                     };
+                    let stage_counts = stage_sync.counts;
+                    self.spatial.fixed_processing.publish(
+                        &control,
+                        &FixedProcessingReport {
+                            stream_has_objects: false,
+                            family: self.spatial.source_family,
+                            source_label: &self.spatial.source_label,
+                            labels,
+                            output_has_height: layout_has_height(output_layout),
+                            stages: stage_sync,
+                        },
+                    );
                     let events = self.spatial.channel_objects.events(channel_count);
                     self.spatial.bed_events.extend(events);
 

@@ -23,7 +23,9 @@
 
 use std::collections::HashMap;
 
+use bridge_api::RChannelLabel;
 use renderer::live_params::{PhantomExtractMode, RendererControl};
+use renderer::placement::SourceFamily;
 use renderer::spatial_renderer::SpatialChannelEvent;
 
 use crate::object_gen::{ObjectGenStage, ObjectGeneratorFactory, PrepareCtx, SynthObjectSpec};
@@ -225,6 +227,36 @@ impl ChannelObjectStages {
         StageCounts { phantom, synth }
     }
 
+    /// Publish the Studio state that describes this machinery rather than the
+    /// stream: the generator catalogue with each generator's parameter
+    /// schema, the phantom-extraction parameter schema, and the fixed-channel
+    /// catalogue (every channel label with its default poses). Both hosts call
+    /// it once their stages exist, and again after registering a generator.
+    pub fn publish_static_state(&self, control: &RendererControl) {
+        control.set_object_generators_schema(self.generator_listings_json());
+        control.set_phantom_schema(Self::phantom_schema_json());
+        control.set_fixed_channel_catalog(crate::virtual_bed::fixed_channel_catalog_json());
+    }
+
+    /// The stage selection in the live params, with nothing planned: what an
+    /// object stream reports, whose channels never reach the stages.
+    pub fn selection_from_control(control: &RendererControl) -> StageSync {
+        let options_epoch = control.options_epoch();
+        let live = control.live.read();
+        let selection = StageSelection {
+            synthetic_objects_enabled: live.synthetic_objects_enabled,
+            phantom_mode: live.phantom_extract_mode,
+            generator_id: &live.object_generator_id,
+        };
+        StageSync {
+            counts: StageCounts::default(),
+            synthetic_objects_enabled: selection.synthetic_objects_enabled,
+            phantom_mode: selection.phantom_mode,
+            generator_selected: selection.generator_selected(),
+            options_epoch,
+        }
+    }
+
     /// Read the stage selection and parameters off the live params (one read
     /// lock, nothing cloned), (re)plan both stages and push their parameters —
     /// what both hosts do on every channel frame.
@@ -390,6 +422,123 @@ impl Default for ChannelObjectStages {
     }
 }
 
+/// The stream's side of the fixed-channel processing diagnostic.
+pub struct FixedProcessingReport<'a> {
+    /// An object stream: its fixed channels never reach the stages.
+    pub stream_has_objects: bool,
+    pub family: SourceFamily,
+    /// The bridge's name for the format (`FormatBridge::source_label`).
+    pub source_label: &'a str,
+    /// The fixed channels: the whole bed, or an object stream's prefix.
+    pub labels: &'a [RChannelLabel],
+    pub output_has_height: bool,
+    pub stages: StageSync,
+}
+
+#[derive(Clone, PartialEq)]
+struct FixedProcessingSig {
+    stream_has_objects: bool,
+    family: SourceFamily,
+    source_label: String,
+    labels: Vec<RChannelLabel>,
+    output_has_height: bool,
+    stages: StageSync,
+}
+
+/// The fixed-channel processing diagnostic Studio shows
+/// (`RendererControl::set_fixed_channel_processing`): whether phantom
+/// extraction and the height lift run on the current stream, and if not,
+/// why. Published by both hosts, and rebuilt only when what it reports
+/// changes — never on every frame.
+#[derive(Default)]
+pub struct FixedProcessingState {
+    sig: Option<FixedProcessingSig>,
+}
+
+impl FixedProcessingState {
+    /// The state with no stream (and forget the last one published).
+    pub fn reset(&mut self, control: &RendererControl) {
+        self.sig = None;
+        control.set_fixed_channel_processing(
+            r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
+                .to_string(),
+        );
+    }
+
+    pub fn publish(&mut self, control: &RendererControl, report: &FixedProcessingReport) {
+        let FixedProcessingReport {
+            stream_has_objects,
+            family,
+            source_label,
+            labels,
+            output_has_height,
+            stages,
+        } = *report;
+        let unchanged = self.sig.as_ref().is_some_and(|sig| {
+            sig.stream_has_objects == stream_has_objects
+                && sig.family == family
+                && sig.source_label == source_label
+                && sig.labels.as_slice() == labels
+                && sig.output_has_height == output_has_height
+                && sig.stages == stages
+        });
+        if unchanged {
+            return;
+        }
+        self.sig = Some(FixedProcessingSig {
+            stream_has_objects,
+            family,
+            source_label: source_label.to_string(),
+            labels: labels.to_vec(),
+            output_has_height,
+            stages,
+        });
+
+        let phantom = if stages.phantom_mode == PhantomExtractMode::Off {
+            "off"
+        } else if !stages.synthetic_objects_enabled {
+            "master_off"
+        } else if stream_has_objects {
+            "object_stream"
+        } else if stages.counts.phantom > 0 {
+            "active"
+        } else {
+            "insufficient_channels"
+        };
+        let input_has_height = crate::object_gen::input_has_height(labels);
+        let height = if !stages.generator_selected {
+            "off"
+        } else if !stages.synthetic_objects_enabled {
+            "master_off"
+        } else if stream_has_objects {
+            "object_stream"
+        } else if input_has_height {
+            "input_has_height"
+        } else if !output_has_height {
+            "output_has_no_height"
+        } else if stages.counts.synth > 0 {
+            "active"
+        } else {
+            "insufficient_channels"
+        };
+        let names: Vec<&str> = labels
+            .iter()
+            .map(|&label| bridge_api::labels::canonical_name(label))
+            .collect();
+        let state = serde_json::json!({
+            "stream": if stream_has_objects { "objects" } else { "fixed" },
+            "family": family.as_str(),
+            "label": source_label,
+            "labels": names,
+            "inputHasHeight": input_has_height,
+            "outputHasHeight": output_has_height,
+            "phantom": phantom,
+            "height": height,
+        });
+        control.set_fixed_channel_processing(state.to_string());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,6 +654,78 @@ mod tests {
                 assert_eq!(row[c + counts.phantom + k], row[src], "lift of ch {src}");
             }
         }
+    }
+
+    /// What a host publishes once its stages exist: the three catalogues
+    /// Studio builds its controls from, none of them left at the empty default.
+    #[test]
+    fn static_state_publishes_every_catalogue() {
+        let renderer = renderer_7_1_4();
+        let control = renderer.renderer_control();
+        ChannelObjectStages::new().publish_static_state(&control);
+        for (what, json) in [
+            ("generators", control.object_generators_schema()),
+            ("phantom", control.phantom_schema()),
+            ("catalogue", control.fixed_channel_catalog()),
+        ] {
+            let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+            assert!(
+                value.as_array().is_some_and(|a| !a.is_empty())
+                    || value.as_object().is_some_and(|o| !o.is_empty()),
+                "{what} published empty: {json}"
+            );
+        }
+    }
+
+    /// The diagnostic reports why each stage does (not) run, and is rebuilt
+    /// only when what it reports changes.
+    #[test]
+    fn fixed_processing_state_reports_and_resets() {
+        use bridge_api::RChannelLabel::*;
+        let renderer = renderer_7_1_4();
+        let control = renderer.renderer_control();
+        let mut state = FixedProcessingState::default();
+        let stages = StageSync {
+            counts: StageCounts {
+                phantom: 5,
+                synth: 0,
+            },
+            synthetic_objects_enabled: true,
+            phantom_mode: PhantomExtractMode::Broadband,
+            generator_selected: true,
+            options_epoch: 0,
+        };
+        let labels = [L, R, C, LFE, Ls, Rs];
+        let report = FixedProcessingReport {
+            stream_has_objects: false,
+            family: SourceFamily::Dts,
+            source_label: "DTS-HD MA",
+            labels: &labels,
+            output_has_height: false,
+            stages,
+        };
+        state.publish(&control, &report);
+        let json: serde_json::Value =
+            serde_json::from_str(&control.fixed_channel_processing()).expect("valid JSON");
+        assert_eq!(json["stream"], "fixed");
+        assert_eq!(json["family"], "dts");
+        assert_eq!(json["label"], "DTS-HD MA");
+        assert_eq!(json["labels"][4], "Ls");
+        assert_eq!(json["phantom"], "active");
+        assert_eq!(json["height"], "output_has_no_height");
+
+        let generation = control.live_state_generation();
+        state.publish(&control, &report);
+        assert_eq!(
+            control.live_state_generation(),
+            generation,
+            "unchanged → no republish"
+        );
+
+        state.reset(&control);
+        let json: serde_json::Value =
+            serde_json::from_str(&control.fixed_channel_processing()).expect("valid JSON");
+        assert_eq!(json["stream"], "idle");
     }
 
     /// With nothing planned the bed must come back untouched, not copied into

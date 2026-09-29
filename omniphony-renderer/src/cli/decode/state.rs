@@ -140,6 +140,11 @@ pub struct SpatialState {
     /// segment resets: a segment start or a label change comes with a new one.
     pub source_family: SourceFamily,
     pub declared_poses: Vec<RChannelPose>,
+    /// The bridge's name for the format, from the same declaration.
+    pub source_label: String,
+    /// The fixed-channel processing diagnostic Studio shows, as the embedded
+    /// engine publishes it.
+    pub fixed_processing: orender_engine::channel_objects::FixedProcessingState,
     pub object_names: std::collections::HashMap<u32, String>,
     pub au_index: u64,
     pub frame_events: Vec<renderer::spatial_renderer::SpatialChannelEvent>,
@@ -159,6 +164,8 @@ impl Default for SpatialState {
             object_channels: Vec::new(),
             source_family: SourceFamily::Generic,
             declared_poses: Vec::new(),
+            source_label: String::new(),
+            fixed_processing: Default::default(),
             object_names: std::collections::HashMap::new(),
             au_index: 0,
             frame_events: Vec::new(),
