@@ -1569,69 +1569,36 @@ impl Engine {
 
             // Borrowed from the live topology rather than `speaker_layout()`,
             // which hands back a deep copy of the whole layout.
-            let topology = self.renderer.renderer_control().active_topology();
+            let control = self.renderer.renderer_control();
+            let topology = control.active_topology();
             let output_layout = &topology.speaker_layout;
-            let (
-                surround_placement,
-                object_generator_id,
-                synthetic_objects_enabled,
-                phantom_extract_mode,
-                options_epoch,
-            ) = {
-                let control = self.renderer.renderer_control();
-                let live = control.live.read();
-                (
-                    live.surround_placement,
-                    live.object_generator_id.clone(),
-                    live.synthetic_objects_enabled,
-                    live.phantom_extract_mode,
-                    control.options_epoch(),
-                )
-            };
 
-            // Bed→height object generator (2D upmix): plan synthesized height
-            // objects for channel content on a height-capable layout. No-op
-            // unless a generator is selected and the gating passes. The static
-            // positions/names are planned here (before the OSC object emit); the
-            // audio for the new object channels is filled after the bed PCM is
-            // built, below — they then ride the existing object/VBAP path.
+            // Synthesize objects from the bed (phantom extraction, then the
+            // bed→height lift), placed from the poses the bed plan resolved.
+            // Planned here, before the OSC object emit; the audio for the new
+            // object channels is filled after the bed PCM is built, below —
+            // phantom objects in the slots right after the bed, the height
+            // objects past them — and rides the existing object/VBAP path.
             let ctx = object_gen::PrepareCtx {
                 input_labels: labels,
                 output_layout,
                 sample_rate,
                 bed_poses: self.bed_planner.poses(),
             };
-            // Phantom-extraction pre-stage runs first: its planar objects occupy the
-            // channel slots right after the bed; the height-lift objects follow. The
-            // audio (and the bed reduction) is applied after the bed PCM is built.
-            let selection = channel_objects::StageSelection {
-                synthetic_objects_enabled,
-                phantom_mode: phantom_extract_mode,
-                generator_id: object_generator_id.as_str(),
-            };
-            let counts = self.stages.sync(&ctx, &selection, options_epoch);
-            phantom_count = counts.phantom;
-            synth_count = counts.synth;
+            let sync = self.stages.sync_from_control(&control, &ctx);
+            phantom_count = sync.counts.phantom;
+            synth_count = sync.counts.synth;
             self.publish_fixed_processing_state(
                 false,
                 labels,
-                options_epoch,
+                sync.options_epoch,
                 object_gen::layout_has_height(output_layout),
                 phantom_count,
                 synth_count,
-                synthetic_objects_enabled,
-                phantom_extract_mode,
-                selection.generator_selected(),
+                sync.synthetic_objects_enabled,
+                sync.phantom_mode,
+                sync.generator_selected,
             );
-            if counts.any() {
-                let control = self.renderer.renderer_control();
-                let live = control.live.read();
-                self.stages.push_params(
-                    &live.phantom_params,
-                    &live.object_generator_params,
-                    sample_rate,
-                );
-            }
             // Phantom objects first (channels [channel_count ..]), then the height
             // objects offset past them.
             self.frame_events.extend(self.stages.events(channel_count));
@@ -1643,12 +1610,12 @@ impl Engine {
                 // Only the display path needs the bed layout and the room
                 // ratios, so they are read (and the layout copied) here rather
                 // than on every frame — with no client attached, never.
-                let (placement, room) = {
-                    let control = self.renderer.renderer_control();
+                let (placement, room, surround_placement) = {
                     let live = control.live.read();
                     (
                         virtual_bed::OwnedPlacement::from_live(&live, self.source_family),
                         virtual_bed::RoomRatios::from_live(&live),
+                        live.surround_placement,
                     )
                 };
                 let mut objects = virtual_bed::build_virtual_bed_objects(

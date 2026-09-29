@@ -26,9 +26,9 @@
 //! channels untouched.
 //!
 //! Like the object generators it runs in the realtime audio thread: all setup is
-//! in [`PhantomExtractStage::sync`]; the per-frame DSP in
-//! [`PhantomExtractStage::process_and_extend`] does not allocate (steady state)
-//! and never panics.
+//! in [`PhantomExtractStage::sync`]; the per-frame DSP (driven through
+//! [`crate::channel_objects::ChannelObjectStages`]) does not allocate (steady
+//! state) and never panics.
 
 use crate::object_gen::ObjectKind;
 use bridge_api::RChannelLabel;
@@ -667,10 +667,6 @@ pub struct PhantomExtractStage {
     /// method (the arc/pair units above are then all `None`/empty).
     spectral: Option<SpectralExtractor>,
     specs: Vec<SynthObjectSpec>,
-    /// Per-phantom planar audio scratch (persistent).
-    planar: Vec<Vec<f32>>,
-    /// Extended interleaved PCM (reduced bed + phantom object channels).
-    pcm_ext: Vec<f32>,
     sig: PlanSig,
     strength: f32,
     passes: usize,
@@ -699,8 +695,6 @@ impl PhantomExtractStage {
             pairs: Vec::new(),
             spectral: None,
             specs: Vec::new(),
-            planar: Vec::new(),
-            pcm_ext: Vec::new(),
             sig: PlanSig::default(),
             strength: PHANTOM_DEFAULT_STRENGTH,
             passes: 1,
@@ -801,7 +795,6 @@ impl PhantomExtractStage {
         let fs = ctx.sample_rate.max(1) as f32;
         self.alpha = one_pole_coeff(PHANTOM_STAT_TC_MS, fs);
         if !enabled {
-            self.planar.clear();
             return;
         }
         if self.method == ExtractMethod::Spectral {
@@ -810,8 +803,6 @@ impl PhantomExtractStage {
                 self.specs = ext.specs(self.lift as f64);
                 self.spectral = Some(ext);
             }
-            self.planar.truncate(self.specs.len());
-            self.planar.resize_with(self.specs.len(), Vec::new);
             return;
         }
         // Present, positionable floor channels with their position + azimuth,
@@ -827,7 +818,6 @@ impl PhantomExtractStage {
             }
         }
         if chans.len() < 2 {
-            self.planar.clear();
             return;
         }
         chans.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
@@ -982,8 +972,6 @@ impl PhantomExtractStage {
                 ));
             }
         }
-        self.planar.truncate(self.specs.len());
-        self.planar.resize_with(self.specs.len(), Vec::new);
     }
 
     /// Refresh every phantom's position from its smoothed per-side correlated
@@ -1011,66 +999,34 @@ impl PhantomExtractStage {
         }
     }
 
-    /// Run the extraction (mutating `bed` in place — the correlated component is
-    /// subtracted from each source channel) and return the bed extended with the
-    /// phantom object channels, plus the new channel count. Call only when
-    /// [`sync`](Self::sync) returned `> 0`.
-    pub fn process_and_extend(
-        &mut self,
-        bed: &mut [f32],
-        channel_count: usize,
-        sample_count: usize,
-        _sample_rate: u32,
-    ) -> (&[f32], usize) {
-        self.process(bed, channel_count, sample_count);
-        let m = self.specs.len();
-        let out_ch = channel_count + m;
-        self.pcm_ext.clear();
-        self.pcm_ext.resize(sample_count * out_ch, 0.0);
-        for s in 0..sample_count {
-            let src = &bed[s * channel_count..s * channel_count + channel_count];
-            let dst = &mut self.pcm_ext[s * out_ch..s * out_ch + out_ch];
-            dst[..channel_count].copy_from_slice(src);
-            for (k, buf) in self.planar.iter().enumerate().take(m) {
-                dst[channel_count + k] = buf[s];
-            }
-        }
-        (&self.pcm_ext, out_ch)
-    }
-
-    fn process(&mut self, bed: &mut [f32], c: usize, n: usize) {
+    /// Run the extraction: the correlated component is subtracted from each
+    /// source channel of `bed` *in place*, and each phantom's audio written to
+    /// its buffer of `planar` (one per [`specs`](Self::specs) entry, zeroed,
+    /// `n` samples long). Call only when [`sync`](Self::sync) returned `> 0`.
+    pub fn process(&mut self, bed: &mut [f32], c: usize, n: usize, planar: &mut [Vec<f32>]) {
         let strength = self.strength;
         let alpha = self.alpha;
-        // Borrow the planar scratch out of `self` so the units can write it while
-        // borrowing other `self` fields (disjoint, but this keeps it simple).
-        let mut planar = std::mem::take(&mut self.planar);
-        for buf in planar.iter_mut() {
-            buf.clear();
-            buf.resize(n, 0.0);
-        }
         if let Some(ext) = self.spectral.as_mut() {
-            ext.process(bed, c, n, strength, &mut planar);
-            self.planar = planar;
+            ext.process(bed, c, n, strength, planar);
             return;
         }
         // Cascade order: front, then back, then the side arcs (which share the
         // corner channels with front/back — those get first claim), then the rest.
         if let Some(u) = self.front.as_mut() {
-            u.process(bed, c, n, strength, alpha, &mut planar);
+            u.process(bed, c, n, strength, alpha, planar);
         }
         if let Some(p) = self.back.as_mut() {
-            p.process(bed, c, n, strength, alpha, &mut planar);
+            p.process(bed, c, n, strength, alpha, planar);
         }
         if let Some(u) = self.left.as_mut() {
-            u.process(bed, c, n, strength, alpha, &mut planar);
+            u.process(bed, c, n, strength, alpha, planar);
         }
         if let Some(u) = self.right.as_mut() {
-            u.process(bed, c, n, strength, alpha, &mut planar);
+            u.process(bed, c, n, strength, alpha, planar);
         }
         for pair in self.pairs.iter_mut() {
-            pair.process(bed, c, n, strength, alpha, &mut planar);
+            pair.process(bed, c, n, strength, alpha, planar);
         }
-        self.planar = planar;
     }
 }
 
@@ -1132,6 +1088,16 @@ mod tests {
                 ),
             }
         };
+    }
+
+    /// Run the stage over `bed` and return the bed extended with the phantom
+    /// channels, as the owner builds it.
+    fn run(st: &mut PhantomExtractStage, bed: &mut [f32], c: usize, n: usize) -> (Vec<f32>, usize) {
+        let mut planar = vec![vec![0.0; n]; st.specs().len()];
+        st.process(bed, c, n, &mut planar);
+        let mut pcm = Vec::new();
+        let out_ch = crate::channel_objects::extend_interleaved(bed, c, n, &planar, &mut pcm);
+        (pcm, out_ch)
     }
 
     fn sine(f: f32) -> impl Fn(usize) -> f32 {
@@ -1216,7 +1182,7 @@ mod tests {
             .iter()
             .position(|sp| sp.name == "Phantom_L_C")
             .unwrap();
-        let (pcm, out_ch) = st.process_and_extend(&mut bed, c, n, 48_000);
+        let (pcm, out_ch) = run(&mut st, &mut bed, c, n);
         let tail = n / 2..n;
         let ph: f32 = tail.clone().map(|i| pcm[i * out_ch + c + k].powi(2)).sum();
         let l_red: f32 = tail.map(|i| pcm[i * out_ch].powi(2)).sum();
@@ -1261,7 +1227,7 @@ mod tests {
             .iter()
             .position(|sp| sp.name == "Phantom_L_C")
             .unwrap();
-        let (pcm, out_ch) = st.process_and_extend(&mut bed, c, n, 48_000);
+        let (pcm, out_ch) = run(&mut st, &mut bed, c, n);
         let tail = n / 2..n;
         let ph: f32 = tail.clone().map(|i| pcm[i * out_ch + c + k].powi(2)).sum();
         let l_red: f32 = tail.map(|i| pcm[i * out_ch].powi(2)).sum();
@@ -1308,7 +1274,7 @@ mod tests {
             .iter()
             .position(|sp| sp.name == "Phantom_C_R")
             .unwrap();
-        let (pcm, out_ch) = st.process_and_extend(&mut bed, c, n, 48_000);
+        let (pcm, out_ch) = run(&mut st, &mut bed, c, n);
         let tail = n / 2..n;
         let l_red: f32 = tail.clone().map(|i| pcm[i * out_ch].powi(2)).sum();
         let r_red: f32 = tail.map(|i| pcm[i * out_ch + 1].powi(2)).sum();
@@ -1377,7 +1343,7 @@ mod tests {
                 in_l += v * v;
             }
         }
-        let (pcm, out_ch) = st.process_and_extend(&mut bed, c, n, 48_000);
+        let (pcm, out_ch) = run(&mut st, &mut bed, c, n);
         let tail = n / 2..n;
         let l_red: f32 = tail.clone().map(|i| pcm[i * out_ch].powi(2)).sum();
         let lb_red: f32 = tail.map(|i| pcm[i * out_ch + 6].powi(2)).sum();
@@ -1441,7 +1407,7 @@ mod tests {
             .iter()
             .position(|sp| sp.name == "Phantom_C")
             .unwrap();
-        let (pcm, out_ch) = st.process_and_extend(&mut bed, c, n, 48_000);
+        let (pcm, out_ch) = run(&mut st, &mut bed, c, n);
         let tail = n / 2..n;
         let ph: f32 = tail.clone().map(|i| pcm[i * out_ch + c + k].powi(2)).sum();
         let c_red: f32 = tail.clone().map(|i| pcm[i * out_ch + 2].powi(2)).sum();
@@ -1526,7 +1492,7 @@ mod tests {
             .iter()
             .position(|sp| sp.name == "Phantom_Ls")
             .unwrap();
-        let (pcm, out_ch) = st.process_and_extend(&mut bed, c, n, 48_000);
+        let (pcm, out_ch) = run(&mut st, &mut bed, c, n);
         let tail = n / 2..n;
         let ph: f32 = tail.clone().map(|i| pcm[i * out_ch + c + k].powi(2)).sum();
         let ls_red: f32 = tail.map(|i| pcm[i * out_ch + 4].powi(2)).sum();
@@ -1694,7 +1660,7 @@ mod tests {
             .iter()
             .position(|sp| sp.name == "Direct_F")
             .unwrap();
-        let (pcm, out_ch) = st.process_and_extend(&mut bed, c, n, 48_000);
+        let (pcm, out_ch) = run(&mut st, &mut bed, c, n);
         let tail = n / 2..n;
         let ph: f32 = tail.clone().map(|i| pcm[i * out_ch + c + k].powi(2)).sum();
         let c_res: f32 = tail.map(|i| pcm[i * out_ch + 2].powi(2)).sum();
@@ -1729,7 +1695,7 @@ mod tests {
             bed[i * c + 1] = s(i) * 0.3;
             bed[i * c + 2] = s(i) * 0.2;
         }
-        let (pcm, _) = st.process_and_extend(&mut bed, c, n, 48_000);
+        let (pcm, _) = run(&mut st, &mut bed, c, n);
         assert!(pcm.iter().all(|x| x.is_finite()));
     }
 }
