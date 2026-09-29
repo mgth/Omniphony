@@ -92,8 +92,10 @@ impl Default for SpaFraction {
     }
 }
 
-// SPA control IDs from spa/control/control.h
-const SPA_PROP_RATE: u32 = 3;
+/// `SPA_PROP_rate` from <spa/param/props.h>: the stream adapter's resample
+/// rate scaler, the control `pw_stream_set_control` takes to speed up or slow
+/// down how fast the graph drains this stream.
+const SPA_PROP_RATE: u32 = pw::spa::sys::SPA_PROP_rate;
 
 /// Convert speaker name to PipeWire channel position name
 /// PipeWire expects lowercase positions like "FL", "FR", "FC", "LFE", "RL", "RR", etc.
@@ -262,6 +264,18 @@ pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
 const LATENCY_SERVO_P_GAIN: f64 = 0.000004;
 const LATENCY_SERVO_I_GAIN: f64 = 0.0000002;
 const LATENCY_SERVO_MAX_RATE_ADJUST: f64 = 0.03;
+
+/// The `SPA_PROP_rate` value that makes the graph drain the ring
+/// `consume_adjust` times as fast as nominal.
+///
+/// The stream adapter resamples with `in_rate * rate / out_rate` input frames
+/// per output frame (spa audioconvert divides its resampler rate by
+/// `props.rate`), so a value above 1.0 consumes more of this stream per graph
+/// cycle. That is the same direction as `consume_adjust`: no inversion, unlike
+/// the local resampler's output/input ratio.
+fn pipewire_rate_for_consume_adjust(consume_adjust: f64) -> f32 {
+    consume_adjust as f32
+}
 fn wallclock_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1802,7 +1816,8 @@ fn run_pipewire_loop(
                                 };
                                 let consume_adjust =
                                     (1.0 + p_term + i_term).clamp(1.0 - max_adjust, 1.0 + max_adjust);
-                                let pipewire_rate = (1.0 / consume_adjust) as f32;
+                                let pipewire_rate =
+                                    pipewire_rate_for_consume_adjust(consume_adjust);
 
                                 rate_adjust_for_callback
                                     .store((consume_adjust as f32).to_bits(), Ordering::Relaxed);
@@ -2172,6 +2187,21 @@ fn run_pipewire_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_control_is_the_spa_rate_property() {
+        // 0x10c in <spa/param/props.h>; the old literal 3 named no rate control.
+        assert_eq!(SPA_PROP_RATE, 0x10c);
+    }
+
+    #[test]
+    fn rate_control_drains_faster_when_the_ring_is_too_full() {
+        // Ring above target -> consume_adjust > 1 -> the adapter must consume
+        // more input per cycle, which SPA_PROP_rate does for values above 1.
+        assert!(pipewire_rate_for_consume_adjust(1.001) > 1.0);
+        assert!(pipewire_rate_for_consume_adjust(0.999) < 1.0);
+        assert_eq!(pipewire_rate_for_consume_adjust(1.0), 1.0);
+    }
 
     #[test]
     fn output_target_is_stated_in_both_spellings() {
