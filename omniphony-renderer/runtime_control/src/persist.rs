@@ -225,8 +225,8 @@ pub fn store_live_into_config(
             None
         };
     // Binaural (headphone) stage: persist the live selection so it survives a
-    // restart — output mode, HRIR source (+ SOFA path), isotropic scale, and the
-    // head-tracking OSC address/format.
+    // restart — output mode, HRIR source (+ SOFA path), isotropic scale, the
+    // head-tracking input and the room (reflections, reverb).
     let (hrir_source, hrtf_sofa_path, brir_sofa_path) = match &live.binaural.hrir_source {
         renderer::binaural::HrirSource::Sofa(p) if !p.is_empty() => {
             ("sofa".to_string(), Some(std::path::PathBuf::from(p)), None)
@@ -249,63 +249,57 @@ pub fn store_live_into_config(
         } => (format!("prtf:{freq_scale_pct}:{depth_pct}"), None, None),
         other => (other.as_str().to_string(), None, None),
     };
-    render.binaural = Some(renderer::config::BinauralConfig {
-        output_mode: Some(live.binaural.output_mode.as_str().to_string()),
-        mode: Some(live.binaural.mode.as_str().to_string()),
-        ear_gains: Some([live.binaural.ears[0].gain, live.binaural.ears[1].gain]),
-        ear_mutes: Some([live.binaural.ears[0].muted, live.binaural.ears[1].muted]),
-        unit_scale_m: Some(live.binaural.unit_scale_m),
-        head_radius_m: Some(live.binaural.head_radius_m),
-        hrir_source: Some(hrir_source),
-        hrtf_sofa_path,
-        brir_sofa_path,
-        brir_head_tracking: live.binaural.brir.head_tracking,
-        brir_max_length_s: Some(live.binaural.brir.max_length_s),
-        brir_tail_floor_db: Some(live.binaural.brir.tail_floor_db),
-        head_tracking: Some(renderer::config::HeadTrackingConfig {
-            osc_address: live.binaural.tracking.address.clone(),
-            format: Some(live.binaural.tracking.format.as_str().to_string()),
-            reference_quat: {
-                // Carry the recenter reference through an explicit Save too (the
-                // targeted write-back already persists it on recenter); omit when
-                // back at identity to keep the YAML clean.
-                let r = live.binaural.tracking.reference;
-                (r != renderer::binaural::HeadPose::identity()).then(|| r.to_quat_array())
-            },
-            axes_quat: {
-                let a = live.binaural.tracking.axes;
-                (a != renderer::binaural::HeadPose::identity()).then(|| a.to_quat_array())
-            },
-            extra: Default::default(),
-        }),
-        reflections: Some(renderer::config::ReflectionsConfig {
-            enabled: Some(live.binaural.reflections.enabled),
-            room_width_m: Some(live.binaural.reflections.room_size_m[0]),
-            room_depth_m: Some(live.binaural.reflections.room_size_m[1]),
-            room_height_m: Some(live.binaural.reflections.room_size_m[2]),
-            level: Some(live.binaural.reflections.level),
-            wall_cutoff_hz: Some(live.binaural.reflections.wall_cutoff_hz),
-            extra: Default::default(),
-        }),
-        reverb: Some(renderer::config::ReverbConfig {
-            enabled: Some(live.binaural.reverb.enabled),
-            level: Some(live.binaural.reverb.level),
-            rt60_s: Some(live.binaural.reverb.rt60_s),
-            predelay_ms: Some(live.binaural.reverb.predelay_ms),
-            size: Some(live.binaural.reverb.size),
-            rt60_low_ratio: Some(live.binaural.reverb.rt60_low_ratio),
-            rt60_high_ratio: Some(live.binaural.reverb.rt60_high_ratio),
-            extra: Default::default(),
-        }),
-        air_absorption: Some(live.binaural.air_absorption),
-        diffuse_field_eq: Some(live.binaural.diffuse_field_eq),
-        // Written just below through its descriptor, so the skip-if-default
-        // rule lives in one place — this wholesale rebuild of the section runs
-        // *after* `store_live_to_config` and would otherwise clobber it.
-        hrir_update_lattice: None,
-        extra: Default::default(),
-    });
-    renderer::config_fields::hrir_update_lattice::store(render, live.binaural.hrir_update_lattice);
+    // Updated field by field in the loaded section, never rebuilt: keys this
+    // version does not know (`extra`) and anything `store_live_to_config`
+    // wrote under `binaural` above (e.g. `hrir_update_lattice`) survive.
+    let bin = render.binaural.get_or_insert_with(Default::default);
+    bin.output_mode = Some(live.binaural.output_mode.as_str().to_string());
+    bin.mode = Some(live.binaural.mode.as_str().to_string());
+    bin.ear_gains = Some([live.binaural.ears[0].gain, live.binaural.ears[1].gain]);
+    bin.ear_mutes = Some([live.binaural.ears[0].muted, live.binaural.ears[1].muted]);
+    bin.unit_scale_m = Some(live.binaural.unit_scale_m);
+    bin.head_radius_m = Some(live.binaural.head_radius_m);
+    bin.hrir_source = Some(hrir_source);
+    bin.hrtf_sofa_path = hrtf_sofa_path;
+    bin.brir_sofa_path = brir_sofa_path;
+    bin.brir_head_tracking = live.binaural.brir.head_tracking;
+    bin.brir_max_length_s = Some(live.binaural.brir.max_length_s);
+    bin.brir_tail_floor_db = Some(live.binaural.brir.tail_floor_db);
+    bin.air_absorption = Some(live.binaural.air_absorption);
+    bin.diffuse_field_eq = Some(live.binaural.diffuse_field_eq);
+
+    let tracking = &live.binaural.tracking;
+    let ht = bin.head_tracking.get_or_insert_with(Default::default);
+    ht.osc_address = tracking.address.clone();
+    ht.format = Some(tracking.format.as_str().to_string());
+    // Carry the recenter reference through an explicit Save too (the targeted
+    // write-back already persists it on recenter); omit when back at identity
+    // to keep the YAML clean.
+    let identity = renderer::binaural::HeadPose::identity();
+    ht.reference_quat =
+        (tracking.reference != identity).then(|| tracking.reference.to_quat_array());
+    ht.axes_quat = (tracking.axes != identity).then(|| tracking.axes.to_quat_array());
+    ht.smoothing = Some(tracking.smoothing);
+    ht.invert = Some(tracking.invert);
+
+    let reflections = &live.binaural.reflections;
+    let refl = bin.reflections.get_or_insert_with(Default::default);
+    refl.enabled = Some(reflections.enabled);
+    refl.room_width_m = Some(reflections.room_size_m[0]);
+    refl.room_depth_m = Some(reflections.room_size_m[1]);
+    refl.room_height_m = Some(reflections.room_size_m[2]);
+    refl.level = Some(reflections.level);
+    refl.wall_cutoff_hz = Some(reflections.wall_cutoff_hz);
+
+    let reverb = &live.binaural.reverb;
+    let rev = bin.reverb.get_or_insert_with(Default::default);
+    rev.enabled = Some(reverb.enabled);
+    rev.level = Some(reverb.level);
+    rev.rt60_s = Some(reverb.rt60_s);
+    rev.predelay_ms = Some(reverb.predelay_ms);
+    rev.size = Some(reverb.size);
+    rev.rt60_low_ratio = Some(reverb.rt60_low_ratio);
+    rev.rt60_high_ratio = Some(reverb.rt60_high_ratio);
     // barycenter / experimental_distance params now live in the generic param bag
     // (`render.backend_params`, written below), so drop the legacy dedicated keys
     // on save. Reading an old config still migrates them into the bag on load.

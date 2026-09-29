@@ -448,8 +448,6 @@ pub struct BinauralConfig {
     pub extra: Mapping,
 }
 
-/// Head-tracking OSC input configuration. The orientation arrives on an
-/// arbitrary OSC address (e.g. SensorsOSC `/android/rotationvector`), so both
 /// `render.binaural.reverb`: late-reverb (FDN) tail of the binaural stage.
 /// Models the (small, dry) listening room, not the scene's acoustics.
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -507,6 +505,8 @@ pub struct ReflectionsConfig {
     pub extra: Mapping,
 }
 
+/// Head-tracking OSC input configuration. The orientation arrives on an
+/// arbitrary OSC address (e.g. SensorsOSC `/android/rotationvector`), so both
 /// the address and the value format are configurable.
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct HeadTrackingConfig {
@@ -527,6 +527,14 @@ pub struct HeadTrackingConfig {
     /// head's).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub axes_quat: Option<[f32; 4]>,
+    /// Exponential orientation smoothing in [0, 0.999]: 0 = instant, higher =
+    /// smoother/laggier. Absent → the tracker default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smoothing: Option<f32>,
+    /// Flip the applied rotation, for sensors whose motion comes out mirrored.
+    /// Absent → false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invert: Option<bool>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,
@@ -1084,6 +1092,29 @@ mod tests {
         assert!(
             !yaml.contains("reference_quat"),
             "None should omit the key: {yaml}"
+        );
+    }
+
+    #[test]
+    fn head_tracking_smoothing_and_invert_round_trip_and_omit_when_absent() {
+        let ht = HeadTrackingConfig {
+            smoothing: Some(0.6),
+            invert: Some(true),
+            ..Default::default()
+        };
+        let yaml = serde_yaml_ng::to_string(&ht).unwrap();
+        let back: HeadTrackingConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(back.smoothing, Some(0.6));
+        assert_eq!(back.invert, Some(true));
+        assert!(
+            back.extra.is_empty(),
+            "known keys leaked into extra: {yaml}"
+        );
+
+        let yaml = serde_yaml_ng::to_string(&HeadTrackingConfig::default()).unwrap();
+        assert!(
+            !yaml.contains("smoothing") && !yaml.contains("invert"),
+            "None should omit the keys: {yaml}"
         );
     }
 

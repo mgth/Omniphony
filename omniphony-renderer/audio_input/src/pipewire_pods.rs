@@ -21,7 +21,10 @@ pub const IEC958_DTS_CHANNELS: u16 = 2;
 /// burst at all.
 pub const IEC958_DTSHD_RATE_HZ: u32 = 192_000;
 pub const IEC958_DTSHD_CHANNELS: u16 = 8;
-const IEC958_AUDIO_POSITION_PROP_8CH: &str = "[ FL FR C LFE SL SR RL RR ]";
+/// PipeWire position names, the same order as [`raw_audio_positions`]. The
+/// centre is `FC`: PipeWire has no `C` position, and a name it cannot parse
+/// leaves that channel unpositioned.
+const IEC958_AUDIO_POSITION_PROP_8CH: &str = "[ FL FR FC LFE SL SR RL RR ]";
 const IEC958_AUDIO_POSITION_PROP_2CH: &str = "[ FL FR ]";
 const SPA_PARAM_BUFFERS_META_TYPE_RAW: u32 = 7;
 /// PipeWire's default `clock.quantum-limit`: the largest number of frames a
@@ -592,5 +595,33 @@ mod tests {
     fn raw_positions_match_the_fixed_input_map() {
         assert_eq!(raw_audio_positions(8).len(), 8);
         assert_eq!(raw_audio_positions(2).len(), 2);
+    }
+
+    /// `audio.position` and the format pod's positions describe the same
+    /// channels: every name must be one PipeWire parses, in the pod's order.
+    #[test]
+    fn audio_position_property_names_the_pod_positions() {
+        let spa_name = |id: u32| match id {
+            spa::sys::SPA_AUDIO_CHANNEL_FL => "FL",
+            spa::sys::SPA_AUDIO_CHANNEL_FR => "FR",
+            spa::sys::SPA_AUDIO_CHANNEL_FC => "FC",
+            spa::sys::SPA_AUDIO_CHANNEL_LFE => "LFE",
+            spa::sys::SPA_AUDIO_CHANNEL_SL => "SL",
+            spa::sys::SPA_AUDIO_CHANNEL_SR => "SR",
+            spa::sys::SPA_AUDIO_CHANNEL_RL => "RL",
+            spa::sys::SPA_AUDIO_CHANNEL_RR => "RR",
+            other => panic!("unexpected channel id {other}"),
+        };
+        for channels in [2u16, 8] {
+            let expected: Vec<&str> = raw_audio_positions(channels)
+                .iter()
+                .map(|id| spa_name(id.0))
+                .collect();
+            let published: Vec<&str> = iec958_audio_position(channels)
+                .trim_matches(|c| c == '[' || c == ']' || c == ' ')
+                .split_whitespace()
+                .collect();
+            assert_eq!(published, expected, "{channels} channels");
+        }
     }
 }
