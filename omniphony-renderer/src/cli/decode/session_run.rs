@@ -1,5 +1,8 @@
 use super::bootstrap::init_render_handler;
-use super::config_resolution::{effective_to_config, merge_render_config};
+use super::config_resolution::{
+    apply_explicit_renderer_args, apply_osc_settings, apply_render_cfg_overrides,
+    effective_to_config, merge_render_config, renderer_params, resolve_osc_settings,
+};
 use super::decoder_thread::{
     DecodedAudioData, DecodedSource, DecoderCommand, DecoderMessage, DecoderThreadConfig,
     PipeInputDiag, spawn_decoder_thread,
@@ -9,9 +12,10 @@ use super::idle_feed::{IdleFeedInputs, IdleFeeder};
 use super::live_input::{LiveBridgeRuntimeConfig, spawn_live_input_manager};
 use super::output::OutputClosed;
 use super::state::FrameHandlerContext;
-use crate::cli::command::{Cli, EvaluationModeArg, OutputBackend, RenderArgSources, RenderArgs};
+use crate::cli::command::{Cli, OutputBackend, RenderArgSources, RenderArgs};
 use anyhow::Result;
 use orender_engine::bridge_loader::{LoadedBridge, resolve_bridge_path};
+use orender_engine::renderer_build::SpatialRendererParams;
 use std::sync::mpsc;
 use std::sync::{Arc, atomic::AtomicU64};
 use std::time::Duration;
@@ -103,47 +107,64 @@ impl PacerBridgeDiag {
     }
 }
 
+/// Everything one render iteration resolves from the command line and the
+/// config file before it starts.
+struct ResolvedRun {
+    config_path: Option<std::path::PathBuf>,
+    /// The args with the config folded in (flag > config > default).
+    args: RenderArgs,
+    /// The config file as this run loaded it (live-handoff sidecar included):
+    /// the base `--save-config` writes the flags over.
+    config: renderer::config::Config,
+    /// The render section this run uses: the file with the CLI flags applied.
+    render_cfg: renderer::config::RenderConfig,
+    /// Renderer construction params, resolved from `render_cfg` by the same
+    /// call as the embedded engine.
+    renderer_params: SpatialRendererParams,
+    current_layout: Option<renderer::speaker_layout::SpeakerLayout>,
+}
+
 fn resolve_effective_decode_args(
     args: &RenderArgs,
     cli: &Cli,
     arg_sources: &RenderArgSources<'_>,
-) -> (
-    Option<std::path::PathBuf>,
-    RenderArgs,
-    Option<renderer::speaker_layout::SpeakerLayout>,
-    bool,
-) {
+) -> ResolvedRun {
     let config_path = cli
         .config
         .clone()
         .or_else(renderer::config::default_config_path);
     // Sidecar-aware load: when a yielded predecessor handed over unsaved live
-    // state, the args fold below must see it (apply_render_cfg_overrides later
-    // writes folded values like master_gain back over the render config, so a
-    // base-config fold would silently undo the handoff).
-    let cfg = config_path
+    // state, the args fold and the render config below must both see it, or
+    // the renderer would start on the base file and silently undo the handoff.
+    let config = config_path
         .as_deref()
         .map(|p| renderer::config::Config::load_or_default_with_live(p).0)
         .unwrap_or_default();
 
     let mut effective = args.clone();
-    let evaluation_mode_explicit = arg_sources.is_explicit("render_evaluation_mode")
-        || cfg
-            .render
-            .as_ref()
-            .and_then(|rc| rc.render_evaluation_mode.as_ref())
-            .is_some();
-    if let Some(rc) = &cfg.render {
+    if let Some(rc) = &config.render {
         merge_render_config(rc, &mut effective, arg_sources);
     }
+    let osc = resolve_osc_settings(config.render.as_ref(), &effective, arg_sources);
+    apply_osc_settings(&mut effective, osc);
 
-    let current_layout = cfg.render.and_then(|rc| rc.current_layout);
-    (
+    let mut render_cfg = config.render.clone().unwrap_or_default();
+    apply_render_cfg_overrides(&mut render_cfg, &effective);
+    apply_explicit_renderer_args(&mut render_cfg, &effective, arg_sources);
+    let renderer_params = renderer_params(&render_cfg, &effective);
+
+    let current_layout = config
+        .render
+        .as_ref()
+        .and_then(|rc| rc.current_layout.clone());
+    ResolvedRun {
         config_path,
-        effective,
+        args: effective,
+        config,
+        render_cfg,
+        renderer_params,
         current_layout,
-        evaluation_mode_explicit,
-    )
+    }
 }
 
 fn decode_queue_capacity(latency_target_ms: Option<u32>) -> usize {
@@ -171,19 +192,18 @@ fn is_bridge_unavailable_error(err: &anyhow::Error) -> bool {
 
 fn maybe_save_effective_config(
     cli: &Cli,
-    args: &RenderArgs,
-    config_path: &Option<std::path::PathBuf>,
+    run: &ResolvedRun,
+    arg_sources: &RenderArgSources<'_>,
 ) -> Result<bool> {
     if !cli.save_config {
         return Ok(false);
     }
 
-    let path = config_path.clone().ok_or_else(|| {
+    let path = run.config_path.clone().ok_or_else(|| {
         anyhow::anyhow!("Cannot determine config path; use --config to specify one")
     })?;
 
-    let existing = renderer::config::Config::load_or_default(&path);
-    let config = effective_to_config(args, cli, Some(&existing))?;
+    let config = effective_to_config(&run.args, arg_sources, cli, Some(&run.config))?;
     config.save(&path)?;
     log::info!("Config written to: {}", path.display());
     Ok(true)
@@ -305,23 +325,22 @@ fn idle_input_path(args: &RenderArgs) -> &std::path::Path {
 }
 
 fn run_idle_runtime(
-    args: &RenderArgs,
-    config_path: &Option<std::path::PathBuf>,
-    current_layout_from_config: Option<renderer::speaker_layout::SpeakerLayout>,
-    evaluation_mode_explicit: bool,
+    run: &ResolvedRun,
     bridge_error: &anyhow::Error,
 ) -> Result<Option<std::path::PathBuf>> {
+    let args = &run.args;
     let shutdown = sys::shutdown::ShutdownHandle::install()?;
     let mut handler = DecodeHandler::default();
     init_render_handler(
         &mut handler,
         args,
+        &run.render_cfg,
+        &run.renderer_params,
         idle_input_path(args),
-        config_path,
-        current_layout_from_config,
+        &run.config_path,
+        run.current_layout.clone(),
         IDLE_BRIDGE_VBAP_DEFAULTS,
         IDLE_BRIDGE_PREFERRED_EVALUATION_MODE,
-        evaluation_mode_explicit,
     )?;
     handler.spatial.coordinate_format = IDLE_BRIDGE_COORDINATE_FORMAT;
     if let Some(input_control) = handler.input_control.as_ref() {
@@ -384,8 +403,13 @@ fn effective_output_backend(
     Ok(resolved_backend)
 }
 
+/// Report what auto-gain did, when it is on — live, as Studio may have turned
+/// it on or off since the start.
 fn log_auto_gain_summary(handler: &DecodeHandler) {
     if let Some(ref renderer) = handler.spatial_renderer {
+        if !renderer.renderer_control().live.read().auto_gain {
+            return;
+        }
         if renderer.auto_gain_triggered() {
             let master_gain = renderer.renderer_control().live.read().master_gain;
             log::warn!(
@@ -400,13 +424,11 @@ fn log_auto_gain_summary(handler: &DecodeHandler) {
     }
 }
 
-fn handle_stream_end(handler: &mut DecodeHandler, args: &RenderArgs) -> Result<()> {
+fn handle_stream_end(handler: &mut DecodeHandler) -> Result<()> {
     log::info!("Stream ended, finalizing current output and resetting handler...");
     handler.finalize()?;
 
-    if args.auto_gain {
-        log_auto_gain_summary(handler);
-    }
+    log_auto_gain_summary(handler);
 
     let spatial_renderer = handler.spatial_renderer.take();
     let audio_control = handler.audio_control.take();
@@ -470,7 +492,6 @@ fn handle_audio_message(
 
     let ctx = FrameHandlerContext {
         bed_conform: ctx.args.bed_conform,
-        use_loudness: ctx.args.use_loudness,
         decode_time_ms: decoded.decode_time_ms,
         queue_delay_ms: decoded.sent_at.elapsed().as_secs_f32() * 1000.0,
     };
@@ -669,7 +690,7 @@ fn process_decoder_messages(
             }
             Ok(DecoderMessage::StreamEnd(source)) => {
                 if handler.should_accept_source(source) {
-                    handle_stream_end(handler, ctx.args)?;
+                    handle_stream_end(handler)?;
                 } else {
                     handler.poll_runtime_state()?;
                 }
@@ -717,7 +738,6 @@ fn finalize_output_for_exit(handler: &mut DecodeHandler, is_shutdown: bool) -> R
 fn complete_render_run(
     prepared: PreparedDecodeRun,
     handler: &DecodeHandler,
-    args: &RenderArgs,
     is_shutdown: bool,
 ) -> Result<()> {
     // Close the frame channel before joining. It is bounded, and the decoder
@@ -735,9 +755,7 @@ fn complete_render_run(
                 log::info!("Decoder stopped cleanly");
             } else {
                 log::info!("Decoding completed successfully");
-                if args.auto_gain {
-                    log_auto_gain_summary(handler);
-                }
+                log_auto_gain_summary(handler);
             }
             Ok(())
         }
@@ -761,14 +779,10 @@ fn run_render_message_phase(
     process_decoder_messages(&prepared.rx, handler, &run_ctx, &prepared.drain_tx)
 }
 
-fn finalize_render_run(
-    prepared: PreparedDecodeRun,
-    handler: &mut DecodeHandler,
-    args: &RenderArgs,
-) -> Result<()> {
+fn finalize_render_run(prepared: PreparedDecodeRun, handler: &mut DecodeHandler) -> Result<()> {
     let is_shutdown = begin_shutdown_if_requested();
     finalize_output_for_exit(handler, is_shutdown)?;
-    complete_render_run(prepared, handler, args, is_shutdown)
+    complete_render_run(prepared, handler, is_shutdown)
 }
 
 /// Drains the post-rendering output pacer FIFO into the ring for pure
@@ -851,33 +865,27 @@ fn spawn_pacer_drain_thread(
 
 fn run_prepared_render(
     mut prepared: PreparedDecodeRun,
-    args: &RenderArgs,
-    config_path: &Option<std::path::PathBuf>,
-    current_layout_from_config: Option<renderer::speaker_layout::SpeakerLayout>,
-    evaluation_mode_explicit: bool,
+    run: &ResolvedRun,
 ) -> Result<Option<std::path::PathBuf>> {
-    let mut effective_args = args.clone();
-    if !evaluation_mode_explicit {
-        effective_args.render_evaluation_mode = match prepared.preferred_evaluation_mode {
-            bridge_api::RVbapTableMode::Polar => EvaluationModeArg::Polar,
-            bridge_api::RVbapTableMode::Cartesian => EvaluationModeArg::Cartesian,
-        };
+    let effective_args = &run.args;
+    if run.renderer_params.render_evaluation_mode.is_none() {
         log::info!(
             "Using bridge-preferred evaluation mode: {:?}",
-            effective_args.render_evaluation_mode
+            prepared.preferred_evaluation_mode
         );
     }
 
     let mut handler = DecodeHandler::default();
     init_render_handler(
         &mut handler,
-        &effective_args,
+        effective_args,
+        &run.render_cfg,
+        &run.renderer_params,
         &prepared.input_path,
-        config_path,
-        current_layout_from_config,
+        &run.config_path,
+        run.current_layout.clone(),
         prepared.vbap_cartesian_defaults,
         prepared.preferred_evaluation_mode,
-        evaluation_mode_explicit,
     )?;
     handler.spatial.coordinate_format = prepared.coordinate_format;
     handler.drc.cmd_tx = Some(prepared.cmd_tx.clone());
@@ -985,7 +993,7 @@ fn run_prepared_render(
             )
         });
 
-    let run_result = run_render_message_phase(&prepared, &mut handler, &effective_args);
+    let run_result = run_render_message_phase(&prepared, &mut handler, effective_args);
     if let Some(manager) = live_input_manager {
         manager.stop();
     }
@@ -995,7 +1003,7 @@ fn run_prepared_render(
         .as_ref()
         .map(|renderer| renderer.renderer_control().bridge_path())
         .unwrap_or_else(|| effective_args.bridge_path.clone());
-    finalize_render_run(prepared, &mut handler, &effective_args)?;
+    finalize_render_run(prepared, &mut handler)?;
     Ok(current_bridge_path)
 }
 
@@ -1014,27 +1022,11 @@ fn negotiate_osc_port_if_enabled(args: &RenderArgs, cli: &Cli, arg_sources: &Ren
         .map(renderer::config::Config::load_or_default)
         .unwrap_or_default()
         .render;
-    // Mirror merge_render_config's osc / osc_rx_port resolution.
-    let osc_on = if arg_sources.is_explicit("osc") || arg_sources.is_explicit("no_osc") {
-        args.osc && !args.no_osc
-    } else {
-        render_cfg
-            .as_ref()
-            .and_then(|rc| rc.osc)
-            .unwrap_or(renderer::config_fields::osc::DEFAULT)
-    };
-    if !osc_on {
-        return;
+    // The same resolution the run itself folds into its args.
+    let osc = resolve_osc_settings(render_cfg.as_ref(), args, arg_sources);
+    if osc.enabled {
+        let _ = orender_engine::osc::negotiate_rx_port(osc.port_in);
     }
-    let rx_port = if arg_sources.is_explicit("osc_rx_port") {
-        args.osc_rx_port
-    } else {
-        render_cfg
-            .as_ref()
-            .and_then(|rc| rc.osc_rx_port)
-            .unwrap_or(args.osc_rx_port)
-    };
-    let _ = orender_engine::osc::negotiate_rx_port(rx_port);
 }
 
 pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'_>) -> Result<()> {
@@ -1042,32 +1034,20 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
     let mut restart_bridge_path_override: Option<Option<std::path::PathBuf>> = None;
     loop {
         negotiate_osc_port_if_enabled(args, cli, arg_sources);
-        let (config_path, mut effective_args, current_layout_from_config, evaluation_mode_explicit) =
-            resolve_effective_decode_args(args, cli, arg_sources);
+        let mut run = resolve_effective_decode_args(args, cli, arg_sources);
         if let Some(bridge_path) = restart_bridge_path_override.take() {
-            effective_args.bridge_path = bridge_path;
+            run.args.bridge_path = bridge_path;
         }
-        let args = &effective_args;
 
-        if maybe_save_effective_config(cli, args, &config_path)? {
+        if maybe_save_effective_config(cli, &run, arg_sources)? {
             return Ok(());
         }
 
-        let bridge_path_after_run = match prepare_render_run(args) {
-            Ok(prepared) => run_prepared_render(
-                prepared,
-                args,
-                &config_path,
-                current_layout_from_config,
-                evaluation_mode_explicit,
-            )?,
-            Err(err) if args.osc && is_bridge_unavailable_error(&err) => run_idle_runtime(
-                args,
-                &config_path,
-                current_layout_from_config,
-                evaluation_mode_explicit,
-                &err,
-            )?,
+        let bridge_path_after_run = match prepare_render_run(&run.args) {
+            Ok(prepared) => run_prepared_render(prepared, &run)?,
+            Err(err) if run.args.osc && is_bridge_unavailable_error(&err) => {
+                run_idle_runtime(&run, &err)?
+            }
             Err(err) => return Err(err),
         };
 

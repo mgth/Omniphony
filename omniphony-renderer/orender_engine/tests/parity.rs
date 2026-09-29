@@ -41,6 +41,7 @@ fn renders_real_truehd_atmos_stream() {
             host: "127.0.0.1".to_string(),
             port_out: 9000,
             port_in: 0,
+            metering: false,
         })
         .expect("enable_osc should start the OSC listener");
 
@@ -149,6 +150,7 @@ fn osc_broadcasts_object_frames() {
             host: "127.0.0.1".to_string(),
             port_out,
             port_in: 0,
+            metering: false,
         })
         .expect("enable_osc");
 

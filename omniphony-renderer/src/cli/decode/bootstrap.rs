@@ -1,5 +1,5 @@
 use super::handler::DecodeHandler;
-use crate::cli::command::{EvaluationModeArg, OutputBackend, RenderArgs};
+use crate::cli::command::{OutputBackend, RenderArgs};
 use anyhow::Result;
 use audio_input::{
     InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode, InputMode,
@@ -62,24 +62,6 @@ fn list_available_output_devices(backend: OutputBackend) -> Vec<OutputDeviceOpti
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn list_available_output_devices(_backend: OutputBackend) -> Vec<OutputDeviceOption> {
     Vec::new()
-}
-
-/// Load the on-disk render config and fold the CLI's override-only render args
-/// on top of it, so backend selection, backend params, distance metrics,
-/// size-to-spread and adaptive PI tuning take effect on a live run (the
-/// renderer sources those from `render_cfg`, not from `RenderArgs`). This is the
-/// same effective view that `--save-config` writes.
-fn render_config_from_path(
-    args: &RenderArgs,
-    config_path: &Option<std::path::PathBuf>,
-) -> Option<renderer::config::RenderConfig> {
-    let mut render = config_path
-        .as_deref()
-        .map(|p| renderer::config::Config::load_or_default_with_live(p).0)
-        .and_then(|cfg| cfg.render)
-        .unwrap_or_default();
-    super::config_resolution::apply_render_cfg_overrides(&mut render, args);
-    Some(render)
 }
 
 fn build_adaptive_resampling_config(
@@ -261,71 +243,26 @@ fn resolve_layout(
 fn init_spatial_renderer(
     handler: &mut DecodeHandler,
     args: &RenderArgs,
-    render_cfg: Option<&renderer::config::RenderConfig>,
+    render_cfg: &renderer::config::RenderConfig,
+    params: &orender_engine::renderer_build::SpatialRendererParams,
     current_layout_from_config: &Option<SpeakerLayout>,
     vbap_cartesian_defaults: bridge_api::RVbapCartesianDefaults,
     preferred_evaluation_mode: bridge_api::RVbapTableMode,
-    evaluation_mode_explicit: bool,
 ) -> Result<()> {
     if !args.enable_vbap {
         return Ok(());
     }
 
     let layout = resolve_layout(args, current_layout_from_config)?;
-    let params = orender_engine::renderer_build::SpatialRendererParams {
-        vbap_table: args.vbap_table.clone(),
-        evaluation_polar_azimuth_resolution: args.evaluation_polar_azimuth_resolution,
-        evaluation_polar_elevation_resolution: args.evaluation_polar_elevation_resolution,
-        evaluation_polar_distance_res: args.evaluation_polar_distance_res,
-        evaluation_polar_distance_max: args.evaluation_polar_distance_max,
-        // None lets the engine follow the bridge's preferred mode (cartesian
-        // for OAMD/spatial). Only commit to a concrete EvalMode when the user
-        // explicitly picked one via CLI or config, so an unset --eval-mode
-        // doesn't lock the pre-compute to the CLI's default Polar.
-        render_evaluation_mode: if evaluation_mode_explicit {
-            Some(match args.render_evaluation_mode {
-                EvaluationModeArg::Polar => orender_engine::renderer_build::EvalMode::Polar,
-                EvaluationModeArg::Cartesian => orender_engine::renderer_build::EvalMode::Cartesian,
-            })
-        } else {
-            None
-        },
-        evaluation_mode_explicit,
-        evaluation_cartesian_x_size: args.evaluation_cartesian_x_size,
-        evaluation_cartesian_y_size: args.evaluation_cartesian_y_size,
-        evaluation_cartesian_z_size: args.evaluation_cartesian_z_size,
-        evaluation_cartesian_z_neg_size: args.evaluation_cartesian_z_neg_size,
-        vbap_allow_negative_z: args.vbap_allow_negative_z,
-        no_vbap_allow_negative_z: args.no_vbap_allow_negative_z,
-        render_evaluation_position_interpolation: args.render_evaluation_position_interpolation,
-        vbap_distance_model: args.vbap_distance_model.clone(),
-        spread_from_distance: args.spread_from_distance,
-        spread_distance_range: args.spread_distance_range,
-        spread_distance_curve: args.spread_distance_curve,
-        vbap_spread_min: args.vbap_spread_min,
-        vbap_spread_max: args.vbap_spread_max,
-        log_object_positions: args.log_object_positions,
-        room_ratio: args.room_ratio.clone(),
-        room_ratio_rear: args.room_ratio_rear,
-        room_ratio_lower: args.room_ratio_lower,
-        room_ratio_center_blend: args.room_ratio_center_blend,
-        master_gain: args.master_gain,
-        auto_gain: args.auto_gain,
-        use_loudness: args.use_loudness,
-        distance_diffuse: args.distance_diffuse,
-        distance_diffuse_threshold: args.distance_diffuse_threshold,
-        distance_diffuse_curve: args.distance_diffuse_curve,
-    };
-
     // The CLI keeps using the stream's native 48 kHz here, matching the
     // previous behaviour; the FFI passes its host sample rate instead.
     let renderer = orender_engine::renderer_build::build_spatial_renderer(
-        &params,
+        params,
         layout,
         48000,
         vbap_cartesian_defaults,
         preferred_evaluation_mode,
-        render_cfg,
+        Some(render_cfg),
     )?;
     handler.spatial_renderer = Some(renderer);
     Ok(())
@@ -334,11 +271,10 @@ fn init_spatial_renderer(
 fn init_osc_runtime(
     handler: &mut DecodeHandler,
     args: &RenderArgs,
+    render_cfg: &renderer::config::RenderConfig,
     input_path: &std::path::Path,
     config_path: &Option<std::path::PathBuf>,
 ) -> Result<()> {
-    let render_cfg = render_config_from_path(args, config_path);
-
     if args.osc {
         use std::net::SocketAddrV4;
         use std::str::FromStr;
@@ -388,7 +324,7 @@ fn init_osc_runtime(
         );
         ctrl.set_input_path(Some(input_path.display().to_string()));
         ctrl.set_bridge_path(args.bridge_path.clone());
-        let persisted_bridge_path = render_cfg.as_ref().and_then(|cfg| cfg.bridge_path.clone());
+        let persisted_bridge_path = render_cfg.bridge_path.clone();
         if persisted_bridge_path != args.bridge_path {
             ctrl.mark_dirty();
         }
@@ -400,44 +336,27 @@ fn init_osc_runtime(
             ctrl.mark_dirty();
         }
 
-        let drc_mode = render_cfg
-            .as_ref()
-            .and_then(|cfg| cfg.drc_mode.clone())
-            .unwrap_or_else(|| "Off".to_string());
-        ctrl.live.write().drc_mode = drc_mode;
-
-        let drc_weight = render_cfg
-            .as_ref()
-            .and_then(|cfg| cfg.drc_weight)
-            .unwrap_or(1.0)
-            .clamp(0.0, 1.0);
-        ctrl.live.write().drc_weight = drc_weight;
-
-        // Monitoring cadences. This host publishes faster than the embedded
-        // one: it is what Studio's meters and diag plots read. Recorded on the
-        // control first so a later profile switch, which replays the shared
-        // runtime seed, falls back to this value and not the embedded host's.
-        // Renderer is the source of truth — OSC-adjustable + persisted.
+        // Monitoring cadences, ramp mode, declared live options (+ their param
+        // bags and the virtual bed) and the DRC selection: the shared runtime
+        // seed — the same call as the embedded host (`Engine::from_paths`) and
+        // the live profile switch — so the hosts cannot drift. This host's
+        // cadence fallback is recorded first: it publishes faster than the
+        // embedded one (Studio's meters and diag plots read it), and a later
+        // profile switch, which replays the same seed, falls back to it too.
         ctrl.set_cadence_defaults_hz(CLI_METER_RATE_HZ, CLI_DIAG_RATE_HZ);
-        ctrl.seed_cadences_from_config(
-            render_cfg.as_ref().and_then(|cfg| cfg.meter_rate),
-            render_cfg.as_ref().and_then(|cfg| cfg.diag_rate),
+        orender_engine::renderer_build::seed_runtime_state_from_render_config(
+            &ctrl,
+            Some(render_cfg),
         );
-
+        // Then the flag-backed settings, which the resolved args already fold
+        // through flag > config > default.
         ctrl.set_requested_ramp_mode(args.ramp_mode.into());
-        ctrl.live.write().ramp_mode = args.ramp_mode.into();
-
-        // Declared live options + their param-bag companions and the virtual
-        // bed: seeded from the effective config through the shared registry
-        // seed — the same call as the embedded host (`Engine::from_paths`), so
-        // the two boot paths cannot drift (FFI/CLI parity by construction).
-        // The flag-backed options are then overridden from the resolved CLI
-        // args, which already folded config through flag > config > default.
-        if let Some(render) = render_cfg.as_ref() {
-            renderer::options::seed_live_from_config(&mut ctrl.live.write(), render);
+        {
+            let mut live = ctrl.live.write();
+            live.ramp_mode = args.ramp_mode.into();
+            live.channel_render_mode = args.channel_render_mode.into();
+            live.surround_placement = args.surround_placement.into();
         }
-        ctrl.live.write().channel_render_mode = args.channel_render_mode.into();
-        ctrl.live.write().surround_placement = args.surround_placement.into();
 
         let requested_latency_target_ms = {
             #[cfg(target_os = "linux")]
@@ -468,9 +387,9 @@ fn init_osc_runtime(
             // launch-resolved values and Studio populates these on demand.
             ..Default::default()
         }));
-        let input_control = Arc::new(InputControl::new(build_requested_input_config(
-            render_cfg.as_ref(),
-        )));
+        let input_control = Arc::new(InputControl::new(build_requested_input_config(Some(
+            render_cfg,
+        ))));
 
         if let Some(backend) = args.output_backend.or_else(OutputBackend::platform_default) {
             audio_control.set_available_output_devices(list_available_output_devices(backend));
@@ -555,22 +474,22 @@ fn init_osc_runtime(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn init_render_handler(
     handler: &mut DecodeHandler,
     args: &RenderArgs,
+    render_cfg: &renderer::config::RenderConfig,
+    params: &orender_engine::renderer_build::SpatialRendererParams,
     input_path: &std::path::Path,
     config_path: &Option<std::path::PathBuf>,
     current_layout_from_config: Option<renderer::speaker_layout::SpeakerLayout>,
     vbap_cartesian_defaults: bridge_api::RVbapCartesianDefaults,
     preferred_evaluation_mode: bridge_api::RVbapTableMode,
-    evaluation_mode_explicit: bool,
 ) -> Result<()> {
-    let render_cfg = render_config_from_path(args, config_path);
-
     #[cfg(target_os = "linux")]
-    configure_linux_runtime_output(handler, args, render_cfg.as_ref());
+    configure_linux_runtime_output(handler, args, Some(render_cfg));
     #[cfg(any(target_os = "windows", target_os = "macos"))]
-    configure_cpal_runtime_output(handler, args, render_cfg.as_ref());
+    configure_cpal_runtime_output(handler, args, Some(render_cfg));
 
     handler.runtime.output_sample_rate = args.output_sample_rate;
     handler.runtime.enable_adaptive_resampling = args.enable_adaptive_resampling;
@@ -580,12 +499,12 @@ pub fn init_render_handler(
     init_spatial_renderer(
         handler,
         args,
-        render_cfg.as_ref(),
+        render_cfg,
+        params,
         &current_layout_from_config,
         vbap_cartesian_defaults,
         preferred_evaluation_mode,
-        evaluation_mode_explicit,
     )?;
-    init_osc_runtime(handler, args, input_path, config_path)?;
+    init_osc_runtime(handler, args, render_cfg, input_path, config_path)?;
     Ok(())
 }
