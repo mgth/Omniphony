@@ -1067,7 +1067,9 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
             }
             restart_bridge_path_override = Some(bridge_path_after_run);
             // reload_config discards live state: forget any consumed handoff
-            // overlay so the next iteration re-reads the config from disk.
+            // overlay so the next iteration re-reads the config from disk. (A
+            // restart that keeps the live state wrote a fresh sidecar on the
+            // way down, which the next iteration reads before the cache.)
             renderer::config::clear_live_overlay_cache();
             log::info!("Restarting render pipeline from config");
             continue;

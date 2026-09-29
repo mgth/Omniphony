@@ -58,8 +58,10 @@ pub(crate) fn handle_control_message(
 
     // mpv overlay configuration. The overlay itself is generated in-process by
     // the `overlay` module and pulled over FFI; Studio only configures it here
-    // (it no longer transports overlay frames). These are transient view
-    // preferences — not persisted, so no `mark_dirty`.
+    // (it no longer transports overlay frames). These are view state
+    // (docs/persistence-policy.md): the enabled, labels and trails switches
+    // are written to `overlay-prefs.conf` as they change, the rest is
+    // transient, and none of them ever marks the config dirty.
     if addr == osc_contract::CONTROL_OVERLAY_ENABLED {
         let enabled = match parse_bool_arg(msg.args.first()) {
             Some(v) => v,
@@ -442,6 +444,16 @@ pub(crate) fn handle_control_message(
                     );
                 }
             }
+            RuntimeCommand::Restart => {
+                if sys::shutdown::is_restartable() {
+                    log::info!("OSC restart requested (live state kept)");
+                    sys::shutdown::request_restart_keeping_live();
+                } else {
+                    // An embedded host owns the pipeline's lifecycle: a new
+                    // bridge takes effect when it restarts the renderer.
+                    log::info!("OSC restart ignored (embedded host)");
+                }
+            }
             RuntimeCommand::Quit => {
                 log::info!("OSC quit requested");
                 sys::shutdown::request_shutdown();
@@ -552,6 +564,19 @@ fn notify_changed(
 ) {
     control.mark_dirty();
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
+    publish_changed(control, host, socket, clients, notify);
+}
+
+/// Publish a changed live value to every client the way `notify` says. The
+/// tail of [`notify_changed`], and the whole of the announcement for a change
+/// no Save is for (view or transient state), which leaves the config clean.
+fn publish_changed(
+    control: &Arc<RendererControl>,
+    host: Option<&Arc<dyn HostControlHandler>>,
+    socket: &Arc<UdpSocket>,
+    clients: &Arc<OscClientRegistry>,
+    notify: Notify,
+) {
     match notify {
         Notify::Snapshot => build_live_state(control, host).broadcast(socket, clients),
         // Picked up by the OSC loop's live-state generation poll.
@@ -573,6 +598,8 @@ fn apply_control_effects(
     runtime_control::persist::persist_ops(control, &effects.persist);
     if effects.mark_dirty {
         notify_changed(control, host, socket, clients, effects.notify);
+    } else if effects.publish_only {
+        publish_changed(control, host, socket, clients, effects.notify);
     }
     for update in effects.broadcasts {
         match update.value {
@@ -1147,7 +1174,13 @@ mod notify_tests {
             vec![OscType::Float(12.0)],
         );
         let messages = received(&wire.bystander);
-        assert!(saw_dirty(&messages));
+        // A cadence is view state: it never lights the Save button.
+        assert!(!saw_dirty(&messages));
+        assert!(
+            !control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
         let monitoring = state_json(&messages, osc_contract::STATE_MONITORING)
             .expect("the bundle went out with the write");
         assert_eq!(monitoring["meterRateHz"], 12.0);

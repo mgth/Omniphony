@@ -976,6 +976,30 @@ pub fn clear_live_overlay_cache() {
     LIVE_OVERLAY.lock().unwrap().clear();
 }
 
+/// Apply a targeted config write to the live overlay for `config_path` — the
+/// consumed one this process caches and a sidecar still waiting on disk — so
+/// the pending unsaved state carries the written value instead of the stale
+/// one it was taken with. Everything else in the overlay is left alone.
+pub fn amend_live_overlay(config_path: &Path, amend: impl Fn(&mut Config)) {
+    if let Some(cfg) = LIVE_OVERLAY.lock().unwrap().get_mut(config_path) {
+        amend(cfg);
+    }
+    let sidecar = live_sidecar_path(config_path);
+    if !sidecar.exists() {
+        return;
+    }
+    match Config::load(&sidecar) {
+        Ok(mut cfg) => {
+            amend(&mut cfg);
+            if let Err(e) = cfg.save(&sidecar) {
+                log::warn!("failed to amend {}: {e}", sidecar.display());
+            }
+        }
+        // Unparsable: the next load deletes it without applying it anyway.
+        Err(e) => log::warn!("not amending unreadable {}: {e}", sidecar.display()),
+    }
+}
+
 /// Discard the live-handoff sidecar for `config_path`: remove the file AND
 /// clear the consumed-overlay cache. The two must happen together — clearing
 /// only one re-applies a superseded overlay on the next engine rebuild.

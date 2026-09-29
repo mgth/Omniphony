@@ -26,9 +26,9 @@ use renderer::live_params::RendererControl;
 use rosc::{OscMessage, OscPacket, OscType};
 use runtime_control::HostControlHandler;
 use runtime_control::osc::{
-    BroadcastUpdate, BroadcastValue, ControlEffects, parse_bool_arg, parse_input_layout_arg,
-    parse_json_string_arg, parse_nonnegative_f32_arg, parse_nonnegative_u32_arg,
-    parse_positive_f32_arg, parse_positive_u32_arg, parse_string_arg,
+    BroadcastUpdate, BroadcastValue, ControlEffects, Notify, parse_bool_arg,
+    parse_input_layout_arg, parse_json_string_arg, parse_nonnegative_f32_arg,
+    parse_nonnegative_u32_arg, parse_positive_f32_arg, parse_positive_u32_arg, parse_string_arg,
 };
 use runtime_control::osc_contract;
 use serde::Deserialize;
@@ -300,6 +300,27 @@ impl HostAudio {
             audio,
             input,
         }
+    }
+}
+
+/// The output backend and the file sink's destination and encoding, as a Save
+/// writes them. They start unrequested — the CLI resolves them at launch and
+/// keeps them in its runtime — so only a live request replaces what the file
+/// already holds. Defaults stay out of the file, the way the CLI's own
+/// `--save-config` writes them.
+fn store_output_sink(
+    render: &mut renderer::config::RenderConfig,
+    requested: &audio_output::RequestedAudioOutputConfig,
+) {
+    if let Some(backend) = &requested.output_backend {
+        render.output_backend = Some(backend.clone());
+    }
+    if let Some(file) = &requested.output_file {
+        render.output_file = (file != "-").then(|| file.clone());
+    }
+    if let Some(format) = &requested.output_file_format {
+        let raw = matches!(format.as_str(), "raw_f32" | "rawf32" | "raw" | "f32");
+        render.output_file_format = (!raw).then(|| format.clone());
     }
 }
 
@@ -819,14 +840,15 @@ impl HostControlHandler for HostAudio {
         if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_PAUSE {
             if let Some(paused) = parse_bool_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_paused(paused);
-                effects.mark_dirty = true;
+                // A diagnostic hold, never saved.
+                effects = ControlEffects::transient(Notify::Snapshot);
             }
             return Some(effects);
         }
 
         if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_RESET_RATIO {
+            // An action: nothing to save, nothing to publish.
             audio.request_ratio_reset();
-            effects.mark_dirty = true;
             return Some(effects);
         }
 
@@ -943,8 +965,9 @@ impl HostControlHandler for HostAudio {
         // ── Audio output ──
         let audio = &self.audio;
         let requested = audio.requested_snapshot();
-        render.output_device = requested.output_device;
+        render.output_device = requested.output_device.clone();
         render.output_sample_rate = requested.output_sample_rate_hz;
+        store_output_sink(render, &requested);
         renderer::config_fields::enable_adaptive_resampling::store(
             render,
             requested.adaptive_enabled,
@@ -1062,5 +1085,49 @@ mod tests {
         assert_eq!(live_input.backend, Some(Some("asio".to_string())));
         assert_eq!(live_input.node, Some(Some("omniphony-in".to_string())));
         assert_eq!(patch.mode, Some(InputMode::Pipewire));
+    }
+
+    /// `/control/audio/output_backend` and the file-sink addresses mark the
+    /// config dirty, so the Save they light must write them.
+    #[test]
+    fn a_save_writes_the_requested_output_sink() {
+        let mut render = renderer::config::RenderConfig::default();
+        let requested = audio_output::RequestedAudioOutputConfig {
+            output_backend: Some("file".into()),
+            output_file: Some("/tmp/out.caf".into()),
+            output_file_format: Some("caf".into()),
+            ..Default::default()
+        };
+        store_output_sink(&mut render, &requested);
+        assert_eq!(render.output_backend.as_deref(), Some("file"));
+        assert_eq!(render.output_file.as_deref(), Some("/tmp/out.caf"));
+        assert_eq!(render.output_file_format.as_deref(), Some("caf"));
+
+        // Back to stdout and raw samples: the defaults leave the file.
+        let requested = audio_output::RequestedAudioOutputConfig {
+            output_file: Some("-".into()),
+            output_file_format: Some("raw_f32".into()),
+            ..Default::default()
+        };
+        store_output_sink(&mut render, &requested);
+        assert_eq!(render.output_file, None);
+        assert_eq!(render.output_file_format, None);
+    }
+
+    /// Nothing requested live: a Save keeps what the file says, rather than
+    /// erasing a backend the user configured before this session.
+    #[test]
+    fn an_unrequested_output_sink_keeps_the_saved_one() {
+        let mut render = renderer::config::RenderConfig {
+            output_backend: Some("pipewire".into()),
+            output_file: Some("/srv/fifo".into()),
+            ..Default::default()
+        };
+        store_output_sink(
+            &mut render,
+            &audio_output::RequestedAudioOutputConfig::default(),
+        );
+        assert_eq!(render.output_backend.as_deref(), Some("pipewire"));
+        assert_eq!(render.output_file.as_deref(), Some("/srv/fifo"));
     }
 }

@@ -99,9 +99,11 @@ pub struct Speaker {
     /// Set to false for LFE/subwoofers (default: true)
     pub spatialize: bool,
 
-    /// Per-entry gain in dB (default: 0 = unity). Used by the virtual bed as
-    /// the per-input-channel trim (0.1 dB resolution, like the per-speaker
-    /// output gain); ignored for output-layout speakers.
+    /// Per-entry gain in dB (default: 0 = unity, 0.1 dB resolution). In the
+    /// virtual bed, the per-input-channel trim; in an output layout, the saved
+    /// per-speaker output gain, which seeds the live one
+    /// (`live_params::speaker_live_from_layout`) and is written back from it
+    /// on Save.
     pub gain_db: f32,
 
     /// Per-speaker output delay in milliseconds (default: 0.0).

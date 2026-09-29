@@ -8,7 +8,7 @@ use super::{SharedState, send_control};
 use crate::host::channels::{CoordMode, Family, PlacementMode};
 use crate::osc_contract;
 
-pub fn control_save_config(state: &SharedState) {
+fn control_save_config(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
@@ -26,10 +26,21 @@ pub fn control_reload_config(state: &SharedState) {
     );
 }
 
+/// Restart the renderer's pipeline, keeping the unsaved edits: they come
+/// back unsaved. For a change only a restart applies (a new bridge), which
+/// must not save everything else behind the user's back.
+pub fn control_restart(state: &SharedState) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendNoArgs {
+            address: osc_contract::CONTROL_RESTART.to_string(),
+        },
+    );
+}
+
 /// The Save button: the model remembers that a save was asked for — the
-/// footer's indicator reads it — and the renderer is told. The bootstrap path
-/// of the input apply wants only the message, and calls
-/// [`control_save_config`].
+/// footer's indicator reads it — and the renderer is told. This is the only
+/// way Studio writes the renderer's config (docs/persistence-policy.md).
 pub fn request_save_config(state: &SharedState) {
     state.inner.lock().unwrap().save_requested = true;
     control_save_config(state);

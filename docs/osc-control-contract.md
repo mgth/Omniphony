@@ -31,15 +31,29 @@ address is missing from it. Keep this document and that crate in sync.
 
 ## Notification
 
-A write that changes state the config file holds marks the config dirty and
-tells **every** registered client, not only the sender: `/state/config/saved`
-drops to `0` at once, and the new value reaches everyone through the
-live-state snapshot (`/state/renderer`, `/state/speakers`, …). Discrete edits
-send the snapshot right away; slider-driven ones (generator / phantom params,
-placement entries, realtime gains) let it ride the OSC loop's poll, at most one
-snapshot per 200 ms tick. Registry options flagged `persist`, head recenter /
-calibration and profile operations are also written to `config.yaml`
-immediately; everything else waits for `/control/save_config`.
+Every control write falls in one of the classes of
+[`docs/persistence-policy.md`](persistence-policy.md), and the class decides
+what it does to the Save button:
+
+- **Render / engine** — a write that changes state the config file holds marks
+  the config dirty and tells **every** registered client, not only the sender:
+  `/state/config/saved` drops to `0` at once, and the new value reaches
+  everyone through the live-state snapshot (`/state/renderer`,
+  `/state/speakers`, …). Discrete edits send the snapshot right away;
+  slider-driven ones (generator / phantom params, placement entries, realtime
+  gains) let it ride the OSC loop's poll, at most one snapshot per 200 ms tick.
+  The value reaches `config.yaml` only through `/control/save_config`.
+- **View** — the monitoring cadences (`metering/rate_hz`, `diag/rate_hz`) and
+  the head-tracker calibration: written to `config.yaml` at once, published,
+  and the config stays clean. The mpv overlay's display switches are written
+  to `overlay-prefs.conf` the same way.
+- **Transient** — mutes, a manual head pose, test signals, subscriptions,
+  actions: published when they carry state, never written, never dirtying.
+
+Registry options and profile operations are still written to `config.yaml`
+immediately; the policy's *Known deviations* tracks them. A targeted write never
+touches the other unsaved edits: they stay pending, and a live-handoff sidecar
+holding them is amended rather than discarded.
 
 ---
 
@@ -111,10 +125,10 @@ payload shape.
 | Address | Args | Meaning |
 |---|---|---|
 | `/control/realtime/master_gain` | f `≥0` (linear), seq int | Master gain; echoed on `/state/realtime/master_gain`. Studio sends `[0,2]`. |
-| `/control/realtime/speaker_gain` | id int, f `≥0` (linear), seq int | Per-speaker gain; echoed on `/state/realtime/speaker_gain`. |
+| `/control/realtime/speaker_gain` | id int, f `≥0` (linear), seq int | Per-speaker output gain; echoed on `/state/realtime/speaker_gain`. Saved as the layout speaker's `gain_db` (0.1 dB), which seeds it at the next start. |
 | `/control/gain` | f `≥0` (linear) | Master gain without a sequence number (scripts). Same field as the realtime address. |
-| `/control/object/{id}/mute` | int bool | Per-object mute. |
-| `/control/config/speakers` | json | Speaker edits (incl. per-speaker mute). |
+| `/control/object/{id}/mute` | int bool | Per-object mute. Transient: never saved. |
+| `/control/config/speakers` | json | Speaker edits: delay (saved) and mute (transient, never saved). |
 | `/control/loudness` | int bool | Dialogue-norm / loudness correction. Registry option alias (`use_loudness`). |
 | `/control/auto_gain` | int bool | Auto gain-reduction on clipping. Registry option alias. |
 | `/control/auto_gain_ceiling` | f `[-12,0]` dB | Auto-gain target ceiling. Registry option alias (`auto_gain_ceiling_db`). |
@@ -124,7 +138,8 @@ payload shape.
 All under `/control/adaptive_resampling/…`. Master toggle: bare
 `/control/adaptive_resampling` (int bool). Tunables: `kp_near`, `ki`,
 `max_adjust`, `update_interval_callbacks`, `high_recover_entry_margin_ms`,
-`integral_discharge_ratio`, `near_far_threshold_ms`, `reset_ratio`, `pause`,
+`integral_discharge_ratio`, `near_far_threshold_ms`, `reset_ratio` and `pause`
+(both transient: an action and a diagnostic hold, never saved),
 and the far-mode group `enable_far_mode`, `force_silence_in_far_mode`,
 `hard_recover_high_in_far_mode`, `hard_recover_low_in_far_mode`,
 `far_mode_return_fade_in_ms`. `/control/latency_target` sets the target buffer
@@ -160,8 +175,8 @@ contract address. See `omniphony-renderer/BINAURAL.md`.
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/control/head/orientation` | f×3 (euler °) | Set head pose directly (yaw, pitch, roll). |
-| `/control/head/quat` | f×4 | Set head pose directly (quaternion). |
+| `/control/head/orientation` | f×3 (euler °) | Set head pose directly (yaw, pitch, roll). Transient, like the tracker feed. |
+| `/control/head/quat` | f×4 | Set head pose directly (quaternion). Transient. |
 | `/control/head/recenter` | — | Capture the current orientation as "front" (persisted to `config.yaml` right away). |
 | `/control/head/calibrate` | s | Three-pose sensor-axis calibration, one step per message: `front` (also recenters), `left`, `up`, or `reset`. The result is persisted right away. |
 | `/control/head/tracking/address` | s | Feed address the engine listens on (`""` disables tracking). |
@@ -379,8 +394,8 @@ and heatmap configuration.
 | Address | Args | Meaning |
 |---|---|---|
 | `/control/metering` | int bool | Subscribe (or not) the sending client to the meter stream; acknowledged on `/state/osc/metering`. |
-| `/control/metering/rate_hz` | f `[1,1000]` | Metering publication rate. |
-| `/control/diag/rate_hz` | f `[1,1000]` | Diagnostics publication rate. |
+| `/control/metering/rate_hz` | f `[1,1000]` | Metering publication rate. View state: written to `config.yaml` at once, never dirties the config; resending the current value does nothing. |
+| `/control/diag/rate_hz` | f `[1,1000]` | Diagnostics publication rate. View state, like the metering rate. |
 | `/control/diag/enabled` | int bool | Subscribe (or not) the sending client to diagnostics; acknowledged on `/state/osc/diag`. |
 | `/control/debug/speaker_gaintable/subscribe` | have_version int, speaker int | Subscribe to a speaker's gain-table field. |
 | `/control/debug/speaker_gaintable/unsubscribe` | — | Release the gain-table subscription. |
@@ -390,6 +405,7 @@ and heatmap configuration.
 | `/control/option` | s key, value | Generic setter for any declared live option — see [Live options](#live-options). |
 | `/control/save_config` | — | Persist the current config. |
 | `/control/reload_config` | — | Discard the live state (including a handoff sidecar) and reload config from disk. The CLI renderer restarts its pipeline; an embedded (mpv) renderer re-applies the config in place — layout, live params, active profile — while host-owned fields (output device, live input, bridge path) wait for the next engine start. |
+| `/control/restart` | — | Restart the render pipeline keeping the unsaved live state, which comes back unsaved (it rides the live-handoff sidecar). For a change only a restart applies, such as a new bridge. CLI renderer only; an embedded renderer ignores it. |
 | `/control/quit` | — | Shut the engine down. |
 | `/control/yield_port` | — | Ask this instance to free the OSC RX port. Honoured only by instances started with `--osc-yield` (a Studio-launched standby renderer); ignored otherwise, so an embedded (mpv) renderer can never be evicted. Sent automatically by a starting instance that finds the port busy. The instance replies `/omniphony/yield/resume_port [port]` and stands by. |
 | `/control/resume` | — | Sent to a standing-by instance, on the resume port it advertised, to re-acquire the OSC port and audio. |
@@ -613,6 +629,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/control/realtime/master_gain`
 - `/omniphony/control/realtime/speaker_gain`
 - `/omniphony/control/reload_config`
+- `/omniphony/control/restart`
 - `/omniphony/control/render/bridge_path`
 - `/omniphony/control/render/input_pipe`
 - `/omniphony/control/render_backend`
