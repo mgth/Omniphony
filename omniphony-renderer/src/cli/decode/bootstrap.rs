@@ -254,8 +254,9 @@ fn init_spatial_renderer(
     }
 
     let layout = resolve_layout(args, current_layout_from_config)?;
-    // The CLI keeps using the stream's native 48 kHz here, matching the
-    // previous behaviour; the FFI passes its host sample rate instead.
+    // Built before any frame is decoded, so at the rate of the formats this
+    // host is fed; the first frame at another rate re-targets the renderer
+    // (`follow_stream_rate`, as the embedded engine does).
     let renderer = orender_engine::renderer_build::build_spatial_renderer(
         params,
         layout,
