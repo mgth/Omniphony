@@ -27,7 +27,12 @@ const MIN_DECODE_QUEUE_CAPACITY: usize = 512;
 const MAX_DECODE_QUEUE_CAPACITY: usize = 8192;
 
 struct PreparedDecodeRun {
-    tx: mpsc::SyncSender<Result<DecoderMessage>>,
+    /// A frame sender for the live-input manager, taken (or dropped) as soon
+    /// as the producers are spawned. The render loop ends on `Disconnected`,
+    /// i.e. once every producer is gone: a sender kept here beside the
+    /// decoder thread's would keep the channel open past the end of a
+    /// non-continuous input, and the run would never finish.
+    live_input_tx: Option<mpsc::SyncSender<Result<DecoderMessage>>>,
     rx: mpsc::Receiver<Result<DecoderMessage>>,
     /// The DRC mode both bridge decoders follow (pipe and PipeWire sink),
     /// seeded with the configured one before the decoder thread starts.
@@ -305,7 +310,7 @@ fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecod
     });
 
     Ok(PreparedDecodeRun {
-        tx,
+        live_input_tx: Some(tx),
         rx,
         drc_mode,
         decode_thread,
@@ -962,14 +967,19 @@ fn run_prepared_render(
     // node beside the running renderer's, and feed its capture into the render.
     let offline =
         effective_args.output_backend == Some(OutputBackend::File) && !effective_args.continuous;
+    // Taken whether the manager starts or not: when it does not, the decoder
+    // thread is left the only producer, and the loop below ends once it has
+    // delivered the last frame of the input.
+    let live_input_tx = prepared.live_input_tx.take();
     let live_input_manager = handler
         .input_control
         .as_ref()
         .zip(handler.audio_control.as_ref())
         .filter(|_| !offline)
-        .map(|(input_control, audio_control)| {
+        .zip(live_input_tx)
+        .map(|((input_control, audio_control), tx)| {
             spawn_live_input_manager(
-                prepared.tx.clone(),
+                tx,
                 input_control.clone(),
                 audio_control.clone(),
                 LiveBridgeRuntimeConfig {

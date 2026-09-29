@@ -30,6 +30,7 @@ live_log = { version = "0.1.0", path = "live_log" }
 omniphony_geometry = { version = "0.1.0", path = "omniphony_geometry" }
 omniphony-osc-contract = { version = "0.1.0", path = "../osc-contract" }
 orender_engine = { version = "0.2.3", path = "orender_engine" }
+reference_bridge = { version = "0.1.0", path = "reference_bridge" }
 renderer = { version = "0.2.4", path = "renderer" }
 runtime_control = { version = "0.2.4", path = "runtime_control" }
 script_backend = { version = "0.1.0", path = "script_backend" }
@@ -99,6 +100,11 @@ anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 log.workspace = true
 libc.workspace = true
+
+[dev-dependencies]
+# Not linked by the tests: depending on it makes `cargo test` build its cdylib,
+# the bridge the CLI tests under tests/ load into the `orender` binary.
+reference_bridge.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true
