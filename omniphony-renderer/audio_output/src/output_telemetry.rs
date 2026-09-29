@@ -301,9 +301,23 @@ pub struct LatencySample {
     pub resampler_pending_input_samples: usize,
 }
 
-fn samples_to_ms(samples: usize, channel_count: u32, sample_rate: u32) -> f32 {
+/// Interleaved sample count → milliseconds of audio,
+/// `samples / channels / rate · 1000`. No guard: a zero channel count or rate
+/// gives inf/NaN, as the callers that use it unguarded always did.
+#[inline]
+pub(crate) fn interleaved_samples_to_ms(
+    samples: usize,
+    channel_count: usize,
+    sample_rate: u32,
+) -> f32 {
+    samples as f32 / channel_count as f32 / sample_rate as f32 * 1000.0
+}
+
+/// [`interleaved_samples_to_ms`], but 0 for a zero channel count or rate.
+#[inline]
+pub(crate) fn samples_to_ms(samples: usize, channel_count: usize, sample_rate: u32) -> f32 {
     if channel_count > 0 && sample_rate > 0 {
-        samples as f32 / channel_count as f32 / sample_rate as f32 * 1000.0
+        interleaved_samples_to_ms(samples, channel_count, sample_rate)
     } else {
         0.0
     }
@@ -323,7 +337,7 @@ impl OutputTelemetry {
     pub fn publish_latency(&self, sample: &LatencySample, channel_count: u32, sample_rate: u32) {
         let smoothed_ms = samples_to_ms(
             sample.smoothed_control_available,
-            channel_count,
+            channel_count as usize,
             sample_rate,
         );
         self.smoothed_control_latency_ms_bits
@@ -357,7 +371,7 @@ impl OutputTelemetry {
                 &self.diag_latency_resampler_pending_ms_bits,
             ),
         ] {
-            let ms = samples_to_ms(samples, channel_count, sample_rate);
+            let ms = samples_to_ms(samples, channel_count as usize, sample_rate);
             f32_bits.store(ms.to_bits(), Ordering::Relaxed);
             f64_bits.store((ms as f64).to_bits(), Ordering::Relaxed);
         }

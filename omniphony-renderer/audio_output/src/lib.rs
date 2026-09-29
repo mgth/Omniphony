@@ -14,7 +14,7 @@ pub use control::{
 pub use file_sink::{CafChannelDesc, FileAudioWriter, FileSinkFormat};
 pub use pacer::PacerHandle;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AdaptiveResamplingConfig {
     pub enable_far_mode: bool,
     pub force_silence_in_far_mode: bool,
