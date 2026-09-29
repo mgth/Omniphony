@@ -69,6 +69,10 @@ pub(crate) struct WavFormat {
     pub(crate) channels: u16,
     pub(crate) sample_rate: u32,
     pub(crate) sample_format: SampleFormat,
+    /// `dwChannelMask` of a `WAVE_FORMAT_EXTENSIBLE` header: which speaker
+    /// positions the channels carry, in ascending bit order. 0 when the header
+    /// is not extensible or declares no positions.
+    pub(crate) channel_mask: u32,
 }
 
 impl WavFormat {
@@ -124,13 +128,16 @@ fn parse_fmt(body: &[u8]) -> Result<WavFormat, &'static str> {
     let channels = read_u16(body, 2);
     let sample_rate = read_u32(body, 4);
     let bits = read_u16(body, 14);
+    let mut channel_mask = 0;
 
     // WAVE_FORMAT_EXTENSIBLE: the real format lives in the sub-format GUID
-    // (its first two little-endian bytes are the effective format tag).
+    // (its first two little-endian bytes are the effective format tag), and
+    // `dwChannelMask` says which speaker each channel feeds.
     if tag == 0xFFFE {
         if body.len() < 40 {
             return Err("extensible fmt chunk too short");
         }
+        channel_mask = read_u32(body, 20);
         tag = read_u16(body, 24);
     }
 
@@ -145,6 +152,7 @@ fn parse_fmt(body: &[u8]) -> Result<WavFormat, &'static str> {
         channels,
         sample_rate,
         sample_format,
+        channel_mask,
     })
 }
 
