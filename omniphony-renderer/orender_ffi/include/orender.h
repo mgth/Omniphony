@@ -30,7 +30,11 @@
 // `orender_bed_layout` (one byte per channel). Mirrors the engine's
 // ABI-stable `bridge_api::RChannelLabel` exactly (a unit test asserts
 // discriminant parity); values are append-only per the ABI policy.
-enum OrenderChannelLabel {
+enum OrenderChannelLabel
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
     OrenderChannelLabel_L = 0,
     OrenderChannelLabel_R = 1,
     OrenderChannelLabel_C = 2,
@@ -68,13 +72,13 @@ enum OrenderChannelLabel {
     OrenderChannelLabel_Rhs = 29,
     OrenderChannelLabel_Unknown = 255,
 };
+#ifndef __cplusplus
 typedef uint8_t OrenderChannelLabel;
+#endif // __cplusplus
 
 // Opaque handle to a decode→render session. Created by `orender_create`,
 // freed by `orender_destroy`. Internally an engine session.
-typedef struct OrenderRenderer {
-    uint8_t _private[0];
-} OrenderRenderer;
+typedef struct OrenderRenderer OrenderRenderer;
 
 // Session configuration passed to `orender_create`. All `*const c_char`
 // fields are UTF-8, nul-terminated, and may be NULL (treated as "unset").
@@ -125,6 +129,10 @@ typedef struct OrenderConfig {
     // OSC monitoring target host.
     const char *osc_host;
 } OrenderConfig;
+
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
 
 // Create a session. Returns NULL on failure (bad config, missing bridge, etc.).
 struct OrenderRenderer *orender_create(const struct OrenderConfig *cfg);
@@ -433,5 +441,9 @@ const char *orender_build_id(void);
 //   engine then follows at packet boundaries, winding the thread down a
 //   packet per call when it is turned off mid-stream.
 int orender_set_option(struct OrenderRenderer *r, const char *key, const char *value);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  /* ORENDER_H */

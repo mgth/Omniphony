@@ -111,7 +111,9 @@ fn resolve_osc_opts(
 
 /// Opaque handle to a decode→render session. Created by `orender_create`,
 /// freed by `orender_destroy`. Internally an engine session.
-#[repr(C)]
+// Deliberately not `#[repr(C)]`: cbindgen then emits an incomplete type
+// (`typedef struct OrenderRenderer OrenderRenderer;`) instead of a body with a
+// zero-length array, which ISO C and C++ reject. Hosts only hold pointers.
 pub struct OrenderRenderer {
     _private: [u8; 0],
 }

@@ -4,6 +4,10 @@ include_guard = "ORENDER_H"
 tab_width = 4
 documentation = true
 documentation_style = "c99"
+# Usable from C++ too: `extern "C"` around the declarations, and the
+# `#[repr(u8)]` label enum as `enum … : uint8_t` there (the plain-C form, an
+# enum plus a same-named `typedef uint8_t`, is a redeclaration in C++).
+cpp_compat = true
 
 [parse]
 parse_deps = false
