@@ -22,9 +22,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-const TRUEHD_ONLY_IEC958_CODECS_PROP: &str = "[ \"TRUEHD\" ]";
-const IEC958_AUDIO_POSITION_PROP: &str = "[ FL FR C LFE SL SR RL RR ]";
-
 #[allow(dead_code)]
 struct PipewireBridgeClientNodeState {
     hook: spa::sys::spa_hook,
@@ -162,6 +159,10 @@ pub fn run_pipewire_bridge_client_node_backend(
         config.sample_rate_hz,
         &requested_latency,
     );
+    // Logged from the properties actually published, so the log cannot
+    // drift from them.
+    let published_codecs = props.get("iec958.codecs").unwrap_or_default().to_owned();
+    let published_position = props.get("audio.position").unwrap_or_default().to_owned();
     let props_raw = props.into_raw();
 
     let mut state = Box::new(PipewireBridgeClientNodeState {
@@ -493,8 +494,8 @@ pub fn run_pipewire_bridge_client_node_backend(
         config.channels,
         config.sample_rate_hz,
         requested_latency,
-        TRUEHD_ONLY_IEC958_CODECS_PROP,
-        IEC958_AUDIO_POSITION_PROP,
+        published_codecs,
+        published_position,
         client_node,
         pw_node
     );

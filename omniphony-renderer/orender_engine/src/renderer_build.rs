@@ -735,6 +735,15 @@ pub fn seed_control_from_render_config(
                     {
                         live.binaural.tracking.format = fmt;
                     }
+                    // Same bound as the OSC setter.
+                    if let Some(s) = ht.smoothing
+                        && s.is_finite()
+                    {
+                        live.binaural.tracking.smoothing = s.clamp(0.0, 0.999);
+                    }
+                    if let Some(invert) = ht.invert {
+                        live.binaural.tracking.invert = invert;
+                    }
                     // Restore the persisted recenter reference so the centering
                     // survives an engine rebuild (mpv track change) and a restart.
                     // `head_pose`/`last_raw` stay at their defaults: the first
