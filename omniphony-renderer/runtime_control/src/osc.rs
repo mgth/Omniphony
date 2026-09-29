@@ -43,9 +43,38 @@ pub struct BroadcastUpdate {
     pub value: BroadcastValue,
 }
 
+/// How the clients learn that a control write changed the live state.
+///
+/// Every write that marks the config dirty goes through one notification path
+/// in the engine (`notify_changed` in `orender_engine::osc::dispatch`): mark
+/// the config dirty, broadcast `/state/config/saved = 0` so the Save button
+/// lights, then publish the new value to *every* registered client — not just
+/// the one that sent it, which already knows. The variants only differ in how
+/// the value travels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Notify {
+    /// Broadcast the full live-state bundle right away. For discrete edits (a
+    /// toggle, a menu choice, a typed value).
+    #[default]
+    Snapshot,
+    /// Let the bundle ride the OSC loop's live-state poll
+    /// (`RendererControl::bump_live_state`, at most one bundle per poll tick),
+    /// so a slider drag's burst of writes coalesces into a few bundles instead
+    /// of one per tick.
+    CoalescedSnapshot,
+    /// Dirty flag and `/state/config/saved` only: the write publishes its value
+    /// through a dedicated state address of its own (in `broadcasts`), and the
+    /// next bundle carries it anyway.
+    DirtyOnly,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ControlEffects {
+    /// The write changed state the config file holds: mark it dirty and notify
+    /// the clients, the way [`ControlEffects::notify`] says.
     pub mark_dirty: bool,
+    /// How clients learn about a `mark_dirty` change. Ignored otherwise.
+    pub notify: Notify,
     pub trigger_layout_recompute: bool,
     /// When `trigger_layout_recompute` is set, whether this change is
     /// evaluation-layer only (mode / grid resolution) — i.e. the backend geometry
@@ -56,13 +85,39 @@ pub struct ControlEffects {
     pub evaluation_only: bool,
     pub broadcasts: Vec<BroadcastUpdate>,
     pub log_message: Option<String>,
-    /// Head-tracking recenter reference `[w, x, y, z]` to write straight to
-    /// `config.yaml` (systematic save, like `surround_placement`). The engine
-    /// layer performs the I/O in `apply_control_effects`.
-    pub persist_head_center: Option<[f32; 4]>,
-    /// Sensor-to-head axis calibration `[w, x, y, z]` to write straight to
-    /// `config.yaml`, same mechanism (identity = drop the key).
-    pub persist_head_axes: Option<[f32; 4]>,
+    /// Config fields to write straight to `config.yaml` (a targeted,
+    /// sidecar-clearing write, see [`crate::persist::persist_ops`]) instead of
+    /// waiting for an explicit Save. The engine layer performs the I/O in
+    /// `apply_control_effects`.
+    pub persist: Vec<crate::persist::PersistOp>,
+}
+
+impl ControlEffects {
+    /// A config edit announced the way `notify` says.
+    pub fn dirty(notify: Notify) -> Self {
+        Self {
+            mark_dirty: true,
+            notify,
+            ..Self::default()
+        }
+    }
+}
+
+/// Validate and apply a master gain (linear) from any control address.
+///
+/// `/control/gain` and `/control/realtime/master_gain` used to write the field
+/// each in their own way — the realtime path with no check at all, so a NaN or
+/// negative gain went straight to the audio thread (and on to the config as a
+/// NaN dB value). Both now land here. Returns the applied gain, or `None` when
+/// the value is rejected (non-finite or negative: a negative linear gain is a
+/// polarity flip, never what a gain control means).
+pub fn set_master_gain(control: &renderer::live_params::RendererControl, gain: f32) -> Option<f32> {
+    if !gain.is_finite() || gain < 0.0 {
+        log::warn!("OSC master gain: rejected value {gain}");
+        return None;
+    }
+    control.live.write().master_gain = gain;
+    Some(gain)
 }
 
 // AdaptiveResamplingPatch / AudioConfigPatch / LiveInputPatch / InputConfigPatch
@@ -1475,11 +1530,10 @@ pub fn apply_simple_osc_control(
                 if step == renderer::binaural::CalibrationStep::Front {
                     // Looking ahead is the recenter: snap and persist it.
                     live.binaural.head_pose = renderer::binaural::HeadPose::identity();
-                    effects.persist_head_center =
-                        Some(live.binaural.tracking.reference.to_quat_array());
+                    effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
                 }
                 if done || step == renderer::binaural::CalibrationStep::Reset {
-                    effects.persist_head_axes = Some(live.binaural.tracking.axes.to_quat_array());
+                    effects.persist.push(crate::persist::PersistOp::HEAD_AXES);
                 }
                 effects.mark_dirty = true;
                 effects.log_message = Some(format!(
@@ -1504,7 +1558,7 @@ pub fn apply_simple_osc_control(
         live.binaural.head_pose = renderer::binaural::HeadPose::identity();
         // Persist the new reference to config right away so the centering survives
         // an engine rebuild (mpv track change) and a restart.
-        effects.persist_head_center = Some(live.binaural.tracking.reference.to_quat_array());
+        effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
         effects.mark_dirty = true;
         effects.log_message = Some("OSC: head/recenter".to_string());
         return Some(effects);
@@ -1685,7 +1739,6 @@ pub fn apply_simple_osc_control(
         }) else {
             return Some(effects);
         };
-        ctx.renderer.set_requested_ramp_mode(mode);
         ctx.renderer.live.write().ramp_mode = mode;
         effects.mark_dirty = true;
         effects.log_message = Some(format!("OSC: ramp_mode → {}", mode.as_str()));
@@ -1703,8 +1756,12 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == osc_contract::CONTROL_GAIN {
-        if let Some(gain) = parse_f32_arg(msg.args.first()) {
-            ctx.renderer.live.write().master_gain = gain;
+        // Same setter as `/control/realtime/master_gain` (engine dispatch):
+        // one validation, one field.
+        if parse_f32_arg(msg.args.first())
+            .and_then(|gain| set_master_gain(&ctx.renderer, gain))
+            .is_some()
+        {
             effects.mark_dirty = true;
         }
         return Some(effects);

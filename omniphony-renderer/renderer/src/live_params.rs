@@ -1652,8 +1652,6 @@ pub struct RendererControl {
     pub bridge_path: Mutex<Option<PathBuf>>,
     /// Supported DRC modes reported by the bridge.
     pub bridge_supported_drc_modes: Mutex<Vec<String>>,
-    /// Requested ramp mode from OSC control.
-    pub requested_ramp_mode: Mutex<RampMode>,
 
     /// OSC meter cadence in Hz (`f32::to_bits`). Read lock-free by `AudioMeter`
     /// each poll; OSC-adjustable and persisted to config. The renderer is the
@@ -1766,7 +1764,6 @@ impl RendererControl {
             input_path: Mutex::new(None),
             bridge_path: Mutex::new(None),
             bridge_supported_drc_modes: Mutex::new(Vec::new()),
-            requested_ramp_mode: Mutex::new(RampMode::Frame),
             // Seeded by the renderer at construction; 48 kHz until then.
             sample_rate: std::sync::atomic::AtomicU32::new(48_000),
             // Seeded from config (or a host default) after construction.
@@ -2338,13 +2335,5 @@ impl RendererControl {
 
     pub fn bridge_supported_drc_modes(&self) -> Vec<String> {
         self.bridge_supported_drc_modes.lock().clone()
-    }
-
-    pub fn set_requested_ramp_mode(&self, mode: RampMode) {
-        *self.requested_ramp_mode.lock() = mode;
-    }
-
-    pub fn requested_ramp_mode(&self) -> RampMode {
-        *self.requested_ramp_mode.lock()
     }
 }
