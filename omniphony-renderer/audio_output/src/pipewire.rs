@@ -37,61 +37,6 @@ use crate::{
     },
 };
 
-// FFI bindings for PipeWire thread-safe rate control and stream timing
-#[link(name = "pipewire-0.3")]
-unsafe extern "C" {
-    fn pw_stream_set_control(
-        stream: *mut std::ffi::c_void,
-        id: u32,
-        n_values: u32,
-        values: *const f32,
-        flags: u32,
-    ) -> i32;
-
-    fn pw_thread_loop_lock(loop_: *mut std::ffi::c_void);
-    fn pw_thread_loop_unlock(loop_: *mut std::ffi::c_void);
-
-    /// RT-safe.  `time` must point to a zero-initialised PwTime.
-    fn pw_stream_get_time(stream: *mut std::ffi::c_void, time: *mut PwTime) -> i32;
-}
-
-/// Mirrors `struct spa_fraction` from <spa/utils/defs.h>
-#[repr(C)]
-struct SpaFraction {
-    num: u32,
-    denom: u32,
-}
-
-/// Mirrors `struct pw_time` from <pipewire/stream.h>.
-/// Must match the full C struct exactly to avoid stack corruption when
-/// pw_stream_get_time() writes past the end of an undersized struct.
-/// Fields up to `queued` exist since 0.3.0; `buffered`/`queued_buffers`/
-/// `avail_buffers` were added in 0.3.50; `size` in 1.1.0.
-/// Total: 64 bytes (verified against pipewire-sys bindgen output).
-#[repr(C)]
-#[derive(Default)]
-struct PwTime {
-    now: i64,
-    rate: SpaFraction,
-    ticks: u64,
-    /// Downstream graph latency in `rate` ticks (frames at `rate.denom` Hz).
-    /// Does NOT include queued ring-buffer samples.
-    delay: i64,
-    queued: u64,
-    // Fields added in 0.3.50 — must be present to avoid stack overflow.
-    buffered: u64,
-    queued_buffers: u32,
-    avail_buffers: u32,
-    // Field added in 1.1.0.
-    size: u64,
-}
-
-impl Default for SpaFraction {
-    fn default() -> Self {
-        SpaFraction { num: 0, denom: 1 }
-    }
-}
-
 /// `SPA_PROP_rate` from <spa/param/props.h>: the stream adapter's resample
 /// rate scaler, the control `pw_stream_set_control` takes to speed up or slow
 /// down how fast the graph drains this stream.
@@ -738,7 +683,7 @@ impl PipewireWriter {
         adaptive_runtime_state_name_from_code(self.current_runtime_state.load(Ordering::Relaxed))
     }
 
-    /// Downstream graph latency in ms as reported by pw_stream_get_time().delay.
+    /// Downstream graph latency in ms as reported by pw_stream_get_time_n().delay.
     /// Includes PipeWire graph scheduling and the netjack2 driver quantum.
     /// Returns 0.0 until the stream has been active for ~2 seconds.
     pub fn graph_latency_ms(&self) -> f32 {
@@ -1235,12 +1180,23 @@ fn run_pipewire_loop(
                         state.logged_runtime_target = runtime_target_buffer_fill;
                     }
 
-                    // Sample downstream graph latency (RT-safe: pw_stream_get_time is RT-safe
+                    // Sample downstream graph latency (RT-safe: pw_stream_get_time_n is RT-safe
                     // inside the process callback). Update every ~100 callbacks to amortise cost.
                     if callback_count % 100 == 50 {
-                        let stream_ptr = stream.as_raw_ptr();
-                        let mut pw_t = PwTime::default();
-                        let ok = unsafe { pw_stream_get_time(stream_ptr as *mut _, &mut pw_t) };
+                        // `pw_stream_get_time_n` with our struct size: the
+                        // library writes only as much of `pw_time` as it
+                        // knows, whatever version it is.
+                        let mut pw_t = std::mem::MaybeUninit::<pw::sys::pw_time>::zeroed();
+                        let ok = unsafe {
+                            pw::sys::pw_stream_get_time_n(
+                                stream.as_raw_ptr(),
+                                pw_t.as_mut_ptr(),
+                                std::mem::size_of::<pw::sys::pw_time>(),
+                            )
+                        };
+                        // Zero-initialised, so fully initialised whatever the
+                        // call wrote.
+                        let pw_t = unsafe { pw_t.assume_init() };
                         if ok == 0 && pw_t.rate.denom > 0 && pw_t.delay > 0 {
                             let delay_ms = pw_t.delay as f32 / pw_t.rate.denom as f32 * 1000.0;
                             graph_latency_for_callback.store(delay_ms.to_bits(), Ordering::Relaxed);
@@ -2145,19 +2101,22 @@ fn run_pipewire_loop(
             if desired_rate_value.to_bits() != last_applied_rate.to_bits() {
                 // Lock the thread loop for thread-safe API calls
                 unsafe {
-                    pw_thread_loop_lock(loop_ptr as *mut _);
+                    pw::sys::pw_thread_loop_lock(loop_ptr);
 
-                    // Apply rate control
-                    let rate = desired_rate_value;
-                    let result = pw_stream_set_control(
-                        stream_ptr as *mut _,
+                    // Apply rate control. `pw_stream_set_control` is variadic
+                    // in C: after the first (id, n_values, values) triple it
+                    // reads further triples until an id of 0, hence the
+                    // trailing terminator.
+                    let mut rate = desired_rate_value;
+                    let result = pw::sys::pw_stream_set_control(
+                        stream_ptr,
                         SPA_PROP_RATE,
                         1,
-                        &rate as *const f32,
-                        0,
+                        &mut rate as *mut f32,
+                        0u32,
                     );
 
-                    pw_thread_loop_unlock(loop_ptr as *mut _);
+                    pw::sys::pw_thread_loop_unlock(loop_ptr);
 
                     if result == 0 {
                         last_applied_rate = desired_rate_value;
