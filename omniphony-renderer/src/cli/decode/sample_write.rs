@@ -492,7 +492,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             input_labels: labels,
                             output_layout,
                             sample_rate: frame.sampling_frequency,
-                            surround_placement,
+                            bed_poses: self.spatial.bed_planner.poses(),
                         };
                         let selection = orender_engine::channel_objects::StageSelection {
                             synthetic_objects_enabled: master,

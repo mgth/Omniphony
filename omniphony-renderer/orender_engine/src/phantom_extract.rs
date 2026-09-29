@@ -34,9 +34,7 @@ use crate::object_gen::ObjectKind;
 use bridge_api::RChannelLabel;
 use renderer::live_params::PhantomExtractMode;
 
-use crate::object_gen::{
-    ObjectGenParamSpec, PrepareCtx, SynthObjectSpec, channel_top_position, one_pole_coeff,
-};
+use crate::object_gen::{ObjectGenParamSpec, PrepareCtx, SynthObjectSpec, one_pole_coeff};
 use crate::phantom_spectral::SpectralExtractor;
 
 /// Time constant (ms) of the one-pole smoothers for the inter-channel statistics.
@@ -634,6 +632,10 @@ enum ExtractMethod {
 struct PlanSig {
     enabled: bool,
     labels: Vec<RChannelLabel>,
+    /// The bed poses the plan was placed from ([`PrepareCtx::bed_poses`]),
+    /// compared by value: a placement edit (mode, entries, room) moves them
+    /// without bumping anything.
+    poses: Vec<Option<[f64; 3]>>,
     rate: u32,
     passes: usize,
     center: bool,
@@ -745,7 +747,8 @@ impl PhantomExtractStage {
                     || self.sig.center != self.center_relocalize
                     || self.sig.sides != self.sides_relocalize))
             || (spectral && self.sig.heights != self.heights)
-            || self.sig.labels.as_slice() != ctx.input_labels;
+            || self.sig.labels.as_slice() != ctx.input_labels
+            || self.sig.poses.as_slice() != ctx.bed_poses;
         if changed {
             self.sig.enabled = enabled;
             self.sig.rate = ctx.sample_rate;
@@ -757,6 +760,8 @@ impl PhantomExtractStage {
             self.sig.options_epoch = options_epoch;
             self.sig.labels.clear();
             self.sig.labels.extend_from_slice(ctx.input_labels);
+            self.sig.poses.clear();
+            self.sig.poses.extend_from_slice(ctx.bed_poses);
             self.rebuild(enabled, ctx);
         }
         self.refresh_positions();
@@ -809,14 +814,14 @@ impl PhantomExtractStage {
             self.planar.resize_with(self.specs.len(), Vec::new);
             return;
         }
-        // Present, positionable bed channels with their floor position + azimuth.
-        // Honour the Side/Back surround placement (matching the virtual bed), so a
-        // 4.x/5.x surround phantom sits where the user put the surrounds.
-        let use_7_1 = crate::virtual_bed::source_has_back(ctx.input_labels);
+        // Present, positionable floor channels with their position + azimuth,
+        // where the bed renders them (placement policy and Side/Back surround
+        // placement included), so a phantom sits between its channels as the
+        // listener hears them.
         let mut chans: Vec<(usize, RChannelLabel, [f64; 3], f64)> = Vec::new();
         for (idx, &label) in ctx.input_labels.iter().enumerate() {
-            if let Some(top) = channel_top_position(label, use_7_1, ctx.surround_placement) {
-                let floor = [top[0], top[1], 0.0];
+            if let Some(pose) = ctx.floor_pose(idx) {
+                let floor = [pose[0], pose[1], 0.0];
                 let az = floor[0].atan2(floor[1]); // atan2(x, y): 0 = front, +90° = right
                 chans.push((idx, label, floor, az));
             }
@@ -1112,13 +1117,21 @@ mod tests {
         }
     }
 
-    fn ctx<'a>(labels: &'a [RChannelLabel], layout: &'a SpeakerLayout) -> PrepareCtx<'a> {
-        PrepareCtx {
-            input_labels: labels,
-            output_layout: layout,
-            sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
-        }
+    /// A room-model prepare context (Side surround placement). A macro, not
+    /// a function: the bed poses are a temporary that must outlive the call
+    /// the context is passed to.
+    macro_rules! ctx {
+        ($labels:expr, $layout:expr) => {
+            PrepareCtx {
+                input_labels: $labels,
+                output_layout: $layout,
+                sample_rate: 48_000,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    $labels,
+                    renderer::live_params::SurroundPlacement::Side,
+                ),
+            }
+        };
     }
 
     fn sine(f: f32) -> impl Fn(usize) -> f32 {
@@ -1154,7 +1167,7 @@ mod tests {
     fn disabled_is_noop() {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        assert_eq!(st.sync(false, &ctx(&LABELS_5_1, &layout), 0), 0);
+        assert_eq!(st.sync(false, &ctx!(&LABELS_5_1, &layout), 0), 0);
     }
 
     #[test]
@@ -1162,16 +1175,16 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         // 5 positionable channels (L,R,C,Ls,Rs; LFE excluded) → ring of 5 pairs.
-        assert_eq!(st.sync(true, &ctx(&LABELS_5_1, &layout), 0), 5);
+        assert_eq!(st.sync(true, &ctx!(&LABELS_5_1, &layout), 0), 5);
     }
 
     #[test]
     fn passes_widen_the_pair_set() {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        let ring = st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        let ring = st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         st.set_param("passes", 2.0, 48_000);
-        let widened = st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        let widened = st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         assert!(
             widened > ring,
             "passes=2 ({widened}) should add pairs over ring ({ring})"
@@ -1183,7 +1196,7 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         st.set_param("strength", 1.0, 48_000);
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         // A correlated source panned between adjacent channels L and C (0.8 / 0.2).
         let c = 6usize;
         let n = 6000usize;
@@ -1216,7 +1229,7 @@ mod tests {
             "L should be largely emptied ({l_red} vs {in_l})"
         );
         // Position: refresh from the converged stats and check it sits toward L.
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let pos = st.specs()[k].position;
         assert!(
             pos[0] < -0.5,
@@ -1230,7 +1243,7 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         st.set_param("strength", 1.0, 48_000);
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let c = 6usize;
         let n = 6000usize;
         let (s1, s2) = (sine(700.0), sine(1130.0)); // independent tones
@@ -1270,7 +1283,7 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         st.set_param("strength", 1.0, 48_000);
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let c = 6usize;
         let n = 6000usize;
         let s = sine(700.0);
@@ -1307,7 +1320,7 @@ mod tests {
             (l_red - r_red).abs() < 0.1 * in_l + 1.0e-6,
             "L and R must be reduced symmetrically ({l_red} vs {r_red})"
         );
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let x_lc = st.specs()[i_lc].position[0];
         let x_cr = st.specs()[i_cr].position[0];
         assert!(
@@ -1326,7 +1339,7 @@ mod tests {
         let layout = dummy_layout();
         // front(2) + back(1) + left(2) + right(2); every ring distance-1 pair is
         // covered, so passes=1 yields exactly these 7.
-        let n_specs = st.sync(true, &ctx(&LABELS_7_1, &layout), 0);
+        let n_specs = st.sync(true, &ctx!(&LABELS_7_1, &layout), 0);
         assert_eq!(n_specs, 7);
         let names: Vec<&str> = st.specs().iter().map(|s| s.name.as_str()).collect();
         for want in [
@@ -1349,7 +1362,7 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         st.set_param("strength", 1.0, 48_000);
-        st.sync(true, &ctx(&LABELS_7_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_7_1, &layout), 0);
         let c = 8usize; // L=0, Ls=4, Lb=6
         let n = 6000usize;
         let s = sine(700.0);
@@ -1385,7 +1398,7 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         st.set_param("center", 1.0, 48_000);
-        let n_specs = st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        let n_specs = st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let names: Vec<&str> = st.specs().iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"Phantom_C"),
@@ -1410,7 +1423,7 @@ mod tests {
         let layout = dummy_layout();
         st.set_param("center", 1.0, 48_000);
         st.set_param("strength", 1.0, 48_000);
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let c = 6usize;
         let n = 6000usize;
         let s = sine(700.0);
@@ -1445,7 +1458,7 @@ mod tests {
             "spread centre should be re-extracted, leaving L/R near silent ({lr_red} vs {in_c})"
         );
         // Position: symmetric centre → object sits near the centre line.
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let pos = st.specs()[k].position;
         assert!(
             pos[0].abs() < 0.15,
@@ -1462,7 +1475,7 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         st.set_param("sides", 1.0, 48_000);
-        let n_specs = st.sync(true, &ctx(&LABELS_7_1, &layout), 0);
+        let n_specs = st.sync(true, &ctx!(&LABELS_7_1, &layout), 0);
         let names: Vec<&str> = st.specs().iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"Phantom_Ls"),
@@ -1495,7 +1508,7 @@ mod tests {
         let layout = dummy_layout();
         st.set_param("sides", 1.0, 48_000);
         st.set_param("strength", 1.0, 48_000);
-        st.sync(true, &ctx(&LABELS_7_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_7_1, &layout), 0);
         let c = 8usize;
         let n = 6000usize;
         let s = sine(700.0);
@@ -1529,7 +1542,7 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         st.set_param("lift", 0.8, 48_000);
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         assert!(
             st.specs()
                 .iter()
@@ -1537,11 +1550,13 @@ mod tests {
         );
     }
 
+    /// A placement edit moves the bed without bumping the options epoch; the
+    /// stage compares the bed poses by value and re-plans.
     #[test]
-    fn replans_on_options_epoch_bump() {
+    fn replans_when_the_bed_poses_move() {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        assert_eq!(st.sync(true, &ctx(&LABELS_5_1, &layout), 0), 5);
+        assert_eq!(st.sync(true, &ctx!(&LABELS_5_1, &layout), 0), 5);
         let find_ls_y = |st: &PhantomExtractStage| {
             st.specs()
                 .iter()
@@ -1554,24 +1569,81 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &layout,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Back,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Back,
+            ),
         };
-        // The ctx value alone must NOT re-plan: the options epoch is the
-        // invalidator (a redundant state echo must not re-prime the stages).
         assert_eq!(st.sync(true, &ctx_back, 0), 5);
-        assert_eq!(
-            find_ls_y(&st),
-            y_side,
-            "no epoch bump: the previous plan must be kept"
-        );
-        // The real flow: a live placement change is a REPLAN-flagged registry
-        // option, so it arrives together with an epoch bump → re-plan.
-        assert_eq!(st.sync(true, &ctx_back, 1), 5);
         let y_back = find_ls_y(&st);
         assert!(
             y_side > y_back + 0.5,
-            "Ls-anchored phantom must follow a live placement change \
+            "Ls-anchored phantom must follow the bed, epoch unchanged \
              (side y = {y_side}, back y = {y_back})"
+        );
+    }
+
+    /// A phantom sits between its two channels where the bed renders them:
+    /// in sphere mode that is between their directions, not between the
+    /// room corners.
+    #[test]
+    fn phantoms_sit_between_the_bed_poses_of_the_policy() {
+        use crate::virtual_bed::{PlacementPolicy, RoomRatios, resolve_bed_poses};
+        let mut poses = Vec::new();
+        resolve_bed_poses(
+            &LABELS_5_1,
+            &PlacementPolicy::sphere(&[]),
+            RoomRatios::UNIT,
+            renderer::live_params::SurroundPlacement::Side,
+            &mut poses,
+        );
+        let layout = dummy_layout();
+        let mut st = PhantomExtractStage::new();
+        let ctx = PrepareCtx {
+            input_labels: &LABELS_5_1,
+            output_layout: &layout,
+            sample_rate: 48_000,
+            bed_poses: &poses,
+        };
+        assert_eq!(st.sync(true, &ctx, 0), 5);
+        // The L–C phantom slides along the segment between the bed poses of
+        // L and C (by the energy balance), never off it.
+        let pose = |label: RChannelLabel| {
+            let idx = LABELS_5_1.iter().position(|&l| l == label).expect("label");
+            poses[idx].expect("pose")
+        };
+        let (l, c) = (pose(RChannelLabel::L), pose(RChannelLabel::C));
+        let p = st
+            .specs()
+            .iter()
+            .find(|s| s.name == "Phantom_L_C")
+            .expect("L-C phantom")
+            .position;
+        let cross = (c[0] - l[0]) * (p[1] - l[1]) - (c[1] - l[1]) * (p[0] - l[0]);
+        assert!(
+            cross.abs() < 1e-9,
+            "{p:?} off the L {l:?} – C {c:?} segment"
+        );
+        let t = (p[0] - l[0]) / (c[0] - l[0]);
+        assert!((0.0..=1.0).contains(&t), "{p:?} outside the L–C segment");
+        // Sphere-mode L is at −30°, not at the front-left corner.
+        assert!((l[0].atan2(l[1]).to_degrees() + 30.0).abs() < 0.5);
+    }
+
+    /// The wide, front-centre and surround-direct pairs have bed poses, so
+    /// they take part in the extraction like every other floor channel
+    /// (the old table had no entry for them and dropped them).
+    #[test]
+    fn wide_channels_join_the_ring() {
+        use RChannelLabel::*;
+        const LABELS: [RChannelLabel; 10] = [L, R, C, LFE, Ls, Rs, Lb, Rb, Lw, Rw];
+        let layout = dummy_layout();
+        let mut st = PhantomExtractStage::new();
+        assert!(st.sync(true, &ctx!(&LABELS, &layout), 0) > 0);
+        assert!(
+            st.specs().iter().any(|s| s.name.contains("Lw")),
+            "a phantom anchored on Lw, got {:?}",
+            st.specs().iter().map(|s| &s.name).collect::<Vec<_>>()
         );
     }
 
@@ -1579,9 +1651,9 @@ mod tests {
     fn method_switch_replans() {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        assert_eq!(st.sync(true, &ctx(&LABELS_5_1, &layout), 0), 5);
+        assert_eq!(st.sync(true, &ctx!(&LABELS_5_1, &layout), 0), 5);
         st.set_mode(PhantomExtractMode::Spectral);
-        assert_eq!(st.sync(true, &ctx(&LABELS_5_1, &layout), 0), 8);
+        assert_eq!(st.sync(true, &ctx!(&LABELS_5_1, &layout), 0), 8);
         let names: Vec<&str> = st.specs().iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"Direct_F") && names.contains(&"Direct_FL"),
@@ -1589,7 +1661,7 @@ mod tests {
         );
         st.set_mode(PhantomExtractMode::Broadband);
         assert_eq!(
-            st.sync(true, &ctx(&LABELS_5_1, &layout), 0),
+            st.sync(true, &ctx!(&LABELS_5_1, &layout), 0),
             5,
             "switching back must restore the broadband ring plan"
         );
@@ -1604,7 +1676,7 @@ mod tests {
         let layout = dummy_layout();
         st.set_mode(PhantomExtractMode::Spectral);
         st.set_param("strength", 1.0, 48_000);
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let c = 6usize;
         let n = 24_000usize;
         let s = sine(700.0);
@@ -1635,7 +1707,7 @@ mod tests {
             "C should be largely emptied ({c_res} vs {in_c})"
         );
         // Position: converged stats keep the object at the front centre.
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let pos = st.specs()[k].position;
         assert!(
             pos[0].abs() < 0.15 && pos[1] > 0.85,
@@ -1647,7 +1719,7 @@ mod tests {
     fn finite_output() {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
+        st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let c = 6usize;
         let n = 2000usize;
         let s = sine(500.0);
