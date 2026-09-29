@@ -659,7 +659,7 @@
   "distance.model.inverseSquare": "反平方",
   "distance.modelInfoButton": "距离模型信息",
   "distance.modelInfoTitle": "距离模型",
-  "distance.modelInfoBody": "距离模型控制在应用任何扩散或扩散范围特定处理之前，对象增益如何随距离衰减。<br><br><strong>无</strong> 保持距离中性。<strong>线性</strong> 和 <strong>二次</strong> 逐级施加更强的衰减。<strong>平方反比</strong> 最为陡峭，最接近简单的物理衰减。",
+  "distance.modelInfoBody": "距离模型控制在应用任何扩散或扩散范围特定处理之前，对象增益如何随距离衰减。<br><br><strong>无</strong> 保持距离中性。<strong>线性</strong> 和 <strong>二次</strong> 逐级施加更强的衰减。<strong>平方反比</strong> 遵循物理定律：在扬声器之外，距离每增加一倍衰减 −6 dB；在扬声器以内从不提升电平。",
   "distance.infoButton": "Distance Diffuse 信息",
   "hybrid.title": "混合后端",
   "hybrid.infoButton": "混合后端信息",

@@ -659,7 +659,7 @@
   "distance.model.inverseSquare": "逆二乗",
   "distance.modelInfoButton": "距離モデル情報",
   "distance.modelInfoTitle": "距離モデル",
-  "distance.modelInfoBody": "距離モデルは、ディフューズやスプレッド固有の処理が適用される前に、オブジェクトのゲインが距離とともにどのように減衰するかを制御します。<br><br><strong>なし</strong> は距離を中立に保ちます。<strong>線形</strong> と <strong>二次</strong> は段階的に強い減衰を適用します。<strong>逆二乗</strong> は最も急峻で、単純な物理的減衰に最も近いものです。",
+  "distance.modelInfoBody": "距離モデルは、ディフューズやスプレッド固有の処理が適用される前に、オブジェクトのゲインが距離とともにどのように減衰するかを制御します。<br><br><strong>なし</strong> は距離を中立に保ちます。<strong>線形</strong> と <strong>二次</strong> は段階的に強い減衰を適用します。<strong>逆二乗</strong> は物理法則に従います。スピーカーより外側では距離が2倍になるごとに −6 dB 減衰し、内側でレベルを上げることはありません。",
   "distance.infoButton": "Distance Diffuse 情報",
   "hybrid.title": "ハイブリッドバックエンド",
   "hybrid.infoButton": "ハイブリッドバックエンド情報",
