@@ -1600,6 +1600,7 @@ dependencies = [
  "live_log",
  "log",
  "orender_engine",
+ "reference_bridge",
  "renderer",
  "runtime_control",
  "spdif",
