@@ -695,6 +695,36 @@ impl ResampleKernel {
         }
     }
 
+    /// [`Self::resample_into`], but every output sample is divided by the
+    /// sum of the taps that actually landed on the input. That makes the DC
+    /// gain exactly 1, including at the edges where part of the kernel hangs
+    /// off the ends — what a signal (as opposed to an impulse response)
+    /// wants.
+    pub(crate) fn resample_normalized_into(&self, x: &[f32], out: &mut Vec<f32>) {
+        let out_len = self.out_len(x.len());
+        out.clear();
+        out.reserve(out_len);
+        for n in 0..out_len {
+            let k0 = (n as u64 * self.from as u64 / self.to as u64) as isize - HALF_WIDTH + 1;
+            let row = &self.taps[(n % self.phases) * KERNEL_WIDTH..][..KERNEL_WIDTH];
+            let mut acc = 0.0f64;
+            let mut norm = 0.0f64;
+            for (j, &tap) in row.iter().enumerate() {
+                let k = k0 + j as isize;
+                if k < 0 || k as usize >= x.len() {
+                    continue;
+                }
+                acc += x[k as usize] as f64 * tap;
+                norm += tap;
+            }
+            out.push(if norm.abs() > 1e-12 {
+                (acc / norm) as f32
+            } else {
+                0.0
+            });
+        }
+    }
+
     #[cfg(test)]
     fn resample(&self, x: &[f32]) -> Vec<f32> {
         let mut out = Vec::new();
