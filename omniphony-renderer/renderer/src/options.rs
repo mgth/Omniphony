@@ -59,11 +59,10 @@ pub struct OptionFlags(u8);
 
 impl OptionFlags {
     pub const NONE: Self = Self(0);
-    /// Commit to config.yaml immediately when set over OSC (targeted,
-    /// sidecar-clearing write). Rationale: a host fallback can route the next
-    /// toggle to a *different* renderer instance, so the value must reach the
-    /// file — not just the memory of whichever instance received it.
-    pub const PERSIST: Self = Self(1 << 0);
+    // Bit 0 was `PERSIST`, a write to config.yaml on every OSC set. Options
+    // change what is heard, so they reach the file through the Save button
+    // only (docs/persistence-policy.md); an unsaved value that must follow a
+    // handoff to another renderer instance rides the live-handoff sidecar.
     /// A change re-plans synthesized-object stages: setting the option bumps
     /// `RendererControl::options_epoch`, which plan signatures compare instead
     /// of enumerating options field by field.
@@ -207,7 +206,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         key: "surround_placement",
         kind: OptionKind::Enum(&["side", "back"]),
         default: OptionDefault::Str("side"),
-        flags: OptionFlags::PERSIST.or(OptionFlags::REPLAN),
+        flags: OptionFlags::REPLAN,
         i18n_key: "twoDSources.surroundLabel",
         help_i18n_key: None,
         legacy_control_addr: osc_contract::CONTROL_SURROUND_PLACEMENT,
@@ -230,7 +229,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         key: "synthetic_objects_enabled",
         kind: OptionKind::Bool,
         default: OptionDefault::Bool(false),
-        flags: OptionFlags::PERSIST.or(OptionFlags::REPLAN),
+        flags: OptionFlags::REPLAN,
         i18n_key: "twoDSources.syntheticObjectsLabel",
         help_i18n_key: Some("help.syntheticObjects"),
         legacy_control_addr: osc_contract::CONTROL_SYNTHETIC_OBJECTS,
@@ -256,7 +255,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Bool,
         default: OptionDefault::Bool(false),
         // No REPLAN: nothing synthesized depends on where decoding runs.
-        flags: OptionFlags::PERSIST,
+        flags: OptionFlags::NONE,
         i18n_key: "renderer.decodeThreadLabel",
         help_i18n_key: Some("help.decodeThread"),
         legacy_control_addr: osc_contract::CONTROL_DECODE_THREAD,
@@ -279,7 +278,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         key: "output_channel_mapping",
         kind: OptionKind::Enum(&["by_index", "by_name"]),
         default: OptionDefault::Str("by_index"),
-        flags: OptionFlags::PERSIST,
+        flags: OptionFlags::NONE,
         i18n_key: "audio.channelMapping",
         help_i18n_key: None,
         legacy_control_addr: osc_contract::CONTROL_OUTPUT_CHANNEL_MAPPING,
@@ -302,7 +301,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         key: "object_generator_id",
         kind: OptionKind::Str,
         default: OptionDefault::Str(""),
-        flags: OptionFlags::PERSIST.or(OptionFlags::REPLAN),
+        flags: OptionFlags::REPLAN,
         i18n_key: "twoDSources.objectGeneratorLabel",
         help_i18n_key: Some("help.objectGenerator"),
         legacy_control_addr: osc_contract::CONTROL_OBJECT_GENERATOR,
@@ -330,7 +329,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         key: "phantom_extract_mode",
         kind: OptionKind::Enum(&["off", "broadband", "spectral"]),
         default: OptionDefault::Str("off"),
-        flags: OptionFlags::PERSIST.or(OptionFlags::REPLAN),
+        flags: OptionFlags::REPLAN,
         i18n_key: "twoDSources.phantomLabel",
         help_i18n_key: Some("help.phantomExtract"),
         legacy_control_addr: osc_contract::CONTROL_PHANTOM_EXTRACT,
@@ -376,7 +375,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         // No REPLAN: the speaker stage compares the live value against the
         // bank it built every frame and rebuilds the filter bank itself; no
         // synthesized-object topology depends on it.
-        flags: OptionFlags::PERSIST,
+        flags: OptionFlags::NONE,
         i18n_key: "renderer.crossoverTypeLabel",
         help_i18n_key: Some("help.crossoverType"),
         legacy_control_addr: osc_contract::CONTROL_CROSSOVER_TYPE,
@@ -402,7 +401,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         // No REPLAN, same as crossover_type: the speaker stage compares the
         // live value against the bank it built every frame and rebuilds the
         // FIR bank itself when it moves.
-        flags: OptionFlags::PERSIST,
+        flags: OptionFlags::NONE,
         i18n_key: "renderer.crossoverTransitionLabel",
         help_i18n_key: Some("help.crossoverFirTransition"),
         legacy_control_addr: osc_contract::CONTROL_CROSSOVER_FIR_TRANSITION_RATIO,
@@ -431,7 +430,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         default: OptionDefault::Str("exact"),
         // No REPLAN: the lattice only gates a per-block cache in the binaural
         // stage, it does not change any synthesized-object topology.
-        flags: OptionFlags::PERSIST,
+        flags: OptionFlags::NONE,
         i18n_key: "binaural.hrirUpdateLatticeLabel",
         help_i18n_key: Some("help.hrirUpdateLattice"),
         legacy_control_addr: osc_contract::CONTROL_BINAURAL_HRIR_UPDATE_LATTICE,
@@ -458,9 +457,8 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
     // Migrated from dedicated handlers; the dedicated addresses stay as
     // aliases and the flat snapshot keys (`autoGain`, `autoGainCeilingDb`,
     // `rampMode`, `/state/loudness` `enabled`, `/state/input` `drcMode` /
-    // `drcWeight`) are still emitted. No `PERSIST`: like before the
-    // migration they reach `config.yaml` on an explicit Save, not on every
-    // OSC set (two of them are slider-driven). None re-plans anything: they
+    // `drcWeight`) are still emitted. Like every option they reach
+    // `config.yaml` on an explicit Save. None re-plans anything: they
     // are read per frame (gain stage, ramps) or pushed to the decoder.
     OptionSpec {
         key: "auto_gain",
@@ -615,20 +613,29 @@ pub fn find(key: &str) -> Option<&'static OptionSpec> {
     LIVE_OPTIONS.iter().find(|spec| spec.key == key)
 }
 
+/// What [`apply_to_control`] made of a client value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Applied {
+    /// The canonical value now in force.
+    pub canonical: String,
+    /// Whether it differs from the value before.
+    pub changed: bool,
+}
+
 /// Apply a client value to a control's live params through `spec`: validate +
-/// set, mark the config dirty, and bump the replan epoch when a
-/// `REPLAN`-flagged option **actually changed value** — a redundant re-send
-/// (Studio reconnecting, a client echoing state back) must not force a
-/// re-plan, which can carry an audible re-prime transient. Returns the
-/// canonical value applied, or `None` when the value was rejected.
+/// set, and — only when the option **actually changed value** — mark the
+/// config dirty and bump the replan epoch of a `REPLAN`-flagged option. A
+/// redundant re-send (Studio reconnecting, a client echoing state back) must
+/// neither light the Save button nor force a re-plan, which can carry an
+/// audible re-prime transient. Returns `None` when the value was rejected.
 ///
-/// Persistence and client notification stay with the transport layer (the OSC
-/// dispatcher), which alone knows the config path and the subscriber list.
+/// Client notification stays with the transport layer (the OSC dispatcher),
+/// which alone knows the subscriber list.
 pub fn apply_to_control(
     control: &crate::live_params::RendererControl,
     spec: &OptionSpec,
     raw: &RawOptionValue,
-) -> Option<String> {
+) -> Option<Applied> {
     let (canonical, changed) = {
         let mut live = control.live.write();
         let before = (spec.get_json)(&live);
@@ -636,11 +643,13 @@ pub fn apply_to_control(
         let changed = (spec.get_json)(&live) != before;
         (canonical, changed)
     };
-    control.mark_dirty();
-    if changed && spec.flags.contains(OptionFlags::REPLAN) {
-        control.bump_options_epoch();
+    if changed {
+        control.mark_dirty();
+        if spec.flags.contains(OptionFlags::REPLAN) {
+            control.bump_options_epoch();
+        }
     }
-    Some(canonical)
+    Some(Applied { canonical, changed })
 }
 
 /// Look an option up by its pre-registry dedicated control address.
@@ -782,9 +791,6 @@ pub fn schema_json() -> String {
                 OptionKind::Float { .. } => ("float", None),
             };
             let mut flags = Vec::new();
-            if spec.flags.contains(OptionFlags::PERSIST) {
-                flags.push("persist");
-            }
             if spec.flags.contains(OptionFlags::REPLAN) {
                 flags.push("replan");
             }
@@ -831,10 +837,9 @@ mod tests {
                 "{}: bad legacy address",
                 spec.key
             );
-            // Without PERSIST an option still reaches the file through the
-            // full save (`store_live_to_config` stores every row) and is
-            // seeded from it at boot; it only skips the immediate write on
-            // an OSC set.
+            // Every option reaches the file through the full save
+            // (`store_live_into_config` stores every row) and is seeded from
+            // it at boot.
         }
     }
 

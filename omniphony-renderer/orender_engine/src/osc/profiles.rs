@@ -94,41 +94,82 @@ pub(crate) fn handle_profile_message(
         }
     }
 
-    // Commit the current live state into `render:` first, so the operation
-    // acts on — and the outgoing/copied profile captures — what the user
-    // actually hears, including unsaved tweaks (same spirit as the handoff
-    // sidecar: a deliberate profile action must not lose them). Deliberately
-    // WITHOUT the host amend: host-owned fields (output device, live input,
-    // resampling, latency) only take effect at engine start, so after a
-    // switch the running host state describes the PREVIOUS profile — amending
-    // here would overwrite the new profile's saved output settings with it.
-    // The on-disk values (already in `config`) stay as persisted.
-    runtime_control::persist::store_live_into_config(control, None, &mut config);
+    // A profile operation never commits the user's unsaved edits behind their
+    // back (docs/persistence-policy.md):
+    // - switch discards them — unless the client asked to save first
+    //   (`[name, "save"]`): the full Save, host fields included, into the
+    //   outgoing profile, and no switch at all when it fails;
+    // - create makes the new profile from what the user hears ("from the
+    //   current state") and leaves the active one as its file says;
+    // - rename and delete are bookkeeping.
+    let host_ref: Option<&dyn HostControlHandler> = host.map(|h| h.as_ref());
+    if is_switch && matches!(msg.args.get(1), Some(OscType::String(mode)) if mode == "save") {
+        broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
+        if let Err(e) = runtime_control::persist::save_live_config(control, host_ref) {
+            let message = format!("profile switch '{name}' not done: save failed: {e}");
+            log::error!("OSC {addr}: {message}");
+            broadcast_string(
+                socket,
+                clients,
+                osc_contract::STATE_CONFIG_SAVE_ERROR,
+                &message,
+            );
+            broadcast_profiles_state(control, socket, clients);
+            return true;
+        }
+        config = renderer::config::Config::load_or_default(&path);
+    }
+    let created_from_live = (addr == osc_contract::CONTROL_PROFILE_CREATE).then(|| {
+        let mut live = config.clone();
+        // Without the host amend, as a switch-in re-seeds: host-owned fields
+        // (output device, live input, resampling, latency) only take effect
+        // at engine start, so the new profile keeps the file's.
+        runtime_control::persist::store_live_into_config(control, None, &mut live);
+        live.render.unwrap_or_default()
+    });
 
-    let result = if is_switch {
-        config.switch_profile(&name)
-    } else if addr == osc_contract::CONTROL_PROFILE_CREATE {
-        config.create_profile(&name)
-    } else if addr == osc_contract::CONTROL_PROFILE_DELETE {
-        config.delete_profile(&name)
-    } else {
-        match msg.args.get(1) {
-            Some(OscType::String(new)) => config.rename_profile(&name, new),
-            _ => {
-                log::warn!("OSC {addr}: rename needs [old, new]");
-                return true;
+    let rename_to = match msg.args.get(1) {
+        Some(OscType::String(new)) => Some(new.clone()),
+        _ => None,
+    };
+    let operation = |config: &mut renderer::config::Config| -> anyhow::Result<()> {
+        if is_switch {
+            config.switch_profile(&name)
+        } else if let Some(render) = &created_from_live {
+            config.create_profile(&name)?;
+            config.profiles.insert(name.clone(), render.clone());
+            Ok(())
+        } else if addr == osc_contract::CONTROL_PROFILE_DELETE {
+            config.delete_profile(&name)
+        } else {
+            match &rename_to {
+                Some(new) => config.rename_profile(&name, new),
+                None => anyhow::bail!("rename needs [old, new]"),
             }
         }
     };
-    if let Err(e) = result {
+    if let Err(e) = operation(&mut config) {
         log::warn!("OSC {addr} '{name}': {e}");
         broadcast_profiles_state(control, socket, clients);
         return true;
     }
 
-    // A deliberate profile mutation supersedes any pending live-handoff
-    // overlay: the shared commit writes the file and drops the sidecar.
-    if let Err(e) = runtime_control::persist::commit_config(&path, &config) {
+    // A switch replaces the live state with the file's, so a pending handoff
+    // overlay (the outgoing profile's unsaved edits) goes with it. The others
+    // leave those edits pending: the overlay gets the same bookkeeping, or a
+    // handoff would bring the old profile list back.
+    let written = if is_switch {
+        runtime_control::persist::commit_config(&path, &config)
+    } else {
+        config.save(&path).map(|()| {
+            renderer::config::amend_live_overlay(&path, |overlay| {
+                if let Err(e) = operation(overlay) {
+                    log::warn!("OSC {addr} '{name}': not applied to the handoff overlay: {e}");
+                }
+            });
+        })
+    };
+    if let Err(e) = written {
         let message = format!("profile operation failed to save config: {e}");
         log::error!("OSC {addr} '{name}': {message}");
         broadcast_string(
@@ -144,14 +185,11 @@ pub(crate) fn handle_profile_message(
 
     if is_switch {
         apply_switched_profile(&config, control, socket, clients, gaintable_cache);
+        // The live state is now the switched-in profile, as its file says.
+        control.mark_clean();
+        broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
+        broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
     }
-
-    // Everything the user heard is now in the file (the commit above), so the
-    // dirty indicator clears like it does after an explicit save, and any
-    // stale save-error banner from an earlier attempt clears with it.
-    control.mark_clean();
-    broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
-    broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
     broadcast_profiles_state(control, socket, clients);
     // Full state refresh so every client view (options, layout, binaural,
     // gains…) re-syncs to the post-operation state.
@@ -437,5 +475,117 @@ mod tests {
         assert!(!control.config_dirty.load(Ordering::Relaxed));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A config holding two profiles, "a" (active) and "b", both 7.1.4 with
+    /// every option at its default, and a control running "a" with one
+    /// unsaved edit: surround placement set to `back`.
+    fn two_profiles_with_an_unsaved_edit(tag: &str) -> (std::path::PathBuf, Arc<RendererControl>) {
+        let dir =
+            std::env::temp_dir().join(format!("orender-profile-ops-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        let mut config = config_with_layout("7.1.4");
+        config.active_profile = Some("a".into());
+        config.create_profile("b").unwrap();
+        config.save(&path).unwrap();
+
+        let control = fixture_control();
+        control.set_config_path(path.clone());
+        control.live.write().surround_placement = renderer::live_params::SurroundPlacement::Back;
+        control.mark_dirty();
+        (path, control)
+    }
+
+    fn run(control: &Arc<RendererControl>, addr: &str, args: &[&str]) {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
+        let msg = OscMessage {
+            addr: addr.to_string(),
+            args: args
+                .iter()
+                .map(|a| OscType::String(a.to_string()))
+                .collect(),
+        };
+        assert!(handle_profile_message(
+            &msg,
+            control,
+            None,
+            &socket,
+            &clients,
+            &Arc::new(GaintableCache::new()),
+        ));
+    }
+
+    /// Whether profile `name`, as the file says, sets surround placement to
+    /// `back` (the unsaved edit of the fixture).
+    fn saved_back(path: &std::path::Path, name: &str) -> bool {
+        let config = Config::load_or_default(path);
+        let render = if config.active_profile_name() == name {
+            config.render.clone()
+        } else {
+            config.profiles.get(name).cloned()
+        };
+        render.expect("profile present").surround_placement
+            == Some(renderer::live_params::SurroundPlacement::Back)
+    }
+
+    /// A switch without "save" discards the unsaved edit: the outgoing
+    /// profile's file is left as it was, and the live state is the incoming
+    /// profile's.
+    #[test]
+    fn a_plain_switch_never_saves_the_unsaved_edits() {
+        let (path, control) = two_profiles_with_an_unsaved_edit("switch");
+        run(&control, osc_contract::CONTROL_PROFILE_SWITCH, &["b"]);
+        assert!(!saved_back(&path, "a"));
+        assert_eq!(Config::load_or_default(&path).active_profile_name(), "b");
+        assert!(!control.config_dirty.load(Ordering::Relaxed));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// `[name, "save"]` is the Save button, then the switch.
+    #[test]
+    fn save_and_switch_keeps_the_edits_in_the_outgoing_profile() {
+        let (path, control) = two_profiles_with_an_unsaved_edit("save-switch");
+        run(
+            &control,
+            osc_contract::CONTROL_PROFILE_SWITCH,
+            &["b", "save"],
+        );
+        assert!(saved_back(&path, "a"));
+        assert!(!saved_back(&path, "b"));
+        assert_eq!(Config::load_or_default(&path).active_profile_name(), "b");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Create copies what the user hears into the new profile; the active one
+    /// keeps its file, and its edit stays unsaved.
+    #[test]
+    fn create_copies_the_live_state_and_leaves_the_active_profile_alone() {
+        let (path, control) = two_profiles_with_an_unsaved_edit("create");
+        run(&control, osc_contract::CONTROL_PROFILE_CREATE, &["c"]);
+        assert!(saved_back(&path, "c"));
+        assert!(!saved_back(&path, "a"));
+        assert!(control.config_dirty.load(Ordering::Relaxed));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Rename and delete are bookkeeping: the edit stays unsaved.
+    #[test]
+    fn rename_and_delete_leave_the_unsaved_edits_pending() {
+        let (path, control) = two_profiles_with_an_unsaved_edit("rename");
+        run(
+            &control,
+            osc_contract::CONTROL_PROFILE_RENAME,
+            &["a", "main"],
+        );
+        run(&control, osc_contract::CONTROL_PROFILE_DELETE, &["b"]);
+        let config = Config::load_or_default(&path);
+        assert_eq!(config.active_profile_name(), "main");
+        assert_eq!(config.profile_names(), vec!["main".to_string()]);
+        assert!(!saved_back(&path, "main"));
+        assert!(control.config_dirty.load(Ordering::Relaxed));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

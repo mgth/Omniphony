@@ -107,6 +107,7 @@ impl StudioSpike {
             live.app.binaural.clone()
         };
         let doc = doc.as_ref();
+        self.adopt_hrir_params(doc);
         // What each group feeds, from the renderer's binaural stage:
         // - Direct and Cascaded run the HRTF stage, which reads every group
         //   (the source and its shaping, the distance cues, the synthetic
@@ -126,6 +127,41 @@ impl StudioSpike {
             self.room_block(ui, doc);
         }
         self.tracking_block(ui, doc);
+    }
+
+    /// Take the parametric settings the renderer echoes (`hrirParams`) when
+    /// they change: at connect, after a profile switch or a reload. Without
+    /// it the sliders showed their defaults over a saved setup, and touching
+    /// one sent the defaults of the others. During a drag the echo is what
+    /// was just sent, so nothing fights the slider.
+    fn adopt_hrir_params(&mut self, doc: Option<&serde_json::Value>) {
+        let Some(params) = doc
+            .and_then(|d| d.get("hrirParams"))
+            .filter(|p| p.is_object())
+        else {
+            return;
+        };
+        if self.hrir_params_seen.as_ref() == Some(params) {
+            return;
+        }
+        self.hrir_params_seen = Some(params.clone());
+        let pct = |key: &str| params.get(key).and_then(serde_json::Value::as_f64);
+        if let Some(preset) = params.get("preset").and_then(serde_json::Value::as_str) {
+            self.pinna_preset = preset.to_owned();
+            if let Some(v) = pct("dScalePct") {
+                self.pinna_d_scale = v as f32;
+            }
+            if let Some(v) = pct("depthPct") {
+                self.pinna_depth = v as f32;
+            }
+        } else {
+            if let Some(v) = pct("freqScalePct") {
+                self.prtf_freq_scale = v as f32;
+            }
+            if let Some(v) = pct("depthPct") {
+                self.prtf_depth = v as f32;
+            }
+        }
     }
 
     fn hrtf_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>, path: BinauralPath) {
@@ -313,8 +349,8 @@ impl StudioSpike {
         }
 
         // The parametric sources carry their settings inside the source
-        // string, so the renderer never echoes them back: this panel owns
-        // them, like the web does.
+        // string; the renderer echoes them in `hrirParams`, which
+        // `adopt_hrir_params` takes into these fields.
         if source == "pinna" {
             let presets = [
                 ("pbnh", "binaural.pinnaPreset.pbnh"),

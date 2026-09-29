@@ -363,9 +363,9 @@ pub fn commit_config(path: &Path, config: &renderer::config::Config) -> Result<(
 /// One targeted write-back: the config field(s) a live change must reach the
 /// file right away, instead of waiting for an explicit Save.
 ///
-/// `store` reads the live value and writes it into the render section; like
-/// the registry's `OptionSpec::config_store`, a skip-if-default writer keeps a
-/// default value out of the file entirely. Carried in
+/// `store` reads the live value and writes it into the render section; a
+/// skip-if-default writer keeps a default value out of the file entirely.
+/// Only view state is written this way (docs/persistence-policy.md). Carried in
 /// [`crate::osc::ControlEffects::persist`] by the handlers and performed by the
 /// engine, which owns the I/O.
 #[derive(Debug, Clone, Copy)]
@@ -385,14 +385,6 @@ pub enum PersistStore {
 }
 
 impl PersistOp {
-    /// A declared live option (`renderer::options` registry row).
-    pub fn option(spec: &'static renderer::options::OptionSpec) -> Self {
-        Self {
-            what: spec.key,
-            store: PersistStore::Live(spec.config_store),
-        }
-    }
-
     /// The head-tracking recenter reference, so the chosen "forward" survives
     /// an engine rebuild (mpv track change) and a restart.
     pub const HEAD_CENTER: Self = Self {

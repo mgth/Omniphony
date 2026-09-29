@@ -41,15 +41,15 @@ Declared options (`renderer::options::LIVE_OPTIONS`):
 
 | Key | Kind | Default | Flags | Legacy alias |
 |---|---|---|---|---|
-| `surround_placement` | `Enum` side / back | `side` | PERSIST, REPLAN | `/control/surround_placement` |
-| `synthetic_objects_enabled` | `Bool` | `false` | PERSIST, REPLAN | `/control/synthetic_objects` |
-| `decode_thread` | `Bool` | `false` | PERSIST | `/control/decode_thread` |
-| `output_channel_mapping` | `Enum` by_index / by_name | `by_index` | PERSIST | `/control/output_channel_mapping` |
-| `object_generator_id` | `Str` | `""` | PERSIST, REPLAN | `/control/object_generator` |
-| `phantom_extract_mode` | `Enum` off / broadband / spectral | `off` | PERSIST, REPLAN | `/control/phantom_extract` |
-| `crossover_type` | `Enum` lr4 / fir | `lr4` | PERSIST | `/control/crossover_type` |
-| `crossover_fir_transition_ratio` | `Float` 0.05–2.0, step 0.05 | `0.5` | PERSIST | `/control/crossover_fir_transition_ratio` |
-| `hrir_update_lattice` | `Enum` exact / fine / balanced / coarse | `exact` | PERSIST | `/control/binaural/hrir_update_lattice` |
+| `surround_placement` | `Enum` side / back | `side` | REPLAN | `/control/surround_placement` |
+| `synthetic_objects_enabled` | `Bool` | `false` | REPLAN | `/control/synthetic_objects` |
+| `decode_thread` | `Bool` | `false` | — | `/control/decode_thread` |
+| `output_channel_mapping` | `Enum` by_index / by_name | `by_index` | — | `/control/output_channel_mapping` |
+| `object_generator_id` | `Str` | `""` | REPLAN | `/control/object_generator` |
+| `phantom_extract_mode` | `Enum` off / broadband / spectral | `off` | REPLAN | `/control/phantom_extract` |
+| `crossover_type` | `Enum` lr4 / fir | `lr4` | — | `/control/crossover_type` |
+| `crossover_fir_transition_ratio` | `Float` 0.05–2.0, step 0.05 | `0.5` | — | `/control/crossover_fir_transition_ratio` |
+| `hrir_update_lattice` | `Enum` exact / fine / balanced / coarse | `exact` | — | `/control/binaural/hrir_update_lattice` |
 | `auto_gain` | `Bool` | `false` | — | `/control/auto_gain` |
 | `auto_gain_ceiling_db` | `Float` −12–0 dBFS, step 0.1 | `-1` | — | `/control/auto_gain_ceiling` |
 | `use_loudness` | `Bool` | `false` | — | `/control/loudness` |
@@ -67,13 +67,12 @@ What the implementation settled on, where it differs from the proposal below:
 - **Kinds**: `Bool`, `Enum(&[&str])`, `Str` (free-form, e.g. a registry id)
   and `Float { min, max, step }` (the proposal's `F32`; `step` is a UI hint,
   the setter clamps to `[min, max]`).
-- **Flags**: only `PERSIST` (commit to `config.yaml` on an OSC set, with the
-  targeted sidecar-clearing write) and `REPLAN` (bump
-  `RendererControl::options_epoch` on a real change). `NEEDS_TOPOLOGY` and
-  `ADVANCED` were never needed and do not exist. A row without `PERSIST`
-  still reaches the file through the full save and is seeded from it at boot;
-  it just waits for an explicit Save, like the gain-stage / DRC rows that
-  kept their pre-registry behaviour when they migrated.
+- **Flags**: only `REPLAN` (bump `RendererControl::options_epoch` on a real
+  change). `NEEDS_TOPOLOGY` and `ADVANCED` were never needed and do not exist.
+  `PERSIST`, a write to `config.yaml` on every OSC set, was removed: options
+  change what is heard, so every row reaches the file through the Save button
+  only and is seeded from it at boot (`docs/persistence-policy.md`). An OSC
+  set marks the config dirty only when the value actually changed.
 - **Setters**: `raw_bool` / `raw_str` / `raw_float` read a raw value by
   shape; a `Float` row states its bounds once, in its `kind` constant, and
   the setter (`raw_float`) and the seed (`clamp_to`) read them from there.
@@ -117,7 +116,7 @@ declaring it in up to **ten** places, each one silently optional:
 | 2 | Config persistence key + default | `renderer/src/config_fields.rs` |
 | 3 | CLI flag + config resolution + bootstrap seed | `src/cli/command.rs`, `config_resolution.rs`, `bootstrap.rs` |
 | 4 | FFI seed from config (CLI parity) | `orender_engine/src/engine.rs` |
-| 5 | OSC control handler + targeted persist | `orender_engine/src/osc/dispatch.rs` (+ `osc_contract`) |
+| 5 | OSC control handler | `runtime_control/src/live_control.rs` (+ `osc_contract`) |
 | 6 | State snapshot emit | `runtime_control/src/snapshot.rs` |
 | 7 | Studio Tauri mirror | `src-tauri/src/osc_listener.rs` domain struct + `app_state.rs` field + apply copy |
 | 8 | Studio JS | `state.js` default + snapshot ingestion + UI update fn + click handler + Tauri command |
@@ -199,7 +198,7 @@ lookups or allocation in the audio thread, matching the realtime rules.
 - **OSC**: one generic `/omniphony/control/option <key> <value>` handler
   validating against the spec. Existing addresses stay as aliases until
   migration completes.
-- **Persist + seed**: one generic save (options flagged `PERSIST`) and one
+- **Persist + seed**: one generic save (every option, on Save) and one
   generic config→store seed used by BOTH the CLI bootstrap and
   `Engine::from_paths` — the FFI/CLI parity bug class dies structurally.
 - **Snapshot**: one loop emits `"options": { key: value, ... }` (plus the flat

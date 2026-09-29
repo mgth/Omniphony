@@ -24,12 +24,11 @@ pub fn apply_live_control(msg: &OscMessage, ctx: &RuntimeControlContext) -> Opti
 
     // Declared live options (renderer::options registry): the generic setter
     // `/control/option [key, value]` and the legacy per-option addresses both
-    // land on the same registry-driven path — validate, apply, mark dirty,
-    // bump the replan epoch, and commit PERSIST-flagged options to config.yaml
-    // right away (not only mark_dirty): a host fallback can route the next
-    // toggle to a *different* orender instance (the standby renderer that
-    // resumes on the port), so the file — written by whichever instance got
-    // the toggle — is what the next boot reads.
+    // land on the same registry-driven path — validate, apply, and on a real
+    // change mark dirty and bump the replan epoch. Options change what is
+    // heard, so they reach config.yaml through the Save button only
+    // (docs/persistence-policy.md); a handoff to another renderer instance
+    // carries them unsaved in the live-handoff sidecar.
     if addr == osc_contract::CONTROL_OPTION {
         let Some(OscType::String(key)) = msg.args.first() else {
             return Some(ControlEffects::default());
@@ -140,9 +139,8 @@ fn raw_option_value(arg: Option<&OscType>) -> Option<renderer::options::RawOptio
 
 /// Registry-driven application of a declared live option: validate + apply via
 /// `options::apply_to_control` (which marks dirty and bumps the replan epoch
-/// on a real change), then ask for the config write (`PERSIST`) and a
-/// live-state bundle. Invalid values are dropped with a warning, per the OSC
-/// contract.
+/// on a real change), then ask for a live-state bundle. Invalid values are
+/// dropped with a warning, per the OSC contract.
 ///
 /// The bundle goes out with the acknowledgement: without it a client that did
 /// not send the message never learns the value moved, and the one that did
@@ -153,17 +151,22 @@ fn apply_option(
     spec: &'static renderer::options::OptionSpec,
     arg: Option<&OscType>,
 ) -> ControlEffects {
-    let Some(canonical) = raw_option_value(arg)
+    let Some(applied) = raw_option_value(arg)
         .and_then(|raw| renderer::options::apply_to_control(&ctx.renderer, spec, &raw))
     else {
         log::warn!("OSC option {}: rejected value", spec.key);
         return ControlEffects::default();
     };
-    let mut effects = ControlEffects::dirty(Notify::Snapshot);
-    if spec.flags.contains(renderer::options::OptionFlags::PERSIST) {
-        effects.persist.push(PersistOp::option(spec));
+    if !applied.changed {
+        // Still published: a value clamped back onto the current one must
+        // reach the client that typed it.
+        return ControlEffects::transient(Notify::Snapshot);
     }
-    effects.log_message = Some(format!("OSC option {} set to '{}'", spec.key, canonical));
+    let mut effects = ControlEffects::dirty(Notify::Snapshot);
+    effects.log_message = Some(format!(
+        "OSC option {} set to '{}'",
+        spec.key, applied.canonical
+    ));
     effects
 }
 

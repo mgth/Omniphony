@@ -439,7 +439,7 @@ mod tests {
                     state.inner.lock().unwrap().layout_context_generation += 1;
                 }
                 _ => {
-                    super::super::profiles::control_profile_switch(&state, "another".into());
+                    super::super::profiles::control_profile_switch(&state, "another".into(), false);
                 }
             }
             assert!(!request.is_current(&state) || change == 3);
