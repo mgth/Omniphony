@@ -80,7 +80,9 @@ struct AudioConfigPatch {
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct LiveInputPatch {
-    backend: Option<Option<InputBackend>>,
+    /// Kept as a string so a rejected value (the retired `asio`) drops only
+    /// this field, not the whole patch; see [`stage_live_input_backend`].
+    backend: Option<Option<String>>,
     node: Option<Option<String>>,
     description: Option<Option<String>>,
     layout: Option<Option<String>>,
@@ -110,7 +112,34 @@ fn input_mode_name(mode: InputMode) -> &'static str {
 fn input_backend_name(backend: InputBackend) -> &'static str {
     match backend {
         InputBackend::Pipewire => "pipewire",
-        InputBackend::Asio => "asio",
+    }
+}
+
+/// Stage a live-input backend (`/control/input/live/backend`, or the
+/// `liveInput.backend` field of `/control/config/input`). Only `pipewire`
+/// exists. `asio` was reserved for a Windows capture path that was never
+/// implemented and has been removed: it — like any other unknown value — is
+/// rejected with a warning and leaves the staged backend unchanged. Returns
+/// whether the value was staged.
+fn stage_live_input_backend(input: &InputControl, value: &str) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "pipewire" => {
+            input.set_requested_backend(Some(InputBackend::Pipewire));
+            true
+        }
+        "asio" => {
+            log::warn!(
+                "OSC: live input backend 'asio' rejected: the ASIO live-input backend was never \
+                 implemented and has been removed; only 'pipewire' is supported"
+            );
+            false
+        }
+        other => {
+            log::warn!(
+                "OSC: unknown live input backend '{other}' rejected; only 'pipewire' is supported"
+            );
+            false
+        }
     }
 }
 
@@ -436,8 +465,12 @@ impl HostControlHandler for HostAudio {
                     input.set_requested_mode(mode);
                 }
                 if let Some(live_input) = patch.live_input {
-                    if let Some(backend) = live_input.backend {
-                        input.set_requested_backend(backend);
+                    match live_input.backend {
+                        Some(Some(backend)) => {
+                            stage_live_input_backend(input, &backend);
+                        }
+                        Some(None) => input.set_requested_backend(None),
+                        None => {}
                     }
                     if let Some(node) = live_input.node {
                         input.set_requested_node_name(node.and_then(|value| {
@@ -569,15 +602,9 @@ impl HostControlHandler for HostAudio {
         }
 
         if addr == osc_contract::CONTROL_INPUT_LIVE_BACKEND {
-            let requested = parse_string_arg(msg.args.first()).and_then(|value| {
-                match value.to_ascii_lowercase().as_str() {
-                    "pipewire" => Some(InputBackend::Pipewire),
-                    "asio" => Some(InputBackend::Asio),
-                    _ => None,
-                }
-            });
-            if let Some(requested) = requested {
-                input.set_requested_backend(Some(requested));
+            if let Some(value) = parse_string_arg(msg.args.first())
+                && stage_live_input_backend(input, &value)
+            {
                 effects.mark_dirty = true;
             }
             return Some(effects);
@@ -971,7 +998,6 @@ impl HostControlHandler for HostAudio {
         render.live_input = Some(renderer::config::LiveInputConfig {
             backend: requested.backend.map(|backend| match backend {
                 InputBackend::Pipewire => renderer::config::InputBackendConfig::Pipewire,
-                InputBackend::Asio => renderer::config::InputBackendConfig::Asio,
             }),
             node: requested.node_name,
             description: requested.node_description,
@@ -993,5 +1019,48 @@ impl HostControlHandler for HostAudio {
                 InputLfeMode::Drop => renderer::config::InputLfeModeConfig::Drop,
             }),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retired_asio_live_input_backend_is_rejected() {
+        let input = InputControl::default();
+        input.set_requested_backend(Some(InputBackend::Pipewire));
+
+        assert!(!stage_live_input_backend(&input, "asio"));
+        assert!(!stage_live_input_backend(&input, " ASIO "));
+        assert!(!stage_live_input_backend(&input, "coreaudio"));
+        // The staged backend is left as it was.
+        assert_eq!(
+            input.requested_snapshot().backend,
+            Some(InputBackend::Pipewire)
+        );
+    }
+
+    #[test]
+    fn pipewire_live_input_backend_is_staged() {
+        let input = InputControl::default();
+        assert_eq!(input.requested_snapshot().backend, None);
+        assert!(stage_live_input_backend(&input, "PipeWire"));
+        assert_eq!(
+            input.requested_snapshot().backend,
+            Some(InputBackend::Pipewire)
+        );
+    }
+
+    #[test]
+    fn input_config_patch_with_the_retired_backend_still_parses() {
+        // A client (an older Studio) that still sends `asio` must not lose the
+        // rest of its patch: only the backend field is rejected.
+        let json = r#"{"mode":"pipewire","liveInput":{"backend":"asio","node":"omniphony-in"}}"#;
+        let patch: InputConfigPatch = serde_json::from_str(json).expect("patch parses");
+        let live_input = patch.live_input.expect("liveInput");
+        assert_eq!(live_input.backend, Some(Some("asio".to_string())));
+        assert_eq!(live_input.node, Some(Some("omniphony-in".to_string())));
+        assert_eq!(patch.mode, Some(InputMode::Pipewire));
     }
 }

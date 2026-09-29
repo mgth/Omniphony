@@ -355,11 +355,8 @@ fn resolve_pipewire_bridge_config(
     audio_control: &AudioControl,
     bridge_runtime: &LiveBridgeRuntimeConfig,
 ) -> Result<PipewireBridgeInputConfig> {
-    let backend = requested.backend.unwrap_or(InputBackend::Pipewire);
-    if backend != InputBackend::Pipewire {
-        anyhow::bail!("only the PipeWire bridge input backend is implemented on Linux");
-    }
-
+    // PipeWire is the only live-input backend (`requested.backend` is either
+    // unset or `Pipewire`), so there is nothing to select here.
     let channels = requested.channels.unwrap_or(DEFAULT_LIVE_BRIDGE_CHANNELS);
     if channels != 2 && channels != 8 {
         anyhow::bail!(

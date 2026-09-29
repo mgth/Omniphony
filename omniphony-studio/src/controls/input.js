@@ -7,7 +7,6 @@ function getInputModeSelectEl() { return inInputPanel('inputModeSelect'); }
 function getInputPipeInputEl() { return inInputPanel('pipeStatus'); }
 function getOscBridgePathInputEl() { return inInputPanel('oscBridgePathInput'); }
 function getOscBridgePathStatusEl() { return inInputPanel('oscBridgePathStatus'); }
-function getInputBackendSelectEl() { return inInputPanel('inputBackendSelect'); }
 function getInputNodeInputEl() { return inInputPanel('inputNodeInput'); }
 function getInputDescriptionInputEl() { return inInputPanel('inputDescriptionInput'); }
 function getInputClockModeSelectEl() { return inInputPanel('inputClockModeSelect'); }
@@ -98,7 +97,6 @@ export function updateInputControlUI() {
   const inputPipeInputEl = getInputPipeInputEl();
   const oscBridgePathInputEl = getOscBridgePathInputEl();
   const oscBridgePathStatusEl = getOscBridgePathStatusEl();
-  const inputBackendSelectEl = getInputBackendSelectEl();
   const inputNodeInputEl = getInputNodeInputEl();
   const inputDescriptionInputEl = getInputDescriptionInputEl();
   const inputClockModeSelectEl = getInputClockModeSelectEl();
@@ -113,7 +111,6 @@ export function updateInputControlUI() {
   const inputApplyBtnEl = getInputApplyBtnEl();
   const inputBridgeFieldsEl = getInputBridgeFieldsEl();
   const inputLiveFieldsEl = getInputLiveFieldsEl();
-  const inputBackendRowEl = inputBackendSelectEl?.closest('.input-panel-row') || null;
   const inputPipeRowEl = inputPipeInputEl?.closest('.input-panel-row') || null;
   const inputNodeRowEl = inputNodeInputEl?.closest('.input-panel-row') || null;
   const inputDescriptionRowEl = inputDescriptionInputEl?.closest('.input-panel-row') || null;
@@ -133,9 +130,6 @@ export function updateInputControlUI() {
       ? app.inputMode
       : 'pipe_bridge';
     inputModeSelectEl.disabled = !hasInputDomain;
-  }
-  if (inputBackendSelectEl) {
-    inputBackendSelectEl.value = app.liveInput.backend === 'asio' ? 'asio' : 'pipewire';
   }
   if (inputPipeInputEl && document.activeElement !== inputPipeInputEl) {
     inputPipeInputEl.value = stringOrEmpty(app.orenderInputPipe);
@@ -224,7 +218,6 @@ export function updateInputControlUI() {
   // own format and fixes the input map, so it reads none of these; they stay
   // in the DOM, hidden, until the PipeWire-mode rework decides which return.
   [
-    inputBackendRowEl,
     inputLayoutRowEl,
     inputChannelsRowEl,
     inputSampleRateRowEl,
@@ -237,7 +230,6 @@ export function updateInputControlUI() {
     if (el) el.disabled = !hasInputDomain || !pipewireRequested;
   });
   [
-    inputBackendSelectEl,
     inputChannelsInputEl,
     inputSampleRateInputEl,
     inputMapSelectEl,

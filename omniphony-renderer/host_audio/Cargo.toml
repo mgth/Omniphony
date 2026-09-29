@@ -10,6 +10,7 @@ description = "OSC control surface for the host-owned audio output/input, layere
 runtime_control.workspace = true
 audio_output.workspace = true
 audio_input.workspace = true
+log.workspace = true
 renderer.workspace = true
 rosc.workspace = true
 serde.workspace = true
