@@ -422,6 +422,34 @@ mod registry {
         }
     }
 
+    /// Every option: a real change lights the Save button, the same value
+    /// again does not (docs/persistence-policy.md) — Studio re-sends values
+    /// on reconnect, and a keepalive that dirtied the config once kept the
+    /// Save button lit for good.
+    #[test]
+    fn every_option_dirties_on_a_change_and_only_then() {
+        let dirty = |control: &Arc<RendererControl>| {
+            control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        for spec in options::LIVE_OPTIONS {
+            let control = fixture_control();
+            let sample = sample_for(spec.key);
+            let applied = options::apply_to_control(&control, spec, &sample).expect("accepted");
+            assert!(applied.changed, "{}: the sample is not a change", spec.key);
+            assert!(dirty(&control), "{}: a change must light Save", spec.key);
+            control.mark_clean();
+            let again = options::apply_to_control(&control, spec, &sample).expect("accepted");
+            assert!(!again.changed, "{}", spec.key);
+            assert!(
+                !dirty(&control),
+                "{}: the same value again lit Save",
+                spec.key
+            );
+        }
+    }
+
     /// `apply_to_control` bumps the replan epoch exactly when a REPLAN-flagged
     /// option **changes value**: a redundant re-send (a client echoing state
     /// back) must not force a re-plan, and non-REPLAN options never bump.
