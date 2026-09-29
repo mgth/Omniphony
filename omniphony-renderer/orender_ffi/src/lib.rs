@@ -209,7 +209,11 @@ pub const ORENDER_ABI_MAJOR: u32 = 0;
 // 9: added orender_source_label (the bridge's name for the presentation's
 //    format — "DTS-HD MA + DTS:X 7.1.4", "Dolby TrueHD + Dolby Atmos" — for
 //    the host's track info; 0/empty when the bridge states none).
-pub const ORENDER_ABI_MINOR: u32 = 9;
+// 10: added the `decode_thread` key of orender_set_option (decode on a thread
+//     of its own, overlapping the render; a packet's audio may then come back
+//     from a later call) and orender_drain (render what the engine still holds
+//     at end of stream, one packet's audio per call).
+pub const ORENDER_ABI_MINOR: u32 = 10;
 
 /// Speaker-position labels written by [`orender_channel_layout`] and
 /// [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -721,6 +725,11 @@ pub unsafe extern "C" fn orender_reset(r: *mut OrenderRenderer) {
 /// rendered audio and the retry hands it back without decoding the packet a
 /// second time. A host that moves on to the next packet instead loses this
 /// packet's audio, but the stream stays in step.
+///
+/// With the `decode_thread` option on (see [`orender_set_option`]) a packet's
+/// audio comes back from a later call - one packet's per call, about 30 ms of
+/// audio behind, or one packet if that is longer - or from [`orender_drain`]:
+/// take the timestamps from `*out_pts_us`, and drain at end of stream.
 #[no_mangle]
 pub unsafe extern "C" fn orender_process(
     r: *mut OrenderRenderer,
@@ -754,45 +763,129 @@ pub unsafe extern "C" fn orender_process(
             }
         };
 
-        let out_slice = std::slice::from_raw_parts_mut(out, out_cap_samples);
-        let mut written = 0usize;
-        let mut total_frames = 0usize;
-        let mut n_channels = engine.channel_count();
-        let mut first_sample_pos: Option<u64> = None;
-        for chunk in &chunks {
-            // An output-mode switch can land between blocks of one packet; a
-            // mixed-layout copy would corrupt the frame geometry. Keep the
-            // call single-layout and drop the tail (sub-millisecond of audio,
-            // once per switch) — the next call carries the new layout.
-            if total_frames > 0 && chunk.n_channels != n_channels {
-                break;
-            }
-            out_slice[written..written + chunk.samples.len()].copy_from_slice(&chunk.samples);
-            written += chunk.samples.len();
-            total_frames += chunk.n_frames;
-            n_channels = chunk.n_channels;
-            first_sample_pos.get_or_insert(chunk.sample_pos);
-        }
-        // Copied out (or deliberately skipped, on a layout change): the sample
-        // buffers go back to the engine to be filled again next packet, instead
-        // of being freed and reallocated ~1200 times a second.
-        engine.recycle(chunks);
-
-        if !out_frames.is_null() {
-            *out_frames = total_frames;
-        }
-        if !out_channels.is_null() {
-            *out_channels = n_channels;
-        }
-        if !out_pts_us.is_null() {
-            let sr = engine.sample_rate().max(1) as i64;
-            *out_pts_us = first_sample_pos
-                .map(|p| (p as i64) * 1_000_000 / sr)
-                .unwrap_or(0);
-        }
-        0
+        emit_chunks(
+            engine,
+            chunks,
+            out,
+            out_cap_samples,
+            out_frames,
+            out_channels,
+            out_pts_us,
+        )
     }))
     .unwrap_or(-100)
+}
+
+/// Render what the engine still holds, because the stream is over: with the
+/// `decode_thread` option on, the packets it has been handed and not returned
+/// yet. One packet's audio per call, as [`orender_process`] returns it, so a
+/// buffer that fits one packet's audio fits a drain too: after the last packet,
+/// call it until it returns 0 frames, and play what each call returns.
+///
+/// Not a reset: the renderer keeps its state, because this audio continues
+/// what came before. Once it has returned 0 frames it keeps returning 0 until
+/// new input. `out` and the out-parameters are as for [`orender_process`].
+///
+/// Returns: 0 = OK (0 frames: nothing is left), >0 = output buffer too small
+/// (nothing written; call drain again with a larger buffer before sending
+/// more input — the audio is kept for it, and [`orender_process`] refuses
+/// input until it has been collected), <0 = error. [`orender_reset`]
+/// discards it.
+#[no_mangle]
+pub unsafe extern "C" fn orender_drain(
+    r: *mut OrenderRenderer,
+    out: *mut f32,
+    out_cap_samples: usize,
+    out_frames: *mut usize,
+    out_channels: *mut u32,
+    out_pts_us: *mut i64,
+) -> c_int {
+    catch_unwind(AssertUnwindSafe(|| {
+        if r.is_null() || out.is_null() {
+            return -1;
+        }
+        let engine = &mut *(r as *mut Engine);
+
+        let chunks = match engine.drain_with_capacity(out_cap_samples) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                if !out_frames.is_null() {
+                    *out_frames = 0;
+                }
+                return 1; // buffer too small; the engine keeps the audio for the retry
+            }
+            Err(e) => {
+                eprintln!("orender_drain error: {e:#}");
+                return -2;
+            }
+        };
+
+        emit_chunks(
+            engine,
+            chunks,
+            out,
+            out_cap_samples,
+            out_frames,
+            out_channels,
+            out_pts_us,
+        )
+    }))
+    .unwrap_or(-100)
+}
+
+/// Copy rendered blocks into the caller's buffer and report their geometry:
+/// the tail shared by [`orender_process`] and [`orender_drain`]. Both have
+/// checked the capacity by then.
+///
+/// # Safety
+/// `out` must be non-null and valid for `out_cap_samples` floats; the three
+/// out-parameters are written only when non-null.
+unsafe fn emit_chunks(
+    engine: &mut Engine,
+    chunks: Vec<orender_engine::engine::RenderedAudio>,
+    out: *mut f32,
+    out_cap_samples: usize,
+    out_frames: *mut usize,
+    out_channels: *mut u32,
+    out_pts_us: *mut i64,
+) -> c_int {
+    let out_slice = std::slice::from_raw_parts_mut(out, out_cap_samples);
+    let mut written = 0usize;
+    let mut total_frames = 0usize;
+    let mut n_channels = engine.channel_count();
+    let mut first_sample_pos: Option<u64> = None;
+    for chunk in &chunks {
+        // An output-mode switch can land between blocks of one packet; a
+        // mixed-layout copy would corrupt the frame geometry. Keep the
+        // call single-layout and drop the tail (sub-millisecond of audio,
+        // once per switch) — the next call carries the new layout.
+        if total_frames > 0 && chunk.n_channels != n_channels {
+            break;
+        }
+        out_slice[written..written + chunk.samples.len()].copy_from_slice(&chunk.samples);
+        written += chunk.samples.len();
+        total_frames += chunk.n_frames;
+        n_channels = chunk.n_channels;
+        first_sample_pos.get_or_insert(chunk.sample_pos);
+    }
+    // Copied out (or deliberately skipped, on a layout change): the sample
+    // buffers go back to the engine to be filled again next packet, instead
+    // of being freed and reallocated ~1200 times a second.
+    engine.recycle(chunks);
+
+    if !out_frames.is_null() {
+        *out_frames = total_frames;
+    }
+    if !out_channels.is_null() {
+        *out_channels = n_channels;
+    }
+    if !out_pts_us.is_null() {
+        let sr = engine.sample_rate().max(1) as i64;
+        *out_pts_us = first_sample_pos
+            .map(|p| (p as i64) * 1_000_000 / sr)
+            .unwrap_or(0);
+    }
+    0
 }
 
 /// Render the spatial overlay for the given OSD resolution and copy the ASS
@@ -1222,8 +1315,18 @@ pub extern "C" fn orender_build_id() -> *const c_char {
 /// whether this build supports a key), -2 for an invalid value, -3 on a NULL
 /// handle/argument or internal error.
 ///
-/// No keys are defined at ABI 0.5 — every call returns -1. The mechanism ships
-/// ahead of the first key so consumers can adopt the probe pattern now.
+/// Keys:
+///
+/// - `decode_thread` = `on` | `off` (ABI 0.10; default `off`): decode on a
+///   thread of its own, overlapping the render, so the two share the work
+///   across two cores. With it on, a packet's audio comes back from a later
+///   [`orender_process`] call (one packet's per call, about 30 ms of audio
+///   behind, or one packet if that is longer) or from [`orender_drain`], so
+///   only a host that takes its timestamps from `*out_pts_us` and drains at
+///   end of stream should turn it on. Switch it while nothing is in flight:
+///   right after [`orender_create`], after [`orender_reset`], or once
+///   [`orender_drain`] has returned 0 frames; turning it off with packets
+///   still on the thread returns -2.
 #[no_mangle]
 pub unsafe extern "C" fn orender_set_option(
     r: *mut OrenderRenderer,
@@ -1234,14 +1337,27 @@ pub unsafe extern "C" fn orender_set_option(
         if r.is_null() {
             return -3;
         }
-        let (Some(key), Some(_value)) = (opt_str(key), opt_str(value)) else {
+        let (Some(key), Some(value)) = (opt_str(key), opt_str(value)) else {
             return -3;
         };
-        let _engine = &mut *(r as *mut Engine);
-        // No keys defined yet (ABI 0.5): report "unknown key" so consumers can
-        // probe support. First real key: match on `key` and route to the engine.
-        let _ = key;
-        -1
+        let engine = &mut *(r as *mut Engine);
+        match key {
+            "decode_thread" => {
+                let on = match value {
+                    "on" => true,
+                    "off" => false,
+                    _ => return -2,
+                };
+                match engine.set_decode_thread(on) {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        eprintln!("orender_set_option decode_thread={value}: {e:#}");
+                        -2
+                    }
+                }
+            }
+            _ => -1,
+        }
     }))
     .unwrap_or(-3)
 }

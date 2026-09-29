@@ -74,6 +74,7 @@ int main(void) {
     if (orender_channel_count(NULL) != 0) { printf("FAIL: channel_count(NULL)\n"); return 2; }
     if (orender_is_spatial(NULL) >= 0)    { printf("FAIL: is_spatial(NULL)\n"); return 3; }
     if (orender_channel_layout(NULL, NULL, 0) != 0) { printf("FAIL: channel_layout(NULL)\n"); return 5; }
+    if (orender_drain(NULL, NULL, 0, NULL, NULL, NULL) >= 0) { printf("FAIL: drain(NULL)\n"); return 11; }
     orender_reset(NULL);
     orender_destroy(NULL);
     if (orender_create(NULL) != NULL)     { printf("FAIL: create(NULL)\n"); return 4; }

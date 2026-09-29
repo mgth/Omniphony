@@ -55,6 +55,25 @@ At load time a consumer must:
 Probing an `orender_set_option` key: a return of `-1` means "this build does
 not know that key" — treat it as feature-unavailable, not as an error.
 
+## Options
+
+`orender_set_option` keys, in the order they were added:
+
+| Key | Values | Since | Meaning |
+|---|---|---|---|
+| `decode_thread` | `on`, `off` (default) | 0.10 | Decode on a thread of its own, overlapping the render, so the two share the work across two cores. A packet's audio then comes back from a later `orender_process` call — one packet's per call, about 30 ms of audio behind, or one packet if that is longer — or from `orender_drain`, so only a host that takes its timestamps from `out_pts_us` and drains at end of stream should turn it on. Switch it while nothing is in flight — right after `orender_create`, after `orender_reset`, or once `orender_drain` has returned 0 frames; turning it off with packets still on the thread returns -2. |
+
+## End of stream
+
+`orender_drain` renders what the engine still holds when the input ends: with
+`decode_thread` on, the packets still on the thread. One packet's audio per
+call, as `orender_process` returns it, so a buffer that fits one packet's audio
+fits a drain too: call it until it returns 0 frames. It is not a reset, and not
+a DSP/reverb-tail flush; call `orender_reset` on a seek. A short output buffer
+returns 1 with zero frames and keeps the audio: call drain again with a larger
+buffer before sending more input — `orender_process` refuses input until it has
+been collected. `orender_reset` discards it.
+
 ## Bump checklist
 
 1. Edit `ORENDER_ABI_MINOR` (or `MAJOR`) in `orender_ffi/src/lib.rs` and extend
