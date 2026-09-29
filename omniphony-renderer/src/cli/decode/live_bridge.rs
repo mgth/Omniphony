@@ -292,11 +292,11 @@ mod tests {
 
     /// Run the worker over `packets` (byte 0 of each: its layout) with a
     /// handler queue of `capacity`, draining it only at the end.
-    fn run(
+    fn run_frames(
         packets: &[u8],
         capacity: usize,
         drc: Option<Arc<RwLock<String>>>,
-    ) -> (Vec<Option<Declaration>>, Vec<String>) {
+    ) -> (Vec<DecodedAudioData>, Vec<String>) {
         let drc_modes = Arc::default();
         let (raw_tx, raw_rx) = mpsc::sync_channel(packets.len());
         let (tx, rx) = mpsc::sync_channel(capacity);
@@ -305,15 +305,28 @@ mod tests {
         }
         drop(raw_tx);
         run_live_bridge_decoder(bridge(&drc_modes), raw_rx, drc, None, tx);
-        let declarations = rx
+        let frames = rx
             .try_iter()
             .map(|m| match m.unwrap() {
-                DecoderMessage::AudioData(d) => d.declaration,
+                DecoderMessage::AudioData(d) => d,
                 _ => panic!("only audio is sent"),
             })
             .collect();
         let drc_modes = drc_modes.lock().unwrap().clone();
-        (declarations, drc_modes)
+        (frames, drc_modes)
+    }
+
+    /// [`run_frames`], keeping only the declarations.
+    fn run(
+        packets: &[u8],
+        capacity: usize,
+        drc: Option<Arc<RwLock<String>>>,
+    ) -> (Vec<Option<Declaration>>, Vec<String>) {
+        let (frames, drc_modes) = run_frames(packets, capacity, drc);
+        (
+            frames.into_iter().map(|d| d.declaration).collect(),
+            drc_modes,
+        )
     }
 
     fn family(d: &Option<Declaration>) -> Option<&str> {
@@ -393,6 +406,52 @@ mod tests {
         assert_eq!(family(&received(&rx)), None);
         deliver(&tx, audio(None), &mut undelivered);
         assert_eq!(family(&received(&rx)), Some("auro"), "the newer one");
+    }
+
+    /// The sink's plain PCM carries no declaration, and its bridge never sees
+    /// it. After a bitstream, the PCM must still reach the renderer as PCM —
+    /// its own family, no declared poses — not with the bitstream's DTS
+    /// angles; and the bitstream that follows must get its declaration back,
+    /// although its bridge, whose labels did not change, does not send it
+    /// again.
+    #[test]
+    fn the_sinks_pcm_does_not_inherit_the_bitstreams_declaration() {
+        use super::super::state::SpatialState;
+        use renderer::placement::SourceFamily;
+
+        let (bitstream, _) = run_frames(&[1, 1, 1], 8, None);
+        assert_eq!(
+            bitstream
+                .iter()
+                .map(|d| family(&d.declaration))
+                .collect::<Vec<_>>(),
+            [Some("dts"), None, None],
+            "the bridge declares once"
+        );
+        let live_pcm = || DecodedAudioData {
+            source: DecodedSource::Live,
+            ..audio(None)
+        };
+        let mut bitstream = bitstream.into_iter();
+        let mut spatial = SpatialState::default();
+        let mut seen = Vec::new();
+        for data in [
+            bitstream.next().unwrap(),
+            bitstream.next().unwrap(),
+            live_pcm(),
+            live_pcm(),
+            bitstream.next().unwrap(),
+        ] {
+            spatial.take_declaration(data.source, data.declaration);
+            seen.push((
+                spatial.source_family,
+                spatial.declared_poses.len(),
+                spatial.source_label.clone(),
+            ));
+        }
+        let dts = (SourceFamily::Dts, 6, "6 channels".to_owned());
+        let pcm = (SourceFamily::Pcm, 0, "PCM".to_owned());
+        assert_eq!(seen, [dts.clone(), dts.clone(), pcm.clone(), pcm, dts]);
     }
 
     /// The requested DRC mode reaches the bridge once, then on changes only.

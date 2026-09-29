@@ -40,7 +40,9 @@ pub struct DecodedAudioData {
     /// The bridge's declaration, sent with the frame a
     /// [`DeclarationTracker`] says needs it (the bridge lives on the decoding
     /// thread, this one or the PipeWire sink's; the handler keeps the last
-    /// value it received). Never set on the sink's plain PCM.
+    /// value it received). Never set on the sink's plain PCM: the handler
+    /// declares that itself when the input switches to it
+    /// (`SpatialState::take_declaration`).
     pub declaration: Option<Declaration>,
     pub decode_time_ms: f32,
     pub sent_at: Instant,
