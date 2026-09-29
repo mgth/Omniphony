@@ -15,15 +15,15 @@ use renderer::live_params::ChannelRenderMode;
 
 use anyhow::Result;
 use orender_engine::decode_step::DrcModeSync;
-use std::sync::{Arc, RwLock, mpsc};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-/// Where the handler sends the DRC mode picked in the live params: the pipe
-/// decoder thread (a command) and the PipeWire sink's bridge decoder (a value
-/// it reads before each packet). Outlives a stream reset, like the decoders.
+/// Where the handler sends the DRC mode picked in the live params: the value
+/// the pipe decoder thread and the PipeWire sink's bridge decoder both read
+/// before decoding (seeded with the configured mode before they start).
+/// Outlives a stream reset, like the decoders.
 #[derive(Default)]
 pub struct DrcForwarding {
-    pub cmd_tx: Option<mpsc::Sender<super::decoder_thread::DecoderCommand>>,
     pub shared: Option<Arc<RwLock<String>>>,
     pub sync: DrcModeSync,
 }
@@ -35,11 +35,6 @@ impl DrcForwarding {
             return;
         }
         let mode = self.sync.mode();
-        if let Some(tx) = self.cmd_tx.as_ref() {
-            let _ = tx.send(super::decoder_thread::DecoderCommand::SetDrcMode(
-                mode.to_owned(),
-            ));
-        }
         if let Some(shared) = self.shared.as_ref() {
             let mut shared = shared.write().unwrap_or_else(|e| e.into_inner());
             shared.clear();

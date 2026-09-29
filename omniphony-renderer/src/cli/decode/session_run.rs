@@ -4,8 +4,8 @@ use super::config_resolution::{
     effective_to_config, merge_render_config, renderer_params, resolve_osc_settings,
 };
 use super::decoder_thread::{
-    DecodedAudioData, DecodedSource, DecoderCommand, DecoderMessage, DecoderThreadConfig,
-    PipeInputDiag, spawn_decoder_thread,
+    DecodedAudioData, DecodedSource, DecoderMessage, DecoderThreadConfig, PipeInputDiag,
+    spawn_decoder_thread,
 };
 use super::handler::DecodeHandler;
 use super::idle_feed::{IdleFeedInputs, IdleFeeder};
@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use orender_engine::bridge_loader::{LoadedBridge, resolve_bridge_path};
 use orender_engine::renderer_build::SpatialRendererParams;
 use std::sync::mpsc;
-use std::sync::{Arc, atomic::AtomicU64};
+use std::sync::{Arc, RwLock, atomic::AtomicU64};
 use std::time::Duration;
 use sys::diag::DiagAtomicHandle;
 
@@ -29,7 +29,9 @@ const MAX_DECODE_QUEUE_CAPACITY: usize = 8192;
 struct PreparedDecodeRun {
     tx: mpsc::SyncSender<Result<DecoderMessage>>,
     rx: mpsc::Receiver<Result<DecoderMessage>>,
-    cmd_tx: mpsc::Sender<DecoderCommand>,
+    /// The DRC mode both bridge decoders follow (pipe and PipeWire sink),
+    /// seeded with the configured one before the decoder thread starts.
+    drc_mode: Arc<RwLock<String>>,
     decode_thread: std::thread::JoinHandle<Result<()>>,
     /// Receives per-packet emitted audio duration (microseconds) from the
     /// decoder thread; consumed by the pure pipe-bridge pacer drain thread.
@@ -200,7 +202,14 @@ fn maybe_save_effective_config(
     Ok(true)
 }
 
-fn prepare_render_run(args: &RenderArgs) -> Result<PreparedDecodeRun> {
+/// The DRC mode a render starts with: the live params' seed
+/// (`seed_runtime_state_from_render_config`), known before the renderer is
+/// built so the decoders can start in it.
+fn configured_drc_mode(render_cfg: &renderer::config::RenderConfig) -> &str {
+    render_cfg.drc_mode.as_deref().unwrap_or("Off")
+}
+
+fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecodeRun> {
     let input = args
         .input
         .as_ref()
@@ -260,7 +269,10 @@ fn prepare_render_run(args: &RenderArgs) -> Result<PreparedDecodeRun> {
         queue_capacity / DECODE_QUEUE_MESSAGES_PER_MS
     );
     let (tx, rx) = mpsc::sync_channel(queue_capacity);
-    let (cmd_tx, cmd_rx) = mpsc::channel();
+    // Given to the decoder thread at spawn: the handler only exists once the
+    // renderer is built, and a mode it sent then landed after however many
+    // packets the thread had decoded meanwhile — a different render each run.
+    let drc_mode = Arc::new(RwLock::new(drc_mode.to_owned()));
     // Unbounded so the decoder never blocks posting a drain token (a bounded
     // channel here would re-introduce the very backpressure deadlock this
     // pacer drain path exists to avoid).
@@ -285,7 +297,7 @@ fn prepare_render_run(args: &RenderArgs) -> Result<PreparedDecodeRun> {
         continuous: args.continuous,
         drain_pipe: !args.no_drain_pipe,
         tx: tx.clone(),
-        cmd_rx,
+        requested_drc_mode: Arc::clone(&drc_mode),
         drain_tx: Some(drain_tx.clone()),
         pipe_input_diag: Some(pipe_input_diag.clone()),
         bridge,
@@ -295,7 +307,7 @@ fn prepare_render_run(args: &RenderArgs) -> Result<PreparedDecodeRun> {
     Ok(PreparedDecodeRun {
         tx,
         rx,
-        cmd_tx,
+        drc_mode,
         decode_thread,
         drain_rx: Some(drain_rx),
         drain_tx,
@@ -887,24 +899,13 @@ fn run_prepared_render(
         prepared.preferred_evaluation_mode,
     )?;
     handler.spatial.coordinate_format = prepared.coordinate_format;
-    handler.drc.cmd_tx = Some(prepared.cmd_tx.clone());
-
-    let live_drc_mode = std::sync::Arc::new(std::sync::RwLock::new(String::new()));
-    handler.drc.shared = Some(live_drc_mode.clone());
+    // Live DRC changes reach both decoders through this value; the one the
+    // live params were seeded with is already in it.
+    handler.drc.shared = Some(Arc::clone(&prepared.drc_mode));
 
     if let Some(renderer) = &handler.spatial_renderer {
         let ctrl = renderer.renderer_control();
         ctrl.set_bridge_supported_drc_modes(prepared.supported_drc_modes.clone());
-
-        let initial_mode = ctrl.live.read().drc_mode.clone();
-        *live_drc_mode.write().unwrap() = initial_mode.clone();
-        // Best-effort initial DRC sync. The decoder thread already defaults to
-        // this same mode, and on a fast/short file decode it can finish and drop
-        // the command receiver before we reach this point — so a closed channel
-        // here is benign and must not abort the whole render.
-        let _ = prepared
-            .cmd_tx
-            .send(DecoderCommand::SetDrcMode(initial_mode));
     }
 
     if let Some(input_control) = handler.input_control.as_ref() {
@@ -978,7 +979,7 @@ fn run_prepared_render(
                     lib: prepared.bridge_lib.clone(),
                     presentation: prepared.presentation.clone(),
                     clock_mode: input_control.requested_snapshot().clock_mode,
-                    requested_drc_mode: live_drc_mode.clone(),
+                    requested_drc_mode: Arc::clone(&prepared.drc_mode),
                 },
             )
         });
@@ -1049,7 +1050,8 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
             return Ok(());
         }
 
-        let bridge_path_after_run = match prepare_render_run(&run.args) {
+        let drc_mode = configured_drc_mode(&run.render_cfg);
+        let bridge_path_after_run = match prepare_render_run(&run.args, drc_mode) {
             Ok(prepared) => run_prepared_render(prepared, &run)?,
             Err(err) if run.args.osc && is_bridge_unavailable_error(&err) => {
                 run_idle_runtime(&run, &err)?
@@ -1097,11 +1099,15 @@ mod tests {
     #[test]
     fn only_bridge_failures_count_as_bridge_unavailable() {
         let missing = render_args(&["--bridge-path", "/nonexistent/libnone_bridge.so", "in.thd"]);
-        let err = prepare_render_run(&missing).err().expect("missing bridge");
+        let err = prepare_render_run(&missing, "Off")
+            .err()
+            .expect("missing bridge");
         assert!(is_bridge_unavailable_error(&err), "{err:#}");
 
         let no_input = render_args(&["--bridge-path", "/nonexistent/libnone_bridge.so"]);
-        let err = prepare_render_run(&no_input).err().expect("missing input");
+        let err = prepare_render_run(&no_input, "Off")
+            .err()
+            .expect("missing input");
         assert!(!is_bridge_unavailable_error(&err), "{err:#}");
     }
 }
