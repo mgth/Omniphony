@@ -52,7 +52,7 @@ use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 
 use crate::object_gen::{
-    PrepareCtx, SynthObjectSpec, channel_3d_position, flush_denorm, input_has_back, one_pole_coeff,
+    PrepareCtx, SynthObjectSpec, channel_3d_position, flush_denorm, one_pole_coeff,
 };
 use crate::stft::{DelayLine, OlaFifo, sine_window};
 
@@ -220,7 +220,7 @@ impl SpectralExtractor {
     /// `heights` opts the input's height channels into the analysis (3D DOA +
     /// high sector ring); off, they ride the bypass delay untouched.
     pub(crate) fn prepare(ctx: &PrepareCtx, heights: bool) -> Option<Self> {
-        let use_7_1 = input_has_back(ctx.input_labels);
+        let use_7_1 = crate::virtual_bed::source_has_back(ctx.input_labels);
         let mut enc = Vec::new();
         let mut other = Vec::new();
         let mut has_top = false;

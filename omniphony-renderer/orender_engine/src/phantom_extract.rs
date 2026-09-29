@@ -35,8 +35,7 @@ use bridge_api::RChannelLabel;
 use renderer::live_params::PhantomExtractMode;
 
 use crate::object_gen::{
-    ObjectGenParamSpec, PrepareCtx, SynthObjectSpec, channel_top_position, input_has_back,
-    one_pole_coeff,
+    ObjectGenParamSpec, PrepareCtx, SynthObjectSpec, channel_top_position, one_pole_coeff,
 };
 use crate::phantom_spectral::SpectralExtractor;
 
@@ -813,7 +812,7 @@ impl PhantomExtractStage {
         // Present, positionable bed channels with their floor position + azimuth.
         // Honour the Side/Back surround placement (matching the virtual bed), so a
         // 4.x/5.x surround phantom sits where the user put the surrounds.
-        let use_7_1 = input_has_back(ctx.input_labels);
+        let use_7_1 = crate::virtual_bed::source_has_back(ctx.input_labels);
         let mut chans: Vec<(usize, RChannelLabel, [f64; 3], f64)> = Vec::new();
         for (idx, &label) in ctx.input_labels.iter().enumerate() {
             if let Some(top) = channel_top_position(label, use_7_1, ctx.surround_placement) {

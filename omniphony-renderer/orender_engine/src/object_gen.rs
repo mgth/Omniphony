@@ -25,6 +25,8 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use renderer::live_params::SurroundPlacement;
 use renderer::speaker_layout::SpeakerLayout;
 
+use crate::virtual_bed::source_has_back;
+
 /// What a generator needs from its environment; lets the host gate the UI.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ObjectGenCapabilities {
@@ -336,14 +338,6 @@ pub(crate) fn top_position(label: RChannelLabel) -> Option<[f64; 3]> {
     Some(pos)
 }
 
-/// True when the input carries dedicated back-surround channels (7.x); then the
-/// side surrounds are unambiguous and `surround_placement` does not apply.
-pub(crate) fn input_has_back(labels: &[RChannelLabel]) -> bool {
-    labels
-        .iter()
-        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb))
-}
-
 /// Canonical top position of a bed channel, with a 4.x/5.x surround pair
 /// (`Ls`/`Rs`) moved to the side or back per `surround_placement` — matching the
 /// virtual bed — so synthesized objects track the same Side/Back choice.
@@ -447,7 +441,7 @@ impl ObjectGenerator for CopyUpGenerator {
         const SIZE: [f32; 3] = [0.3, 0.3, 0.3];
         // Lift every spatializable bed channel (front, sides, back, center) to its
         // canonical top position; LFE / unknown channels have no `top_position`.
-        let use_7_1 = input_has_back(ctx.input_labels);
+        let use_7_1 = source_has_back(ctx.input_labels);
         let mut specs = Vec::new();
         for (ch, &label) in ctx.input_labels.iter().enumerate() {
             let Some(position) = channel_top_position(label, use_7_1, ctx.surround_placement)
@@ -727,7 +721,7 @@ impl ObjectGenerator for PadGenerator {
         // One-pole smoothing coefficient for the statistics (τ = PAD_STAT_TC_MS).
         self.alpha = one_pole_coeff(PAD_STAT_TC_MS, fs);
         let labels = ctx.input_labels;
-        let use_7_1 = input_has_back(labels);
+        let use_7_1 = source_has_back(labels);
         let hpf = Biquad::highpass(fs, PAD_HPF_HZ, PAD_HPF_Q);
         const SIZE: [f32; 3] = [0.5, 0.5, 0.5];
 
@@ -1294,7 +1288,7 @@ impl ObjectGenerator for DiracGenerator {
 
         // Virtual horizontal B-format encoder: az = atan2(x, y) → cos = y/r (front),
         // sin = x/r (right); equivalent to the engine convention, no trig per sample.
-        let use_7_1 = input_has_back(ctx.input_labels);
+        let use_7_1 = source_has_back(ctx.input_labels);
         for (idx, &label) in ctx.input_labels.iter().enumerate() {
             if let Some(pos) = channel_top_position(label, use_7_1, ctx.surround_placement) {
                 let (x, y) = (pos[0] as f32, pos[1] as f32);
