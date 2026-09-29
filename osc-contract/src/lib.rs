@@ -16,7 +16,8 @@
 //!
 //! The human-readable companion — direction, argument types and semantics for
 //! every address — lives in `docs/osc-control-contract.md`. Keep the two in
-//! sync when adding or changing an address.
+//! sync when adding or changing an address; a test fails when a catalogued
+//! address is missing from that document's index.
 //!
 //! ## Address families with a dynamic or prefixed tail
 //!
@@ -260,10 +261,6 @@ pub const CONTROL_PROFILE_SWITCH: &str = "/omniphony/control/profile/switch";
 pub const CONTROL_PROFILE_CREATE: &str = "/omniphony/control/profile/create";
 pub const CONTROL_PROFILE_DELETE: &str = "/omniphony/control/profile/delete";
 pub const CONTROL_PROFILE_RENAME: &str = "/omniphony/control/profile/rename";
-/// Overlay display preferences as JSON, republished whenever they change —
-/// including when an mpv keybind flips one through the FFI toggles. The overlay
-/// is a process-global singleton with two writers, so a client must read this
-/// rather than trust its own mirror.
 /// What the object test's clip is, after a [`CONTROL_OBJECT_TEST_CLIP`] request.
 ///
 /// Args: `[json: String]` — `{"name","path","seconds","sourceRate","channels",
@@ -271,6 +268,10 @@ pub const CONTROL_PROFILE_RENAME: &str = "/omniphony/control/profile/rename";
 /// and `{}` when it was cleared.
 pub const STATE_OBJECT_TEST_CLIP: &str = "/omniphony/state/object_test/clip";
 
+/// Overlay display preferences as JSON, republished whenever they change —
+/// including when an mpv keybind flips one through the FFI toggles. The overlay
+/// is a process-global singleton with two writers, so a client must read this
+/// rather than trust its own mirror.
 pub const STATE_OVERLAY: &str = "/omniphony/state/overlay";
 pub const CONTROL_OVERLAY_LABELS: &str = "/omniphony/control/overlay/labels";
 pub const CONTROL_OVERLAY_OBJECTS: &str = "/omniphony/control/overlay/objects";
@@ -956,6 +957,30 @@ mod tests {
             "OSC addresses spelled out instead of referencing this module \
              (add a constant here and use it):\n  {}",
             offenders.join("\n  ")
+        );
+    }
+
+    /// `docs/osc-control-contract.md` indexes every catalogued address, so an
+    /// address added here without documentation fails instead of drifting.
+    #[test]
+    fn every_catalogued_address_is_indexed_in_the_contract_doc() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../docs/osc-control-contract.md"
+        );
+        let doc = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("guard is stale: cannot read {path}: {e}"));
+        let missing: Vec<&str> = ALL_CONTROL
+            .iter()
+            .chain(ALL_STATE)
+            .chain(ALL_SESSION)
+            .copied()
+            .filter(|a| !doc.contains(&format!("`{a}`")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "addresses missing from the docs/osc-control-contract.md index:\n  {}",
+            missing.join("\n  ")
         );
     }
 

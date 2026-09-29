@@ -21,7 +21,9 @@ audio), donc les domaines `audio` et `input` sont retirés.
 
 Sources de vérité : `omniphony-renderer/src/cli/command.rs` (CLI),
 `renderer/src/config.rs` + `renderer/src/config_fields.rs` (config),
-`orender_engine/src/osc/dispatch.rs` + `runtime_control/src/command.rs` (OSC).
+`renderer/src/options.rs` (registre des options live),
+`runtime_control/src/osc.rs` + `orender_engine/src/osc/dispatch.rs` +
+`runtime_control/src/command.rs` (OSC), `osc-contract/src/lib.rs` (adresses).
 
 Légende statut : ✅ OK · 🟡 écart **justifié** (ne pas corriger) · 🔴 écart **à corriger**.
 
@@ -46,10 +48,10 @@ Légende statut : ✅ OK · 🟡 écart **justifié** (ne pas corriger) · 🔴 
 
 | Option | CLI | OSC/Studio | mpv | Statut | Pourquoi |
 |---|:--:|:--:|:--:|:--:|---|
-| `render_backend` (vbap/barycenter/experimental_distance/hybrid) | 🔴 | ✅ | ✅ | 🔴 | **CLI bloqué sur VBAP** : `render_backend` n'a aucun flag. Lu depuis `render_cfg` par `build_spatial_renderer` → plomberie manquante. **Partie 1.** |
-| `barycenter` (localize) | 🔴 | ✅ | ✅ | 🔴 | idem, params dédiés au backend. **Partie 1.** |
-| `experimental_distance_*` (6 params) | 🔴 | ✅ | ✅ | 🔴 | idem. **Partie 1.** |
-| `hybrid_external/internal/smoothing/metric` | 🔴 | ✅ | ✅ | 🔴 | idem. **Partie 1.** |
+| `render_backend` (vbap/barycenter/experimental_distance/hybrid) | ✅ | ✅ | ✅ | ✅ | **Corrigé (Partie 1)** : `--render-backend`. |
+| `barycenter` (localize) | ✅ | ✅ | ✅ | ✅ | **Corrigé (Partie 1)** : `--barycenter-localize`. |
+| `experimental_distance_*` (6 params) | ✅ | ✅ | ✅ | ✅ | **Corrigé (Partie 1)** : `--experimental-distance-*`. |
+| `hybrid_external/internal/smoothing/metric` | ✅ | ✅ | ✅ | ✅ | **Corrigé (Partie 1)** : `--hybrid-external-backend`, `--hybrid-internal-backend`, `--hybrid-curve-smoothing`, `--hybrid-metric`. |
 | `hybrid_curve` (`Vec<[f32;2]>`) | — | ✅ | ✅ | 🟡 | courbe via éditeur canvas Studio ; pas adapté à un flag CLI. Reste Studio-only. |
 
 ### Distance / spread
@@ -60,9 +62,9 @@ Légende statut : ✅ OK · 🟡 écart **justifié** (ne pas corriger) · 🔴 
 | `vbap_spread_min/max` | ✅ | ✅ | ✅ | ✅ | — |
 | `distance_diffuse` (+threshold/curve) | ✅ | ✅ | ✅ | ✅ | — |
 | `vbap_distance_model` (none/linear/…) | ✅ | ✅ | ✅ | ✅ | — |
-| `distance_model_metric` (spherical/chebyshev) | 🔴 | ✅ | ✅ | 🔴 | aucun flag CLI. **Partie 2.** |
-| `distance_diffuse_metric` (spherical/chebyshev) | 🔴 | ✅ | ✅ | 🔴 | aucun flag CLI. **Partie 2.** |
-| `size_to_spread_mode` (max/mean/projection_perpendicular) | 🔴 | ✅ | ✅ | 🔴 | aucun flag CLI. **Partie 2.** |
+| `distance_model_metric` (spherical/chebyshev) | ✅ | ✅ | ✅ | ✅ | **Corrigé (Partie 2)** : `--distance-model-metric`. |
+| `distance_diffuse_metric` (spherical/chebyshev) | ✅ | ✅ | ✅ | ✅ | **Corrigé (Partie 2)** : `--distance-diffuse-metric` (+ `--distance-diffuse-mirror-axes`). |
+| `size_to_spread_mode` (max/mean/projection_perpendicular) | ✅ | ✅ | ✅ | ✅ | **Corrigé (Partie 2)** : `--size-to-spread-mode`. |
 
 ### Gain / loudness
 
@@ -93,7 +95,7 @@ Légende statut : ✅ OK · 🟡 écart **justifié** (ne pas corriger) · 🔴 
 | `latency_target` | ✅ | ✅ | 🟡 | 🟡 | idem. **Justifié.** |
 | `pw_quantum` | ✅ | — | — | 🟡 | *load-time* PipeWire. **Justifié.** |
 | `enable_adaptive_resampling` | ✅ | ✅ | 🟡 | 🟡 | resampling = host audio ; sans objet en mpv. **Justifié.** |
-| tuning PI (`kp_near`, `ki`, `max_adjust`, far-mode, marges…) | 🔴 | ✅ | 🟡 | 🔴 | en **standalone** (CLI/Studio) : pas de flag CLI alors que l'OSC les expose → **Partie 3**. En mpv : sans objet (host audio absent) → justifié. |
+| tuning PI (`kp_near`, `ki`, `max_adjust`, far-mode, marges…) | ✅ | ✅ | 🟡 | 🟡 | **Corrigé en standalone (Partie 3)** : `--adaptive-resampling-kp-near`, `--adaptive-resampling-ki`, `--adaptive-resampling-max-adjust`, `--adaptive-resampling-*-far-mode*`, marges de récupération. En mpv : sans objet (host audio absent) → justifié. |
 | `adaptive_resampling_integral_discharge_ratio` | — | (✅) | — | 🟡 | **non opérant** → volontairement non exposé en CLI (cf. note). |
 | `ramp_mode` | ✅ | ✅ | 🟡 | 🟡 | géré par le pipeline de rendu mpv en embarqué. **Justifié.** |
 
@@ -117,15 +119,17 @@ Légende statut : ✅ OK · 🟡 écart **justifié** (ne pas corriger) · 🔴 
 
 ---
 
-## Synthèse des écarts à corriger (🔴)
+## Synthèse des écarts
+
+Faits :
 
 1. **Sélection de backend en CLI** : `--render-backend` + params barycenter / hybrid / experimental_distance → **Partie 1**.
 2. **Métriques & size_to_spread en CLI** : `--distance-model-metric`, `--distance-diffuse-metric`, `--size-to-spread-mode` → **Partie 2**.
 3. **Tuning resampling en CLI** (standalone) : flags PI au-delà de enable/update-interval → **Partie 3**.
-4. **`auto_gain`** : contrôle live OSC/Studio (fait — Partie 4). `bed_conform` : **réévalué comme écart justifié** (mode de sortie couplé au CLI, beds déjà gérés côté moteur) → non porté.
+4. **`auto_gain`** : contrôle live OSC/Studio → **Partie 4**. `bed_conform` : **réévalué comme écart justifié** (mode de sortie couplé au CLI, beds déjà gérés côté moteur) → non porté.
 
-Hors-scope ce tour-ci (à corriger ultérieurement) : `meter_rate`/`diag_rate`,
-`drc_mode`/`drc_weight` en CLI.
+Restent à corriger (🔴) : `meter_rate`/`diag_rate` et `drc_mode`/`drc_weight`
+n'ont toujours pas de flag CLI.
 
 ## Note — `integral_discharge_ratio`
 

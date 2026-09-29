@@ -31,9 +31,55 @@ Progress:
   gone — values come from the snapshot's `options` block, pre-snapshot
   defaults from the published `/state/options_schema`, and pre-connect the
   controls keep their baked HTML default.
-- **Next (phase 3)**: fold remaining `LiveParams` scalars opportunistically;
-  CLI flags for the newly-seeded options
-  (`docs/option-surface-parity.fr.md`).
+- **Phase 3 (in progress)**: remaining `LiveParams` scalars fold in
+  opportunistically, as they get touched. See "Current state" below for what
+  the registry declares today.
+
+### Current state
+
+Declared options (`renderer::options::LIVE_OPTIONS`), all `PERSIST`:
+
+| Key | Kind | Default | `REPLAN` | Legacy alias |
+|---|---|---|---|---|
+| `surround_placement` | `Enum` side / back | `side` | yes | `/control/surround_placement` |
+| `synthetic_objects_enabled` | `Bool` | `false` | yes | `/control/synthetic_objects` |
+| `decode_thread` | `Bool` | `false` | — | `/control/decode_thread` |
+| `output_channel_mapping` | `Enum` by_index / by_name | `by_index` | — | `/control/output_channel_mapping` |
+| `object_generator_id` | `Str` | `""` | yes | `/control/object_generator` |
+| `phantom_extract_mode` | `Enum` off / broadband / spectral | `off` | yes | `/control/phantom_extract` |
+| `crossover_type` | `Enum` lr4 / fir | `lr4` | — | `/control/crossover_type` |
+| `crossover_fir_transition_ratio` | `Float` 0.05–2.0, step 0.05 | `0.5` | — | `/control/crossover_fir_transition_ratio` |
+| `hrir_update_lattice` | `Enum` exact / fine / balanced / coarse | `exact` | — | `/control/binaural/hrir_update_lattice` |
+
+(Aliases are under `/omniphony`; the contract constants live in
+`osc-contract/src/lib.rs`.) Every other live setting is still a hand-wired
+`LiveParams` field with its own OSC handler; the conformance net keeps a
+table of the hand-wired options that predate the registry.
+
+What the implementation settled on, where it differs from the proposal below:
+
+- **Kinds**: `Bool`, `Enum(&[&str])`, `Str` (free-form, e.g. a registry id)
+  and `Float { min, max, step }` (the proposal's `F32`; `step` is a UI hint,
+  the setter clamps to `[min, max]`).
+- **Flags**: only `PERSIST` (commit to `config.yaml` on an OSC set, with the
+  targeted sidecar-clearing write) and `REPLAN` (bump
+  `RendererControl::options_epoch` on a real change). `NEEDS_TOPOLOGY` and
+  `ADVANCED` were never needed and do not exist.
+- **Storage**: no store and no macro-generated `OptionId`. Options stay typed
+  `LiveParams` fields read directly on the audio path; a row carries
+  `set` / `get_json` / `config_store` / `config_seed` function pointers that
+  reach them. The registry is the declaration and plumbing layer, not the
+  storage — which is what the realtime rules asked for anyway.
+- **Per-row extras**: `help_i18n_key` is optional; `legacy_control_addr` names
+  the pre-registry address kept as an alias.
+- **Profile switch**: `reset_live_to_defaults` puts every declared option (and
+  the param bags and placement) back to its declared default before the new
+  profile's `seed_live_from_config`, because a seed only assigns the keys the
+  config pins — a skip-if-default key would otherwise keep the previous
+  profile's value.
+- **Not built**: the phase-3 check "a config key outside the registry and the
+  known legacy list fails" does not exist; the conformance net only proves
+  that each declared (or hand-wired) option reaches every layer.
 
 ## Adding a live option today (post-phase-2)
 
@@ -102,6 +148,9 @@ with **zero** plumbing churn.
 This RFC generalizes that pattern to all live options.
 
 ## Proposal: `LIVE_OPTIONS` registry
+
+> Historical: this is the design as proposed. Where the implementation
+> differs (kinds, flags, no store / `OptionId`), "Current state" above wins.
 
 ### 1. One declaration
 

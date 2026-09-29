@@ -160,7 +160,8 @@ You can point to another file with `--config`, and persist the current effective
 
 - [BUILD.md](BUILD.md): build profiles and feature flags
 - [BINAURAL.md](BINAURAL.md): binaural headphone output, head tracking, tuning
-- [OSC_PROTOCOL.md](OSC_PROTOCOL.md): OSC message surface
+- [OSC_PROTOCOL.md](OSC_PROTOCOL.md): OSC session handshake and streams
+- [../docs/osc-control-contract.md](../docs/osc-control-contract.md): every OSC control and state address
 - [QUICKSTART.md](QUICKSTART.md): local bring-up notes
 - [../layouts/README.md](../layouts/README.md): speaker layout format
 - [BRIDGE_API.md](BRIDGE_API.md): runtime bridge ABI
