@@ -46,6 +46,49 @@ pub fn request_save_config(state: &SharedState) {
     control_save_config(state);
 }
 
+/// Whether the renderer holds edits its config file does not: connected, and
+/// its last word on the file was "unsaved". An unknown or stale answer (no
+/// snapshot yet, a renderer gone) says no, so nothing ever asks about edits
+/// in a renderer that is not there.
+pub fn has_unsaved_edits(state: &SharedState) -> bool {
+    state.stats.connection_state() == crate::osc::ConnectionState::Connected
+        && state.inner.lock().unwrap().app.config_saved == Some(0)
+}
+
+/// Where the last Save stands, for a flow that waits on it (save and quit).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveOutcome {
+    /// Asked for, no answer yet.
+    Pending,
+    /// The file matches the renderer.
+    Saved,
+    /// The renderer tried and could not.
+    Failed(String),
+    /// Answered, and the renderer still holds unsaved edits (another write
+    /// landed in between).
+    Unsaved,
+}
+
+pub fn save_outcome(state: &SharedState) -> SaveOutcome {
+    let live = state.inner.lock().unwrap();
+    if live.save_requested {
+        return SaveOutcome::Pending;
+    }
+    if let Some(error) = live
+        .app
+        .save_error
+        .as_ref()
+        .filter(|e| !e.trim().is_empty())
+    {
+        return SaveOutcome::Failed(error.clone());
+    }
+    if live.app.config_saved == Some(1) {
+        SaveOutcome::Saved
+    } else {
+        SaveOutcome::Unsaved
+    }
+}
+
 pub fn control_log_level(state: &SharedState, value: String) {
     let trimmed = value.trim().to_ascii_lowercase();
     if !matches!(
@@ -484,5 +527,44 @@ mod placement_tests {
         drop(live);
         select_placement_family(&state, Family::Pcm);
         assert_ne!(state.inner.lock().unwrap().editing_family, family);
+    }
+}
+
+#[cfg(test)]
+mod unsaved_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// The quit prompt and the Reload confirmation ask only about a renderer
+    /// that is there and said "unsaved".
+    #[test]
+    fn unsaved_edits_need_a_connected_renderer_that_said_so() {
+        let state = crate::host::commands::tests::state();
+        assert!(!has_unsaved_edits(&state), "nothing heard yet");
+        state.inner.lock().unwrap().app.config_saved = Some(0);
+        assert!(!has_unsaved_edits(&state), "not connected");
+        state.stats.registered.store(true, Ordering::Relaxed);
+        assert!(has_unsaved_edits(&state));
+        state.inner.lock().unwrap().app.config_saved = Some(1);
+        assert!(!has_unsaved_edits(&state));
+    }
+
+    #[test]
+    fn a_save_is_pending_until_the_renderer_answers() {
+        let state = crate::host::commands::tests::state();
+        state.inner.lock().unwrap().app.config_saved = Some(0);
+        request_save_config(&state);
+        assert_eq!(save_outcome(&state), SaveOutcome::Pending);
+        {
+            let mut live = state.inner.lock().unwrap();
+            live.save_requested = false;
+            live.app.config_saved = Some(1);
+        }
+        assert_eq!(save_outcome(&state), SaveOutcome::Saved);
+        state.inner.lock().unwrap().app.save_error = Some("read-only".into());
+        assert_eq!(
+            save_outcome(&state),
+            SaveOutcome::Failed("read-only".into())
+        );
     }
 }

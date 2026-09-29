@@ -239,21 +239,31 @@ fn resolve_orender_launch_spec(
 /// other build does not implement is silently dropped, which is close to
 /// undiagnosable from the UI. Returns `None` when no binary can be resolved at
 /// all; that is a separate, already-reported condition.
+/// Whether quitting Studio stops the renderer: one it launched and still
+/// runs, unless the user asked to keep it alive. What the quit prompt tells
+/// the user about their unsaved edits depends on it.
+pub fn quitting_stops_renderer(state: &SharedState) -> bool {
+    let running = state
+        .renderer_child
+        .lock()
+        .unwrap()
+        .as_mut()
+        .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+    running && !state.config.snapshot().keep_renderer_alive_on_quit
+}
+
 /// At quit, take a renderer this Studio launched down with it, unless the
 /// user asked to keep it: a graceful quit first, so it writes its live-state
 /// handoff, then a kill if it has not gone within two seconds. A renderer this
 /// Studio did not start (a service, mpv's own) is left alone.
 pub fn stop_launched_renderer(state: &SharedState) {
+    if !quitting_stops_renderer(state) {
+        return;
+    }
     let mut guard = state.renderer_child.lock().unwrap();
     let Some(child) = guard.as_mut() else {
         return;
     };
-    if !matches!(child.try_wait(), Ok(None)) {
-        return;
-    }
-    if state.config.snapshot().keep_renderer_alive_on_quit {
-        return;
-    }
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {

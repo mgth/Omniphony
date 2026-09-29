@@ -83,9 +83,27 @@ carries the unsaved state over in the sidecar instead of saving it.
 - **App** state lives in `RuntimeConfig` (`osc_config.json`), written through
   the same kind of writer.
 - **Render / engine** state is sent to the engine and nowhere else. Studio
-  sends `/control/save_config` only from the Save button — and, once it lands,
-  the quit prompt — through `commands::engine::request_save_config`. No panel,
-  no Apply, no profile change saves on the user's behalf.
+  sends `/control/save_config` only from the Save button and the quit prompt,
+  through `commands::engine::request_save_config`. No panel, no Apply, no
+  profile change saves on the user's behalf.
+
+### Leaving with unsaved edits
+
+The footer's indicator is the engine's word on its file (`/state/config/saved`),
+shown only while connected: a renderer that is gone has nothing to save. Where
+unsaved edits would be dropped, Studio asks first — and only then:
+
+- **Closing Studio** holds the close back (`guard_quit_request`, run from
+  `App::logic` so it works behind a minimised window) and offers *Save and
+  quit*, *Quit without saving* or *Cancel*. *Save and quit* closes once the
+  engine confirms the save; a failure brings the prompt back with the reason.
+  The prompt also says whether quitting stops the renderer (one Studio launched
+  without keep-alive) or leaves it running with the edits.
+- **Reload** asks before discarding them.
+
+Limits: on macOS, Cmd+Q from the application menu terminates without a close
+event, so only the window's close button is guarded; a Studio killed by a
+signal asks nothing.
 
 ## Adding something
 
@@ -108,8 +126,6 @@ fixes it.
   `config.yaml` as soon as they are set.
 - **Profile operations** (switch, create, rename, delete) commit every pending
   unsaved edit into the file.
-- **No quit prompt**: Studio closes without asking when the engine holds
-  unsaved edits, and Reload discards them without asking.
 - **Studio view state not yet kept**: camera, window size and position, open
   sections, tabs, the Speakers and Grid switches, the speaker-test settings,
   the log panel.

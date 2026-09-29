@@ -37,4 +37,5 @@ pub mod sofa_browser;
 pub mod sources_2d;
 pub mod speaker_editor;
 pub mod speaker_layouts;
+pub mod unsaved_quit;
 pub mod updates;
