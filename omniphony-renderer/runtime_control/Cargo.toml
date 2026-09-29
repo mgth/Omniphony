@@ -1,22 +1,23 @@
 [package]
 name = "runtime_control"
 version = "0.2.4"
-edition = "2024"
-license = "GPL-3.0-or-later"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-omniphony-geometry = { version = "0.1.0", path = "../omniphony-geometry" }
-omniphony-osc-contract = { version = "0.1.0", path = "../../osc-contract" }
-anyhow = "1.0.99"
-log = "0.4.27"
-renderer = { path = "../renderer" }
-rosc = "0.11"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml_ng = "0.10"
-sys = { path = "../sys" }
+omniphony-geometry.workspace = true
+omniphony-osc-contract.workspace = true
+anyhow.workspace = true
+log.workspace = true
+renderer.workspace = true
+rosc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+sys.workspace = true
 
 [build-dependencies]
-anyhow = "1.0.99"
-vergen-gitcl = { version = "1.0.8", default-features = false, features = ["build"] }
-chrono = "0.4.41"
+anyhow.workspace = true
+vergen-gitcl.workspace = true
+chrono.workspace = true

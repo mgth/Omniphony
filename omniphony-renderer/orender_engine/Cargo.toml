@@ -1,33 +1,34 @@
 [package]
 name = "orender_engine"
 version = "0.2.3"
-edition = "2024"
-license = "GPL-3.0-or-later"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Headless decode→render engine for the orender spatial audio renderer (host-agnostic, no audio I/O)"
-repository = "https://github.com/mgth/Omniphony"
+repository.workspace = true
 
 [dependencies]
-renderer = { version = "0.2.4", path = "../renderer" }
+renderer.workspace = true
 # Demonstration render backend, registered at startup to prove the open backend
 # frontier end-to-end. A real deployment would register/discover backends here.
-example_backend = { path = "../example_backend" }
+example_backend.workspace = true
 # User-scriptable (Lua) render backend, registered at startup.
-script_backend = { path = "../script_backend" }
-omniphony-geometry = { version = "0.1.0", path = "../omniphony-geometry" }
-bridge_api = { version = "0.4.0", path = "../bridge_api" }
-runtime_control = { version = "0.2.4", path = "../runtime_control" }
-sys = { version = "0.1.0", path = "../sys" }
+script_backend.workspace = true
+omniphony-geometry.workspace = true
+bridge_api.workspace = true
+runtime_control.workspace = true
+sys.workspace = true
 # Audio output/input belong to the host_audio crate and reach the OSC server
 # via runtime_control::HostControlHandler — never a dependency of this engine
 # so liborender cross-compiles without cpal/pipewire/asio.
-abi_stable = "0.11"
-anyhow = "1.0"
-log = "0.4"
-rosc = "0.11"
-serde_json = "1.0"
+abi_stable.workspace = true
+anyhow.workspace = true
+log.workspace = true
+rosc.workspace = true
+serde_json.workspace = true
 # Real-input FFT for the DirAC diffuse→height object generator (pure Rust, no
 # system deps — safe for the liborender cdylib). Already in the workspace lock.
-realfft = "3.5"
+realfft.workspace = true
 
 [features]
 # Personalised HRTF loading (SOFA files) in the binaural stage.

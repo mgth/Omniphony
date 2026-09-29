@@ -1,8 +1,9 @@
 [package]
 name = "bridge_api"
 version = "0.4.0"
-edition = "2024"
-license = "GPL-3.0-or-later"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-abi_stable = "0.11"
+abi_stable.workspace = true

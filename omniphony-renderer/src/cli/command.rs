@@ -889,7 +889,7 @@ pub enum OutputBackend {
     /// PipeWire audio output (streaming, Linux only).
     #[cfg(target_os = "linux")]
     Pipewire,
-    /// ASIO audio output (Windows only, requires 'asio' feature).
+    /// ASIO audio output (Windows only; always compiled into Windows builds).
     #[cfg(target_os = "windows")]
     Asio,
     /// CoreAudio audio output (macOS only).
