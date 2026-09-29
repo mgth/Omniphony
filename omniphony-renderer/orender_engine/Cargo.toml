@@ -9,9 +9,10 @@ repository.workspace = true
 
 [dependencies]
 renderer.workspace = true
-# Demonstration render backend, registered at startup to prove the open backend
-# frontier end-to-end. A real deployment would register/discover backends here.
-example_backend.workspace = true
+# Demonstration render backend: the starting point contributors copy. Only
+# built and registered with the `example-backend` feature, so release builds
+# don't ship (or offer in Studio) a backend nobody should render with.
+example_backend = { workspace = true, optional = true }
 # User-scriptable (Lua) render backend, registered at startup.
 script_backend.workspace = true
 omniphony-geometry.workspace = true
@@ -33,3 +34,6 @@ realfft.workspace = true
 [features]
 # Personalised HRTF loading (SOFA files) in the binaural stage.
 sofa = ["renderer/sofa"]
+# Register the demonstration backend (`backend_id = "example"`), for contributors
+# trying the render-backend frontier end to end. Off in release builds.
+example-backend = ["dep:example_backend"]

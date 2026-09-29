@@ -18,6 +18,11 @@ can never crash the audio thread.
 > built and tested as a workspace member in CI — so it always stays in sync with
 > the public surface a backend needs. Everything below is implemented there; read
 > it alongside this guide.
+>
+> The hosts only register it when built with the `example-backend` feature
+> (`cargo build --features example-backend` for `orender`, the same feature on
+> `orender_ffi` for `liborender`), so release builds don't offer it in Studio.
+> Build with the feature to select `backend_id = "example"` and try it end to end.
 
 ## The two traits
 
@@ -177,7 +182,8 @@ control.register_backend(Box::new(my_backend::MyFactory));
 
 The built-in host does this in
 [`renderer_build.rs`](../omniphony-renderer/orender_engine/src/renderer_build.rs)
-(see the `example_backend::ExampleFactory` registration). After that line,
+(see the `example_backend::ExampleFactory` registration, behind the
+`example-backend` feature). After that line,
 selecting `backend_id = "my_model"` — from config (`render_backend = "my_model"`),
 over OSC, or from the Studio dropdown — routes a topology rebuild through your
 factory. A later registration with the same id replaces an earlier one, so a host

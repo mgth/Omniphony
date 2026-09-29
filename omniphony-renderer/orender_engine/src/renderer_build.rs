@@ -374,7 +374,9 @@ pub fn build_spatial_renderer(
     log::info!("VBAP spatial rendering enabled");
     {
         let control = renderer.renderer_control();
-        // Register the demonstration backend so `backend_id = "example"` resolves.
+        // The demonstration backend (`backend_id = "example"`), only in builds
+        // made with the `example-backend` feature.
+        #[cfg(feature = "example-backend")]
         control.register_backend(Box::new(example_backend::ExampleFactory));
         // User-scriptable (Lua) backend; selecting `backend_id = "script"` routes
         // a rebuild through it, reading its `.lua` path from the param store.
@@ -1063,6 +1065,17 @@ mod tests {
             LiveEvaluationMode::PrecomputedCartesian
         );
         assert!(!seed_control_from_render_config(&control, Some(&cfg)));
+    }
+
+    /// The demonstration backend is for contributors: a release build (no
+    /// `example-backend` feature) must not offer it.
+    #[test]
+    fn the_example_backend_is_registered_only_with_its_feature() {
+        let renderer = test_renderer();
+        assert_eq!(
+            renderer.renderer_control().has_backend("example"),
+            cfg!(feature = "example-backend")
+        );
     }
 
     /// A configured backend is applied after construction, so it must reach
