@@ -200,6 +200,16 @@ jobs:
             exit 1
           fi
 
+      # The header is consumed from C (mpv, C11) and must stay usable from C++:
+      # compile it standalone as strict ISO C and C++, warnings as errors.
+      - name: Check the C header compiles as strict C and C++
+        working-directory: omniphony-renderer/orender_ffi/include
+        run: |
+          printf '#include "orender.h"\nint main(void) { return 0; }\n' > "$RUNNER_TEMP/orender_h.c"
+          cp "$RUNNER_TEMP/orender_h.c" "$RUNNER_TEMP/orender_h.cpp"
+          gcc -std=c11 -Wall -Wextra -pedantic -Werror -fsyntax-only -I. "$RUNNER_TEMP/orender_h.c"
+          g++ -std=c++17 -Wall -Wextra -pedantic -Werror -fsyntax-only -I. "$RUNNER_TEMP/orender_h.cpp"
+
       # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
       # The phase-2 replacement of the web frontend. It is a separate workspace
       # (the egui app and its toolkit-free core, omniphony-studio-core)
