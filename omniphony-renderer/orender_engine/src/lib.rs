@@ -24,6 +24,7 @@ pub mod overlay;
 pub mod phantom_extract;
 mod phantom_spectral;
 pub mod render;
+pub mod render_metering;
 pub mod renderer_build;
 pub mod spatial;
 mod stft;

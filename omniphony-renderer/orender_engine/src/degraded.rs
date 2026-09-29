@@ -22,17 +22,24 @@ use std::net::SocketAddrV4;
 use std::path::Path;
 use std::str::FromStr;
 
-// VBAP grid for the decoder-less reporter (mirrors the CLI's idle-bridge
-// constants in `cli/decode/session_run.rs`). We never decode or render through
-// it; the grid only has to be valid for `build_spatial_renderer` to succeed.
-const REPORTER_VBAP_DEFAULTS: bridge_api::RVbapCartesianDefaults =
+/// What a host without a bridge builds its renderer against, in place of the
+/// bridge's own declarations: the CLI's idle runtime and this reporter. The
+/// renderer never decodes or renders through it; the grid only has to be
+/// valid for `build_spatial_renderer` to succeed and the coordinate format
+/// for the OSC state to be coherent.
+pub const NO_BRIDGE_VBAP_DEFAULTS: bridge_api::RVbapCartesianDefaults =
     bridge_api::RVbapCartesianDefaults {
         x_size: 62,
         y_size: 62,
         z_size: 15,
         allow_negative_z: false,
     };
-const REPORTER_PREFERRED_MODE: bridge_api::RVbapTableMode = bridge_api::RVbapTableMode::Cartesian;
+/// See [`NO_BRIDGE_VBAP_DEFAULTS`].
+pub const NO_BRIDGE_PREFERRED_MODE: bridge_api::RVbapTableMode =
+    bridge_api::RVbapTableMode::Cartesian;
+/// See [`NO_BRIDGE_VBAP_DEFAULTS`].
+pub const NO_BRIDGE_COORDINATE_FORMAT: bridge_api::RCoordinateFormat =
+    bridge_api::RCoordinateFormat::Cartesian;
 
 /// A decoder-less renderer + OSC server, kept alive only to report the bridge
 /// error to Studio. Dropping it shuts the OSC server down.
@@ -72,8 +79,8 @@ pub fn start_degraded_reporter(
         &params,
         layout,
         sample_rate,
-        REPORTER_VBAP_DEFAULTS,
-        REPORTER_PREFERRED_MODE,
+        NO_BRIDGE_VBAP_DEFAULTS,
+        NO_BRIDGE_PREFERRED_MODE,
         render_cfg.as_ref(),
     )?;
 

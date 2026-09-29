@@ -859,6 +859,25 @@ pub fn seed_runtime_state_from_render_config(
     }
 }
 
+/// Record the bridge a host runs with as the live `render.bridge_path` — what
+/// Studio shows and edits, and what a save writes back. Every host records the
+/// path it was *asked* for: its own override (a CLI flag, the C config's
+/// `bridge_path`) else the config's. Never an auto-discovered one: a bridge
+/// found next to the host binary is that host's, and saving it would write,
+/// say, the mpv bundle's bridge into the config every host shares. A host
+/// override that differs from the config is unsaved state.
+pub fn record_bridge_path(
+    control: &RendererControl,
+    host_override: Option<&std::path::Path>,
+    config_bridge: Option<&std::path::Path>,
+) {
+    let recorded = host_override.or(config_bridge);
+    if recorded != config_bridge {
+        control.mark_dirty();
+    }
+    control.set_bridge_path(recorded.map(std::path::Path::to_path_buf));
+}
+
 /// Re-apply a render config to a RUNNING engine — the live profile switch
 /// (docs/config-profiles.md). Covers the construction-path seeding minus what
 /// needs a new renderer instance (input plumbing, output device, bridge):
@@ -1032,6 +1051,34 @@ mod tests {
             LiveEvaluationMode::PrecomputedCartesian
         );
         assert!(!seed_control_from_render_config(&control, Some(&cfg)));
+    }
+
+    /// The recorded bridge path is the one asked for, and asking for another
+    /// than the config's is unsaved state.
+    #[test]
+    fn the_recorded_bridge_path_is_the_requested_one() {
+        use std::path::Path;
+        let renderer = test_renderer();
+        let control = renderer.renderer_control();
+        let dirty = || {
+            control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        let config = Path::new("/cfg/libbridge.so");
+
+        record_bridge_path(&control, None, Some(config));
+        assert_eq!(control.bridge_path().as_deref(), Some(config));
+        assert!(!dirty());
+
+        record_bridge_path(&control, None, None);
+        assert_eq!(control.bridge_path(), None);
+        assert!(!dirty());
+
+        let host = Path::new("/host/libbridge.so");
+        record_bridge_path(&control, Some(host), Some(config));
+        assert_eq!(control.bridge_path().as_deref(), Some(host));
+        assert!(dirty());
     }
 
     /// The shared runtime seed must not carry a cadence of its own.

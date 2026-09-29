@@ -211,6 +211,8 @@ pub struct OutputState {
     pub bootstrap_started_at: Option<Instant>,
     pub render_buf: Vec<f32>,
     pub pcm_f32_buf: Vec<f32>,
+    /// Reused copy of the decoded PCM for the unrendered writes.
+    pub pcm_i32_buf: Vec<i32>,
     pub output_init_failed: bool,
     pub last_audio_delay_written_ms: Option<f32>,
     pub last_audio_delay_attempted_ms: Option<f32>,
@@ -221,6 +223,10 @@ pub struct OutputState {
     pub drc_gain: f32,
     pub drc_ramp_samples_remaining: u32,
     pub drc_target_gain: f32,
+    /// Duty-cycle EMA of the render cost for the meter bundle, as in the
+    /// embedded engine: raw per-frame timings alias with 40-sample access
+    /// units, so the published figure is a smoothed per-frame equivalent.
+    pub render_duty: renderer::metering::DutyEma,
 }
 
 impl Default for OutputState {
@@ -232,6 +238,7 @@ impl Default for OutputState {
             bootstrap_started_at: None,
             render_buf: Vec::new(),
             pcm_f32_buf: Vec::new(),
+            pcm_i32_buf: Vec::new(),
             output_init_failed: false,
             last_audio_delay_written_ms: None,
             last_audio_delay_attempted_ms: None,
@@ -242,6 +249,7 @@ impl Default for OutputState {
             drc_gain: 1.0,
             drc_ramp_samples_remaining: 0,
             drc_target_gain: 1.0,
+            render_duty: Default::default(),
         }
     }
 }
