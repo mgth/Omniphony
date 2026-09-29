@@ -5,7 +5,7 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Canonical coordinate, angle and room-geometry math shared by the Omniphony renderer and Studio"
 repository = "https://github.com/mgth/Omniphony"
-rust-version = "1.87.0"
+rust-version = "1.88"
 
 # Deliberately dependency-free.
 #

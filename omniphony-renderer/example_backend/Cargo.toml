@@ -1,13 +1,14 @@
 [package]
 name = "example_backend"
 version = "0.1.0"
-edition = "2024"
-license = "GPL-3.0-or-later"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Minimal reference render backend (GainModel) showing contributors how to add their own spatial panner"
 
 [lib]
 name = "example_backend"
 
 [dependencies]
-renderer = { path = "../renderer" }
-anyhow = "1"
+renderer.workspace = true
+anyhow.workspace = true

@@ -225,7 +225,6 @@ dependencies = [
  "libc",
  "log",
  "pipewire",
- "pkg-config",
  "renderer",
  "serde",
  "spdif",
@@ -1045,10 +1044,8 @@ checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 name = "host_audio"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "audio_input",
  "audio_output",
- "log",
  "renderer",
  "rosc",
  "runtime_control",
@@ -1579,30 +1576,20 @@ version = "0.2.5"
 dependencies = [
  "abi_stable",
  "anyhow",
- "arc-swap",
  "audio_input",
  "audio_output",
  "bridge_api",
  "chrono",
  "clap",
- "env_logger",
- "flate2",
  "host_audio",
  "libc",
- "libloading 0.8.9",
  "log",
  "orender_engine",
- "parking_lot",
- "pipewire",
  "renderer",
- "rosc",
  "runtime_control",
- "serde_json",
  "spdif",
  "sys",
  "vergen-gitcl",
- "windows",
- "windows-service",
 ]
 
 [[package]]
@@ -1931,7 +1918,6 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sofar",
- "sys",
 ]
 
 [[package]]
@@ -2081,7 +2067,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "mlua",
- "parking_lot",
  "renderer",
 ]
 
