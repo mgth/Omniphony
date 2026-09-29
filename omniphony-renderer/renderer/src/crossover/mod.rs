@@ -4,7 +4,7 @@ pub mod filter;
 pub mod fir;
 
 pub use bands::{FreqBand, compute_bands};
-pub use bank::{CrossoverBank, CrossoverStates, IntegerDelay};
+pub use bank::{CrossoverBank, CrossoverStates};
 pub use filter::{BiquadState, LR4CrossoverBank, SmallBands};
 pub use fir::{FirCrossoverBank, FirCrossoverSpec, FirCrossoverState};
 

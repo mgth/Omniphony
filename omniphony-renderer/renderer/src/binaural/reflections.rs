@@ -16,6 +16,8 @@
 //! falls naturally with source distance, which is exactly the distance cue
 //! we are after.
 
+use crate::delay_line::read_linear;
+
 /// Speed of sound (m/s), matching `itd.rs`.
 const SPEED_OF_SOUND: f32 = 343.0;
 
@@ -53,7 +55,7 @@ const GAIN_SMOOTH_48K: f32 = 0.015;
 /// constant of [`GAIN_SMOOTH_48K`]: the pole is raised to the rate ratio,
 /// so the fade takes the same milliseconds at 96 kHz as at 48.
 fn gain_smooth_for(sample_rate: u32) -> f32 {
-    1.0 - (1.0 - GAIN_SMOOTH_48K).powf(48_000.0 / sample_rate as f32)
+    1.0 - crate::dsp::iir::pole_at_rate(1.0 - GAIN_SMOOTH_48K, sample_rate)
 }
 
 /// Number of first-order images of a shoebox (one per wall).
@@ -74,7 +76,7 @@ pub fn lowpass_coeff(cutoff_hz: f32, sample_rate: u32) -> f32 {
     if cutoff_hz >= MAX_WALL_CUTOFF_HZ {
         0.0
     } else {
-        (-std::f32::consts::TAU * cutoff_hz.max(1.0) / sample_rate as f32).exp()
+        crate::dsp::iir::one_pole_pole(cutoff_hz.max(1.0), sample_rate)
     }
 }
 
@@ -260,12 +262,12 @@ impl ReflectionBank {
         for i in 0..NUM_REFLECTIONS {
             let tl = &mut self.taps_l[i];
             tl.step(gain_smooth);
-            let xl = read_frac(&self.ring, cap, self.write_pos, tl.delay);
+            let xl = read_linear(&self.ring, self.write_pos, tl.delay);
             tl.lp += (xl - tl.lp) * (1.0 - tl.lp_a);
             l += tl.gain * tl.lp;
             let tr = &mut self.taps_r[i];
             tr.step(gain_smooth);
-            let xr = read_frac(&self.ring, cap, self.write_pos, tr.delay);
+            let xr = read_linear(&self.ring, self.write_pos, tr.delay);
             tr.lp += (xr - tr.lp) * (1.0 - tr.lp_a);
             r += tr.gain * tr.lp;
         }
@@ -276,29 +278,6 @@ impl ReflectionBank {
         }
         (l, r)
     }
-}
-
-/// Linear-interpolated read at `delay` samples behind `write_pos` (which still
-/// points at the sample just written).
-///
-/// `delay` is clamped to `cap − 2` by [`ReflectionBank::set_targets`] and
-/// ramps between such values, so the read sits less than one lap behind the
-/// write: one conditional subtraction wraps it. This runs twelve times per
-/// channel per sample; the three integer divisions it used to do per call
-/// were the dearest thing in the bank.
-#[inline]
-fn read_frac(ring: &[f32], cap: usize, write_pos: usize, delay: f32) -> f32 {
-    let lo = delay.floor();
-    let frac = delay - lo;
-    let lo = lo as usize;
-    debug_assert!(lo < cap);
-    let idx0 = if write_pos >= lo {
-        write_pos - lo
-    } else {
-        write_pos + cap - lo
-    };
-    let idx1 = if idx0 == 0 { cap - 1 } else { idx0 - 1 };
-    ring[idx0] * (1.0 - frac) + ring[idx1] * frac
 }
 
 /// Speed of sound accessor so callers share one constant.

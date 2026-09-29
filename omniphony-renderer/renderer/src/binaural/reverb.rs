@@ -68,9 +68,8 @@
 //! send with distance (near-field roll-in): the DRR falls with distance
 //! without ever touching the direct object level.
 
-use crate::crossover::filter::{
-    BiquadCoeffs, BiquadState, biquad, butterworth2_hp, butterworth2_lp,
-};
+use crate::delay_line::read_linear;
+use crate::dsp::iir::{BiquadCoeffs, BiquadState, biquad, one_pole_bilinear_gain, pole_at_rate};
 use crate::live_params::BinauralReverb;
 
 /// Number of delay lines. Sixteen: dense enough that a sustained tone no
@@ -251,10 +250,6 @@ impl Fdn {
         }
         // 120 ms pre-delay capacity; the active length is set per block.
         let pre_cap = (sample_rate as usize * 120 / 1000).max(16);
-        let one_pole = |hz: f32| {
-            let g = (std::f32::consts::PI * hz / sample_rate as f32).tan();
-            g / (1.0 + g)
-        };
         Self {
             lines,
             base_len,
@@ -266,12 +261,12 @@ impl Fdn {
             fb_high: [0.0; N],
             band_lo: [0.0; N],
             band_hi: [0.0; N],
-            k_lo: one_pole(LOW_BAND_HZ),
-            k_hi: one_pole(HIGH_BAND_HZ),
+            k_lo: one_pole_bilinear_gain(LOW_BAND_HZ, sample_rate),
+            k_hi: one_pole_bilinear_gain(HIGH_BAND_HZ, sample_rate),
             mod_phase,
             cur_delay: base_len,
-            xover_lp: butterworth2_lp(COHERENCE_XOVER_HZ, sample_rate),
-            xover_hp: butterworth2_hp(COHERENCE_XOVER_HZ, sample_rate),
+            xover_lp: BiquadCoeffs::butterworth2_lp(COHERENCE_XOVER_HZ, sample_rate),
+            xover_hp: BiquadCoeffs::butterworth2_hp(COHERENCE_XOVER_HZ, sample_rate),
             xover_state: Default::default(),
             predelay: vec![[0.0; 2]; pre_cap],
             pre_pos: 0,
@@ -279,7 +274,7 @@ impl Fdn {
             sample_rate,
             cached: (0.0, 0.0, 0.0, 0.0),
             primed: false,
-            damp_mix: 1.0 - DAMPING_48K.powf(48_000.0 / sample_rate as f32),
+            damp_mix: 1.0 - pole_at_rate(DAMPING_48K, sample_rate),
             mod_depth: MOD_DEPTH_48K * scale,
         }
     }
@@ -397,18 +392,7 @@ impl Fdn {
                 let mut sum = 0.0f32;
                 for i in 0..N {
                     self.cur_delay[i] += d_step[i];
-                    let d = self.cur_delay[i];
-                    let cap = self.lines[i].len();
-                    let di = d as usize;
-                    let frac = d - di as f32;
-                    let r0 = if self.pos[i] >= di {
-                        self.pos[i] - di
-                    } else {
-                        self.pos[i] + cap - di
-                    };
-                    let r1 = if r0 == 0 { cap - 1 } else { r0 - 1 };
-                    let line = &self.lines[i];
-                    o[i] = line[r0] * (1.0 - frac) + line[r1] * frac;
+                    o[i] = read_linear(&self.lines[i], self.pos[i], self.cur_delay[i]);
                     sum += o[i];
                 }
 

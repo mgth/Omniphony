@@ -987,7 +987,7 @@ impl BinauralRenderer {
             // distance (HF dies in air — true outdoors as much as indoors).
             // Bypass within 3 m; ~14 kHz at 10 m, ~5 kHz at 30 m, floor 2 kHz.
             dsp.air_coeff = match air_cutoff_hz(dist_m).filter(|_| air_absorption) {
-                Some(fc) => (-std::f32::consts::TAU * fc / self.sample_rate as f32).exp(),
+                Some(fc) => crate::dsp::iir::one_pole_pole(fc, self.sample_rate),
                 None => 0.0,
             };
 

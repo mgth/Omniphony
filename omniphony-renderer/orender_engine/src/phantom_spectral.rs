@@ -54,7 +54,7 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use crate::object_gen::{
     PrepareCtx, SynthObjectSpec, flush_denorm, is_height_label, one_pole_coeff,
 };
-use crate::stft::{DelayLine, OlaFifo, sine_window};
+use crate::stft::{IntegerDelay, OlaFifo, sine_window};
 
 /// STFT size and 50% hop — matches the DirAC generator (≈21 ms frame at
 /// 48 kHz), and so does the fixed one-frame latency.
@@ -154,7 +154,7 @@ pub(crate) struct SpectralExtractor {
     enc: Vec<(usize, f32, f32, f32)>,
     /// Channels that bypass the STFT (LFE, unpositioned): delayed to stay
     /// aligned with the transformed ones.
-    other: Vec<(usize, DelayLine)>,
+    other: Vec<(usize, IntegerDelay)>,
     fft_fwd: Arc<dyn RealToComplex<f32>>,
     fft_inv: Arc<dyn ComplexToReal<f32>>,
     /// Sine (√Hann) window, applied on both analysis and synthesis (their
@@ -240,7 +240,7 @@ impl SpectralExtractor {
                     has_top |= height;
                     enc.push((idx, ca, sa, ua));
                 }
-                None => other.push((idx, DelayLine::new(SPEC_FFT_SIZE))),
+                None => other.push((idx, IntegerDelay::new(SPEC_FFT_SIZE))),
             }
         }
         if enc.len() < 2 {
@@ -384,7 +384,7 @@ impl SpectralExtractor {
             }
             for (ch, dl) in self.other.iter_mut() {
                 if *ch < c {
-                    bed[base + *ch] = dl.push_pop(bed[base + *ch]);
+                    bed[base + *ch] = dl.push(bed[base + *ch]);
                 }
             }
             self.widx = (self.widx + 1) % SPEC_FFT_SIZE;

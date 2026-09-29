@@ -22,6 +22,7 @@ use std::sync::Arc;
 use bridge_api::RChannelLabel;
 use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
+use renderer::dsp::iir::Biquad;
 use renderer::speaker_layout::SpeakerLayout;
 
 /// What a generator needs from its environment; lets the host gate the UI.
@@ -342,7 +343,7 @@ pub(crate) fn find_channel(labels: &[RChannelLabel], want: RChannelLabel) -> Opt
 /// phantom extraction). Idiom shared with `audio_output::iir::step_one_pole`.
 pub(crate) fn one_pole_coeff(tc_ms: f32, fs: f32) -> f32 {
     let tau_samples = (tc_ms * 1.0e-3 * fs).max(1.0);
-    1.0 - (-1.0 / tau_samples).exp()
+    renderer::dsp::iir::one_pole_smoothing(1.0, tau_samples)
 }
 
 /// A floor pose raised to the height layer (`z = 1`): where the height lift
@@ -433,59 +434,6 @@ impl ObjectGenerator for CopyUpGenerator {
 }
 
 // ─────────────────────────── built-in: pad ───────────────────────────
-
-/// Minimal transposed-direct-form-II biquad, used by PAD to keep low frequencies
-/// out of the height layer (a mild psychoacoustic "elevation" lean: bass stays
-/// grounded, mids/highs rise).
-#[derive(Clone, Copy)]
-struct Biquad {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    z1: f32,
-    z2: f32,
-}
-
-impl Biquad {
-    /// RBJ high-pass at cutoff `fc` (Hz), quality `q`, sample rate `fs` (Hz).
-    fn highpass(fs: f32, fc: f32, q: f32) -> Self {
-        let mut b = Self {
-            b0: 0.0,
-            b1: 0.0,
-            b2: 0.0,
-            a1: 0.0,
-            a2: 0.0,
-            z1: 0.0,
-            z2: 0.0,
-        };
-        b.set_highpass(fs, fc, q);
-        b
-    }
-
-    /// Recompute the high-pass coefficients in place, preserving the filter state
-    /// (`z1`/`z2`) so a live cutoff change does not click.
-    fn set_highpass(&mut self, fs: f32, fc: f32, q: f32) {
-        let w0 = std::f32::consts::TAU * (fc / fs).clamp(1.0e-4, 0.49);
-        let (sin, cos) = w0.sin_cos();
-        let alpha = sin / (2.0 * q);
-        let a0 = 1.0 + alpha;
-        self.b0 = ((1.0 + cos) / 2.0) / a0;
-        self.b1 = (-(1.0 + cos)) / a0;
-        self.b2 = ((1.0 + cos) / 2.0) / a0;
-        self.a1 = (-2.0 * cos) / a0;
-        self.a2 = (1.0 - alpha) / a0;
-    }
-
-    #[inline]
-    fn process(&mut self, x: f32) -> f32 {
-        let y = self.b0 * x + self.z1;
-        self.z1 = self.b1 * x - self.a1 * y + self.z2;
-        self.z2 = self.b2 * x - self.a2 * y;
-        y
-    }
-}
 
 /// Primary-Ambient Decomposition generator: extracts the decorrelated *ambient*
 /// component of each floor pair (front L/R, surround L/R) with a 1-tap adaptive
