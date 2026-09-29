@@ -337,6 +337,7 @@ impl MeasuredHrirData {
     /// its (minimum-phase, resampled) left and right responses. For
     /// offline analysis of a set — the PRTF fit reads the KEMAR median
     /// plane through it — not a render-path lookup.
+    #[cfg(test)]
     pub(super) fn nearest_measurement(
         &self,
         az_deg: f32,
@@ -568,6 +569,7 @@ impl MeasuredHrirData {
 /// Below this peak a set is silence: [`HrirSet::new`](super::hrir::HrirSet::new)
 /// normalizes any usable set to unit mean energy, so a surviving one peaks
 /// around 1 — six orders of magnitude clear of this bound.
+#[cfg(any(test, feature = "sofa"))]
 const SILENT_PEAK: f32 = 1e-9;
 
 /// Refuse an HRIR set a SOFA file cannot actually drive.
@@ -584,6 +586,7 @@ const SILENT_PEAK: f32 = 1e-9;
 /// `Data.IR` as `[M][R][E][N]`; `sofar` reads it as `[M][R][N]`, takes the
 /// emitter count for the filter length, and so slices the handful of samples
 /// that *precede* the direct sound — all zeros, in every direction.
+#[cfg(any(test, feature = "sofa"))]
 fn check_loaded_set(
     set: &super::hrir::HrirSet,
     path: &str,
