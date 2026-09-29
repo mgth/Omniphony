@@ -50,7 +50,7 @@ fn linear_to_dbfs(v: f32) -> f32 {
     if v <= 0.0 {
         DBFS_FLOOR
     } else {
-        (20.0 * v.log10()).max(DBFS_FLOOR)
+        crate::dsp::db::linear_to_db(v).max(DBFS_FLOOR)
     }
 }
 

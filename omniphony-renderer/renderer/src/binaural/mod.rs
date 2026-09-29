@@ -41,6 +41,11 @@ pub use head_pose::HeadPose;
 pub use tracking::{CalibrationStep, HeadTracking, HeadTrackingFormat};
 
 use crate::delay_line::DelayLine;
+
+/// Gain of a direct (non-spatialized) bus into each ear: constant power, the
+/// binaural stage's standing policy for the LFE (issue #156). Shared by the
+/// direct and the BRIR paths.
+const DIRECT_EAR_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
 use crate::live_params::{BinauralReflections, BinauralReverb};
 use convolver::EarConvolver;
 use hrir::{DirectionKey, HRIR_LEN, HrirPair, HrirSet, ParametricPinnaHrir};
@@ -908,8 +913,7 @@ impl BinauralRenderer {
                 }
                 for s in 0..span {
                     let g = gain.start + gain.step * s as f32;
-                    let v =
-                        src_pcm[s * src_stride + src_offset] * g * std::f32::consts::FRAC_1_SQRT_2;
+                    let v = src_pcm[s * src_stride + src_offset] * g * DIRECT_EAR_GAIN;
                     let o = s * 2;
                     out[o] += v;
                     out[o + 1] += v;

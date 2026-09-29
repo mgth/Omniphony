@@ -348,7 +348,7 @@ impl SpatialRenderer {
                 "disabled (nearest-cell lookup)"
             }
         );
-        let master_gain = 10.0_f32.powf(master_gain_db / 20.0);
+        let master_gain = crate::dsp::db::db_to_linear(master_gain_db);
         log::info!(
             "Master gain: {:.1} dB (linear: {:.4}), auto-gain: {}",
             master_gain_db,

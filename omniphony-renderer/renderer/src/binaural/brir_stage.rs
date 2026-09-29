@@ -38,6 +38,7 @@ use std::sync::mpsc;
 
 use arc_swap::ArcSwapOption;
 
+use super::DIRECT_EAR_GAIN;
 use super::brir::{BrirLoadOptions, BrirSet};
 use super::head_pose::HeadPose;
 use crate::partitioned_conv::{ConvolutionPlan, InputHistory, OutputScratch, PartitionedKernel};
@@ -47,10 +48,6 @@ use crate::partitioned_conv::{ConvolutionPlan, InputHistory, OutputScratch, Part
 /// block boundary; the work per output sample is set by the kernel length,
 /// not by this.
 pub const BRIR_BLOCK: usize = 128;
-
-/// Gain of a direct (non-spatialized) bus into each ear: constant power,
-/// the binaural stage's standing policy for the LFE (issue #156).
-const DIRECT_EAR_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
 /// Angle between a virtual speaker and the emitter it is rendered from
 /// above which the mapping is logged as a mismatch, degrees.

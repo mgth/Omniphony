@@ -782,7 +782,7 @@ impl ObjectGenerator for PadGenerator {
     fn set_param(&mut self, key: &str, value: f32, sample_rate: u32) {
         match key {
             "strength" => self.strength = value.clamp(0.0, 1.0),
-            "gain_db" => self.makeup = 10.0_f32.powf(value.clamp(-24.0, 24.0) / 20.0),
+            "gain_db" => self.makeup = renderer::dsp::db::db_to_linear(value.clamp(-24.0, 24.0)),
             "hpf_hz" => {
                 let fs = sample_rate.max(1) as f32;
                 let fc = value.clamp(20.0, 2000.0);
