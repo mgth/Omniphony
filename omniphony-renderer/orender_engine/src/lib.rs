@@ -13,6 +13,7 @@
 pub mod bridge_loader;
 pub mod channel_layout;
 pub mod channel_objects;
+pub mod decode_step;
 pub mod degraded;
 pub mod engine;
 pub mod events;
