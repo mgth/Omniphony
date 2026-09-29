@@ -133,6 +133,26 @@ signal asks nothing.
    [`docs/osc-control-contract.md`](osc-control-contract.md) when it is not
    render / engine.
 
+## How the rule is held
+
+Written rules drift; these fail the build instead:
+
+- `omniphony-renderer/runtime_control/tests/persistence_policy.rs` — every
+  `PersistOp` (a write that bypasses Save) must be one of the view-state
+  exceptions above, and only the Save handler, the profile operations and the
+  shutdown handoff may call the whole-state writers.
+- `live_options_conformance::every_option_dirties_on_a_change_and_only_then`
+  — every registry option lights the Save button on a real change and never
+  on a re-send of the current value.
+- The native Studio's architecture test, rule `save-config` — only the Save
+  button, the quit prompt and the profile-switch prompt save.
+- `prefs::display::every_display_setting_is_classified` — a new display
+  setting does not compile until it is classified.
+
+When one of them fails, decide which class the new thing is; do not widen the
+allow-list to get the change through. A genuine new exception is added here,
+under *Exceptions, and why*, with its reason, in the same change.
+
 ## Known deviations
 
 None. A change that has to leave one behind lists it here, with the reason.

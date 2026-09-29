@@ -137,6 +137,18 @@ strings have named constants in the dependency-free `osc-contract` crate
 (`osc-contract/src/lib.rs`, the single source of truth; `ALL_CONTROL` /
 `ALL_STATE` / `ALL_SESSION` are the exhaustive lists).
 
+## What gets saved, and when
+
+One rule, written down in
+[`docs/persistence-policy.md`](docs/persistence-policy.md): **display and
+cosmetic state is kept the moment it changes; anything that changes what is
+heard, or how the engine behaves, reaches `config.yaml` only through the Save
+button.** Classify a new setting or control before wiring it — the policy says
+how each class is plumbed on both sides. Two tripwires hold it:
+`runtime_control/tests/persistence_policy.rs` in the renderer (no new write
+that bypasses Save without a stated reason) and the `save-config` rule of the
+native Studio's architecture test.
+
 ## Coding conventions
 
 - **Write everything in English** — commit messages, PR titles/descriptions,
