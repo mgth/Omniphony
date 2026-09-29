@@ -6,6 +6,7 @@ use super::room_transform::room_scaled_position;
 use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
 use crate::spatial_vbap::{Gains, spherical_to_adm};
 use crate::speaker_layout::SpeakerLayout;
+use omniphony_geometry::f32::vec3::dot;
 
 /// Triangulation-free VBAP for degenerate geometry — any speaker set the full
 /// panner cannot triangulate (`find_ls_triplets` fails): 1–2 speakers, or larger
@@ -32,11 +33,6 @@ pub struct DegenerateVbapBackend {
     /// direction) and should take a constant omnidirectional baseline share
     /// instead of being panned. Same length as `speaker_dirs`.
     omni: Vec<bool>,
-}
-
-#[inline]
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Each omni speaker's raw (pre-normalisation) gain. The directional pair carries

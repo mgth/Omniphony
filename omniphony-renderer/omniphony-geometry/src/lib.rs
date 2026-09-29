@@ -3,8 +3,8 @@
 //! Before this crate the same handful of formulas existed in five places: four
 //! copies of the room depth warp inside the renderer workspace
 //! (`renderer::speaker_layout`, `renderer::render_backend::room_transform`,
-//! `renderer::render_backend::file_loaded_evaluator`,
-//! `orender_engine::virtual_bed`), plus one in the Studio frontend — and two
+//! a since-removed file-loaded evaluator, `orender_engine::virtual_bed`),
+//! plus one in the Studio frontend — and two
 //! independent cartesian/spherical pairs that did **not** agree (see
 //! "Frames" below).
 //!
@@ -93,6 +93,14 @@ macro_rules! geometry_for {
             #[inline]
             pub fn scene_to_adm(position: [$f; 3]) -> [$f; 3] {
                 [position[2], position[0], position[1]]
+            }
+
+            /// SOFA cartesian (`x` front, `y` left, `z` up) -> ADM `(x, y, z)`
+            /// (`x` right, `y` front, `z` up). SOFA azimuth runs
+            /// counter-clockwise (left positive), ADM clockwise.
+            #[inline]
+            pub fn sofa_to_adm(position: [$f; 3]) -> [$f; 3] {
+                [-position[1], position[0], position[2]]
             }
 
             // ---------------------------------------------------------------
@@ -470,6 +478,74 @@ macro_rules! geometry_for {
             }
 
             // ---------------------------------------------------------------
+            // 3-vectors
+            // ---------------------------------------------------------------
+
+            /// Plain 3-vector arithmetic on `[x, y, z]` arrays, in any frame.
+            ///
+            /// Normalisation takes the zero-length policy as an argument
+            /// ([`try_normalize`](vec3::try_normalize) returns `None` below a
+            /// caller-chosen length) because the callers genuinely differ:
+            /// some keep the input, some fall back to a fixed axis.
+            pub mod vec3 {
+                /// `a · b`.
+                #[inline]
+                pub fn dot(a: [$f; 3], b: [$f; 3]) -> $f {
+                    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+                }
+
+                /// `a × b`.
+                #[inline]
+                pub fn cross(a: [$f; 3], b: [$f; 3]) -> [$f; 3] {
+                    [
+                        a[1] * b[2] - a[2] * b[1],
+                        a[2] * b[0] - a[0] * b[2],
+                        a[0] * b[1] - a[1] * b[0],
+                    ]
+                }
+
+                /// `a − b`.
+                #[inline]
+                pub fn sub(a: [$f; 3], b: [$f; 3]) -> [$f; 3] {
+                    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+                }
+
+                /// `|v|`.
+                #[inline]
+                pub fn length(v: [$f; 3]) -> $f {
+                    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+                }
+
+                /// `|a − b|²`.
+                #[inline]
+                pub fn distance_sq(a: [$f; 3], b: [$f; 3]) -> $f {
+                    let dx = a[0] - b[0];
+                    let dy = a[1] - b[1];
+                    let dz = a[2] - b[2];
+                    dx * dx + dy * dy + dz * dz
+                }
+
+                /// `|a − b|`.
+                #[inline]
+                pub fn distance(a: [$f; 3], b: [$f; 3]) -> $f {
+                    distance_sq(a, b).sqrt()
+                }
+
+                /// `v / |v|`, or `None` when `|v| < min_length`. A NaN length
+                /// is not below the threshold, so NaN propagates rather than
+                /// being mistaken for a zero vector.
+                #[inline]
+                pub fn try_normalize(v: [$f; 3], min_length: $f) -> Option<[$f; 3]> {
+                    let n = length(v);
+                    if n < min_length {
+                        None
+                    } else {
+                        Some([v[0] / n, v[1] / n, v[2] / n])
+                    }
+                }
+            }
+
+            // ---------------------------------------------------------------
             // Coordinate hydration
             // ---------------------------------------------------------------
 
@@ -552,6 +628,28 @@ mod tests {
         let wrong_el = 1.0f64.atan2((1.0f64 + 0.0).sqrt()).to_degrees();
         close(wrong_az, 0.0);
         close(wrong_el, 45.0);
+    }
+
+    /// SOFA's front and left land on ADM's front and left.
+    #[test]
+    fn sofa_frame_maps_front_and_left() {
+        assert_eq!(sofa_to_adm([1.0, 0.0, 0.0]), [0.0, 1.0, 0.0]);
+        assert_eq!(sofa_to_adm([0.0, 1.0, 0.0]), [-1.0, 0.0, 0.0]);
+        assert_eq!(sofa_to_adm([0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]);
+        let (az, _, _) = to_spherical(-1.0, 0.0, 0.0);
+        close(az, -90.0);
+    }
+
+    #[test]
+    fn vec3_normalize_honours_the_callers_threshold() {
+        use super::f64::vec3::*;
+        assert_eq!(try_normalize([3.0, 0.0, 4.0], 1e-6), Some([0.6, 0.0, 0.8]));
+        assert_eq!(try_normalize([1e-7, 0.0, 0.0], 1e-6), None);
+        // NaN is not "below the threshold": it propagates.
+        assert!(try_normalize([f64::NAN, 0.0, 0.0], 1e-6).unwrap()[0].is_nan());
+        assert_eq!(cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), [0.0, 0.0, 1.0]);
+        assert_eq!(dot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]), 32.0);
+        assert_eq!(distance([0.0, 0.0, 0.0], [3.0, 4.0, 0.0]), 5.0);
     }
 
     #[test]

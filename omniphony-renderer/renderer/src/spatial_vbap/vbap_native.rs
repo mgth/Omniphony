@@ -9,42 +9,27 @@
 // vbap3D, generateVBAPgainTable3D.  No unsafe code, no external dependencies.
 
 use super::convhull::convhull_3d_build;
+use omniphony_geometry::f32::vec3::{cross as cross3, dot as dot3, try_normalize};
 
 const APERTURE_LIMIT_RAD: f32 = std::f32::consts::PI; // 180 degrees
 
 // ── Coordinate helpers ───────────────────────────────────────────────────────
 
+/// Unit vector in the **SAF frame** (`x` front, `y` left, `z` up; azimuth
+/// counter-clockwise from the front), as `saf_vbap.c` defines it. This is
+/// deliberately not `omniphony_geometry::from_spherical`, which is the ADM
+/// frame (`x` right, `y` front): the triangulation and its inverse matrices
+/// live entirely in SAF's frame, and callers pass SAF-convention angles.
 #[inline]
 fn sph_to_cart(az_rad: f32, el_rad: f32) -> [f32; 3] {
     let cos_el = el_rad.cos();
     [cos_el * az_rad.cos(), cos_el * az_rad.sin(), el_rad.sin()]
 }
 
-/// 3-D cross product
-#[inline]
-fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-/// Dot product of two 3-vectors
-#[inline]
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 /// Normalise a 3-vector; returns the original vector if the norm is tiny.
 #[inline]
 fn normalise3(v: [f32; 3]) -> [f32; 3] {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if n < 1e-30 {
-        v
-    } else {
-        [v[0] / n, v[1] / n, v[2] / n]
-    }
+    try_normalize(v, 1e-30).unwrap_or(v)
 }
 
 // ── Analytical 3×3 matrix inverse ───────────────────────────────────────────

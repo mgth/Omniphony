@@ -337,6 +337,7 @@ impl MeasuredHrirData {
     /// its (minimum-phase, resampled) left and right responses. For
     /// offline analysis of a set — the PRTF fit reads the KEMAR median
     /// plane through it — not a render-path lookup.
+    #[cfg(test)]
     pub(super) fn nearest_measurement(
         &self,
         az_deg: f32,
@@ -547,9 +548,9 @@ impl MeasuredHrirData {
             if !keep(p) {
                 continue;
             }
-            let (x, y, z) = (p[0], p[1], p[2]);
             // SOFA +y is the listener's left; the renderer's +az is right.
-            let az = (-y).atan2(x).to_degrees().rem_euclid(360.0);
+            let [x, y, z] = omniphony_geometry::f32::sofa_to_adm(*p);
+            let az = x.atan2(y).to_degrees().rem_euclid(360.0);
             let el = z.atan2((x * x + y * y).sqrt()).to_degrees();
             dirs.push((az, el));
             kept.push(pair);
@@ -568,6 +569,7 @@ impl MeasuredHrirData {
 /// Below this peak a set is silence: [`HrirSet::new`](super::hrir::HrirSet::new)
 /// normalizes any usable set to unit mean energy, so a surviving one peaks
 /// around 1 — six orders of magnitude clear of this bound.
+#[cfg(any(test, feature = "sofa"))]
 const SILENT_PEAK: f32 = 1e-9;
 
 /// Refuse an HRIR set a SOFA file cannot actually drive.
@@ -584,6 +586,7 @@ const SILENT_PEAK: f32 = 1e-9;
 /// `Data.IR` as `[M][R][E][N]`; `sofar` reads it as `[M][R][N]`, takes the
 /// emitter count for the filter length, and so slices the handful of samples
 /// that *precede* the direct sound — all zeros, in every direction.
+#[cfg(any(test, feature = "sofa"))]
 fn check_loaded_set(
     set: &super::hrir::HrirSet,
     path: &str,
@@ -610,10 +613,8 @@ fn check_loaded_set(
 
 /// Unit vector for a direction (az 0 = front/+Y, +az = right/+X; el up = +Z).
 fn dir_vec(az_deg: f32, el_deg: f32) -> [f32; 3] {
-    let az = az_deg.to_radians();
-    let el = el_deg.to_radians();
-    let ce = el.cos();
-    [ce * az.sin(), ce * az.cos(), el.sin()]
+    let (x, y, z) = omniphony_geometry::f32::from_spherical(az_deg, el_deg, 1.0);
+    [x, y, z]
 }
 
 /// Half-width of the resampling kernel, in input samples.

@@ -18,9 +18,6 @@
 
 use crate::delay_line::read_linear;
 
-/// Speed of sound (m/s), matching `itd.rs`.
-const SPEED_OF_SOUND: f32 = 343.0;
-
 /// Ring capacity in seconds. Bounds the relative reflection delay; with room
 /// dimensions clamped to [`MAX_ROOM_M`] the longest first-order detour stays
 /// well below this.
@@ -278,12 +275,6 @@ impl ReflectionBank {
         }
         (l, r)
     }
-}
-
-/// Speed of sound accessor so callers share one constant.
-#[inline]
-pub fn speed_of_sound() -> f32 {
-    SPEED_OF_SOUND
 }
 
 #[cfg(test)]

@@ -172,12 +172,6 @@ fn row3(arr: &[f32], i: usize) -> [f32; 3] {
     }
 }
 
-/// SOFA cartesian (`x` front, `y` left, `z` up) → renderer (`x` right, `y`
-/// front, `z` up).
-fn to_renderer_frame(p: [f32; 3]) -> [f32; 3] {
-    [-p[1], p[0], p[2]]
-}
-
 /// `(yaw, pitch)` in degrees, renderer convention, of a SOFA view vector.
 /// A degenerate vector is straight ahead.
 fn view_to_yaw_pitch(v: [f32; 3]) -> (f32, f32) {
@@ -192,6 +186,10 @@ fn view_to_yaw_pitch(v: [f32; 3]) -> (f32, f32) {
 }
 
 /// Wrap into `(-180, 180]`.
+///
+/// Not `omniphony_geometry::wrap_deg`: that one adds 180 before reducing,
+/// which rounds away the low bits of small angles (0.1 → 0.100006), and the
+/// nearest-orientation scans below compare these distances for ties.
 fn wrap_deg(a: f32) -> f32 {
     let mut a = a.rem_euclid(360.0);
     if a > 180.0 {
@@ -325,7 +323,7 @@ impl BrirSet {
                     source[1] + em[1] - listener[1],
                     source[2] + em[2] - listener[2],
                 ];
-                let ei = find_or_push_emitter(to_renderer_frame(rel));
+                let ei = find_or_push_emitter(omniphony_geometry::f32::sofa_to_adm(rel));
                 meas.push((ei, o));
             }
         }

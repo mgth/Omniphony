@@ -4,6 +4,7 @@ use super::room_transform::room_scaled_position;
 use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
 use crate::spatial_vbap::{Gains, MAX_SPEAKERS};
 use crate::speaker_layout::SpeakerLayout;
+use omniphony_geometry::f32::vec3::distance as euclidean_distance;
 
 pub struct ExperimentalDistanceBackend {
     speaker_positions: Vec<[f32; 3]>,
@@ -150,14 +151,6 @@ impl GainModel for ExperimentalDistanceBackend {
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         ExperimentalDistanceBackend::save_to_file(self, path, speaker_layout)
     }
-}
-
-#[inline]
-fn euclidean_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 #[inline]

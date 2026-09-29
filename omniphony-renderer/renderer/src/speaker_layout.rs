@@ -565,7 +565,8 @@ impl SpeakerLayout {
         }
     }
 
-    /// ITU-R BS.775 stereo layout (±30°)
+    /// Stereo pair on the front corners of the default 1:2 room — ±26.57°,
+    /// not the ITU-R BS.775 ±30°.
     pub fn preset_stereo() -> Result<Self> {
         Self::from_speakers(vec![
             speaker_with_distance("L", -26.565052, 0.0, 2.236068),
@@ -574,7 +575,9 @@ impl SpeakerLayout {
         ])
     }
 
-    /// ITU-R BS.775 5.1 layout
+    /// 5.1 with the ITU-R BS.775 channel set, placed on the corners of the
+    /// default 1:2 room: fronts at ±26.57°, backs at ±153.4° (not the
+    /// recommendation's ±30° / ±110°).
     pub fn preset_5_1() -> Result<Self> {
         Self::from_speakers(vec![
             speaker_with_distance("FL", -26.565052, 0.0, 2.236068),
@@ -586,7 +589,8 @@ impl SpeakerLayout {
         ])
     }
 
-    /// ITU-R BS.775 7.1 layout
+    /// 7.1: the [`Self::preset_5_1`] room-corner placement (fronts ±26.57°,
+    /// backs ±153.4°) plus sides at ±90° — not the ITU-R BS.775 angles.
     pub fn preset_7_1() -> Result<Self> {
         Self::from_speakers(vec![
             speaker_with_distance("FL", -26.565052, 0.0, 2.236068),
@@ -650,7 +654,10 @@ impl SpeakerLayout {
         ])
     }
 
-    /// 9.1.6 spatial audio layout (ITU-R BS.2051-3 Config 6+4+0)
+    /// 9.1.6 with the channel set of ITU-R BS.2051, placed on the walls and
+    /// corners of the default 1:2 room (fronts ±26.57°, wides ±63.4°, backs
+    /// ±153.4°, heights on the ceiling corners) rather than at the
+    /// recommendation's angles.
     pub fn preset_9_1_6() -> Result<Self> {
         Self::from_speakers(vec![
             // Bed layer (9.1)

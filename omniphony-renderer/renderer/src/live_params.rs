@@ -910,9 +910,9 @@ impl RotationAxis {
                 azimuth_deg,
                 elevation_deg,
             } => {
-                let az = azimuth_deg.to_radians();
-                let el = elevation_deg.to_radians();
-                let axis = [el.cos() * az.sin(), el.cos() * az.cos(), el.sin()];
+                let (x, y, z) =
+                    omniphony_geometry::f32::from_spherical(azimuth_deg, elevation_deg, 1.0);
+                let axis = [x, y, z];
                 // Any pair perpendicular to the axis will do. Seeding from
                 // whichever world axis is *least* aligned with it keeps the
                 // cross product well away from zero — which is exactly what a
@@ -930,21 +930,10 @@ impl RotationAxis {
     }
 }
 
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
+use omniphony_geometry::f32::vec3::cross;
 
 fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if n < 1e-6 {
-        [1.0, 0.0, 0.0]
-    } else {
-        [v[0] / n, v[1] / n, v[2] / n]
-    }
+    omniphony_geometry::f32::vec3::try_normalize(v, 1e-6).unwrap_or([1.0, 0.0, 0.0])
 }
 
 /// An orbit applied to the object test's placed position.
