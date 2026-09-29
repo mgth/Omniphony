@@ -224,17 +224,6 @@ impl OwnedPlacement {
     }
 }
 
-fn find_speaker_in_layout<'a>(
-    layout: &'a SpeakerLayout,
-    aliases: &[&str],
-) -> Option<&'a renderer::speaker_layout::Speaker> {
-    layout.speakers.iter().find(|speaker| {
-        aliases
-            .iter()
-            .any(|alias| speaker.name.eq_ignore_ascii_case(alias))
-    })
-}
-
 /// Convert a resolved bed speaker to a normalized ADM position in [-1, 1],
 /// honouring its `coord_mode` exactly like the output speakers do
 /// ([`SpeakerLayout::spatializable_positions_for_room`]):
@@ -323,114 +312,41 @@ pub(crate) fn nominal_angle(label: RChannelLabel, use_7_1: bool) -> Option<(f32,
     })
 }
 
-fn label_aliases(label: RChannelLabel, use_7_1: bool) -> Option<&'static [&'static str]> {
-    match label {
-        RChannelLabel::L => Some(&["FL", "L", "FrontLeft", "LeftFront"]),
-        RChannelLabel::R => Some(&["FR", "R", "FrontRight", "RightFront"]),
-        RChannelLabel::C => Some(&["C", "FC", "Center", "Centre"]),
-        RChannelLabel::LFE => Some(&["LFE", "LFE1", "Sub", "Subwoofer", "SW"]),
-        RChannelLabel::LFE2 => Some(&["LFE2"]),
-        RChannelLabel::Ls => {
-            if use_7_1 {
-                Some(&["SL", "Ls", "LeftSurround", "SurroundLeft"])
-            } else {
-                Some(&[
-                    "SL",
-                    "Ls",
-                    "BL",
-                    "Lb",
-                    "LeftSurround",
-                    "SurroundLeft",
-                    "BackLeft",
-                    "LeftBack",
-                ])
-            }
-        }
-        RChannelLabel::Rs => {
-            if use_7_1 {
-                Some(&["SR", "Rs", "RightSurround", "SurroundRight"])
-            } else {
-                Some(&[
-                    "SR",
-                    "Rs",
-                    "BR",
-                    "Rb",
-                    "RightSurround",
-                    "SurroundRight",
-                    "BackRight",
-                    "RightBack",
-                ])
-            }
-        }
-        RChannelLabel::Lb => Some(&[
-            "BL", "Lb", "Lrs", "BackLeft", "LeftBack", "RearLeft", "LeftRear",
-        ]),
-        RChannelLabel::Rb => Some(&[
-            "BR",
-            "Rb",
-            "Rrs",
-            "BackRight",
-            "RightBack",
-            "RearRight",
-            "RightRear",
-        ]),
-        RChannelLabel::Cb => Some(&["BC", "Cb", "BackCenter", "RearCenter"]),
-        RChannelLabel::Lsc => Some(&["LSC", "FLC", "FrontLeftCenter", "LeftCenter"]),
-        RChannelLabel::Rsc => Some(&["RSC", "FRC", "FrontRightCenter", "RightCenter"]),
-        RChannelLabel::Lw => Some(&["Lw", "FWL", "WL", "WideLeft", "FrontWideLeft"]),
-        RChannelLabel::Rw => Some(&["Rw", "FWR", "WR", "WideRight", "FrontWideRight"]),
-        RChannelLabel::Lsd => Some(&["LSD"]),
-        RChannelLabel::Rsd => Some(&["RSD"]),
-        // Height layer. Aliases cover the common naming schemes (TFL/TBL,
-        // Dolby Ltf/Ltr, ADM Tp* / U* upper-layer) so a configured 7.1.4 layout
-        // resolves these to its named top speakers.
-        RChannelLabel::Tfl => Some(&[
-            "TFL",
-            "Tfl",
-            "Ltf",
-            "TpFL",
-            "TopFrontLeft",
-            "UpperFrontLeft",
-        ]),
-        RChannelLabel::Tfr => Some(&[
-            "TFR",
-            "Tfr",
-            "Rtf",
-            "TpFR",
-            "TopFrontRight",
-            "UpperFrontRight",
-        ]),
-        RChannelLabel::Tbl => Some(&[
-            "TBL",
-            "Tbl",
-            "Ltr",
-            "TpBL",
-            "TopBackLeft",
-            "TopRearLeft",
-            "UpperBackLeft",
-        ]),
-        RChannelLabel::Tbr => Some(&[
-            "TBR",
-            "Tbr",
-            "Rtr",
-            "TpBR",
-            "TopBackRight",
-            "TopRearRight",
-            "UpperBackRight",
-        ]),
-        RChannelLabel::Tsl => Some(&["TSL", "Tsl", "TpSL", "TopSideLeft", "UpperSideLeft"]),
-        RChannelLabel::Tsr => Some(&["TSR", "Tsr", "TpSR", "TopSideRight", "UpperSideRight"]),
-        RChannelLabel::Tc => Some(&["TC", "TpC", "TopCenter", "TopMiddleCenter"]),
-        RChannelLabel::Tfc => Some(&["TFC", "Tfc", "TpFC", "TopFrontCenter"]),
-        // Height tier (30° over the floor speaker of the same name). `HL`/`HR`
-        // are not here: they have always meant the top-front pair.
-        RChannelLabel::Lh => Some(&["Lh", "LeftHeight", "FrontHeightLeft", "FHL"]),
-        RChannelLabel::Rh => Some(&["Rh", "RightHeight", "FrontHeightRight", "FHR"]),
-        RChannelLabel::Ch => Some(&["Ch", "HC", "CenterHeight", "HeightCenter", "FHC"]),
-        RChannelLabel::Lhs => Some(&["Lhs", "HLs", "LeftHeightSurround", "HeightLeftSurround"]),
-        RChannelLabel::Rhs => Some(&["Rhs", "HRs", "RightHeightSurround", "HeightRightSurround"]),
-        _ => None,
-    }
+/// Whether the source carries back channels (`Lb`/`Rb`/`Cb`), i.e. is a
+/// 7.x bed. Without them the surround pair of a 4.x/5.x source has no
+/// canonical corner ([`surround_placement_override`]), and a bed's back
+/// entries stand in for its surround ones ([`find_bed_entry`]).
+pub(crate) fn source_has_back(labels: &[RChannelLabel]) -> bool {
+    labels
+        .iter()
+        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb))
+}
+
+/// The bed entry for a channel label: the first entry whose name is one of
+/// the label's spellings ([`bridge_api::labels::name_matches`], the same
+/// table the output channel map and Studio's catalogue use). A 4.x/5.x
+/// source (`use_7_1 == false`) has one surround pair where a 7.x bed has two,
+/// so its `Ls`/`Rs` fall back to the bed's back entry (`Lb`/`Rb`) when there
+/// is no surround one — the bundled 5.1 layout names its surrounds `BL`/`BR`.
+fn find_bed_entry(
+    layout: &SpeakerLayout,
+    label: RChannelLabel,
+    use_7_1: bool,
+) -> Option<&renderer::speaker_layout::Speaker> {
+    let find = |label: RChannelLabel| {
+        layout
+            .speakers
+            .iter()
+            .find(|speaker| bridge_api::labels::name_matches(&speaker.name, label))
+    };
+    find(label).or_else(|| {
+        let folded = match label {
+            RChannelLabel::Ls if !use_7_1 => RChannelLabel::Lb,
+            RChannelLabel::Rs if !use_7_1 => RChannelLabel::Rb,
+            _ => return None,
+        };
+        find(folded)
+    })
 }
 
 /// The room model's pose for a label, as a **normalized cartesian** corner:
@@ -650,10 +566,8 @@ fn room_pose(
     } else {
         layouts.layout_5_1.as_ref()
     };
-    if let (Some(layout), Some(aliases)) = (layout_opt, label_aliases(label, use_7_1)) {
-        if let Some(found) = find_speaker_in_layout(layout, aliases) {
-            return Some(speaker_pose_to_normalized(found, room));
-        }
+    if let Some(found) = layout_opt.and_then(|layout| find_bed_entry(layout, label, use_7_1)) {
+        return Some(speaker_pose_to_normalized(found, room));
     }
 
     // Cartesian corner: use x/y/z directly (clamped), exactly like the
@@ -699,10 +613,7 @@ pub fn build_virtual_bed_events(
     room: RoomRatios,
     surround_placement: SurroundPlacement,
 ) -> Option<Vec<renderer::spatial_renderer::SpatialChannelEvent>> {
-    let has_back = channel_labels
-        .iter()
-        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
-    let use_7_1 = has_back;
+    let use_7_1 = source_has_back(channel_labels);
 
     let mut events: Vec<renderer::spatial_renderer::SpatialChannelEvent> =
         Vec::with_capacity(channel_labels.len());
@@ -738,10 +649,7 @@ pub fn build_virtual_bed_objects(
     room: RoomRatios,
     surround_placement: SurroundPlacement,
 ) -> Option<Vec<ObjectMeta>> {
-    let has_back = channel_labels
-        .iter()
-        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
-    let use_7_1 = has_back;
+    let use_7_1 = source_has_back(channel_labels);
 
     // Used to anchor a direct channel onto its output speaker so Studio shows it
     // snapped to that speaker (its `directSpeakerIndex` decoration).
@@ -813,19 +721,13 @@ fn default_channel_spatialize(label: RChannelLabel) -> bool {
 }
 
 /// Find the virtual-bed entry (a [`renderer::speaker_layout::Speaker`]) for a
-/// channel label, matching by the same name aliases used to resolve poses.
+/// channel label in the family's entries, if it has any ([`find_bed_entry`]).
 fn find_virtual_bed_entry(
     layout: Option<&SpeakerLayout>,
     label: RChannelLabel,
     use_7_1: bool,
 ) -> Option<&renderer::speaker_layout::Speaker> {
-    let layout = layout?;
-    let aliases = label_aliases(label, use_7_1)?;
-    layout.speakers.iter().find(|speaker| {
-        aliases
-            .iter()
-            .any(|alias| speaker.name.eq_ignore_ascii_case(alias))
-    })
+    find_bed_entry(layout?, label, use_7_1)
 }
 
 /// The bed entry's `gain_db` as an audio-event gain: clamped into the event
@@ -922,10 +824,7 @@ fn build_virtual_bed_plan(
     room: RoomRatios,
     surround_placement: SurroundPlacement,
 ) -> ChannelRenderPlan {
-    let has_back = channel_labels
-        .iter()
-        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
-    let use_7_1 = has_back;
+    let use_7_1 = source_has_back(channel_labels);
 
     // Label → output-speaker map, so a direct surround can be rerouted to a
     // back speaker (Back placement) only when the layout actually has one.
@@ -1373,14 +1272,12 @@ impl FixedChannelPlanner {
 
         // Trim per fixed channel, mirroring the gain the plan events carry, so
         // the hosts can fold it into the stream's recurring channel-gain events.
-        let has_back = fixed
-            .iter()
-            .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
+        let use_7_1 = source_has_back(fixed);
         self.trims.clear();
         self.trims.extend(
             fixed
                 .iter()
-                .map(|l| bed_entry_gain_db(key.placement.layout.as_ref(), *l, has_back)),
+                .map(|l| bed_entry_gain_db(key.placement.layout.as_ref(), *l, use_7_1)),
         );
 
         match plan_channel_render(
@@ -1503,28 +1400,142 @@ mod tests {
         assert!(tfl.contains(&"HL"));
     }
 
-    /// The bed-planner matcher (label_aliases) must only accept spellings that the
-    /// bridge_api single source of truth also resolves to the same label, otherwise a
-    /// user-bed speaker name could earn a pose here while failing everywhere else. Only
-    /// the 7.1 lists are asserted: the 5.1 arms deliberately fold back surround into
-    /// Ls/Rs, which is context-dependent bed folding, not SoT-level tolerance.
-    #[test]
-    fn planner_aliases_resolve_through_the_so_t() {
+    /// Bed entries as a family's placement layout holds them: any count,
+    /// no triangulation requirement (unlike [`vbed`]).
+    fn entries(speakers: Vec<renderer::speaker_layout::Speaker>) -> SpeakerLayout {
+        SpeakerLayout {
+            radius_m: 1.0,
+            speakers,
+        }
+    }
+
+    const FIXED_LABELS: [RChannelLabel; 29] = {
         use RChannelLabel::*;
-        let fixed = [
+        [
             L, R, C, LFE, LFE2, Ls, Rs, Lb, Rb, Cb, Lsc, Rsc, Lw, Rw, Lsd, Rsd, Tfl, Tfr, Tsl, Tsr,
             Tbl, Tbr, Tc, Tfc, Lh, Rh, Ch, Lhs, Rhs,
-        ];
-        for label in fixed {
-            let aliases = label_aliases(label, true).expect("planner aliases");
-            for alias in aliases {
-                assert_eq!(
-                    bridge_api::labels::label_for_name(alias),
-                    label,
-                    "planner spelling {alias:?} no longer resolves to {label:?}"
-                );
+        ]
+    };
+
+    /// A bed entry is found by exactly the spellings the single source of
+    /// truth (`bridge_api::labels`) gives its label — the table the output
+    /// channel map and Studio's catalogue match with — whatever the case or
+    /// the separators, and by no other label's. The one exception is the
+    /// explicit 5.1 fold: a 4.x/5.x source's `Ls`/`Rs` read a back entry.
+    #[test]
+    fn bed_entries_match_the_so_t_spellings_both_ways() {
+        use RChannelLabel::*;
+        for entry_label in FIXED_LABELS {
+            for alias in bridge_api::labels::aliases_for(entry_label) {
+                // `ALIAS`, `alias` and `A_L_I_A_S`-style spellings alike.
+                let spaced: String = alias
+                    .chars()
+                    .flat_map(|c| ['_', c.to_ascii_lowercase()])
+                    .collect();
+                for name in [alias.to_string(), alias.to_ascii_lowercase(), spaced] {
+                    let bed = entries(vec![renderer::speaker_layout::Speaker::new(
+                        &name, 0.0, 0.0,
+                    )]);
+                    for use_7_1 in [true, false] {
+                        for label in FIXED_LABELS {
+                            let folded =
+                                !use_7_1 && matches!((label, entry_label), (Ls, Lb) | (Rs, Rb));
+                            assert_eq!(
+                                find_bed_entry(&bed, label, use_7_1).is_some(),
+                                label == entry_label || folded,
+                                "entry {name:?} ({entry_label:?}) looked up as {label:?}, \
+                                 use_7_1={use_7_1}"
+                            );
+                        }
+                    }
+                }
             }
         }
+    }
+
+    /// The bug: a bed entry spelled `Top_Front_Left` or `HL` resolved in the
+    /// output channel map but not for the bed's own gain, spatialize flag or
+    /// pose, which silently fell back to the defaults.
+    #[test]
+    fn bed_entry_spelled_another_way_still_reaches_the_plan() {
+        use renderer::speaker_layout::Speaker;
+        for name in ["Top_Front_Left", "HL", "top front left"] {
+            let mut tfl = Speaker::new(name, -40.0, 20.0);
+            tfl.gain_db = -4.5;
+            tfl.spatialize = false;
+            let bed = entries(vec![tfl]);
+            let labels = [RChannelLabel::L, RChannelLabel::Tfl];
+            let policy = PlacementPolicy::manual(&bed);
+            assert_eq!(
+                bed_entry_gain_db(Some(&bed), RChannelLabel::Tfl, false),
+                -4.5
+            );
+            assert!(!channel_is_spatialized(
+                Some(&bed),
+                RChannelLabel::Tfl,
+                false
+            ));
+            let (_, x, y, z) = resolve_virtual_bed_pose(
+                RChannelLabel::Tfl,
+                false,
+                &policy,
+                RoomRatios::UNIT,
+                SurroundPlacement::Side,
+            )
+            .expect("pose");
+            let corner = fallback_virtual_bed_pose(RChannelLabel::Tfl, false).expect("corner");
+            assert_ne!(
+                (x, y, z),
+                (corner.1, corner.2, corner.3),
+                "{name:?}: entry's own pose"
+            );
+            match plan_channel_render(
+                renderer::live_params::ChannelRenderMode::Spatial,
+                &labels,
+                &policy,
+                None,
+                RoomRatios::UNIT,
+                SurroundPlacement::Side,
+            ) {
+                ChannelRenderPlan::Events { events, routes } => {
+                    assert_eq!(
+                        routes[1],
+                        renderer::spatial_renderer::ChannelRoute::Direct(RChannelLabel::Tfl)
+                    );
+                    assert_eq!(events[1].gain_db, Some(-4.5));
+                }
+                other => panic!("expected events, got {:?}", PlanKind::from(&other)),
+            }
+        }
+    }
+
+    /// The 5.1 fold prefers a surround entry to a back one wherever the back
+    /// one sits in the bed, and a 7.x source never folds.
+    #[test]
+    fn five_one_surround_folds_onto_a_back_entry_only_as_a_fallback() {
+        use renderer::speaker_layout::Speaker;
+        let mut back = Speaker::new("BL", -135.0, 0.0);
+        back.gain_db = -3.0;
+        let mut side = Speaker::new("SL", -90.0, 0.0);
+        side.gain_db = -1.0;
+        let only_back = entries(vec![back.clone()]);
+        let both = entries(vec![back, side]);
+        assert_eq!(
+            bed_entry_gain_db(Some(&only_back), RChannelLabel::Ls, false),
+            -3.0
+        );
+        assert_eq!(
+            bed_entry_gain_db(Some(&only_back), RChannelLabel::Ls, true),
+            0.0
+        );
+        assert_eq!(
+            bed_entry_gain_db(Some(&both), RChannelLabel::Ls, false),
+            -1.0
+        );
+        assert_eq!(
+            bed_entry_gain_db(Some(&both), RChannelLabel::Lb, false),
+            -3.0
+        );
     }
 
     #[test]
