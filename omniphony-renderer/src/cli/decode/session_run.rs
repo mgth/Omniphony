@@ -1038,6 +1038,7 @@ fn negotiate_osc_port_if_enabled(args: &RenderArgs, cli: &Cli, arg_sources: &Ren
 
 pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'_>) -> Result<()> {
     sys::shutdown::set_yieldable(args.osc_yield);
+    sys::shutdown::set_restartable(true);
     let mut restart_bridge_path_override: Option<Option<std::path::PathBuf>> = None;
     loop {
         negotiate_osc_port_if_enabled(args, cli, arg_sources);

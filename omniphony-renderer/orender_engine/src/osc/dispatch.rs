@@ -430,7 +430,17 @@ pub(crate) fn handle_control_message(
             RuntimeCommand::SaveConfig => save_live_config(control, host, socket, clients),
             RuntimeCommand::ReloadConfig => {
                 log::info!("OSC reload_config requested");
-                sys::shutdown::request_restart_from_config();
+                if sys::shutdown::is_restartable() {
+                    sys::shutdown::request_restart_from_config();
+                } else {
+                    super::profiles::reload_config_in_place(
+                        control,
+                        host,
+                        socket,
+                        clients,
+                        gaintable_cache,
+                    );
+                }
             }
             RuntimeCommand::Quit => {
                 log::info!("OSC quit requested");
