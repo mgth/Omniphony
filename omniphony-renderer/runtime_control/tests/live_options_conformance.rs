@@ -432,14 +432,27 @@ mod registry {
         let mapping = options::find("output_channel_mapping").expect("registered");
 
         let epoch = control.options_epoch();
-        assert_eq!(
-            options::apply_to_control(&control, placement, &RawOptionValue::Str("back")).as_deref(),
-            Some("back")
-        );
+        let applied = options::apply_to_control(&control, placement, &RawOptionValue::Str("back"))
+            .expect("accepted");
+        assert_eq!(applied.canonical, "back");
+        assert!(applied.changed);
         assert_eq!(control.options_epoch(), epoch + 1, "real change must bump");
-
         assert!(
-            options::apply_to_control(&control, placement, &RawOptionValue::Str("back")).is_some()
+            control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "a real change must mark the config dirty"
+        );
+        control.mark_clean();
+
+        let again = options::apply_to_control(&control, placement, &RawOptionValue::Str("back"))
+            .expect("accepted");
+        assert!(!again.changed);
+        assert!(
+            !control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "a redundant re-send must not light the Save button"
         );
         assert_eq!(
             control.options_epoch(),
@@ -468,7 +481,7 @@ mod registry {
             control
                 .config_dirty
                 .load(std::sync::atomic::Ordering::Relaxed),
-            "apply must mark the config dirty"
+            "a real change of a non-REPLAN option still marks the config dirty"
         );
     }
 

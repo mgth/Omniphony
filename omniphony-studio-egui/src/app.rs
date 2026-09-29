@@ -110,6 +110,9 @@ pub struct StudioSpike {
     pub(crate) pinna_depth: f32,
     pub(crate) prtf_depth: f32,
     pub(crate) prtf_freq_scale: f32,
+    /// The renderer's last echo of the parametric settings above, so a new
+    /// one (connect, profile switch, reload) is adopted once.
+    pub(crate) hrir_params_seen: Option<serde_json::Value>,
     /// Target latency being typed, until Apply.
     pub(crate) latency_target_edit: Option<f64>,
     /// Adaptive-controller fields edited but not yet applied.
@@ -457,6 +460,7 @@ impl StudioSpike {
             pinna_depth: 100.0,
             prtf_depth: 100.0,
             prtf_freq_scale: 100.0,
+            hrir_params_seen: None,
             latency_target_edit: None,
             adaptive_edits: Default::default(),
             file_picker: None,

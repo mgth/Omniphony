@@ -1187,7 +1187,7 @@ mod notify_tests {
     }
 
     #[test]
-    fn a_registry_option_write_persists_and_reaches_the_other_clients() {
+    fn a_registry_option_write_waits_for_save_and_reaches_the_other_clients() {
         let control = fixture_control();
         let wire = wire();
         let dir = std::env::temp_dir().join(format!(
@@ -1211,9 +1211,19 @@ mod notify_tests {
         let renderer = state_json(&messages, osc_contract::STATE_RENDERER)
             .expect("the bundle went out with the write");
         assert_eq!(renderer["options"]["surround_placement"], "back");
+        // An option changes what is heard: it waits for the Save button.
         let written = std::fs::read_to_string(&path).unwrap();
-        assert!(written.contains("surround_placement: back"), "{written}");
-        assert!(written.contains("some_future_key: 42"), "{written}");
+        assert_eq!(written, "render:\n  some_future_key: 42\n");
+
+        // The same value again changes nothing, so it lights nothing.
+        control.mark_clean();
+        send(
+            &wire,
+            &control,
+            osc_contract::CONTROL_SURROUND_PLACEMENT,
+            vec![OscType::String("back".into())],
+        );
+        assert!(!saw_dirty(&received(&wire.bystander)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

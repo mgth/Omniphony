@@ -69,6 +69,12 @@ A control handler returns `ControlEffects`, and the class picks its shape:
 - **Transient** — `ControlEffects::transient(notify)` when the state must reach
   other clients, `ControlEffects::default()` for a pure action.
 
+Registry options (`/control/option`) are render state: dirty on a real change,
+saved by the Save. Profile operations write the profile list, never the unsaved
+edits: a switch discards them unless it carries `"save"` (the full Save first,
+no switch if it fails), create copies the live state into the new profile
+only, rename and delete leave them pending.
+
 Nothing writes the whole live state to `config.yaml` except the explicit Save.
 A change only a restart can apply (a new bridge) uses `/control/restart`, which
 carries the unsaved state over in the sidecar instead of saving it.
@@ -84,8 +90,9 @@ carries the unsaved state over in the sidecar instead of saving it.
   the same kind of writer.
 - **Render / engine** state is sent to the engine and nowhere else. Studio
   sends `/control/save_config` only from the Save button and the quit prompt,
-  through `commands::engine::request_save_config`. No panel, no Apply, no
-  profile change saves on the user's behalf.
+  through `commands::engine::request_save_config` — and asks for a save before
+  a profile switch only when the user picks *Save and switch*. No panel, no
+  Apply, no profile change saves on the user's behalf.
 
 ### Leaving with unsaved edits
 
@@ -100,6 +107,8 @@ unsaved edits would be dropped, Studio asks first — and only then:
   The prompt also says whether quitting stops the renderer (one Studio launched
   without keep-alive) or leaves it running with the edits.
 - **Reload** asks before discarding them.
+- **Switching profile** asks: *Save and switch*, *Switch without saving* or
+  *Cancel*.
 
 Limits: on macOS, Cmd+Q from the application menu terminates without a close
 event, so only the window's close button is guarded; a Studio killed by a
@@ -122,10 +131,6 @@ signal asks nothing.
 Still to be brought in line; each is removed from this list by the change that
 fixes it.
 
-- **Registry options** (`/control/option` and its aliases) are written to
-  `config.yaml` as soon as they are set.
-- **Profile operations** (switch, create, rename, delete) commit every pending
-  unsaved edit into the file.
 - **Studio view state not yet kept**: camera, window size and position, open
   sections, tabs, the Speakers and Grid switches, the speaker-test settings,
   the log panel.

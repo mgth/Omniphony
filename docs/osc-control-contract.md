@@ -50,10 +50,12 @@ what it does to the Save button:
 - **Transient** — mutes, a manual head pose, test signals, subscriptions,
   actions: published when they carry state, never written, never dirtying.
 
-Registry options and profile operations are still written to `config.yaml`
-immediately; the policy's *Known deviations* tracks them. A targeted write never
-touches the other unsaved edits: they stay pending, and a live-handoff sidecar
-holding them is amended rather than discarded.
+Registry options are render state like any other. Profile operations never
+commit unsaved edits either: a switch discards them unless it is sent with
+`"save"`, create copies the live state into the new profile only, rename and
+delete are bookkeeping. A targeted write never touches the other unsaved edits:
+they stay pending, and a live-handoff sidecar holding them is amended rather
+than discarded.
 
 ---
 
@@ -249,9 +251,9 @@ objects stages (height generator, phantom extraction).
 
 `/control/option [key (string), value]` sets any option declared in the
 `renderer::options` registry (schema on `/state/options_schema`, values in the
-`options` block of `/state/renderer`). Options flagged `persist` in the
-schema are written to `config.yaml` as soon as they are set; the others wait
-for `/control/save_config`. The fifteen dedicated addresses marked "Registry
+`options` block of `/state/renderer`). Every option waits for
+`/control/save_config`, and a set marks the config dirty only when the value
+actually changed. The fifteen dedicated addresses marked "Registry
 option alias" above are aliases of it: `synthetic_objects`,
 `object_generator`, `phantom_extract`, `surround_placement`,
 `output_channel_mapping`, `crossover_type`, `crossover_fir_transition_ratio`,
@@ -261,16 +263,17 @@ option alias" above are aliases of it: `synthetic_objects`,
 
 ### Config profiles
 
-Named profiles (`docs/config-profiles.md`). Every mutation commits the live
-state into the outgoing profile, saves the config and re-broadcasts
-`/state/profiles` and the live-state snapshot.
+Named profiles (`docs/config-profiles.md`). Every mutation writes the profile
+list to `config.yaml` and re-broadcasts `/state/profiles` and the live-state
+snapshot, but none commits the user's unsaved edits
+(`docs/persistence-policy.md`).
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/control/profile/switch` | name s | Switch to a profile (refused if its layout file is missing). |
-| `/control/profile/create` | name s | Create a profile from the current state. |
-| `/control/profile/delete` | name s | Delete a profile. |
-| `/control/profile/rename` | old s, new s | Rename a profile. |
+| `/control/profile/switch` | name s, mode s? | Switch to a profile (refused if its layout file is missing). The outgoing profile's unsaved edits are discarded, unless `mode` is `"save"`: then they are saved into it first (the full Save), and a failed save cancels the switch. |
+| `/control/profile/create` | name s | Create a profile from the current state, unsaved edits included; the active profile's file and unsaved state are untouched. |
+| `/control/profile/delete` | name s | Delete a profile. Unsaved edits stay pending. |
+| `/control/profile/rename` | old s, new s | Rename a profile. Unsaved edits stay pending. |
 
 ### Layout
 

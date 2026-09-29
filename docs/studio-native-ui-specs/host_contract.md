@@ -1197,7 +1197,7 @@ per-option JS mirrors — "the lying hard-coded defaults died with phase 2".
   "key":     "<canonical snake_case>",
   "kind":    "bool" | "enum" | "string" | "float",
   "default": <bool|string|number>,
-  "flags":   ["persist"?, "replan"?],
+  "flags":   ["replan"?],             // "persist" was dropped: every option waits for Save
   "i18nKey": "<label key>",
   "values":  ["…"],          // enum only
   "min": …, "max": …, "step": …,  // float only (step is a UI hint, not a grid)

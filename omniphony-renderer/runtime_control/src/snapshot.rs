@@ -298,6 +298,10 @@ pub fn build_renderer_state_json(
             "airAbsorption": live.binaural.air_absorption,
             "diffuseFieldEq": live.binaural.diffuse_field_eq,
             "hrirSource": live.binaural.hrir_source.as_str(),
+            // The parametric sources' settings, which travel inside the
+            // source string: echoed so a client shows what is rendered (and
+            // saved) rather than its own defaults.
+            "hrirParams": hrir_params_json(&live.binaural.hrir_source),
             "hrtfSofaPath": match &live.binaural.hrir_source {
                 renderer::binaural::HrirSource::Sofa(p) => p.as_str(),
                 _ => "",
@@ -365,6 +369,30 @@ pub fn build_renderer_state_json(
 /// The embedded host (`liborender` inside mpv) owns no audio output or input
 /// stage — mpv does — so it attaches neither and advertises the reduced set,
 /// tagged `variant: "embedded"` / `host: "mpv"` for the connection label.
+/// The parametric HRIR sources' settings (`hrirParams`), `null` for the
+/// others.
+fn hrir_params_json(source: &renderer::binaural::HrirSource) -> serde_json::Value {
+    match source {
+        renderer::binaural::HrirSource::Pinna {
+            preset,
+            d_scale_pct,
+            depth_pct,
+        } => json!({
+            "preset": preset.as_str(),
+            "dScalePct": d_scale_pct,
+            "depthPct": depth_pct,
+        }),
+        renderer::binaural::HrirSource::Prtf {
+            freq_scale_pct,
+            depth_pct,
+        } => json!({
+            "freqScalePct": freq_scale_pct,
+            "depthPct": depth_pct,
+        }),
+        _ => serde_json::Value::Null,
+    }
+}
+
 fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String {
     let mut domains = vec!["renderer", "layout", "speakers", "loudness"];
     let mut control_config = vec!["layout", "speakers"];
@@ -784,4 +812,31 @@ fn placement_json(state: &renderer::placement::PlacementState) -> serde_json::Va
         );
     }
     serde_json::Value::Object(families)
+}
+
+#[cfg(test)]
+mod hrir_params_tests {
+    use super::hrir_params_json;
+    use renderer::binaural::{HrirSource, PinnaPreset};
+
+    /// The parametric settings are echoed, so Studio shows what is rendered
+    /// and saved instead of its own defaults.
+    #[test]
+    fn parametric_sources_echo_their_settings() {
+        let pinna = hrir_params_json(&HrirSource::Pinna {
+            preset: PinnaPreset::Rd,
+            d_scale_pct: 110,
+            depth_pct: 60,
+        });
+        assert_eq!(pinna["preset"], "rd");
+        assert_eq!(pinna["dScalePct"], 110);
+        assert_eq!(pinna["depthPct"], 60);
+        let prtf = hrir_params_json(&HrirSource::Prtf {
+            freq_scale_pct: 95,
+            depth_pct: 40,
+        });
+        assert_eq!(prtf["freqScalePct"], 95);
+        assert_eq!(prtf["depthPct"], 40);
+        assert!(hrir_params_json(&HrirSource::SafKemar).is_null());
+    }
 }
