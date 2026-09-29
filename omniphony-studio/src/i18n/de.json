@@ -659,7 +659,7 @@
   "distance.model.inverseSquare": "Inverse Quadratik",
   "distance.modelInfoButton": "Distanzmodell-Info",
   "distance.modelInfoTitle": "Distanzmodell",
-  "distance.modelInfoBody": "Das Distanzmodell steuert, wie der Objekt-Gain mit der Distanz abfällt, bevor eine diffus- oder spread-spezifische Verarbeitung angewendet wird.<br><br><strong>Keins</strong> hält die Distanz neutral. <strong>Linear</strong> und <strong>quadratisch</strong> wenden zunehmend stärkere Dämpfung an. <strong>Inverses Quadrat</strong> ist am steilsten und kommt einem einfachen physikalischen Abfall am nächsten.",
+  "distance.modelInfoBody": "Das Distanzmodell steuert, wie der Objekt-Gain mit der Distanz abfällt, bevor eine diffus- oder spread-spezifische Verarbeitung angewendet wird.<br><br><strong>Keins</strong> hält die Distanz neutral. <strong>Linear</strong> und <strong>quadratisch</strong> wenden zunehmend stärkere Dämpfung an. <strong>Inverses Quadrat</strong> folgt dem physikalischen Gesetz: −6 dB pro Verdopplung der Distanz jenseits der Lautsprecher, und es hebt den Pegel innerhalb nie an.",
   "distance.infoButton": "Info zu Distance Diffuse",
   "hybrid.title": "Hybrid-Backend",
   "hybrid.infoButton": "Hybrid-Backend-Info",

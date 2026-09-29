@@ -659,7 +659,7 @@
   "distance.model.inverseSquare": "Inverso del quadrato",
   "distance.modelInfoButton": "Info modello di distanza",
   "distance.modelInfoTitle": "Modello di distanza",
-  "distance.modelInfoBody": "Il modello di distanza controlla come il gain di un oggetto cala con la distanza prima di qualsiasi elaborazione specifica per il diffuso o lo spread.<br><br><strong>Nessuno</strong> mantiene la distanza neutra. <strong>Lineare</strong> e <strong>quadratico</strong> applicano un'attenuazione progressivamente più forte. <strong>Quadrato inverso</strong> è il più ripido e il più vicino a un semplice decadimento fisico.",
+  "distance.modelInfoBody": "Il modello di distanza controlla come il gain di un oggetto cala con la distanza prima di qualsiasi elaborazione specifica per il diffuso o lo spread.<br><br><strong>Nessuno</strong> mantiene la distanza neutra. <strong>Lineare</strong> e <strong>quadratico</strong> applicano un'attenuazione progressivamente più forte. <strong>Quadrato inverso</strong> segue la legge fisica: −6 dB per ogni raddoppio della distanza oltre i diffusori, e non alza mai il livello al loro interno.",
   "distance.infoButton": "Info distance diffuse",
   "hybrid.title": "Backend ibrido",
   "hybrid.infoButton": "Info backend ibrido",
