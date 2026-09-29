@@ -364,7 +364,7 @@ pub struct RenderArgs {
     /// Room ratio for spatial rendering: width,length,height (default: 1.0,2.0,1.0)
     /// Scales ADM coordinates before VBAP processing to match room proportions.
     /// Example: --room-ratio 1.0,2.0,1.0 for a room twice as long as wide
-    #[arg(long, value_name = "W,L,H", default_value = "1.0,2.0,1.0")]
+    #[arg(long, value_name = "W,L,H", default_value = orender_engine::renderer_build::DEFAULT_ROOM_RATIO)]
     pub room_ratio: String,
 
     /// Rear depth ratio used by the non-linear depth warp (`depth < 0`).

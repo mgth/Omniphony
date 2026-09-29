@@ -42,6 +42,9 @@ pub struct OscOptions {
     pub port_out: u16,
     /// Registration/listener port for incoming control; 0 = OS-assigned (logged).
     pub port_in: u16,
+    /// Pre-subscribe the monitoring target to meter bundles (`render.osc_metering`),
+    /// so it receives them without registering first.
+    pub metering: bool,
 }
 
 /// One block of rendered, interleaved multichannel `f32` PCM.
@@ -439,6 +442,9 @@ impl Engine {
         let target = SocketAddrV4::from_str(&format!("{}:{}", opts.host, opts.port_out))
             .map_err(|e| anyhow!("invalid OSC target {}:{}: {e}", opts.host, opts.port_out))?;
         let mut sender = OscSender::new(target)?;
+        if opts.metering {
+            sender.set_default_metering(true);
+        }
         sender.attach_renderer_control(self.renderer.renderer_control());
         sender.start_listener(opts.port_in, true)?;
         // Meter cadence reads the RendererControl atomic each poll (source of

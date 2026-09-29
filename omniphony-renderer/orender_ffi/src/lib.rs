@@ -11,7 +11,8 @@
 #![allow(clippy::missing_safety_doc)]
 
 use orender_engine::{
-    start_degraded_reporter, DecodeThreadMode, DegradedReporter, Engine, OscOptions,
+    start_degraded_reporter, DecodeThreadMode, DegradedReporter, Engine, OscOptions, OscOverrides,
+    OscSettings,
 };
 
 use anyhow::Result;
@@ -78,52 +79,31 @@ fn stop_degraded_reporter_global() {
 }
 
 // Resolve OSC options from the C override → config → environment → defaults,
-// or None when OSC is off. Shared by the normal path and the degraded reporter.
+// or None when OSC is off. Shared by the normal path and the degraded reporter,
+// and — through `OscSettings::resolve` — with the CLI, so the two hosts cannot
+// disagree on when OSC is up or where it listens.
 //
-// A workflow launcher that sets OMNIPHONY_OSC_PORT is assigning this engine a
-// control port, so the variable both supplies the default port AND turns OSC on
-// when the config doesn't decide (`render.osc` unset). Without that, an
-// embedded engine in a fresh workflow config dir came up with no listener at
-// all — unreachable from Studio. An explicit `render.osc: false` still wins.
+// A zero/NULL field of the C struct defers to the config; `osc_enabled` can
+// only force OSC on (0 means "follow the config", never "off").
 fn resolve_osc_opts(
     cfg: &OrenderConfig,
     render_cfg: Option<&orender_engine::RenderConfig>,
 ) -> Option<OscOptions> {
-    let env_port = orender_engine::runtime_env::osc_port();
-    let osc_on = cfg.osc_enabled != 0
-        || render_cfg
-            .and_then(|c| c.osc)
-            .unwrap_or_else(|| env_port.is_some());
-    if !osc_on {
+    let overrides = OscOverrides {
+        enabled: (cfg.osc_enabled != 0).then_some(true),
+        host: unsafe { opt_str(cfg.osc_host) }.map(str::to_string),
+        port_out: (cfg.osc_port_out != 0).then_some(cfg.osc_port_out),
+        port_in: (cfg.osc_port_in != 0).then_some(cfg.osc_port_in),
+        metering: None,
+    };
+    let opts = OscSettings::resolve(render_cfg, &overrides).options();
+    if opts.is_none() {
         log::info!(
             "OSC disabled: render.osc is unset/false, no host override, \
              and no OMNIPHONY_OSC_PORT in the environment"
         );
-        return None;
     }
-    let host = unsafe { opt_str(cfg.osc_host) }
-        .map(str::to_string)
-        .or_else(|| render_cfg.and_then(|c| c.osc_host.clone()))
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    let port_out = if cfg.osc_port_out != 0 {
-        cfg.osc_port_out
-    } else {
-        render_cfg
-            .and_then(|c| c.osc_port)
-            .unwrap_or_else(orender_engine::runtime_env::default_osc_port)
-    };
-    let port_in = if cfg.osc_port_in != 0 {
-        cfg.osc_port_in
-    } else {
-        render_cfg
-            .and_then(|c| c.osc_rx_port)
-            .unwrap_or_else(orender_engine::runtime_env::default_osc_rx_port)
-    };
-    Some(OscOptions {
-        host,
-        port_out,
-        port_in,
-    })
+    opts
 }
 
 /// Opaque handle to a decode→render session. Created by `orender_create`,

@@ -296,7 +296,6 @@ impl Default for DecodeSessionState {
 
 pub struct FrameHandlerContext {
     pub bed_conform: bool,
-    pub use_loudness: bool,
     pub decode_time_ms: f32,
     pub queue_delay_ms: f32,
 }

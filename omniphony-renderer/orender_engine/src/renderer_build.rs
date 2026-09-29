@@ -24,6 +24,27 @@ pub enum EvalMode {
     Cartesian,
 }
 
+/// Room proportions (`width,length,height`) when neither the config nor a flag
+/// sets `room_ratio`. Shared by the config resolution below and the CLI's
+/// `--room-ratio` default so the two cannot drift.
+pub const DEFAULT_ROOM_RATIO: &str = "1.0,2.0,1.0";
+
+/// Parse a configured evaluation table mode (`render.render_evaluation_mode`)
+/// into the precomputed-table choice, or `None` for anything else (`auto`,
+/// `realtime`, unknown), which leaves the choice to the bridge.
+pub fn parse_eval_mode(value: &str) -> Option<EvalMode> {
+    if value.eq_ignore_ascii_case("precomputed_cartesian")
+        || value.eq_ignore_ascii_case("cartesian")
+    {
+        Some(EvalMode::Cartesian)
+    } else if value.eq_ignore_ascii_case("precomputed_polar") || value.eq_ignore_ascii_case("polar")
+    {
+        Some(EvalMode::Polar)
+    } else {
+        None
+    }
+}
+
 /// Host-neutral inputs to [`build_spatial_renderer`]. Field names and semantics
 /// mirror the `render` CLI args / config keys.
 #[derive(Debug, Clone)]
@@ -35,9 +56,10 @@ pub struct SpatialRendererParams {
     pub evaluation_polar_distance_max: f32,
     /// Evaluation table mode chosen by the user (CLI flag or config YAML).
     /// `None` means "no explicit choice" — the engine then follows the
-    /// `preferred_evaluation_mode` advertised by the format bridge.
+    /// `preferred_evaluation_mode` advertised by the format bridge and the
+    /// live evaluation mode starts at `Auto`; a choice also starts the live
+    /// mode on it.
     pub render_evaluation_mode: Option<EvalMode>,
-    pub evaluation_mode_explicit: bool,
     pub evaluation_cartesian_x_size: Option<usize>,
     pub evaluation_cartesian_y_size: Option<usize>,
     pub evaluation_cartesian_z_size: Option<usize>,
@@ -65,33 +87,22 @@ pub struct SpatialRendererParams {
 }
 
 impl SpatialRendererParams {
-    /// Resolve renderer params from a YAML render config, applying the same
-    /// defaults the CLI uses (mirrors `config_resolution::merge_render_config`)
-    /// so the FFI and CLI build an identical renderer from the same config.
+    /// Resolve renderer params from a YAML render config, applying the
+    /// built-in defaults for absent keys. This is the one config→params
+    /// resolution: the embedded engine uses it as is, the CLI lays its
+    /// explicit flags over it.
     ///
     /// `log_object_positions` and precomputed `vbap_table` loading are CLI-only
     /// and stay off here. `render_evaluation_mode` is `None` when the config
-    /// doesn't specify one — the engine then defers to the bridge's
-    /// preferred mode (cartesian for OAMD/spatial sources). A config-set mode
-    /// is honored but, like the CLI, not treated as "explicit" so the live
-    /// evaluation mode starts at `Auto`.
+    /// doesn't pick a precomputed table — the engine then defers to the
+    /// bridge's preferred mode (cartesian for OAMD/spatial sources). A
+    /// config-set table mode is an explicit choice: the live evaluation mode
+    /// starts on it, so the config seed that follows construction finds it
+    /// already applied and does not rebuild the topology a second time.
     pub fn from_render_config(cfg: Option<&RenderConfig>) -> Self {
-        let mode = cfg.and_then(|c| c.render_evaluation_mode.as_deref());
-        let render_evaluation_mode = match mode {
-            Some(v)
-                if v.eq_ignore_ascii_case("precomputed_cartesian")
-                    || v.eq_ignore_ascii_case("cartesian") =>
-            {
-                Some(EvalMode::Cartesian)
-            }
-            Some(v)
-                if v.eq_ignore_ascii_case("precomputed_polar")
-                    || v.eq_ignore_ascii_case("polar") =>
-            {
-                Some(EvalMode::Polar)
-            }
-            _ => None,
-        };
+        let render_evaluation_mode = cfg
+            .and_then(|c| c.render_evaluation_mode.as_deref())
+            .and_then(parse_eval_mode);
         Self {
             vbap_table: None,
             evaluation_polar_azimuth_resolution: cfg
@@ -107,7 +118,6 @@ impl SpatialRendererParams {
                 .and_then(renderer::config_fields::vbap_distance_max::get)
                 .unwrap_or(renderer::config_fields::vbap_distance_max::DEFAULT),
             render_evaluation_mode,
-            evaluation_mode_explicit: false,
             evaluation_cartesian_x_size: cfg.and_then(|c| c.evaluation_cartesian_x_size),
             evaluation_cartesian_y_size: cfg.and_then(|c| c.evaluation_cartesian_y_size),
             evaluation_cartesian_z_size: cfg.and_then(|c| c.evaluation_cartesian_z_size),
@@ -145,7 +155,7 @@ impl SpatialRendererParams {
             log_object_positions: false,
             room_ratio: cfg
                 .and_then(|c| c.room_ratio.clone())
-                .unwrap_or_else(|| "1.0,2.0,1.0".to_string()),
+                .unwrap_or_else(|| DEFAULT_ROOM_RATIO.to_string()),
             room_ratio_rear: cfg.and_then(|c| c.room_ratio_rear),
             room_ratio_lower: cfg.and_then(|c| c.room_ratio_lower),
             room_ratio_center_blend: cfg.and_then(|c| c.room_ratio_center_blend),
@@ -340,16 +350,10 @@ pub fn build_spatial_renderer(
                 RVbapTableMode::Polar => PreferredEvaluationMode::PrecomputedPolar,
                 RVbapTableMode::Cartesian => PreferredEvaluationMode::PrecomputedCartesian,
             },
-            if params.evaluation_mode_explicit {
-                match params.render_evaluation_mode {
-                    Some(EvalMode::Polar) => LiveEvaluationMode::PrecomputedPolar,
-                    Some(EvalMode::Cartesian) => LiveEvaluationMode::PrecomputedCartesian,
-                    // evaluation_mode_explicit but no mode set is a logic error
-                    // upstream; fall back to Auto rather than panicking.
-                    None => LiveEvaluationMode::Auto,
-                }
-            } else {
-                LiveEvaluationMode::Auto
+            match params.render_evaluation_mode {
+                Some(EvalMode::Polar) => LiveEvaluationMode::PrecomputedPolar,
+                Some(EvalMode::Cartesian) => LiveEvaluationMode::PrecomputedCartesian,
+                None => LiveEvaluationMode::Auto,
             },
             params
                 .evaluation_cartesian_x_size
@@ -994,6 +998,41 @@ mod tests {
             None,
         )
         .expect("renderer")
+    }
+
+    /// A config-set evaluation table mode is where the live mode starts, so
+    /// the config seed that follows construction finds nothing left to
+    /// change. It used to start at `Auto` in the embedded host (unlike the
+    /// CLI), and every engine creation — every track a player opens — with
+    /// such a config then built the VBAP topology a second time.
+    #[test]
+    fn a_configured_table_mode_needs_no_second_topology_build() {
+        let cfg = RenderConfig {
+            render_evaluation_mode: Some("precomputed_cartesian".to_string()),
+            ..Default::default()
+        };
+        let params = SpatialRendererParams::from_render_config(Some(&cfg));
+        let renderer = build_spatial_renderer(
+            &params,
+            SpeakerLayout::preset("7.1.4").expect("preset layout"),
+            48_000,
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 9,
+                y_size: 9,
+                z_size: 5,
+                allow_negative_z: true,
+            },
+            // The bridge prefers the other table: the config must win.
+            bridge_api::RVbapTableMode::Polar,
+            None,
+        )
+        .expect("renderer");
+        let control = renderer.renderer_control();
+        assert_eq!(
+            control.live.read().evaluation.mode,
+            LiveEvaluationMode::PrecomputedCartesian
+        );
+        assert!(!seed_control_from_render_config(&control, Some(&cfg)));
     }
 
     /// The shared runtime seed must not carry a cadence of its own.
