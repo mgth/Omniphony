@@ -37,7 +37,7 @@ specifications are in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   scaling, selection tint and fade), `room.rs` (box, edges, far-side faces,
   screen plane, axes, face shadows, VBAP grids), `trails.rs` (diffuse and
   line modes), `volumes.rs` (the four field providers). Coordinates go
-  through `omniphony-geometry` (`room_scaled_position`, `adm_to_scene`,
+  through `omniphony_geometry` (`room_scaled_position`, `adm_to_scene`,
   `inverse_map_depth`), so the room warp is the renderer's, not a copy.
 - **Camera** (`src/render/camera.rs`): OrbitControls semantics (65°, near
   0.1, pivot `(0, 0.25, 0)`, eye `(-3.8, 1.1, 0)`, damping 0.06, rotate by

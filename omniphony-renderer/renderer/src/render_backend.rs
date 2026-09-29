@@ -912,7 +912,7 @@ struct AxisSample {
     fraction: f32,
 }
 
-// The cartesian table's axis geometry lives in `omniphony-geometry`, shared
+// The cartesian table's axis geometry lives in `omniphony_geometry`, shared
 // with the Studio: its snap-to-grid has to land on the same nodes the table is
 // sampled at, and re-deriving them from the published interval counts is what
 // made that fragile.

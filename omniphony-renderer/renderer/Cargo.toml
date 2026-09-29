@@ -11,7 +11,7 @@ name = "renderer"
 
 [dependencies]
 anyhow.workspace = true
-omniphony-geometry.workspace = true
+omniphony_geometry.workspace = true
 omniphony-osc-contract.workspace = true
 bridge_api.workspace = true
 log.workspace = true

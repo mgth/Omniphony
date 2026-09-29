@@ -15,7 +15,7 @@ publish = false
 [dependencies]
 omniphony-osc-contract = { version = "0.1.0", path = "../../osc-contract" }
 # Canonical coordinate math shared with the renderer; dependency-free by design.
-omniphony-geometry = { path = "../../omniphony-renderer/omniphony-geometry" }
+omniphony_geometry = { path = "../../omniphony-renderer/omniphony_geometry" }
 # OSC transport, same crate/version as the Tauri Studio.
 rosc = "0.11"
 serde = { version = "1", features = ["derive"] }

@@ -28,7 +28,7 @@ path = "src/main.rs"
 omniphony-studio-core = { path = "core" }
 omniphony-studio-scene = { path = "scene" }
 # Canonical coordinate math shared with the renderer; dependency-free by design.
-omniphony-geometry = { path = "../omniphony-renderer/omniphony-geometry" }
+omniphony_geometry = { path = "../omniphony-renderer/omniphony_geometry" }
 
 # UI + windowing. wgpu is the only backend the spike supports: the whole point
 # is the wgpu paint callback that hosts the 3D viewport.

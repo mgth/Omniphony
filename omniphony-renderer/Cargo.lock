@@ -1562,10 +1562,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "omniphony-geometry"
-version = "0.1.0"
-
-[[package]]
 name = "omniphony-osc-contract"
 version = "0.1.0"
 
@@ -1590,6 +1586,10 @@ dependencies = [
  "sys",
  "vergen-gitcl",
 ]
+
+[[package]]
+name = "omniphony_geometry"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"
@@ -1618,7 +1618,7 @@ dependencies = [
  "bridge_api",
  "example_backend",
  "log",
- "omniphony-geometry",
+ "omniphony_geometry",
  "realfft",
  "renderer",
  "rosc",
@@ -1909,8 +1909,8 @@ dependencies = [
  "flate2",
  "libc",
  "log",
- "omniphony-geometry",
  "omniphony-osc-contract",
+ "omniphony_geometry",
  "parking_lot",
  "rayon",
  "realfft",
@@ -1975,8 +1975,8 @@ dependencies = [
  "anyhow",
  "chrono",
  "log",
- "omniphony-geometry",
  "omniphony-osc-contract",
+ "omniphony_geometry",
  "renderer",
  "rosc",
  "serde",

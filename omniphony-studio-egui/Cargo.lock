@@ -2543,10 +2543,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "omniphony-geometry"
-version = "0.1.0"
-
-[[package]]
 name = "omniphony-osc-contract"
 version = "0.1.0"
 
@@ -2557,8 +2553,8 @@ dependencies = [
  "flate2",
  "log",
  "memory-stats",
- "omniphony-geometry",
  "omniphony-osc-contract",
+ "omniphony_geometry",
  "rosc",
  "serde",
  "serde_json",
@@ -2581,9 +2577,9 @@ dependencies = [
  "glam",
  "gltf",
  "log",
- "omniphony-geometry",
  "omniphony-studio-core",
  "omniphony-studio-scene",
+ "omniphony_geometry",
  "regex",
  "rfd",
  "rosc",
@@ -2601,12 +2597,16 @@ dependencies = [
  "glam",
  "gltf",
  "log",
- "omniphony-geometry",
  "omniphony-studio-core",
+ "omniphony_geometry",
  "serde",
  "serde_json",
  "wgpu",
 ]
+
+[[package]]
+name = "omniphony_geometry"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"
