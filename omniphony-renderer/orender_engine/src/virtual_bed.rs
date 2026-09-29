@@ -360,7 +360,7 @@ fn find_bed_entry(
 /// horizontal distance`). `use_7_1` does not change these (the corners are
 /// layout-independent); the surround pair and the height above it are
 /// finalised by [`surround_placement_override`] for 4.x/5.x sources.
-pub(crate) fn fallback_virtual_bed_pose(
+fn fallback_virtual_bed_pose(
     label: RChannelLabel,
     _use_7_1: bool,
 ) -> Option<(String, f32, f32, f32)> {
@@ -455,7 +455,7 @@ pub fn fixed_channel_catalog_json() -> String {
 ///
 /// Room model only: a sphere direction, a declared angle and a user's own
 /// entry all say where the pair is, and are never overridden.
-pub(crate) fn surround_placement_override(
+fn surround_placement_override(
     label: RChannelLabel,
     use_7_1: bool,
     placement: SurroundPlacement,
@@ -605,6 +605,48 @@ fn sphere_pose(
         y,
         z,
     ))
+}
+
+/// Where the bed renders each channel under `policy`, as a normalized ADM
+/// position, in channel order: the pose [`plan_channel_render`] gives the
+/// channel when it is virtualized — whether or not this one is — so the
+/// same room corner, sphere direction or user entry. `None` for a label with
+/// no pose (`Object`, `Unknown`). `out` is cleared and refilled.
+///
+/// The channel-object stages place what they synthesize from these
+/// ([`crate::object_gen::PrepareCtx::bed_poses`]): a phantom between two
+/// channels sits between them wherever the family's policy put them.
+pub fn resolve_bed_poses(
+    channel_labels: &[RChannelLabel],
+    policy: &PlacementPolicy<'_>,
+    room: RoomRatios,
+    surround_placement: SurroundPlacement,
+    out: &mut Vec<Option<[f64; 3]>>,
+) {
+    let use_7_1 = source_has_back(channel_labels);
+    out.clear();
+    out.extend(channel_labels.iter().map(|&label| {
+        resolve_virtual_bed_pose(label, use_7_1, policy, room, surround_placement)
+            .map(|(_, x, y, z)| [x as f64, y as f64, z as f64])
+    }));
+}
+
+/// [`resolve_bed_poses`] under the room model with no entries: the poses a
+/// fresh install gives, for the tests of the stages that consume them.
+#[cfg(test)]
+pub(crate) fn room_bed_poses(
+    channel_labels: &[RChannelLabel],
+    surround_placement: SurroundPlacement,
+) -> Vec<Option<[f64; 3]>> {
+    let mut poses = Vec::new();
+    resolve_bed_poses(
+        channel_labels,
+        &PlacementPolicy::room(),
+        RoomRatios::UNIT,
+        surround_placement,
+        &mut poses,
+    );
+    poses
 }
 
 pub fn build_virtual_bed_events(
@@ -1119,6 +1161,10 @@ pub struct BedChannelPlanner {
     cache: PlanCache,
     kind: Option<BedPlanKind>,
     events: Vec<renderer::spatial_renderer::SpatialChannelEvent>,
+    /// Where the bed renders each channel ([`resolve_bed_poses`]), for the
+    /// channel-object stages. Planned with the events, so it costs nothing
+    /// on a steady stream.
+    poses: Vec<Option<[f64; 3]>>,
 }
 
 impl BedChannelPlanner {
@@ -1135,12 +1181,22 @@ impl BedChannelPlanner {
         self.cache.reset();
         self.kind = None;
         self.events.clear();
+        self.poses.clear();
     }
 
     /// The events of the current plan, in channel order. Empty unless the last
     /// [`plan`](Self::plan) returned [`BedPlanKind::Events`].
     pub fn events(&self) -> &[renderer::spatial_renderer::SpatialChannelEvent] {
         &self.events
+    }
+
+    /// Where the bed renders each channel of the current plan, in channel
+    /// order ([`resolve_bed_poses`]) — what the channel-object stages place
+    /// their objects from ([`crate::object_gen::PrepareCtx::bed_poses`]).
+    /// Empty unless the last [`plan`](Self::plan) returned
+    /// [`BedPlanKind::Events`].
+    pub fn poses(&self) -> &[Option<[f64; 3]>] {
+        &self.poses
     }
 
     /// Plan this frame's bed mapping, reusing the previous plan when nothing it
@@ -1161,10 +1217,11 @@ impl BedChannelPlanner {
             return self.kind.unwrap_or(BedPlanKind::Silence);
         };
 
+        let policy = key.placement.policy(&key.declared_poses);
         let kind = match plan_channel_render(
             key.mode,
             &key.labels,
-            &key.placement.policy(&key.declared_poses),
+            &policy,
             Some(&topology.speaker_layout),
             key.room,
             key.surround_placement,
@@ -1172,14 +1229,23 @@ impl BedChannelPlanner {
             ChannelRenderPlan::Events { events, routes } => {
                 self.cache.apply_routes(renderer, routes);
                 self.events = events;
+                resolve_bed_poses(
+                    &key.labels,
+                    &policy,
+                    key.room,
+                    key.surround_placement,
+                    &mut self.poses,
+                );
                 BedPlanKind::Events
             }
             ChannelRenderPlan::HostPassthrough => {
                 self.events.clear();
+                self.poses.clear();
                 BedPlanKind::HostPassthrough
             }
             ChannelRenderPlan::Silence => {
                 self.events.clear();
+                self.poses.clear();
                 BedPlanKind::Silence
             }
         };
@@ -2730,6 +2796,41 @@ mod tests {
         let (fixed_routes, bed_routes) = plan_both(&mut fixed, &mut bed, &mut out);
         assert_eq!(fixed_routes[4], ChannelRoute::Direct(RChannelLabel::LFE2));
         assert_eq!(bed_routes[4], ChannelRoute::Direct(RChannelLabel::LFE2));
+    }
+
+    /// The bed planner hands the stages the poses its own events carry, for
+    /// every channel (direct ones too), under the family's policy.
+    #[test]
+    fn bed_planner_publishes_the_poses_of_its_plan() {
+        use renderer::placement::PlacementMode;
+        let renderer = small_renderer(SpeakerLayout::preset("7.1.4").expect("preset layout"));
+        let control = renderer.renderer_control();
+        control
+            .live
+            .write()
+            .placement
+            .family_mut(SourceFamily::Dts)
+            .mode = Some(PlacementMode::Sphere);
+        let mut planner = BedChannelPlanner::new();
+        assert_eq!(
+            planner.plan(&renderer, &BED_5_1, SourceFamily::Dts, &[]),
+            BedPlanKind::Events
+        );
+        let poses = planner.poses().to_vec();
+        assert_eq!(poses.len(), BED_5_1.len());
+        assert!(poses.iter().all(Option::is_some), "LFE included: {poses:?}");
+        for event in planner.events() {
+            if let Some(position) = event.position {
+                assert_eq!(poses[event.channel_idx], Some(position));
+            }
+        }
+
+        control.live.write().channel_render_mode = renderer::live_params::ChannelRenderMode::Host;
+        assert_eq!(
+            planner.plan(&renderer, &BED_5_1, SourceFamily::Dts, &[]),
+            BedPlanKind::HostPassthrough
+        );
+        assert!(planner.poses().is_empty());
     }
 
     /// The bed comparison is a derived `PartialEq`; if it ever stopped looking

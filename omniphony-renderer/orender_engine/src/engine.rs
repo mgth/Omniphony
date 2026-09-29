@@ -1608,7 +1608,7 @@ impl Engine {
                 input_labels: labels,
                 output_layout,
                 sample_rate,
-                surround_placement,
+                bed_poses: self.bed_planner.poses(),
             };
             // Phantom-extraction pre-stage runs first: its planar objects occupy the
             // channel slots right after the bed; the height-lift objects follow. The

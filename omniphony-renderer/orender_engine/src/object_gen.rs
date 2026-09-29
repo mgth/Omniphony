@@ -22,10 +22,7 @@ use std::sync::Arc;
 use bridge_api::RChannelLabel;
 use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
-use renderer::live_params::SurroundPlacement;
 use renderer::speaker_layout::SpeakerLayout;
-
-use crate::virtual_bed::source_has_back;
 
 /// What a generator needs from its environment; lets the host gate the UI.
 #[derive(Debug, Clone, Copy, Default)]
@@ -121,9 +118,36 @@ pub struct PrepareCtx<'a> {
     /// The active output speaker layout.
     pub output_layout: &'a SpeakerLayout,
     pub sample_rate: u32,
-    /// Where a 4.x/5.x surround pair (`Ls`/`Rs`) sits — Side or Back — so the
-    /// synthesized objects track the same choice as the virtual bed.
-    pub surround_placement: SurroundPlacement,
+    /// Where the bed renders each input channel, parallel to `input_labels`:
+    /// a normalized ADM position under the family's placement policy (room
+    /// corner, sphere direction or the user's entry, Side/Back surround
+    /// placement included — [`crate::virtual_bed::resolve_bed_poses`]).
+    /// Synthesized objects are placed from these so they track the bed
+    /// they are extracted from. Read through [`channel_pose`](Self::channel_pose)
+    /// and [`floor_pose`](Self::floor_pose).
+    pub bed_poses: &'a [Option<[f64; 3]>],
+}
+
+impl PrepareCtx<'_> {
+    /// Where the bed renders input channel `idx`, for a channel objects can be
+    /// synthesized from: `None` for the LFE (never lifted nor extracted) and
+    /// for a channel with no pose.
+    pub fn channel_pose(&self, idx: usize) -> Option<[f64; 3]> {
+        match self.input_labels.get(idx)? {
+            RChannelLabel::LFE | RChannelLabel::LFE2 => None,
+            _ => self.bed_poses.get(idx).copied().flatten(),
+        }
+    }
+
+    /// [`channel_pose`](Self::channel_pose) for a floor-tier channel only:
+    /// `None` for a height channel. The ring the height lift and the
+    /// broadband phantom extraction work on.
+    pub fn floor_pose(&self, idx: usize) -> Option<[f64; 3]> {
+        if is_height_label(*self.input_labels.get(idx)?) {
+            return None;
+        }
+        self.channel_pose(idx)
+    }
 }
 
 /// One block of channel-based bed PCM handed to [`ObjectGenerator::process`].
@@ -286,24 +310,27 @@ pub fn layout_has_height(layout: &SpeakerLayout) -> bool {
 /// True when the input channel set already carries a height channel — then any
 /// upmix is suppressed (the content is already 3D).
 pub fn input_has_height(labels: &[RChannelLabel]) -> bool {
-    labels.iter().any(|l| {
-        matches!(
-            l,
-            RChannelLabel::Tfl
-                | RChannelLabel::Tfr
-                | RChannelLabel::Tsl
-                | RChannelLabel::Tsr
-                | RChannelLabel::Tbl
-                | RChannelLabel::Tbr
-                | RChannelLabel::Tc
-                | RChannelLabel::Tfc
-                | RChannelLabel::Lh
-                | RChannelLabel::Rh
-                | RChannelLabel::Ch
-                | RChannelLabel::Lhs
-                | RChannelLabel::Rhs
-        )
-    })
+    labels.iter().any(|&l| is_height_label(l))
+}
+
+/// True for a label of the top or the height tier.
+pub(crate) fn is_height_label(label: RChannelLabel) -> bool {
+    matches!(
+        label,
+        RChannelLabel::Tfl
+            | RChannelLabel::Tfr
+            | RChannelLabel::Tsl
+            | RChannelLabel::Tsr
+            | RChannelLabel::Tbl
+            | RChannelLabel::Tbr
+            | RChannelLabel::Tc
+            | RChannelLabel::Tfc
+            | RChannelLabel::Lh
+            | RChannelLabel::Rh
+            | RChannelLabel::Ch
+            | RChannelLabel::Lhs
+            | RChannelLabel::Rhs
+    )
 }
 
 pub(crate) fn find_channel(labels: &[RChannelLabel], want: RChannelLabel) -> Option<usize> {
@@ -318,77 +345,10 @@ pub(crate) fn one_pole_coeff(tc_ms: f32, fs: f32) -> f32 {
     1.0 - (-1.0 / tau_samples).exp()
 }
 
-/// Canonical top position of a bed channel: its floor position raised to the
-/// height layer (`z = 1`). Mirrors the engine's channel→position convention
-/// (`renderer/src/virtual_bed.rs`): x = right, y = front. `None` for channels
-/// that should never be lifted (LFE) or carry no position (unknown).
-pub(crate) fn top_position(label: RChannelLabel) -> Option<[f64; 3]> {
-    use RChannelLabel::*;
-    let pos = match label {
-        L => [-1.0, 1.0, 1.0],
-        R => [1.0, 1.0, 1.0],
-        C => [0.0, 1.0, 1.0],
-        Ls => [-1.0, 0.0, 1.0],
-        Rs => [1.0, 0.0, 1.0],
-        Lb => [-1.0, -1.0, 1.0],
-        Rb => [1.0, -1.0, 1.0],
-        Cb => [0.0, -1.0, 1.0],
-        _ => return None,
-    };
-    Some(pos)
-}
-
-/// Canonical top position of a bed channel, with a 4.x/5.x surround pair
-/// (`Ls`/`Rs`) moved to the side or back per `surround_placement` — matching the
-/// virtual bed — so synthesized objects track the same Side/Back choice.
-pub(crate) fn channel_top_position(
-    label: RChannelLabel,
-    use_7_1: bool,
-    placement: SurroundPlacement,
-) -> Option<[f64; 3]> {
-    let mut pos = top_position(label)?;
-    if let Some((x, y, _)) =
-        crate::virtual_bed::surround_placement_override(label, use_7_1, placement)
-    {
-        pos[0] = x as f64;
-        pos[1] = y as f64;
-    }
-    Some(pos)
-}
-
-/// Canonical 3D position of any positionable channel: bed channels on the floor
-/// (`z = 0`, honouring the Side/Back surround placement) and height channels at
-/// the ceiling (`z = 1`, the virtual-bed convention). `None` for LFE/unknown.
-pub(crate) fn channel_3d_position(
-    label: RChannelLabel,
-    use_7_1: bool,
-    placement: SurroundPlacement,
-) -> Option<[f64; 3]> {
-    use RChannelLabel::*;
-    // The height tier is on the wall above its floor speaker (the room
-    // model's corner for it), following the surround pair's Side/Back choice.
-    if matches!(label, Lh | Rh | Ch | Lhs | Rhs) {
-        let (_, x, y, z) = crate::virtual_bed::fallback_virtual_bed_pose(label, use_7_1)?;
-        let (x, y, z) = crate::virtual_bed::surround_placement_override(label, use_7_1, placement)
-            .unwrap_or((x, y, z));
-        return Some([x as f64, y as f64, z as f64]);
-    }
-    let top = match label {
-        Tfl => [-1.0, 1.0, 1.0],
-        Tfr => [1.0, 1.0, 1.0],
-        Tbl => [-1.0, -1.0, 1.0],
-        Tbr => [1.0, -1.0, 1.0],
-        Tsl => [-1.0, 0.0, 1.0],
-        Tsr => [1.0, 0.0, 1.0],
-        Tc => [0.0, 0.0, 1.0],
-        Tfc => [0.0, 1.0, 1.0],
-        _ => {
-            let mut pos = channel_top_position(label, use_7_1, placement)?;
-            pos[2] = 0.0;
-            return Some(pos);
-        }
-    };
-    Some(top)
+/// A floor pose raised to the height layer (`z = 1`): where the height lift
+/// puts what it takes from a floor channel.
+fn lifted(pose: [f64; 3]) -> [f64; 3] {
+    [pose[0], pose[1], 1.0]
 }
 
 // ───────────────────────── built-in: copy_up ─────────────────────────
@@ -439,13 +399,11 @@ impl ObjectGenerator for CopyUpGenerator {
         }
         const GAIN_DB: i8 = -6;
         const SIZE: [f32; 3] = [0.3, 0.3, 0.3];
-        // Lift every spatializable bed channel (front, sides, back, center) to its
-        // canonical top position; LFE / unknown channels have no `top_position`.
-        let use_7_1 = source_has_back(ctx.input_labels);
+        // Lift every floor channel straight up from where the bed renders it;
+        // LFE / unknown channels have no pose to lift.
         let mut specs = Vec::new();
         for (ch, &label) in ctx.input_labels.iter().enumerate() {
-            let Some(position) = channel_top_position(label, use_7_1, ctx.surround_placement)
-            else {
+            let Some(position) = ctx.floor_pose(ch).map(lifted) else {
                 continue;
             };
             self.src_channels.push(ch);
@@ -721,12 +679,12 @@ impl ObjectGenerator for PadGenerator {
         // One-pole smoothing coefficient for the statistics (τ = PAD_STAT_TC_MS).
         self.alpha = one_pole_coeff(PAD_STAT_TC_MS, fs);
         let labels = ctx.input_labels;
-        let use_7_1 = source_has_back(labels);
         let hpf = Biquad::highpass(fs, PAD_HPF_HZ, PAD_HPF_Q);
         const SIZE: [f32; 3] = [0.5, 0.5, 0.5];
 
-        // One decorrelated pair per top row, each lifted to its canonical position:
-        // front (L/R) → top-front, sides (Ls/Rs) → top-side, back (Lb/Rb) → top-back.
+        // One decorrelated pair per top row, each lifted straight up from where
+        // the bed renders it: front (L/R) → top-front, sides (Ls/Rs) → top-side,
+        // back (Lb/Rb) → top-back.
         // A pair is emitted only when both its channels exist (5.1 → front+side,
         // 7.1 → front+side+back).
         let pair_defs: [(&str, &str, RChannelLabel, RChannelLabel); 3] = [
@@ -758,8 +716,8 @@ impl ObjectGenerator for PadGenerator {
                 continue;
             };
             let (Some(pos_l), Some(pos_r)) = (
-                channel_top_position(label_l, use_7_1, ctx.surround_placement),
-                channel_top_position(label_r, use_7_1, ctx.surround_placement),
+                ctx.floor_pose(l_ch).map(lifted),
+                ctx.floor_pose(r_ch).map(lifted),
             ) else {
                 continue;
             };
@@ -795,10 +753,9 @@ impl ObjectGenerator for PadGenerator {
         // Center → a single top-center object (no stereo partner; a high-passed
         // send whose level is `center_amount` and cutoff `center_hpf_hz`). Planned
         // whenever C exists so it shows in the 3D view; silent at amount 0.
-        if let (Some(ch), Some(position)) = (
-            find_channel(labels, RChannelLabel::C),
-            channel_top_position(RChannelLabel::C, use_7_1, ctx.surround_placement),
-        ) {
+        if let Some(ch) = find_channel(labels, RChannelLabel::C)
+            && let Some(position) = ctx.floor_pose(ch).map(lifted)
+        {
             let out = specs.len();
             self.center = Some(CenterChannel {
                 ch,
@@ -1288,9 +1245,8 @@ impl ObjectGenerator for DiracGenerator {
 
         // Virtual horizontal B-format encoder: az = atan2(x, y) → cos = y/r (front),
         // sin = x/r (right); equivalent to the engine convention, no trig per sample.
-        let use_7_1 = source_has_back(ctx.input_labels);
-        for (idx, &label) in ctx.input_labels.iter().enumerate() {
-            if let Some(pos) = channel_top_position(label, use_7_1, ctx.surround_placement) {
+        for idx in 0..ctx.input_labels.len() {
+            if let Some(pos) = ctx.floor_pose(idx) {
                 let (x, y) = (pos[0] as f32, pos[1] as f32);
                 let r = (x * x + y * y).sqrt();
                 let (ca, sa) = if r > 1.0e-6 {
@@ -1441,10 +1397,14 @@ struct PlanSig {
     out_n: usize,
     out_height: bool,
     labels: Vec<RChannelLabel>,
+    /// The bed poses the objects were placed from ([`PrepareCtx::bed_poses`]),
+    /// compared by value: a placement edit (mode, entries, room) moves them
+    /// without bumping anything.
+    poses: Vec<Option<[f64; 3]>>,
     rate: u32,
     /// `RendererControl::options_epoch` at plan time. Bumped whenever a
     /// `REPLAN`-flagged registry option actually changes value (e.g. the
-    /// Side/Back surround placement, which moves the planned positions), so a
+    /// phantom or generator selection), so a
     /// live toggle re-plans without this signature enumerating options field
     /// by field — a new re-planning option cannot be forgotten here (see
     /// `renderer::options`).
@@ -1503,7 +1463,8 @@ impl ObjectGenStage {
             && self.sig.out_height == out_height
             && self.sig.rate == ctx.sample_rate
             && self.sig.options_epoch == options_epoch
-            && self.sig.labels.as_slice() == ctx.input_labels;
+            && self.sig.labels.as_slice() == ctx.input_labels
+            && self.sig.poses.as_slice() == ctx.bed_poses;
         if !unchanged {
             self.sig.id.clear();
             self.sig.id.push_str(did);
@@ -1513,6 +1474,8 @@ impl ObjectGenStage {
             self.sig.options_epoch = options_epoch;
             self.sig.labels.clear();
             self.sig.labels.extend_from_slice(ctx.input_labels);
+            self.sig.poses.clear();
+            self.sig.poses.extend_from_slice(ctx.bed_poses);
 
             self.generator = self.registry.build(did);
             self.specs = match self.generator.as_mut() {
@@ -1633,7 +1596,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         assert!(specs.is_empty());
     }
@@ -1652,7 +1618,10 @@ mod tests {
             input_labels: &labels,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &labels,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         assert!(specs.is_empty());
     }
@@ -1665,7 +1634,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         // L, R, C, Ls, Rs lifted (LFE skipped) — sides + center now included.
         assert_eq!(specs.len(), 5);
@@ -1675,8 +1647,11 @@ mod tests {
         );
     }
 
+    /// A placement edit moves the bed without bumping the options epoch (a
+    /// placement entry, the family's mode, the room): the stage compares the
+    /// bed poses by value, so the objects follow on the next frame.
     #[test]
-    fn stage_replans_on_options_epoch_bump() {
+    fn stage_replans_when_the_bed_poses_move() {
         use renderer::live_params::SurroundPlacement;
         let mut stage = ObjectGenStage::new();
         let out = layout_7_1_4();
@@ -1684,7 +1659,7 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(&LABELS_5_1, SurroundPlacement::Side),
         };
         assert_eq!(stage.sync("copy_up", &ctx_side, 0), 5);
         let ls_y = |stage: &ObjectGenStage| {
@@ -1697,26 +1672,49 @@ mod tests {
         };
         let ls_y_side = ls_y(&stage);
         let ctx_back = PrepareCtx {
-            surround_placement: SurroundPlacement::Back,
+            bed_poses: &crate::virtual_bed::room_bed_poses(&LABELS_5_1, SurroundPlacement::Back),
             ..ctx_side
         };
-        // The ctx value alone must NOT re-plan: the options epoch is the
-        // invalidator (a redundant state echo must not re-prime the stages).
         assert_eq!(stage.sync("copy_up", &ctx_back, 0), 5);
-        assert_eq!(
-            ls_y(&stage),
-            ls_y_side,
-            "no epoch bump: the previous plan must be kept"
-        );
-        // The real flow: a live placement change is a REPLAN-flagged registry
-        // option, so it arrives together with an epoch bump → re-plan.
-        assert_eq!(stage.sync("copy_up", &ctx_back, 1), 5);
         let ls_y_back = ls_y(&stage);
         assert!(
             ls_y_side > ls_y_back + 0.5,
-            "Ls object must move to the back row on a live placement change \
+            "Ls object must move to the back row with the bed, epoch unchanged \
              (side y = {ls_y_side}, back y = {ls_y_back})"
         );
+    }
+
+    /// The lift follows the bed wherever the family's policy puts it: in
+    /// sphere mode each object sits straight above its channel's direction,
+    /// not above the room corner the old table assumed.
+    #[test]
+    fn lift_sits_above_the_bed_pose_of_the_policy() {
+        use crate::virtual_bed::{PlacementPolicy, RoomRatios, resolve_bed_poses};
+        use renderer::live_params::SurroundPlacement;
+        let mut poses = Vec::new();
+        resolve_bed_poses(
+            &LABELS_5_1,
+            &PlacementPolicy::sphere(&[]),
+            RoomRatios::UNIT,
+            SurroundPlacement::Side,
+            &mut poses,
+        );
+        let mut g = CopyUpGenerator::default();
+        let specs = g.prepare(&PrepareCtx {
+            input_labels: &LABELS_5_1,
+            output_layout: &layout_7_1_4(),
+            sample_rate: 48_000,
+            bed_poses: &poses,
+        });
+        assert_eq!(specs.len(), 5, "L R C Ls Rs lifted, LFE not");
+        for (spec, &ch) in specs.iter().zip(&g.src_channels) {
+            let bed = poses[ch].expect("bed pose");
+            assert_eq!(spec.position, [bed[0], bed[1], 1.0], "{}", spec.name);
+        }
+        // L at −30° on the sphere, not the front-left corner (−45°).
+        let l = specs.iter().find(|s| s.name.contains("_L_")).expect("L");
+        let az = l.position[0].atan2(l.position[1]).to_degrees();
+        assert!((az + 30.0).abs() < 0.5, "L lifted from −30°, got {az}");
     }
 
     #[test]
@@ -1727,7 +1725,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         // 2 sample frames, 6 channels: channel value = channel index + sample*10.
         let c = 6usize;
@@ -1771,7 +1772,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out_layout,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         // 5.1 → front (L/R) + side (Ls/Rs) + center (C) = 5 objects.
         assert_eq!(specs.len(), 5);
@@ -1805,7 +1809,10 @@ mod tests {
                 input_labels: &LABELS_5_1,
                 output_layout: &out,
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &LABELS_5_1,
+                    renderer::live_params::SurroundPlacement::Side
+                ),
             })
             .is_empty()
         );
@@ -1819,7 +1826,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         // front L/R + side Ls/Rs + center C (no back pair in 5.1).
         assert_eq!(specs.len(), 5);
@@ -1849,7 +1859,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &layout_7_1_4(),
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Back,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Back,
+            ),
         });
         assert!(
             specs
@@ -1906,7 +1919,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out_layout,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         g.set_param("strength", 1.0, 48_000);
         let mut out: Vec<Vec<f32>> = vec![vec![0.0; n]; 4];
@@ -1964,7 +1980,10 @@ mod tests {
                 input_labels: &LABELS_5_1,
                 output_layout: &out_layout,
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &LABELS_5_1,
+                    renderer::live_params::SurroundPlacement::Side,
+                ),
             });
             g.set_param("strength", strength, 48_000);
             let mut out: Vec<Vec<f32>> = vec![vec![0.0; n]; 4];
@@ -2024,7 +2043,10 @@ mod tests {
             input_labels: &labels,
             output_layout: &layout_7_1_4(),
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &labels,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         // front + side + back pairs (6) + center (1) = 7.
         assert_eq!(specs.len(), 7);
@@ -2057,7 +2079,10 @@ mod tests {
                 input_labels: &LABELS_5_1,
                 output_layout: &layout_7_1_4(),
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &LABELS_5_1,
+                    renderer::live_params::SurroundPlacement::Side,
+                ),
             });
             let center_idx = specs.iter().position(|s| s.name == "Ambience_TC").unwrap();
             g.set_param("center_amount", amount, 48_000);
@@ -2117,7 +2142,10 @@ mod tests {
                 input_labels: &LABELS_5_1,
                 output_layout: &out_layout,
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &LABELS_5_1,
+                    renderer::live_params::SurroundPlacement::Side,
+                ),
             });
             if let Some(db) = gain_db {
                 g.set_param("gain_db", db, 48_000);
@@ -2219,7 +2247,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out_layout,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         (g, specs)
     }
@@ -2254,7 +2285,10 @@ mod tests {
                 input_labels: &LABELS_5_1,
                 output_layout: &out,
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &LABELS_5_1,
+                    renderer::live_params::SurroundPlacement::Side
+                ),
             })
             .is_empty()
         );
@@ -2276,7 +2310,10 @@ mod tests {
                 input_labels: &labels,
                 output_layout: &out,
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &labels,
+                    renderer::live_params::SurroundPlacement::Side
+                ),
             })
             .is_empty()
         );
