@@ -83,6 +83,36 @@ fn row_id(section: &str) -> egui::Id {
 }
 
 /// Where a header toggle leaves its click for the caller to pick up.
+/// Which sections are open, by section id: seeded from the preferences at
+/// start-up, updated on every toggle, and read back by the app through
+/// [`take_changed_open_states`] — the preferences file, not egui's memory, is
+/// what remembers them across launches (docs/persistence-policy.md).
+pub type OpenStates = std::collections::BTreeMap<String, bool>;
+
+fn open_states_id() -> egui::Id {
+    egui::Id::new("section-open-states")
+}
+
+fn open_states_changed_id() -> egui::Id {
+    egui::Id::new("section-open-states-changed")
+}
+
+/// Hand the saved open sections to the widgets, before the first frame.
+pub fn seed_open_states(ctx: &egui::Context, states: OpenStates) {
+    ctx.data_mut(|d| d.insert_temp(open_states_id(), states));
+}
+
+/// The open sections, when one was toggled since the last call.
+pub fn take_changed_open_states(ctx: &egui::Context) -> Option<OpenStates> {
+    ctx.data_mut(|d| {
+        d.remove_temp::<bool>(open_states_changed_id())?;
+        Some(
+            d.get_temp_mut_or_default::<OpenStates>(open_states_id())
+                .clone(),
+        )
+    })
+}
+
 fn toggle_id(section: &str) -> egui::Id {
     egui::Id::new(("section-header-toggle", section))
 }
@@ -175,10 +205,17 @@ impl<'a> Section<'a> {
             header_widget,
         } = self;
         let id = ui.make_persistent_id(("section", section_id));
+        // The saved state only matters on the first frame: after it egui's
+        // own state (and its animation) carries the section.
+        let saved = ui.ctx().data_mut(|d| {
+            d.get_temp_mut_or_default::<OpenStates>(open_states_id())
+                .get(section_id)
+                .copied()
+        });
         let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
             ui.ctx(),
             id,
-            default_open,
+            saved.unwrap_or(default_open),
         );
         ui.add_space(theme::PANEL_GAP);
         ui.separator();
@@ -292,6 +329,12 @@ impl<'a> Section<'a> {
             .data_mut(|d| d.insert_temp(row_id(section_id), header.response.rect));
         if header.inner.clicked() || header.response.clicked() {
             state.toggle(ui);
+            let open = state.is_open();
+            ui.ctx().data_mut(|d| {
+                d.get_temp_mut_or_default::<OpenStates>(open_states_id())
+                    .insert(section_id.to_owned(), open);
+                d.insert_temp(open_states_changed_id(), true);
+            });
         }
         state.show_body_unindented(ui, body).map(|r| r.inner)
     }

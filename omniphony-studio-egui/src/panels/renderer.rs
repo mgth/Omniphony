@@ -83,9 +83,10 @@ impl BackendPathDrafts {
     }
 }
 
-/// Which half of the panel is showing (`body.studio-tab-binaural`). UI state,
-/// not persisted, Renderer first.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+/// Which half of the panel is showing (`body.studio-tab-binaural`). View
+/// state, kept in the preferences; Renderer first.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RendererTab {
     #[default]
     Renderer,

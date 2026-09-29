@@ -83,9 +83,16 @@ carries the unsaved state over in the sidecar instead of saving it.
 
 - **View** state lives in `crate::prefs::Prefs` and is written through the
   debounced `json_store::Writer`: a change marks the prefs dirty and the next
-  frame submits them. Never persist through egui's memory (`ctx.memory`,
-  `ctx.data`): it is not saved, and another toolkit would not have it
-  (`ARCHITECTURE.md`).
+  frame submits them. `prefs::display` holds the Display panel's settings,
+  `prefs::view` the rest of the view — camera (taken at rest), window size,
+  position and maximised state, open sections, tabs, the speaker-test
+  settings. Never persist through egui's memory (`ctx.memory`, `ctx.data`):
+  it is not saved, and another toolkit would not have it (`ARCHITECTURE.md`);
+  sections, whose open state egui animates, report every toggle back to
+  `prefs::view` (`ui::section::take_changed_open_states`).
+- A new field of the scene's `ViewSettings` or `VolumeSettings` does not
+  compile until `prefs::display::every_display_setting_is_classified` names
+  it as kept or not kept, with the reason.
 - **App** state lives in `RuntimeConfig` (`osc_config.json`), written through
   the same kind of writer.
 - **Render / engine** state is sent to the engine and nowhere else. Studio
@@ -128,9 +135,4 @@ signal asks nothing.
 
 ## Known deviations
 
-Still to be brought in line; each is removed from this list by the change that
-fixes it.
-
-- **Studio view state not yet kept**: camera, window size and position, open
-  sections, tabs, the Speakers and Grid switches, the speaker-test settings,
-  the log panel.
+None. A change that has to leave one behind lists it here, with the reason.

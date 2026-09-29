@@ -38,6 +38,9 @@ pub struct StudioSpike {
     pub(crate) args: Args,
     pub(crate) osc_stats: Arc<OscStats>,
     pub(crate) camera: OrbitCamera,
+    /// The camera is still gliding (or being dragged): its resting place is
+    /// what the preferences keep, not every frame on the way.
+    pub(crate) camera_moving: bool,
     pub(crate) selection: Selection,
     pub(crate) settings: ViewSettings,
     pub(crate) frame_stats: FrameStats,
@@ -405,13 +408,14 @@ impl StudioSpike {
         // nudges it, so an idle Studio wakes for nothing.
         let services = crate::host::services::spawn(host.clone(), repaint, clock)?;
 
-        Ok(Self {
+        let mut app = Self {
             listener,
             services,
             synthetic,
             args,
             osc_stats,
             camera: OrbitCamera::new(),
+            camera_moving: false,
             selection: Selection::default(),
             settings,
             frame_stats: FrameStats::new(),
@@ -516,7 +520,9 @@ impl StudioSpike {
             unsaved_quit: Default::default(),
             unsaved_quit_error: None,
             reload_confirm_open: false,
-        })
+        };
+        app.restore_view(&cc.egui_ctx);
+        Ok(app)
     }
 
     /// Head pose: only while the renderer is in binaural output mode; the
@@ -624,9 +630,11 @@ impl StudioSpike {
         if !ui.ctx().text_edit_focused() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.selection = Selection::default();
         }
-        if self.camera.update() {
+        let gliding = self.camera.update();
+        if gliding {
             ui.ctx().request_repaint();
         }
+        self.camera_moving = gliding || ui.ctx().input(|i| i.pointer.any_down());
         self.ease_head_pose(ui.ctx());
 
         if response.clicked()
@@ -917,6 +925,7 @@ impl StudioSpike {
             self.prefs.display = next;
             self.mark_prefs_dirty();
         }
+        self.remember_view(ctx, self.camera_moving);
     }
 
     /// Where the two side panels sit, in framebuffer pixels, so the renderer
