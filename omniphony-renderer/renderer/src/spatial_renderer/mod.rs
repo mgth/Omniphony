@@ -1378,6 +1378,12 @@ impl SpatialRenderer {
         self.num_speakers
     }
 
+    /// The sample rate the renderer's DSP is built for (see
+    /// [`set_sample_rate`](Self::set_sample_rate)).
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
     /// Number of channels the renderer actually emits this frame: 2 in binaural
     /// (headphone) mode, otherwise the speaker count. Hosts must size their sink
     /// and `RenderedAudio` from this, not from [`num_speakers`](Self::num_speakers).

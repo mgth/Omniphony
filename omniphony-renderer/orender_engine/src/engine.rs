@@ -1279,6 +1279,7 @@ impl Engine {
         let sample_count = frame.sample_count as usize;
         let sample_rate = frame.sampling_frequency.max(1);
         let sample_pos_at_start = self.decoded_samples;
+        render::follow_stream_rate(&mut self.renderer, frame.sampling_frequency)?;
 
         let want_osc = self.osc.as_ref().is_some_and(|o| o.has_osc_clients());
         // The mpv overlay is produced in-process by the `overlay` module and

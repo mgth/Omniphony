@@ -349,6 +349,9 @@ impl DecodeHandler {
         self.spatial.au_index += 1;
 
         self.sync_input_runtime_state(source, &frame)?;
+        if let Some(renderer) = self.spatial_renderer.as_mut() {
+            orender_engine::render::follow_stream_rate(renderer, sample_rate)?;
+        }
 
         // Apply dialogue normalisation from bridge (updated on major sync frames).
         // The level is always stored so OSC clients receive loudness/source

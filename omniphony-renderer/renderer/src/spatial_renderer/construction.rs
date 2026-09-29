@@ -489,44 +489,15 @@ impl SpatialRenderer {
 
         let initial_output_mode = control.live.read().binaural.output_mode;
 
-        // The binaural stage reports each HRIR build to the control, where
-        // the state snapshot picks it up; the bump gets it broadcast.
-        let binaural = {
-            let status_control = std::sync::Arc::clone(&control);
-            crate::binaural::BinauralRenderer::with_status_sink(
-                sample_rate,
-                std::sync::Arc::new(move |status| {
-                    status_control
-                        .binaural_hrir_status
-                        .store(std::sync::Arc::new(status));
-                    status_control.bump_live_state();
-                }),
-            )
-        };
-
-        // The BRIR stage of the cascaded path reports each set load the
-        // same way.
-        let brir = {
-            let status_control = std::sync::Arc::clone(&control);
-            crate::binaural::BrirStage::with_status_sink(
-                sample_rate,
-                std::sync::Arc::new(move |status| {
-                    status_control
-                        .binaural_brir_status
-                        .store(std::sync::Arc::new(status));
-                    status_control.bump_live_state();
-                }),
-            )
-        };
+        let binaural = Self::build_binaural_stage(&control, sample_rate);
+        let brir = Self::build_brir_stage(&control, sample_rate);
 
         Ok(Self {
             num_speakers,
             active_output_mode: initial_output_mode,
             mode_fade: None,
             has_rendered_frame: false,
-            // 5 ms: long enough to bury the step between two DSP chains, short
-            // enough that the switch still feels immediate.
-            mode_fade_samples: ((sample_rate as f32) * 0.005).round().max(1.0) as usize,
+            mode_fade_samples: mode_fade_samples(sample_rate),
             spread_resolution,
             channel_routing: arc_swap::ArcSwap::new(std::sync::Arc::new(Vec::new())),
             first_render: std::sync::atomic::AtomicBool::new(true),
@@ -562,4 +533,81 @@ impl SpatialRenderer {
             object_test_source: Default::default(),
         })
     }
+
+    /// The binaural stage for `sample_rate`. It reports each HRIR build to the
+    /// control, where the state snapshot picks it up; the bump gets it
+    /// broadcast.
+    fn build_binaural_stage(
+        control: &Arc<RendererControl>,
+        sample_rate: u32,
+    ) -> crate::binaural::BinauralRenderer {
+        let status_control = Arc::clone(control);
+        crate::binaural::BinauralRenderer::with_status_sink(
+            sample_rate,
+            Arc::new(move |status| {
+                status_control.binaural_hrir_status.store(Arc::new(status));
+                status_control.bump_live_state();
+            }),
+        )
+    }
+
+    /// The BRIR stage of the cascaded path for `sample_rate`, reporting each
+    /// set load the same way.
+    fn build_brir_stage(
+        control: &Arc<RendererControl>,
+        sample_rate: u32,
+    ) -> crate::binaural::BrirStage {
+        let status_control = Arc::clone(control);
+        crate::binaural::BrirStage::with_status_sink(
+            sample_rate,
+            Arc::new(move |status| {
+                status_control.binaural_brir_status.store(Arc::new(status));
+                status_control.bump_live_state();
+            }),
+        )
+    }
+
+    /// Re-target the renderer to another sample rate: the one the frames it is
+    /// given actually run at. Everything timed in samples is rebuilt for it —
+    /// crossover filters, speaker delay lines, gain slews, the output-mode
+    /// fade, the binaural and BRIR stages — and the per-object ramp state
+    /// starts over; live params and the topology stay. A host that builds the
+    /// renderer before it has seen the stream calls this when the stream's
+    /// rate turns out to differ. A no-op at the current rate (and for 0).
+    ///
+    /// Not a per-frame operation: the stages are rebuilt from scratch.
+    pub fn set_sample_rate(&mut self, sample_rate: u32) -> Result<()> {
+        if sample_rate == 0 || sample_rate == self.sample_rate {
+            return Ok(());
+        }
+        let topology = self.control.active_topology();
+        let topology_identity = Arc::as_ptr(&topology) as usize;
+        self.speaker_stage = super::SpeakerRenderStage::new(
+            &self.control,
+            &topology.speaker_layout,
+            topology_identity,
+            self.num_speakers,
+            sample_rate,
+        )?;
+        self.binaural = Self::build_binaural_stage(&self.control, sample_rate);
+        self.brir = Self::build_brir_stage(&self.control, sample_rate);
+        // Re-derived on the next cascaded frame against the new stages.
+        self.cascade = None;
+        self.last_mix_num_speakers = 0;
+        self.mode_fade = None;
+        self.mode_fade_samples = mode_fade_samples(sample_rate);
+        self.last_output_latency = 0;
+        self.sample_rate = sample_rate;
+        self.control
+            .sample_rate
+            .store(sample_rate, std::sync::atomic::Ordering::Relaxed);
+        self.reset_runtime_state();
+        Ok(())
+    }
+}
+
+/// Length of the output-mode cross-fade: 5 ms, long enough to bury the step
+/// between two DSP chains, short enough that the switch still feels immediate.
+fn mode_fade_samples(sample_rate: u32) -> usize {
+    ((sample_rate as f32) * 0.005).round().max(1.0) as usize
 }
