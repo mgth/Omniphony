@@ -86,7 +86,7 @@ impl WavBridge {
                 data_offset,
                 data_len,
             } => {
-                self.labels = channel_labels(format.channels);
+                self.labels = channel_labels(format.channels, format.channel_mask);
                 self.buf.drain(0..data_offset);
                 bridge_diag_log(
                     log::Level::Info,
@@ -176,13 +176,22 @@ impl WavBridge {
     }
 }
 
-/// Map a channel count to canonical [`RChannelLabel`]s.
+/// Map a WAV's channels to canonical [`RChannelLabel`]s.
 ///
-/// Known layouts use the conventional interleave order; any unrecognised count
-/// labels as many leading channels as it can and marks the rest `Unknown` (still
-/// rendered, just without a canonical position).
-fn channel_labels(channel_count: u16) -> Vec<RChannelLabel> {
+/// A `WAVE_FORMAT_EXTENSIBLE` header's `dwChannelMask` names the positions
+/// (see [`labels_from_mask`]); that is what ffmpeg and most tools write for
+/// more than two channels, in the WAVE order, where a 7.1 is
+/// `FL FR FC LFE BL BR SL SR` — backs before sides.
+///
+/// Without a mask, known counts use this bridge's own interleave order (the
+/// one `examples/gen_demo_wav.rs` writes, sides before backs); any
+/// unrecognised count labels as many leading channels as it can and marks the
+/// rest `Unknown` (still rendered, just without a canonical position).
+fn channel_labels(channel_count: u16, channel_mask: u32) -> Vec<RChannelLabel> {
     use RChannelLabel::*;
+    if channel_mask != 0 {
+        return labels_from_mask(channel_count, channel_mask);
+    }
     let canonical: &[RChannelLabel] = match channel_count {
         1 => &[C],
         2 => &[L, R],
@@ -203,6 +212,62 @@ fn channel_labels(channel_count: u16) -> Vec<RChannelLabel> {
                 .copied()
                 .unwrap_or(RChannelLabel::Unknown)
         })
+        .collect()
+}
+
+/// Speaker positions of the `dwChannelMask` bits, lowest bit first (the order
+/// the channels are interleaved in). `SPEAKER_TOP_BACK_CENTER` has no
+/// renderer label.
+const MASK_POSITIONS: [RChannelLabel; 18] = {
+    use RChannelLabel::*;
+    [
+        L,       // FRONT_LEFT
+        R,       // FRONT_RIGHT
+        C,       // FRONT_CENTER
+        LFE,     // LOW_FREQUENCY
+        Lb,      // BACK_LEFT
+        Rb,      // BACK_RIGHT
+        Lsc,     // FRONT_LEFT_OF_CENTER
+        Rsc,     // FRONT_RIGHT_OF_CENTER
+        Cb,      // BACK_CENTER
+        Ls,      // SIDE_LEFT
+        Rs,      // SIDE_RIGHT
+        Tc,      // TOP_CENTER
+        Tfl,     // TOP_FRONT_LEFT
+        Tfc,     // TOP_FRONT_CENTER
+        Tfr,     // TOP_FRONT_RIGHT
+        Tbl,     // TOP_BACK_LEFT
+        Unknown, // TOP_BACK_CENTER
+        Tbr,     // TOP_BACK_RIGHT
+    ]
+};
+
+const MASK_BACK_PAIR: u32 = 0b11 << 4;
+const MASK_SIDE_PAIR: u32 = 0b11 << 9;
+
+/// Label channels from a `dwChannelMask`: one channel per set bit, in
+/// ascending bit order. Channels beyond the mask's positions (or on a
+/// position with no renderer label) are `Unknown`.
+///
+/// A back pair with no side pair is the surround pair of a 5.1 written as
+/// `FL FR FC LFE BL BR` (ffmpeg's `5.1`, as opposed to `5.1(side)`), so it is
+/// labelled `Ls`/`Rs`, as a 5.1's surrounds are everywhere else. With both
+/// pairs present, the backs are `Lb`/`Rb` and the sides `Ls`/`Rs`.
+fn labels_from_mask(channel_count: u16, channel_mask: u32) -> Vec<RChannelLabel> {
+    use RChannelLabel::*;
+    let backs_are_surrounds =
+        channel_mask & MASK_BACK_PAIR != 0 && channel_mask & MASK_SIDE_PAIR == 0;
+    let mut positions = MASK_POSITIONS
+        .iter()
+        .enumerate()
+        .filter(|&(bit, _)| channel_mask & (1 << bit) != 0)
+        .map(|(_, &label)| match label {
+            Lb if backs_are_surrounds => Ls,
+            Rb if backs_are_surrounds => Rs,
+            label => label,
+        });
+    (0..channel_count)
+        .map(|_| positions.next().unwrap_or(Unknown))
         .collect()
 }
 
@@ -321,17 +386,89 @@ mod tests {
     #[test]
     fn labels_for_supported_counts() {
         use RChannelLabel::*;
-        assert_eq!(channel_labels(2), vec![L, R]);
-        assert_eq!(channel_labels(6), vec![L, R, C, LFE, Ls, Rs]);
+        assert_eq!(channel_labels(2, 0), vec![L, R]);
+        assert_eq!(channel_labels(6, 0), vec![L, R, C, LFE, Ls, Rs]);
         assert_eq!(
-            channel_labels(12),
+            channel_labels(12, 0),
             vec![L, R, C, LFE, Ls, Rs, Lb, Rb, Tfl, Tfr, Tbl, Tbr]
         );
         // Unsupported count: best-effort prefix then Unknown.
-        let three = channel_labels(3);
+        let three = channel_labels(3, 0);
         assert_eq!(three, vec![L, R, C]);
-        let seven = channel_labels(7);
+        let seven = channel_labels(7, 0);
         assert_eq!(&seven[..6], &[L, R, C, LFE, Ls, Rs]);
+    }
+
+    #[test]
+    fn channel_mask_orders_backs_before_sides() {
+        use RChannelLabel::*;
+        // KSAUDIO_SPEAKER_7POINT1_SURROUND, what ffmpeg writes for 7.1:
+        // FL FR FC LFE BL BR SL SR.
+        assert_eq!(channel_labels(8, 0x63F), vec![L, R, C, LFE, Lb, Rb, Ls, Rs]);
+        // 7.1.4: the four top channels follow, in bit order.
+        assert_eq!(
+            channel_labels(12, 0x2D63F),
+            vec![L, R, C, LFE, Lb, Rb, Ls, Rs, Tfl, Tfr, Tbl, Tbr]
+        );
+    }
+
+    #[test]
+    fn channel_mask_five_one_surrounds() {
+        use RChannelLabel::*;
+        // 5.1(side) and the older back-pair 5.1 are both a 5.1's surrounds.
+        assert_eq!(channel_labels(6, 0x60F), vec![L, R, C, LFE, Ls, Rs]);
+        assert_eq!(channel_labels(6, 0x3F), vec![L, R, C, LFE, Ls, Rs]);
+    }
+
+    #[test]
+    fn channel_mask_shorter_than_channel_count() {
+        use RChannelLabel::*;
+        // Stereo mask on four channels: the extra two have no position.
+        assert_eq!(channel_labels(4, 0x3), vec![L, R, Unknown, Unknown]);
+        // More positions than channels: only the first ones are used.
+        assert_eq!(channel_labels(2, 0x63F), vec![L, R]);
+    }
+
+    /// A 16-bit `WAVE_FORMAT_EXTENSIBLE` file carrying `channel_mask`.
+    fn write_extensible_wav(channels: u16, channel_mask: u32, frames: usize) -> Vec<u8> {
+        let sample_rate = 48_000u32;
+        let data = vec![0u8; frames * channels as usize * 2];
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&(60 + data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&40u32.to_le_bytes());
+        buf.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        buf.extend_from_slice(&channels.to_le_bytes());
+        buf.extend_from_slice(&sample_rate.to_le_bytes());
+        buf.extend_from_slice(&(sample_rate * channels as u32 * 2).to_le_bytes());
+        buf.extend_from_slice(&(channels * 2).to_le_bytes());
+        buf.extend_from_slice(&16u16.to_le_bytes());
+        buf.extend_from_slice(&22u16.to_le_bytes()); // cbSize
+        buf.extend_from_slice(&16u16.to_le_bytes()); // wValidBitsPerSample
+        buf.extend_from_slice(&channel_mask.to_le_bytes());
+        // KSDATAFORMAT_SUBTYPE_PCM: 00000001-0000-0010-8000-00aa00389b71
+        buf.extend_from_slice(&[
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38,
+            0x9B, 0x71,
+        ]);
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&data);
+        buf
+    }
+
+    #[test]
+    fn extensible_file_is_labelled_from_its_channel_mask() {
+        use RChannelLabel::*;
+        let wav = write_extensible_wav(8, 0x63F, 4);
+        let mut bridge = WavBridge::new(false);
+        let r = bridge.push_packet(RSlice::from_slice(&wav), RInputTransport::Raw, 0);
+        assert!(r.error_message.is_empty());
+        let f = &r.frames[0];
+        assert_eq!(f.channel_count, 8);
+        assert_eq!(f.channel_labels.as_slice(), &[L, R, C, LFE, Lb, Rb, Ls, Rs]);
     }
 
     #[test]
