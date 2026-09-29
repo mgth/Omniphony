@@ -259,9 +259,10 @@ fn auto_discovery_dirs() -> Vec<PathBuf> {
 }
 
 /// Look for a `*_bridge.{so,dll,dylib}` in the auto-discovery directories.
-/// Used as a fallback both by [`resolve_bridge`] and by
-/// [`crate::engine::Engine::from_paths`] when no explicit / config-provided
-/// path exists or the one provided no longer points at a real file.
+/// [`resolve_bridge`] (the CLI's and [`crate::engine::Engine::from_paths`]'s
+/// resolution) falls back to it only when no path was requested at all: a
+/// requested path that does not resolve to a file is an error, never a cue
+/// to load some other bridge.
 pub fn find_bridge_next_to_exe() -> Result<PathBuf> {
     find_bridge_in_dirs(&auto_discovery_dirs())
 }
