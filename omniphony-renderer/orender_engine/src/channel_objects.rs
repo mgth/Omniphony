@@ -14,11 +14,16 @@
 //! `bed | phantom objects | height objects`, and the object channels ride the
 //! existing object/VBAP path. Both stages are zero-cost when inactive.
 //!
+//! The owner holds the one planar pool both stages write into and builds the
+//! extended buffer once, whichever stages ran; the hosts drive it through
+//! [`ChannelObjectStages::sync_from_control`], one read of the live params
+//! per frame.
+//!
 //! [`Engine`]: crate::engine::Engine
 
 use std::collections::HashMap;
 
-use renderer::live_params::PhantomExtractMode;
+use renderer::live_params::{PhantomExtractMode, RendererControl};
 use renderer::spatial_renderer::SpatialChannelEvent;
 
 use crate::object_gen::{ObjectGenStage, ObjectGeneratorFactory, PrepareCtx, SynthObjectSpec};
@@ -64,10 +69,105 @@ impl StageCounts {
     }
 }
 
+/// What [`ChannelObjectStages::sync_from_control`] read and planned for a
+/// frame — the stage counts plus the selection behind them, for the host's
+/// diagnostic state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StageSync {
+    pub counts: StageCounts,
+    pub synthetic_objects_enabled: bool,
+    pub phantom_mode: PhantomExtractMode,
+    /// A generator is selected, whatever the master says
+    /// ([`StageSelection::generator_selected`]).
+    pub generator_selected: bool,
+    pub options_epoch: u64,
+}
+
+/// One synthesizing stage, as the owner runs it once planned: its live
+/// parameters, and its per-frame DSP into the owner's planar pool.
+trait ChannelObjectStage {
+    fn set_param(&mut self, key: &str, value: f32, sample_rate: u32);
+
+    /// Write this frame's object audio into `out` (one zeroed buffer of
+    /// `sample_count` samples per spec). A stage may modify `bed` in place:
+    /// the phantom pre-stage subtracts what it extracts.
+    fn process(
+        &mut self,
+        bed: &mut [f32],
+        channel_count: usize,
+        sample_count: usize,
+        sample_rate: u32,
+        out: &mut [Vec<f32>],
+    );
+}
+
+impl ChannelObjectStage for PhantomExtractStage {
+    fn set_param(&mut self, key: &str, value: f32, sample_rate: u32) {
+        PhantomExtractStage::set_param(self, key, value, sample_rate);
+    }
+
+    fn process(
+        &mut self,
+        bed: &mut [f32],
+        channel_count: usize,
+        sample_count: usize,
+        _sample_rate: u32,
+        out: &mut [Vec<f32>],
+    ) {
+        PhantomExtractStage::process(self, bed, channel_count, sample_count, out);
+    }
+}
+
+impl ChannelObjectStage for ObjectGenStage {
+    fn set_param(&mut self, key: &str, value: f32, sample_rate: u32) {
+        ObjectGenStage::set_param(self, key, value, sample_rate);
+    }
+
+    fn process(
+        &mut self,
+        bed: &mut [f32],
+        channel_count: usize,
+        sample_count: usize,
+        sample_rate: u32,
+        out: &mut [Vec<f32>],
+    ) {
+        ObjectGenStage::process(self, bed, channel_count, sample_count, sample_rate, out);
+    }
+}
+
+/// Interleave `planar` after the `channel_count` channels of `bed` into
+/// `out` (resized; no allocation once warm) and return the extended width.
+pub(crate) fn extend_interleaved(
+    bed: &[f32],
+    channel_count: usize,
+    sample_count: usize,
+    planar: &[Vec<f32>],
+    out: &mut Vec<f32>,
+) -> usize {
+    let out_ch = channel_count + planar.len();
+    out.clear();
+    out.resize(sample_count * out_ch, 0.0);
+    for s in 0..sample_count {
+        let src = &bed[s * channel_count..s * channel_count + channel_count];
+        let dst = &mut out[s * out_ch..s * out_ch + out_ch];
+        dst[..channel_count].copy_from_slice(src);
+        for (k, buf) in planar.iter().enumerate() {
+            dst[channel_count + k] = buf[s];
+        }
+    }
+    out_ch
+}
+
 /// The phantom-extraction and height-lift stages, driven as one.
 pub struct ChannelObjectStages {
     phantom: PhantomExtractStage,
     object_gen: ObjectGenStage,
+    /// Planar object audio for both stages, phantom objects first — one
+    /// buffer per planned object, kept across frames.
+    planar: Vec<Vec<f32>>,
+    /// The extended interleaved buffer: `bed | phantom objects | height
+    /// objects`.
+    pcm_ext: Vec<f32>,
 }
 
 impl ChannelObjectStages {
@@ -75,6 +175,8 @@ impl ChannelObjectStages {
         Self {
             phantom: PhantomExtractStage::new(),
             object_gen: ObjectGenStage::new(),
+            planar: Vec::new(),
+            pcm_ext: Vec::new(),
         }
     }
 
@@ -123,6 +225,34 @@ impl ChannelObjectStages {
         StageCounts { phantom, synth }
     }
 
+    /// Read the stage selection and parameters off the live params (one read
+    /// lock, nothing cloned), (re)plan both stages and push their parameters —
+    /// what both hosts do on every channel frame.
+    pub fn sync_from_control(&mut self, control: &RendererControl, ctx: &PrepareCtx) -> StageSync {
+        let options_epoch = control.options_epoch();
+        let live = control.live.read();
+        let selection = StageSelection {
+            synthetic_objects_enabled: live.synthetic_objects_enabled,
+            phantom_mode: live.phantom_extract_mode,
+            generator_id: &live.object_generator_id,
+        };
+        let counts = self.sync(ctx, &selection, options_epoch);
+        if counts.any() {
+            self.push_params(
+                &live.phantom_params,
+                &live.object_generator_params,
+                ctx.sample_rate,
+            );
+        }
+        StageSync {
+            counts,
+            synthetic_objects_enabled: selection.synthetic_objects_enabled,
+            phantom_mode: selection.phantom_mode,
+            generator_selected: selection.generator_selected(),
+            options_epoch,
+        }
+    }
+
     /// Push each stage's live parameter overrides.
     ///
     /// Sparse: absent keys keep the stage default. Cheap and idempotent, so a
@@ -133,11 +263,14 @@ impl ChannelObjectStages {
         generator_params: &HashMap<String, f32>,
         sample_rate: u32,
     ) {
-        for (key, &value) in phantom_params.iter() {
-            self.phantom.set_param(key, value, sample_rate);
-        }
-        for (key, &value) in generator_params.iter() {
-            self.object_gen.set_param(key, value, sample_rate);
+        let stages: [(&mut dyn ChannelObjectStage, &HashMap<String, f32>); 2] = [
+            (&mut self.phantom, phantom_params),
+            (&mut self.object_gen, generator_params),
+        ];
+        for (stage, params) in stages {
+            for (key, &value) in params.iter() {
+                stage.set_param(key, value, sample_rate);
+            }
         }
     }
 
@@ -204,7 +337,8 @@ impl ChannelObjectStages {
     ///
     /// `bed` is modified in place by the phantom pre-stage. Pass the counts from
     /// [`sync`](Self::sync) for this frame: a stage that planned nothing is
-    /// skipped rather than asked for an empty extension.
+    /// skipped. The height lift reads the bed the phantom stage reduced, and
+    /// both write into the one planar pool, interleaved once.
     ///
     /// The result borrows from the stages when either ran and from `bed` when
     /// neither did, so both are held for as long as it lives — the caller gets
@@ -217,18 +351,36 @@ impl ChannelObjectStages {
         sample_rate: u32,
         counts: StageCounts,
     ) -> (&'a [f32], usize) {
-        let (mid_pcm, mid_channels): (&[f32], usize) = if counts.phantom > 0 {
-            self.phantom
-                .process_and_extend(bed, channel_count, sample_count, sample_rate)
-        } else {
-            (&*bed, channel_count)
-        };
-        if counts.synth > 0 {
-            self.object_gen
-                .fill_and_extend(mid_pcm, mid_channels, sample_count, sample_rate)
-        } else {
-            (mid_pcm, mid_channels)
+        let total = counts.total();
+        if total == 0 {
+            return (&*bed, channel_count);
         }
+        if self.planar.len() < total {
+            self.planar.resize_with(total, Vec::new);
+        }
+        let planar = &mut self.planar[..total];
+        for buf in planar.iter_mut() {
+            buf.clear();
+            buf.resize(sample_count, 0.0);
+        }
+        let (phantom_out, synth_out) = planar.split_at_mut(counts.phantom);
+        let stages: [(&mut dyn ChannelObjectStage, &mut [Vec<f32>]); 2] = [
+            (&mut self.phantom, phantom_out),
+            (&mut self.object_gen, synth_out),
+        ];
+        for (stage, out) in stages {
+            if !out.is_empty() {
+                stage.process(bed, channel_count, sample_count, sample_rate, out);
+            }
+        }
+        let out_ch = extend_interleaved(
+            bed,
+            channel_count,
+            sample_count,
+            &self.planar[..total],
+            &mut self.pcm_ext,
+        );
+        (&self.pcm_ext, out_ch)
     }
 }
 
@@ -278,6 +430,81 @@ mod tests {
         };
         assert!(counts.any());
         assert_eq!(counts.total(), 5);
+    }
+
+    fn renderer_7_1_4() -> renderer::spatial_renderer::SpatialRenderer {
+        crate::renderer_build::build_spatial_renderer(
+            &crate::renderer_build::SpatialRendererParams::from_render_config(None),
+            renderer::speaker_layout::SpeakerLayout::preset("7.1.4").expect("preset layout"),
+            48_000,
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 9,
+                y_size: 9,
+                z_size: 5,
+                allow_negative_z: true,
+            },
+            bridge_api::RVbapTableMode::Cartesian,
+            None,
+        )
+        .expect("renderer")
+    }
+
+    /// Both stages from the live params in one call: the selection facts the
+    /// hosts publish come back with the counts, and the extended buffer is
+    /// `bed | phantom objects | height objects`, the lift reading the bed
+    /// the phantom stage reduced.
+    #[test]
+    fn both_stages_share_one_extension() {
+        use bridge_api::RChannelLabel::*;
+        let renderer = renderer_7_1_4();
+        let control = renderer.renderer_control();
+        {
+            let mut live = control.live.write();
+            live.synthetic_objects_enabled = true;
+            live.phantom_extract_mode = PhantomExtractMode::Broadband;
+            live.object_generator_id = "copy_up".to_string();
+        }
+        let labels = [L, R, C, LFE, Ls, Rs];
+        let poses = crate::virtual_bed::room_bed_poses(
+            &labels,
+            renderer::live_params::SurroundPlacement::Side,
+        );
+        let topology = control.active_topology();
+        let ctx = PrepareCtx {
+            input_labels: &labels,
+            output_layout: &topology.speaker_layout,
+            sample_rate: 48_000,
+            bed_poses: &poses,
+        };
+        let mut stages = ChannelObjectStages::new();
+        let sync = stages.sync_from_control(&control, &ctx);
+        assert!(sync.synthetic_objects_enabled && sync.generator_selected);
+        assert_eq!(sync.phantom_mode, PhantomExtractMode::Broadband);
+        assert_eq!(sync.options_epoch, control.options_epoch());
+        let counts = sync.counts;
+        assert!(counts.phantom > 0 && counts.synth == 5, "{counts:?}");
+
+        // Correlated L/C content: the phantom stage pulls part of it out of
+        // the bed, so the lift must see the reduced channels.
+        let (c, n) = (labels.len(), 256);
+        let mut bed = vec![0.0f32; c * n];
+        for s in 0..n {
+            let v = (s as f32 * 0.05).sin();
+            bed[s * c] = v;
+            bed[s * c + 2] = v;
+            bed[s * c + 4] = 0.3 * (s as f32 * 0.11).cos();
+        }
+        let (ext, width) = stages.process_and_extend(&mut bed, c, n, 48_000, counts);
+        assert_eq!(width, c + counts.total());
+        let ext = ext.to_vec();
+        let lifted_sources: Vec<usize> = (0..c).filter(|&ch| labels[ch] != LFE).collect();
+        for s in 0..n {
+            let row = &ext[s * width..(s + 1) * width];
+            assert_eq!(&row[..c], &bed[s * c..(s + 1) * c], "reduced bed first");
+            for (k, &src) in lifted_sources.iter().enumerate() {
+                assert_eq!(row[c + counts.phantom + k], row[src], "lift of ch {src}");
+            }
+        }
     }
 
     /// With nothing planned the bed must come back untouched, not copied into

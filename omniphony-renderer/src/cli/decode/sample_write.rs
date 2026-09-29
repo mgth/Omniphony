@@ -471,24 +471,12 @@ impl<'a> SampleWriteCoordinator<'a> {
 
                     // Synthesize objects from the bed, as the embedded engine
                     // does: plan first so each object gets its channel event,
-                    // then extend the PCM below with its audio.
-                    let (master, phantom_mode, generator_id, options_epoch) = {
-                        let control = renderer.renderer_control();
-                        let live = control.live.read();
-                        (
-                            live.synthetic_objects_enabled,
-                            live.phantom_extract_mode,
-                            live.object_generator_id.clone(),
-                            control.options_epoch(),
-                        )
-                    };
-                    // Borrowed from the live topology rather than
-                    // `speaker_layout()`, which hands back a deep copy of the
-                    // whole layout.
-                    let topology = renderer.renderer_control().active_topology();
+                    // then extend the PCM below with its audio. The layout is
+                    // borrowed from the live topology rather than
+                    // `speaker_layout()`, which hands back a deep copy of it.
+                    let control = renderer.renderer_control();
+                    let topology = control.active_topology();
                     let output_layout = &topology.speaker_layout;
-                    let surround_placement =
-                        renderer.renderer_control().live.read().surround_placement;
                     let stage_counts = {
                         let ctx = orender_engine::object_gen::PrepareCtx {
                             input_labels: labels,
@@ -496,28 +484,13 @@ impl<'a> SampleWriteCoordinator<'a> {
                             sample_rate: frame.sampling_frequency,
                             bed_poses: self.spatial.bed_planner.poses(),
                         };
-                        let selection = orender_engine::channel_objects::StageSelection {
-                            synthetic_objects_enabled: master,
-                            phantom_mode,
-                            generator_id: generator_id.as_str(),
-                        };
                         self.spatial
                             .channel_objects
-                            .sync(&ctx, &selection, options_epoch)
+                            .sync_from_control(&control, &ctx)
+                            .counts
                     };
-                    if stage_counts.any() {
-                        {
-                            let control = renderer.renderer_control();
-                            let live = control.live.read();
-                            self.spatial.channel_objects.push_params(
-                                &live.phantom_params,
-                                &live.object_generator_params,
-                                frame.sampling_frequency,
-                            );
-                        }
-                        let events = self.spatial.channel_objects.events(channel_count);
-                        self.spatial.bed_events.extend(events);
-                    }
+                    let events = self.spatial.channel_objects.events(channel_count);
+                    self.spatial.bed_events.extend(events);
 
                     fill_pcm_f32_drc(
                         &mut pcm_f32_scratch,
@@ -675,12 +648,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                         // room ratios, so they are read (and the layout copied)
                         // here rather than on every frame — with no client
                         // attached, never.
-                        let (placement, room) = {
-                            let control = renderer.renderer_control();
+                        let (placement, room, surround_placement) = {
                             let live = control.live.read();
                             (
                                 OwnedPlacement::from_live(&live, self.spatial.source_family),
                                 RoomRatios::from_live(&live),
+                                live.surround_placement,
                             )
                         };
                         if let (Some(ref mut osc_sender), Some(mut objects)) = (

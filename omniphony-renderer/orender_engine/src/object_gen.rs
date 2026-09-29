@@ -1365,10 +1365,6 @@ pub struct ObjectGenStage {
     registry: ObjectGeneratorRegistry,
     generator: Option<Box<dyn ObjectGenerator>>,
     specs: Vec<SynthObjectSpec>,
-    /// Per-object planar audio scratch (persistent; one Vec per planned object).
-    planar: Vec<Vec<f32>>,
-    /// Extended interleaved PCM (bed channels + synthesized object channels).
-    pcm_ext: Vec<f32>,
     sig: PlanSig,
 }
 
@@ -1378,8 +1374,6 @@ impl ObjectGenStage {
             registry: ObjectGeneratorRegistry::with_builtins(),
             generator: None,
             specs: Vec::new(),
-            planar: Vec::new(),
-            pcm_ext: Vec::new(),
             sig: PlanSig::default(),
         }
     }
@@ -1430,8 +1424,6 @@ impl ObjectGenStage {
                 Some(g) => g.prepare(ctx),
                 None => Vec::new(),
             };
-            self.planar.truncate(self.specs.len());
-            self.planar.resize_with(self.specs.len(), Vec::new);
         }
         self.specs.len()
     }
@@ -1445,21 +1437,18 @@ impl ObjectGenStage {
         }
     }
 
-    /// Run the per-frame DSP and return the bed PCM extended with the
-    /// synthesized object channels, plus the new channel count. Call only when
-    /// [`sync`](Self::sync) returned `> 0`.
-    pub fn fill_and_extend(
+    /// Run the per-frame DSP: each planned object's audio is written to its
+    /// buffer of `out` (one per [`specs`](Self::specs) entry, zeroed,
+    /// `sample_count` samples long). Call only when [`sync`](Self::sync)
+    /// returned `> 0`.
+    pub fn process(
         &mut self,
         bed_pcm: &[f32],
         channel_count: usize,
         sample_count: usize,
         sample_rate: u32,
-    ) -> (&[f32], usize) {
-        let m = self.specs.len();
-        for buf in self.planar.iter_mut() {
-            buf.clear();
-            buf.resize(sample_count, 0.0);
-        }
+        out: &mut [Vec<f32>],
+    ) {
         if let Some(generator) = self.generator.as_mut() {
             let bed = BedFrame {
                 pcm: bed_pcm,
@@ -1467,20 +1456,8 @@ impl ObjectGenStage {
                 sample_count,
                 sample_rate,
             };
-            generator.process(&bed, &mut self.planar);
+            generator.process(&bed, out);
         }
-        let out_ch = channel_count + m;
-        self.pcm_ext.clear();
-        self.pcm_ext.resize(sample_count * out_ch, 0.0);
-        for s in 0..sample_count {
-            let src = &bed_pcm[s * channel_count..s * channel_count + channel_count];
-            let dst = &mut self.pcm_ext[s * out_ch..s * out_ch + out_ch];
-            dst[..channel_count].copy_from_slice(src);
-            for (k, buf) in self.planar.iter().enumerate().take(m) {
-                dst[channel_count + k] = buf[s];
-            }
-        }
-        (&self.pcm_ext, out_ch)
     }
 }
 
