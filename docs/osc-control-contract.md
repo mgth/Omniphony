@@ -37,9 +37,9 @@ drops to `0` at once, and the new value reaches everyone through the
 live-state snapshot (`/state/renderer`, `/state/speakers`, …). Discrete edits
 send the snapshot right away; slider-driven ones (generator / phantom params,
 placement entries, realtime gains) let it ride the OSC loop's poll, at most one
-snapshot per 200 ms tick. Registry options, head recenter / calibration and
-profile operations are also written to `config.yaml` immediately; everything
-else waits for `/control/save_config`.
+snapshot per 200 ms tick. Registry options flagged `persist`, head recenter /
+calibration and profile operations are also written to `config.yaml`
+immediately; everything else waits for `/control/save_config`.
 
 ---
 
@@ -115,9 +115,9 @@ payload shape.
 | `/control/gain` | f `≥0` (linear) | Master gain without a sequence number (scripts). Same field as the realtime address. |
 | `/control/object/{id}/mute` | int bool | Per-object mute. |
 | `/control/config/speakers` | json | Speaker edits (incl. per-speaker mute). |
-| `/control/loudness` | int bool | Dialogue-norm / loudness correction. |
-| `/control/auto_gain` | int bool | Auto gain-reduction on clipping. |
-| `/control/auto_gain_ceiling` | f `[-12,0]` dB | Auto-gain target ceiling. |
+| `/control/loudness` | int bool | Dialogue-norm / loudness correction. Registry option alias (`use_loudness`). |
+| `/control/auto_gain` | int bool | Auto gain-reduction on clipping. Registry option alias. |
+| `/control/auto_gain_ceiling` | f `[-12,0]` dB | Auto-gain target ceiling. Registry option alias (`auto_gain_ceiling_db`). |
 
 ### Adaptive resampling (output clock servo)
 
@@ -144,8 +144,8 @@ latency. See `PI_TUNING_PROCEDURE.md` and `docs/latency-regulation.md`.
 | `/control/config/input`, `/control/config/input/apply`, `/control/input/apply` | json | Input config (stage / apply). |
 | `/control/input/mode` | s | Input source mode. |
 | `/control/input/refresh` | — | Re-enumerate input sources. |
-| `/control/input/drc_mode` | s | Dynamic-range-control mode. |
-| `/control/input/drc_weight` | f `[0,1]` | DRC weight. |
+| `/control/input/drc_mode` | s | Dynamic-range-control mode (one of the bridge's `supportedDrcModes`). Registry option alias. |
+| `/control/input/drc_weight` | f `[0,1]` | DRC weight. Registry option alias. |
 | `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,clock_mode,map,lfe_mode}` | varies | Live-capture parameters. |
 | `/control/render/bridge_path` | s | Path to the format bridge library. |
 | `/control/render/input_pipe` | s | Named-pipe input path. |
@@ -234,12 +234,15 @@ objects stages (height generator, phantom extraction).
 
 `/control/option [key (string), value]` sets any option declared in the
 `renderer::options` registry (schema on `/state/options_schema`, values in the
-`options` block of `/state/renderer`). Every option is persisted to
-`config.yaml` as soon as it is set. The nine dedicated addresses above are
-aliases of it: `synthetic_objects`, `object_generator`, `phantom_extract`,
-`surround_placement`, `output_channel_mapping`, `crossover_type`,
-`crossover_fir_transition_ratio`, `decode_thread`,
-`binaural/hrir_update_lattice`. See `docs/live-options-registry.md`.
+`options` block of `/state/renderer`). Options flagged `persist` in the
+schema are written to `config.yaml` as soon as they are set; the others wait
+for `/control/save_config`. The fifteen dedicated addresses marked "Registry
+option alias" above are aliases of it: `synthetic_objects`,
+`object_generator`, `phantom_extract`, `surround_placement`,
+`output_channel_mapping`, `crossover_type`, `crossover_fir_transition_ratio`,
+`decode_thread`, `binaural/hrir_update_lattice`, `auto_gain`,
+`auto_gain_ceiling`, `loudness`, `ramp_mode`, `input/drc_mode`,
+`input/drc_weight`. See `docs/live-options-registry.md`.
 
 ### Config profiles
 
@@ -383,7 +386,7 @@ and heatmap configuration.
 | `/control/debug/speaker_gaintable/unsubscribe` | — | Release the gain-table subscription. |
 | `/control/debug/speaker_gaintable/nack` | … | Request missing chunks / version. |
 | `/control/log_level` | s | `off`\|`error`\|`warn`\|`info`\|`debug`\|`trace`. |
-| `/control/ramp_mode` | s | Object-transition ramp: `off` \| `frame` \| `interp` \| `sample`. |
+| `/control/ramp_mode` | s | Object-transition ramp: `off` \| `frame` \| `interp` \| `sample`. Registry option alias. |
 | `/control/option` | s key, value | Generic setter for any declared live option — see [Live options](#live-options). |
 | `/control/save_config` | — | Persist the current config. |
 | `/control/reload_config` | — | Reload config from disk. |

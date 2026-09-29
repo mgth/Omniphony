@@ -31,7 +31,7 @@
 use crate::config::RenderConfig;
 use crate::live_params::{
     CrossoverType, HrirUpdateLattice, LiveParams, OutputChannelMapping, PhantomExtractMode,
-    SurroundPlacement,
+    RampMode, SurroundPlacement,
 };
 use omniphony_osc_contract as osc_contract;
 
@@ -134,6 +134,72 @@ pub struct OptionSpec {
     pub config_seed: fn(&mut LiveParams, &RenderConfig),
 }
 
+/// A boolean from the raw shapes a `Bool` option accepts: a bool, or a number
+/// (`0` = false). Strings are rejected.
+fn raw_bool(raw: &RawOptionValue) -> Option<bool> {
+    match raw {
+        RawOptionValue::Number(n) => Some(*n != 0.0),
+        RawOptionValue::Bool(b) => Some(*b),
+        RawOptionValue::Str(_) => None,
+    }
+}
+
+/// Canonical wire spelling of a boolean option value.
+fn bool_canonical(value: bool) -> String {
+    if value { "1" } else { "0" }.to_string()
+}
+
+/// The string of a string-shaped value (`Enum` / `Str` options); other shapes
+/// are rejected.
+fn raw_str<'a>(raw: &RawOptionValue<'a>) -> Option<&'a str> {
+    match raw {
+        RawOptionValue::Str(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// A `Float` option value: a number or a parseable string, finite, clamped to
+/// the bounds declared by `kind` — so a row states its range once, in its
+/// `kind`, and the setter, the seed and the schema all read it from there.
+fn raw_float(raw: &RawOptionValue, kind: OptionKind) -> Option<f32> {
+    let value = match raw {
+        RawOptionValue::Number(n) => *n as f32,
+        RawOptionValue::Str(s) => s.trim().parse::<f32>().ok()?,
+        RawOptionValue::Bool(_) => return None,
+    };
+    value.is_finite().then(|| clamp_to(kind, value))
+}
+
+/// Clamp `value` to the bounds of a `Float` kind (identity for other kinds).
+fn clamp_to(kind: OptionKind, value: f32) -> f32 {
+    match kind {
+        OptionKind::Float { min, max, .. } => value.clamp(min, max),
+        _ => value,
+    }
+}
+
+const CROSSOVER_FIR_TRANSITION_RATIO_KIND: OptionKind = OptionKind::Float {
+    min: 0.05,
+    max: 2.0,
+    step: 0.05,
+};
+/// dBFS target of the anti-clip auto-gain: at or below 0 dBFS.
+const AUTO_GAIN_CEILING_DB_KIND: OptionKind = OptionKind::Float {
+    min: -12.0,
+    max: 0.0,
+    step: 0.1,
+};
+const DRC_WEIGHT_KIND: OptionKind = OptionKind::Float {
+    min: 0.0,
+    max: 1.0,
+    step: 0.01,
+};
+
+#[inline]
+fn round6(v: f32) -> f32 {
+    (v * 1_000_000.0).round() / 1_000_000.0
+}
+
 /// Every declared live option. Iterated by the OSC dispatcher, persistence,
 /// seeding, the snapshot, the schema dump, and the conformance net.
 pub static LIVE_OPTIONS: &[OptionSpec] = &[
@@ -145,13 +211,10 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         i18n_key: "twoDSources.surroundLabel",
         help_i18n_key: None,
         legacy_control_addr: osc_contract::CONTROL_SURROUND_PLACEMENT,
-        set: |live, raw| match raw {
-            RawOptionValue::Str(s) => {
-                let placement = SurroundPlacement::from_str(s)?;
-                live.surround_placement = placement;
-                Some(placement.as_str().to_string())
-            }
-            _ => None,
+        set: |live, raw| {
+            let placement = SurroundPlacement::from_str(raw_str(raw)?)?;
+            live.surround_placement = placement;
+            Some(placement.as_str().to_string())
         },
         get_json: |live| live.surround_placement.as_str().into(),
         config_store: |render, live| {
@@ -172,13 +235,9 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         help_i18n_key: Some("help.syntheticObjects"),
         legacy_control_addr: osc_contract::CONTROL_SYNTHETIC_OBJECTS,
         set: |live, raw| {
-            let enabled = match raw {
-                RawOptionValue::Number(n) => *n != 0.0,
-                RawOptionValue::Bool(b) => *b,
-                RawOptionValue::Str(_) => return None,
-            };
+            let enabled = raw_bool(raw)?;
             live.synthetic_objects_enabled = enabled;
-            Some(if enabled { "1" } else { "0" }.to_string())
+            Some(bool_canonical(enabled))
         },
         get_json: |live| live.synthetic_objects_enabled.into(),
         // Always persist this master, including false: an explicit false must
@@ -202,13 +261,9 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         help_i18n_key: Some("help.decodeThread"),
         legacy_control_addr: osc_contract::CONTROL_DECODE_THREAD,
         set: |live, raw| {
-            let enabled = match raw {
-                RawOptionValue::Number(n) => *n != 0.0,
-                RawOptionValue::Bool(b) => *b,
-                RawOptionValue::Str(_) => return None,
-            };
+            let enabled = raw_bool(raw)?;
             live.decode_thread = enabled;
-            Some(if enabled { "1" } else { "0" }.to_string())
+            Some(bool_canonical(enabled))
         },
         get_json: |live| live.decode_thread.into(),
         config_store: |render, live| {
@@ -228,13 +283,10 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         i18n_key: "audio.channelMapping",
         help_i18n_key: None,
         legacy_control_addr: osc_contract::CONTROL_OUTPUT_CHANNEL_MAPPING,
-        set: |live, raw| match raw {
-            RawOptionValue::Str(s) => {
-                let mapping = OutputChannelMapping::from_str(s)?;
-                live.output_channel_mapping = mapping;
-                Some(mapping.as_str().to_string())
-            }
-            _ => None,
+        set: |live, raw| {
+            let mapping = OutputChannelMapping::from_str(raw_str(raw)?)?;
+            live.output_channel_mapping = mapping;
+            Some(mapping.as_str().to_string())
         },
         get_json: |live| live.output_channel_mapping.as_str().into(),
         config_store: |render, live| {
@@ -254,17 +306,15 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         i18n_key: "twoDSources.objectGeneratorLabel",
         help_i18n_key: Some("help.objectGenerator"),
         legacy_control_addr: osc_contract::CONTROL_OBJECT_GENERATOR,
-        set: |live, raw| match raw {
-            RawOptionValue::Str(s) => {
-                if live.object_generator_id != *s {
-                    // New generator: drop the previous one's param overrides so
-                    // the new generator starts at its declared defaults.
-                    live.object_generator_params.clear();
-                }
-                live.object_generator_id = s.to_string();
-                Some(s.to_string())
+        set: |live, raw| {
+            let id = raw_str(raw)?;
+            if live.object_generator_id != id {
+                // New generator: drop the previous one's param overrides so
+                // the new generator starts at its declared defaults.
+                live.object_generator_params.clear();
             }
-            _ => None,
+            live.object_generator_id = id.to_string();
+            Some(id.to_string())
         },
         get_json: |live| live.object_generator_id.as_str().into(),
         config_store: |render, live| {
@@ -330,13 +380,10 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         i18n_key: "renderer.crossoverTypeLabel",
         help_i18n_key: Some("help.crossoverType"),
         legacy_control_addr: osc_contract::CONTROL_CROSSOVER_TYPE,
-        set: |live, raw| match raw {
-            RawOptionValue::Str(s) => {
-                let crossover_type = CrossoverType::from_str(s)?;
-                live.crossover_type = crossover_type;
-                Some(crossover_type.as_str().to_string())
-            }
-            _ => None,
+        set: |live, raw| {
+            let crossover_type = CrossoverType::from_str(raw_str(raw)?)?;
+            live.crossover_type = crossover_type;
+            Some(crossover_type.as_str().to_string())
         },
         get_json: |live| live.crossover_type.as_str().into(),
         config_store: |render, live| {
@@ -350,11 +397,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
     },
     OptionSpec {
         key: "crossover_fir_transition_ratio",
-        kind: OptionKind::Float {
-            min: 0.05,
-            max: 2.0,
-            step: 0.05,
-        },
+        kind: CROSSOVER_FIR_TRANSITION_RATIO_KIND,
         default: OptionDefault::Float(0.5),
         // No REPLAN, same as crossover_type: the speaker stage compares the
         // live value against the bank it built every frame and rebuilds the
@@ -364,15 +407,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         help_i18n_key: Some("help.crossoverFirTransition"),
         legacy_control_addr: osc_contract::CONTROL_CROSSOVER_FIR_TRANSITION_RATIO,
         set: |live, raw| {
-            let v = match raw {
-                RawOptionValue::Number(n) => *n as f32,
-                RawOptionValue::Str(s) => s.trim().parse::<f32>().ok()?,
-                RawOptionValue::Bool(_) => return None,
-            };
-            if !v.is_finite() {
-                return None;
-            }
-            let v = v.clamp(0.05, 2.0);
+            let v = raw_float(raw, CROSSOVER_FIR_TRANSITION_RATIO_KIND)?;
             live.crossover_fir_transition_ratio = v;
             Some(format!("{v}"))
         },
@@ -385,7 +420,8 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         },
         config_seed: |live, render| {
             if let Some(ratio) = crate::config_fields::crossover_fir_transition_ratio::get(render) {
-                live.crossover_fir_transition_ratio = ratio.clamp(0.05, 2.0);
+                live.crossover_fir_transition_ratio =
+                    clamp_to(CROSSOVER_FIR_TRANSITION_RATIO_KIND, ratio);
             }
         },
     },
@@ -399,13 +435,10 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         i18n_key: "binaural.hrirUpdateLatticeLabel",
         help_i18n_key: Some("help.hrirUpdateLattice"),
         legacy_control_addr: osc_contract::CONTROL_BINAURAL_HRIR_UPDATE_LATTICE,
-        set: |live, raw| match raw {
-            RawOptionValue::Str(s) => {
-                let lattice = HrirUpdateLattice::from_str(s)?;
-                live.binaural.hrir_update_lattice = lattice;
-                Some(lattice.as_str().to_string())
-            }
-            _ => None,
+        set: |live, raw| {
+            let lattice = HrirUpdateLattice::from_str(raw_str(raw)?)?;
+            live.binaural.hrir_update_lattice = lattice;
+            Some(lattice.as_str().to_string())
         },
         get_json: |live| live.binaural.hrir_update_lattice.as_str().into(),
         config_store: |render, live| {
@@ -417,6 +450,161 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         config_seed: |live, render| {
             if let Some(lattice) = crate::config_fields::hrir_update_lattice::get(render) {
                 live.binaural.hrir_update_lattice = lattice;
+            }
+        },
+    },
+    // ── Gain stage, loudness, transitions, DRC ──────────────────────────
+    //
+    // Migrated from dedicated handlers; the dedicated addresses stay as
+    // aliases and the flat snapshot keys (`autoGain`, `autoGainCeilingDb`,
+    // `rampMode`, `/state/loudness` `enabled`, `/state/input` `drcMode` /
+    // `drcWeight`) are still emitted. No `PERSIST`: like before the
+    // migration they reach `config.yaml` on an explicit Save, not on every
+    // OSC set (two of them are slider-driven). None re-plans anything: they
+    // are read per frame (gain stage, ramps) or pushed to the decoder.
+    OptionSpec {
+        key: "auto_gain",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(crate::config_fields::auto_gain::DEFAULT),
+        flags: OptionFlags::NONE,
+        i18n_key: "autoGain.title",
+        help_i18n_key: Some("help.master.autoGain"),
+        legacy_control_addr: osc_contract::CONTROL_AUTO_GAIN,
+        set: |live, raw| {
+            let enabled = raw_bool(raw)?;
+            live.auto_gain = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.auto_gain.into(),
+        config_store: |render, live| crate::config_fields::auto_gain::store(render, live.auto_gain),
+        config_seed: |live, render| {
+            if let Some(enabled) = crate::config_fields::auto_gain::get(render) {
+                live.auto_gain = enabled;
+            }
+        },
+    },
+    OptionSpec {
+        key: "auto_gain_ceiling_db",
+        kind: AUTO_GAIN_CEILING_DB_KIND,
+        default: OptionDefault::Float(crate::config_fields::auto_gain_ceiling_db::DEFAULT),
+        flags: OptionFlags::NONE,
+        i18n_key: "autoGain.ceiling",
+        help_i18n_key: Some("help.master.ceiling"),
+        legacy_control_addr: osc_contract::CONTROL_AUTO_GAIN_CEILING,
+        set: |live, raw| {
+            let db = raw_float(raw, AUTO_GAIN_CEILING_DB_KIND)?;
+            live.auto_gain_ceiling_db = db;
+            Some(format!("{db}"))
+        },
+        get_json: |live| live.auto_gain_ceiling_db.into(),
+        config_store: |render, live| {
+            crate::config_fields::auto_gain_ceiling_db::store(render, live.auto_gain_ceiling_db)
+        },
+        // Seeded as configured (not clamped), exactly as before the
+        // migration; only a client write is bounded.
+        config_seed: |live, render| {
+            if let Some(db) = crate::config_fields::auto_gain_ceiling_db::get(render) {
+                live.auto_gain_ceiling_db = db;
+            }
+        },
+    },
+    OptionSpec {
+        key: "use_loudness",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(crate::config_fields::use_loudness::DEFAULT),
+        flags: OptionFlags::NONE,
+        i18n_key: "section.loudness",
+        help_i18n_key: Some("help.drc.loudness"),
+        legacy_control_addr: osc_contract::CONTROL_LOUDNESS,
+        set: |live, raw| {
+            let enabled = raw_bool(raw)?;
+            live.use_loudness = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.use_loudness.into(),
+        config_store: |render, live| {
+            crate::config_fields::use_loudness::store(render, live.use_loudness)
+        },
+        config_seed: |live, render| {
+            if let Some(enabled) = crate::config_fields::use_loudness::get(render) {
+                live.use_loudness = enabled;
+            }
+        },
+    },
+    OptionSpec {
+        key: "ramp_mode",
+        kind: OptionKind::Enum(&["off", "frame", "interp", "sample"]),
+        default: OptionDefault::Str(crate::config_fields::ramp_mode::DEFAULT),
+        flags: OptionFlags::NONE,
+        i18n_key: "audio.rampMode",
+        help_i18n_key: None,
+        legacy_control_addr: osc_contract::CONTROL_RAMP_MODE,
+        set: |live, raw| {
+            let mode = RampMode::from_str(raw_str(raw)?)?;
+            live.ramp_mode = mode;
+            Some(mode.as_str().to_string())
+        },
+        get_json: |live| live.ramp_mode.as_str().into(),
+        config_store: |render, live| {
+            crate::config_fields::ramp_mode::store(render, live.ramp_mode.as_str())
+        },
+        config_seed: |live, render| {
+            if let Some(mode) = crate::config_fields::ramp_mode::get(render)
+                .as_deref()
+                .and_then(RampMode::from_str)
+            {
+                live.ramp_mode = mode;
+            }
+        },
+    },
+    OptionSpec {
+        key: "drc_mode",
+        // Free-form: the modes are the bridge's (`supportedDrcModes` on
+        // `/state/input`), not a closed set the renderer knows.
+        kind: OptionKind::Str,
+        default: OptionDefault::Str("Off"),
+        flags: OptionFlags::NONE,
+        i18n_key: "input.drc",
+        help_i18n_key: Some("help.drc.mode"),
+        legacy_control_addr: osc_contract::CONTROL_INPUT_DRC_MODE,
+        set: |live, raw| {
+            let mode = raw_str(raw)?;
+            if live.drc_mode != mode {
+                live.drc_mode = mode.to_string();
+            }
+            Some(mode.to_string())
+        },
+        get_json: |live| live.drc_mode.as_str().into(),
+        config_store: |render, live| {
+            render.drc_mode = (live.drc_mode != "Off").then(|| live.drc_mode.clone());
+        },
+        config_seed: |live, render| {
+            if let Some(mode) = render.drc_mode.as_ref() {
+                live.drc_mode = mode.clone();
+            }
+        },
+    },
+    OptionSpec {
+        key: "drc_weight",
+        kind: DRC_WEIGHT_KIND,
+        default: OptionDefault::Float(1.0),
+        flags: OptionFlags::NONE,
+        i18n_key: "input.drc_weight",
+        help_i18n_key: Some("help.drc.weight"),
+        legacy_control_addr: osc_contract::CONTROL_INPUT_DRC_WEIGHT,
+        set: |live, raw| {
+            let weight = raw_float(raw, DRC_WEIGHT_KIND)?;
+            live.drc_weight = weight;
+            Some(format!("{weight}"))
+        },
+        get_json: |live| live.drc_weight.into(),
+        config_store: |render, live| {
+            render.drc_weight =
+                ((live.drc_weight - 1.0).abs() > 1e-4).then(|| round6(live.drc_weight));
+        },
+        config_seed: |live, render| {
+            if let Some(weight) = render.drc_weight {
+                live.drc_weight = clamp_to(DRC_WEIGHT_KIND, weight);
             }
         },
     },
@@ -643,9 +831,10 @@ mod tests {
                 "{}: bad legacy address",
                 spec.key
             );
-            // Every declared option persists today; a non-persisted option
-            // would need a dedicated review of the save/seed paths.
-            assert!(spec.flags.contains(OptionFlags::PERSIST), "{}", spec.key);
+            // Without PERSIST an option still reaches the file through the
+            // full save (`store_live_to_config` stores every row) and is
+            // seeded from it at boot; it only skips the immediate write on
+            // an OSC set.
         }
     }
 
@@ -660,6 +849,27 @@ mod tests {
                     "{}: default '{}' missing from values",
                     spec.key,
                     default
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn float_values_are_bounded_by_their_kind() {
+        let kind = DRC_WEIGHT_KIND;
+        assert_eq!(raw_float(&RawOptionValue::Number(2.0), kind), Some(1.0));
+        assert_eq!(raw_float(&RawOptionValue::Str(" -1 "), kind), Some(0.0));
+        assert_eq!(raw_float(&RawOptionValue::Number(f64::NAN), kind), None);
+        assert_eq!(raw_float(&RawOptionValue::Bool(true), kind), None);
+        // Every Float row's default sits inside its own bounds.
+        for spec in LIVE_OPTIONS {
+            if let (OptionKind::Float { min, max, .. }, OptionDefault::Float(d)) =
+                (spec.kind, spec.default)
+            {
+                assert!(
+                    (min..=max).contains(&d),
+                    "{}: default out of bounds",
+                    spec.key
                 );
             }
         }

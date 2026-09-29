@@ -164,13 +164,11 @@ pub fn store_live_into_config(
     render.spread_distance_range = None;
     render.spread_distance_curve = None;
     render.size_to_spread_mode = None;
-    renderer::config_fields::use_loudness::store(render, live.use_loudness);
-    // Declared live options (registry rows) + their param bags and the virtual
+    // Declared live options (registry rows: auto-gain, loudness, ramp mode,
+    // DRC, the fixed-channel family, …) + their param bags and the virtual
     // bed: one call covers what the OSC targeted persists cover, so the full
     // save and the per-option writes cannot drift.
     renderer::options::store_live_to_config(render, &live);
-    renderer::config_fields::auto_gain::store(render, live.auto_gain);
-    renderer::config_fields::auto_gain_ceiling_db::store(render, live.auto_gain_ceiling_db);
     renderer::config_fields::vbap_distance_model::store(render, live.distance_model.to_string());
     // Room geometry is persisted in metres. Width is the reference and the room
     // scale is Width/2 = the layout radius, so metres = ratio × radius × factor
@@ -191,16 +189,6 @@ pub fn store_live_into_config(
     render.room_ratio = None;
     render.room_ratio_rear = None;
     render.room_ratio_lower = None;
-    render.drc_weight = if (live.drc_weight - 1.0).abs() > 1e-4 {
-        Some(round6(live.drc_weight))
-    } else {
-        None
-    };
-    render.drc_mode = if live.drc_mode != "Off" {
-        Some(live.drc_mode.clone())
-    } else {
-        None
-    };
     // Monitoring cadences: the renderer is the source of truth, so always
     // persist the current values (read lock-free from RendererControl).
     render.meter_rate = Some(round6(control.meter_rate_hz()));
@@ -344,7 +332,6 @@ pub fn store_live_into_config(
         None
     };
     render.barycenter_localize = None;
-    renderer::config_fields::ramp_mode::store(render, live.ramp_mode.as_str());
 
     drop(live);
 

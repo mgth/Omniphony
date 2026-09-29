@@ -1706,45 +1706,6 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == osc_contract::CONTROL_INPUT_DRC_MODE {
-        let requested = parse_string_arg(msg.args.first());
-        if let Some(requested) = requested {
-            let mut live = ctx.renderer.live.write();
-            if live.drc_mode != requested {
-                live.drc_mode = requested.clone();
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: DRC mode staged → {}", requested));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_INPUT_DRC_WEIGHT {
-        if let Some(value) = parse_f32_arg(msg.args.first()) {
-            let clamped = value.clamp(0.0, 1.0);
-            let mut live = ctx.renderer.live.write();
-            if (live.drc_weight - clamped).abs() > f32::EPSILON {
-                live.drc_weight = clamped;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: DRC weight staged → {:.3}", clamped));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_RAMP_MODE {
-        let Some(mode) = msg.args.first().and_then(|arg| match arg {
-            OscType::String(s) => renderer::live_params::RampMode::from_str(s),
-            _ => None,
-        }) else {
-            return Some(effects);
-        };
-        ctx.renderer.live.write().ramp_mode = mode;
-        effects.mark_dirty = true;
-        effects.log_message = Some(format!("OSC: ramp_mode → {}", mode.as_str()));
-        return Some(effects);
-    }
-
     if addr == osc_contract::CONTROL_LAYOUT_RADIUS_M {
         if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
             ctx.renderer
@@ -1828,25 +1789,6 @@ pub fn apply_simple_osc_control(
                 // required (it was previously a per-request GainCache key).
                 effects.trigger_layout_recompute = true;
             }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_AUTO_GAIN {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().auto_gain = v;
-            effects.mark_dirty = true;
-            // Per-frame gain-stage flag: no topology recompute.
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_AUTO_GAIN_CEILING {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            // dBFS target; clamp to a sane range (ceiling at or below 0 dBFS).
-            ctx.renderer.live.write().auto_gain_ceiling_db = v.clamp(-12.0, 0.0);
-            effects.mark_dirty = true;
-            // Per-frame gain-stage value: no topology recompute.
         }
         return Some(effects);
     }
@@ -1998,14 +1940,6 @@ pub fn apply_simple_osc_control(
                 }
             }
             _ => {}
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_LOUDNESS {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().use_loudness = v;
-            effects.mark_dirty = true;
         }
         return Some(effects);
     }
