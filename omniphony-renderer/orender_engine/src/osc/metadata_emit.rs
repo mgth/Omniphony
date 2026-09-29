@@ -211,6 +211,12 @@ impl OscSender {
         Ok(())
     }
 
+    /// The content generation stamped on outgoing object frames; bumped when
+    /// the content changes (segment start, bridge reset, stream end).
+    pub fn content_generation(&self) -> u64 {
+        self.content_generation
+    }
+
     pub fn bump_content_generation(&mut self) {
         self.content_generation = self.content_generation.saturating_add(1);
         self.prev_objects = None;

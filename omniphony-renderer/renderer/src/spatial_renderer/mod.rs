@@ -1424,6 +1424,31 @@ impl SpatialRenderer {
         }
     }
 
+    /// Whether the renderer emits one channel per layout speaker this frame
+    /// (the speaker array, not the binaural stereo pair). Same active mode as
+    /// [`output_channel_count`](Self::output_channel_count).
+    pub fn output_is_speaker_array(&self) -> bool {
+        matches!(
+            self.active_output_mode,
+            crate::live_params::OutputMode::SpeakerArray
+        )
+    }
+
+    /// Names of the channels the renderer emits, in output order, one per
+    /// [`output_channel_count`](Self::output_channel_count): the layout's
+    /// speaker names, or `FL`/`FR` for the binaural pair (a 2.0 speaker layout
+    /// keeps its own names). Every host labels its sink from this, so a
+    /// headphone switch cannot leave a speaker-named, speaker-wide channel map
+    /// behind a stereo stream. Allocates: call it when (re)building a sink,
+    /// not per frame.
+    pub fn output_channel_names(&self) -> Vec<String> {
+        if self.output_is_speaker_array() {
+            self.speaker_names()
+        } else {
+            vec!["FL".to_string(), "FR".to_string()]
+        }
+    }
+
     pub fn speaker_layout(&self) -> crate::speaker_layout::SpeakerLayout {
         self.control.active_layout()
     }

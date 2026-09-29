@@ -3,14 +3,15 @@ use super::output_runtime_sync::OutputRuntimeCoordinator;
 use super::sample_write::SampleWriteCoordinator;
 use super::spatial_metadata::SpatialMetadataCoordinator;
 use super::state::{
-    DecodeSessionState, FrameHandlerContext, OutputState, RuntimeOutputState, SpatialState,
-    TelemetryState,
+    DecodeSessionState, FrameHandlerContext, OutputSource, OutputState, RuntimeOutputState,
+    SpatialState, TelemetryState,
 };
 use super::writer_lifecycle::WriterLifecycleCoordinator;
 use crate::cli::command::OutputBackend;
 use audio_input::{InputClockMode, InputControl, InputMode};
 use audio_output::AudioControl;
 use bridge_api::RDecodedFrame;
+use renderer::live_params::ChannelRenderMode;
 
 use anyhow::Result;
 use orender_engine::decode_step::DrcModeSync;
@@ -82,45 +83,6 @@ impl ChannelCountCalculator {
 }
 
 impl BedChannelMapper {
-    pub(crate) fn apply_bed_conformance(
-        original_samples: Vec<i32>,
-        original_channel_count: usize,
-        bed_indices: &[usize],
-    ) -> Vec<i32> {
-        let (num_bed_channels, num_object_channels, conformed_channel_count) =
-            ChannelCountCalculator::calculate_bed_conform_counts(
-                original_channel_count,
-                bed_indices,
-            );
-        let samples_per_frame = original_samples.len() / original_channel_count;
-
-        let mut conformed_samples = Vec::with_capacity(samples_per_frame * conformed_channel_count);
-
-        for sample_idx in 0..samples_per_frame {
-            // Handle bed channels (0-9)
-            for target_bed_ch in 0..ChannelCountCalculator::TARGET_BED_CHANNELS {
-                if let Some(source_ch_pos) =
-                    bed_indices.iter().position(|&idx| idx == target_bed_ch)
-                {
-                    let sample =
-                        original_samples[sample_idx * original_channel_count + source_ch_pos];
-                    conformed_samples.push(sample);
-                } else {
-                    conformed_samples.push(0i32);
-                }
-            }
-
-            // Handle object channels
-            for obj_ch in 0..num_object_channels {
-                let source_ch = num_bed_channels + obj_ch;
-                let sample = original_samples[sample_idx * original_channel_count + source_ch];
-                conformed_samples.push(sample);
-            }
-        }
-
-        conformed_samples
-    }
-
     pub(crate) fn apply_bed_conformance_to_frame(
         pcm: &[i32],
         sample_count: usize,
@@ -536,22 +498,8 @@ impl DecodeHandler {
             }
         }
 
-        let effective_channel_count = if ctx.bed_conform && self.spatial.has_objects {
-            let empty_vec = Vec::new();
-            let bed_indices = self.spatial.bed_indices.as_ref().unwrap_or(&empty_vec);
-            ChannelCountCalculator::calculate_conformed_channel_count(channel_count, bed_indices)
-        } else if let Some(ref renderer) = self.spatial_renderer {
-            // What the renderer EMITS, which is the speaker count only while it
-            // is rendering speakers: headphone mode emits a stereo pair from a
-            // wholly separate path. Sizing the sink from `num_speakers()`
-            // instead built a twelve-channel PipeWire stream and then fed it
-            // stereo frames, so the device consumed six frames' worth of
-            // channels per frame — heard as chopped noise, and the reason a
-            // binaural object test was unlistenable.
-            renderer.output_channel_count()
-        } else {
-            channel_count
-        };
+        let (effective_channel_count, output_source) =
+            self.output_shape(&frame, source, ctx.bed_conform);
 
         // A live headphone toggle changes that width under a writer that has
         // already been built for the old one. Retire it here so the block below
@@ -600,6 +548,7 @@ impl DecodeHandler {
             active_output_backend,
             sample_rate,
             effective_channel_count,
+            output_source,
         )?;
         WriterLifecycleCoordinator::new(
             &mut self.output,
@@ -638,66 +587,70 @@ impl DecodeHandler {
         Ok(())
     }
 
-    pub fn handle_stream_restart(
-        &mut self,
-        output_backend: OutputBackend,
-        sample_rate: u32,
-        channel_count: usize,
+    /// The sink's width for this frame, and whether it carries the renderer's
+    /// output or the decoded channels as they are. The one place this host
+    /// decides it: the writer is built, labelled, rebuilt on a change and fed
+    /// from it — a second guess anywhere else is how a binaural stereo pair
+    /// once ended up in a speaker-wide sink.
+    ///
+    /// - bed-conformed export of an object frame: the conformed decoded PCM;
+    /// - host passthrough (channel content, channel render mode `host`): the
+    ///   decoded channels, unrendered;
+    /// - otherwise, with a renderer: what the renderer emits
+    ///   ([`SpatialRenderer::output_channel_count`] — the speakers, or the
+    ///   binaural pair);
+    /// - no renderer: the decoded channels.
+    ///
+    /// [`SpatialRenderer::output_channel_count`]: renderer::spatial_renderer::SpatialRenderer::output_channel_count
+    pub(crate) fn output_shape(
+        &self,
+        frame: &RDecodedFrame,
+        source: DecodedSource,
         bed_conform: bool,
-    ) -> Result<()> {
+    ) -> (usize, OutputSource) {
+        let channel_count = frame.channel_count as usize;
+        let frame_has_objects = self.spatial.frame_has_objects(source);
+        if bed_conform && frame_has_objects {
+            let bed_indices = self.spatial.bed_indices.as_deref().unwrap_or(&[]);
+            return (
+                ChannelCountCalculator::calculate_conformed_channel_count(
+                    channel_count,
+                    bed_indices,
+                ),
+                OutputSource::Decoded,
+            );
+        }
+        match self.spatial_renderer.as_ref() {
+            Some(renderer)
+                if frame_has_objects
+                    || renderer.renderer_control().live.read().channel_render_mode
+                        != ChannelRenderMode::Host =>
+            {
+                (renderer.output_channel_count(), OutputSource::Rendered)
+            }
+            _ => (channel_count, OutputSource::Decoded),
+        }
+    }
+
+    /// A new segment (`is_new_segment`): the realtime output restarts its
+    /// tracking and the spatial state starts over. The writer is retired, not
+    /// rebuilt here: the frame that follows builds it through
+    /// [`output_shape`](Self::output_shape) like any other, at the right width
+    /// and with the right channel names. (It used to be rebuilt here at the
+    /// decoded width, unlabelled, and then again by that frame whenever the
+    /// renderer's width differed — every segment.)
+    ///
+    /// A file sink is kept: rebuilding it reopens — truncates — the
+    /// destination, which threw away everything written before the segment.
+    pub fn handle_stream_restart(&mut self, output_backend: OutputBackend) -> Result<()> {
         log::info!(
             "Stream restart detected at AU {}, resetting realtime output state",
             self.spatial.au_index
         );
 
-        if let Some(mut writer) = self.output.invalidate_writer(self.input_control.as_deref()) {
-            writer.flush()?;
-        }
-        self.reset_direct_trigger_wiring();
-        self.output.reset_realtime_output_tracking();
-        self.session.first_measured_output_delay_ms = None;
-        self.session.last_output_delay_log_at = None;
-
-        let effective_channel_count = if bed_conform && self.spatial.has_objects {
-            let empty_vec = Vec::new();
-            let bed_indices = self.spatial.bed_indices.as_ref().unwrap_or(&empty_vec);
-            ChannelCountCalculator::calculate_conformed_channel_count(channel_count, bed_indices)
-        } else {
-            channel_count
-        };
-        self.output.audio_writer = Some(
-            WriterLifecycleCoordinator::new(
-                &mut self.output,
-                &self.runtime,
-                &mut self.telemetry,
-                &self.spatial,
-                &self.session,
-                self.spatial_renderer.as_ref(),
-                self.audio_control.as_ref(),
-                self.input_control.as_ref(),
-            )
-            .build_audio_writer(
-                output_backend,
-                sample_rate,
-                effective_channel_count,
-                None,
-            )?,
-        );
-        self.output.audio_writer_channels = Some(effective_channel_count);
-        self.reset_spatial_state_for_segment();
-        Ok(())
-    }
-
-    fn reset_spatial_state_for_segment(&mut self) {
-        SpatialMetadataCoordinator::new(&mut self.spatial, self.spatial_renderer.as_ref(), None)
-            .reset_for_segment();
-    }
-
-    pub fn handle_decoder_flush_request(&mut self) {
-        log::info!("Received flush request after decoder reset");
-        if let Some(mut writer) = self.output.invalidate_writer(self.input_control.as_deref()) {
-            if let Err(err) = writer.flush() {
-                log::warn!("Error flushing realtime output during decoder reset: {err}");
+        if output_backend != OutputBackend::File {
+            if let Some(mut writer) = self.output.invalidate_writer(self.input_control.as_deref()) {
+                writer.flush()?;
             }
         }
         self.reset_direct_trigger_wiring();
@@ -705,5 +658,205 @@ impl DecodeHandler {
         self.session.first_measured_output_delay_ms = None;
         self.session.last_output_delay_log_at = None;
         self.reset_spatial_state_for_segment();
+        Ok(())
+    }
+
+    fn reset_spatial_state_for_segment(&mut self) {
+        SpatialMetadataCoordinator::new(
+            &mut self.spatial,
+            self.spatial_renderer.as_ref(),
+            self.telemetry.osc_sender.as_mut(),
+        )
+        .reset_for_segment();
+    }
+
+    /// The bridge reset itself (sync loss, seek): the spatial state starts
+    /// over, as in the embedded engine. Audio keeps flowing — the writer and
+    /// its buffers are left alone, a transient decoder reset must not turn
+    /// into a dropout.
+    pub fn handle_bridge_reset(&mut self) {
+        log::debug!("Bridge reset: starting the spatial state over");
+        self.reset_spatial_state_for_segment();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bridge_api::RChannelLabel;
+
+    fn test_renderer() -> renderer::spatial_renderer::SpatialRenderer {
+        orender_engine::renderer_build::build_spatial_renderer(
+            &orender_engine::renderer_build::SpatialRendererParams::from_render_config(None),
+            renderer::speaker_layout::SpeakerLayout::preset("7.1.4").expect("preset"),
+            48_000,
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 9,
+                y_size: 9,
+                z_size: 5,
+                allow_negative_z: false,
+            },
+            bridge_api::RVbapTableMode::Cartesian,
+            None,
+        )
+        .expect("renderer")
+    }
+
+    /// A 5.1 bed frame, as the decoder thread hands it over.
+    fn bed_frame() -> RDecodedFrame {
+        use RChannelLabel::*;
+        let labels = vec![L, R, C, LFE, Ls, Rs];
+        RDecodedFrame {
+            sampling_frequency: 48_000,
+            sample_count: 480,
+            channel_count: labels.len() as u32,
+            pcm: vec![0i32; 480 * labels.len()].into(),
+            channel_labels: labels.into(),
+            metadata: abi_stable::std_types::RVec::new(),
+            drc_gain: 1.0,
+            drc_ramp_duration: 0,
+            dialogue_level: abi_stable::std_types::ROption::RNone,
+            is_new_segment: false,
+        }
+    }
+
+    /// Switch the renderer to headphones and render until the cross-fade has
+    /// landed on the binaural pair.
+    fn switch_to_binaural(renderer: &mut renderer::spatial_renderer::SpatialRenderer) {
+        renderer
+            .renderer_control()
+            .live
+            .write()
+            .binaural
+            .output_mode = renderer::live_params::OutputMode::Binaural;
+        let silence = vec![0.0f32; 480 * 6];
+        for _ in 0..16 {
+            renderer
+                .render_frame(&silence, 6, &[], Vec::new(), false)
+                .expect("render");
+            if !renderer.output_is_speaker_array() {
+                return;
+            }
+        }
+        panic!("the output mode never switched to binaural");
+    }
+
+    /// In headphone mode the sink is the binaural stereo pair, labelled as
+    /// such — not the speaker count, and not the layout's speaker names (the
+    /// class of bug that once fed a stereo pair to a twelve-channel sink).
+    #[test]
+    fn a_binaural_render_gets_a_stereo_sink_named_fl_fr() {
+        let mut renderer = test_renderer();
+        switch_to_binaural(&mut renderer);
+        assert_eq!(renderer.output_channel_names(), ["FL", "FR"]);
+
+        let handler = DecodeHandler {
+            spatial_renderer: Some(renderer),
+            ..DecodeHandler::default()
+        };
+        assert_eq!(
+            handler.output_shape(&bed_frame(), DecodedSource::Bridge, false),
+            (2, OutputSource::Rendered)
+        );
+    }
+
+    /// Host passthrough writes the decoded channels unrendered, so the sink is
+    /// sized for them; the renderer's width only applies to what it renders.
+    #[test]
+    fn host_passthrough_sizes_the_sink_for_the_decoded_channels() {
+        let renderer = test_renderer();
+        let speakers = renderer.output_channel_count();
+        renderer.renderer_control().live.write().channel_render_mode = ChannelRenderMode::Host;
+        let mut handler = DecodeHandler {
+            spatial_renderer: Some(renderer),
+            ..DecodeHandler::default()
+        };
+        assert_eq!(
+            handler.output_shape(&bed_frame(), DecodedSource::Bridge, false),
+            (6, OutputSource::Decoded)
+        );
+        // An object stream is always rendered, whatever the channel mode.
+        handler.spatial.has_objects = true;
+        assert_eq!(
+            handler.output_shape(&bed_frame(), DecodedSource::Bridge, false),
+            (speakers, OutputSource::Rendered)
+        );
+    }
+
+    /// A segment start resets the spatial state the way the embedded engine
+    /// does: OSC clients are told the content changed (so the previous
+    /// layout's objects are purged) and the new segment's dialogue level is
+    /// applied instead of the previous one's.
+    #[test]
+    fn a_segment_restart_resets_like_the_engine() {
+        let osc = orender_engine::osc::OscSender::new("127.0.0.1:9".parse().unwrap())
+            .expect("osc sender");
+        let generation = osc.content_generation();
+        let mut handler = DecodeHandler {
+            spatial_renderer: Some(test_renderer()),
+            ..DecodeHandler::default()
+        };
+        handler.telemetry.osc_sender = Some(osc);
+        handler.spatial.loudness_applied = true;
+        handler.spatial.has_objects = true;
+        handler.spatial.object_names.insert(3, "Dialog".to_string());
+
+        handler
+            .handle_stream_restart(OutputBackend::Unsupported)
+            .expect("restart");
+
+        let osc = handler.telemetry.osc_sender.as_ref().unwrap();
+        assert_eq!(osc.content_generation(), generation + 1);
+        assert!(!handler.spatial.loudness_applied);
+        assert!(!handler.spatial.has_objects);
+        assert!(handler.spatial.object_names.is_empty());
+    }
+
+    /// A file sink survives a segment start: rebuilding it reopens — and
+    /// truncates — the destination, losing everything written before.
+    #[test]
+    fn a_segment_restart_keeps_the_file_sink() {
+        let path = std::env::temp_dir().join(format!(
+            "orender-segment-restart-{}.f32",
+            std::process::id()
+        ));
+        let mut handler = DecodeHandler::default();
+        handler.output.audio_writer = Some(
+            super::super::output::AudioWriter::create_file(
+                path.to_str().unwrap(),
+                audio_output::FileSinkFormat::RawF32,
+                48_000,
+                2,
+                None,
+            )
+            .expect("file sink"),
+        );
+        handler.output.audio_writer_channels = Some(2);
+        let block = super::super::output::AudioSamples::F32(vec![0.25; 480 * 2]);
+        let write = |handler: &mut DecodeHandler| {
+            handler
+                .output
+                .audio_writer
+                .as_mut()
+                .expect("writer")
+                .write_pcm_samples(&block, 2)
+                .expect("write");
+        };
+
+        write(&mut handler);
+        handler
+            .handle_stream_restart(OutputBackend::File)
+            .expect("restart");
+        write(&mut handler);
+        handler.finalize().expect("finalize");
+        drop(handler);
+
+        let written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            written,
+            2 * 480 * 2 * 4,
+            "the block before the restart was lost"
+        );
     }
 }

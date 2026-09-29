@@ -142,9 +142,6 @@ pub struct SpatialState {
     pub declared_poses: Vec<RChannelPose>,
     pub object_names: std::collections::HashMap<u32, String>,
     pub au_index: u64,
-    pub segment_index: u32,
-    pub is_segmented: bool,
-    pub segment_start_samples: u64,
     pub frame_events: Vec<renderer::spatial_renderer::SpatialChannelEvent>,
     pub loudness_applied: bool,
     pub coordinate_format: RCoordinateFormat,
@@ -164,14 +161,34 @@ impl Default for SpatialState {
             declared_poses: Vec::new(),
             object_names: std::collections::HashMap::new(),
             au_index: 0,
-            segment_index: 0,
-            is_segmented: false,
-            segment_start_samples: 0,
             frame_events: Vec::new(),
             loudness_applied: false,
             coordinate_format: RCoordinateFormat::Cartesian,
         }
     }
+}
+
+impl SpatialState {
+    /// Whether this frame carries objects, and so takes the object render path.
+    ///
+    /// Derived from the frame's source, not from `has_objects` alone: that
+    /// flag latches on the first frame carrying metadata and is only cleared
+    /// at a segment reset, so once an object stream has played, plain channel
+    /// content arriving afterwards would keep taking the object path. The sink
+    /// switches between encoded and linear PCM at will, so that happens in one
+    /// session. A live PCM frame is channel content by construction — fixed
+    /// labels, no metadata — whatever played before it.
+    pub fn frame_has_objects(&self, source: super::decoder_thread::DecodedSource) -> bool {
+        self.has_objects && !matches!(source, super::decoder_thread::DecodedSource::Live)
+    }
+}
+
+/// What the sink carries: the renderer's output, or the decoded channels as
+/// they are (host passthrough, bed-conformed export, no renderer at all).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputSource {
+    Rendered,
+    Decoded,
 }
 
 pub struct OutputState {

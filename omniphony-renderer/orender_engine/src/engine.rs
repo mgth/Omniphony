@@ -636,25 +636,18 @@ impl Engine {
         self.renderer.output_channel_count() as u32
     }
 
-    /// Per-channel labels of the active output layout, one entry per speaker in
-    /// render (output channel) order. The host (mpv) turns this into a channel
-    /// map. Speakers whose layout name is unrecognised map to
-    /// [`RChannelLabel::Unknown`].
+    /// Per-channel labels of the rendered output, one entry per output channel
+    /// in render order: the layout's speakers, or the binaural pair. The host
+    /// (mpv) turns this into a channel map, so it must match
+    /// [`channel_count`](Self::channel_count) or the frame is malformed
+    /// (silence). Names that do not resolve map to [`RChannelLabel::Unknown`].
+    /// Same source as the standalone renderer's sink labels
+    /// ([`SpatialRenderer::output_channel_names`]).
     pub fn channel_layout(&self) -> Vec<RChannelLabel> {
-        // Binaural output is a plain stereo pair; the layout MUST match
-        // `channel_count()` (2) or the host builds an inconsistent chmap and the
-        // frame is malformed (silence).
-        if self.renderer.output_channel_count() == 2 {
-            return vec![
-                crate::channel_layout::label_for_speaker_name("FL"),
-                crate::channel_layout::label_for_speaker_name("FR"),
-            ];
-        }
         self.renderer
-            .speaker_layout()
-            .speakers
+            .output_channel_names()
             .iter()
-            .map(|s| crate::channel_layout::label_for_speaker_name(&s.name))
+            .map(|name| crate::channel_layout::label_for_speaker_name(name))
             .collect()
     }
 
@@ -1037,12 +1030,8 @@ impl Engine {
             // the content generation, force a full object re-emit and clear the
             // overlay so OSC clients and the overlay purge the pre-seek objects
             // instead of leaving them behind as stale duplicates.
-            self.renderer.reset_runtime_state();
+            spatial::begin_segment(&self.renderer, self.osc.as_mut());
             self.reset_segment_state();
-            if let Some(osc) = self.osc.as_mut() {
-                osc.bump_content_generation();
-                osc.request_full_object_resend();
-            }
             overlay::clear();
         }
 
@@ -1386,12 +1375,8 @@ impl Engine {
         // layout's objects (otherwise a smaller new layout leaves stale,
         // inactive objects behind after the boundary).
         if frame.is_new_segment {
-            self.renderer.reset_runtime_state();
+            spatial::begin_segment(&self.renderer, self.osc.as_mut());
             self.reset_segment_state();
-            if let Some(osc) = self.osc.as_mut() {
-                osc.bump_content_generation();
-                osc.request_full_object_resend();
-            }
             overlay::clear();
         }
         if let Some(declaration) = declaration {

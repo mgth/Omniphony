@@ -478,16 +478,9 @@ fn handle_audio_message(
         handler.spatial.declared_poses = declaration.poses;
     }
     if frame.is_new_segment {
-        handler.spatial.segment_start_samples = handler.session.decoded_samples;
         // Use the live-active backend (not the launch one) so a segment
         // restart preserves a Studio-requested switch (e.g. to `file`).
-        handler.handle_stream_restart(
-            handler.runtime.active_output_backend,
-            frame.sampling_frequency,
-            frame.channel_count as usize,
-            ctx.args.bed_conform,
-        )?;
-        handler.spatial.is_segmented = true;
+        handler.handle_stream_restart(handler.runtime.active_output_backend)?;
     }
 
     let ctx = FrameHandlerContext {
@@ -681,9 +674,9 @@ fn process_decoder_messages(
                     return Err(err);
                 }
             }
-            Ok(DecoderMessage::FlushRequest(source)) => {
+            Ok(DecoderMessage::BridgeReset(source)) => {
                 if handler.should_accept_source(source) {
-                    handler.handle_decoder_flush_request();
+                    handler.handle_bridge_reset();
                 } else {
                     handler.poll_runtime_state()?;
                 }
