@@ -489,12 +489,9 @@ fn handle_audio_message(
         return handler.poll_runtime_state();
     }
     let frame = decoded.frame;
-    if let Some(declaration) = decoded.declaration {
-        handler.spatial.source_family =
-            renderer::placement::SourceFamily::from_declared(&declaration.family);
-        handler.spatial.declared_poses = declaration.poses;
-        handler.spatial.source_label = declaration.label;
-    }
+    handler
+        .spatial
+        .take_declaration(decoded.source, decoded.declaration);
     if frame.is_new_segment {
         // Use the live-active backend (not the launch one) so a segment
         // restart preserves a Studio-requested switch (e.g. to `file`).

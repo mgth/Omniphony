@@ -1,3 +1,4 @@
+use super::decoder_thread::{Declaration, DecodedSource};
 use super::output::AudioWriter;
 use crate::cli::command::{OutputBackend, OutputFileFormatArg};
 use audio_input::InputControl;
@@ -11,6 +12,10 @@ use renderer::placement::SourceFamily;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
+
+/// What the handler calls the PipeWire sink's plain PCM, which has no bridge
+/// to name it (`SpatialState::source_label`).
+const LIVE_PCM_LABEL: &str = "PCM";
 
 /// Tracks the diag-publication cadence. The rate is read from a shared
 /// atomic (`RendererControl::diag_rate_atomic`) each tick so the user
@@ -135,13 +140,20 @@ pub struct SpatialState {
     pub object_channels: Vec<(u32, usize)>,
     /// The bridge's declaration for the current labels, as last sent with a
     /// decoded frame (`DecodedAudioData::declaration`, from the pipe decoder
-    /// thread or the PipeWire sink's bridge decoder): the family whose
-    /// placement policy applies, and the poses the format states. Kept across
-    /// segment resets: a segment start or a label change comes with a new one.
+    /// thread or the PipeWire sink's bridge decoder), or the sink's plain PCM
+    /// while that plays: the family whose placement policy applies, and the
+    /// poses the format states. Kept across segment resets: a segment start or
+    /// a label change comes with a new one.
     pub source_family: SourceFamily,
     pub declared_poses: Vec<RChannelPose>,
     /// The bridge's name for the format, from the same declaration.
     pub source_label: String,
+    /// The input the declaration above is for (see
+    /// [`SpatialState::take_declaration`]); `None` before the first frame.
+    declared_for: Option<DecodedSource>,
+    /// The bridge's declaration (family, poses, label), set aside while the
+    /// PipeWire sink plays plain PCM.
+    bridge_declaration_aside: Option<(SourceFamily, Vec<RChannelPose>, String)>,
     /// The fixed-channel processing diagnostic Studio shows, as the embedded
     /// engine publishes it.
     pub fixed_processing: orender_engine::channel_objects::FixedProcessingState,
@@ -165,6 +177,8 @@ impl Default for SpatialState {
             source_family: SourceFamily::Generic,
             declared_poses: Vec::new(),
             source_label: String::new(),
+            declared_for: None,
+            bridge_declaration_aside: None,
             fixed_processing: Default::default(),
             object_names: std::collections::HashMap::new(),
             au_index: 0,
@@ -185,8 +199,58 @@ impl SpatialState {
     /// switches between encoded and linear PCM at will, so that happens in one
     /// session. A live PCM frame is channel content by construction — fixed
     /// labels, no metadata — whatever played before it.
-    pub fn frame_has_objects(&self, source: super::decoder_thread::DecodedSource) -> bool {
-        self.has_objects && !matches!(source, super::decoder_thread::DecodedSource::Live)
+    pub fn frame_has_objects(&self, source: DecodedSource) -> bool {
+        self.has_objects && !matches!(source, DecodedSource::Live)
+    }
+
+    /// Take on the declaration a frame from `source` came with.
+    ///
+    /// The PipeWire sink feeds the handler from two producers: its bridge
+    /// (bitstreams, declared by the bridge on the frames that need it) and
+    /// plain PCM, which declares nothing. So the input changing is itself a
+    /// declaration, applied here once per change rather than on every frame:
+    /// PCM after a bitstream is PCM — its family, no declared poses — and not
+    /// the bitstream's layout; a bitstream after PCM gets back the declaration
+    /// its bridge made, which that bridge will not repeat, never having seen
+    /// the PCM. Every frame of the pipe comes from the bridge, so there this
+    /// only ever applies what the bridge declared.
+    pub fn take_declaration(&mut self, source: DecodedSource, declaration: Option<Declaration>) {
+        let previous = self.declared_for.replace(source);
+        if let Some(declaration) = declaration {
+            self.bridge_declaration_aside = None;
+            self.source_family = SourceFamily::from_declared(&declaration.family);
+            self.declared_poses = declaration.poses;
+            self.source_label = declaration.label;
+            return;
+        }
+        if previous == Some(source) {
+            return;
+        }
+        match source {
+            DecodedSource::Live => {
+                // Moved, not cloned: the bridge's declaration waits here
+                // until its input comes back.
+                self.bridge_declaration_aside = Some((
+                    self.source_family,
+                    std::mem::take(&mut self.declared_poses),
+                    std::mem::take(&mut self.source_label),
+                ));
+                self.source_family = SourceFamily::Pcm;
+                self.source_label.push_str(LIVE_PCM_LABEL);
+            }
+            DecodedSource::Bridge => {
+                // Nothing set aside: the bridge never declared, as for a
+                // fresh stream.
+                let (family, poses, label) = self.bridge_declaration_aside.take().unwrap_or((
+                    SourceFamily::Generic,
+                    Vec::new(),
+                    String::new(),
+                ));
+                self.source_family = family;
+                self.declared_poses = poses;
+                self.source_label = label;
+            }
+        }
     }
 }
 
@@ -330,4 +394,88 @@ pub struct FrameHandlerContext {
     pub bed_conform: bool,
     pub decode_time_ms: f32,
     pub queue_delay_ms: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bridge_api::RChannelLabel;
+
+    fn declared(family: &str, poses: usize, label: &str) -> Option<Declaration> {
+        Some(Declaration {
+            poses: (0..poses)
+                .map(|_| RChannelPose {
+                    label: RChannelLabel::Ls,
+                    azimuth_deg: -90.0,
+                    elevation_deg: 0.0,
+                })
+                .collect(),
+            family: family.to_owned(),
+            label: label.to_owned(),
+        })
+    }
+
+    fn state(s: &SpatialState) -> (SourceFamily, usize, &str) {
+        (s.source_family, s.declared_poses.len(), &s.source_label)
+    }
+
+    /// The input switching between the sink's bridge and its plain PCM is a
+    /// declaration of its own, applied once per switch.
+    #[test]
+    fn the_declaration_follows_the_sinks_input() {
+        use DecodedSource::{Bridge, Live};
+        let pcm = (SourceFamily::Pcm, 0, "PCM");
+        let mut s = SpatialState::default();
+
+        // The first frame of a session is PCM.
+        s.take_declaration(Live, None);
+        assert_eq!(state(&s), pcm);
+        // Declared once: a later PCM frame leaves the state alone.
+        s.source_label.push('!');
+        s.take_declaration(Live, None);
+        assert_eq!(s.source_label, "PCM!");
+        s.source_label.pop();
+
+        // A bitstream declares for itself.
+        s.take_declaration(Bridge, declared("dts", 2, "DTS"));
+        assert_eq!(state(&s), (SourceFamily::Dts, 2, "DTS"));
+        s.take_declaration(Bridge, None);
+        assert_eq!(state(&s), (SourceFamily::Dts, 2, "DTS"));
+        // PCM after it does not keep its layout.
+        s.take_declaration(Live, None);
+        assert_eq!(state(&s), pcm);
+        // Back to the bitstream, which does not declare again: its own
+        // declaration comes back.
+        s.take_declaration(Bridge, None);
+        assert_eq!(state(&s), (SourceFamily::Dts, 2, "DTS"));
+        // A late bitstream frame between PCM ones: each input gets its own.
+        s.take_declaration(Live, None);
+        s.take_declaration(Bridge, None);
+        assert_eq!(state(&s), (SourceFamily::Dts, 2, "DTS"));
+        s.take_declaration(Live, None);
+        assert_eq!(state(&s), pcm);
+        // A new bitstream declaring: the one set aside is gone for good.
+        s.take_declaration(Bridge, declared("dolby", 0, "TrueHD"));
+        s.take_declaration(Live, None);
+        s.take_declaration(Bridge, None);
+        assert_eq!(state(&s), (SourceFamily::Dolby, 0, "TrueHD"));
+
+        // A bridge that never declared, after PCM: as a fresh stream.
+        let mut s = SpatialState::default();
+        s.take_declaration(Live, None);
+        s.take_declaration(Bridge, None);
+        assert_eq!(state(&s), (SourceFamily::Generic, 0, ""));
+    }
+
+    /// The pipe only ever has the bridge: its declarations apply as they come,
+    /// and a frame without one changes nothing.
+    #[test]
+    fn a_bridge_only_input_applies_its_declarations_as_they_come() {
+        let mut s = SpatialState::default();
+        s.take_declaration(DecodedSource::Bridge, None);
+        assert_eq!(state(&s), (SourceFamily::Generic, 0, ""));
+        s.take_declaration(DecodedSource::Bridge, declared("auro", 3, "Auro-3D"));
+        s.take_declaration(DecodedSource::Bridge, None);
+        assert_eq!(state(&s), (SourceFamily::Auro, 3, "Auro-3D"));
+    }
 }
