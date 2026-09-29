@@ -633,19 +633,27 @@ fn vbap_spread_params(
     ctx: &BackendBuildCtx<'_>,
     backend_id: &str,
 ) -> crate::render_backend::VbapSpreadParams {
+    resolve_vbap_spread_params(ctx.live, ctx.backend_params.get(backend_id))
+}
+
+/// The VBAP spread tuning a backend built from `params` (one backend's bag
+/// entry) uses: each bag value, or the live value when the bag lacks the key.
+///
+/// Shared by the backend build and the `/state/renderer` snapshot's `spread`
+/// block, so the block reports what the renderer actually applies — the OSC
+/// spread addresses write the bag, not the live fields.
+pub fn resolve_vbap_spread_params(
+    live: &LiveParams,
+    params: Option<&std::collections::HashMap<String, crate::backend_params::ParamValue>>,
+) -> crate::render_backend::VbapSpreadParams {
     use crate::backend_params::ParamValue;
-    let live = ctx.live;
-    let float = |key: &str, fallback: f32| {
-        ctx.backend_param(backend_id, key)
-            .and_then(ParamValue::as_f32)
-            .unwrap_or(fallback)
-    };
-    let from_distance = ctx
-        .backend_param(backend_id, "spread_from_distance")
+    let param = |key: &str| params.and_then(|m| m.get(key));
+    let float =
+        |key: &str, fallback: f32| param(key).and_then(ParamValue::as_f32).unwrap_or(fallback);
+    let from_distance = param("spread_from_distance")
         .and_then(ParamValue::as_bool)
         .unwrap_or(live.spread_from_distance);
-    let size_to_spread_mode = ctx
-        .backend_param(backend_id, "size_to_spread_mode")
+    let size_to_spread_mode = param("size_to_spread_mode")
         .and_then(ParamValue::as_str)
         .and_then(crate::render_backend::SizeToSpreadMode::from_str)
         .unwrap_or(live.size_to_spread_mode);

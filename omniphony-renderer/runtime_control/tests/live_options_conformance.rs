@@ -1,25 +1,26 @@
-//! Conformance net over the hand-wired live options (the "2D-sources family").
+//! Conformance net over the live options.
 //!
-//! Phase 0 of `docs/live-options-registry.md`: until the declared options
-//! registry exists, this table is the single list of live options and every
-//! test below iterates it. Adding a live option means adding ONE row here; the
-//! row then proves the option is visible on every layer it claims to be on:
+//! Two nets live here. The declared `renderer::options` registry (see
+//! `docs/live-options-registry.md`) is covered by the `registry` module below,
+//! which iterates the registry itself. The hand-wired options that predate it,
+//! or are not declared in it (the per-family placement, …), are covered by
+//! [`HAND_WIRED_OPTIONS`]: one row per option, and every test iterates the
+//! table, proving the option is visible on every layer it claims to be on:
 //!
 //! * the OSC control catalogue (`osc_contract::ALL_CONTROL`),
 //! * the `/omniphony/state/renderer` snapshot (key present, value tracked),
 //! * config persistence (saved when non-default, omitted when default).
 //!
-//! When the Phase-1 registry lands, these rows migrate into the registry and
-//! the tests iterate it instead.
+//! A row that migrates into the registry leaves the table; its registry row
+//! is then covered by the `registry` nets.
 //!
-//! Known gaps this net does NOT cover yet (Phase-1 targets, see the RFC and
+//! Known gaps this net does NOT cover yet (see the RFC and
 //! `docs/option-surface-parity.fr.md`):
 //! * CLI-vs-FFI seed parity for the remaining CLI-specific options, while
 //!   `Engine::from_paths` (FFI) seeds the whole family — exercising both boot
 //!   paths needs an engine fixture that doesn't exist yet.
-//! * OSC dispatcher acceptance: `handle_control_message` is crate-private to
-//!   `orender_engine` and needs a live socket; the generic Phase-1 handler
-//!   will be testable without one.
+//! * OSC dispatcher acceptance end to end (socket, notification, persistence)
+//!   is covered by `orender_engine::osc::dispatch`'s own tests, not here.
 
 use std::sync::Arc;
 
@@ -36,7 +37,8 @@ use runtime_control::osc_contract;
 use runtime_control::persist::save_live_config_to_path;
 use runtime_control::snapshot::build_renderer_state_json;
 
-/// One live option, declared once. Every conformance test iterates this table.
+/// One hand-wired live option, declared once. Every conformance test iterates
+/// [`HAND_WIRED_OPTIONS`].
 struct LiveOptionRow {
     /// Canonical option name (`render.*` config key and failure-message id).
     key: &'static str,
@@ -52,7 +54,7 @@ struct LiveOptionRow {
     config_reflects: fn(&RenderConfig) -> bool,
 }
 
-const LIVE_OPTIONS: &[LiveOptionRow] = &[
+const HAND_WIRED_OPTIONS: &[LiveOptionRow] = &[
     LiveOptionRow {
         key: "synthetic_objects_enabled",
         control_addr: osc_contract::CONTROL_SYNTHETIC_OBJECTS,
@@ -250,7 +252,7 @@ fn temp_path(name: &str) -> std::path::PathBuf {
 /// exactly the silent-omission class the RFC describes.)
 #[test]
 fn every_live_option_is_in_the_control_catalogue() {
-    for row in LIVE_OPTIONS {
+    for row in HAND_WIRED_OPTIONS {
         assert!(
             osc_contract::ALL_CONTROL.contains(&row.control_addr),
             "{}: control address {} is not listed in osc_contract::ALL_CONTROL",
@@ -268,7 +270,7 @@ fn snapshot_carries_every_live_option() {
     let control = fixture_control();
 
     let at_defaults = snapshot_json(&control);
-    for row in LIVE_OPTIONS {
+    for row in HAND_WIRED_OPTIONS {
         assert!(
             at_defaults.get(row.snapshot_key).is_some(),
             "{}: snapshot key {} missing from /state/renderer at defaults",
@@ -279,12 +281,12 @@ fn snapshot_carries_every_live_option() {
 
     {
         let mut live = control.live.write();
-        for row in LIVE_OPTIONS {
+        for row in HAND_WIRED_OPTIONS {
             (row.set_non_default)(&mut live);
         }
     }
     let changed = snapshot_json(&control);
-    for row in LIVE_OPTIONS {
+    for row in HAND_WIRED_OPTIONS {
         assert!(
             (row.snapshot_reflects)(&changed[row.snapshot_key]),
             "{}: snapshot key {} does not reflect the live change (got {})",
@@ -568,7 +570,7 @@ fn config_save_covers_every_live_option_and_omits_defaults() {
 
     save_live_config_to_path(&control, None, &base, &out).expect("save at defaults");
     let yaml = std::fs::read_to_string(&out).expect("saved config readable");
-    for row in LIVE_OPTIONS {
+    for row in HAND_WIRED_OPTIONS {
         if row.key == "synthetic_objects_enabled" {
             assert!(yaml.contains("synthetic_objects_enabled: false"));
             continue;
@@ -582,14 +584,14 @@ fn config_save_covers_every_live_option_and_omits_defaults() {
 
     {
         let mut live = control.live.write();
-        for row in LIVE_OPTIONS {
+        for row in HAND_WIRED_OPTIONS {
             (row.set_non_default)(&mut live);
         }
     }
     save_live_config_to_path(&control, None, &base, &out).expect("save non-defaults");
     let config = Config::load_or_default(&out);
     let render = config.render.expect("saved config has a render section");
-    for row in LIVE_OPTIONS {
+    for row in HAND_WIRED_OPTIONS {
         assert!(
             (row.config_reflects)(&render),
             "{}: non-default value did not round-trip through the saved config",
@@ -598,4 +600,30 @@ fn config_save_covers_every_live_option_and_omits_defaults() {
     }
 
     let _ = std::fs::remove_file(&out);
+}
+
+/// The snapshot `spread` block reports what the VBAP backend applies. The
+/// spread addresses write the "vbap" param bag, not the live fields, so a block
+/// built from the live fields went stale on the first edit.
+#[test]
+fn snapshot_spread_block_follows_the_vbap_param_bag() {
+    use renderer::backend_params::ParamValue;
+    let control = fixture_control();
+    let live_min = control.live.read().spread_min;
+    control.set_backend_param("vbap", "spread_min", ParamValue::Float(live_min + 0.25));
+    control.set_backend_param("vbap", "spread_from_distance", ParamValue::Bool(true));
+    control.set_backend_param(
+        "vbap",
+        "size_to_spread_mode",
+        ParamValue::Text("mean".into()),
+    );
+    let spread = &snapshot_json(&control)["spread"];
+    assert_eq!(spread["min"], serde_json::json!(live_min + 0.25));
+    assert_eq!(spread["fromDistance"], true);
+    assert_eq!(spread["sizeToSpreadMode"], "mean");
+    // Unset keys keep the live fallback, as in the backend build.
+    assert_eq!(
+        spread["max"],
+        serde_json::json!(control.live.read().spread_max)
+    );
 }

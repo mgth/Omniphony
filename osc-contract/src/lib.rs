@@ -884,6 +884,11 @@ mod tests {
             "../omniphony-renderer/orender_engine/src/osc/state_emit.rs",
             "../omniphony-renderer/orender_engine/src/osc/metadata_emit.rs",
             "../omniphony-renderer/orender_engine/src/osc/profiles.rs",
+            // The core's handlers and snapshot producer, and the options
+            // registry's legacy aliases: whole directories, so a module added
+            // there is covered without anyone remembering to list it.
+            "../omniphony-renderer/runtime_control/src/",
+            "../omniphony-renderer/renderer/src/",
             // The client's send path. A directory, so a command module added
             // tomorrow is covered without anyone remembering to list it.
             "../omniphony-studio-egui/core/src/host/commands/",
@@ -909,34 +914,40 @@ mod tests {
             out
         }
 
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("crate root");
+        let root = root.as_path();
+        // A file can be reached through its own entry and its directory's:
+        // scan each once.
+        let files: std::collections::BTreeSet<std::path::PathBuf> = SOURCES
+            .iter()
+            .flat_map(|rel| sources(&root.join(rel)))
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .collect();
         let mut offenders = Vec::new();
-        for rel in SOURCES {
-            for path in sources(&root.join(rel)) {
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .into_owned();
-                let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                    panic!("guard is stale: cannot read {}: {e}", path.display())
-                });
-                for (n, line) in src.lines().enumerate() {
-                    if line.trim_start().starts_with("//") {
-                        continue;
+        for path in files {
+            // Shown relative to the repository root.
+            let rel = path
+                .strip_prefix(root.parent().unwrap_or(root))
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("guard is stale: cannot read {}: {e}", path.display()));
+            for (n, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let mut rest = line;
+                while let Some(i) = rest.find("\"/omniphony/") {
+                    let after = &rest[i + 1..];
+                    let Some(end) = after.find('"') else { break };
+                    let addr = &after[..end];
+                    // A prefix is matched with `starts_with`; a template is
+                    // filled in by `format!`. Neither is a whole address.
+                    if !addr.ends_with('/') && !addr.contains('{') {
+                        offenders.push(format!("{}:{}: {addr}", rel, n + 1));
                     }
-                    let mut rest = line;
-                    while let Some(i) = rest.find("\"/omniphony/") {
-                        let after = &rest[i + 1..];
-                        let Some(end) = after.find('"') else { break };
-                        let addr = &after[..end];
-                        // A prefix is matched with `starts_with`; a template is
-                        // filled in by `format!`. Neither is a whole address.
-                        if !addr.ends_with('/') && !addr.contains('{') {
-                            offenders.push(format!("{}:{}: {addr}", rel, n + 1));
-                        }
-                        rest = &after[end..];
-                    }
+                    rest = &after[end..];
                 }
             }
         }
