@@ -1,11 +1,11 @@
 [workspace]
-members = ["renderer", "audio_input", "audio_output", "sys", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony-geometry"]
+members = ["renderer", "audio_input", "audio_output", "sys", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony_geometry"]
 resolver = "2"
 
 # Metadata shared by the members. A member opts in field by field
 # (`edition.workspace = true`, …), so an exception stays visible in its own
 # manifest: `orender_ffi` keeps edition 2021, `reference_bridge` its own
-# license, and `omniphony-geometry` spells everything out because it is also
+# license, and `omniphony_geometry` spells everything out because it is also
 # built from outside this workspace (the Studio projects).
 [workspace.package]
 edition = "2024"
@@ -25,7 +25,7 @@ bridge_api = { version = "0.4.0", path = "bridge_api" }
 dsp_fixtures = { version = "0.1.0", path = "dsp_fixtures" }
 example_backend = { version = "0.1.0", path = "example_backend" }
 host_audio = { version = "0.1.0", path = "host_audio" }
-omniphony-geometry = { version = "0.1.0", path = "omniphony-geometry" }
+omniphony_geometry = { version = "0.1.0", path = "omniphony_geometry" }
 omniphony-osc-contract = { version = "0.1.0", path = "../osc-contract" }
 orender_engine = { version = "0.2.3", path = "orender_engine" }
 renderer = { version = "0.2.4", path = "renderer" }

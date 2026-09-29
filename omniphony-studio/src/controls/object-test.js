@@ -356,7 +356,7 @@ function send() {
 // list of nodes rather than a step.
 
 // The node list comes from the backend (`get_vbap_grid_nodes`), which builds it
-// with `omniphony-geometry` — the same code the renderer samples the table
+// with `omniphony_geometry` — the same code the renderer samples the table
 // with. Rebuilding it here from the published interval counts meant
 // re-implementing the conventions described above, and being silently wrong if
 // either ever changed.

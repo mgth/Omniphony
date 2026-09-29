@@ -526,7 +526,7 @@ pub fn control_render_input_pipe(state: State<SharedState>, value: String) {
 /// counts are intervals rather than nodes, and that the height axis is
 /// asymmetric (an optional negative half at its own resolution, stopping short
 /// of zero so both halves do not claim it). Both now come from
-/// `omniphony-geometry`, which is also what the renderer builds the table with.
+/// `omniphony_geometry`, which is also what the renderer builds the table with.
 #[tauri::command]
 pub fn get_vbap_grid_nodes(state: State<SharedState>) -> Option<serde_json::Value> {
     let cartesian = {

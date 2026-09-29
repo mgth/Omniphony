@@ -42,7 +42,7 @@ fn clamp(v: f64, min: f64, max: f64) -> f64 {
     v.max(min).min(max)
 }
 
-// Polar -> cartesian comes from `omniphony-geometry`, shared with the renderer.
+// Polar -> cartesian comes from `omniphony_geometry`, shared with the renderer.
 // The copy that lived here read the angles in the Three.js scene frame while
 // labelling the result as ADM, so an object sent at azimuth 90° (hard right)
 // was stored at ADM (0, 0, dist) — directly overhead. Objects arriving in polar

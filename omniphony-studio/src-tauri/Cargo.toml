@@ -12,7 +12,7 @@ path = "src/main.rs"
 # depth warp, shared with the renderer. Dependency-free by design — check the
 # crate's own Cargo.toml before adding anything to it, because whatever it
 # pulls in lands in the Studio build too.
-omniphony-geometry = { path = "../../omniphony-renderer/omniphony-geometry" }
+omniphony_geometry = { path = "../../omniphony-renderer/omniphony_geometry" }
 # The native Studio's core. Several modules here were copies of it, kept in
 # step by hand and drifting; they are re-exports now. Its own dependencies are
 # the ones this crate already had.
