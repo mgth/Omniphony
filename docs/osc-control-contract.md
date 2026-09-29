@@ -3,11 +3,13 @@
 The engine is driven and observed entirely over **OSC** (UDP). This document is
 the human-readable contract for client authors (Omniphony Studio, alternative
 front-ends, automation). The machine-readable single source of truth for the
-address strings is
-[`runtime_control::osc_contract`](../omniphony-renderer/runtime_control/src/osc_contract.rs)
-— every address below has a named constant there, and the exhaustive lists are
-`osc_contract::ALL_CONTROL` and `osc_contract::ALL_STATE`. Keep this document and
-that module in sync.
+address strings is the dependency-free
+[`omniphony-osc-contract`](../osc-contract/src/lib.rs) crate (re-exported to the
+engine as `runtime_control::osc_contract`, and used by Studio too) — every
+address below has a named constant there, and the exhaustive lists are
+`ALL_CONTROL`, `ALL_STATE` and `ALL_SESSION`. The [address index](#address-index)
+at the end lists every one of them; a test in the contract crate fails when an
+address is missing from it. Keep this document and that crate in sync.
 
 ## Directions
 
@@ -45,6 +47,11 @@ else waits for `/control/save_config`.
 
 ### Spatialisation: spread & distance
 
+The six `/control/spread/*` addresses are aliases over the generic backend
+parameter setter: they write the `vbap` backend's param bag
+(`/control/backend/param ["vbap", "spread_min", 0.2]` is the same write) and
+rebuild the topology.
+
 | Address | Args | Meaning |
 |---|---|---|
 | `/control/spread/min` | f `[0,1]` | Minimum effective spread. |
@@ -70,34 +77,42 @@ else waits for `/control/save_config`.
 | Address | Args | Meaning |
 |---|---|---|
 | `/control/render_backend` | s | Select active backend by id (built-in or contributor). |
-| `/control/render_backend/restore` | int | Restore the previously selected backend. |
+| `/control/render_backend/restore` | — | No longer supported: logged and ignored. |
 | `/control/backend/param` | `[key, value]` or `[backend_id, key, value]` | Generic backend parameter setter (schema-driven). With an explicit backend id, targets that backend (e.g. a hybrid inner backend); otherwise the selected one. |
 | `/control/hybrid/external_backend` | s | Hybrid outer backend id. |
 | `/control/hybrid/internal_backend` | s | Hybrid inner backend id. |
 | `/control/hybrid/metric` | s | `spherical` \| `chebyshev`. |
 | `/control/hybrid/curve_smoothing` | f `[0,1]` | Blend-curve smoothing. |
 | `/control/hybrid/curve` | f×2N | Flattened `(x,y)` blend control points, each `[0,1]`. |
+| `/control/backend/file/get` | backend_id s, key s, name s?, request_id s? | Read an editable backend file (e.g. the scriptable backend's `.lua`) — `name` from the managed store, else the param's current handle. Replies point-to-point on `/state/backend/file/content` or `/state/backend/file/error`. |
+| `/control/backend/file/list` | backend_id s | List the managed store's files; replies `/state/backend/file/list` `[backend_id, json array]`. |
+| `/control/backend/file/put` | backend_id s, key s, name s, content s, request_id s? | Write the file (≤ 60 000 bytes), set the param to its handle and rebuild the backend; replies `/state/backend/file/content` as the save ack. An absolute path is only honoured from a loopback client. |
+
+A client advertising `fileRequestIds` gets its optional `request_id` echoed as
+the last argument of the reply; older clients omit it and get the original
+payload shape.
 
 ### Render evaluation (precomputed tables)
 
 | Address | Args | Meaning |
 |---|---|---|
 | `/control/render_evaluation_mode` | s | `auto` \| `realtime` \| `precomputed_polar` \| `precomputed_cartesian`. |
-| `/control/render_evaluation_mode/from_file` | s | Load a precomputed evaluator artifact. |
+| `/control/render_evaluation_mode/from_file` | — | No longer supported: logged and ignored. |
 | `/control/render_evaluation/position_interpolation` | int bool | Nearest-cell vs trilinear table lookup. |
 | `/control/render_evaluation/cartesian/{x_size,y_size,z_size,z_neg_size}` | int `≥1` (z_neg `≥0`) | Cartesian table resolution per axis. |
 | `/control/render_evaluation/polar/azimuth_resolution` | int `≥1` | Azimuth cells. |
 | `/control/render_evaluation/polar/elevation_resolution` | int `≥1` | Elevation cells. |
 | `/control/render_evaluation/polar/distance_res` | int `≥1` | Distance cells. |
 | `/control/render_evaluation/polar/distance_max` | f `>0` | Max table distance. |
+| `/control/render_evaluation/object_size_intervals` | int `≥0` | Object-size interval count of the precomputed tables (`0` = off). |
 
 ### Gain, mute & loudness
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/control/realtime/master_gain` | f `[0,2]`, seq int | Master gain. |
-| `/control/realtime/speaker_gain` | id int, f `[0,2]`, seq int | Per-speaker gain. |
-| `/control/realtime/object_gain` | id s, f `[0,2]`, seq int | Per-object gain. |
+| `/control/realtime/master_gain` | f `≥0` (linear), seq int | Master gain; echoed on `/state/realtime/master_gain`. Studio sends `[0,2]`. |
+| `/control/realtime/speaker_gain` | id int, f `≥0` (linear), seq int | Per-speaker gain; echoed on `/state/realtime/speaker_gain`. |
+| `/control/gain` | f `≥0` (linear) | Master gain without a sequence number (scripts). Same field as the realtime address. |
 | `/control/object/{id}/mute` | int bool | Per-object mute. |
 | `/control/config/speakers` | json | Speaker edits (incl. per-speaker mute). |
 | `/control/loudness` | int bool | Dialogue-norm / loudness correction. |
@@ -121,6 +136,9 @@ latency. See `PI_TUNING_PROCEDURE.md` and `docs/latency-regulation.md`.
 |---|---|---|
 | `/control/config/audio`, `/control/config/audio/apply` | json | Audio output config (stage / apply). |
 | `/control/audio/output_device` | s | Select output device. |
+| `/control/audio/output_backend` | s | Requested output backend (`pipewire`, `asio`, `file`, …; `""` = platform default). Takes effect on the next output (re)start. |
+| `/control/audio/output_file` | s | Destination for the `file` backend (`-`, a path or a FIFO; `""` = unset). |
+| `/control/audio/output_file_format` | s | Container/format for the `file` backend (`""` = unset). |
 | `/control/audio/output_devices/refresh` | — | Re-enumerate output devices. |
 | `/control/audio/sample_rate` | int | Output sample rate. |
 | `/control/config/input`, `/control/config/input/apply`, `/control/input/apply` | json | Input config (stage / apply). |
@@ -128,7 +146,7 @@ latency. See `PI_TUNING_PROCEDURE.md` and `docs/latency-regulation.md`.
 | `/control/input/refresh` | — | Re-enumerate input sources. |
 | `/control/input/drc_mode` | s | Dynamic-range-control mode. |
 | `/control/input/drc_weight` | f `[0,1]` | DRC weight. |
-| `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,format,clock_mode,map,lfe_mode}` | varies | Live-capture parameters. |
+| `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,clock_mode,map,lfe_mode}` | varies | Live-capture parameters. |
 | `/control/render/bridge_path` | s | Path to the format bridge library. |
 | `/control/render/input_pipe` | s | Named-pipe input path. |
 
@@ -144,11 +162,97 @@ contract address. See `omniphony-renderer/BINAURAL.md`.
 |---|---|---|
 | `/control/head/orientation` | f×3 (euler °) | Set head pose directly (yaw, pitch, roll). |
 | `/control/head/quat` | f×4 | Set head pose directly (quaternion). |
-| `/control/head/recenter` | — | Capture the current orientation as "front". |
+| `/control/head/recenter` | — | Capture the current orientation as "front" (persisted to `config.yaml` right away). |
+| `/control/head/calibrate` | s | Three-pose sensor-axis calibration, one step per message: `front` (also recenters), `left`, `up`, or `reset`. The result is persisted right away. |
 | `/control/head/tracking/address` | s | Feed address the engine listens on (`""` disables tracking). |
 | `/control/head/tracking/format` | s | `auto` \| `quat` \| `rotvec` \| `euler`. |
-| `/control/head/tracking/smoothing` | f `[0,0.99]` | Pose smoothing (higher = smoother/laggier). |
+| `/control/head/tracking/smoothing` | f `[0,0.999]` | Pose smoothing (higher = smoother/laggier). |
 | `/control/head/tracking/invert` | int bool | Mirror the applied rotation. |
+
+### Binaural (headphone) stage
+
+See `omniphony-renderer/BINAURAL.md` for what each stage does. Values out of
+range are clamped (an ear gain out of range is dropped instead); non-finite
+values are dropped.
+
+| Address | Args | Meaning |
+|---|---|---|
+| `/control/output_mode` | s | `speaker` (render to the layout) \| `binaural` (stereo for headphones). |
+| `/control/binaural_mode` | s | `direct` (one HRIR pair per object) \| `cascaded` (pan onto a virtual layout, binauralise its speakers). |
+| `/control/binaural/hrir_source` | s | `synthetic` \| `saf_kemar` \| `sofa[:<path>]` \| `brir[:<path>]` \| `pinna[:<preset>:<d_scale %>:<depth %>]` \| `prtf[:<freq_scale %>:<depth %>]`. |
+| `/control/binaural/hrtf_upload/begin` | name s, total_bytes int | Start uploading a SOFA file (≤ 1 GiB; one upload at a time). |
+| `/control/binaural/hrtf_upload/chunk` | index int, blob | One chunk, in order. |
+| `/control/binaural/hrtf_upload/end` | chunk_count int | Finish: the file is written to `hrtf/` next to the default config file and selected as the `sofa` source. |
+| `/control/binaural/unit_scale` | f `[0.01,100]` m | Metres per ADM unit. |
+| `/control/binaural/head_radius` | f `[0.05,0.15]` m | Head radius for the ITD model. |
+| `/control/binaural/ear_gain` | ear int (`0` L, `1` R), f `[0,4]` | Headphone output gain per ear. |
+| `/control/binaural/ear_mute` | ear int, int bool | Headphone mute per ear. |
+| `/control/binaural/reflections/enabled` | int bool | Early reflections of the virtual room. |
+| `/control/binaural/reflections/level` | f `[0,1]` | Reflection level relative to the direct sound. |
+| `/control/binaural/reflections/wall_cutoff` | f `[1000,20000]` Hz | Wall absorption low-pass. |
+| `/control/binaural/reflections/{room_width,room_depth,room_height}` | f `[1,20]` m | Virtual room size. |
+| `/control/binaural/reverb/enabled` | int bool | Late reverb. |
+| `/control/binaural/reverb/level` | f `[0,1]` | Reverb level. |
+| `/control/binaural/reverb/rt60` | f `[0.1,3]` s | Decay time. |
+| `/control/binaural/reverb/predelay` | f `[0,100]` ms | Pre-delay. |
+| `/control/binaural/reverb/size` | f `[0.5,2]` | Room-size factor. |
+| `/control/binaural/reverb/{rt60_low_ratio,rt60_high_ratio}` | f `[0.25,4]` | Low / high band decay relative to `rt60`. |
+| `/control/binaural/diffuse_field_eq` | int bool | Diffuse-field equalisation of the HRIR set. |
+| `/control/binaural/air_absorption` | int bool | Distance-dependent air absorption. |
+| `/control/binaural/brir/head_tracking` | int bool, or `auto` | Which measured head orientations of a room response stay resident: all (`1`), front only (`0`), or `auto` (all when a head-tracking address is set). |
+| `/control/binaural/brir/max_length` | f `[0,10]` s | Truncate the room response (`0` = whole). |
+| `/control/binaural/brir/tail_floor` | f `[20,120]` dB | Cut the tail this far below the response's energy. |
+| `/control/binaural/hrir_update_lattice` | s | `exact` \| `fine` \| `balanced` \| `coarse` — how far an object must turn before its HRIR is rebuilt. Registry option alias (see [Live options](#live-options)). |
+
+### Fixed-channel sources
+
+Channel-based content: placement of the fixed channels, and the synthesized
+objects stages (height generator, phantom extraction).
+
+| Address | Args | Meaning |
+|---|---|---|
+| `/control/synthetic_objects` | int bool | Master switch of every synthesized-object stage (keeps the child selections). Registry option alias. |
+| `/control/object_generator` | s | Bed→height generator id (`""`/`none` = off). Schema on `/state/object_generators`. Registry option alias. |
+| `/control/object_generator/param` | key s, f | One generator parameter (keys from the schema). Not persisted until Save. |
+| `/control/phantom_extract` | s | `off` \| `broadband` \| `spectral` (legacy int `0`/`1` = off/broadband). Registry option alias. |
+| `/control/phantom_extract/param` | key s, f | One phantom-extraction parameter (schema on `/state/phantom`). Not persisted until Save. |
+| `/control/surround_placement` | s | `side` \| `back`: where a 4.x/5.x surround pair goes when there are no back channels. Registry option alias. |
+| `/control/output_channel_mapping` | s | `by_index` \| `by_name`: how output channels map to device ports. Registry option alias. |
+| `/control/placement/mode` | family s, mode s | Placement mode of one source family (`generic`, `dolby`, `dts`, `auro`, `pcm`): `sphere` \| `room` \| `manual`, or `inherit`. Re-plans the stream. |
+| `/control/placement/layout` | family s, yaml s | One family's own entries (a YAML `SpeakerLayout`; `""` clears). Re-plans the stream. |
+| `/control/virtual_bed` | yaml s | Legacy: the `generic` family's entries. |
+
+### Speaker stage & engine
+
+| Address | Args | Meaning |
+|---|---|---|
+| `/control/crossover_type` | s | `lr4` (IIR, zero latency) \| `fir` (linear phase, constant latency). Registry option alias. |
+| `/control/crossover_fir_transition_ratio` | f `[0.05,2]` | FIR transition width relative to the lowest cutoff. Registry option alias. |
+| `/control/decode_thread` | int bool | Decode on a thread of its own in the liborender engine, when its host lets the option decide. Registry option alias. |
+
+### Live options
+
+`/control/option [key (string), value]` sets any option declared in the
+`renderer::options` registry (schema on `/state/options_schema`, values in the
+`options` block of `/state/renderer`). Every option is persisted to
+`config.yaml` as soon as it is set. The nine dedicated addresses above are
+aliases of it: `synthetic_objects`, `object_generator`, `phantom_extract`,
+`surround_placement`, `output_channel_mapping`, `crossover_type`,
+`crossover_fir_transition_ratio`, `decode_thread`,
+`binaural/hrir_update_lattice`. See `docs/live-options-registry.md`.
+
+### Config profiles
+
+Named profiles (`docs/config-profiles.md`). Every mutation commits the live
+state into the outgoing profile, saves the config and re-broadcasts
+`/state/profiles` and the live-state snapshot.
+
+| Address | Args | Meaning |
+|---|---|---|
+| `/control/profile/switch` | name s | Switch to a profile (refused if its layout file is missing). |
+| `/control/profile/create` | name s | Create a profile from the current state. |
+| `/control/profile/delete` | name s | Delete a profile. |
+| `/control/profile/rename` | old s, new s | Rename a profile. |
 
 ### Layout
 
@@ -165,6 +269,7 @@ contract address. See `omniphony-renderer/BINAURAL.md`.
 | `/control/speaker_test` | idx int, level f `[0,1]`, isolation s | Play band-limited pink noise on one speaker; negative idx stops. |
 | `/control/object_test` | on int bool, x f, y f, z f `[-1,1]`, level f `[0,1]`, size f `[0,1]`, isolation s | Play pink noise as an object at a position, panned by the active backend; `on = 0` stops. |
 | `/control/object_test/rotation` | axis s (`x`\|`y`\|`z`\|`free`), diameter f `[0,2]`, period_s f, azimuth f, elevation f | Orbit the object test around its placed position; diameter `0` stops it. |
+| `/control/object_test/clip` | path s | Choose the WAV file the `clip` signal plays (`""` clears). Loaded once, on the control thread; the result comes back on `/state/object_test/clip`. |
 | `/control/speaker_test/idle_feed` | int bool | Keep the output chain warm so a test is heard immediately. Serves both tests. |
 
 `isolation` is one of `test_only` (mute the programme on that speaker only),
@@ -270,19 +375,23 @@ and heatmap configuration.
 
 | Address | Args | Meaning |
 |---|---|---|
+| `/control/metering` | int bool | Subscribe (or not) the sending client to the meter stream; acknowledged on `/state/osc/metering`. |
 | `/control/metering/rate_hz` | f `[1,1000]` | Metering publication rate. |
 | `/control/diag/rate_hz` | f `[1,1000]` | Diagnostics publication rate. |
-| `/control/diag/enabled` | int bool | Enable diagnostics publication. |
+| `/control/diag/enabled` | int bool | Subscribe (or not) the sending client to diagnostics; acknowledged on `/state/osc/diag`. |
 | `/control/debug/speaker_gaintable/subscribe` | have_version int, speaker int | Subscribe to a speaker's gain-table field. |
 | `/control/debug/speaker_gaintable/unsubscribe` | — | Release the gain-table subscription. |
 | `/control/debug/speaker_gaintable/nack` | … | Request missing chunks / version. |
 | `/control/log_level` | s | `off`\|`error`\|`warn`\|`info`\|`debug`\|`trace`. |
-| `/control/ramp_mode` | s | `off` \| `frame` \| `sample`. |
-| `/control/option` | s key, value | Generic setter for any declared live option (`renderer::options` registry; schema on `/state/options_schema`). The dedicated addresses (`synthetic_objects`, `surround_placement`, `output_channel_mapping`, `object_generator`, `phantom_extract`) are aliases of this. |
+| `/control/ramp_mode` | s | Object-transition ramp: `off` \| `frame` \| `interp` \| `sample`. |
+| `/control/option` | s key, value | Generic setter for any declared live option — see [Live options](#live-options). |
 | `/control/save_config` | — | Persist the current config. |
 | `/control/reload_config` | — | Reload config from disk. |
 | `/control/quit` | — | Shut the engine down. |
-| `/control/yield_port` | — | Ask this instance to shut down and free the OSC RX port. Honoured only by instances started with `--osc-yield` (a Studio-launched standby renderer); ignored otherwise, so an embedded (mpv) renderer can never be evicted. Sent automatically by a starting instance that finds the port busy. |
+| `/control/yield_port` | — | Ask this instance to free the OSC RX port. Honoured only by instances started with `--osc-yield` (a Studio-launched standby renderer); ignored otherwise, so an embedded (mpv) renderer can never be evicted. Sent automatically by a starting instance that finds the port busy. The instance replies `/omniphony/yield/resume_port [port]` and stands by. |
+| `/control/resume` | — | Sent to a standing-by instance, on the resume port it advertised, to re-acquire the OSC port and audio. |
+
+`/control/unknown` is a sentinel for tests (an address no handler takes).
 
 ---
 
@@ -305,17 +414,29 @@ exhaustive machine-readable list.
   consecutive bundles when it would not fit a UDP datagram (65 000 bytes);
   `snapshot_complete` is always its last message, so a client acts on that
   marker, never on the bundle boundary.
-- **Render** — `render/version`, `render/config_path`, `render/config_status`,
+- **Render** — `render/version`, `render/executable` (path of the process
+  serving the engine), `render/abi` (C-ABI `major.minor` of the liborender
+  shim, `""` for the CLI), `render/config_path`, `render/config_status`,
   `render/bridge_path`, `render/bridge_error` (bounded to 2 KB: the first
   line and the distinct verdicts of a plugin load failure, the full report
   stays in the renderer log), `vbap/allow_negative_z`,
   `render_evaluation/*` (mirrors of the control resolutions), `speakers`,
   `speakers/recomputing`, `speakers/recompute_error`, `layout`.
+- **Schemas & profiles** — `options_schema`, `object_generators` (height
+  generator ids, labels and param specs), `phantom` (phantom-extraction param
+  specs), `profiles` (`{"active", "names"}`).
+- **Overlay** — `overlay` (display preferences as JSON, republished whenever
+  they change, including from mpv keybinds).
+- **Object test** — `object_test/position` (`x, y, z, peak dB, rms dB` of the
+  running test), `object_test/clip` (the loaded clip as JSON, `{"error"}`, or
+  `{}` when cleared).
+- **Backend files** — `backend/file/content`, `backend/file/list`,
+  `backend/file/error`: point-to-point replies to `/control/backend/file/*`.
 - **Head tracking** — `head_pose` (4-float quaternion `w,x,y,z`, broadcast at
   ~30 Hz while a tracking feed is active, for low-latency client display).
 - **Metering / timing** — `clip`, `decode_time_ms`, `render_time_ms`,
   `write_time_ms`, `crossover_time_ms`, `frame_duration_ms`, `monitoring`,
-  `loudness`, `realtime/{master_gain,object_gain,speaker_gain}`.
+  `loudness`, `realtime/{master_gain,speaker_gain}`.
 - **Latency & resampling** — `latency`, `latency_instant`, `latency_smoothed`,
   `latency_control`, `latency_target`, `latency_avail_input`,
   `latency_output_fifo`, `latency_resampler_pending`, `latency_downstream`,
@@ -330,11 +451,285 @@ exhaustive machine-readable list.
 
 ## Adding or changing an address
 
-1. Add/rename the constant in `runtime_control/src/osc_contract.rs` (and to
-   `ALL_CONTROL` / `ALL_STATE`).
+1. Add/rename the constant in `osc-contract/src/lib.rs` (and to `ALL_CONTROL`,
+   `ALL_STATE` or `ALL_SESSION`).
 2. Reference the constant from the dispatcher / producer instead of a literal.
-3. Update this document.
+3. Document it above, and list it in the [address index](#address-index).
 
-The `osc_contract` test module guards the structural invariants (every control
-const is a control address, every state const a state address, no duplicate wire
-addresses).
+The contract crate's tests guard the structural invariants (every control const
+is a control address, every state const a state address, no duplicate wire
+addresses), that the engine and Studio sources reference constants instead of
+spelling addresses, and that every catalogued address appears in the index
+below.
+
+## Address index
+
+Every address the contract catalogues, generated from `ALL_CONTROL`,
+`ALL_STATE` and `ALL_SESSION` (sorted). The contract crate's
+`every_catalogued_address_is_indexed_in_the_contract_doc` test fails when one
+is missing here. Families with a dynamic tail are matched by prefix and are
+not catalogued: `/omniphony/control/object/{id}/mute`,
+`/omniphony/control/distance_diffuse/…`, `/omniphony/control/hybrid/…`,
+`/omniphony/control/render_evaluation/cartesian/…` and
+`/omniphony/control/render_evaluation/polar/…` (see above), plus the
+per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id}`.
+
+<details><summary>Control (161)</summary>
+
+- `/omniphony/control/adaptive_resampling`
+- `/omniphony/control/adaptive_resampling/enable_far_mode`
+- `/omniphony/control/adaptive_resampling/far_mode_return_fade_in_ms`
+- `/omniphony/control/adaptive_resampling/force_silence_in_far_mode`
+- `/omniphony/control/adaptive_resampling/hard_recover_high_in_far_mode`
+- `/omniphony/control/adaptive_resampling/hard_recover_in_far_mode`
+- `/omniphony/control/adaptive_resampling/hard_recover_low_in_far_mode`
+- `/omniphony/control/adaptive_resampling/high_recover_entry_margin_ms`
+- `/omniphony/control/adaptive_resampling/integral_discharge_ratio`
+- `/omniphony/control/adaptive_resampling/ki`
+- `/omniphony/control/adaptive_resampling/kp_near`
+- `/omniphony/control/adaptive_resampling/max_adjust`
+- `/omniphony/control/adaptive_resampling/near_far_threshold_ms`
+- `/omniphony/control/adaptive_resampling/pause`
+- `/omniphony/control/adaptive_resampling/reset_ratio`
+- `/omniphony/control/adaptive_resampling/update_interval_callbacks`
+- `/omniphony/control/audio/output_backend`
+- `/omniphony/control/audio/output_device`
+- `/omniphony/control/audio/output_devices/refresh`
+- `/omniphony/control/audio/output_file`
+- `/omniphony/control/audio/output_file_format`
+- `/omniphony/control/audio/sample_rate`
+- `/omniphony/control/auto_gain`
+- `/omniphony/control/auto_gain_ceiling`
+- `/omniphony/control/backend/file/get`
+- `/omniphony/control/backend/file/list`
+- `/omniphony/control/backend/file/put`
+- `/omniphony/control/backend/param`
+- `/omniphony/control/binaural/air_absorption`
+- `/omniphony/control/binaural/brir/head_tracking`
+- `/omniphony/control/binaural/brir/max_length`
+- `/omniphony/control/binaural/brir/tail_floor`
+- `/omniphony/control/binaural/diffuse_field_eq`
+- `/omniphony/control/binaural/ear_gain`
+- `/omniphony/control/binaural/ear_mute`
+- `/omniphony/control/binaural/head_radius`
+- `/omniphony/control/binaural/hrir_source`
+- `/omniphony/control/binaural/hrir_update_lattice`
+- `/omniphony/control/binaural/hrtf_upload/begin`
+- `/omniphony/control/binaural/hrtf_upload/chunk`
+- `/omniphony/control/binaural/hrtf_upload/end`
+- `/omniphony/control/binaural/reflections/enabled`
+- `/omniphony/control/binaural/reflections/level`
+- `/omniphony/control/binaural/reflections/room_depth`
+- `/omniphony/control/binaural/reflections/room_height`
+- `/omniphony/control/binaural/reflections/room_width`
+- `/omniphony/control/binaural/reflections/wall_cutoff`
+- `/omniphony/control/binaural/reverb/enabled`
+- `/omniphony/control/binaural/reverb/level`
+- `/omniphony/control/binaural/reverb/predelay`
+- `/omniphony/control/binaural/reverb/rt60`
+- `/omniphony/control/binaural/reverb/rt60_high_ratio`
+- `/omniphony/control/binaural/reverb/rt60_low_ratio`
+- `/omniphony/control/binaural/reverb/size`
+- `/omniphony/control/binaural/unit_scale`
+- `/omniphony/control/binaural_mode`
+- `/omniphony/control/config/audio`
+- `/omniphony/control/config/audio/apply`
+- `/omniphony/control/config/input`
+- `/omniphony/control/config/input/apply`
+- `/omniphony/control/config/layout`
+- `/omniphony/control/config/layout/apply`
+- `/omniphony/control/config/speakers`
+- `/omniphony/control/crossover_fir_transition_ratio`
+- `/omniphony/control/crossover_type`
+- `/omniphony/control/debug/speaker_gaintable/nack`
+- `/omniphony/control/debug/speaker_gaintable/subscribe`
+- `/omniphony/control/debug/speaker_gaintable/unsubscribe`
+- `/omniphony/control/decode_thread`
+- `/omniphony/control/diag/enabled`
+- `/omniphony/control/diag/rate_hz`
+- `/omniphony/control/distance_model`
+- `/omniphony/control/distance_model_metric`
+- `/omniphony/control/gain`
+- `/omniphony/control/head/calibrate`
+- `/omniphony/control/head/orientation`
+- `/omniphony/control/head/quat`
+- `/omniphony/control/head/recenter`
+- `/omniphony/control/head/tracking/address`
+- `/omniphony/control/head/tracking/format`
+- `/omniphony/control/head/tracking/invert`
+- `/omniphony/control/head/tracking/smoothing`
+- `/omniphony/control/input/apply`
+- `/omniphony/control/input/drc_mode`
+- `/omniphony/control/input/drc_weight`
+- `/omniphony/control/input/live/backend`
+- `/omniphony/control/input/live/channels`
+- `/omniphony/control/input/live/clock_mode`
+- `/omniphony/control/input/live/description`
+- `/omniphony/control/input/live/layout`
+- `/omniphony/control/input/live/layout_import`
+- `/omniphony/control/input/live/lfe_mode`
+- `/omniphony/control/input/live/map`
+- `/omniphony/control/input/live/node`
+- `/omniphony/control/input/live/sample_rate`
+- `/omniphony/control/input/mode`
+- `/omniphony/control/input/refresh`
+- `/omniphony/control/latency_target`
+- `/omniphony/control/layout/export`
+- `/omniphony/control/layout/radius_m`
+- `/omniphony/control/log_level`
+- `/omniphony/control/loudness`
+- `/omniphony/control/metering`
+- `/omniphony/control/metering/rate_hz`
+- `/omniphony/control/object_generator`
+- `/omniphony/control/object_generator/param`
+- `/omniphony/control/object_test`
+- `/omniphony/control/object_test/clip`
+- `/omniphony/control/object_test/rotation`
+- `/omniphony/control/option`
+- `/omniphony/control/output_channel_mapping`
+- `/omniphony/control/output_mode`
+- `/omniphony/control/overlay/enabled`
+- `/omniphony/control/overlay/heatmap_bands`
+- `/omniphony/control/overlay/heatmap_colormap`
+- `/omniphony/control/overlay/heatmap_custom_stops`
+- `/omniphony/control/overlay/heatmap_enabled`
+- `/omniphony/control/overlay/labels`
+- `/omniphony/control/overlay/objects`
+- `/omniphony/control/overlay/tag`
+- `/omniphony/control/overlay/trails`
+- `/omniphony/control/phantom_extract`
+- `/omniphony/control/phantom_extract/param`
+- `/omniphony/control/placement/layout`
+- `/omniphony/control/placement/mode`
+- `/omniphony/control/profile/create`
+- `/omniphony/control/profile/delete`
+- `/omniphony/control/profile/rename`
+- `/omniphony/control/profile/switch`
+- `/omniphony/control/quit`
+- `/omniphony/control/ramp_mode`
+- `/omniphony/control/realtime/master_gain`
+- `/omniphony/control/realtime/speaker_gain`
+- `/omniphony/control/reload_config`
+- `/omniphony/control/render/bridge_path`
+- `/omniphony/control/render/input_pipe`
+- `/omniphony/control/render_backend`
+- `/omniphony/control/render_backend/restore`
+- `/omniphony/control/render_evaluation/object_size_intervals`
+- `/omniphony/control/render_evaluation/position_interpolation`
+- `/omniphony/control/render_evaluation_mode`
+- `/omniphony/control/render_evaluation_mode/from_file`
+- `/omniphony/control/resume`
+- `/omniphony/control/room_ratio`
+- `/omniphony/control/room_ratio_center_blend`
+- `/omniphony/control/room_ratio_lower`
+- `/omniphony/control/room_ratio_rear`
+- `/omniphony/control/save_config`
+- `/omniphony/control/speaker_test`
+- `/omniphony/control/speaker_test/idle_feed`
+- `/omniphony/control/spread/distance_curve`
+- `/omniphony/control/spread/distance_range`
+- `/omniphony/control/spread/from_distance`
+- `/omniphony/control/spread/max`
+- `/omniphony/control/spread/min`
+- `/omniphony/control/spread/size_to_spread_mode`
+- `/omniphony/control/surround_placement`
+- `/omniphony/control/synthetic_objects`
+- `/omniphony/control/unknown`
+- `/omniphony/control/virtual_bed`
+- `/omniphony/control/yield_port`
+
+</details>
+
+<details><summary>State (73)</summary>
+
+- `/omniphony/state/adaptive_resampling/band`
+- `/omniphony/state/adaptive_resampling/state`
+- `/omniphony/state/audio`
+- `/omniphony/state/backend/file/content`
+- `/omniphony/state/backend/file/error`
+- `/omniphony/state/backend/file/list`
+- `/omniphony/state/capabilities`
+- `/omniphony/state/clip`
+- `/omniphony/state/config/save_error`
+- `/omniphony/state/config/saved`
+- `/omniphony/state/crossover_time_ms`
+- `/omniphony/state/debug/speaker_gaintable/chunk`
+- `/omniphony/state/debug/speaker_gaintable/meta`
+- `/omniphony/state/debug/speaker_gaintable/unavailable`
+- `/omniphony/state/debug/speaker_gaintable/uptodate`
+- `/omniphony/state/decode_time_ms`
+- `/omniphony/state/diag_schema`
+- `/omniphony/state/diag_values`
+- `/omniphony/state/frame_duration_ms`
+- `/omniphony/state/head_pose`
+- `/omniphony/state/input`
+- `/omniphony/state/input_pipe`
+- `/omniphony/state/latency`
+- `/omniphony/state/latency_avail_input`
+- `/omniphony/state/latency_control`
+- `/omniphony/state/latency_downstream`
+- `/omniphony/state/latency_instant`
+- `/omniphony/state/latency_output_fifo`
+- `/omniphony/state/latency_resampler_pending`
+- `/omniphony/state/latency_smoothed`
+- `/omniphony/state/latency_target`
+- `/omniphony/state/layout`
+- `/omniphony/state/log_level`
+- `/omniphony/state/loudness`
+- `/omniphony/state/monitoring`
+- `/omniphony/state/object_generators`
+- `/omniphony/state/object_test/clip`
+- `/omniphony/state/object_test/position`
+- `/omniphony/state/options_schema`
+- `/omniphony/state/osc/diag`
+- `/omniphony/state/osc/metering`
+- `/omniphony/state/overlay`
+- `/omniphony/state/phantom`
+- `/omniphony/state/profiles`
+- `/omniphony/state/realtime/master_gain`
+- `/omniphony/state/realtime/speaker_gain`
+- `/omniphony/state/render/abi`
+- `/omniphony/state/render/bridge_error`
+- `/omniphony/state/render/bridge_path`
+- `/omniphony/state/render/config_path`
+- `/omniphony/state/render/config_status`
+- `/omniphony/state/render/executable`
+- `/omniphony/state/render/version`
+- `/omniphony/state/render_evaluation/cartesian/x_size`
+- `/omniphony/state/render_evaluation/cartesian/y_size`
+- `/omniphony/state/render_evaluation/cartesian/z_neg_size`
+- `/omniphony/state/render_evaluation/cartesian/z_size`
+- `/omniphony/state/render_evaluation/object_size_intervals`
+- `/omniphony/state/render_evaluation/polar/azimuth_resolution`
+- `/omniphony/state/render_evaluation/polar/distance_max`
+- `/omniphony/state/render_evaluation/polar/distance_res`
+- `/omniphony/state/render_evaluation/polar/elevation_resolution`
+- `/omniphony/state/render_evaluation/position_interpolation`
+- `/omniphony/state/render_time_ms`
+- `/omniphony/state/renderer`
+- `/omniphony/state/resample_ratio`
+- `/omniphony/state/shutdown`
+- `/omniphony/state/snapshot_complete`
+- `/omniphony/state/speakers`
+- `/omniphony/state/speakers/recompute_error`
+- `/omniphony/state/speakers/recomputing`
+- `/omniphony/state/vbap/allow_negative_z`
+- `/omniphony/state/write_time_ms`
+
+</details>
+
+<details><summary>Session and streams (11)</summary>
+
+- `/omniphony/bed/config`
+- `/omniphony/heartbeat`
+- `/omniphony/heartbeat/ack`
+- `/omniphony/heartbeat/unknown`
+- `/omniphony/log`
+- `/omniphony/meter/drc_gain`
+- `/omniphony/meter/master`
+- `/omniphony/register`
+- `/omniphony/spatial/frame`
+- `/omniphony/timestamp`
+- `/omniphony/yield/resume_port`
+
+</details>

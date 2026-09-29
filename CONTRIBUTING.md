@@ -133,9 +133,9 @@ alternative client or host integration (rather than a backend), this is the
 surface you target. The full contract — every address, its direction, arguments
 and semantics — is documented in
 [`docs/osc-control-contract.md`](docs/osc-control-contract.md), and the address
-strings have named constants in
-`omniphony-renderer/runtime_control/src/osc_contract.rs` (the single source of
-truth; `ALL_CONTROL` / `ALL_STATE` are the exhaustive lists).
+strings have named constants in the dependency-free `osc-contract` crate
+(`osc-contract/src/lib.rs`, the single source of truth; `ALL_CONTROL` /
+`ALL_STATE` / `ALL_SESSION` are the exhaustive lists).
 
 ## Coding conventions
 
