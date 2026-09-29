@@ -22,6 +22,26 @@ pub fn event_pos_raw(event: &Event) -> Option<[f64; 3]> {
     Some([p[0], p[1], p[2]])
 }
 
+/// Start a new segment — a `is_new_segment` frame, or a bridge that reset
+/// (sync loss, seek) — for the renderer and the OSC clients, the same way in
+/// every host: the renderer drops its per-object and ramp state (live params
+/// stay), and OSC clients are told the content changed and get every object
+/// again on the next frame, so a smaller new layout does not leave the
+/// previous one's objects behind (7.1 → 5.1).
+///
+/// The host resets its own per-stream state alongside (planners, object
+/// declarations, the dialogue-normalisation latch, …).
+pub fn begin_segment(
+    renderer: &renderer::spatial_renderer::SpatialRenderer,
+    osc: Option<&mut crate::osc::OscSender>,
+) {
+    renderer.reset_runtime_state();
+    if let Some(osc) = osc {
+        osc.bump_content_generation();
+        osc.request_full_object_resend();
+    }
+}
+
 /// Legacy 0-9 bed ids of the fixed channels, in PCM order, stopping at the
 /// first object channel. EXPORT-order helper only (file-output bed
 /// conformance keeps the fixed 10-slot layout); rendering uses the channel

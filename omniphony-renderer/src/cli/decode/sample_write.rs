@@ -22,17 +22,9 @@ pub struct SampleWriteCoordinator<'a> {
 }
 
 impl<'a> SampleWriteCoordinator<'a> {
-    /// Whether this frame carries objects, and so takes the object render path.
-    ///
-    /// Derived from the frame's source, not from `spatial.has_objects` alone:
-    /// that flag latches on the first frame carrying metadata and is only
-    /// cleared at a segment reset, so once an object stream has played, plain
-    /// channel content arriving afterwards would keep taking the object path.
-    /// The sink switches between encoded and linear PCM at will, so that
-    /// happens in one session. A live PCM frame is channel content by
-    /// construction — fixed labels, no metadata — whatever played before it.
+    /// Whether this frame carries objects (see [`SpatialState::frame_has_objects`]).
     pub fn frame_has_objects(&self, source: DecodedSource) -> bool {
-        self.spatial.has_objects && !matches!(source, DecodedSource::Live)
+        self.spatial.frame_has_objects(source)
     }
 
     pub fn new(
@@ -302,8 +294,6 @@ impl<'a> SampleWriteCoordinator<'a> {
                         has_metering_clients,
                     )?;
 
-                    let num_speakers = renderer.num_speakers();
-
                     // Feed the PipeWire bridge sink's advertised latency:
                     // render DSP latency (constant, e.g. the linear-phase FIR
                     // crossover) plus the measured output-chain latency (ring
@@ -382,19 +372,22 @@ impl<'a> SampleWriteCoordinator<'a> {
                     };
 
                     log::trace!(
-                        "Writing {} samples ({} sample_count × {} speakers) to streaming output",
+                        "Writing {} samples ({} sample_count × {} channels) to streaming output",
                         rendered.samples.len(),
                         sample_count,
-                        num_speakers
+                        rendered.n_channels
                     );
 
+                    // The width of what was rendered (the sink was sized from
+                    // the same `output_channel_count` before the render).
+                    let rendered_channels = rendered.n_channels;
                     let samples_audio = AudioSamples::F32(rendered.samples);
                     let write_started_at = Instant::now();
                     self.output
                         .audio_writer
                         .as_mut()
                         .expect("audio_writer present")
-                        .write_pcm_samples(&samples_audio, num_speakers)?;
+                        .write_pcm_samples(&samples_audio, rendered_channels)?;
                     let write_time_ms = write_started_at.elapsed().as_secs_f32() * 1000.0;
                     if sent_meter_bundle {
                         if let Some(osc_sender) = &self.telemetry.osc_sender {
@@ -436,7 +429,8 @@ impl<'a> SampleWriteCoordinator<'a> {
                         BedPlanKind::HostPassthrough => {
                             // No spatialization: write the decoded channels
                             // straight to the sink (let the host/sink handle
-                            // them), mirroring mpv falling back to ad_lavc.
+                            // them), mirroring mpv falling back to ad_lavc. The
+                            // sink is sized for them (`output_shape`).
                             self.output
                                 .audio_writer
                                 .as_mut()
@@ -453,15 +447,23 @@ impl<'a> SampleWriteCoordinator<'a> {
                                 "No channel render mapping for labels {:?} - outputting silence",
                                 labels
                             );
-                            let num_speakers = renderer.num_speakers();
+                            // As wide as the sink: what the renderer would have
+                            // emitted (the binaural pair in headphone mode, not
+                            // the speaker count).
+                            let width = renderer.output_channel_count();
+                            let mut silence = std::mem::take(&mut self.output.render_buf);
+                            silence.clear();
+                            silence.resize(sample_count * width, 0.0);
+                            let samples_audio = AudioSamples::F32(silence);
                             self.output
                                 .audio_writer
                                 .as_mut()
                                 .expect("audio_writer present")
-                                .write_pcm_samples(
-                                    &AudioSamples::I32(vec![0i32; sample_count * num_speakers]),
-                                    num_speakers,
-                                )?;
+                                .write_pcm_samples(&samples_audio, width)?;
+                            self.output.render_buf = match samples_audio {
+                                AudioSamples::F32(v) => v,
+                                _ => unreachable!(),
+                            };
                             self.output.pcm_f32_buf = pcm_f32_scratch;
                             return Ok(());
                         }
@@ -560,7 +562,6 @@ impl<'a> SampleWriteCoordinator<'a> {
                         donated_buf,
                         has_metering_clients,
                     )?;
-                    let num_speakers = renderer.num_speakers();
 
                     // Same sink-latency feed as the object path above.
                     if let Some(ic) = self.input_control {
@@ -633,13 +634,16 @@ impl<'a> SampleWriteCoordinator<'a> {
                         false
                     };
 
+                    // The width of what was rendered (the sink was sized from
+                    // the same `output_channel_count` before the render).
+                    let rendered_channels = rendered.n_channels;
                     let samples_audio = AudioSamples::F32(rendered.samples);
                     let write_started_at = Instant::now();
                     self.output
                         .audio_writer
                         .as_mut()
                         .expect("audio_writer present")
-                        .write_pcm_samples(&samples_audio, num_speakers)?;
+                        .write_pcm_samples(&samples_audio, rendered_channels)?;
                     let write_time_ms = write_started_at.elapsed().as_secs_f32() * 1000.0;
                     if sent_meter_bundle {
                         if let Some(osc_sender) = &self.telemetry.osc_sender {

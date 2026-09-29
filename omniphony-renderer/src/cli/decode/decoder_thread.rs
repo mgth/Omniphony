@@ -52,8 +52,10 @@ pub use orender_engine::decode_step::Declaration;
 pub enum DecoderMessage {
     /// A fully decoded audio frame (PCM + metadata + dialogue level).
     AudioData(DecodedAudioData),
-    /// Request to flush audio buffers (after seek/decoder reset).
-    FlushRequest(DecodedSource),
+    /// The bridge reset itself (sync loss, seek) before the frames that
+    /// follow: the spatial state starts over, as in the embedded engine. Not
+    /// a flush — the audio buffers are left alone.
+    BridgeReset(DecodedSource),
     /// Stream ended — reset handler state (for continuous mode).
     StreamEnd(DecodedSource),
 }
@@ -334,7 +336,14 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                         // abort or flush. Flushing would turn a recoverable bridge reset
                         // into an audible dropout much longer than the actual decode
                         // hiccup; in live rendering we never want a premature stop.
+                        // Only the spatial state starts over (stale objects, ramps).
                         log::debug!("Bridge reset; keeping audio buffers intact");
+                        if tx
+                            .send(Ok(DecoderMessage::BridgeReset(DecodedSource::Bridge)))
+                            .is_err()
+                        {
+                            return Ok(false);
+                        }
                     }
 
                     let frames_in_packet = result.frames.len();

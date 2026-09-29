@@ -1,7 +1,7 @@
 use super::state::SpatialState;
 use anyhow::Result;
 use bridge_api::{RCoordinateFormat, RMetadataFrame};
-use orender_engine::events::{Configuration, Event};
+use orender_engine::events::Configuration;
 use orender_engine::osc::{ObjectMeta, OscSender};
 use orender_engine::virtual_bed::build_fixed_channel_objects;
 
@@ -77,6 +77,14 @@ impl<'a> SpatialMetadataCoordinator<'a> {
         Ok(())
     }
 
+    /// A new segment starts (or the bridge reset): the shared segment start
+    /// ([`orender_engine::spatial::begin_segment`], as the embedded engine
+    /// does it — including the OSC purge of the previous layout's objects),
+    /// then this host's per-stream state. The dialogue-normalisation latch is
+    /// released so the new segment's level is applied, not the previous one's.
+    ///
+    /// The bridge's declaration (`source_family`, `declared_poses`) is kept:
+    /// the decoder thread re-sends it on a label change, not per segment.
     pub fn reset_for_segment(&mut self) {
         self.spatial.has_objects = false;
         self.spatial.bed_indices = None;
@@ -86,8 +94,9 @@ impl<'a> SpatialMetadataCoordinator<'a> {
         self.spatial.object_names.clear();
         self.spatial.frame_events.clear();
         self.spatial.bed_events.clear();
+        self.spatial.loudness_applied = false;
         if let Some(renderer) = self.spatial_renderer {
-            renderer.reset_runtime_state();
+            orender_engine::spatial::begin_segment(renderer, self.osc_sender.as_deref_mut());
         }
     }
 
@@ -97,19 +106,10 @@ impl<'a> SpatialMetadataCoordinator<'a> {
         conf: Configuration,
         sample_rate: u32,
     ) -> Result<()> {
+        // Object frames and timestamps carry the bridge's own sample position,
+        // unchanged — the same clock the embedded engine sends, so a client
+        // reads one timeline from either host.
         let sample_pos = meta.sample_pos;
-        let segment_relative_sample_pos = if self.spatial.is_segmented {
-            let relative_pos = sample_pos.saturating_sub(self.spatial.segment_start_samples);
-            log::trace!(
-                "Adjusting metadata sample position: absolute={}, segment_start={}, relative={}",
-                sample_pos,
-                self.spatial.segment_start_samples,
-                relative_pos
-            );
-            relative_pos
-        } else {
-            sample_pos
-        };
         let coordinate_format = self.spatial.coordinate_format;
 
         // Cached whether or not anyone is listening, mirroring the embedded
@@ -153,16 +153,13 @@ impl<'a> SpatialMetadataCoordinator<'a> {
                 RCoordinateFormat::Cartesian => 0,
                 RCoordinateFormat::Polar => 1,
             };
-            if let Err(e) = osc_sender.send_object_frame(
-                segment_relative_sample_pos,
-                ramp_duration,
-                osc_coord_format,
-                &objects,
-            ) {
+            if let Err(e) =
+                osc_sender.send_object_frame(sample_pos, ramp_duration, osc_coord_format, &objects)
+            {
                 log::warn!("Failed to send OSC metadata: {}", e);
             }
-            let seconds = segment_relative_sample_pos as f64 / sample_rate as f64;
-            if let Err(e) = osc_sender.send_timestamp(segment_relative_sample_pos, seconds) {
+            let seconds = sample_pos as f64 / sample_rate as f64;
+            if let Err(e) = osc_sender.send_timestamp(sample_pos, seconds) {
                 log::warn!("Failed to send OSC timestamp: {}", e);
             }
         }
@@ -181,13 +178,5 @@ impl<'a> SpatialMetadataCoordinator<'a> {
         }
 
         Ok(())
-    }
-
-    fn event_pos_raw(_coordinate_format: RCoordinateFormat, event: &Event) -> Option<[f64; 3]> {
-        let p = event.pos()?;
-        if p.len() < 3 {
-            return None;
-        }
-        Some([p[0], p[1], p[2]])
     }
 }
