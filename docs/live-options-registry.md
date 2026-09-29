@@ -37,19 +37,25 @@ Progress:
 
 ### Current state
 
-Declared options (`renderer::options::LIVE_OPTIONS`), all `PERSIST`:
+Declared options (`renderer::options::LIVE_OPTIONS`):
 
-| Key | Kind | Default | `REPLAN` | Legacy alias |
+| Key | Kind | Default | Flags | Legacy alias |
 |---|---|---|---|---|
-| `surround_placement` | `Enum` side / back | `side` | yes | `/control/surround_placement` |
-| `synthetic_objects_enabled` | `Bool` | `false` | yes | `/control/synthetic_objects` |
-| `decode_thread` | `Bool` | `false` | — | `/control/decode_thread` |
-| `output_channel_mapping` | `Enum` by_index / by_name | `by_index` | — | `/control/output_channel_mapping` |
-| `object_generator_id` | `Str` | `""` | yes | `/control/object_generator` |
-| `phantom_extract_mode` | `Enum` off / broadband / spectral | `off` | yes | `/control/phantom_extract` |
-| `crossover_type` | `Enum` lr4 / fir | `lr4` | — | `/control/crossover_type` |
-| `crossover_fir_transition_ratio` | `Float` 0.05–2.0, step 0.05 | `0.5` | — | `/control/crossover_fir_transition_ratio` |
-| `hrir_update_lattice` | `Enum` exact / fine / balanced / coarse | `exact` | — | `/control/binaural/hrir_update_lattice` |
+| `surround_placement` | `Enum` side / back | `side` | PERSIST, REPLAN | `/control/surround_placement` |
+| `synthetic_objects_enabled` | `Bool` | `false` | PERSIST, REPLAN | `/control/synthetic_objects` |
+| `decode_thread` | `Bool` | `false` | PERSIST | `/control/decode_thread` |
+| `output_channel_mapping` | `Enum` by_index / by_name | `by_index` | PERSIST | `/control/output_channel_mapping` |
+| `object_generator_id` | `Str` | `""` | PERSIST, REPLAN | `/control/object_generator` |
+| `phantom_extract_mode` | `Enum` off / broadband / spectral | `off` | PERSIST, REPLAN | `/control/phantom_extract` |
+| `crossover_type` | `Enum` lr4 / fir | `lr4` | PERSIST | `/control/crossover_type` |
+| `crossover_fir_transition_ratio` | `Float` 0.05–2.0, step 0.05 | `0.5` | PERSIST | `/control/crossover_fir_transition_ratio` |
+| `hrir_update_lattice` | `Enum` exact / fine / balanced / coarse | `exact` | PERSIST | `/control/binaural/hrir_update_lattice` |
+| `auto_gain` | `Bool` | `false` | — | `/control/auto_gain` |
+| `auto_gain_ceiling_db` | `Float` −12–0 dBFS, step 0.1 | `-1` | — | `/control/auto_gain_ceiling` |
+| `use_loudness` | `Bool` | `false` | — | `/control/loudness` |
+| `ramp_mode` | `Enum` off / frame / interp / sample | `frame` | — | `/control/ramp_mode` |
+| `drc_mode` | `Str` (the bridge's modes) | `Off` | — | `/control/input/drc_mode` |
+| `drc_weight` | `Float` 0–1, step 0.01 | `1` | — | `/control/input/drc_weight` |
 
 (Aliases are under `/omniphony`; the contract constants live in
 `osc-contract/src/lib.rs`.) Every other live setting is still a hand-wired
@@ -64,7 +70,13 @@ What the implementation settled on, where it differs from the proposal below:
 - **Flags**: only `PERSIST` (commit to `config.yaml` on an OSC set, with the
   targeted sidecar-clearing write) and `REPLAN` (bump
   `RendererControl::options_epoch` on a real change). `NEEDS_TOPOLOGY` and
-  `ADVANCED` were never needed and do not exist.
+  `ADVANCED` were never needed and do not exist. A row without `PERSIST`
+  still reaches the file through the full save and is seeded from it at boot;
+  it just waits for an explicit Save, like the gain-stage / DRC rows that
+  kept their pre-registry behaviour when they migrated.
+- **Setters**: `raw_bool` / `raw_str` / `raw_float` read a raw value by
+  shape; a `Float` row states its bounds once, in its `kind` constant, and
+  the setter (`raw_float`) and the seed (`clamp_to`) read them from there.
 - **Storage**: no store and no macro-generated `OptionId`. Options stay typed
   `LiveParams` fields read directly on the audio path; a row carries
   `set` / `get_json` / `config_store` / `config_seed` function pointers that

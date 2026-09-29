@@ -225,7 +225,11 @@ impl SpatialRenderer {
             spread_from_distance,
             spread_distance_range,
             spread_distance_curve,
-            RampMode::Sample,
+            // The declared default (`render.ramp_mode`, "frame"). Every host
+            // seeds the mode before rendering, so this only decides what a
+            // bare construction (tests, fixtures) starts with — but it must
+            // agree with the default the registry and the config declare.
+            RampMode::from_str(crate::config_fields::ramp_mode::DEFAULT).unwrap_or(RampMode::Frame),
             use_loudness,
             distance_model,
             room_ratio,

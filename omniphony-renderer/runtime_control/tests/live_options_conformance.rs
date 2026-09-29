@@ -320,6 +320,12 @@ mod registry {
                 RawOptionValue::Number(0.75),
             ),
             ("hrir_update_lattice", RawOptionValue::Str("coarse")),
+            ("auto_gain", RawOptionValue::Bool(true)),
+            ("auto_gain_ceiling_db", RawOptionValue::Number(-3.0)),
+            ("use_loudness", RawOptionValue::Bool(true)),
+            ("ramp_mode", RawOptionValue::Str("interp")),
+            ("drc_mode", RawOptionValue::Str("Standard")),
+            ("drc_weight", RawOptionValue::Number(0.5)),
         ]
     }
 
