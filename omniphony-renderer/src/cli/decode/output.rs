@@ -529,7 +529,7 @@ impl AudioWriter {
     /// Diagnostic metric handles published by the active output backend.
     /// Each entry should be passed to `DiagRegistry::register_external`.
     /// Returns an empty Vec on backends that do not yet publish any diag.
-    pub fn diag_atomic_handles(&self) -> Vec<sys::diag::DiagAtomicHandle> {
+    pub fn diag_atomic_handles(&self) -> Vec<diag::DiagAtomicHandle> {
         match self {
             #[cfg(target_os = "linux")]
             AudioWriter::Pipewire(pw) => pw.diag_atomic_handles(),

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 audio_output.workspace = true
+diag.workspace = true
 libc.workspace = true
 log.workspace = true
 renderer.workspace = true

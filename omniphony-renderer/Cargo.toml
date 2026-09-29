@@ -1,5 +1,5 @@
 [workspace]
-members = ["renderer", "audio_input", "audio_output", "sys", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony_geometry"]
+members = ["renderer", "audio_input", "audio_output", "sys", "diag", "live_log", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony_geometry"]
 resolver = "2"
 
 # Metadata shared by the members. A member opts in field by field
@@ -22,9 +22,11 @@ rust-version = "1.88"
 audio_input = { version = "0.2.4", path = "audio_input" }
 audio_output = { version = "0.2.4", path = "audio_output" }
 bridge_api = { version = "0.4.0", path = "bridge_api" }
+diag = { version = "0.1.0", path = "diag" }
 dsp_fixtures = { version = "0.1.0", path = "dsp_fixtures" }
 example_backend = { version = "0.1.0", path = "example_backend" }
 host_audio = { version = "0.1.0", path = "host_audio" }
+live_log = { version = "0.1.0", path = "live_log" }
 omniphony_geometry = { version = "0.1.0", path = "omniphony_geometry" }
 omniphony-osc-contract = { version = "0.1.0", path = "../osc-contract" }
 orender_engine = { version = "0.2.3", path = "orender_engine" }
@@ -84,6 +86,8 @@ renderer.workspace = true
 audio_output.workspace = true
 audio_input.workspace = true
 sys.workspace = true
+diag.workspace = true
+live_log.workspace = true
 bridge_api.workspace = true
 spdif.workspace = true
 runtime_control.workspace = true

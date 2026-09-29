@@ -104,6 +104,8 @@ The core engine (executable: `orender`) and its supporting crates:
 - `reference_bridge` — a reference WAV/PCM decoder bridge (powers the demo)
 - `spdif` — IEC 61937 / S/PDIF parsing
 - `sys` — platform integration (incl. Windows service)
+- `diag` — diagnostic-metric registry feeding the Studio diag plot
+- `live_log` — process logger with a runtime log level and live log streaming
 
 Start with [`omniphony-renderer/QUICKSTART.md`](omniphony-renderer/QUICKSTART.md).
 

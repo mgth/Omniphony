@@ -14,12 +14,12 @@ use super::output::OutputClosed;
 use super::state::FrameHandlerContext;
 use crate::cli::command::{Cli, OutputBackend, RenderArgSources, RenderArgs};
 use anyhow::{Context, Result};
+use diag::DiagAtomicHandle;
 use orender_engine::bridge_loader::{LoadedBridge, resolve_bridge_path};
 use orender_engine::renderer_build::SpatialRendererParams;
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock, atomic::AtomicU64};
 use std::time::Duration;
-use sys::diag::DiagAtomicHandle;
 
 const DEFAULT_DECODE_QUEUE_LATENCY_MS: u32 = 220;
 const DECODE_QUEUE_MESSAGES_PER_MS: usize = 2;

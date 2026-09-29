@@ -19,7 +19,7 @@ use std::thread;
 use std::time::Instant;
 
 /// Diagnostic metrics the worker publishes, as `f64` bits (see
-/// `sys::diag::DiagRegistry`).
+/// `diag::DiagRegistry`).
 pub struct LiveBridgeDiag {
     /// Number of decoded frames returned by the most recent `push_packet`.
     pub frames_per_push_packet: Arc<AtomicU64>,

@@ -829,7 +829,7 @@ impl PipewireWriter {
     /// Diagnostic metric handles published by the PipeWire output backend.
     /// Registered in the global registry by the caller; adding a metric to
     /// [`OutputTelemetry`] surfaces it in the diag plot with no change here.
-    pub fn diag_atomic_handles(&self) -> Vec<sys::diag::DiagAtomicHandle> {
+    pub fn diag_atomic_handles(&self) -> Vec<diag::DiagAtomicHandle> {
         self.telemetry.diag_handles()
     }
 }

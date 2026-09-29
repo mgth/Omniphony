@@ -121,121 +121,121 @@ impl OutputTelemetry {
     /// underlying atomics from the process callback. Adding a new metric in
     /// this list is the only change needed to surface it in the Studio diag
     /// plot — no other plumbing required.
-    pub fn diag_handles(&self) -> Vec<sys::diag::DiagAtomicHandle> {
+    pub fn diag_handles(&self) -> Vec<diag::DiagAtomicHandle> {
         vec![
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "output_callback_dt_us",
                 label: "Output callback dt",
                 group: "output",
                 unit: "us",
                 atomic: Arc::clone(&self.output_callback_dt_us_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "output_fifo_input_domain_samples",
                 label: "Output FIFO level (input-domain)",
                 group: "output",
                 unit: "samples",
                 atomic: Arc::clone(&self.output_fifo_input_domain_samples_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "output_resampler_pending_input_samples",
                 label: "Resampler pending input samples",
                 group: "output",
                 unit: "samples",
                 atomic: Arc::clone(&self.output_resampler_pending_input_samples_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "latency_smoothed_ms",
                 label: "Smoothed control latency",
                 group: "latency",
                 unit: "ms",
                 atomic: Arc::clone(&self.diag_latency_smoothed_ms_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "latency_control_ms",
                 label: "Control latency (raw)",
                 group: "latency",
                 unit: "ms",
                 atomic: Arc::clone(&self.diag_latency_control_ms_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "rate_adjust_ppm",
                 label: "Rate adjust",
                 group: "latency",
                 unit: "ppm",
                 atomic: Arc::clone(&self.diag_rate_adjust_ppm_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "latency_avail_input_ms",
                 label: "Avail input latency",
                 group: "latency",
                 unit: "ms",
                 atomic: Arc::clone(&self.diag_latency_avail_input_ms_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "latency_output_fifo_ms",
                 label: "Output FIFO latency",
                 group: "latency",
                 unit: "ms",
                 atomic: Arc::clone(&self.diag_latency_output_fifo_ms_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "latency_resampler_pending_ms",
                 label: "Resampler pending latency",
                 group: "latency",
                 unit: "ms",
                 atomic: Arc::clone(&self.diag_latency_resampler_pending_ms_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "output_effective_ratio_ppm",
                 label: "Effective ratio (ppm dev)",
                 group: "output",
                 unit: "ppm",
                 atomic: Arc::clone(&self.output_effective_ratio_ppm_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "output_ring_input_samples",
                 label: "Ring input level (native sampling)",
                 group: "output",
                 unit: "samples",
                 atomic: Arc::clone(&self.output_ring_input_samples_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "cumulative_flow_control_available",
                 label: "Cumulative-flow control_available (PI input)",
                 group: "output",
                 unit: "samples",
                 atomic: Arc::clone(&self.cumulative_flow_control_available_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "pacer_fifo_level",
                 label: "Pacer FIFO level",
                 group: "output",
                 unit: "samples",
                 atomic: Arc::clone(&self.pacer_fifo_level),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "pacer_drain_total",
                 label: "Pacer drain cumulative",
                 group: "output",
                 unit: "samples",
                 atomic: Arc::clone(&self.pacer_drain_total),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "pacer_underrun_total",
                 label: "Pacer underrun cumulative",
                 group: "output",
                 unit: "samples",
                 atomic: Arc::clone(&self.pacer_underrun_total),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "runtime_state_code",
                 label: "Runtime state (0=stable,1=low,2=settle,3=high)",
                 group: "output",
                 unit: "",
                 atomic: Arc::clone(&self.runtime_state_code_bits),
             },
-            sys::diag::DiagAtomicHandle {
+            diag::DiagAtomicHandle {
                 name: "recovery_discard_count",
                 label: "Cumulative samples discarded by recovery",
                 group: "output",

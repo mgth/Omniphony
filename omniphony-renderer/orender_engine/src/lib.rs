@@ -59,5 +59,5 @@ pub use virtual_bed::{build_virtual_bed_events, build_virtual_bed_objects};
 /// `/omniphony/control/log_level`). Returns `Err` if a global logger is already
 /// installed; callers should guard with their own `Once` and ignore that error.
 pub fn init_live_logging(level: log::LevelFilter, json: bool) -> Result<(), log::SetLoggerError> {
-    sys::live_log::init_logger(level, json)
+    live_log::init_logger(level, json)
 }

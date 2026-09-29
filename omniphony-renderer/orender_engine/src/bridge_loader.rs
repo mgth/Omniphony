@@ -90,7 +90,7 @@ extern "C" fn forward_bridge_log_to_host(level: RLogLevel, target: RStr<'_>, mes
         RLogLevel::Debug => log::Level::Debug,
         RLogLevel::Trace => log::Level::Trace,
     };
-    sys::live_log::emit_external_record(level, target.as_str(), message.as_str());
+    live_log::emit_external_record(level, target.as_str(), message.as_str());
 }
 
 /// Resolve the path to the bridge plugin.
