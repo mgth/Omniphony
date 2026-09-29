@@ -1,11 +1,10 @@
 use anyhow::Result;
 use bridge_api::{FormatBridgeBox, RInputTransport};
-use orender_engine::decode_step::{DeclarationTracker, DecodedPacket, decode_packet};
+use orender_engine::decode_step::{DeclarationTracker, DecodedPacket, DrcModeSync, decode_packet};
 use spdif::SpdifParser;
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, RwLock, mpsc};
 use std::thread;
 use std::time::Instant;
 use sys::InputReader;
@@ -60,10 +59,6 @@ pub enum DecoderMessage {
     StreamEnd(DecodedSource),
 }
 
-pub enum DecoderCommand {
-    SetDrcMode(String),
-}
-
 #[derive(Clone)]
 pub struct PipeInputDiag {
     pub chunk_bytes: Arc<AtomicU64>,
@@ -77,7 +72,11 @@ pub struct DecoderThreadConfig {
     pub continuous: bool,
     pub drain_pipe: bool,
     pub tx: mpsc::SyncSender<Result<DecoderMessage>>,
-    pub cmd_rx: mpsc::Receiver<DecoderCommand>,
+    /// The DRC mode the handler asks for, shared with the PipeWire sink's
+    /// bridge decoder. Seeded with the configured mode before the thread
+    /// starts, so the bridge decodes the first packet in that mode; a later
+    /// change reaches it before the next input chunk.
+    pub requested_drc_mode: Arc<RwLock<String>>,
     /// Post-rendering output pacer drain clock (pure pipe-bridge mode only).
     /// Each decoded packet posts its emitted source duration (microseconds)
     /// here, before the (potentially blocking) frame send. An independent
@@ -103,7 +102,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             continuous,
             drain_pipe,
             tx,
-            cmd_rx,
+            requested_drc_mode,
             drain_tx,
             pipe_input_diag,
             mut bridge,
@@ -111,6 +110,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
         } = config;
 
         let mut frame_count: u64 = 0;
+        let mut drc_mode = DrcModeSync::new();
         // When a frame carries the bridge's declaration: the same rule as the
         // embedded engine and the PipeWire sink's bridge decoder.
         let mut declarations = DeclarationTracker::new();
@@ -124,14 +124,6 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             if sys::ShutdownHandle::is_restart_from_config_requested() {
                 log::info!("Restart from config requested, stopping decoder loop");
                 break;
-            }
-
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                match cmd {
-                    DecoderCommand::SetDrcMode(mode) => {
-                        bridge.set_drc_mode(mode.as_str().into());
-                    }
-                }
             }
 
             // Check for SIGHUP reload — clear the flag and notify systemd
@@ -183,12 +175,11 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     return Ok(false);
                 }
 
-                while let Ok(cmd) = cmd_rx.try_recv() {
-                    match cmd {
-                        DecoderCommand::SetDrcMode(mode) => {
-                            bridge.set_drc_mode(mode.as_str().into());
-                        }
-                    }
+                // Before any packet of this chunk: the first time, the mode
+                // the thread was spawned with; then on changes only.
+                {
+                    let requested = requested_drc_mode.read().unwrap_or_else(|e| e.into_inner());
+                    drc_mode.apply(&requested, &mut bridge);
                 }
 
                 let now = Instant::now();
@@ -529,4 +520,107 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
 
         Ok(())
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use abi_stable::sabi_trait::prelude::TD_Opaque;
+    use abi_stable::std_types::{RSlice, RStr, RString, RVec};
+    use bridge_api::*;
+    use std::sync::Mutex;
+
+    /// Records the DRC mode it is in at each `push_packet`; starts in "Off",
+    /// like the real bridges.
+    struct DrcRecordingBridge {
+        mode: String,
+        modes_at_push: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl FormatBridge for DrcRecordingBridge {
+        fn push_packet(&mut self, _: RSlice<'_, u8>, _: RInputTransport, _: u8) -> RPushResult {
+            self.modes_at_push.lock().unwrap().push(self.mode.clone());
+            RPushResult {
+                frames: RVec::new(),
+                error_message: RString::new(),
+                did_reset: false,
+            }
+        }
+        fn reset(&mut self) {}
+        fn is_ready(&self) -> bool {
+            true
+        }
+        fn has_objects(&self) -> bool {
+            false
+        }
+        fn configure(&mut self, _: RStr<'_>, _: RStr<'_>) -> bool {
+            true
+        }
+        fn coordinate_format(&self) -> RCoordinateFormat {
+            RCoordinateFormat::Cartesian
+        }
+        fn vbap_cartesian_defaults(&self) -> RVbapCartesianDefaults {
+            RVbapCartesianDefaults {
+                x_size: 3,
+                y_size: 3,
+                z_size: 3,
+                allow_negative_z: false,
+            }
+        }
+        fn preferred_vbap_table_mode(&self) -> RVbapTableMode {
+            RVbapTableMode::Cartesian
+        }
+        fn supported_drc_modes(&self) -> RVec<RString> {
+            RVec::new()
+        }
+        fn set_drc_mode(&mut self, mode: RStr<'_>) -> bool {
+            self.mode = mode.as_str().to_owned();
+            true
+        }
+        fn fixed_channel_poses(&self) -> RVec<RChannelPose> {
+            RVec::new()
+        }
+    }
+
+    /// The configured DRC mode is the bridge's from the very first packet,
+    /// with nothing sent after the spawn. It used to be a command the handler
+    /// sent once the renderer was built, which reached the bridge after however
+    /// many packets the thread had decoded by then: with `drc_mode: standard`,
+    /// the same file rendered differently from run to run.
+    #[test]
+    fn the_first_packet_is_decoded_in_the_configured_drc_mode() {
+        let input =
+            std::env::temp_dir().join(format!("orender-decoder-drc-{}.raw", std::process::id()));
+        std::fs::write(&input, [0u8; 16]).unwrap();
+        let mut fds = [0i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let modes_at_push = Arc::default();
+        let (tx, _rx) = mpsc::sync_channel(16);
+        let result = spawn_decoder_thread(DecoderThreadConfig {
+            input_path: input.clone(),
+            continuous: false,
+            drain_pipe: false,
+            tx,
+            requested_drc_mode: Arc::new(RwLock::new("Standard".to_owned())),
+            drain_tx: None,
+            pipe_input_diag: None,
+            bridge: FormatBridge_TO::from_value(
+                DrcRecordingBridge {
+                    mode: "Off".to_owned(),
+                    modes_at_push: Arc::clone(&modes_at_push),
+                },
+                TD_Opaque,
+            ),
+            shutdown_signal: sys::ShutdownSignal { fd: fds[0] },
+        })
+        .join()
+        .unwrap();
+        let _ = std::fs::remove_file(&input);
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+        result.unwrap();
+        assert_eq!(*modes_at_push.lock().unwrap(), ["Standard"]);
+    }
 }
