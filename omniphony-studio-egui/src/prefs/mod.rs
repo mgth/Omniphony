@@ -7,6 +7,7 @@
 //! writing the file is the core's (`host::json_store`).
 
 pub mod display;
+pub mod view;
 
 use std::path::{Path, PathBuf};
 
@@ -37,6 +38,8 @@ pub struct Prefs {
     pub updates: UpdatePrefs,
     /// The Display panel: the web's effective-render and trail prefs.
     pub display: display::DisplayPrefs,
+    /// Where the rest of the view was left: camera, window, sections, tabs.
+    pub view: view::ViewPrefs,
 }
 
 /// Kept private internally so newly saved documents always use the supported version.
