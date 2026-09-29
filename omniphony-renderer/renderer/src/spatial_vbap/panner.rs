@@ -155,6 +155,20 @@ impl Gains {
         self.data[i] = v;
     }
 
+    /// Scale to unit energy given `energy`, the set's `Σ g²` (callers usually
+    /// accumulate it while filling the gains): every gain is divided by
+    /// `√energy`. A set whose energy is at most `1e-12` is left untouched, so
+    /// silence stays silence instead of blowing up.
+    #[inline]
+    pub fn normalize_to_unit_energy(&mut self, energy: f32) {
+        if energy > 1e-12 {
+            let norm = energy.sqrt();
+            for gain in self.iter_mut() {
+                *gain /= norm;
+            }
+        }
+    }
+
     /// Create Gains by copying from a slice.
     #[inline]
     fn from_slice(src: &[f32]) -> Self {

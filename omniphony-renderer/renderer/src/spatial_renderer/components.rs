@@ -140,7 +140,7 @@ pub fn gain_db_to_linear(gain_db: f32) -> f32 {
     if gain_db <= GAIN_DB_NEG_INF {
         0.0
     } else {
-        10.0_f32.powf(gain_db / 20.0)
+        crate::dsp::db::db_to_linear(gain_db)
     }
 }
 

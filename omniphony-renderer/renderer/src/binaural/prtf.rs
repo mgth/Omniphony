@@ -27,6 +27,7 @@
 //! and `depth`.
 
 use super::hrir::{HRIR_LEN, HrirPair, HrirProvider, SyntheticHrir, ear_exposure, pinna_shade};
+use crate::dsp::db::{db_to_linear, linear_to_db};
 
 const PI: f32 = std::f32::consts::PI;
 
@@ -45,7 +46,7 @@ impl Biquad {
     /// variant of `k` (eq 9) for notches. `g_db > 0` boosts (`cut = false`),
     /// `g_db < 0` cuts (`cut = true`).
     fn peak_notch(cf: f32, g_db: f32, bw: f32, fs: f32, cut: bool) -> Self {
-        let v0 = 10f32.powf(g_db / 20.0);
+        let v0 = db_to_linear(g_db);
         let h0 = v0 - 1.0;
         let t = (PI * bw / fs).tan();
         let k = if cut {
@@ -67,7 +68,7 @@ impl Biquad {
     /// for the second resonance so the *parallel* sum keeps unity low-frequency
     /// gain (the first peak already carries the signal through).
     fn bandpass_peak(cf: f32, g_db: f32, bw: f32, fs: f32) -> Self {
-        let v0 = 10f32.powf(g_db / 20.0);
+        let v0 = db_to_linear(g_db);
         let h = 1.0 / (1.0 + (PI * bw / fs).tan());
         let l = -(2.0 * PI * cf / fs).cos();
         Self {
@@ -351,8 +352,8 @@ impl SpagnolPrtfHrir {
         // peak, plus a pure bandpass. Around the second centre the first
         // section is back near unity, so the bandpass's own gain is what
         // takes 1 to the envelope's level there: `1 + v0`.
-        let v0 = (10f32.powf(row.res2.1 / 20.0) - 1.0).max(0.0);
-        let res2_db = if v0 > 1e-3 { 20.0 * v0.log10() } else { -120.0 };
+        let v0 = (db_to_linear(row.res2.1) - 1.0).max(0.0);
+        let res2_db = if v0 > 1e-3 { linear_to_db(v0) } else { -120.0 };
         let notch = |(centre, depth_db, bw): (f32, f32, f32)| {
             Biquad::peak_notch(cf(centre), depth_db, bw, fs, true)
         };

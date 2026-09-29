@@ -82,12 +82,7 @@ impl HybridBackend {
         // A weighted average of two unit-energy vectors is generally not
         // unit-energy (it dips toward the middle of the crossfade), so we
         // renormalise to keep loudness stable across the blend.
-        if energy > 1e-12 {
-            let norm = energy.sqrt();
-            for gain in gains.iter_mut() {
-                *gain /= norm;
-            }
-        }
+        gains.normalize_to_unit_energy(energy);
 
         RenderResponse { gains }
     }

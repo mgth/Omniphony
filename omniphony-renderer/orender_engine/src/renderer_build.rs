@@ -927,7 +927,7 @@ pub fn apply_render_config_live(
         // Construction-time scalars that also exist as live params: the same
         // values `SpatialRenderer::new` would receive for this config
         // (`params` already encodes the config defaults for absent keys).
-        live.master_gain = 10.0_f32.powf(params.master_gain / 20.0);
+        live.master_gain = renderer::dsp::db::db_to_linear(params.master_gain);
         live.auto_gain = params.auto_gain;
         live.use_loudness = params.use_loudness;
         live.distance_model = distance_model;
