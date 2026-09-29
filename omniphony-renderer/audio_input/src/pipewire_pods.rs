@@ -107,58 +107,6 @@ pub fn build_pipewire_bridge_stream_properties(
     props
 }
 
-pub fn build_pipewire_bridge_adapter_properties(
-    node_name: &str,
-    node_description: &str,
-    channels: u16,
-    requested_latency: &str,
-) -> pw::properties::PropertiesBox {
-    let mut props = pw::properties::PropertiesBox::new();
-    props.insert("factory.name", "support.null-audio-sink");
-    props.insert(*pw::keys::MEDIA_TYPE, "Audio");
-    props.insert(*pw::keys::MEDIA_CATEGORY, "Playback");
-    props.insert(*pw::keys::MEDIA_ROLE, "Movie");
-    props.insert("media.class", "Audio/Sink");
-    props.insert("object.linger", "false");
-    props.insert("node.virtual", "true");
-    props.insert("node.name", node_name.to_owned());
-    props.insert("node.description", node_description.to_owned());
-    props.insert("media.name", node_description.to_owned());
-    props.insert("audio.channels", channels.to_string());
-    props.insert("audio.position", iec958_audio_position(channels));
-    props.insert("iec958.codecs", IEC958_CODECS_PROP);
-    props.insert("resample.disable", "true");
-    props.insert("node.latency", requested_latency);
-    props
-}
-
-pub fn build_pipewire_bridge_capture_stream_properties(
-    node_name: &str,
-    node_description: &str,
-    channels: u16,
-    target_object: &str,
-) -> pw::properties::PropertiesBox {
-    let mut props = pw::properties::PropertiesBox::new();
-    props.insert(*pw::keys::MEDIA_TYPE, "Audio");
-    props.insert(*pw::keys::MEDIA_CATEGORY, "Capture");
-    props.insert(*pw::keys::MEDIA_ROLE, "Movie");
-    props.insert("target.object", target_object);
-    props.insert("node.target", target_object);
-    props.insert(*pw::keys::STREAM_CAPTURE_SINK, "true");
-    props.insert(*pw::keys::STREAM_MONITOR, "true");
-    props.insert("node.name", format!("{node_name}.monitor.capture"));
-    props.insert(
-        "node.description",
-        format!("{node_description} Monitor Capture"),
-    );
-    props.insert("media.name", format!("{node_description} Monitor Capture"));
-    props.insert("audio.channels", channels.to_string());
-    props.insert("audio.position", iec958_audio_position(channels));
-    props.insert("iec958.codecs", IEC958_CODECS_PROP);
-    props.insert("resample.disable", "true");
-    props
-}
-
 pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> Result<Vec<u8>> {
     build_buffers_pod(channels, sample_rate_hz, std::mem::size_of::<u16>(), 0)
 }

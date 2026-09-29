@@ -12,11 +12,13 @@
 //! does not rename the node.
 
 use crate::InputControl;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+pub use audio_output::pipewire_registry::{ClientEntry, client_from_props};
+use audio_output::pipewire_registry::{non_empty, registry_snapshot};
 use pipewire as pw;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Bound on the registry round trip. A wedged daemon must not keep the sink
 /// from being published: on expiry the check is skipped, not failed.
@@ -32,17 +34,6 @@ pub struct SinkNodeEntry {
     pub client_id: Option<u32>,
 }
 
-/// A client in the registry. The pid prefers `pipewire.sec.pid`, which the
-/// daemon fills from the socket credentials, over the client-declared
-/// `application.process.id`; the binary prefers the declared
-/// `application.process.binary` over `application.name`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClientEntry {
-    pub id: u32,
-    pub pid: Option<u32>,
-    pub binary: Option<String>,
-}
-
 /// A node with our name that belongs to someone else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DuplicateLiveInputNode {
@@ -51,10 +42,6 @@ pub struct DuplicateLiveInputNode {
     pub client_id: Option<u32>,
     pub pid: Option<u32>,
     pub binary: Option<String>,
-}
-
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|v| !v.is_empty())
 }
 
 /// Reads a registry `Node` global: `Some` only for an `Audio/Sink` named
@@ -75,17 +62,6 @@ pub fn sink_node_from_props<'a>(
         object_serial: non_empty(get(*pw::keys::OBJECT_SERIAL)).and_then(|v| v.parse().ok()),
         client_id: non_empty(get(*pw::keys::CLIENT_ID)).and_then(|v| v.parse().ok()),
     })
-}
-
-/// Reads a registry `Client` global.
-pub fn client_from_props<'a>(id: u32, get: impl Fn(&str) -> Option<&'a str>) -> ClientEntry {
-    let pid = non_empty(get(*pw::keys::SEC_PID))
-        .or_else(|| non_empty(get(*pw::keys::APP_PROCESS_ID)))
-        .and_then(|v| v.parse().ok());
-    let binary = non_empty(get(*pw::keys::APP_PROCESS_BINARY))
-        .or_else(|| non_empty(get(*pw::keys::APP_NAME)))
-        .map(str::to_owned);
-    ClientEntry { id, pid, binary }
 }
 
 /// Joins the nodes to their owning clients and keeps those held by another
@@ -150,67 +126,34 @@ pub fn scan_duplicate_live_input_nodes(
     node_name: &str,
     timeout: Duration,
 ) -> Result<Option<Vec<DuplicateLiveInputNode>>> {
-    let registry = core
-        .get_registry()
-        .map_err(|e| anyhow!("Failed to get PipeWire registry: {e:?}"))?;
-    // Queued after the registry bind, so its `done` lands after every
-    // existing global has been announced.
-    let pending = core
-        .sync(0)
-        .map_err(|e| anyhow!("PipeWire sync failed: {e:?}"))?;
-
-    let done = Rc::new(Cell::new(false));
     let nodes = Rc::new(RefCell::new(Vec::<SinkNodeEntry>::new()));
     let clients = Rc::new(RefCell::new(Vec::<ClientEntry>::new()));
-
-    let done_for_core = Rc::clone(&done);
-    let _core_listener = core
-        .add_listener_local()
-        .done(move |id, seq| {
-            if id == pw::core::PW_ID_CORE && seq == pending {
-                done_for_core.set(true);
-            }
-        })
-        .register();
 
     let node_name_for_registry = node_name.to_owned();
     let nodes_for_registry = Rc::clone(&nodes);
     let clients_for_registry = Rc::clone(&clients);
-    let _registry_listener = registry
-        .add_listener_local()
-        .global(move |global| {
-            let Some(props) = global.props.as_ref() else {
-                return;
-            };
-            match global.type_ {
-                pw::types::ObjectType::Node => {
-                    if let Some(node) =
-                        sink_node_from_props(global.id, &node_name_for_registry, |key| {
-                            props.get(key)
-                        })
-                    {
-                        nodes_for_registry.borrow_mut().push(node);
-                    }
+    let answered = registry_snapshot(mainloop, core, timeout, move |global| {
+        let Some(props) = global.props.as_ref() else {
+            return;
+        };
+        match global.type_ {
+            pw::types::ObjectType::Node => {
+                if let Some(node) =
+                    sink_node_from_props(global.id, &node_name_for_registry, |key| props.get(key))
+                {
+                    nodes_for_registry.borrow_mut().push(node);
                 }
-                pw::types::ObjectType::Client => {
-                    clients_for_registry
-                        .borrow_mut()
-                        .push(client_from_props(global.id, |key| props.get(key)));
-                }
-                _ => {}
             }
-        })
-        .register();
-
-    let deadline = Instant::now() + timeout;
-    while !done.get() {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(None);
+            pw::types::ObjectType::Client => {
+                clients_for_registry
+                    .borrow_mut()
+                    .push(client_from_props(global.id, |key| props.get(key)));
+            }
+            _ => {}
         }
-        let _ = mainloop
-            .loop_()
-            .iterate(remaining.min(Duration::from_millis(50)));
+    })?;
+    if !answered {
+        return Ok(None);
     }
 
     // `pipewire.sec.pid` is the peer pid as the daemon sees it; across a pid

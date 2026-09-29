@@ -254,6 +254,8 @@ pub fn compute_adaptive_step(
 pub mod cpal_output;
 #[cfg(target_os = "linux")]
 pub mod pipewire;
+#[cfg(target_os = "linux")]
+pub mod pipewire_registry;
 
 #[cfg(target_os = "linux")]
 pub use pipewire::{PipewireBufferConfig, PipewireWriter, list_pipewire_output_devices};
