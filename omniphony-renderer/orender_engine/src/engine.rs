@@ -5,8 +5,10 @@
 //! It performs no audio I/O: the host (the `orender` CLI, or `liborender.so`
 //! inside mpv) feeds packets in and consumes rendered samples.
 
-use crate::bridge_loader::{LoadedBridge, resolve_bridge};
-use crate::decode_step::{Declaration, DeclarationTracker, DecodedPacket, decode_packet};
+use crate::bridge_loader::{LoadedBridge, configure_presentation, resolve_bridge};
+use crate::decode_step::{
+    Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, decode_packet,
+};
 use crate::events::Configuration;
 use crate::osc::{ObjectMeta, OscSender};
 use crate::overlay;
@@ -100,9 +102,13 @@ pub struct Engine {
     /// poll it after every packet; with the decode thread on, reading it here
     /// keeps that poll from waiting on the thread's decode.
     bridge_has_objects: Arc<AtomicBool>,
-    /// The bridge's declaration captured with the packet being rendered, so
-    /// a frame is matched with its own packet's, not the thread's latest.
-    packet_declaration: Option<Declaration>,
+    /// Which packets decoded inline carry the bridge's declaration. The decode
+    /// thread keeps its own: each counts the packets it decodes.
+    declarations: DeclarationTracker,
+    /// A declaration that came with a packet the bridge reported an error for:
+    /// its frames are dropped, but not what it declared, which the next
+    /// frames do not bring again.
+    carried_declaration: Option<Declaration>,
     renderer: SpatialRenderer,
     sample_rate: u32,
     coordinate_format: RCoordinateFormat,
@@ -117,10 +123,11 @@ pub struct Engine {
     /// sorted by channel. See `docs/channel-object-contract.md`.
     object_channels: Vec<(u32, usize)>,
     /// The poses the bridge declares for the current labels
-    /// (`FormatBridge::fixed_channel_poses`), read once per label change —
-    /// `declared_poses_labels` remembers which labels they were read for.
+    /// (`FormatBridge::fixed_channel_poses`), from the last [`Declaration`] a
+    /// decoded packet carried: applied from the frame it belongs to, kept
+    /// until the next one (segment starts included, since the tracker has one
+    /// read for them), and dropped by a [`reset`](Engine::reset).
     declared_poses: Vec<RChannelPose>,
-    declared_poses_labels: Vec<RChannelLabel>,
     /// The family the bridge declares for the current presentation
     /// (`FormatBridge::source_family`), read with the poses: it selects the
     /// placement policy the fixed channels are planned with.
@@ -151,9 +158,8 @@ pub struct Engine {
     drc_ramp_samples_remaining: u32,
     /// DRC mode last pushed to the bridge (selects which DRC words the decoder
     /// extracts → drives `frame.drc_gain`). Synced from the live param each
-    /// `process` so config + OSC changes reach the decoder, mirroring the CLI's
-    /// decoder thread. Empty until the first sync.
-    applied_drc_mode: String,
+    /// `process` so config + OSC changes reach the decoder, as in the CLI.
+    drc_mode: DrcModeSync,
 
     // ── reusable scratch ──
     frame_events: Vec<SpatialChannelEvent>,
@@ -340,7 +346,8 @@ impl Engine {
             bridge: Arc::new(Mutex::new(bridge)),
             decode_worker: None,
             bridge_has_objects,
-            packet_declaration: None,
+            declarations: DeclarationTracker::new(),
+            carried_declaration: None,
             renderer,
             sample_rate,
             coordinate_format,
@@ -348,7 +355,6 @@ impl Engine {
             bed_planner: virtual_bed::BedChannelPlanner::new(),
             object_channels: Vec::new(),
             declared_poses: Vec::new(),
-            declared_poses_labels: Vec::new(),
             source_family: SourceFamily::Generic,
             source_label: String::new(),
             has_objects: false,
@@ -360,7 +366,7 @@ impl Engine {
             drc_gain: 1.0,
             drc_target_gain: 1.0,
             drc_ramp_samples_remaining: 0,
-            applied_drc_mode: String::new(),
+            drc_mode: DrcModeSync::new(),
             frame_events: Vec::new(),
             pcm_f32_buf: Vec::new(),
             output_pool: Vec::new(),
@@ -508,14 +514,11 @@ impl Engine {
             .and_then(renderer::config_fields::presentation::get)
             .map(|p| p.to_string())
             .unwrap_or_else(|| renderer::config_fields::presentation::DEFAULT.to_string());
-        if !bridge.configure("presentation", presentation.as_str()) {
+        if let Err(e) = configure_presentation(&mut bridge.bridge, &presentation) {
             // Not fatal here, unlike the CLI: this host is a decoder inside a
             // player, and refusing to start would drop playback entirely where
             // falling back to the bridge's own default still plays.
-            log::warn!(
-                "Bridge rejected presentation '{}'; keeping the bridge default",
-                presentation
-            );
+            log::warn!("{e}; keeping the bridge default");
         }
         if let Some(codec) = input_codec {
             // Disambiguates the bridge's `Raw` transport (no data_type byte).
@@ -784,6 +787,16 @@ impl Engine {
             self.bridge_has_objects
                 .store(bridge.bridge.has_objects(), Ordering::Relaxed);
         }
+        // The bridge restarts: its next frames come with a declaration read
+        // anew, whatever their labels, and the old one no longer applies.
+        self.declarations.forget();
+        if let Some(worker) = self.decode_worker.as_mut() {
+            worker.fresh = true;
+        }
+        self.carried_declaration = None;
+        self.declared_poses.clear();
+        self.source_family = SourceFamily::Generic;
+        self.source_label.clear();
         self.renderer.reset_runtime_state();
         self.reset_segment_state();
         // Object frames are delta-encoded; after a seek the (static) virtual-bed
@@ -800,18 +813,14 @@ impl Engine {
         overlay::clear();
     }
 
+    /// Drop what a segment start invalidates. Not the bridge's declaration:
+    /// a segment start or a bridge reset comes with a fresh one (see
+    /// [`DeclarationTracker`]), applied to the frame right after this.
     fn reset_segment_state(&mut self) {
-        if let Some(worker) = self.decode_worker.as_mut() {
-            worker.fresh = true;
-        }
         self.has_objects = false;
         self.fixed_planner.reset();
         self.bed_planner.reset();
         self.object_channels.clear();
-        self.declared_poses.clear();
-        self.declared_poses_labels.clear();
-        self.source_family = SourceFamily::Generic;
-        self.source_label.clear();
         self.frame_events.clear();
         self.loudness_applied = false;
         self.object_names.clear();
@@ -908,42 +917,32 @@ impl Engine {
             .set_fixed_channel_processing(state.to_string());
     }
 
-    /// Re-read the bridge's declaration — its source family and the poses it
-    /// states for its channels — when the frame's labels differ from the ones
-    /// it was read for. A steady stream compares one short slice per frame
-    /// and never calls into the bridge.
-    fn refresh_declared_poses(&mut self, labels: &[RChannelLabel]) {
-        if self.declared_poses_labels.as_slice() == labels {
-            return;
-        }
-        let captured = self.packet_declaration.take();
-        let declaration = captured.unwrap_or_else(|| Declaration::read(&self.lock_bridge().bridge));
-        self.declared_poses.clear();
-        self.declared_poses.extend_from_slice(&declaration.poses);
+    /// Take on the bridge's declaration — its source family, the poses it
+    /// states for its channels and its name for the format — for this frame
+    /// and the ones after it, as the CLI's handler does with the one a frame
+    /// carries.
+    fn apply_declaration(&mut self, declaration: Declaration) {
+        self.declared_poses = declaration.poses;
         self.source_family = SourceFamily::from_declared(&declaration.family);
-        self.source_label.clear();
-        self.source_label.push_str(&declaration.label);
-        self.packet_declaration = Some(declaration);
-        self.declared_poses_labels.clear();
-        self.declared_poses_labels.extend_from_slice(labels);
+        self.source_label = declaration.label;
     }
 
     /// Bring the decoder in line with the live options it follows, before the
     /// next packet: the DRC mode (which DRC words the decoder extracts; mirrors
-    /// the CLI's `DecoderCommand::SetDrcMode`) and, in
-    /// [`DecodeThreadMode::Live`], the decode thread. One read of the live
-    /// params per packet; the bridge is locked only when the DRC mode changed.
-    /// The bridge preserves the mode across `reset`, so a seek keeps it.
+    /// the CLI's [`DrcModeSync`]) and, in [`DecodeThreadMode::Live`], the
+    /// decode thread. One read of the live params per packet; the bridge is
+    /// locked only when the DRC mode changed. The bridge preserves the mode
+    /// across `reset`, so a seek keeps it.
     fn sync_live_options(&mut self) {
-        let (drc_mode, want_thread) = {
+        let (drc_changed, want_thread) = {
             let control = self.renderer.renderer_control();
             let live = control.live.read();
-            let drc_mode = (live.drc_mode != self.applied_drc_mode).then(|| live.drc_mode.clone());
-            (drc_mode, live.decode_thread)
+            (self.drc_mode.update(&live.drc_mode), live.decode_thread)
         };
-        if let Some(mode) = drc_mode {
-            self.lock_bridge().bridge.set_drc_mode(mode.as_str().into());
-            self.applied_drc_mode = mode;
+        if drc_changed {
+            self.lock_bridge()
+                .bridge
+                .set_drc_mode(self.drc_mode.mode().into());
         }
         self.follow_live_decode_thread(want_thread);
     }
@@ -970,11 +969,15 @@ impl Engine {
             return self.process_pipelined(data, transport, data_type, pts);
         }
 
-        // Inline, the bridge is not on a later packet when a frame is rendered,
-        // so the declaration is read live when needed: no tracker.
         let packet = {
-            let mut bridge = self.lock_bridge();
-            let packet = decode_packet(&mut bridge.bridge, data, transport, data_type, None);
+            let mut bridge = self.bridge.lock().unwrap_or_else(|e| e.into_inner());
+            let packet = decode_packet(
+                &mut bridge.bridge,
+                data,
+                transport,
+                data_type,
+                &mut self.declarations,
+            );
             self.bridge_has_objects
                 .store(bridge.bridge.has_objects(), Ordering::Relaxed);
             packet
@@ -1008,10 +1011,18 @@ impl Engine {
         let DecodedPacket {
             result,
             declaration,
+            declaration_frame,
             ..
         } = packet;
-        self.packet_declaration = declaration;
+        let (mut declaration, declaration_frame) = match declaration {
+            Some(own) => {
+                self.carried_declaration = None;
+                (Some(own), declaration_frame)
+            }
+            None => (self.carried_declaration.take(), 0),
+        };
         if !result.error_message.is_empty() {
+            self.carried_declaration = declaration;
             bail!("bridge decode error: {}", result.error_message);
         }
         if result.did_reset {
@@ -1030,12 +1041,16 @@ impl Engine {
         }
 
         let mut out = Vec::with_capacity(result.frames.len());
-        for frame in result.frames.iter() {
-            if let Some(chunk) = self.render_frame(frame, per_frame_decode_time_ms)? {
+        for (i, frame) in result.frames.iter().enumerate() {
+            let declaration = if i == declaration_frame {
+                declaration.take()
+            } else {
+                None
+            };
+            if let Some(chunk) = self.render_frame(frame, per_frame_decode_time_ms, declaration)? {
                 out.push(chunk);
             }
         }
-        self.packet_declaration = None;
         if let Some(first) = out.first_mut() {
             first.input_pts_us = pts;
         }
@@ -1192,6 +1207,9 @@ impl Engine {
     }
 
     fn start_decode_worker(&mut self) -> Result<()> {
+        // The thread counts packets with a tracker of its own. When it stops,
+        // the inline one has missed them all: start it over now.
+        self.declarations.forget();
         let has_objects = self.lock_bridge().bridge.has_objects();
         self.bridge_has_objects
             .store(has_objects, Ordering::Relaxed);
@@ -1336,6 +1354,7 @@ impl Engine {
         &mut self,
         frame: &RDecodedFrame,
         decode_time_ms: f32,
+        declaration: Option<Declaration>,
     ) -> Result<Option<RenderedAudio>> {
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
@@ -1369,7 +1388,9 @@ impl Engine {
             }
             overlay::clear();
         }
-        self.refresh_declared_poses(&frame.channel_labels);
+        if let Some(declaration) = declaration {
+            self.apply_declaration(declaration);
+        }
 
         // Dialogue normalisation (from major-sync frames), applied once.
         if !self.loudness_applied {
@@ -1917,7 +1938,7 @@ struct DecodeDone {
     /// The job's buffer, handed back to copy a later packet into.
     data: Vec<u8>,
     /// With the bridge's declaration read under the same lock as the decode,
-    /// when a frame in it can make the engine re-read it.
+    /// when the thread's tracker says a frame needs it.
     packet: DecodedPacket,
     /// The job's [`DecodeJob::pts`].
     pts: Option<i64>,
@@ -1958,9 +1979,9 @@ impl DecodeWorker {
         let thread = std::thread::Builder::new()
             .name("orender-decode".into())
             .spawn(move || {
-                // The engine re-reads the declaration whenever a frame's labels
-                // differ from the previous frame's, and after anything that
-                // clears its segment state; capture it on the same triggers.
+                // Read the declaration under the decode's lock, with the packet
+                // it follows: by the time the engine renders it, the bridge is
+                // on later packets.
                 let mut declarations = DeclarationTracker::new();
                 for job in job_rx {
                     if job.fresh {
@@ -1972,7 +1993,7 @@ impl DecodeWorker {
                         &job.data,
                         job.transport,
                         job.data_type,
-                        Some(&mut declarations),
+                        &mut declarations,
                     );
                     has_objects.store(guard.bridge.has_objects(), Ordering::Relaxed);
                     drop(guard);

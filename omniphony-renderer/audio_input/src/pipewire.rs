@@ -863,10 +863,7 @@ where
                     user_data.channels
                 );
             }
-            let has_spdif_sync = chunk.windows(4).any(|w| {
-                u16::from_le_bytes([w[0], w[1]]) == 0xF872
-                    && u16::from_le_bytes([w[2], w[3]]) == 0x4E1F
-            });
+            let has_spdif_sync = spdif::contains_sync(chunk);
             // DIAG iec958-chain: per-chunk arrival trace. Publishes the chunk
             // size and inter-chunk interval to atomics so the Studio plot can
             // show whether the 1 Hz sawtooth already exists in the PipeWire

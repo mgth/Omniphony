@@ -13,8 +13,39 @@ use audio_output::AudioControl;
 use bridge_api::RDecodedFrame;
 
 use anyhow::Result;
-use std::sync::{Arc, mpsc};
+use orender_engine::decode_step::DrcModeSync;
+use std::sync::{Arc, RwLock, mpsc};
 use std::time::Instant;
+
+/// Where the handler sends the DRC mode picked in the live params: the pipe
+/// decoder thread (a command) and the PipeWire sink's bridge decoder (a value
+/// it reads before each packet). Outlives a stream reset, like the decoders.
+#[derive(Default)]
+pub struct DrcForwarding {
+    pub cmd_tx: Option<mpsc::Sender<super::decoder_thread::DecoderCommand>>,
+    pub shared: Option<Arc<RwLock<String>>>,
+    pub sync: DrcModeSync,
+}
+
+impl DrcForwarding {
+    /// Forward `requested` to the decoders when it changed.
+    fn forward(&mut self, requested: &str) {
+        if !self.sync.update(requested) {
+            return;
+        }
+        let mode = self.sync.mode();
+        if let Some(tx) = self.cmd_tx.as_ref() {
+            let _ = tx.send(super::decoder_thread::DecoderCommand::SetDrcMode(
+                mode.to_owned(),
+            ));
+        }
+        if let Some(shared) = self.shared.as_ref() {
+            let mut shared = shared.write().unwrap_or_else(|e| e.into_inner());
+            shared.clear();
+            shared.push_str(mode);
+        }
+    }
+}
 
 pub(crate) struct BedChannelMapper;
 
@@ -135,9 +166,7 @@ pub struct DecodeHandler {
     pub spatial_renderer: Option<renderer::spatial_renderer::SpatialRenderer>,
     pub audio_control: Option<Arc<AudioControl>>,
     pub input_control: Option<Arc<InputControl>>,
-    pub drc_mode_cmd_tx: Option<mpsc::Sender<super::decoder_thread::DecoderCommand>>,
-    pub live_drc_mode: Option<Arc<std::sync::RwLock<String>>>,
-    pub last_seen_drc_mode: Option<String>,
+    pub drc: DrcForwarding,
 }
 
 impl Default for DecodeHandler {
@@ -151,9 +180,7 @@ impl Default for DecodeHandler {
             spatial_renderer: None,
             audio_control: None,
             input_control: None,
-            drc_mode_cmd_tx: None,
-            live_drc_mode: None,
-            last_seen_drc_mode: None,
+            drc: DrcForwarding::default(),
         }
     }
 }
@@ -259,19 +286,7 @@ impl DecodeHandler {
 
         if let Some(renderer) = self.spatial_renderer.as_ref() {
             let control = renderer.renderer_control();
-            let drc_mode = control.live.read().drc_mode.clone();
-
-            if Some(&drc_mode) != self.last_seen_drc_mode.as_ref() {
-                if let Some(ref tx) = self.drc_mode_cmd_tx {
-                    let _ = tx.send(super::decoder_thread::DecoderCommand::SetDrcMode(
-                        drc_mode.clone(),
-                    ));
-                }
-                if let Some(ref shared) = self.live_drc_mode {
-                    *shared.write().unwrap() = drc_mode.clone();
-                }
-                self.last_seen_drc_mode = Some(drc_mode);
-            }
+            self.drc.forward(&control.live.read().drc_mode);
         }
 
         let Some(input_control) = self.input_control.as_ref() else {

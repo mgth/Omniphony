@@ -221,7 +221,6 @@ version = "0.2.4"
 dependencies = [
  "anyhow",
  "audio_output",
- "bridge_api",
  "libc",
  "log",
  "pipewire",

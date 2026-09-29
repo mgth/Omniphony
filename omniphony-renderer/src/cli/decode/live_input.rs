@@ -2,10 +2,12 @@ use super::decoder_thread::DecoderMessage;
 #[cfg(target_os = "linux")]
 use super::decoder_thread::{DecodedAudioData, DecodedSource};
 #[cfg(target_os = "linux")]
+use super::live_bridge::{LiveBridgeDiag, spawn_live_bridge_decoder};
+#[cfg(target_os = "linux")]
 use super::output::I32_PCM_FULL_SCALE;
 use anyhow::Result;
 #[cfg(target_os = "linux")]
-use audio_input::bridge::{BridgeDecodeDiag, LiveBridgeIngestRuntime, spawn_bridge_decode_worker};
+use audio_input::bridge::LiveBridgeIngestRuntime;
 #[cfg(target_os = "linux")]
 use audio_input::pipewire::{
     PipewireBridgeBackendKind, PipewireBridgeStreamConfig, run_pipewire_bridge_input_stream,
@@ -19,7 +21,7 @@ use audio_output::pipewire::PipewireBufferConfig;
 #[cfg(target_os = "linux")]
 use bridge_api::{FormatBridgeBox, RChannelLabel, RDecodedFrame};
 #[cfg(target_os = "linux")]
-use orender_engine::bridge_loader::install_bridge_host_log_sink;
+use orender_engine::bridge_loader::{configure_presentation, open_bridge};
 #[cfg(target_os = "linux")]
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -422,73 +424,43 @@ fn run_pipewire_bridge_capture_loop(
 ) -> Result<()> {
     let (raw_tx, raw_rx) = mpsc::sync_channel::<(u8, Vec<u8>)>(256);
     let bridge = instantiate_live_bridge(&config.runtime)?;
-    let tx_for_frame = tx.clone();
     // DIAG iec958-chain: capture bridge plugin output cadence. Registry-handed
     // diag metrics — updated each time the harletty plugin emits a decoded
     // PCM frame, so the Studio plot can see whether the plugin batches
     // frames at ~1 s intervals.
     let diag = input_control.diag_registry();
-    let bridge_frame_samples_out =
-        diag.register("bridge_frame_samples", "Frame samples", "bridge", "samples");
-    let bridge_frame_dt_us_out = diag.register("bridge_frame_dt_us", "Frame dt", "bridge", "us");
-    let bridge_frame_count_out = diag.register(
-        "bridge_frame_count",
-        "Frames emitted (counter)",
-        "bridge",
-        "",
-    );
-    let bridge_frames_per_push_packet_out = diag.register(
-        "bridge_frames_per_push_packet",
-        "Frames per push_packet",
-        "bridge",
-        "",
-    );
-    let bridge_push_packet_dt_us_out =
-        diag.register("bridge_push_packet_dt_us", "push_packet dt", "bridge", "us");
-    let mut last_bridge_frame_at: Option<Instant> = None;
-    let mut bridge_frame_count: u64 = 0;
-    spawn_bridge_decode_worker(
+    spawn_live_bridge_decoder(
         bridge,
         raw_rx,
         Some(config.runtime.requested_drc_mode.clone()),
-        Some(BridgeDecodeDiag {
-            frames_per_push_packet: bridge_frames_per_push_packet_out,
-            push_packet_dt_us: bridge_push_packet_dt_us_out,
+        Some(LiveBridgeDiag {
+            frames_per_push_packet: diag.register(
+                "bridge_frames_per_push_packet",
+                "Frames per push_packet",
+                "bridge",
+                "",
+            ),
+            push_packet_dt_us: diag.register(
+                "bridge_push_packet_dt_us",
+                "push_packet dt",
+                "bridge",
+                "us",
+            ),
+            frame_samples: diag.register(
+                "bridge_frame_samples",
+                "Frame samples",
+                "bridge",
+                "samples",
+            ),
+            frame_dt_us: diag.register("bridge_frame_dt_us", "Frame dt", "bridge", "us"),
+            frame_count: diag.register(
+                "bridge_frame_count",
+                "Frames emitted (counter)",
+                "bridge",
+                "",
+            ),
         }),
-        move |frame, decode_time_ms| {
-            let now = Instant::now();
-            let dt_us = last_bridge_frame_at
-                .map(|prev| now.saturating_duration_since(prev).as_micros() as u64)
-                .unwrap_or(0);
-            last_bridge_frame_at = Some(now);
-            bridge_frame_count = bridge_frame_count.saturating_add(1);
-            bridge_frame_samples_out.store(
-                (frame.sample_count as f64).to_bits(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            // Filter out sub-ms back-to-back updates: the harletty plugin
-            // emits multiple frames per push_packet result, and those are
-            // dispatched in a tight loop with microsecond spacing — meaningless
-            // as a cadence metric. We only publish the dt when it's > 1 ms,
-            // which captures the actual inter-batch intervals.
-            if dt_us >= 1000 {
-                bridge_frame_dt_us_out.store(
-                    (dt_us as f64).to_bits(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-            }
-            bridge_frame_count_out.store(
-                (bridge_frame_count as f64).to_bits(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            let _ = tx_for_frame.try_send(Ok(DecoderMessage::AudioData(DecodedAudioData {
-                source: DecodedSource::Bridge,
-                frame,
-                declaration: None,
-                decode_time_ms,
-                sent_at: Instant::now(),
-            })));
-        },
+        tx.clone(),
     )?;
     let ingest = LiveBridgeIngestRuntime::new(raw_tx);
 
@@ -574,16 +546,8 @@ fn run_pipewire_bridge_pw_stream_backend(
 
 #[cfg(target_os = "linux")]
 fn instantiate_live_bridge(runtime: &LiveBridgeRuntimeConfig) -> Result<FormatBridgeBox> {
-    install_bridge_host_log_sink(&runtime.lib);
-    let new_bridge = runtime.lib.new_bridge();
-    // strict mode removed: bridges ignore it; the host always requests non-strict.
-    let mut bridge = new_bridge(false);
-    if !bridge.configure("presentation".into(), runtime.presentation.as_str().into()) {
-        anyhow::bail!(
-            "Bridge rejected presentation value '{}'",
-            runtime.presentation
-        );
-    }
+    let mut bridge = open_bridge(&runtime.lib);
+    configure_presentation(&mut bridge, &runtime.presentation)?;
     Ok(bridge)
 }
 
