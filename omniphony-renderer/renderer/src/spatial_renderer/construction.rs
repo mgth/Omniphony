@@ -187,7 +187,10 @@ impl SpatialRenderer {
                 ),
             )?),
             speaker_layout,
-        )?;
+        )?
+        // The initial live backend (`backend_id: "vbap"` below) at generation 0,
+        // so an evaluation-only rebuild can re-wrap this model.
+        .with_model_origin(0, "vbap");
 
         log::info!(
             "Created spatial renderer: {} total speakers, {} spatializable, {} triangles, spread_res={}, table_mode={:?}, distance_model={}",

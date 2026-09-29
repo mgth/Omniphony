@@ -405,7 +405,12 @@ pub fn seed_control_from_render_config(
     let configured_evaluation = render_cfg
         .and_then(|cfg| cfg.render_evaluation_mode.as_deref())
         .and_then(LiveEvaluationMode::from_str);
+    // `requires_rebuild`: evaluation-only changes (mode, size intervals) that a
+    // rebuild can serve by re-wrapping the current gain models. `model_changed`:
+    // the backend, its params or its metrics changed, so the models themselves
+    // must be rebuilt.
     let mut requires_rebuild = false;
+    let mut model_changed = false;
     {
         // Resolved after registration so any registered backend (not just the
         // historical concrete ones) is accepted as a hybrid inner model; a nested
@@ -454,7 +459,7 @@ pub fn seed_control_from_render_config(
         if let Some(cfg) = render_cfg {
             use renderer::backend_params::ParamValue;
             if !cfg.backend_params.is_empty() {
-                requires_rebuild = true;
+                model_changed = true;
             }
             for (backend_id, params) in &cfg.backend_params {
                 for (key, value) in params {
@@ -464,7 +469,7 @@ pub fn seed_control_from_render_config(
             let mut migrate = |backend_id: &str, key: &str, value: Option<ParamValue>| {
                 if let Some(value) = value {
                     control.set_backend_param(backend_id, key, value);
-                    requires_rebuild = true;
+                    model_changed = true;
                 }
             };
             migrate(
@@ -547,7 +552,7 @@ pub fn seed_control_from_render_config(
             if let Some(configured_backend) = &configured_backend {
                 if live.backend_id() != configured_backend {
                     live.backend_id = configured_backend.clone();
-                    requires_rebuild = true;
+                    model_changed = true;
                 }
             }
             if let Some(configured_evaluation) = configured_evaluation {
@@ -570,7 +575,7 @@ pub fn seed_control_from_render_config(
                     || live.hybrid.metric != hybrid.metric
                 {
                     live.hybrid = hybrid;
-                    requires_rebuild = true;
+                    model_changed = true;
                 }
             }
             if let Some(metric) = render_cfg
@@ -579,7 +584,7 @@ pub fn seed_control_from_render_config(
             {
                 if live.distance_model_metric != metric {
                     live.distance_model_metric = metric;
-                    requires_rebuild = true;
+                    model_changed = true;
                 }
             }
             if let Some(metric) = render_cfg
@@ -588,7 +593,7 @@ pub fn seed_control_from_render_config(
             {
                 if live.distance_diffuse_metric != metric {
                     live.distance_diffuse_metric = metric;
-                    requires_rebuild = true;
+                    model_changed = true;
                 }
             }
             if let Some(axes) = render_cfg
@@ -597,7 +602,7 @@ pub fn seed_control_from_render_config(
             {
                 if live.distance_diffuse_mirror_axes != axes {
                     live.distance_diffuse_mirror_axes = axes;
-                    requires_rebuild = true;
+                    model_changed = true;
                 }
             }
             // Per-frame live params (no topology rebuild): seed from config so a
@@ -808,7 +813,14 @@ pub fn seed_control_from_render_config(
             }
         }
     }
-    requires_rebuild
+    if model_changed {
+        // Same rule as an OSC change to the model (`osc::dispatch`): bump the
+        // geometry generation so every rebuild after this seed, the crossover
+        // band renderers' included, builds new gain models instead of
+        // re-wrapping the ones built before the config was applied.
+        control.bump_geometry_generation();
+    }
+    requires_rebuild || model_changed
 }
 
 /// Seed the host-runtime live state (monitoring cadences, ramp mode, declared
@@ -1051,6 +1063,37 @@ mod tests {
             LiveEvaluationMode::PrecomputedCartesian
         );
         assert!(!seed_control_from_render_config(&control, Some(&cfg)));
+    }
+
+    /// A configured backend is applied after construction, so it must reach
+    /// every model built afterwards, the crossover band renderers' included:
+    /// the seed bumps the geometry generation, which they compare before
+    /// reusing a model. An evaluation-only change keeps the generation, so its
+    /// rebuild can still re-wrap the models.
+    #[test]
+    fn a_configured_backend_invalidates_the_models_built_before_it() {
+        let renderer = test_renderer();
+        let control = renderer.renderer_control();
+
+        let before = control.geometry_generation();
+        let eval_only = RenderConfig {
+            render_evaluation_mode: Some("realtime".to_string()),
+            ..Default::default()
+        };
+        assert!(seed_control_from_render_config(&control, Some(&eval_only)));
+        assert_eq!(control.geometry_generation(), before);
+
+        let backend = RenderConfig {
+            render_backend: Some("barycenter".to_string()),
+            ..Default::default()
+        };
+        assert!(seed_control_from_render_config(&control, Some(&backend)));
+        assert!(control.geometry_generation() > before);
+        let plan = control.prepare_topology_rebuild().expect("rebuild plan");
+        let rebuilt = plan
+            .build_topology_reusing(Some(&control.active_topology()))
+            .expect("rebuild");
+        assert_eq!(rebuilt.model_backend_id, "barycenter");
     }
 
     /// The recorded bridge path is the one asked for, and asking for another

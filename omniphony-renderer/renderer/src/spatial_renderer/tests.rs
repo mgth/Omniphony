@@ -369,6 +369,22 @@ fn eval_mode_change_reuses_geometry() {
         !Arc::ptr_eq(&model0, &rebuilt.backend.decorated_model().unwrap()),
         "a geometry change must rebuild the gain model"
     );
+
+    // Backend switch at an unchanged generation (a config applied after
+    // construction): the vbap model must not be re-wrapped for barycenter.
+    control.live.write().backend_id = "barycenter".to_string();
+    let plan3 = control.prepare_topology_rebuild().expect("rebuild plan 3");
+    let switched = plan3
+        .build_topology_reusing(Some(&rebuilt))
+        .expect("backend switch build");
+    assert_eq!(switched.model_backend_id, "barycenter");
+    assert!(
+        !Arc::ptr_eq(
+            &rebuilt.backend.decorated_model().unwrap(),
+            &switched.backend.decorated_model().unwrap()
+        ),
+        "a backend switch must build the new backend's gain model"
+    );
 }
 
 #[test]
