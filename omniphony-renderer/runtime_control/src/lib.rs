@@ -5,6 +5,7 @@
 pub mod command;
 pub mod context;
 pub mod host_control;
+pub mod live_control;
 pub mod osc;
 /// The OSC address contract, shared with the Studio.
 ///
@@ -15,6 +16,8 @@ pub mod osc;
 pub use omniphony_osc_contract as osc_contract;
 pub mod persist;
 pub mod snapshot;
+#[cfg(test)]
+mod test_support;
 
 pub use host_control::HostControlHandler;
 

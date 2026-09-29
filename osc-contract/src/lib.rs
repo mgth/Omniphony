@@ -874,6 +874,7 @@ mod tests {
         const SOURCES: &[&str] = &[
             "../omniphony-renderer/runtime_control/src/osc.rs",
             "../omniphony-renderer/runtime_control/src/command.rs",
+            "../omniphony-renderer/runtime_control/src/live_control.rs",
             "../omniphony-renderer/host_audio/src/lib.rs",
             "../omniphony-renderer/orender_engine/src/osc.rs",
             "../omniphony-renderer/orender_engine/src/osc/dispatch.rs",
