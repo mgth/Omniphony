@@ -1404,7 +1404,7 @@ impl Engine {
             // virtualized by default, per-entry direct opt-in via the
             // placement layout — identically to fixed-only streams. Mode is
             // always Spatial here (an object stream cannot pass through the
-            // host), and the plan is cached on (labels, options epoch).
+            // host), and the plan is cached until one of its inputs changes.
             self.fixed_planner.plan_object_stream_fixed(
                 &frame.channel_labels,
                 self.source_family,
@@ -1631,31 +1631,19 @@ impl Engine {
                 // Only the display path needs the bed layout and the room
                 // ratios, so they are read (and the layout copied) here rather
                 // than on every frame — with no client attached, never.
-                let (
-                    placement,
-                    room_ratio,
-                    room_ratio_rear,
-                    room_ratio_lower,
-                    room_ratio_center_blend,
-                ) = {
+                let (placement, room) = {
                     let control = self.renderer.renderer_control();
                     let live = control.live.read();
                     (
                         virtual_bed::OwnedPlacement::from_live(&live, self.source_family),
-                        live.room_ratio,
-                        live.room_ratio_rear,
-                        live.room_ratio_lower,
-                        live.room_ratio_center_blend,
+                        virtual_bed::RoomRatios::from_live(&live),
                     )
                 };
                 let mut objects = virtual_bed::build_virtual_bed_objects(
                     labels,
                     &placement.policy(&self.declared_poses),
                     Some(output_layout),
-                    room_ratio,
-                    room_ratio_rear,
-                    room_ratio_lower,
-                    room_ratio_center_blend,
+                    room,
                     surround_placement,
                 )
                 .unwrap_or_default();

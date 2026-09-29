@@ -220,10 +220,8 @@ pub(crate) fn handle_control_message(
             let cleared = layout.is_none();
             control.live.write().placement.family_mut(family).layout = layout;
             control.mark_dirty();
-            // The fixed-prefix planner caches on the options epoch among
-            // other things; without the bump an object stream could keep the
-            // old plan until the next track switch.
-            control.bump_options_epoch();
+            // No epoch bump: both channel planners compare the family's
+            // placement by value (`virtual_bed::ChannelPlanKey`).
             broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
             control.bump_live_state();
             if cleared {
