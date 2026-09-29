@@ -33,6 +33,8 @@ bridge_api.workspace = true
 # builds can use --no-default-features.
 default = ["sofa"]
 sofa = ["orender_engine/sofa"]
+# The demonstration render backend (see orender_engine's feature).
+example-backend = ["orender_engine/example-backend"]
 
 [build-dependencies]
 cbindgen = "0.27"

@@ -127,6 +127,11 @@ default = []
 # Usage: cargo build --features saf_vbap
 saf_vbap = ["renderer/saf_vbap"]
 
+# Register the demonstration render backend (`backend_id = "example"`) in the
+# CLI, as the starting point for a custom backend. Off in release builds.
+# Usage: cargo build --features example-backend
+example-backend = ["orender_engine/example-backend"]
+
 # Legacy compatibility alias. Windows ASIO support is compiled by default on Windows.
 asio = []
 
