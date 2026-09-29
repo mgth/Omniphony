@@ -1,9 +1,7 @@
 [package]
 name = "orender_ffi"
 version = "0.6.0"
-# Edition 2021 (not 2024) so cbindgen sees plain #[no_mangle] and unsafe fn
-# bodies stay implicitly unsafe — simpler for a thin C ABI shim.
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "C ABI for the orender spatial audio renderer (produces liborender.so)"
@@ -37,4 +35,6 @@ sofa = ["orender_engine/sofa"]
 example-backend = ["orender_engine/example-backend"]
 
 [build-dependencies]
-cbindgen = "0.27"
+# 0.28 at least: 0.27 skips `#[unsafe(no_mangle)]` functions (edition 2024) and
+# would emit a header without a single prototype.
+cbindgen = "0.28"
