@@ -192,6 +192,34 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         },
     },
     OptionSpec {
+        key: "decode_thread",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(false),
+        // No REPLAN: nothing synthesized depends on where decoding runs.
+        flags: OptionFlags::PERSIST,
+        i18n_key: "renderer.decodeThreadLabel",
+        help_i18n_key: Some("help.decodeThread"),
+        legacy_control_addr: "/omniphony/control/decode_thread",
+        set: |live, raw| {
+            let enabled = match raw {
+                RawOptionValue::Number(n) => *n != 0.0,
+                RawOptionValue::Bool(b) => *b,
+                RawOptionValue::Str(_) => return None,
+            };
+            live.decode_thread = enabled;
+            Some(if enabled { "1" } else { "0" }.to_string())
+        },
+        get_json: |live| live.decode_thread.into(),
+        config_store: |render, live| {
+            crate::config_fields::decode_thread::store(render, live.decode_thread)
+        },
+        config_seed: |live, render| {
+            if let Some(enabled) = crate::config_fields::decode_thread::get(render) {
+                live.decode_thread = enabled;
+            }
+        },
+    },
+    OptionSpec {
         key: "output_channel_mapping",
         kind: OptionKind::Enum(&["by_index", "by_name"]),
         default: OptionDefault::Str("by_index"),

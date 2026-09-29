@@ -307,6 +307,14 @@ render_field! {
 }
 
 render_field! {
+    /// Decode on a thread of its own in the liborender engine
+    /// (`render.decode_thread`), when its host lets the option decide.
+    pub decode_thread: bool = false,
+    field = decode_thread,
+    eq = bool::eq
+}
+
+render_field! {
     /// Bed conformance for spatial content (`render.bed_conform`).
     pub bed_conform: bool = false,
     field = bed_conform,

@@ -833,7 +833,7 @@ pub fn seed_runtime_state_from_render_config(
     }
 
     // DRC selection. The decode-side mode is pushed to the bridge lazily by
-    // the host (see the engine's `sync_drc_mode`); the bridge's supported-mode
+    // the host (see the engine's `sync_live_options`); the bridge's supported-mode
     // list is host knowledge and stays with the host.
     {
         let mut live = control.live.write();

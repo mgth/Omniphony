@@ -1351,6 +1351,14 @@ pub struct LiveParams {
     /// their configured selections or parameters.
     pub synthetic_objects_enabled: bool,
 
+    /// Decode on a thread of its own, overlapping the render (a performance
+    /// switch, off by default). Honoured by the liborender engine only when
+    /// its host lets the option decide (`orender_set_option("decode_thread",
+    /// "live")`), since the host must then stamp its output from the input
+    /// timestamps carried with the audio and drain at end of stream. The
+    /// standalone renderer always decodes on its own thread and ignores it.
+    pub decode_thread: bool,
+
     /// Phantom-source extraction algorithm. `Off` disables only this stage;
     /// the global synthesized-object master may independently suppress it.
     pub phantom_extract_mode: PhantomExtractMode,

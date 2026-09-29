@@ -211,6 +211,10 @@ pub struct RenderConfig {
     /// an off master can retain non-off child selections.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub synthetic_objects_enabled: Option<bool>,
+    /// Decode on a thread of its own in the liborender engine, when its host
+    /// lets the option decide. Absent = off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_thread: Option<bool>,
     /// Phantom extraction algorithm. Absent = off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phantom_extract_mode: Option<crate::live_params::PhantomExtractMode>,

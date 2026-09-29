@@ -309,6 +309,7 @@ mod registry {
             ("surround_placement", RawOptionValue::Str("back")),
             ("output_channel_mapping", RawOptionValue::Str("by_name")),
             ("synthetic_objects_enabled", RawOptionValue::Bool(true)),
+            ("decode_thread", RawOptionValue::Bool(true)),
             ("object_generator_id", RawOptionValue::Str("copy_up")),
             ("phantom_extract_mode", RawOptionValue::Str("spectral")),
             ("crossover_type", RawOptionValue::Str("fir")),

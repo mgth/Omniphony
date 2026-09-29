@@ -1212,6 +1212,7 @@ these but must still render generically from the received schema:
 |---|---|---|---|---|---|---|---|
 | `surround_placement` | enum | `side`, `back` | `"side"` | persist, replan | `twoDSources.surroundLabel` | — | `/omniphony/control/surround_placement` |
 | `synthetic_objects_enabled` | bool | — | `false` | persist, replan | `twoDSources.syntheticObjectsLabel` | `help.syntheticObjects` | `/omniphony/control/synthetic_objects` |
+| `decode_thread` | bool | — | `false` | persist | `renderer.decodeThreadLabel` | `help.decodeThread` | `/omniphony/control/decode_thread` |
 | `output_channel_mapping` | enum | `by_index`, `by_name` | `"by_index"` | persist | `audio.channelMapping` | — | `/omniphony/control/output_channel_mapping` |
 | `object_generator_id` | string | — | `""` | persist, replan | `twoDSources.objectGeneratorLabel` | `help.objectGenerator` | `/omniphony/control/object_generator` |
 | `phantom_extract_mode` | enum | `off`, `broadband`, `spectral` | `"off"` | persist, replan | `twoDSources.phantomLabel` | `help.phantomExtract` | `/omniphony/control/phantom_extract` |

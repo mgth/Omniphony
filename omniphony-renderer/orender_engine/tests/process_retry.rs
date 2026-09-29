@@ -10,35 +10,17 @@
 //! cargo test -p orender_engine --test process_retry -- --nocapture
 //! ```
 
+mod common;
+
+use common::{Blocks, PACKET, real_engine as setup};
 use orender_engine::{Engine, RenderedAudio};
-use std::path::Path;
 
-/// Raw bytes per call: several access units, so one call returns many blocks.
-const PACKET: usize = 4096;
-
-/// What one call handed back: each block's position and samples.
-type Output = Vec<(u64, Vec<f32>)>;
-
-fn setup() -> Option<(Engine, Vec<u8>)> {
-    let (Ok(bridge), Ok(sample)) = (
-        std::env::var("ORENDER_BRIDGE"),
-        std::env::var("ORENDER_SAMPLE"),
-    ) else {
-        eprintln!("skipping: set ORENDER_BRIDGE and ORENDER_SAMPLE");
-        return None;
-    };
-    let data = std::fs::read(&sample).expect("read sample file");
-    let engine = Engine::from_paths(None, None, Some(Path::new(&bridge)), None, 48_000)
-        .expect("build engine");
-    Some((engine, data))
-}
+/// What one call handed back.
+type Output = Blocks;
 
 fn collect(engine: &mut Engine, chunks: Vec<RenderedAudio>) -> Output {
-    let out = chunks
-        .iter()
-        .map(|c| (c.sample_pos, c.samples.clone()))
-        .collect();
-    engine.recycle(chunks);
+    let mut out = Output::new();
+    common::collect(engine, chunks, &mut out);
     out
 }
 

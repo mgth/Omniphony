@@ -54,6 +54,11 @@ export function rendererPanelMarkup() {
         <div id="rendererSectionContent" class="conditional-params">
           <div class="renderer-panel-stack" style="margin-top:0.25rem;display:grid;gap:0.35rem">
           <div class="output-mode-mpv-note" style="font-size:0.65rem;color:#8fa6bd;padding:0 0.1rem;" data-i18n="outputMode.mpvNote">mpv host: the output mode is applied at player start — restart playback after switching.</div>
+          <label id="decodeThreadRow" class="switch-row decode-thread-embedded" style="font-size:13px;cursor:pointer;padding:0 0.1rem">
+            <span data-i18n="renderer.decodeThreadLabel" data-help-i18n="help.decodeThread" data-help-anchor=".switch-row">Decode on a separate thread</span>
+            <input id="decodeThreadToggle" type="checkbox" data-option="decode_thread" />
+          </label>
+          <div class="decode-thread-standalone-note" style="font-size:0.65rem;color:#8fa6bd;padding:0 0.1rem;" data-i18n="renderer.decodeThreadStandaloneNote">The standalone renderer always decodes on a thread of its own.</div>
           <div id="rendererTabsBar" style="display:flex;gap:0.25rem;padding:0 0.1rem;">
             <button id="rendererTabRendererBtn" type="button" class="toggle-btn renderer-tab-btn" data-i18n="rendererTabs.renderer">Renderer</button>
             <button id="rendererTabBinauralBtn" type="button" class="toggle-btn renderer-tab-btn" data-i18n="rendererTabs.binaural">Binaural</button>

@@ -445,6 +445,7 @@ impl SpatialRenderer {
             // by default; their selections remain independent so the master can
             // temporarily bypass processing without losing setup.
             synthetic_objects_enabled: false,
+            decode_thread: false,
             phantom_extract_mode: crate::live_params::PhantomExtractMode::Off,
             phantom_params: std::collections::HashMap::new(),
         }
