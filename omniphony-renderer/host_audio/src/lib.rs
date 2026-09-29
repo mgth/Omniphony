@@ -1,8 +1,11 @@
 //! Host audio layer for the orender renderer.
 //!
-//! This crate owns audio **output** and **input** (device I/O, the adaptive
-//! resampler, the pacer) and the OSC control surface for them
-//! (`/omniphony/control/audio/*` and `/omniphony/control/input/*`). It sits
+//! This crate is the OSC control surface for audio **output** and **input**
+//! (`/omniphony/control/audio/*` and `/omniphony/control/input/*`): it applies
+//! those messages to the shared [`audio_output::AudioControl`] and
+//! [`audio_input::InputControl`] and publishes their state. The device I/O
+//! itself (backends, the adaptive resampler, the pacer) lives in the
+//! `audio_output` and `audio_input` crates and is driven by the host. It sits
 //! *above* the engine: it depends on `runtime_control` (the audio-free core),
 //! `audio_output` and `audio_input` — never the other way around.
 //!
@@ -249,7 +252,7 @@ fn push_input_domain_broadcasts(
     }
 }
 
-// ─── HostAudio: the host-owned audio I/O + OSC control implementation ──────────
+// ─── HostAudio: the OSC control handler for the host-owned audio I/O ──────────
 
 pub struct HostAudio {
     pub renderer: Arc<RendererControl>,

@@ -43,7 +43,7 @@ Fixed names:
 Host lifecycle:
 1. load the shared library
 2. resolve `new_bridge`
-3. create a bridge instance with `strict`
+3. create a bridge instance (`new_bridge(false)`: see "Strict vs Non-Strict")
 4. call `configure(...)` as needed
 5. query capability/hints
 6. feed input via `push_packet(...)`
@@ -105,8 +105,8 @@ Semantics:
 - `frames`
   - zero or more fully decoded PCM frames
 - `error_message`
-  - non-empty for fatal bridge errors
-  - mainly relevant in strict mode
+  - non-empty when the bridge could not decode the chunk and did not recover
+  - the engine fails the call on it; the live PipeWire input only logs it
 - `did_reset`
   - the bridge internally reset its pipeline during recovery
 
@@ -218,13 +218,15 @@ Return value:
 
 ## Strict vs Non-Strict
 
-The constructor receives `strict: bool`.
+The constructor receives `strict: bool`. It is a legacy flag kept for ABI
+compatibility: the hosts in this repository always pass `false`, and a bridge
+may ignore it.
 
 Expected behavior:
-- strict mode
-  - fatal parse/decode problems should surface via `error_message`
-- non-strict mode
+- non-strict mode (what hosts use)
   - the bridge may recover by resetting internally and continuing
+- strict mode (only if a bridge chooses to honour the flag)
+  - fatal parse/decode problems should surface via `error_message`
 
 In both modes, `did_reset` should report internal recovery resets.
 

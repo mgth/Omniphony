@@ -10,13 +10,13 @@
 
 // C-ABI major version of this library. A bump means a breaking change: the
 // Linux soname `liborender.so.<major>` follows automatically (see build.rs);
-// Windows/macOS consumers must gate on [`orender_version_major`] at load time
+// Windows/macOS consumers must gate on `orender_version_major` at load time
 // (their library file name does not change).
 //
 // Exported into the generated header (as a `#define`) so a consumer can
 // compare the constants it was compiled against with the runtime values
-// reported by [`orender_version_major`]/[`orender_version_minor`]. Policy:
-// additive change (new symbol, new [`orender_set_option`] key, enum value
+// reported by `orender_version_major`/`orender_version_minor`. Policy:
+// additive change (new symbol, new `orender_set_option` key, enum value
 // appended) bumps the minor; anything else (signature/struct/semantic change,
 // symbol removal, enum reorder) bumps the major. See ABI.md.
 #define ORENDER_ABI_MAJOR 0
@@ -26,8 +26,8 @@
 // exists for logging and diagnostics.
 #define ORENDER_ABI_MINOR 11
 
-// Speaker-position labels written by [`orender_channel_layout`] and
-// [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
+// Speaker-position labels written by `orender_channel_layout` and
+// `orender_bed_layout` (one byte per channel). Mirrors the engine's
 // ABI-stable `bridge_api::RChannelLabel` exactly (a unit test asserts
 // discriminant parity); values are append-only per the ABI policy.
 enum OrenderChannelLabel {
@@ -70,19 +70,19 @@ enum OrenderChannelLabel {
 };
 typedef uint8_t OrenderChannelLabel;
 
-// Opaque handle to a decode→render session. Created by [`orender_create`],
-// freed by [`orender_destroy`]. Internally a boxed [`Engine`].
+// Opaque handle to a decode→render session. Created by `orender_create`,
+// freed by `orender_destroy`. Internally an engine session.
 typedef struct OrenderRenderer {
     uint8_t _private[0];
 } OrenderRenderer;
 
-// Session configuration passed to [`orender_create`]. All `*const c_char`
+// Session configuration passed to `orender_create`. All `*const c_char`
 // fields are UTF-8, nul-terminated, and may be NULL (treated as "unset").
 //
 // **FROZEN at ABI major 0** — never add, remove, reorder, or retype fields:
 // consumers compiled against an older header pass this struct by layout with
 // no size handshake, so any change here is silently breaking. New knobs go
-// through [`orender_set_option`] (post-create) or the config YAML
+// through `orender_set_option` (post-create) or the config YAML
 // (create-time). See ABI.md.
 typedef struct OrenderConfig {
     // Output/host sample rate in Hz. 0 → 48000.
@@ -95,9 +95,14 @@ typedef struct OrenderConfig {
     // config's embedded layout, else the 7.1.4 preset.
     const char *speaker_layout_path;
     // Optional decoder bridge plugin path (the `*_bridge.so` produced by
-    // the input format's bridge crate) overriding the config. NULL → taken
-    // from the config YAML's `render.bridge_path` (the source of truth;
-    // library hosts have no exe-relative search).
+    // the input format's bridge crate) overriding the config. NULL → the
+    // config YAML's `render.bridge_path`; when that is unset too, the engine
+    // looks for a `*_bridge.{so,dll,dylib}` next to the host executable, then
+    // in `$ORENDER_BRIDGE_DIR`, then in the system plugin directory
+    // (`/usr/lib/orender` on Unix) — for library hosts as for the CLI. A path
+    // given here or in the config must name an existing file (a relative one
+    // is tried against the working directory, then the executable's
+    // directory); it is never replaced by a discovered bridge.
     const char *bridge_path;
     // Codec identifier of the raw access units the host will feed (matches
     // the bridge's supported codec IDs, e.g. as used in FFmpeg/IEC958).
@@ -124,7 +129,7 @@ typedef struct OrenderConfig {
 // Create a session. Returns NULL on failure (bad config, missing bridge, etc.).
 struct OrenderRenderer *orender_create(const struct OrenderConfig *cfg);
 
-// Free a session created by [`orender_create`]. NULL is ignored.
+// Free a session created by `orender_create`. NULL is ignored.
 void orender_destroy(struct OrenderRenderer *r);
 
 // 1 while the current presentation carries dynamic objects, 0 while it is a
@@ -135,29 +140,29 @@ void orender_destroy(struct OrenderRenderer *r);
 // the first decoded frame it reports the bridge's container-level guess.
 // Hosts keep object-bearing tracks on the renderer regardless of the channel
 // mode (a host cannot render objects); channel-based content follows
-// [`orender_channel_mode`].
+// `orender_channel_mode`.
 int orender_has_objects(const struct OrenderRenderer *r);
 
-// Deprecated alias of [`orender_has_objects`], kept for hosts compiled
+// Deprecated alias of `orender_has_objects`, kept for hosts compiled
 // against ABI minor < 6. Same values, same live semantics.
 int orender_is_spatial(const struct OrenderRenderer *r);
 
 // Dynamic object count of the last rendered frame (decoded channels minus the
 // bed channels) for object-based content, `0` for plain multichannel, `-1` on
 // a NULL handle / error. For the host's track info display. Meaningful after at
-// least one [`orender_process`] call.
+// least one `orender_process` call.
 int orender_object_count(const struct OrenderRenderer *r);
 
 // Dialogue normalisation level in dBFS (always ≤ 0) once the stream has
-// declared it, or [`i32::MIN`] when unknown / not yet seen (also on a NULL
+// declared it, or `INT32_MIN` when unknown / not yet seen (also on a NULL
 // handle / error). For the host's track info display.
 int orender_dialnorm_db(const struct OrenderRenderer *r);
 
 // Write the bed channel labels of the last object-based frame (one
-// [`OrenderChannelLabel`] byte per bed channel) so the host can show the bed
+// `OrenderChannelLabel` byte per bed channel) so the host can show the bed
 // composition (e.g. "LFE+11 objects").
 //
-// Same query/fill convention as [`orender_channel_layout`]: returns the bed
+// Same query/fill convention as `orender_channel_layout`: returns the bed
 // channel count `N`; if `out_labels` is non-NULL and `cap >= N`, the first `N`
 // bytes are filled (else nothing is written — call with `out_labels = NULL` to
 // query `N`). `0` for plain multichannel / no bed / NULL handle / error.
@@ -179,19 +184,19 @@ uint32_t orender_bed_layout(const struct OrenderRenderer *r, uint8_t *out_labels
 uint32_t orender_source_label(const struct OrenderRenderer *r, char *out, uint32_t cap);
 
 // Constant DSP latency of the rendered output, in samples at the engine
-// sample rate: PCM fed to [`orender_process`] emerges this many samples later
+// sample rate: PCM fed to `orender_process` emerges this many samples later
 // in the rendered stream. 0 for the default filters; non-zero when the
 // linear-phase FIR crossover sits on the rendered path. The host should
 // subtract `latency / sample_rate` from the presentation timestamps of
 // rendered frames (or delay video by the same amount) to preserve A/V sync.
 // May change mid-stream (live crossover / output-mode switch), so poll it
-// per rendered frame; meaningful after the first [`orender_process`] call.
+// per rendered frame; meaningful after the first `orender_process` call.
 // 0 on a NULL handle / error.
 uint64_t orender_output_latency_samples(const struct OrenderRenderer *r);
 
 // Configured render mode for channel-based (non-object) content:
 // 0 = host, 1 = spatial; <0 on error. When this is `host` (0) and
-// [`orender_has_objects`] reports 0, the host should decline this track and fall
+// `orender_has_objects` reports 0, the host should decline this track and fall
 // back to its native decoder. Meaningful once the renderer is created (the mode
 // comes from config / live params, not from the stream).
 int orender_channel_mode(const struct OrenderRenderer *r);
@@ -215,13 +220,13 @@ void orender_set_channel_mapping(struct OrenderRenderer *r, int mode);
 uint32_t orender_channel_count(const struct OrenderRenderer *r);
 
 // Write the active output layout's per-channel labels (one
-// [`OrenderChannelLabel`] byte per speaker, in render order) so the host can
+// `OrenderChannelLabel` byte per speaker, in render order) so the host can
 // build a channel map.
 //
 // Returns the channel count `N`. If `out_labels` is non-NULL and `cap >= N`,
 // the first `N` bytes are filled with label discriminants; otherwise nothing is
 // written — call with `out_labels = NULL` to query `N`, size a buffer, then
-// call again. Each byte is an [`OrenderChannelLabel`] value (255 = Unknown).
+// call again. Each byte is an `OrenderChannelLabel` value (255 = Unknown).
 // Returns 0 on error/NULL handle.
 uint32_t orender_channel_layout(const struct OrenderRenderer *r, uint8_t *out_labels, uint32_t cap);
 
@@ -245,15 +250,17 @@ void orender_reset(struct OrenderRenderer *r);
 // packet's audio, but the stream stays in step.
 //
 // `*out_pts_us` is where the returned audio sits in the stream, from the
-// samples decoded since [`orender_create`] or the last [`orender_reset`];
-// [`orender_output_packet_pts`] gives the `pts_us` passed with the packet it
+// samples decoded since `orender_create` or the last `orender_reset`;
+// `orender_output_packet_pts` gives the `pts_us` passed with the packet it
 // was decoded from, carried through untouched (ABI.md, "Output timestamps").
 //
-// With the `decode_thread` option on (see [`orender_set_option`]) a packet's
+// With the `decode_thread` option on (see `orender_set_option`) a packet's
 // audio comes back from a later call - one packet's per call, about 30 ms of
-// audio behind, or one packet if that is longer - or from [`orender_drain`]:
-// take the timestamps from one of those two, not from the packet just passed
-// in, and drain at end of stream.
+// audio behind, or one packet if that is longer; occasionally two while the
+// queue shrinks, so size `out` for two packets' audio (a smaller buffer gets
+// the >0 return above and a retry) - or from `orender_drain`: take the
+// timestamps from one of those two, not from the packet just passed in, and
+// drain at end of stream.
 int orender_process(struct OrenderRenderer *r,
                     const uint8_t *pkt,
                     uintptr_t pkt_len,
@@ -266,18 +273,18 @@ int orender_process(struct OrenderRenderer *r,
 
 // Render what the engine still holds, because the stream is over: with the
 // `decode_thread` option on, the packets it has been handed and not returned
-// yet. One packet's audio per call, as [`orender_process`] returns it, so a
+// yet. One packet's audio per call, as `orender_process` returns it, so a
 // buffer that fits one packet's audio fits a drain too: after the last packet,
 // call it until it returns 0 frames, and play what each call returns.
 //
 // Not a reset: the renderer keeps its state, because this audio continues
 // what came before. Once it has returned 0 frames it keeps returning 0 until
-// new input. `out` and the out-parameters are as for [`orender_process`].
+// new input. `out` and the out-parameters are as for `orender_process`.
 //
 // Returns: 0 = OK (0 frames: nothing is left), >0 = output buffer too small
 // (nothing written; call drain again with a larger buffer before sending
-// more input — the audio is kept for it, and [`orender_process`] refuses
-// input until it has been collected), <0 = error. [`orender_reset`]
+// more input — the audio is kept for it, and `orender_process` refuses
+// input until it has been collected), <0 = error. `orender_reset`
 // discards it.
 int orender_drain(struct OrenderRenderer *r,
                   float *out,
@@ -286,8 +293,8 @@ int orender_drain(struct OrenderRenderer *r,
                   uint32_t *out_channels,
                   int64_t *out_pts_us);
 
-// The `pts_us` the host passed to [`orender_process`] with the packet whose
-// audio the last [`orender_process`] or [`orender_drain`] call returned.
+// The `pts_us` the host passed to `orender_process` with the packet whose
+// audio the last `orender_process` or `orender_drain` call returned.
 //
 // Inline, that is the packet the call was given. With the `decode_thread`
 // option on, a packet's audio comes back a few calls later, and this says
@@ -297,7 +304,7 @@ int orender_drain(struct OrenderRenderer *r,
 //
 // Returns 1 and writes `*pts_us` when the last call returned audio; 0 when it
 // returned none (nothing ready yet, a short buffer, end of drain) and after
-// [`orender_reset`]; -1 on a NULL argument.
+// `orender_reset`; -1 on a NULL argument.
 int orender_output_packet_pts(const struct OrenderRenderer *r, int64_t *pts_us);
 
 // Render the spatial overlay for the given OSD resolution and copy the ASS
@@ -382,23 +389,24 @@ uintptr_t orender_overlay_heatmap_bgra(uint32_t res_x,
                                        uintptr_t cap,
                                        int32_t *geom);
 
-// ABI major version of the loaded library (see [`ORENDER_ABI_MAJOR`]). A
+// ABI major version of the loaded library (see `ORENDER_ABI_MAJOR`). A
 // consumer must refuse a library whose major differs from the one it was
 // compiled against.
 uint32_t orender_version_major(void);
 
 // ABI minor version of the loaded library (backwards-compatible additions;
-// see [`ORENDER_ABI_MINOR`]). For logging — gate features on symbol presence.
+// see `ORENDER_ABI_MINOR`). For logging — gate features on symbol presence.
 uint32_t orender_version_minor(void);
 
 // Human-readable build identifier of the loaded library:
 // `"<crate-version> <git-describe> (built <timestamp>)"`. Static storage,
-// never NULL — for host logs, so "which engine did I actually load" is one
+// never NULL (a fixed placeholder if the identifier cannot be built) — for
+// host logs, so "which engine did I actually load" is one
 // log line instead of a debugging session.
 const char *orender_build_id(void);
 
 // Set a named runtime option on a session — the additive evolution path for
-// the frozen [`OrenderConfig`]: new knobs get a string key here instead of a
+// the frozen `OrenderConfig`: new knobs get a string key here instead of a
 // struct field, so consumers compiled against older headers keep working and
 // newer consumers can probe.
 //
@@ -411,14 +419,15 @@ const char *orender_build_id(void);
 // - `decode_thread` = `on` | `off` | `live` (ABI 0.10, `live` since 0.11;
 //   default `off`): decode on a thread of its own, overlapping the render, so
 //   the two share the work across two cores. With it on, a packet's audio
-//   comes back from a later [`orender_process`] call (one packet's per call,
-//   about 30 ms of audio behind, or one packet if that is longer) or from
-//   [`orender_drain`], so only a host that takes its timestamps from what the
-//   call returns (`*out_pts_us` or [`orender_output_packet_pts`], see
-//   [`orender_process`]) and drains at end of stream should turn it on.
+//   comes back from a later `orender_process` call (one packet's per call,
+//   about 30 ms of audio behind, or one packet if that is longer;
+//   occasionally two while the queue shrinks) or from
+//   `orender_drain`, so only a host that takes its timestamps from what the
+//   call returns (`*out_pts_us` or `orender_output_packet_pts`, see
+//   `orender_process`) and drains at end of stream should turn it on.
 //   `on` and `off` force it: switch them while nothing is in flight — right
-//   after [`orender_create`], after [`orender_reset`], or once
-//   [`orender_drain`] has returned 0 frames; turning it off with packets
+//   after `orender_create`, after `orender_reset`, or once
+//   `orender_drain` has returned 0 frames; turning it off with packets
 //   still on the thread returns -2. `live` hands the choice to the user's
 //   `render.decode_thread` option (config.yaml, Studio, OSC), which the
 //   engine then follows at packet boundaries, winding the thread down a
