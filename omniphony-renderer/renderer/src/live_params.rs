@@ -1469,6 +1469,11 @@ pub struct RenderTopology {
     /// built at. A recompute whose generation matches can reuse `backend`'s
     /// decorated model instead of re-triangulating. Defaults to 0 (initial build).
     pub geometry_generation: u64,
+    /// The backend id whose plan built `backend`'s gain model. Reuse also
+    /// requires it to match: the generation tracks geometry, not which backend
+    /// is selected, so without it a backend switch that lands without a bump
+    /// would re-wrap the previous backend's model. Empty until set by a plan.
+    pub model_backend_id: String,
 }
 
 impl RenderTopology {
@@ -1508,12 +1513,16 @@ impl RenderTopology {
             backend,
             backend_to_speaker_mapping,
             geometry_generation: 0,
+            model_backend_id: String::new(),
         })
     }
 
-    /// Set the geometry generation this topology was built at (chaining helper).
-    pub fn with_geometry_generation(mut self, generation: u64) -> Self {
+    /// Record what this topology's gain model was built from: the geometry
+    /// generation and the backend id (chaining helper). Both gate reuse in
+    /// `TopologyBuildPlan::build_topology_reusing`.
+    pub fn with_model_origin(mut self, generation: u64, backend_id: &str) -> Self {
         self.geometry_generation = generation;
+        self.model_backend_id = backend_id.to_string();
         self
     }
 

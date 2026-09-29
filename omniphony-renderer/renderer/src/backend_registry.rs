@@ -335,11 +335,11 @@ impl TopologyBuildPlan {
         self.build_topology_reusing(None)
     }
 
-    /// Build the topology, reusing `current`'s decorated gain model when the
-    /// geometry generation is unchanged (only the evaluation mode / grid changed).
-    /// Reuse skips re-triangulation: realtime just re-wraps the model, precomputed
-    /// re-samples it. A geometry change (different generation, or no current model)
-    /// falls back to a full rebuild.
+    /// Build the topology, reusing `current`'s decorated gain model when it was
+    /// built by the same backend at the same geometry generation (only the
+    /// evaluation mode / grid changed). Reuse skips re-triangulation: realtime
+    /// just re-wraps the model, precomputed re-samples it. Anything else (another
+    /// generation, another backend, or no current model) is a full rebuild.
     pub fn build_topology_reusing(
         &self,
         current: Option<&RenderTopology>,
@@ -354,14 +354,15 @@ impl TopologyBuildPlan {
         };
 
         if let Some(model) = current.and_then(|cur| {
-            (cur.geometry_generation == self.geometry_generation)
+            (cur.geometry_generation == self.geometry_generation
+                && cur.model_backend_id == self.backend_id)
                 .then(|| cur.backend.decorated_model())
                 .flatten()
         }) {
             let engine =
                 wrap_prepared_engine(model, effective_mode, &self.evaluation_build_config)?;
             let topology = RenderTopology::new(Arc::new(engine), self.layout.clone())?
-                .with_geometry_generation(self.geometry_generation);
+                .with_model_origin(self.geometry_generation, &self.backend_id);
             smoke_test_engine(
                 &topology.backend,
                 &self.evaluation_build_config,
@@ -382,7 +383,7 @@ impl TopologyBuildPlan {
             )?),
             self.layout.clone(),
         )?
-        .with_geometry_generation(self.geometry_generation);
+        .with_model_origin(self.geometry_generation, &self.backend_id);
         smoke_test_engine(
             &topology.backend,
             &self.evaluation_build_config,
