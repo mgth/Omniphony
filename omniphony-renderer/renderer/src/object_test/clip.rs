@@ -13,6 +13,8 @@
 
 use std::path::Path;
 
+use crate::binaural::measured::ResampleKernel;
+
 /// Longest clip kept, in seconds. A test that outlives the safety cap cannot be
 /// heard anyway, and the array is resident in the renderer for as long as it is
 /// loaded.
@@ -188,57 +190,113 @@ fn downmix(interleaved: &[f32], channels: u16) -> Vec<f32> {
 ///
 /// Offline, so the quality is worth paying for: linear interpolation of 44.1 →
 /// 48 kHz folds audible rubbish into exactly the top octaves that carry the
-/// spectral cues this test exists to judge. A 32-tap Blackman-windowed sinc
-/// costs a fraction of a second on a clip and leaves them alone.
+/// spectral cues this test exists to judge. The kernel is the measured-HRIR
+/// one (32-tap Blackman-windowed sinc, low-passed at the lower Nyquist, taps
+/// tabulated per phase), normalised by the taps that land on the clip so the
+/// gain stays flat at its edges.
 fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
-    const HALF_TAPS: i64 = 16;
     if input.is_empty() || from == 0 || to == 0 || from == to {
         return input.to_vec();
     }
-    let ratio = to as f64 / from as f64;
-    // Downsampling has to lower the cutoff to the new Nyquist or it aliases.
-    let cutoff = if ratio < 1.0 { ratio } else { 1.0 };
-    let out_len = ((input.len() as f64) * ratio).floor() as usize;
-    let mut out = Vec::with_capacity(out_len);
-    for i in 0..out_len {
-        let src = i as f64 / ratio;
-        let base = src.floor() as i64;
-        let frac = src - base as f64;
-        let mut acc = 0.0f64;
-        let mut norm = 0.0f64;
-        for k in -HALF_TAPS..HALF_TAPS {
-            let idx = base + k;
-            if idx < 0 || idx as usize >= input.len() {
-                continue;
-            }
-            let x = k as f64 - frac;
-            let sinc = if x.abs() < 1e-9 {
-                cutoff
-            } else {
-                (std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
-            };
-            // Blackman window over the tap span.
-            let t = (x + HALF_TAPS as f64) / (2.0 * HALF_TAPS as f64);
-            let w = 0.42 - 0.5 * (std::f64::consts::TAU * t).cos()
-                + 0.08 * (2.0 * std::f64::consts::TAU * t).cos();
-            let h = sinc * w;
-            acc += input[idx as usize] as f64 * h;
-            norm += h;
-        }
-        // Normalising by the realised window keeps the gain flat at the edges,
-        // where part of the kernel hangs off the end of the input.
-        out.push(if norm.abs() > 1e-12 {
-            (acc / norm) as f32
-        } else {
-            0.0
-        });
-    }
+    let mut out = Vec::new();
+    ResampleKernel::new(from, to).resample_normalized_into(input, &mut out);
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The clip loader's own resampler before it moved onto `ResampleKernel`,
+    /// kept as the reference the shared kernel is checked against.
+    ///
+    /// Windowed-sinc resampling to the render rate.
+    ///
+    /// Offline, so the quality is worth paying for: linear interpolation of 44.1 →
+    /// 48 kHz folds audible rubbish into exactly the top octaves that carry the
+    /// spectral cues this test exists to judge. A 32-tap Blackman-windowed sinc
+    /// costs a fraction of a second on a clip and leaves them alone.
+    fn reference_resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
+        const HALF_TAPS: i64 = 16;
+        if input.is_empty() || from == 0 || to == 0 || from == to {
+            return input.to_vec();
+        }
+        let ratio = to as f64 / from as f64;
+        // Downsampling has to lower the cutoff to the new Nyquist or it aliases.
+        let cutoff = if ratio < 1.0 { ratio } else { 1.0 };
+        let out_len = ((input.len() as f64) * ratio).floor() as usize;
+        let mut out = Vec::with_capacity(out_len);
+        for i in 0..out_len {
+            let src = i as f64 / ratio;
+            let base = src.floor() as i64;
+            let frac = src - base as f64;
+            let mut acc = 0.0f64;
+            let mut norm = 0.0f64;
+            for k in -HALF_TAPS..HALF_TAPS {
+                let idx = base + k;
+                if idx < 0 || idx as usize >= input.len() {
+                    continue;
+                }
+                let x = k as f64 - frac;
+                let sinc = if x.abs() < 1e-9 {
+                    cutoff
+                } else {
+                    (std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
+                };
+                // Blackman window over the tap span.
+                let t = (x + HALF_TAPS as f64) / (2.0 * HALF_TAPS as f64);
+                let w = 0.42 - 0.5 * (std::f64::consts::TAU * t).cos()
+                    + 0.08 * (2.0 * std::f64::consts::TAU * t).cos();
+                let h = sinc * w;
+                acc += input[idx as usize] as f64 * h;
+                norm += h;
+            }
+            // Normalising by the realised window keeps the gain flat at the edges,
+            // where part of the kernel hangs off the end of the input.
+            out.push(if norm.abs() > 1e-12 {
+                (acc / norm) as f32
+            } else {
+                0.0
+            });
+        }
+        out
+    }
+
+    /// The shared kernel reproduces the clip loader's former resampler within
+    /// a hair: same window, cutoff and tap count; it differs only in the
+    /// kernel's centring (symmetric around the output position instead of one
+    /// tap early), its integer phase stepping, and rounding the length rather
+    /// than truncating it. Offline test-signal loading, so that is fine.
+    #[test]
+    fn shared_kernel_matches_the_former_clip_resampler() {
+        for (from, to) in [(44_100u32, 48_000u32), (96_000, 48_000), (22_050, 48_000)] {
+            let len = from as usize / 2;
+            let input: Vec<f32> = (0..len)
+                .map(|i| {
+                    let t = i as f64 / from as f64;
+                    (0.5 * (std::f64::consts::TAU * 997.0 * t).sin()
+                        + 0.25 * (std::f64::consts::TAU * 5_003.0 * t).sin())
+                        as f32
+                })
+                .collect();
+            let old = reference_resample(&input, from, to);
+            let new = resample(&input, from, to);
+            assert!(
+                (old.len() as i64 - new.len() as i64).abs() <= 1,
+                "{from}->{to}: lengths {} vs {}",
+                old.len(),
+                new.len()
+            );
+            let n = old.len().min(new.len());
+            let max_diff = old[..n]
+                .iter()
+                .zip(&new[..n])
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            eprintln!("{from}->{to}: max difference {max_diff:e}");
+            assert!(max_diff < 2e-4, "{from}->{to}: max difference {max_diff}");
+        }
+    }
 
     /// Build a canonical 16-bit PCM WAV in memory.
     fn wav16(channels: u16, rate: u32, frames: &[Vec<i16>]) -> Vec<u8> {
