@@ -55,8 +55,13 @@ Progress:
   when applied) groups, 38 options; the JSON patches and their `/apply` as
   aliases; `/control/options/apply`; `/state/host_options`; the
   `OptionalInt` kind, the `Unset` default and a `Null` raw value;
-  `OptionFlags::EMBEDDED_ONLY` (`decode_thread`). Optional step 5: a generic
-  Apply button in Studio from the schema.
+  `OptionFlags::EMBEDDED_ONLY` (`decode_thread`).
+- **Groups, step 5 landed** (native Studio): the Studio reads `/state/host_options`
+  and derives the `staged` groups from the schema (`Live::staged_groups`); a
+  generic row (`panels/staged_apply.rs`) offers the Apply of a group while it
+  holds staged values, through `/control/options/apply`. The Audio Input
+  section shows it under its own Apply, which still sends the section's edits
+  as one document. The web Studio does not have it.
 
 ### Current state
 

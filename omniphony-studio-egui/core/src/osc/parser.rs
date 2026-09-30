@@ -435,6 +435,10 @@ pub enum OscEvent {
     StateOptionsSchema {
         value: String,
     },
+    #[serde(rename = "state:host_options")]
+    StateHostOptions {
+        value: String,
+    },
     #[serde(rename = "state:decode_time_ms")]
     StateDecodeTimeMs {
         value: f64,
@@ -932,6 +936,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (3, "options_schema") => Some(OscEvent::StateOptionsSchema {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
+        (3, "host_options") => Some(OscEvent::StateHostOptions {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (3, "diag_values") => Some(OscEvent::StateDiagValues {

@@ -250,6 +250,8 @@
   "input.lfeInfoBody": "LFE controlla cosa accade al canale degli effetti a bassa frequenza del flusso di ingresso.<br><br><strong>Oggetto</strong> lo trasforma in un oggetto spaziale. <strong>Diretto</strong> lo mantiene come percorso LFE dedicato e diretto. <strong>Scarta</strong> lo ignora del tutto.<br><br>Scegli in base a come è stato creato il materiale sorgente e a come il tuo layout di uscita prevede di instradare i bassi.",
   "input.refresh": "Aggiorna",
   "input.apply": "Applica",
+  "options.stagedPending": "{group}: ci sono modifiche in sospeso da applicare.",
+  "options.applyStaged": "Applica le modifiche in sospeso",
   "input.applyPending": "Applicazione in sospeso...",
   "input.sync.pending": "applicazione in sospeso",
   "input.sync.synced": "sincronizzato",

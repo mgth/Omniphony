@@ -96,6 +96,10 @@ pub struct Live {
     pub overlay: Option<serde_json::Value>,
     pub object_test_position: Option<ObjectTestPosition>,
     pub options_schema: Option<serde_json::Value>,
+    /// The options the standalone renderer's host declares
+    /// (`/state/host_options`: `options`, `applied`, `pending`). `None` for
+    /// the embedded engine, which declares none.
+    pub host_options: Option<serde_json::Value>,
     pub object_generators_schema: Option<serde_json::Value>,
     pub phantom_schema: Option<serde_json::Value>,
     pub drc_gain: Option<f64>,
@@ -292,7 +296,80 @@ impl std::ops::DerefMut for Live {
     }
 }
 
+/// A `staged` group of declared options (`/state/options_schema`): its
+/// writes wait for an apply. What a generic Apply button needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedGroup {
+    /// The group key (`/control/options/apply` takes it).
+    pub key: String,
+    /// The i18n key of its title.
+    pub i18n_key: String,
+    /// Whether it holds staged values not applied yet (`pending` in
+    /// `/state/host_options`).
+    pub pending: bool,
+}
+
 impl Live {
+    /// The `staged` groups the schema declares, in schema order, each with
+    /// its pending flag. Read from the schema, not from a list in Studio: a
+    /// group a newer renderer stages gets its Apply button without a Studio
+    /// change.
+    pub fn staged_groups(&self) -> Vec<StagedGroup> {
+        let mut groups: Vec<StagedGroup> = Vec::new();
+        let specs = self
+            .options_schema
+            .as_ref()
+            .and_then(|s| s.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for group in specs.iter().filter_map(|spec| spec.get("group")) {
+            if group.get("mode").and_then(|m| m.as_str()) != Some("staged") {
+                continue;
+            }
+            let Some(key) = group.get("key").and_then(|k| k.as_str()) else {
+                continue;
+            };
+            if groups.iter().any(|g| g.key == key) {
+                continue;
+            }
+            let pending = self
+                .host_options
+                .as_ref()
+                .and_then(|h| h.get("pending"))
+                .and_then(|p| p.get(key))
+                .and_then(|p| p.as_bool())
+                .unwrap_or(false);
+            groups.push(StagedGroup {
+                key: key.to_owned(),
+                i18n_key: group
+                    .get("i18nKey")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                pending,
+            });
+        }
+        groups
+    }
+
+    /// One `staged` group by key, if the schema declares it.
+    pub fn staged_group(&self, key: &str) -> Option<StagedGroup> {
+        self.staged_groups().into_iter().find(|g| g.key == key)
+    }
+
+    /// Clear a group's pending flag the moment its apply goes out, so the
+    /// button does not offer a second click before the renderer's echo.
+    pub fn clear_group_pending(&mut self, key: &str) {
+        if let Some(pending) = self
+            .host_options
+            .as_mut()
+            .and_then(|h| h.get_mut("pending"))
+            .and_then(|p| p.as_object_mut())
+        {
+            pending.insert(key.to_owned(), serde_json::Value::Bool(false));
+        }
+    }
+
     /// One declared live option, falling back to the published schema's
     /// default when the renderer has not sent a snapshot yet
     /// (`getLiveOption`).
@@ -450,6 +527,7 @@ impl Live {
             backend_file_pending: None,
             backend_file_error: None,
             options_schema: None,
+            host_options: None,
             object_generators_schema: None,
             phantom_schema: None,
             drc_gain: None,
@@ -954,6 +1032,10 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         OscEvent::StateOptionsSchema { value } => {
             live.options_schema = serde_json::from_str(&value).ok();
             Change::None
+        }
+        OscEvent::StateHostOptions { value } => {
+            live.host_options = serde_json::from_str(&value).ok();
+            Change::Snapshot
         }
         OscEvent::StateObjectTestPosition {
             x,

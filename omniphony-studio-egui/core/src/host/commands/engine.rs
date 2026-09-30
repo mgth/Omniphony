@@ -176,6 +176,24 @@ pub fn control_option(state: &SharedState, key: String, value: serde_json::Value
     );
 }
 
+/// Apply a `staged` group of declared options (`/control/options/apply`):
+/// every value staged since its last apply goes in at once. The pending flag
+/// is cleared at once, as the renderer's echo will.
+pub fn apply_option_group(state: &SharedState, group: &str) {
+    let group = group.trim();
+    if group.is_empty() {
+        return;
+    }
+    state.inner.lock().unwrap().clear_group_pending(group);
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: osc_contract::CONTROL_OPTIONS_APPLY.to_string(),
+            args: vec![rosc::OscType::String(group.to_owned())],
+        },
+    );
+}
+
 /// Set a live object-generator parameter (PAD: `strength` / `hpf_hz` /
 /// `gain_db`). Sent as `[key, value]`; the renderer clamps and applies it live.
 /// Remember a live parameter in the model, so the slider that set it reads
@@ -566,5 +584,76 @@ mod unsaved_tests {
             save_outcome(&state),
             SaveOutcome::Failed("read-only".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod staged_group_tests {
+    use super::*;
+    use crate::host::commands::tests::{sent_addresses, state_with_outbox};
+    use crate::osc::dispatch::StagedGroup;
+
+    /// A schema with one staged group (`live_input`) and one live one.
+    fn schema() -> serde_json::Value {
+        serde_json::json!([
+            {"key": "room_ratio_rear", "group": {"key": "room", "mode": "live", "i18nKey": "room.title"}},
+            {"key": "input_mode", "group": {"key": "live_input", "mode": "staged", "i18nKey": "section.audioInput"}},
+            {"key": "live_input_node", "group": {"key": "live_input", "mode": "staged", "i18nKey": "section.audioInput"}},
+            {"key": "decode_thread"}
+        ])
+    }
+
+    #[test]
+    fn staged_groups_come_from_the_schema_with_their_pending_flag() {
+        let (state, _rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        {
+            let mut live = state.inner.lock().unwrap();
+            live.options_schema = Some(schema());
+            // No host options yet (or the embedded engine): nothing pending.
+            assert_eq!(
+                live.staged_groups(),
+                vec![StagedGroup {
+                    key: "live_input".into(),
+                    i18n_key: "section.audioInput".into(),
+                    pending: false,
+                }]
+            );
+            live.host_options = Some(serde_json::json!({
+                "options": {}, "applied": {}, "pending": {"live_input": true}
+            }));
+            assert!(live.staged_group("live_input").is_some_and(|g| g.pending));
+            assert_eq!(
+                live.staged_group("room"),
+                None,
+                "a live group is not staged"
+            );
+        }
+    }
+
+    /// The Apply sends the generic group apply and clears the flag at once,
+    /// so a second click is not offered before the renderer's echo.
+    #[test]
+    fn applying_a_group_sends_it_and_clears_its_flag() {
+        let (state, rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        {
+            let mut live = state.inner.lock().unwrap();
+            live.options_schema = Some(schema());
+            live.host_options = Some(serde_json::json!({"pending": {"live_input": true}}));
+        }
+        apply_option_group(&state, "live_input");
+        assert_eq!(
+            sent_addresses(&rx),
+            vec![osc_contract::CONTROL_OPTIONS_APPLY.to_string()]
+        );
+        assert!(
+            state
+                .inner
+                .lock()
+                .unwrap()
+                .staged_group("live_input")
+                .is_some_and(|g| !g.pending)
+        );
+        apply_option_group(&state, "  ");
+        assert!(sent_addresses(&rx).is_empty(), "no group, nothing sent");
     }
 }
