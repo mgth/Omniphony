@@ -393,6 +393,38 @@ fn hrir_params_json(source: &renderer::binaural::HrirSource) -> serde_json::Valu
     }
 }
 
+/// The options schema a host publishes: the core options it offers (a host
+/// with audio I/O leaves out the embedded engine's), then its own.
+fn options_schema_json(has_audio: bool, host: Option<&dyn crate::HostControlHandler>) -> String {
+    let mut entries = renderer::options::schema_entries(has_audio);
+    if let Some(host) = host {
+        entries.extend(host.options_schema());
+    }
+    serde_json::Value::Array(entries).to_string()
+}
+
+/// `/state/host_options`: the host's options, requested and applied, and its
+/// `Staged` groups' pending flags. `None` for a host that declares none.
+fn host_options_json(host: &dyn crate::HostControlHandler) -> Option<String> {
+    let options = host.options_json();
+    if options.is_empty() {
+        return None;
+    }
+    let pending: serde_json::Map<String, serde_json::Value> = host
+        .option_groups_pending()
+        .into_iter()
+        .map(|(group, pending)| (group.to_string(), pending.into()))
+        .collect();
+    Some(
+        json!({
+            "options": options,
+            "applied": host.options_applied_json(),
+            "pending": pending,
+        })
+        .to_string(),
+    )
+}
+
 fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String {
     let mut domains = vec!["renderer", "layout", "speakers", "loudness"];
     let mut control_config = vec!["layout", "speakers"];
@@ -515,6 +547,18 @@ pub fn build_live_state_bundle(
     has_audio: bool,
     has_input: bool,
 ) -> Vec<OscPacket> {
+    build_live_state_bundle_with_host(control, has_audio, has_input, None)
+}
+
+/// [`build_live_state_bundle`] with the registered host handler, whose
+/// declared options join the published schema and go out in
+/// `/state/host_options`.
+pub fn build_live_state_bundle_with_host(
+    control: &Arc<RendererControl>,
+    has_audio: bool,
+    has_input: bool,
+    host: Option<&dyn crate::HostControlHandler>,
+) -> Vec<OscPacket> {
     let live = control.live.read();
     let active_topology = control.active_topology();
     let editable_layout = control.editable_layout();
@@ -553,7 +597,7 @@ pub fn build_live_state_bundle(
             // default, flags, i18n keys) — same pattern as the generator /
             // phantom param schemas, so clients can build controls from it.
             addr: crate::osc_contract::STATE_OPTIONS_SCHEMA.to_string(),
-            args: vec![OscType::String(renderer::options::schema_json())],
+            args: vec![OscType::String(options_schema_json(has_audio, host))],
         }),
         OscPacket::Message(OscMessage {
             // Named config profiles (docs/config-profiles.md): active + list,
@@ -749,6 +793,12 @@ pub fn build_live_state_bundle(
             args: vec![OscType::String(control.bridge_error().unwrap_or_default())],
         }),
     ];
+    if let Some(host_options) = host.and_then(host_options_json) {
+        messages.push(OscPacket::Message(OscMessage {
+            addr: crate::osc_contract::STATE_HOST_OPTIONS.to_string(),
+            args: vec![OscType::String(host_options)],
+        }));
+    }
 
     // DRC is a decode-stage control owned by the core (lives in liborender).
     // Always publish the DRC fields on /state/input. When a host_audio

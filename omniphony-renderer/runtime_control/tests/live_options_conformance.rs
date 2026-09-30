@@ -922,3 +922,124 @@ fn snapshot_spread_block_follows_the_vbap_param_bag() {
         serde_json::json!(control.live.read().spread_max)
     );
 }
+
+/// Hosts scope the options: a host with audio I/O leaves the embedded
+/// engine's out of what it publishes and saves, and publishes its own.
+mod host_scope {
+    use super::*;
+    use rosc::{OscMessage, OscPacket, OscType};
+    use runtime_control::HostControlHandler;
+    use runtime_control::osc::ControlEffects;
+
+    /// A host declaring one option, `stub_rate`.
+    struct StubHost;
+
+    impl HostControlHandler for StubHost {
+        fn handle(&self, _addr: &str, _msg: &OscMessage) -> Option<ControlEffects> {
+            None
+        }
+        fn extend_snapshot(&self) -> Vec<OscPacket> {
+            Vec::new()
+        }
+        fn amend_saved_config(&self, _render: &mut RenderConfig) {}
+        fn options_schema(&self) -> Vec<serde_json::Value> {
+            vec![serde_json::json!({"key": "stub_rate", "kind": "optional_int"})]
+        }
+        fn options_json(&self) -> serde_json::Map<String, serde_json::Value> {
+            [("stub_rate".to_string(), serde_json::json!(48_000))]
+                .into_iter()
+                .collect()
+        }
+        fn options_applied_json(&self) -> serde_json::Map<String, serde_json::Value> {
+            [("stub_rate".to_string(), serde_json::Value::Null)]
+                .into_iter()
+                .collect()
+        }
+        fn option_groups_pending(&self) -> Vec<(&'static str, bool)> {
+            vec![("stub", true)]
+        }
+    }
+
+    fn published(
+        control: &Arc<RendererControl>,
+        host: Option<&dyn HostControlHandler>,
+    ) -> std::collections::HashMap<String, serde_json::Value> {
+        runtime_control::snapshot::build_live_state_bundle_with_host(
+            control,
+            host.is_some(),
+            host.is_some(),
+            host,
+        )
+        .into_iter()
+        .filter_map(|packet| match packet {
+            OscPacket::Message(OscMessage { addr, args }) => match args.first() {
+                Some(OscType::String(json)) => {
+                    serde_json::from_str(json).ok().map(|value| (addr, value))
+                }
+                _ => None,
+            },
+            OscPacket::Bundle(_) => None,
+        })
+        .collect()
+    }
+
+    fn schema_keys(state: &std::collections::HashMap<String, serde_json::Value>) -> Vec<String> {
+        state[osc_contract::STATE_OPTIONS_SCHEMA]
+            .as_array()
+            .expect("schema array")
+            .iter()
+            .map(|entry| entry["key"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn each_host_publishes_what_it_offers() {
+        let control = fixture_control();
+        let embedded = published(&control, None);
+        let keys = schema_keys(&embedded);
+        assert!(keys.iter().any(|k| k == "decode_thread"));
+        assert!(!keys.iter().any(|k| k == "stub_rate"));
+        assert!(!embedded.contains_key(osc_contract::STATE_HOST_OPTIONS));
+
+        let standalone = published(&control, Some(&StubHost));
+        let keys = schema_keys(&standalone);
+        assert!(!keys.iter().any(|k| k == "decode_thread"));
+        assert_eq!(keys.last().map(String::as_str), Some("stub_rate"));
+        let host_options = &standalone[osc_contract::STATE_HOST_OPTIONS];
+        assert_eq!(host_options["options"]["stub_rate"], 48_000);
+        assert!(host_options["applied"]["stub_rate"].is_null());
+        assert_eq!(host_options["pending"]["stub"], true);
+    }
+
+    /// A save by the standalone renderer keeps the embedded engine's
+    /// `decode_thread` as the file has it (the two share the config); the
+    /// embedded engine writes its own.
+    #[test]
+    fn a_host_save_keeps_the_options_it_does_not_offer() {
+        let control = fixture_control();
+        let base = temp_path("scope-base");
+        let out = temp_path("scope-out");
+        let mut config = Config::default();
+        config.render = Some(RenderConfig {
+            decode_thread: Some(true),
+            ..Default::default()
+        });
+        config.save(&base).expect("base written");
+        assert!(!control.live.read().decode_thread);
+
+        save_live_config_to_path(&control, Some(&StubHost), &base, &out).expect("save");
+        let saved = Config::load_or_default(&out).render.expect("render");
+        assert_eq!(saved.decode_thread, Some(true), "the file's value survives");
+
+        save_live_config_to_path(&control, None, &base, &out).expect("save");
+        let saved = Config::load_or_default(&out).render.expect("render");
+        assert_ne!(
+            saved.decode_thread,
+            Some(true),
+            "the embedded engine writes its own"
+        );
+
+        let _ = std::fs::remove_file(&base);
+        let _ = std::fs::remove_file(&out);
+    }
+}

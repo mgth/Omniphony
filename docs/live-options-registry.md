@@ -47,10 +47,16 @@ Progress:
   groups, the ungrouped binaural scalars (output and binaural modes, unit
   scale, head radius, air absorption, diffuse-field EQ, reflections, reverb,
   both ear gains) and the master gain; the `Reload` effect and
-  `LegacyAddr::None`. Next step: `Staged` groups declared by the host (audio
-  output, live input), with the JSON patches and their `/apply` as exact
-  aliases and the options published per host (`decode_thread` by the
-  embedded engine only).
+  `LegacyAddr::None`.
+- **Groups, step 4 landed**: host-declared options (`HostOptionSpec<H>`,
+  published and set through `HostControlHandler`'s option methods) — the
+  standalone renderer's `audio_output` (live, restarts the output),
+  `adaptive_resampling` (live) and `live_input` (`Staged`, restarts the input
+  when applied) groups, 38 options; the JSON patches and their `/apply` as
+  aliases; `/control/options/apply`; `/state/host_options`; the
+  `OptionalInt` kind, the `Unset` default and a `Null` raw value;
+  `OptionFlags::EMBEDDED_ONLY` (`decode_thread`). Optional step 5: a generic
+  Apply button in Studio from the schema.
 
 ### Current state
 
@@ -230,6 +236,43 @@ the manual head pose (transient state), the head-tracking recenter and axis
 calibration (written at once, the policy's exception; `persist` still
 carries them through an explicit Save and `seed_control_from_render_config`
 still seeds them) and the SOFA upload.
+
+### Host options and `Staged` groups
+
+The renderer crate knows nothing of audio devices, so the settings a host
+owns are declared by the host, in its own crate: `HostOptionSpec<H>` rows
+over its state `H` (`host_audio::options::HOST_OPTIONS`, over `HostAudio`).
+A row has the same declaration as a core row (key, kind, default, flags,
+group, i18n, legacy alias) and functions reaching the host's state: `set`
+(the requested value), `get_json`, an optional `applied_json` (the value in
+force, for a `Staged` group) and `config_store`. It has no seed: the host
+seeds its state at its own bootstrap (the CLI's argument resolution).
+
+The host exposes its rows through `runtime_control::HostControlHandler`'s
+option methods — `option_kind`, `apply_options`, `apply_option_group`,
+`options_schema`, `options_json`, `options_applied_json`,
+`option_groups_pending` — each a one-line call to the `renderer::options`
+`host_*` helpers. The core then treats them like its own:
+`/control/option(s)` split a message between the core batch and the host
+batch (one notification), the schema appends the host's entries, and
+`/state/host_options` carries the requested and applied values and the
+pending flags. The `/state/renderer` `options` block stays the core's: that
+message is also sent by the topology rebuild, which knows no host.
+
+A `Staged` group separates the requested value from the value in force: a
+write stages (and lights Save), `/control/options/apply <group>` hands every
+staged value over at once, and the snapshot shows both with a pending flag.
+Only the live input is staged — the host already kept requested and applied
+input state apart. The audio output is declared `Live` with the
+`RestartOutput` effect because that is what it does: the host compares
+requested and running values on every poll and restarts the output as soon
+as they differ; staging it would change what its addresses do.
+
+Scoping by host: a row flagged `EMBEDDED_ONLY` (`decode_thread`) exists only
+on a host without audio I/O of its own — the embedded engine, the `embedded`
+variant of `/state/capabilities`. The standalone renderer leaves it out of
+its schema, refuses a write to it and, on Save, keeps what the file says
+(both hosts share the config).
 
 Kept out of the registry, as structured data: the hybrid curve (a point
 list; the grouped setter's arity-based parser cannot delimit it) and the

@@ -63,6 +63,10 @@ pub enum OptionKind {
     /// `renderBackendState.available_backends`). The setter validates against
     /// the running host.
     DynamicEnum { source: &'static str },
+    /// An integer, or unset (`null`): a sample rate, a latency target that
+    /// may be left to the device. A value below `min` (e.g. 0 for a rate)
+    /// also unsets it; above `max` it is clamped.
+    OptionalInt { min: i64, max: i64 },
     /// Bounded integer (a grid size, a count). Accepts a number (rounded to
     /// the nearest integer) or a parseable string, clamped to `[min, max]`.
     Int { min: i64, max: i64 },
@@ -93,12 +97,18 @@ impl OptionKind {
 pub enum GroupMode {
     /// Applied as it arrives; a multi-key write is applied as one.
     Live,
+    /// A write stages a requested value; the group applies every staged
+    /// value at once on command (`/omniphony/control/options/apply`), and
+    /// until then publishes the requested and the applied value side by side
+    /// with a pending flag.
+    Staged,
 }
 
 impl GroupMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Live => "live",
+            Self::Staged => "staged",
         }
     }
 }
@@ -121,6 +131,11 @@ pub enum ApplyEffect {
     /// sees it change (the HRIR grid, the BRIR set, the crossover bank):
     /// nothing for the engine to trigger, but the change is not instant.
     Reload,
+    /// The host restarts its audio output when it sees the change (a new
+    /// device, rate, backend…): an audible gap.
+    RestartOutput,
+    /// The host restarts its live input when the group is applied.
+    RestartInput,
 }
 
 impl ApplyEffect {
@@ -131,6 +146,8 @@ impl ApplyEffect {
             Self::Topology => "topology",
             Self::Evaluation => "evaluation",
             Self::Reload => "reload",
+            Self::RestartOutput => "restart_output",
+            Self::RestartInput => "restart_input",
         }
     }
 }
@@ -266,6 +283,12 @@ impl OptionFlags {
     /// `RendererControl::options_epoch`, which plan signatures compare instead
     /// of enumerating options field by field.
     pub const REPLAN: Self = Self(1 << 1);
+    /// Published, accepted and saved only by a host without audio I/O of its
+    /// own — the embedded engine (the `embedded` variant of
+    /// `/state/capabilities`). Elsewhere it is inert: left out of the schema
+    /// and the snapshot, a write refused, and a save keeps what the file says
+    /// for the host that does use it.
+    pub const EMBEDDED_ONLY: Self = Self(1 << 2);
 
     pub const fn or(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -290,6 +313,8 @@ pub enum OptionDefault {
     /// profile reset leaves the option alone and the incoming profile's seed
     /// decides.
     Build,
+    /// Unset (`null`): an `OptionalInt` left to the device or the stream.
+    Unset,
 }
 
 impl OptionDefault {
@@ -300,7 +325,7 @@ impl OptionDefault {
             Self::Float(f) => f.into(),
             Self::Int(i) => i.into(),
             Self::FloatArray(values) => values.into(),
-            Self::Build => serde_json::Value::Null,
+            Self::Build | Self::Unset => serde_json::Value::Null,
         }
     }
 }
@@ -314,6 +339,9 @@ pub enum RawOptionValue<'a> {
     Bool(bool),
     /// The values of a `FloatArray` option, in order.
     Numbers(&'a [f64]),
+    /// Explicitly unset (a JSON `null`, an OSC nil): an `OptionalInt`
+    /// option's "none", distinct from a key left out of a write.
+    Null,
 }
 
 /// One live option, declared once.
@@ -382,6 +410,9 @@ impl LegacyAddr {
 #[derive(Clone, Copy)]
 pub struct OptionEnv<'a> {
     control: Option<&'a crate::live_params::RendererControl>,
+    /// Whether the host has audio I/O of its own (the standalone renderer),
+    /// which scopes `EMBEDDED_ONLY` options out.
+    host_io: bool,
 }
 
 impl<'a> OptionEnv<'a> {
@@ -389,13 +420,28 @@ impl<'a> OptionEnv<'a> {
     pub fn of(control: &'a crate::live_params::RendererControl) -> Self {
         Self {
             control: Some(control),
+            host_io: false,
         }
+    }
+
+    /// The same environment, on a host with (`true`) or without audio I/O of
+    /// its own.
+    pub const fn with_host_io(self, host_io: bool) -> Self {
+        Self { host_io, ..self }
+    }
+
+    /// Whether `spec` exists on this host (see [`OptionFlags::EMBEDDED_ONLY`]).
+    pub fn offers(&self, spec: &OptionSpec) -> bool {
+        offered(spec.flags, self.host_io)
     }
 
     /// No control: only the built-in backends exist and no build facts are
     /// known. For code that works on bare `LiveParams` (tests, tools).
     pub const fn detached() -> Self {
-        Self { control: None }
+        Self {
+            control: None,
+            host_io: false,
+        }
     }
 
     /// Whether a backend with this id is registered.
@@ -413,11 +459,11 @@ impl<'a> OptionEnv<'a> {
 
 /// A boolean from the raw shapes a `Bool` option accepts: a bool, or a number
 /// (`0` = false). Strings are rejected.
-fn raw_bool(raw: &RawOptionValue) -> Option<bool> {
+pub fn raw_bool(raw: &RawOptionValue) -> Option<bool> {
     match raw {
         RawOptionValue::Number(n) => Some(*n != 0.0),
         RawOptionValue::Bool(b) => Some(*b),
-        RawOptionValue::Str(_) | RawOptionValue::Numbers(_) => None,
+        RawOptionValue::Str(_) | RawOptionValue::Numbers(_) | RawOptionValue::Null => None,
     }
 }
 
@@ -428,7 +474,7 @@ fn bool_canonical(value: bool) -> String {
 
 /// The string of a string-shaped value (`Enum` / `Str` options); other shapes
 /// are rejected.
-fn raw_str<'a>(raw: &RawOptionValue<'a>) -> Option<&'a str> {
+pub fn raw_str<'a>(raw: &RawOptionValue<'a>) -> Option<&'a str> {
     match raw {
         RawOptionValue::Str(s) => Some(s),
         _ => None,
@@ -438,18 +484,20 @@ fn raw_str<'a>(raw: &RawOptionValue<'a>) -> Option<&'a str> {
 /// A `Float` option value: a number or a parseable string, finite, clamped to
 /// the bounds declared by `kind` — so a row states its range once, in its
 /// `kind`, and the setter, the seed and the schema all read it from there.
-fn raw_float(raw: &RawOptionValue, kind: OptionKind) -> Option<f32> {
+pub fn raw_float(raw: &RawOptionValue, kind: OptionKind) -> Option<f32> {
     let value = match raw {
         RawOptionValue::Number(n) => *n as f32,
         RawOptionValue::Str(s) => s.trim().parse::<f32>().ok()?,
-        RawOptionValue::Bool(_) | RawOptionValue::Numbers(_) => return None,
+        RawOptionValue::Bool(_) | RawOptionValue::Numbers(_) | RawOptionValue::Null => {
+            return None;
+        }
     };
     value.is_finite().then(|| clamp_to(kind, value))
 }
 
 /// An `Int` option value: a finite number rounded to the nearest integer, or
 /// a parseable string, clamped to the bounds declared by `kind`.
-fn raw_int(raw: &RawOptionValue, kind: OptionKind) -> Option<i64> {
+pub fn raw_int(raw: &RawOptionValue, kind: OptionKind) -> Option<i64> {
     let value = match raw {
         RawOptionValue::Number(n) if n.is_finite() => n.round() as i64,
         RawOptionValue::Str(s) => s.trim().parse::<i64>().ok()?,
@@ -459,6 +507,24 @@ fn raw_int(raw: &RawOptionValue, kind: OptionKind) -> Option<i64> {
         OptionKind::Int { min, max } => Some(value.clamp(min, max)),
         _ => Some(value),
     }
+}
+
+/// An `OptionalInt` option value: `Some(None)` to unset it (null, or a number
+/// below the kind's `min`), `Some(Some(v))` for a value (rounded, clamped to
+/// `max`), `None` for a shape it does not take.
+pub fn raw_optional_int(raw: &RawOptionValue, kind: OptionKind) -> Option<Option<i64>> {
+    let (min, max) = match kind {
+        OptionKind::OptionalInt { min, max } => (min, max),
+        _ => (i64::MIN, i64::MAX),
+    };
+    let value = match raw {
+        RawOptionValue::Null => return Some(None),
+        RawOptionValue::Number(n) if n.is_finite() => n.round() as i64,
+        RawOptionValue::Str(s) if s.trim().is_empty() => return Some(None),
+        RawOptionValue::Str(s) => s.trim().parse::<i64>().ok()?,
+        _ => return None,
+    };
+    Some((value >= min).then(|| value.min(max)))
 }
 
 /// A `FloatArray` option value: exactly `N` finite numbers, each clamped to
@@ -625,7 +691,11 @@ fn cartesian_in_force(live: &LiveParams, env: &OptionEnv) -> bool {
 /// A `Float` value that must pass `accept` before it is clamped — the
 /// binaural handlers rejected, rather than clamped, a zero room size or a
 /// negative pre-delay.
-fn raw_float_if(raw: &RawOptionValue, kind: OptionKind, accept: fn(f32) -> bool) -> Option<f32> {
+pub fn raw_float_if(
+    raw: &RawOptionValue,
+    kind: OptionKind,
+    accept: fn(f32) -> bool,
+) -> Option<f32> {
     let value = match raw {
         RawOptionValue::Number(n) => *n as f32,
         RawOptionValue::Str(s) => s.trim().parse::<f32>().ok()?,
@@ -891,7 +961,9 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Bool,
         default: OptionDefault::Bool(false),
         // No REPLAN: nothing synthesized depends on where decoding runs.
-        flags: OptionFlags::NONE,
+        // Embedded only: the standalone renderer always decodes on a thread
+        // of its own, so there the option is inert.
+        flags: OptionFlags::EMBEDDED_ONLY,
         group: None,
         i18n_key: "renderer.decodeThreadLabel",
         help_i18n_key: Some("help.decodeThread"),
@@ -987,7 +1059,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
                 }
                 RawOptionValue::Bool(false) => PhantomExtractMode::Off,
                 RawOptionValue::Bool(true) => PhantomExtractMode::Broadband,
-                RawOptionValue::Numbers(_) => return None,
+                RawOptionValue::Numbers(_) | RawOptionValue::Null => return None,
             };
             live.phantom_extract_mode = mode;
             Some(mode.as_str().to_string())
@@ -2985,7 +3057,14 @@ fn rebuild_for(spec: &OptionSpec) -> Rebuild {
     match spec.group.map(|group| group.effect) {
         Some(ApplyEffect::Topology) => Rebuild::Topology,
         Some(ApplyEffect::Evaluation) => Rebuild::Evaluation,
-        Some(ApplyEffect::None | ApplyEffect::Replan | ApplyEffect::Reload) | None => Rebuild::None,
+        Some(
+            ApplyEffect::None
+            | ApplyEffect::Replan
+            | ApplyEffect::Reload
+            | ApplyEffect::RestartOutput
+            | ApplyEffect::RestartInput,
+        )
+        | None => Rebuild::None,
     }
 }
 
@@ -3084,6 +3163,7 @@ pub fn reset_live_to_defaults(live: &mut LiveParams, env: &OptionEnv) {
             OptionDefault::Int(i) => RawOptionValue::Number(i as f64),
             // Left to the incoming profile's seed.
             OptionDefault::Build => continue,
+            OptionDefault::Unset => RawOptionValue::Null,
             OptionDefault::FloatArray(values) => {
                 let len = values.len().min(MAX_ARRAY_LEN);
                 for (slot, value) in numbers.iter_mut().zip(values) {
@@ -3184,7 +3264,9 @@ pub fn seed_rebuilding_rows_from_config(
 /// bed — into a config. Used by the full live-state save; the OSC targeted
 /// persist stores single options through `OptionSpec::config_store`.
 pub fn store_live_to_config(render: &mut RenderConfig, live: &LiveParams, env: &OptionEnv) {
-    for spec in LIVE_OPTIONS {
+    // An option this host does not offer keeps what the file says, for the
+    // host that does use it.
+    for spec in LIVE_OPTIONS.iter().filter(|spec| env.offers(spec)) {
         (spec.config_store)(render, live, env);
     }
     // Param bags: `None` keeps the key out of the file so each stage falls
@@ -3226,73 +3308,262 @@ pub fn options_json(live: &LiveParams) -> serde_json::Value {
 /// contract check (CI) and the `data-option` binder. Shape mirrors the
 /// object-generator/phantom param schemas: an array of specs with i18n keys.
 pub fn schema_json() -> String {
-    let specs: Vec<serde_json::Value> = LIVE_OPTIONS
+    schema_json_for(false)
+}
+
+/// The schema a host publishes: [`schema_json`] without the options it does
+/// not offer (`EMBEDDED_ONLY` ones on a host with audio I/O).
+pub fn schema_json_for(host_io: bool) -> String {
+    serde_json::Value::Array(schema_entries(host_io)).to_string()
+}
+
+/// The schema entries of the core options a host offers, for a host that
+/// appends its own ([`host_schema_entries`]).
+pub fn schema_entries(host_io: bool) -> Vec<serde_json::Value> {
+    LIVE_OPTIONS
+        .iter()
+        .filter(|spec| offered(spec.flags, host_io))
+        .map(|spec| {
+            schema_entry(
+                spec.key,
+                spec.kind,
+                spec.default,
+                spec.flags,
+                spec.group,
+                spec.i18n_key,
+                spec.help_i18n_key,
+            )
+        })
+        .collect()
+}
+
+/// Whether an option with `flags` exists on a host with (or without) audio
+/// I/O of its own.
+fn offered(flags: OptionFlags, host_io: bool) -> bool {
+    !(host_io && flags.contains(OptionFlags::EMBEDDED_ONLY))
+}
+
+/// One schema entry, for a core or a host row.
+fn schema_entry(
+    key: &str,
+    kind: OptionKind,
+    default: OptionDefault,
+    option_flags: OptionFlags,
+    group: Option<&OptionGroup>,
+    i18n_key: &str,
+    help_i18n_key: Option<&str>,
+) -> serde_json::Value {
+    let (kind_name, values) = match kind {
+        OptionKind::Bool => ("bool", None),
+        OptionKind::Enum(values) => ("enum", Some(values)),
+        OptionKind::Str => ("string", None),
+        OptionKind::Float { .. } => ("float", None),
+        OptionKind::Int { .. } => ("int", None),
+        OptionKind::OptionalInt { .. } => ("optional_int", None),
+        OptionKind::DynamicEnum { .. } => ("dynamic_enum", None),
+        OptionKind::FloatArray { .. } => ("float_array", None),
+    };
+    let mut flags = Vec::new();
+    if option_flags.contains(OptionFlags::REPLAN) {
+        flags.push("replan");
+    }
+    if option_flags.contains(OptionFlags::EMBEDDED_ONLY) {
+        flags.push("embedded_only");
+    }
+    let mut obj = serde_json::json!({
+        "key": key,
+        "kind": kind_name,
+        "default": default.to_json(),
+        "flags": flags,
+        "i18nKey": i18n_key,
+    });
+    if let Some(values) = values {
+        obj["values"] = values.into();
+    }
+    match kind {
+        OptionKind::Float { min, max, step } => {
+            obj["min"] = min.into();
+            obj["max"] = max.into();
+            obj["step"] = step.into();
+        }
+        OptionKind::Int { min, max } | OptionKind::OptionalInt { min, max } => {
+            obj["min"] = min.into();
+            obj["max"] = max.into();
+        }
+        OptionKind::DynamicEnum { source } => {
+            obj["source"] = source.into();
+        }
+        OptionKind::FloatArray {
+            len,
+            min,
+            max,
+            step,
+        } => {
+            obj["len"] = len.into();
+            obj["min"] = min.into();
+            obj["max"] = max.into();
+            obj["step"] = step.into();
+        }
+        _ => {}
+    }
+    if let Some(group) = group {
+        obj["group"] = serde_json::json!({
+            "key": group.key,
+            "mode": group.mode.as_str(),
+            "effect": group.effect.as_str(),
+            "i18nKey": group.i18n_key,
+        });
+    }
+    if let Some(help) = help_i18n_key {
+        obj["helpI18nKey"] = help.into();
+    }
+    obj
+}
+
+// ── Host-declared options ───────────────────────────────────────────────
+//
+// Settings a host owns rather than the renderer (the standalone renderer's
+// audio output and live input) are declared by the host, in its own crate,
+// as `HostOptionSpec<H>` rows over its own state `H` — this crate never
+// learns what an audio device is. The host exposes them through
+// `runtime_control::HostControlHandler`, whose option methods are one-line
+// calls to the helpers below; the engine then publishes, sets and applies
+// them exactly like the core rows: `/control/option(s)`, the schema, the
+// snapshot `options` block, the legacy aliases, Save. The embedded engine
+// registers no host, so it publishes none of them. A host seeds its own
+// state at its own bootstrap (the CLI's argument resolution), so a host row
+// has no `config_seed`.
+
+/// One host-declared option. Same declaration as an [`OptionSpec`]; the
+/// functions reach the host's state `H` instead of the live params.
+pub struct HostOptionSpec<H: 'static> {
+    pub key: &'static str,
+    pub kind: OptionKind,
+    pub default: OptionDefault,
+    pub flags: OptionFlags,
+    pub group: Option<&'static OptionGroup>,
+    pub i18n_key: &'static str,
+    pub help_i18n_key: Option<&'static str>,
+    pub legacy_control_addr: LegacyAddr,
+    /// Validate and store a client value — for a `Staged` group, as the
+    /// requested value. The canonical value, or `None` when rejected.
+    pub set: fn(&H, &RawOptionValue) -> Option<String>,
+    /// The (requested) value, for the snapshot `options` block.
+    pub get_json: fn(&H) -> serde_json::Value,
+    /// The value in force, for an option of a `Staged` group whose host
+    /// reports one (`optionsApplied` in the snapshot).
+    pub applied_json: Option<fn(&H) -> serde_json::Value>,
+    /// Write the (requested) value into the config being saved.
+    pub config_store: fn(&mut RenderConfig, &H),
+}
+
+/// What a host made of a batch of values ([`host_apply_batch`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HostBatchApplied {
+    /// One entry per input, in order: `None` for a rejected value.
+    pub results: Vec<Option<Applied>>,
+    /// Whether any value changed.
+    pub changed: bool,
+}
+
+/// Look a host row up by key.
+pub fn find_host<H>(
+    specs: &'static [HostOptionSpec<H>],
+    key: &str,
+) -> Option<&'static HostOptionSpec<H>> {
+    specs.iter().find(|spec| spec.key == key)
+}
+
+/// Look a host row up by its pre-registry address.
+pub fn find_host_by_legacy_addr<H>(
+    specs: &'static [HostOptionSpec<H>],
+    addr: &str,
+) -> Option<&'static HostOptionSpec<H>> {
+    specs
+        .iter()
+        .find(|spec| spec.legacy_control_addr.matches(addr))
+}
+
+/// Apply a batch of values to a host's state: each validated and stored by
+/// its row, a change detected by value. The host's own restart (output) or
+/// apply (a `Staged` group) picks the new values up.
+pub fn host_apply_batch<H>(
+    host: &H,
+    specs: &'static [HostOptionSpec<H>],
+    items: &[(&str, RawOptionValue)],
+) -> HostBatchApplied {
+    let mut batch = HostBatchApplied {
+        results: Vec::with_capacity(items.len()),
+        changed: false,
+    };
+    for (key, raw) in items {
+        let Some(spec) = find_host(specs, key) else {
+            batch.results.push(None);
+            continue;
+        };
+        let before = (spec.get_json)(host);
+        let result = (spec.set)(host, raw).map(|canonical| Applied {
+            changed: (spec.get_json)(host) != before,
+            canonical,
+        });
+        batch.changed |= result.as_ref().is_some_and(|applied| applied.changed);
+        batch.results.push(result);
+    }
+    batch
+}
+
+/// The schema entries of a host's rows.
+pub fn host_schema_entries<H>(specs: &'static [HostOptionSpec<H>]) -> Vec<serde_json::Value> {
+    specs
         .iter()
         .map(|spec| {
-            let (kind, values) = match spec.kind {
-                OptionKind::Bool => ("bool", None),
-                OptionKind::Enum(values) => ("enum", Some(values)),
-                OptionKind::Str => ("string", None),
-                OptionKind::Float { .. } => ("float", None),
-                OptionKind::Int { .. } => ("int", None),
-                OptionKind::DynamicEnum { .. } => ("dynamic_enum", None),
-                OptionKind::FloatArray { .. } => ("float_array", None),
-            };
-            let mut flags = Vec::new();
-            if spec.flags.contains(OptionFlags::REPLAN) {
-                flags.push("replan");
-            }
-            let mut obj = serde_json::json!({
-                "key": spec.key,
-                "kind": kind,
-                "default": spec.default.to_json(),
-                "flags": flags,
-                "i18nKey": spec.i18n_key,
-            });
-            if let Some(values) = values {
-                obj["values"] = values.into();
-            }
-            match spec.kind {
-                OptionKind::Float { min, max, step } => {
-                    obj["min"] = min.into();
-                    obj["max"] = max.into();
-                    obj["step"] = step.into();
-                }
-                OptionKind::Int { min, max } => {
-                    obj["min"] = min.into();
-                    obj["max"] = max.into();
-                }
-                OptionKind::DynamicEnum { source } => {
-                    obj["source"] = source.into();
-                }
-                OptionKind::FloatArray {
-                    len,
-                    min,
-                    max,
-                    step,
-                } => {
-                    obj["len"] = len.into();
-                    obj["min"] = min.into();
-                    obj["max"] = max.into();
-                    obj["step"] = step.into();
-                }
-                _ => {}
-            }
-            if let Some(group) = spec.group {
-                obj["group"] = serde_json::json!({
-                    "key": group.key,
-                    "mode": group.mode.as_str(),
-                    "effect": group.effect.as_str(),
-                    "i18nKey": group.i18n_key,
-                });
-            }
-            if let Some(help) = spec.help_i18n_key {
-                obj["helpI18nKey"] = help.into();
-            }
-            obj
+            schema_entry(
+                spec.key,
+                spec.kind,
+                spec.default,
+                spec.flags,
+                spec.group,
+                spec.i18n_key,
+                spec.help_i18n_key,
+            )
         })
-        .collect();
-    serde_json::Value::Array(specs).to_string()
+        .collect()
+}
+
+/// The (requested) value of every host row, for the snapshot `options` block.
+pub fn host_options_json<H>(
+    host: &H,
+    specs: &'static [HostOptionSpec<H>],
+) -> serde_json::Map<String, serde_json::Value> {
+    specs
+        .iter()
+        .map(|spec| (spec.key.to_string(), (spec.get_json)(host)))
+        .collect()
+}
+
+/// The value in force of every host row that reports one.
+pub fn host_applied_json<H>(
+    host: &H,
+    specs: &'static [HostOptionSpec<H>],
+) -> serde_json::Map<String, serde_json::Value> {
+    specs
+        .iter()
+        .filter_map(|spec| {
+            spec.applied_json
+                .map(|applied| (spec.key.to_string(), applied(host)))
+        })
+        .collect()
+}
+
+/// Write every host row into the config being saved.
+pub fn host_store_to_config<H>(
+    render: &mut RenderConfig,
+    host: &H,
+    specs: &'static [HostOptionSpec<H>],
+) {
+    for spec in specs {
+        (spec.config_store)(render, host);
+    }
 }
 
 #[cfg(test)]

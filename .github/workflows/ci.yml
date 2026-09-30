@@ -353,6 +353,9 @@ jobs:
           cargo run -q -p renderer --example dump_options_schema --locked \
             --manifest-path omniphony-renderer/Cargo.toml > /tmp/options-schema.json
           node omniphony-studio/scripts/check-options-schema.mjs /tmp/options-schema.json
+          cargo run -q -p host_audio --example dump_host_options_schema --locked \
+            --manifest-path omniphony-renderer/Cargo.toml > /tmp/host-options-schema.json
+          node omniphony-studio/scripts/check-options-schema.mjs /tmp/host-options-schema.json
 
   build-macos:
     # macOS arm64 compile gate. The renderer workspace pulls the CoreAudio

@@ -11,14 +11,22 @@
 
 use rosc::{OscMessage, OscType};
 
+use crate::HostControlHandler;
 use crate::context::RuntimeControlContext;
 use crate::osc::{ControlEffects, Notify, parse_f32_arg};
 use crate::osc_contract;
 use crate::persist::PersistOp;
 
 /// Handle the live-state writes this module owns. `None` when `msg` is not one
-/// of them, so the dispatcher moves on.
-pub fn apply_live_control(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+/// of them, so the dispatcher moves on. `host` is the registered host control
+/// handler, if any: the options it declares are set through the same generic
+/// setters as the core's, and its presence scopes out the core options only
+/// the embedded engine offers.
+pub fn apply_live_control(
+    msg: &OscMessage,
+    ctx: &RuntimeControlContext,
+    host: Option<&dyn HostControlHandler>,
+) -> Option<ControlEffects> {
     let addr = msg.addr.as_str();
     let control = &ctx.renderer;
 
@@ -32,20 +40,34 @@ pub fn apply_live_control(msg: &OscMessage, ctx: &RuntimeControlContext) -> Opti
     //
     // `/control/options [key, value, key, value, …]` writes several at once:
     // one lock, one rebuild, one notification (`renderer::options` groups).
+    // Both take the host's options too (its audio output and live input).
     if addr == osc_contract::CONTROL_OPTION || addr == osc_contract::CONTROL_OPTIONS {
         // `/control/option` takes one pair; anything after it is ignored.
         let single = addr == osc_contract::CONTROL_OPTION;
-        let Some(pairs) = parse_option_pairs(&msg.args, single) else {
+        let Some(pairs) = parse_option_pairs(&msg.args, single, host) else {
             return Some(ControlEffects::default());
         };
-        return Some(apply_options(ctx, &pairs));
+        return Some(apply_options(ctx, host, &pairs));
+    }
+    if addr == osc_contract::CONTROL_OPTIONS_APPLY {
+        return Some(apply_option_group(msg, host));
     }
     if let Some(spec) = renderer::options::find_by_legacy_addr(addr) {
         let Some(value) = msg.args.get(..spec.kind.arity()) else {
             log::warn!("OSC option {}: missing value", spec.key);
             return Some(ControlEffects::default());
         };
-        return Some(apply_options(ctx, &[(spec, value)]));
+        let target = core_target(spec, host);
+        return Some(apply_options(
+            ctx,
+            host,
+            &[OptionPair {
+                key: spec.key,
+                kind: spec.kind,
+                target,
+                args: value,
+            }],
+        ));
     }
 
     // Monitoring cadences live on RendererControl (the source of truth): both
@@ -127,15 +149,48 @@ pub fn apply_live_control(msg: &OscMessage, ctx: &RuntimeControlContext) -> Opti
     None
 }
 
+/// Where a key of `/control/option(s)` goes.
+#[derive(Clone, Copy)]
+enum OptionTarget {
+    /// A core option (`renderer::options::LIVE_OPTIONS`).
+    Core(&'static renderer::options::OptionSpec),
+    /// One the host declares.
+    Host,
+    /// A core option this host does not offer (`EMBEDDED_ONLY` on a host
+    /// with audio I/O): its value is skipped and refused.
+    NotOffered,
+}
+
+/// One key of `/control/option(s)` with its value's arguments.
+struct OptionPair<'a> {
+    key: &'a str,
+    kind: renderer::options::OptionKind,
+    target: OptionTarget,
+    args: &'a [OscType],
+}
+
+fn core_target(
+    spec: &'static renderer::options::OptionSpec,
+    host: Option<&dyn HostControlHandler>,
+) -> OptionTarget {
+    let env = renderer::options::OptionEnv::detached().with_host_io(host.is_some());
+    if env.offers(spec) {
+        OptionTarget::Core(spec)
+    } else {
+        OptionTarget::NotOffered
+    }
+}
+
 /// Split `[key, value, key, value, …]` into (option, value arguments) pairs,
 /// each value as many arguments as its option's kind takes; only the first
-/// pair when `single`. `None` — the whole message dropped — on an unknown
-/// key or a truncated value: past either, where the next key starts is
-/// unknowable.
-fn parse_option_pairs(
-    args: &[OscType],
+/// pair when `single`. A key is a core option or one the host declares.
+/// `None` — the whole message dropped — on an unknown key or a truncated
+/// value: past either, where the next key starts is unknowable.
+fn parse_option_pairs<'a>(
+    args: &'a [OscType],
     single: bool,
-) -> Option<Vec<(&'static renderer::options::OptionSpec, &[OscType])>> {
+    host: Option<&dyn HostControlHandler>,
+) -> Option<Vec<OptionPair<'a>>> {
     let mut pairs = Vec::new();
     let mut rest = args;
     while let Some((key, tail)) = rest.split_first() {
@@ -143,17 +198,26 @@ fn parse_option_pairs(
             log::warn!("OSC options: expected a key, got {key:?}");
             return None;
         };
-        let Some(spec) = renderer::options::find(key) else {
+        let (kind, target) = if let Some(spec) = renderer::options::find(key) {
+            (spec.kind, core_target(spec, host))
+        } else if let Some(kind) = host.and_then(|host| host.option_kind(key)) {
+            (kind, OptionTarget::Host)
+        } else {
             log::warn!("OSC option: unknown key '{}'", key);
             return None;
         };
-        let arity = spec.kind.arity();
+        let arity = kind.arity();
         if tail.len() < arity {
-            log::warn!("OSC option {}: missing value", spec.key);
+            log::warn!("OSC option {}: missing value", key);
             return None;
         }
         let (value, next) = tail.split_at(arity);
-        pairs.push((spec, value));
+        pairs.push(OptionPair {
+            key,
+            kind,
+            target,
+            args: value,
+        });
         if single {
             break;
         }
@@ -167,10 +231,11 @@ fn parse_option_pairs(
 }
 
 /// A client value in the owned shape [`RawOptionValue`] borrows from: the
-/// numbers of an array option are collected here first.
+/// numbers of an array option are collected here first. Public so a host
+/// maps the arguments of its own legacy addresses the same way.
 ///
 /// [`RawOptionValue`]: renderer::options::RawOptionValue
-enum WireValue<'a> {
+pub enum WireValue<'a> {
     Scalar(renderer::options::RawOptionValue<'a>),
     Numbers(Vec<f64>),
     Invalid,
@@ -179,8 +244,9 @@ enum WireValue<'a> {
 impl<'a> WireValue<'a> {
     /// Map the OSC arguments of one value onto the registry's
     /// transport-agnostic raw value. A shape no option accepts (blobs, arrays,
-    /// a non-number inside an array value, …) is `Invalid`.
-    fn from_args(kind: renderer::options::OptionKind, args: &'a [OscType]) -> Self {
+    /// a non-number inside an array value, …) is `Invalid`; an OSC nil is the
+    /// explicit "unset" of an optional value.
+    pub fn from_args(kind: renderer::options::OptionKind, args: &'a [OscType]) -> Self {
         use renderer::options::{OptionKind, RawOptionValue};
         if let OptionKind::FloatArray { .. } = kind {
             let numbers: Option<Vec<f64>> = args.iter().map(number).collect();
@@ -189,6 +255,7 @@ impl<'a> WireValue<'a> {
         let raw = match args.first() {
             Some(OscType::String(s)) => RawOptionValue::Str(s),
             Some(OscType::Bool(b)) => RawOptionValue::Bool(*b),
+            Some(OscType::Nil) => RawOptionValue::Null,
             Some(other) => match number(other) {
                 Some(n) => RawOptionValue::Number(n),
                 None => return Self::Invalid,
@@ -198,7 +265,7 @@ impl<'a> WireValue<'a> {
         Self::Scalar(raw)
     }
 
-    fn raw(&self) -> Option<renderer::options::RawOptionValue<'_>> {
+    pub fn raw(&self) -> Option<renderer::options::RawOptionValue<'_>> {
         match self {
             Self::Scalar(raw) => Some(*raw),
             Self::Numbers(values) => Some(renderer::options::RawOptionValue::Numbers(values)),
@@ -217,11 +284,12 @@ fn number(arg: &OscType) -> Option<f64> {
     }
 }
 
-/// Registry-driven application of declared live options: validate + apply
-/// them together via `options::apply_batch` (which marks dirty and bumps the
-/// replan epoch on a real change), ask for the one rebuild their groups
-/// need, then for a live-state bundle. Invalid values are dropped with a
-/// warning, per the OSC contract; the rest of the message still applies.
+/// Registry-driven application of declared options: the core ones validated
+/// and applied together via `options::apply_batch` (which marks dirty and
+/// bumps the replan epoch on a real change) and asking for the one rebuild
+/// their groups need, the host's handed to the host in one batch; then one
+/// live-state bundle. Invalid values are dropped with a warning, per the OSC
+/// contract; the rest of the message still applies.
 ///
 /// The bundle goes out with the acknowledgement: without it a client that did
 /// not send the message never learns the value moved, and the one that did
@@ -229,36 +297,69 @@ fn number(arg: &OscType) -> Option<f64> {
 /// would keep displaying the number the user typed.
 fn apply_options(
     ctx: &RuntimeControlContext,
-    pairs: &[(&'static renderer::options::OptionSpec, &[OscType])],
+    host: Option<&dyn HostControlHandler>,
+    pairs: &[OptionPair],
 ) -> ControlEffects {
-    use renderer::options::Rebuild;
+    use renderer::options::{Applied, Rebuild};
     let values: Vec<WireValue> = pairs
         .iter()
-        .map(|(spec, args)| WireValue::from_args(spec.kind, args))
+        .map(|pair| WireValue::from_args(pair.kind, pair.args))
         .collect();
-    let mut items = Vec::with_capacity(pairs.len());
-    for ((spec, _), value) in pairs.iter().zip(&values) {
-        match value.raw() {
-            Some(raw) => items.push((*spec, raw)),
-            None => log::warn!("OSC option {}: rejected value", spec.key),
+    let mut core_items = Vec::new();
+    let mut host_items = Vec::new();
+    for (pair, value) in pairs.iter().zip(&values) {
+        let Some(raw) = value.raw() else {
+            log::warn!("OSC option {}: rejected value", pair.key);
+            continue;
+        };
+        match pair.target {
+            OptionTarget::Core(spec) => core_items.push((spec, raw)),
+            OptionTarget::Host => host_items.push((pair.key, raw)),
+            OptionTarget::NotOffered => {
+                log::warn!("OSC option {}: not offered by this host", pair.key)
+            }
         }
     }
-    if items.is_empty() {
+    if core_items.is_empty() && host_items.is_empty() {
         return ControlEffects::default();
     }
-    let batch = renderer::options::apply_batch(&ctx.renderer, &items);
+    let core = (!core_items.is_empty())
+        .then(|| renderer::options::apply_batch(&ctx.renderer, &core_items));
+    let hosted = match host {
+        Some(host) if !host_items.is_empty() => Some(host.apply_options(&host_items)),
+        _ => None,
+    };
+
     let mut applied = Vec::new();
-    for ((spec, _), result) in items.iter().zip(&batch.results) {
-        match result {
-            Some(result) if result.changed => {
-                applied.push(format!("{} set to '{}'", spec.key, result.canonical));
+    let mut accepted = false;
+    let mut report = |key: &str, result: &Option<Applied>| match result {
+        Some(result) => {
+            accepted = true;
+            if result.changed {
+                applied.push(format!("{} set to '{}'", key, result.canonical));
             }
-            Some(_) => {}
-            None => log::warn!("OSC option {}: rejected value", spec.key),
+        }
+        None => log::warn!("OSC option {}: rejected value", key),
+    };
+    if let Some(core) = &core {
+        for ((spec, _), result) in core_items.iter().zip(&core.results) {
+            report(spec.key, result);
         }
     }
-    if !batch.changed {
-        if batch.results.iter().all(Option::is_none) {
+    if let Some(hosted) = &hosted {
+        for ((key, _), result) in host_items.iter().zip(&hosted.results) {
+            report(key, result);
+        }
+    }
+    let host_changed = hosted.as_ref().is_some_and(|hosted| hosted.changed);
+    if host_changed {
+        // The core batch marks the config dirty on its own changes; a host
+        // change is a config edit too.
+        ctx.renderer.mark_dirty();
+    }
+    let changed = core.as_ref().is_some_and(|core| core.changed) || host_changed;
+    if !changed {
+        if !accepted {
             return ControlEffects::default();
         }
         // Still published: a value clamped back onto the current one must
@@ -267,7 +368,7 @@ fn apply_options(
     }
     let mut effects = ControlEffects::dirty(Notify::Snapshot);
     effects.log_message = Some(format!("OSC option {}", applied.join(", ")));
-    match batch.rebuild {
+    match core.map(|core| core.rebuild).unwrap_or(Rebuild::None) {
         Rebuild::None => {}
         Rebuild::Evaluation => {
             effects.trigger_layout_recompute = true;
@@ -276,6 +377,28 @@ fn apply_options(
         Rebuild::Topology => effects.trigger_layout_recompute = true,
     }
     effects
+}
+
+/// `/control/options/apply [group]`: apply a group of declared options. A
+/// host's `Staged` group applies what it staged; a `Live` group, the core's
+/// or the host's, has nothing waiting and is only acknowledged with a
+/// bundle.
+fn apply_option_group(msg: &OscMessage, host: Option<&dyn HostControlHandler>) -> ControlEffects {
+    let Some(OscType::String(group)) = msg.args.first() else {
+        log::warn!("OSC options/apply: expected a group");
+        return ControlEffects::default();
+    };
+    if let Some(effects) = host.and_then(|host| host.apply_option_group(group)) {
+        return effects;
+    }
+    if renderer::options::OPTION_GROUPS
+        .iter()
+        .any(|declared| declared.key == group)
+    {
+        return ControlEffects::transient(Notify::Snapshot);
+    }
+    log::warn!("OSC options/apply: unknown group '{group}'");
+    ControlEffects::default()
 }
 
 fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> ControlEffects {
@@ -424,7 +547,7 @@ mod tests {
                 OscType::Float(0.25),
             ],
         );
-        let effects = apply_live_control(&write, &ctx).expect("handled");
+        let effects = apply_live_control(&write, &ctx, None).expect("handled");
         assert!(effects.mark_dirty);
         assert_eq!(effects.notify, Notify::Snapshot);
         assert!(effects.trigger_layout_recompute);
@@ -435,7 +558,7 @@ mod tests {
         assert_eq!(blend, 0.25);
 
         // The same message again changes nothing: no rebuild, no Save.
-        let again = apply_live_control(&write, &ctx).expect("handled");
+        let again = apply_live_control(&write, &ctx, None).expect("handled");
         assert!(!again.mark_dirty);
         assert!(!again.trigger_layout_recompute);
         assert!(again.publish_only, "still acknowledged");
@@ -456,14 +579,14 @@ mod tests {
                 OscType::Float(before.0[2]),
             ],
         );
-        let effects = apply_live_control(&fff, &ctx).expect("handled");
+        let effects = apply_live_control(&fff, &ctx, None).expect("handled");
         assert!(!effects.trigger_layout_recompute, "unchanged: no rebuild");
 
         let rear = msg(
             osc_contract::CONTROL_ROOM_RATIO_REAR,
             vec![OscType::Float(before.1 + 1.0)],
         );
-        let effects = apply_live_control(&rear, &ctx).expect("handled");
+        let effects = apply_live_control(&rear, &ctx, None).expect("handled");
         assert!(effects.mark_dirty && effects.trigger_layout_recompute);
         assert_eq!(room(&ctx).1, before.1 + 1.0);
 
@@ -472,18 +595,18 @@ mod tests {
             osc_contract::CONTROL_ROOM_RATIO_LOWER,
             vec![OscType::Float(-1.0)],
         );
-        apply_live_control(&lower, &ctx).expect("handled");
+        apply_live_control(&lower, &ctx, None).expect("handled");
         assert_eq!(room(&ctx).2, 0.01);
         let blend = msg(
             osc_contract::CONTROL_ROOM_RATIO_CENTER_BLEND,
             vec![OscType::Float(3.0)],
         );
-        apply_live_control(&blend, &ctx).expect("handled");
+        apply_live_control(&blend, &ctx, None).expect("handled");
         assert_eq!(room(&ctx).3, 1.0);
 
         // A short ratio is dropped, as before.
         let short = msg(osc_contract::CONTROL_ROOM_RATIO, vec![OscType::Float(1.0)]);
-        let effects = apply_live_control(&short, &ctx).expect("handled");
+        let effects = apply_live_control(&short, &ctx, None).expect("handled");
         assert!(!effects.mark_dirty && !effects.publish_only);
     }
 
@@ -510,9 +633,12 @@ mod tests {
             vec![OscType::Float(3.0)],
             vec![],
         ] {
-            let effects =
-                apply_live_control(&msg(osc_contract::CONTROL_OPTIONS, args.clone()), &ctx)
-                    .expect("handled");
+            let effects = apply_live_control(
+                &msg(osc_contract::CONTROL_OPTIONS, args.clone()),
+                &ctx,
+                None,
+            )
+            .expect("handled");
             assert!(!effects.mark_dirty, "{args:?}");
             assert_eq!(room(&ctx), before, "{args:?}: nothing may apply");
         }
@@ -530,6 +656,7 @@ mod tests {
                 ],
             ),
             &ctx,
+            None,
         )
         .expect("handled");
         assert!(effects.mark_dirty);
@@ -553,6 +680,7 @@ mod tests {
                 ],
             ),
             &ctx,
+            None,
         )
         .expect("handled");
         assert!(effects.mark_dirty);
@@ -565,6 +693,7 @@ mod tests {
                 vec![s("use_loudness"), OscType::Int(1), s("ignored")],
             ),
             &ctx,
+            None,
         )
         .expect("handled");
         assert!(effects.mark_dirty);
@@ -588,6 +717,7 @@ mod tests {
                 ],
             ),
             &ctx,
+            None,
         )
         .expect("handled");
         assert!(grid.trigger_layout_recompute && grid.evaluation_only);
@@ -608,6 +738,7 @@ mod tests {
                 ],
             ),
             &ctx,
+            None,
         )
         .expect("handled");
         assert!(mixed.trigger_layout_recompute && !mixed.evaluation_only);
@@ -626,7 +757,7 @@ mod tests {
     fn the_prefixed_legacy_addresses_are_aliases() {
         let ctx = ctx();
         let send = |addr: String, arg: OscType| {
-            apply_live_control(&msg(&addr, vec![arg]), &ctx).expect("handled")
+            apply_live_control(&msg(&addr, vec![arg]), &ctx, None).expect("handled")
         };
         let effects = send(
             format!("{}threshold", osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX),
@@ -667,7 +798,8 @@ mod tests {
                     &format!("{}curve", osc_contract::CONTROL_HYBRID_PREFIX),
                     vec![OscType::Float(0.0); 4]
                 ),
-                &ctx
+                &ctx,
+                None
             )
             .is_none()
         );
@@ -681,6 +813,7 @@ mod tests {
             apply_live_control(
                 &msg(osc_contract::CONTROL_RENDER_BACKEND, vec![s(id)]),
                 &ctx,
+                None,
             )
             .expect("handled")
         };
@@ -704,7 +837,7 @@ mod tests {
     fn the_binaural_aliases_keep_their_rejections() {
         let ctx = ctx();
         let send = |addr: &str, arg: OscType| {
-            apply_live_control(&msg(addr, vec![arg]), &ctx).expect("handled")
+            apply_live_control(&msg(addr, vec![arg]), &ctx, None).expect("handled")
         };
         let before = ctx.renderer.live.read().binaural.unit_scale_m;
         assert!(
@@ -785,6 +918,7 @@ mod tests {
                 ],
             ),
             &ctx,
+            None,
         )
         .expect("handled");
         assert!(effects.mark_dirty && !effects.trigger_layout_recompute);
@@ -795,6 +929,190 @@ mod tests {
         );
         assert_eq!(live.binaural.ears[0].gain, 0.5);
         assert_eq!(live.binaural.ears[1].gain, 0.75);
+    }
+
+    /// A host declaring one staged option, `stub_rate`, in group `stub`.
+    struct StubHost {
+        rate: std::sync::Mutex<Option<i64>>,
+        applied: std::sync::Mutex<Option<i64>>,
+    }
+
+    impl StubHost {
+        fn new() -> Self {
+            Self {
+                rate: std::sync::Mutex::new(None),
+                applied: std::sync::Mutex::new(None),
+            }
+        }
+    }
+
+    impl crate::HostControlHandler for StubHost {
+        fn handle(&self, _addr: &str, _msg: &OscMessage) -> Option<ControlEffects> {
+            None
+        }
+        fn extend_snapshot(&self) -> Vec<rosc::OscPacket> {
+            Vec::new()
+        }
+        fn amend_saved_config(&self, _render: &mut renderer::config::RenderConfig) {}
+        fn option_kind(&self, key: &str) -> Option<renderer::options::OptionKind> {
+            (key == "stub_rate")
+                .then_some(renderer::options::OptionKind::OptionalInt { min: 1, max: 1000 })
+        }
+        fn apply_options(
+            &self,
+            items: &[(&str, renderer::options::RawOptionValue)],
+        ) -> renderer::options::HostBatchApplied {
+            let mut batch = renderer::options::HostBatchApplied::default();
+            for (_, raw) in items {
+                let kind = self.option_kind("stub_rate").unwrap();
+                let result = renderer::options::raw_optional_int(raw, kind).map(|value| {
+                    let changed =
+                        std::mem::replace(&mut *self.rate.lock().unwrap(), value) != value;
+                    batch.changed |= changed;
+                    renderer::options::Applied {
+                        canonical: format!("{value:?}"),
+                        changed,
+                    }
+                });
+                batch.results.push(result);
+            }
+            batch
+        }
+        fn apply_option_group(&self, group: &str) -> Option<ControlEffects> {
+            (group == "stub").then(|| {
+                *self.applied.lock().unwrap() = *self.rate.lock().unwrap();
+                ControlEffects::transient(Notify::Snapshot)
+            })
+        }
+    }
+
+    /// `/control/options` spans the core and the host: one message, both
+    /// applied, one notification.
+    #[test]
+    fn a_batch_spans_core_and_host_options() {
+        let ctx = ctx();
+        let host = StubHost::new();
+        let effects = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTIONS,
+                vec![
+                    s("stub_rate"),
+                    OscType::Int(48),
+                    s("room_ratio_rear"),
+                    OscType::Float(3.0),
+                ],
+            ),
+            &ctx,
+            Some(&host),
+        )
+        .expect("handled");
+        assert!(effects.mark_dirty && effects.trigger_layout_recompute);
+        assert_eq!(*host.rate.lock().unwrap(), Some(48));
+        assert_eq!(ctx.renderer.live.read().room_ratio_rear, 3.0);
+
+        // Staged: nothing applied until the group is.
+        assert_eq!(*host.applied.lock().unwrap(), None);
+        let effects = apply_live_control(
+            &msg(osc_contract::CONTROL_OPTIONS_APPLY, vec![s("stub")]),
+            &ctx,
+            Some(&host),
+        )
+        .expect("handled");
+        assert!(!effects.mark_dirty, "an apply is an action");
+        assert_eq!(*host.applied.lock().unwrap(), Some(48));
+
+        // A host change alone is a config edit too; an OSC nil unsets.
+        ctx.renderer.mark_clean();
+        let effects = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTION,
+                vec![s("stub_rate"), OscType::Nil],
+            ),
+            &ctx,
+            Some(&host),
+        )
+        .expect("handled");
+        assert!(effects.mark_dirty);
+        assert!(
+            ctx.renderer
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+        assert_eq!(*host.rate.lock().unwrap(), None);
+
+        // Without that host the key is unknown.
+        let effects = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTION,
+                vec![s("stub_rate"), OscType::Int(1)],
+            ),
+            &ctx,
+            None,
+        )
+        .expect("handled");
+        assert!(!effects.mark_dirty);
+        // A core live group is only acknowledged; an unknown one ignored.
+        let ack = apply_live_control(
+            &msg(osc_contract::CONTROL_OPTIONS_APPLY, vec![s("room")]),
+            &ctx,
+            None,
+        )
+        .expect("handled");
+        assert!(ack.publish_only && !ack.mark_dirty);
+        let unknown = apply_live_control(
+            &msg(osc_contract::CONTROL_OPTIONS_APPLY, vec![s("nope")]),
+            &ctx,
+            None,
+        )
+        .expect("handled");
+        assert!(!unknown.publish_only && !unknown.mark_dirty);
+    }
+
+    /// `decode_thread` belongs to the embedded engine: a host with audio I/O
+    /// refuses it, by key and by its dedicated address, and the rest of a
+    /// batch still applies.
+    #[test]
+    fn a_host_with_audio_refuses_the_embedded_engines_options() {
+        let ctx = ctx();
+        let host = StubHost::new();
+        let before = ctx.renderer.live.read().decode_thread;
+        for message in [
+            msg(osc_contract::CONTROL_DECODE_THREAD, vec![OscType::Int(1)]),
+            msg(
+                osc_contract::CONTROL_OPTION,
+                vec![s("decode_thread"), OscType::Int(1)],
+            ),
+        ] {
+            let effects = apply_live_control(&message, &ctx, Some(&host)).expect("handled");
+            assert!(!effects.mark_dirty, "{}", message.addr);
+        }
+        assert_eq!(ctx.renderer.live.read().decode_thread, before);
+        let effects = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTIONS,
+                vec![
+                    s("decode_thread"),
+                    OscType::Int(1),
+                    s("auto_gain"),
+                    OscType::Int(1),
+                ],
+            ),
+            &ctx,
+            Some(&host),
+        )
+        .expect("handled");
+        assert!(effects.mark_dirty);
+        assert_eq!(ctx.renderer.live.read().decode_thread, before);
+        assert!(ctx.renderer.live.read().auto_gain);
+
+        // The embedded engine (no host) still takes it.
+        let effects = apply_live_control(
+            &msg(osc_contract::CONTROL_DECODE_THREAD, vec![OscType::Int(1)]),
+            &ctx,
+            None,
+        )
+        .expect("handled");
+        assert!(effects.mark_dirty);
     }
 
     #[test]
@@ -808,7 +1126,7 @@ mod tests {
             ],
         );
         let epoch = ctx.renderer.options_epoch();
-        let effects = apply_live_control(&set_room, &ctx).expect("handled");
+        let effects = apply_live_control(&set_room, &ctx, None).expect("handled");
         assert!(effects.mark_dirty);
         assert_eq!(effects.notify, Notify::CoalescedSnapshot);
         assert_eq!(ctx.renderer.options_epoch(), epoch + 1);
@@ -823,7 +1141,7 @@ mod tests {
         );
 
         // The same value again: still acknowledged, but no re-plan.
-        apply_live_control(&set_room, &ctx).expect("handled");
+        apply_live_control(&set_room, &ctx, None).expect("handled");
         assert_eq!(ctx.renderer.options_epoch(), epoch + 1);
     }
 
@@ -836,7 +1154,7 @@ mod tests {
         );
         let epoch = ctx.renderer.options_epoch();
         // The channel planners compare the placement by value.
-        let effects = apply_live_control(&clear, &ctx).expect("handled");
+        let effects = apply_live_control(&clear, &ctx, None).expect("handled");
         assert!(effects.mark_dirty);
         assert_eq!(ctx.renderer.options_epoch(), epoch);
     }
@@ -851,6 +1169,7 @@ mod tests {
                     vec![OscType::String(" Strength ".into()), OscType::Float(value)],
                 ),
                 &ctx,
+                None,
             )
             .expect("handled")
         };
@@ -874,6 +1193,7 @@ mod tests {
                 vec![OscType::Float(f32::NAN)],
             ),
             &ctx,
+            None,
         )
         .expect("handled");
         assert!(!effects.mark_dirty);
@@ -885,6 +1205,7 @@ mod tests {
                 vec![OscType::Float(12.0)],
             ),
             &ctx,
+            None,
         )
         .expect("handled");
         assert!(!effects.mark_dirty, "a cadence is view state, not a Save");
@@ -904,7 +1225,8 @@ mod tests {
             osc_contract::CONTROL_DIAG_RATE_HZ,
         ] {
             let set = || {
-                apply_live_control(&msg(addr, vec![OscType::Float(25.0)]), &ctx).expect("handled")
+                apply_live_control(&msg(addr, vec![OscType::Float(25.0)]), &ctx, None)
+                    .expect("handled")
             };
             assert!(set().publish_only, "{addr}: the first write is a change");
             let again = set();

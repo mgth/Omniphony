@@ -145,25 +145,41 @@ All under `/control/adaptive_resampling/…`. Master toggle: bare
 and the far-mode group `enable_far_mode`, `force_silence_in_far_mode`,
 `hard_recover_high_in_far_mode`, `hard_recover_low_in_far_mode`,
 `far_mode_return_fade_in_ms`. `/control/latency_target` sets the target buffer
-latency. See `PI_TUNING_PROCEDURE.md` and `docs/latency-regulation.md`.
+latency. All but `reset_ratio` and `pause` are host options of the
+`adaptive_resampling` group (`latency_target` of `audio_output`), keyed by
+their config key (`enable_adaptive_resampling`, `adaptive_resampling_kp_near`,
+…); the low-recover and smoothing tunables, which have no address of their
+own, are reached through `/control/config/audio` or `/control/option(s)`. See
+`PI_TUNING_PROCEDURE.md` and `docs/latency-regulation.md`.
 
 ### Audio output & live input
 
+Declared by the standalone renderer's host (`host_audio`), as host options
+of three groups — `audio_output` (live, restarts the output), 
+`adaptive_resampling` (live) and `live_input` (**staged**, restarts the input
+when applied) — so every one is also reachable through `/control/option(s)`
+under its `render.*` config key (`output_device`, `output_sample_rate`,
+`adaptive_resampling_kp_near`, `live_input_channels`, …), with its schema in
+`/state/options_schema` and its values in `/state/host_options` (see [Live
+options](#live-options)). The embedded engine declares none of them. The
+JSON patches below are aliases of a batch of these options: same fields,
+same wire format; `null` unsets a nullable field.
+
 | Address | Args | Meaning |
 |---|---|---|
-| `/control/config/audio`, `/control/config/audio/apply` | json | Audio output config (stage / apply). |
-| `/control/audio/output_device` | s | Select output device. |
-| `/control/audio/output_backend` | s | Requested output backend (`pipewire`, `asio`, `file`, …; `""` = platform default). Takes effect on the next output (re)start. |
-| `/control/audio/output_file` | s | Destination for the `file` backend (`-`, a path or a FIFO; `""` = unset). |
-| `/control/audio/output_file_format` | s | Container/format for the `file` backend (`""` = unset). |
+| `/control/config/audio`, `/control/config/audio/apply` | json | Audio output and adaptive-resampling config as one batch. The apply is an alias of `/control/options/apply audio_output`: the output applies its values as they arrive, so it only acknowledges. |
+| `/control/audio/output_device` | s | Select output device. Host option `output_device`. |
+| `/control/audio/output_backend` | s | Requested output backend (`pipewire`, `asio`, `file`, …; `""` = platform default). Takes effect on the next output (re)start. Host option `output_backend`. |
+| `/control/audio/output_file` | s | Destination for the `file` backend (`-`, a path or a FIFO; `""` = unset). Host option `output_file`. |
+| `/control/audio/output_file_format` | s | Container/format for the `file` backend (`""` = unset). Host option `output_file_format`. |
 | `/control/audio/output_devices/refresh` | — | Re-enumerate output devices. |
-| `/control/audio/sample_rate` | int | Output sample rate. |
-| `/control/config/input`, `/control/config/input/apply`, `/control/input/apply` | json | Input config (stage / apply). |
-| `/control/input/mode` | s | Input source mode. |
+| `/control/audio/sample_rate` | int | Output sample rate (≤ 0 = the device's). Host option `output_sample_rate`. |
+| `/control/config/input`, `/control/config/input/apply`, `/control/input/apply` | json | Live-input config as one batch of staged values; the two applies are aliases of `/control/options/apply live_input`. An apply is an action: it publishes the new state and lights no Save (the staged writes already did). |
+| `/control/input/mode` | s | Input source mode. Host option `input_mode` (staged). |
 | `/control/input/refresh` | — | Re-enumerate input sources. |
 | `/control/input/drc_mode` | s | Dynamic-range-control mode (one of the bridge's `supportedDrcModes`). Registry option alias. |
 | `/control/input/drc_weight` | f `[0,1]` | DRC weight. Registry option alias. |
-| `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,clock_mode,map,lfe_mode}` | varies | Live-capture parameters. `backend` accepts only `pipewire`; the retired `asio` value (never implemented) and any other value are rejected with a warning, leaving the staged backend unchanged. |
+| `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,clock_mode,map,lfe_mode}` | varies | Live-capture parameters, staged. `backend` accepts only `pipewire`; the retired `asio` value (never implemented) and any other value are rejected with a warning, leaving the staged backend unchanged. All but `layout_import` (an imported layout, structured) are host options `live_input_*`; a non-positive `channels` / `sample_rate` sent here is ignored, as before (through `/control/option(s)` it unsets the value, as the JSON patch does). |
 | `/control/render/bridge_path` | s | Path to the format bridge library. |
 | `/control/render/input_pipe` | s | Named-pipe input path. |
 
@@ -263,6 +279,21 @@ lists them all. An option of kind `int` takes a number rounded to the
 nearest integer; a `dynamic_enum` takes one of the ids of the set its
 `source` names (`backends`: `renderBackendState.available_backends` in
 `/state/renderer`). See `docs/live-options-registry.md`.
+
+The standalone renderer's host declares its own options (audio output,
+adaptive resampling, live input — see [Audio output & live
+input](#audio-output--live-input)): the same setters take their keys, their
+schema entries follow the core's in `/state/options_schema`, and their values
+go out in `/state/host_options` (`{"options": {key: requested}, "applied":
+{key: in force}, "pending": {group: bool}}`) — the `/state/renderer`
+`options` block keeps the core's. A host with audio I/O leaves out the
+options only the embedded engine offers (`decode_thread`, flagged
+`embedded_only`): not in its schema, a write refused, a save keeps the
+file's value.
+
+`/control/options/apply [group]` applies a group: a `staged` group
+(`live_input`) hands over every value staged since its last apply; a `live`
+group has nothing waiting and is only acknowledged.
 
 `/control/options [key, value, key, value, …]` sets several at once. Every
 valid pair is applied before anything is rebuilt, and the whole message costs
@@ -423,6 +454,7 @@ and heatmap configuration.
 | `/control/ramp_mode` | s | Object-transition ramp: `off` \| `frame` \| `interp` \| `sample`. Registry option alias. |
 | `/control/option` | s key, value | Generic setter for any declared live option — see [Live options](#live-options). |
 | `/control/options` | (s key, value)… | Grouped setter: several declared live options applied at once, one rebuild and one notification — see [Live options](#live-options). |
+| `/control/options/apply` | s group | Apply a group of declared options (a `staged` group's staged values; a `live` group is acknowledged) — see [Live options](#live-options). |
 | `/control/save_config` | — | Persist the current config. |
 | `/control/reload_config` | — | Discard the live state (including a handoff sidecar) and reload config from disk. The CLI renderer restarts its pipeline; an embedded (mpv) renderer re-applies the config in place — layout, live params, active profile — while host-owned fields (output device, live input, bridge path) wait for the next engine start. |
 | `/control/restart` | — | Restart the render pipeline keeping the unsaved live state, which comes back unsaved (it rides the live-handoff sidecar). For a change only a restart applies, such as a new bridge. CLI renderer only; an embedded renderer ignores it. |
@@ -440,6 +472,13 @@ and heatmap configuration.
 `[{key, kind, values?, default, flags, i18nKey, helpI18nKey?}]`), mirroring the
 generator/phantom param-schema pattern; option values ride in the `options`
 block of the renderer snapshot.
+
+`/state/host_options` carries the options the standalone renderer's host
+declares (JSON: `options` — the requested values —, `applied` — the values in
+force, for a `staged` group's options that report one —, `pending` — per
+`staged` group, whether it holds values not applied yet). Sent with every
+live-state bundle by a host that declares options; the embedded engine sends
+none.
 
 The full state snapshot is published as `/omniphony/state/renderer` (JSON);
 individual deltas use the addresses below. `osc_contract::ALL_STATE` is the
@@ -626,6 +665,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/control/object_test/rotation`
 - `/omniphony/control/option`
 - `/omniphony/control/options`
+- `/omniphony/control/options/apply`
 - `/omniphony/control/output_channel_mapping`
 - `/omniphony/control/output_mode`
 - `/omniphony/control/overlay/enabled`
@@ -722,6 +762,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/object_test/clip`
 - `/omniphony/state/object_test/position`
 - `/omniphony/state/options_schema`
+- `/omniphony/state/host_options`
 - `/omniphony/state/osc/diag`
 - `/omniphony/state/osc/metering`
 - `/omniphony/state/overlay`

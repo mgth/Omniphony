@@ -15,6 +15,8 @@
 // class the registry exists to kill.
 //
 // Usage: node scripts/check-options-schema.mjs <path-to-options-schema.json>
+// (run once per schema: the core's, and the standalone host's own options,
+// `host_audio`'s `dump_host_options_schema`).
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -40,9 +42,17 @@ function resolvesInEn(key) {
   return typeof node === 'string';
 }
 
-const KINDS = new Set(['bool', 'enum', 'string', 'float', 'int', 'float_array', 'dynamic_enum']);
-const GROUP_MODES = new Set(['live']);
-const GROUP_EFFECTS = new Set(['none', 'replan', 'topology', 'evaluation', 'reload']);
+const KINDS = new Set(['bool', 'enum', 'string', 'float', 'int', 'optional_int', 'float_array', 'dynamic_enum']);
+const GROUP_MODES = new Set(['live', 'staged']);
+const GROUP_EFFECTS = new Set([
+  'none',
+  'replan',
+  'topology',
+  'evaluation',
+  'reload',
+  'restart_output',
+  'restart_input',
+]);
 // Sets a dynamic_enum option draws its values from at runtime.
 const DYNAMIC_SOURCES = new Set(['backends']);
 const failures = [];
