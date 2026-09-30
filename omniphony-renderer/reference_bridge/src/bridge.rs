@@ -323,12 +323,7 @@ impl FormatBridge for WavBridge {
 
     fn vbap_cartesian_defaults(&self) -> RVbapCartesianDefaults {
         // Balanced default grid, matching the production bridge's hint.
-        RVbapCartesianDefaults {
-            x_size: 62,
-            y_size: 62,
-            z_size: 15,
-            allow_negative_z: false,
-        }
+        RVbapCartesianDefaults::BALANCED
     }
 
     fn preferred_vbap_table_mode(&self) -> RVbapTableMode {

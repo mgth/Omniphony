@@ -1602,6 +1602,7 @@ dependencies = [
  "orender_engine",
  "reference_bridge",
  "renderer",
+ "rosc",
  "runtime_control",
  "spdif",
  "sys",

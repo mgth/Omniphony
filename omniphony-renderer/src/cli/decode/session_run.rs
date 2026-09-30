@@ -1,4 +1,4 @@
-use super::bootstrap::init_render_handler;
+use super::bootstrap::{NoBridgeInputs, init_no_bridge_handler, init_render_handler};
 use super::config_resolution::{
     apply_explicit_renderer_args, apply_osc_settings, apply_render_cfg_overrides,
     effective_to_config, merge_render_config, renderer_params, resolve_osc_settings,
@@ -343,33 +343,21 @@ fn run_idle_runtime(
     let args = &run.args;
     let shutdown = sys::shutdown::ShutdownHandle::install()?;
     let mut handler = DecodeHandler::default();
-    init_render_handler(
+    // The no-bridge runtime liborender also brings up, with this host's audio
+    // controls attached: the bridge error in the live state (Studio's banner),
+    // shortened to what a UI can show, instead of a generic "path missing" for
+    // every failure (an ABI mismatch included).
+    init_no_bridge_handler(
         &mut handler,
-        args,
-        &run.render_cfg,
-        &run.renderer_params,
-        idle_input_path(args),
-        &run.config_path,
-        run.current_layout.clone(),
-        orender_engine::degraded::NO_BRIDGE_VBAP_DEFAULTS,
-        orender_engine::degraded::NO_BRIDGE_PREFERRED_MODE,
+        NoBridgeInputs {
+            args,
+            render_cfg: &run.render_cfg,
+            params: &run.renderer_params,
+            input_path: idle_input_path(args),
+            config_path: &run.config_path,
+            bridge_error: format!("{bridge_error:#}"),
+        },
     )?;
-    handler.spatial.coordinate_format = orender_engine::degraded::NO_BRIDGE_COORDINATE_FORMAT;
-    // Tell Studio why, as the embedded host's degraded reporter does: the
-    // bridge error in the live state (Studio's banner), shortened to what a UI
-    // can show, instead of a generic "path missing" for every failure (an ABI
-    // mismatch included).
-    let summary = orender_engine::degraded::summarize_bridge_error(&format!("{bridge_error:#}"));
-    if let Some(renderer) = handler.spatial_renderer.as_ref() {
-        renderer
-            .renderer_control()
-            .set_bridge_error(Some(summary.clone()));
-    }
-    if let Some(input_control) = handler.input_control.as_ref() {
-        input_control.set_input_error(Some(format!(
-            "Bridge unavailable ({summary}). Set a working bridge binary path and Apply."
-        )));
-    }
 
     log::warn!(
         "Bridge unavailable, starting idle OSC runtime without decode/audio session: {bridge_error:#}"
@@ -1119,5 +1107,156 @@ mod tests {
             .err()
             .expect("missing input");
         assert!(!is_bridge_unavailable_error(&err), "{err:#}");
+    }
+
+    /// The live state a Studio registering with `control` would get, by
+    /// address; what the engine's OSC export sends on top of the core bundle
+    /// (the catalogues) included, the host handler's own messages not.
+    fn published_state(
+        control: &std::sync::Arc<renderer::live_params::RendererControl>,
+        has_host_audio: bool,
+    ) -> std::collections::BTreeMap<String, Vec<rosc::OscType>> {
+        let mut state: std::collections::BTreeMap<_, _> =
+            runtime_control::snapshot::build_live_state_bundle(
+                control,
+                has_host_audio,
+                has_host_audio,
+            )
+            .into_iter()
+            .filter_map(|packet| match packet {
+                rosc::OscPacket::Message(msg) => Some((msg.addr, msg.args)),
+                rosc::OscPacket::Bundle(_) => None,
+            })
+            .collect();
+        state.insert(
+            "object_generators".into(),
+            vec![rosc::OscType::String(control.object_generators_schema())],
+        );
+        state.insert(
+            "phantom".into(),
+            vec![rosc::OscType::String(control.phantom_schema())],
+        );
+        state
+    }
+
+    /// Both hosts come up without a bridge through the same runtime
+    /// (`orender_engine::degraded::NoBridgeRuntime`) and publish the same
+    /// state — layout, bridge error and path, config path/status/profiles,
+    /// seeded runtime state, catalogues — save for what is each host's own:
+    /// the embedded host's C-ABI, the CLI's input pipe, audio/input domains
+    /// and faster monitoring cadence. The embedded setup is the one liborender
+    /// builds (`NoBridgeSetup::embedded`); this host's is its idle runtime's.
+    #[test]
+    fn both_hosts_publish_the_same_no_bridge_state() {
+        const HOST_SPECIFIC: &[&str] = &[
+            runtime_control::osc_contract::STATE_RENDER_ABI,
+            runtime_control::osc_contract::STATE_INPUT_PIPE,
+            runtime_control::osc_contract::STATE_MONITORING,
+            runtime_control::osc_contract::STATE_CAPABILITIES,
+        ];
+        let dir =
+            std::env::temp_dir().join(format!("orender-no-bridge-parity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let config = dir.join("config.yaml");
+        // A bridge path of its own (the flag's is unsaved state in both
+        // hosts), a seeded field, and a small grid so the renderers build fast.
+        std::fs::write(
+            &config,
+            "render:
+  bridge_path: /nonexistent/libconfig_bridge.so
+  ramp_mode: sample
+  evaluation_cartesian_x_size: 9
+  evaluation_cartesian_y_size: 9
+  evaluation_cartesian_z_size: 5
+",
+        )
+        .expect("write config");
+        let rx_port = std::net::UdpSocket::bind("127.0.0.1:0")
+            .and_then(|socket| socket.local_addr())
+            .expect("free port")
+            .port()
+            .to_string();
+        let bridge = "/nonexistent/libnone_bridge.so";
+        let error = format!("bridge path '{bridge}' does not exist");
+
+        let parsed = ParsedCli::parse_from([
+            "orender",
+            "--config",
+            config.to_str().expect("utf-8 path"),
+            "render",
+            "--output-backend",
+            "file",
+            "--bridge-path",
+            bridge,
+            "--osc",
+            "--osc-rx-port",
+            &rx_port,
+            "in.thd",
+        ])
+        .expect("parse render args");
+        let Commands::Render(args) = &parsed.cli.command else {
+            unreachable!("render subcommand")
+        };
+        let run = resolve_effective_decode_args(args, &parsed.cli, &parsed.render_sources());
+        let mut handler = DecodeHandler::default();
+        init_no_bridge_handler(
+            &mut handler,
+            NoBridgeInputs {
+                args: &run.args,
+                render_cfg: &run.render_cfg,
+                params: &run.renderer_params,
+                input_path: idle_input_path(&run.args),
+                config_path: &run.config_path,
+                bridge_error: error.clone(),
+            },
+        )
+        .expect("CLI no-bridge runtime");
+        assert!(
+            handler
+                .telemetry
+                .osc_sender
+                .as_ref()
+                .is_some_and(|osc| osc.is_listening()),
+            "the CLI's no-bridge runtime serves OSC"
+        );
+        let cli_control = handler
+            .spatial_renderer
+            .as_ref()
+            .expect("no-bridge renderer")
+            .renderer_control();
+
+        let embedded =
+            orender_engine::NoBridgeRuntime::build(orender_engine::NoBridgeSetup::embedded(
+                Some(config.clone()),
+                renderer::config::Config::load_or_default_with_live(&config)
+                    .0
+                    .render,
+                None,
+                Some(bridge.into()),
+                48_000,
+                error.clone(),
+                Some((0, 1)),
+            ))
+            .expect("embedded no-bridge runtime");
+        let embedded_control = embedded.control();
+
+        assert_eq!(cli_control.bridge_error(), Some(error));
+        assert_eq!(cli_control.bridge_path(), Some(bridge.into()));
+        let mut cli_state = published_state(&cli_control, true);
+        let mut embedded_state = published_state(&embedded_control, false);
+        for addr in HOST_SPECIFIC {
+            assert!(cli_state.remove(*addr).is_some(), "{addr} not published");
+            embedded_state.remove(*addr);
+        }
+        let differing: std::collections::BTreeSet<_> = cli_state
+            .keys()
+            .chain(embedded_state.keys())
+            .filter(|addr| cli_state.get(*addr) != embedded_state.get(*addr))
+            .collect();
+        assert!(
+            differing.is_empty(),
+            "the hosts' no-bridge states differ at {differing:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

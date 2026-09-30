@@ -254,6 +254,19 @@ pub struct RVbapCartesianDefaults {
     pub allow_negative_z: bool,
 }
 
+impl RVbapCartesianDefaults {
+    /// A balanced grid (62 × 62 × 15, no negative z): the hint the reference
+    /// bridge declares, matching the production bridge's, and what a host
+    /// with no bridge at all builds its renderer against. A constant, not
+    /// part of the type's layout: adding it does not change the ABI.
+    pub const BALANCED: Self = Self {
+        x_size: 62,
+        y_size: 62,
+        z_size: 15,
+        allow_negative_z: false,
+    };
+}
+
 /// Preferred VBAP table mode suggested by the loaded bridge.
 #[repr(u8)]
 #[derive(StableAbi, Clone, Copy, Debug, PartialEq, Eq)]

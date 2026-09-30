@@ -105,6 +105,8 @@ libc.workspace = true
 # Not linked by the tests: depending on it makes `cargo test` build its cdylib,
 # the bridge the CLI tests under tests/ load into the `orender` binary.
 reference_bridge.workspace = true
+# Reads the live state the CLI publishes (unit and tests/ OSC round trips).
+rosc.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true
