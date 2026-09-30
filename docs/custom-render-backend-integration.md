@@ -24,16 +24,20 @@ can never crash the audio thread.
 > `orender_ffi` for `liborender`), so release builds don't offer it in Studio.
 > Build with the feature to select `backend_id = "example"` and try it end to end.
 
-## The two traits
+## The traits
 
 A backend is two small pieces, both implementable from your own crate:
 
 1. [`GainModel`](../omniphony-renderer/renderer/src/render_backend.rs) — the
    model itself: identity, capabilities, and the hot-path gain computation.
-2. [`BackendFactory`](../omniphony-renderer/renderer/src/backend_registry.rs) —
-   how the runtime builds your model: a stable id, a label, a declarative
-   parameter schema, and a `build_plan` that captures what it needs from the
-   build context and returns a builder closure.
+2. The factory — how the runtime builds your model:
+   [`PluginFactory`](../omniphony-renderer/renderer/src/plugin.rs), a stable
+   id, a label and a declarative parameter schema — the contract every
+   plugin shares, object generators included (see
+   [the plugin contract](plugin-contract.md)) — and
+   [`BackendFactory`](../omniphony-renderer/renderer/src/backend_registry.rs),
+   a `build_plan` that captures what it needs from the build context and
+   returns a builder closure.
 
 There is **no** `BackendDescriptor`, `RenderBackendKind`, or `GainModelKind` to
 extend any more. Identity is a plain string id carried on the model and the
@@ -104,13 +108,19 @@ over-declare a capability "for later". Studio reasons with capabilities
 If `supports_table_export` is `false`, return an explicit error from
 `save_to_file` rather than silently succeeding.
 
-## Step 3 — Implement `BackendFactory`
+## Step 3 — Implement `PluginFactory` and `BackendFactory`
 
 ```rust
-pub trait BackendFactory: Send + Sync {
+pub trait PluginFactory: Send + Sync {
     fn id(&self) -> &'static str;
-    fn label(&self) -> &'static str { self.id() }            // defaults to id
-    fn param_schema(&self) -> Vec<ParamSpec> { Vec::new() }  // defaults to none
+    fn label(&self) -> &'static str { self.id() }                 // defaults to id
+    fn i18n_key(&self) -> Option<&'static str> { None }           // Studio label key
+    fn param_schema(&self) -> Vec<ParamSpec> { Vec::new() }       // defaults to none
+    fn param_schema_for(&self, params: &ParamMap) -> Vec<ParamSpec> { self.param_schema() }
+}
+
+pub trait BackendFactory: PluginFactory {
+    fn realtime_capable(&self) -> bool { true }
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan>;
 }
 ```
@@ -153,9 +163,11 @@ parameter values through `ctx.backend_param(self.id(), key)`.
 ## Step 4 — Declare tunable parameters (optional)
 
 Parameters are **declared as data** in `param_schema()`; the host stores values
-generically and Studio renders the matching control (slider / checkbox / select)
+generically and Studio renders the matching control (slider / switch / select)
 automatically. There is no typed field to add anywhere in the renderer and no
-Studio code to touch.
+Studio code to touch. The schema is the same `ParamSpec` every plugin declares
+(builders, units, `requires`, how a value is read in its declared type: see
+[the plugin contract](plugin-contract.md#parameters-paramspec)).
 
 ```rust
 fn param_schema(&self) -> Vec<ParamSpec> {
@@ -169,8 +181,9 @@ fn param_schema(&self) -> Vec<ParamSpec> {
 
 Read the values at build time via `BackendBuildCtx::backend_param` (Step 3).
 Values set over OSC (`/omniphony/control/backend/param`) or loaded from config
-are replayed into the store and trigger a rebuild, so your backend picks them up
-on the next build.
+(`render.backend_params`) are replayed into the store and trigger a rebuild, so
+your backend picks them up on the next build; they reach `config.yaml` through
+the Save button.
 
 ## Step 5 — Register it (the one line)
 
@@ -187,14 +200,14 @@ The built-in host does this in
 selecting `backend_id = "my_model"` — from config (`render_backend = "my_model"`),
 over OSC, or from the Studio dropdown — routes a topology rebuild through your
 factory. A later registration with the same id replaces an earlier one, so a host
-can override a built-in.
+can override a built-in — the one registry rule of every plugin kind.
 
 ## Step 6 — It appears in Studio automatically
 
 The runtime snapshot
 ([`snapshot.rs`](../omniphony-renderer/runtime_control/src/snapshot.rs)) publishes
-the registry's `available_backends` (id, label, **and parameter schema**) plus the
-current param values. Studio populates its backend dropdown and generates the
+the registry's `available_backends` (id, label, **and parameter schema**, the
+listing format every plugin kind publishes) plus the current param values. Studio populates its backend dropdown and generates the
 parameter controls from that snapshot — no per-backend JavaScript, no manual
 serde bridge. If your capabilities are correct, the surrounding UI sections adapt
 on their own.
@@ -217,7 +230,8 @@ OSC/state plumbing for a backend that uses the generic parameter schema.
 - [ ] implement `GainModel` (id, label, capabilities, `compute_gains`, …)
 - [ ] honour the hot-path contract in `compute_gains`
 - [ ] declare honest `BackendCapabilities`
-- [ ] implement `BackendFactory` returning a `BackendBuildPlan::Dynamic`
+- [ ] implement `PluginFactory` (id, label, schema) and `BackendFactory`
+      returning a `BackendBuildPlan::Dynamic`
 - [ ] declare any tunables in `param_schema()` and read them via `backend_param`
 - [ ] `register_backend(...)` your factory in the host (one line)
 - [ ] `cargo fmt` + `cargo build/test --workspace`
