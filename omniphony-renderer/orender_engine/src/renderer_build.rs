@@ -892,6 +892,20 @@ pub fn record_bridge_path(
     control.set_bridge_path(recorded.map(std::path::Path::to_path_buf));
 }
 
+/// Record the config's `render.input_pipe` as the live input path, so a save
+/// writes it back. A host that reads a different input records that one after
+/// this (the CLI records the path it actually opened). Without it, a host that
+/// never sets an input path — the embedded engine, its no-bridge runtime —
+/// saves an unset input path, which erases `render.input_pipe` from the
+/// config every host shares.
+pub fn record_input_path(control: &RendererControl, render_cfg: Option<&RenderConfig>) {
+    control.set_input_path(
+        render_cfg
+            .and_then(|cfg| cfg.input_pipe.as_deref())
+            .map(|path| path.display().to_string()),
+    );
+}
+
 /// What a host records on a freshly built renderer's control besides the
 /// renderer itself. See [`seed_host_state`].
 pub struct HostStateSeed<'a> {
@@ -922,6 +936,7 @@ pub fn seed_host_state(control: &RendererControl, seed: &HostStateSeed<'_>) {
         seed.requested_bridge_path,
         seed.render_cfg.and_then(|c| c.bridge_path.as_deref()),
     );
+    record_input_path(control, seed.render_cfg);
     if let Some(path) = seed.config_path {
         // State restored from a live-handoff sidecar is by definition unsaved.
         if renderer::config::live_overlay_active(path) {
@@ -1120,6 +1135,36 @@ mod tests {
             LiveEvaluationMode::PrecomputedCartesian
         );
         assert!(!seed_control_from_render_config(&control, Some(&cfg)));
+    }
+
+    /// A host that never sets an input path of its own (the embedded engine,
+    /// the no-bridge runtimes) must save the config's `render.input_pipe`
+    /// back as it was, not erase it.
+    #[test]
+    fn a_save_keeps_the_configured_input_pipe() {
+        let renderer = test_renderer();
+        let control = renderer.renderer_control();
+        let cfg = RenderConfig {
+            input_pipe: Some(std::path::PathBuf::from("/tmp/orender.pipe")),
+            ..Default::default()
+        };
+        seed_host_state(
+            &control,
+            &HostStateSeed {
+                config_path: None,
+                render_cfg: Some(&cfg),
+                requested_bridge_path: None,
+                cadence_defaults_hz: (10.0, 10.0),
+            },
+        );
+        assert_eq!(control.input_path().as_deref(), Some("/tmp/orender.pipe"));
+
+        let mut saved = renderer::config::Config::default();
+        runtime_control::persist::store_live_into_config(&control, None, &mut saved);
+        assert_eq!(
+            saved.render.and_then(|r| r.input_pipe),
+            Some(std::path::PathBuf::from("/tmp/orender.pipe"))
+        );
     }
 
     /// The demonstration backend is for contributors: a release build (no
