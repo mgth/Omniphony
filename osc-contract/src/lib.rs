@@ -250,10 +250,18 @@ pub const CONTROL_PLACEMENT_LAYOUT: &str = "/omniphony/control/placement/layout"
 pub const CONTROL_BINAURAL_HRIR_UPDATE_LATTICE: &str =
     "/omniphony/control/binaural/hrir_update_lattice";
 /// Generic setter for any declared live option (`renderer::options`):
-/// args `[key (string), value]`. The per-option addresses listed above
-/// (`synthetic_objects`, `object_generator`, `phantom_extract`,
-/// `surround_placement`, `output_channel_mapping`) are legacy aliases of this.
+/// args `[key (string), value]` — `value` is as many arguments as the
+/// option's kind takes (three numbers for `room_ratio`). The per-option
+/// addresses listed above (`synthetic_objects`, `object_generator`,
+/// `phantom_extract`, `surround_placement`, `output_channel_mapping`, the
+/// `room_ratio*` family, …) are legacy aliases of this.
 pub const CONTROL_OPTION: &str = "/omniphony/control/option";
+/// Grouped setter: args `[key, value, key, value, …]`, each value as many
+/// arguments as its option's kind takes. Every valid pair is applied at once:
+/// one rebuild at most and one notification for the whole message, however
+/// many keys it carries. An unknown key or a truncated value drops the whole
+/// message; an invalid value drops only its pair.
+pub const CONTROL_OPTIONS: &str = "/omniphony/control/options";
 /// Named config profiles (docs/config-profiles.md). `switch`/`create`/`delete`
 /// take `[name (string)]`; `rename` takes `[old (string), new (string)]`.
 /// Every mutation saves the config and re-broadcasts [`STATE_PROFILES`].
@@ -582,6 +590,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_OBJECT_GENERATOR,
     CONTROL_OBJECT_GENERATOR_PARAM,
     CONTROL_OPTION,
+    CONTROL_OPTIONS,
     CONTROL_PROFILE_SWITCH,
     CONTROL_PROFILE_CREATE,
     CONTROL_PROFILE_DELETE,

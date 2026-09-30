@@ -166,30 +166,12 @@ pub fn store_live_into_config(
     render.spread_distance_curve = None;
     render.size_to_spread_mode = None;
     // Declared live options (registry rows: auto-gain, loudness, ramp mode,
-    // DRC, the fixed-channel family, …) + their param bags and the virtual
-    // bed: one call covers what the OSC targeted persists cover, so the full
-    // save and the per-option writes cannot drift.
+    // DRC, the fixed-channel family, the room, …) + their param bags and the
+    // virtual bed: one call covers what the OSC targeted persists cover, so
+    // the full save and the per-option writes cannot drift. After the layout:
+    // the room is written in metres against its radius.
     renderer::options::store_live_to_config(render, &live);
     renderer::config_fields::vbap_distance_model::store(render, live.distance_model.to_string());
-    // Room geometry is persisted in metres. Width is the reference and the room
-    // scale is Width/2 = the layout radius, so metres = ratio × radius × factor
-    // (factor 2 for width). The legacy `room_ratio*` are dropped — `Config::load`
-    // re-derives the runtime ratios from these metres.
-    let [w, l, h] = live.room_ratio;
-    let radius = render
-        .current_layout
-        .as_ref()
-        .map(|layout| layout.radius_m)
-        .unwrap_or(1.0);
-    render.room_width_m = Some(round6(w * radius * 2.0));
-    render.room_front_m = Some(round6(l * radius));
-    render.room_rear_m = Some(round6(live.room_ratio_rear * radius));
-    render.room_height_m = Some(round6(h * radius));
-    render.room_lower_m = Some(round6(live.room_ratio_lower * radius));
-    render.room_ratio_center_blend = Some(round6(live.room_ratio_center_blend));
-    render.room_ratio = None;
-    render.room_ratio_rear = None;
-    render.room_ratio_lower = None;
     // Monitoring cadences: the renderer is the source of truth, so always
     // persist the current values (read lock-free from RendererControl).
     render.meter_rate = Some(round6(control.meter_rate_hz()));

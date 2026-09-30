@@ -201,10 +201,12 @@ fn fixture_control() -> Arc<RendererControl> {
         0.0,
         1.0,
         false,
-        [1.0, 1.0, 1.0],
-        1.0,
-        1.0,
-        0.0,
+        // The declared room defaults (`renderer::config_fields::room`), so
+        // the snapshot-vs-schema default net holds for the room rows.
+        [1.0, 2.0, 1.0],
+        2.0,
+        0.5,
+        0.5,
         0.0,
         false,
         false,
@@ -326,6 +328,12 @@ mod registry {
             ("ramp_mode", RawOptionValue::Str("interp")),
             ("drc_mode", RawOptionValue::Str("Standard")),
             ("drc_weight", RawOptionValue::Number(0.5)),
+            // Width stays the reference (1): the file stores metres against
+            // it, so a width ratio is folded into the layout radius on reload.
+            ("room_ratio", RawOptionValue::Numbers(&[1.0, 3.0, 1.5])),
+            ("room_ratio_rear", RawOptionValue::Number(2.5)),
+            ("room_ratio_lower", RawOptionValue::Number(0.75)),
+            ("room_ratio_center_blend", RawOptionValue::Number(0.25)),
         ]
     }
 
@@ -511,6 +519,116 @@ mod registry {
                 .load(std::sync::atomic::Ordering::Relaxed),
             "a real change of a non-REPLAN option still marks the config dirty"
         );
+    }
+
+    /// A profile switch resets every row before seeding the incoming profile:
+    /// the reset must land each one on the default the schema publishes.
+    #[test]
+    fn a_reset_puts_every_row_back_on_its_declared_default() {
+        let control = fixture_control();
+        let mut live = control.live.write();
+        for spec in options::LIVE_OPTIONS {
+            (spec.set)(&mut live, &sample_for(spec.key)).expect("sample accepted");
+        }
+        options::reset_live_to_defaults(&mut live);
+        let schema: serde_json::Value =
+            serde_json::from_str(&options::schema_json()).expect("valid schema");
+        for (spec, entry) in options::LIVE_OPTIONS.iter().zip(schema.as_array().unwrap()) {
+            assert_eq!(
+                (spec.get_json)(&live),
+                entry["default"],
+                "{}: reset missed the declared default",
+                spec.key
+            );
+        }
+    }
+
+    /// A batch over a group: every key applied, one dirty mark, one merged
+    /// rebuild — and nothing at all when it changes nothing.
+    #[test]
+    fn a_room_batch_costs_one_topology_rebuild() {
+        use renderer::options::Rebuild;
+        let control = fixture_control();
+        let ratio = options::find("room_ratio").expect("registered");
+        let rear = options::find("room_ratio_rear").expect("registered");
+        let items = [
+            (ratio, RawOptionValue::Numbers(&[1.0, 3.0, 1.5])),
+            (rear, RawOptionValue::Number(2.5)),
+        ];
+        let batch = options::apply_batch(&control, &items);
+        assert!(batch.changed);
+        assert_eq!(batch.rebuild, Rebuild::Topology);
+        assert!(
+            batch
+                .results
+                .iter()
+                .all(|r| r.as_ref().is_some_and(|r| r.changed))
+        );
+        {
+            let live = control.live.read();
+            assert_eq!(live.room_ratio, [1.0, 3.0, 1.5]);
+            assert_eq!(live.room_ratio_rear, 2.5);
+        }
+        control.mark_clean();
+
+        let again = options::apply_batch(&control, &items);
+        assert!(!again.changed);
+        assert_eq!(again.rebuild, Rebuild::None);
+        assert!(
+            !control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+
+        // A group without an effect of its own adds no rebuild to the batch.
+        let ramp = options::find("ramp_mode").expect("registered");
+        let batch = options::apply_batch(&control, &[(ramp, RawOptionValue::Str("interp"))]);
+        assert!(batch.changed);
+        assert_eq!(batch.rebuild, Rebuild::None);
+    }
+
+    /// The room reaches the file in metres against the layout radius, exactly
+    /// as the save wrote it before the room joined the registry, and a
+    /// config read back through `Config::load` seeds the same room.
+    #[test]
+    fn the_room_is_saved_in_metres_and_reloads_identically() {
+        let control = fixture_control();
+        {
+            let mut live = control.live.write();
+            live.room_ratio = [1.0, 1.8, 0.9];
+            live.room_ratio_rear = 1.2;
+            live.room_ratio_lower = 0.4;
+            live.room_ratio_center_blend = 0.3;
+        }
+        let base = temp_path("room-base-missing");
+        let out = temp_path("room-out");
+        save_live_config_to_path(&control, None, &base, &out).expect("save");
+        let yaml = std::fs::read_to_string(&out).expect("saved config readable");
+        let config = Config::load_or_default(&out);
+        let _ = std::fs::remove_file(&out);
+        assert!(!yaml.contains("room_ratio:"), "legacy ratio key written");
+        assert!(
+            !yaml.contains("room_ratio_rear:"),
+            "legacy rear key written"
+        );
+        let render = config.render.expect("render section");
+        let radius = render.current_layout.as_ref().expect("layout").radius_m;
+        let round6 = |v: f32| (v * 1_000_000.0).round() / 1_000_000.0;
+        assert_eq!(render.room_width_m, Some(round6(2.0 * radius)));
+        assert_eq!(render.room_front_m, Some(round6(1.8 * radius)));
+        assert_eq!(render.room_height_m, Some(round6(0.9 * radius)));
+        assert_eq!(render.room_rear_m, Some(round6(1.2 * radius)));
+        assert_eq!(render.room_lower_m, Some(round6(0.4 * radius)));
+        assert_eq!(render.room_ratio_center_blend, Some(0.3));
+
+        let fresh = fixture_control();
+        options::seed_live_from_config(&mut fresh.live.write(), &render);
+        let live = fresh.live.read();
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!(close(live.room_ratio[1], 1.8) && close(live.room_ratio[2], 0.9));
+        assert!(close(live.room_ratio_rear, 1.2));
+        assert!(close(live.room_ratio_lower, 0.4));
+        assert!(close(live.room_ratio_center_blend, 0.3));
     }
 
     /// Every declared option accepts its sample through the setter and reports

@@ -83,10 +83,10 @@ rebuild the topology.
 | `/control/distance_diffuse/curve` | f `≥0` | Blend-weight curve exponent. |
 | `/control/distance_diffuse/metric` | s | `spherical` \| `chebyshev`. |
 | `/control/distance_diffuse/mirror_axes` | s | ADM axes negated to build the mirror image: any combination of `x`, `y`, `z` (`xy` — the default half-turn about the vertical axis — `y` for a front/back reflection, `xyz` for an inversion through the origin), or `none`. |
-| `/control/room_ratio` | f×3 | Room proportions `[w, l, h]` used to scale ADM coords. |
-| `/control/room_ratio_rear` | f | Rear scaling factor. |
-| `/control/room_ratio_lower` | f | Lower-hemisphere scaling factor. |
-| `/control/room_ratio_center_blend` | f | Centre-blend factor. |
+| `/control/room_ratio` | f×3 `[0.01,100]` | Room proportions `[w, l, h]` used to scale ADM coords. Registry option alias (group `room`). |
+| `/control/room_ratio_rear` | f `[0.01,100]` | Rear scaling factor. Registry option alias (group `room`). |
+| `/control/room_ratio_lower` | f `[0.01,100]` | Lower-hemisphere scaling factor. Registry option alias (group `room`). |
+| `/control/room_ratio_center_blend` | f `[0,1]` | Centre-blend factor. Registry option alias (group `room`). |
 
 ### Render backend selection & parameters
 
@@ -251,15 +251,27 @@ objects stages (height generator, phantom extraction).
 
 `/control/option [key (string), value]` sets any option declared in the
 `renderer::options` registry (schema on `/state/options_schema`, values in the
-`options` block of `/state/renderer`). Every option waits for
+`options` block of `/state/renderer`). `value` is as many arguments as the
+option's kind takes: one, or `len` numbers for a `float_array` option such as
+`room_ratio`; anything after it is ignored. Every option waits for
 `/control/save_config`, and a set marks the config dirty only when the value
-actually changed. The fifteen dedicated addresses marked "Registry
+actually changed. The nineteen dedicated addresses marked "Registry
 option alias" above are aliases of it: `synthetic_objects`,
 `object_generator`, `phantom_extract`, `surround_placement`,
 `output_channel_mapping`, `crossover_type`, `crossover_fir_transition_ratio`,
 `decode_thread`, `binaural/hrir_update_lattice`, `auto_gain`,
 `auto_gain_ceiling`, `loudness`, `ramp_mode`, `input/drc_mode`,
-`input/drc_weight`. See `docs/live-options-registry.md`.
+`input/drc_weight`, `room_ratio`, `room_ratio_rear`, `room_ratio_lower`,
+`room_ratio_center_blend`. See `docs/live-options-registry.md`.
+
+`/control/options [key, value, key, value, …]` sets several at once. Every
+valid pair is applied before anything is rebuilt, and the whole message costs
+at most one rebuild (the widest its options' groups ask for: a `room` change
+rebuilds the topology) and one live-state bundle. An unknown key or a
+truncated value drops the whole message — past it, where the next key starts
+is unknowable; an invalid value drops only its own pair. A change of an
+option whose group asks for no rebuild is read where it is used, as with
+`/control/option`.
 
 ### Config profiles
 
@@ -406,6 +418,7 @@ and heatmap configuration.
 | `/control/log_level` | s | `off`\|`error`\|`warn`\|`info`\|`debug`\|`trace`. |
 | `/control/ramp_mode` | s | Object-transition ramp: `off` \| `frame` \| `interp` \| `sample`. Registry option alias. |
 | `/control/option` | s key, value | Generic setter for any declared live option — see [Live options](#live-options). |
+| `/control/options` | (s key, value)… | Grouped setter: several declared live options applied at once, one rebuild and one notification — see [Live options](#live-options). |
 | `/control/save_config` | — | Persist the current config. |
 | `/control/reload_config` | — | Discard the live state (including a handoff sidecar) and reload config from disk. The CLI renderer restarts its pipeline; an embedded (mpv) renderer re-applies the config in place — layout, live params, active profile — while host-owned fields (output device, live input, bridge path) wait for the next engine start. |
 | `/control/restart` | — | Restart the render pipeline keeping the unsaved live state, which comes back unsaved (it rides the live-handoff sidecar). For a change only a restart applies, such as a new bridge. CLI renderer only; an embedded renderer ignores it. |
@@ -608,6 +621,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/control/object_test/clip`
 - `/omniphony/control/object_test/rotation`
 - `/omniphony/control/option`
+- `/omniphony/control/options`
 - `/omniphony/control/output_channel_mapping`
 - `/omniphony/control/output_mode`
 - `/omniphony/control/overlay/enabled`

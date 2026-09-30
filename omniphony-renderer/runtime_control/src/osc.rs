@@ -2077,51 +2077,6 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == osc_contract::CONTROL_ROOM_RATIO {
-        if msg.args.len() >= 3 {
-            let w = parse_f32_arg(msg.args.first());
-            let l = parse_f32_arg(msg.args.get(1));
-            let h = parse_f32_arg(msg.args.get(2));
-            if let (Some(w), Some(l), Some(h)) = (w, l, h) {
-                ctx.renderer.live.write().room_ratio = [w, l, h];
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-                effects.log_message = Some(format!("OSC: room_ratio → [{}, {}, {}]", w, l, h));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_ROOM_RATIO_REAR {
-        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
-            ctx.renderer.live.write().room_ratio_rear = v;
-            effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
-            effects.log_message = Some(format!("OSC: room_ratio_rear → {}", v));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_ROOM_RATIO_LOWER {
-        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
-            ctx.renderer.live.write().room_ratio_lower = v;
-            effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
-            effects.log_message = Some(format!("OSC: room_ratio_lower → {}", v));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_ROOM_RATIO_CENTER_BLEND {
-        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.clamp(0.0, 1.0)) {
-            ctx.renderer.live.write().room_ratio_center_blend = v;
-            effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
-            effects.log_message = Some(format!("OSC: room_ratio_center_blend → {}", v));
-        }
-        return Some(effects);
-    }
-
     if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX) {
         match rest {
             "enabled" => {
