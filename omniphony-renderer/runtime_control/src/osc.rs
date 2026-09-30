@@ -1,8 +1,6 @@
 use crate::context::RuntimeControlContext;
 use crate::osc_contract;
 use omniphony_geometry::f32 as geometry;
-use renderer::live_params::LiveEvaluationMode;
-use renderer::render_backend::canonical_builtin_backend_id;
 use rosc::{OscMessage, OscType};
 use serde::Deserialize;
 use std::hash::{Hash, Hasher};
@@ -820,26 +818,6 @@ pub fn apply_simple_osc_control(
     // metering/rate_hz and diag/rate_hz are handled by `live_control` against
     // RendererControl — the single source of truth for both, persisted to
     // config as view state.
-
-    if addr == osc_contract::CONTROL_RENDER_BACKEND {
-        // Accept built-in ids/aliases (e.g. "distance") and any registered backend
-        // id (e.g. a contributor's "example"), so the dropdown can offer them all.
-        let requested_id = parse_string_arg(msg.args.first()).and_then(|value| {
-            canonical_builtin_backend_id(&value)
-                .map(|id| id.to_string())
-                .or_else(|| ctx.renderer.has_backend(&value).then_some(value))
-        });
-        if let Some(requested_id) = requested_id {
-            let mut live = ctx.renderer.live.write();
-            if live.backend_id() != requested_id {
-                live.backend_id = requested_id.clone();
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-                effects.log_message = Some(format!("OSC: render_backend -> {requested_id}"));
-            }
-        }
-        return Some(effects);
-    }
 
     if addr == osc_contract::CONTROL_OUTPUT_MODE {
         // Switch between the classic speaker (VBAP) path and the independent
@@ -1706,33 +1684,6 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == osc_contract::CONTROL_RENDER_EVALUATION_MODE {
-        let requested = parse_string_arg(msg.args.first())
-            .and_then(|value| LiveEvaluationMode::from_str(&value));
-        if let Some(requested) = requested {
-            let mut live = ctx.renderer.live.write();
-            if live.evaluation.mode != requested {
-                live.set_evaluation_mode(requested);
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-                // Changing only the evaluation mode leaves the backend geometry
-                // (triangulation + decorator metrics) untouched: reuse the gain
-                // models and rebuild only the evaluation wrapper (no re-triangulation).
-                effects.evaluation_only = true;
-            }
-            {
-                if live.backend_id() == "vbap" {
-                    effects.mark_dirty = true;
-                }
-                effects.log_message = Some(format!(
-                    "OSC: render_evaluation_mode -> {}",
-                    live.requested_evaluation_mode().as_str()
-                ));
-            }
-        }
-        return Some(effects);
-    }
-
     if addr == osc_contract::CONTROL_RENDER_EVALUATION_MODE_FROM_FILE {
         effects.log_message =
             Some("OSC: render_evaluation_mode/from_file is no longer supported".to_string());
@@ -1826,222 +1777,12 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX)
-    {
-        let size = match msg.args.first() {
-            Some(OscType::Int(i)) => Some((*i).max(1) as usize),
-            Some(OscType::Float(f)) => Some((*f).round().max(1.0) as usize),
-            _ => None,
-        };
-        if let Some(size) = size {
-            let state_addr = match rest {
-                "x_size" => {
-                    ctx.renderer.live.write().evaluation.cartesian.x_size = size;
-                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_X_SIZE)
-                }
-                "y_size" => {
-                    ctx.renderer.live.write().evaluation.cartesian.y_size = size;
-                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Y_SIZE)
-                }
-                "z_size" => {
-                    ctx.renderer.live.write().evaluation.cartesian.z_size = size;
-                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Z_SIZE)
-                }
-                "z_neg_size" => {
-                    ctx.renderer.live.write().evaluation.cartesian.z_neg_size = size;
-                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Z_NEG_SIZE)
-                }
-                _ => None,
-            };
-            if let Some(state_addr) = state_addr {
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-                // Cartesian grid resolution is evaluation-layer only: re-sample the
-                // table, reuse the backend geometry.
-                effects.evaluation_only = true;
-                effects.broadcasts.push(BroadcastUpdate {
-                    addr: state_addr.to_string(),
-                    value: BroadcastValue::Int(size as i32),
-                });
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_RENDER_EVALUATION_POSITION_INTERPOLATION {
-        if let Some(enabled) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().evaluation.position_interpolation = enabled;
-            // No layout recompute: this flag only selects nearest-cell vs
-            // trilinear at table-read time. The precomputed table content is
-            // independent of it, and the renderer syncs the live value into the
-            // evaluators each frame (see SpatialRenderer::render_frame). Rebuilding
-            // the whole grid here just produced an identical table.
-            effects.mark_dirty = true;
-            effects.broadcasts.push(BroadcastUpdate {
-                addr: osc_contract::STATE_RENDER_EVALUATION_POSITION_INTERPOLATION.to_string(),
-                value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
-            });
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS {
-        let intervals = match msg.args.first() {
-            Some(OscType::Int(i)) => Some((*i).max(0) as usize),
-            Some(OscType::Float(f)) => Some(f.round().max(0.0) as usize),
-            _ => None,
-        };
-        if let Some(intervals) = intervals {
-            ctx.renderer.live.write().evaluation.object_size_intervals = intervals;
-            effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
-            // Object-size interval count is evaluation-layer only: re-sample the
-            // tables, reuse the backend geometry.
-            effects.evaluation_only = true;
-            effects.broadcasts.push(BroadcastUpdate {
-                addr: osc_contract::STATE_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS.to_string(),
-                value: BroadcastValue::Int(intervals as i32),
-            });
-        }
-        return Some(effects);
-    }
-
-    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX) {
-        match rest {
-            "azimuth_resolution" | "elevation_resolution" => {
-                let res = match msg.args.first() {
-                    Some(OscType::Int(i)) => Some((*i).max(1)),
-                    Some(OscType::Float(f)) => Some((*f as i32).max(1)),
-                    _ => None,
-                };
-                if let Some(res) = res {
-                    let state_addr = match rest {
-                        "azimuth_resolution" => {
-                            ctx.renderer.live.write().evaluation.polar.azimuth_values = res;
-                            Some(osc_contract::STATE_RENDER_EVALUATION_POLAR_AZIMUTH_RESOLUTION)
-                        }
-                        "elevation_resolution" => {
-                            ctx.renderer.live.write().evaluation.polar.elevation_values = res;
-                            Some(osc_contract::STATE_RENDER_EVALUATION_POLAR_ELEVATION_RESOLUTION)
-                        }
-                        _ => None,
-                    };
-                    if let Some(state_addr) = state_addr {
-                        effects.mark_dirty = true;
-                        effects.trigger_layout_recompute = true;
-                        // Polar grid resolution is evaluation-layer only.
-                        effects.evaluation_only = true;
-                        effects.broadcasts.push(BroadcastUpdate {
-                            addr: state_addr.to_string(),
-                            value: BroadcastValue::Int(res),
-                        });
-                    }
-                }
-            }
-            "distance_res" => {
-                let res = match msg.args.first() {
-                    Some(OscType::Int(i)) => Some((*i).max(1)),
-                    Some(OscType::Float(f)) => Some((*f as i32).max(1)),
-                    _ => None,
-                };
-                if let Some(res) = res {
-                    ctx.renderer.live.write().evaluation.polar.distance_res = res;
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                    effects.evaluation_only = true;
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: osc_contract::STATE_RENDER_EVALUATION_POLAR_DISTANCE_RES.to_string(),
-                        value: BroadcastValue::Int(res),
-                    });
-                }
-            }
-            "distance_max" => {
-                let max_v = match msg.args.first() {
-                    Some(OscType::Int(i)) => Some((*i as f32).max(0.01)),
-                    Some(OscType::Float(f)) => Some((*f).max(0.01)),
-                    _ => None,
-                };
-                if let Some(max_v) = max_v {
-                    ctx.renderer.live.write().evaluation.polar.distance_max = max_v;
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                    effects.evaluation_only = true;
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: osc_contract::STATE_RENDER_EVALUATION_POLAR_DISTANCE_MAX.to_string(),
-                        value: BroadcastValue::Float(max_v),
-                    });
-                }
-            }
-            _ => {}
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_DISTANCE_MODEL {
-        if let Some(OscType::String(model)) = msg.args.first() {
-            if let Ok(model) = model.parse::<renderer::spatial_vbap::DistanceModel>() {
-                ctx.renderer.live.write().distance_model = model;
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_DISTANCE_MODEL_METRIC {
-        if let Some(OscType::String(metric)) = msg.args.first() {
-            if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {
-                ctx.renderer.live.write().distance_model_metric = metric;
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-            }
-        }
-        return Some(effects);
-    }
-
+    // The hybrid curve: a point list, kept out of the registry. The legs,
+    // smoothing and metric under the same prefix are registry aliases.
     if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_HYBRID_PREFIX) {
         let mut live = ctx.renderer.live.write();
         let mut changed = false;
         match rest {
-            "external_backend" | "internal_backend" => {
-                if let Some(value) = parse_string_arg(msg.args.first()) {
-                    let normalized = value.trim().to_ascii_lowercase();
-                    // Any registered backend is a valid inner model, except a
-                    // nested hybrid (which would recurse).
-                    if normalized != "hybrid" && ctx.renderer.has_backend(&normalized) {
-                        let slot = if rest == "external_backend" {
-                            &mut live.hybrid.external_backend_id
-                        } else {
-                            &mut live.hybrid.internal_backend_id
-                        };
-                        if *slot != normalized {
-                            *slot = normalized.clone();
-                            changed = true;
-                            effects.log_message =
-                                Some(format!("OSC: hybrid/{rest} -> {normalized}"));
-                        }
-                    }
-                }
-            }
-            "curve_smoothing" => {
-                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.clamp(0.0, 1.0)) {
-                    if (live.hybrid.curve_smoothing - v).abs() > 1e-6 {
-                        live.hybrid.curve_smoothing = v;
-                        changed = true;
-                        effects.log_message = Some(format!("OSC: hybrid/curve_smoothing -> {v}"));
-                    }
-                }
-            }
-            "metric" => {
-                if let Some(OscType::String(metric)) = msg.args.first() {
-                    if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {
-                        if live.hybrid.metric != metric {
-                            live.hybrid.metric = metric;
-                            changed = true;
-                        }
-                    }
-                }
-            }
             "curve" => {
                 // Flat list of (x, y) pairs: x0, y0, x1, y1, …
                 let mut values: Vec<f32> = Vec::with_capacity(msg.args.len());
@@ -2075,56 +1816,6 @@ pub fn apply_simple_osc_control(
             effects.trigger_layout_recompute = true;
         }
         return Some(effects);
-    }
-
-    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX) {
-        match rest {
-            "enabled" => {
-                if let Some(v) = parse_bool_arg(msg.args.first()) {
-                    ctx.renderer.live.write().use_distance_diffuse = v;
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                }
-                return Some(effects);
-            }
-            "metric" => {
-                if let Some(OscType::String(metric)) = msg.args.first() {
-                    if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {
-                        ctx.renderer.live.write().distance_diffuse_metric = metric;
-                        effects.mark_dirty = true;
-                        effects.trigger_layout_recompute = true;
-                    }
-                }
-                return Some(effects);
-            }
-            "mirror_axes" => {
-                if let Some(OscType::String(axes)) = msg.args.first() {
-                    if let Ok(axes) = axes.parse::<renderer::spatial_vbap::MirrorAxes>() {
-                        ctx.renderer.live.write().distance_diffuse_mirror_axes = axes;
-                        effects.mark_dirty = true;
-                        effects.trigger_layout_recompute = true;
-                    }
-                }
-                return Some(effects);
-            }
-            "threshold" => {
-                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(1e-6)) {
-                    ctx.renderer.live.write().distance_diffuse_threshold = v;
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                }
-                return Some(effects);
-            }
-            "curve" => {
-                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.0)) {
-                    ctx.renderer.live.write().distance_diffuse_curve = v;
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                }
-                return Some(effects);
-            }
-            _ => {}
-        }
     }
 
     if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_OBJECT_PREFIX) {

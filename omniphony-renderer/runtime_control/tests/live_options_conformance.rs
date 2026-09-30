@@ -184,7 +184,8 @@ fn fixture_control() -> Arc<RendererControl> {
         48_000,
         1,
         1,
-        0.0,
+        // 8 distance cells over 2 units: the declared polar defaults.
+        0.25,
         2.0,
         VbapTableMode::Cartesian {
             x_size: 5,
@@ -194,7 +195,8 @@ fn fixture_control() -> Arc<RendererControl> {
         },
         false,
         true,
-        DistanceModel::Linear,
+        // The declared default (`config_fields::vbap_distance_model`).
+        DistanceModel::None,
         false,
         1.0,
         1.0,
@@ -214,7 +216,8 @@ fn fixture_control() -> Arc<RendererControl> {
         1.0,
         1.0,
         PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
+        // The declared default mode.
+        LiveEvaluationMode::Auto,
         5,
         5,
         3,
@@ -222,6 +225,36 @@ fn fixture_control() -> Arc<RendererControl> {
     )
     .expect("fixture renderer");
     renderer.renderer_control()
+}
+
+/// The option environment of a fixture control.
+fn env(control: &Arc<RendererControl>) -> renderer::options::OptionEnv<'_> {
+    renderer::options::OptionEnv::of(control)
+}
+
+/// A legacy alias is in the control catalogue: a whole address in
+/// `ALL_CONTROL`, or a tail under one of the contract's prefix families.
+fn legacy_addr_is_catalogued(addr: renderer::options::LegacyAddr) -> bool {
+    use renderer::options::LegacyAddr;
+    match addr {
+        LegacyAddr::Exact(addr) => osc_contract::ALL_CONTROL.contains(&addr),
+        LegacyAddr::Prefixed { prefix, .. } => [
+            osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            osc_contract::CONTROL_HYBRID_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+        ]
+        .contains(&prefix),
+    }
+}
+
+/// The address a client sends for a legacy alias.
+fn legacy_addr_example(addr: renderer::options::LegacyAddr) -> String {
+    use renderer::options::LegacyAddr;
+    match addr {
+        LegacyAddr::Exact(addr) => addr.to_string(),
+        LegacyAddr::Prefixed { prefix, tail } => format!("{prefix}{tail}"),
+    }
 }
 
 fn snapshot_json(control: &Arc<RendererControl>) -> serde_json::Value {
@@ -334,6 +367,47 @@ mod registry {
             ("room_ratio_rear", RawOptionValue::Number(2.5)),
             ("room_ratio_lower", RawOptionValue::Number(0.75)),
             ("room_ratio_center_blend", RawOptionValue::Number(0.25)),
+            ("vbap_distance_model", RawOptionValue::Str("linear")),
+            ("distance_model_metric", RawOptionValue::Str("chebyshev")),
+            ("distance_diffuse", RawOptionValue::Bool(true)),
+            ("distance_diffuse_threshold", RawOptionValue::Number(0.5)),
+            ("distance_diffuse_curve", RawOptionValue::Number(1.5)),
+            ("distance_diffuse_metric", RawOptionValue::Str("chebyshev")),
+            ("distance_diffuse_mirror_axes", RawOptionValue::Str("xyz")),
+            // The cartesian table in force, so the grid below is saved.
+            (
+                "render_evaluation_mode",
+                RawOptionValue::Str("precomputed_cartesian"),
+            ),
+            (
+                "evaluation_object_size_intervals",
+                RawOptionValue::Number(3.0),
+            ),
+            ("evaluation_cartesian_x_size", RawOptionValue::Number(7.0)),
+            ("evaluation_cartesian_y_size", RawOptionValue::Number(6.0)),
+            ("evaluation_cartesian_z_size", RawOptionValue::Number(4.0)),
+            (
+                "evaluation_cartesian_z_neg_size",
+                RawOptionValue::Number(2.0),
+            ),
+            // Values the build's quantization keeps as they are (no negative
+            // elevations in the fixture: 45 cells over 90°).
+            ("vbap_azimuth_resolution", RawOptionValue::Number(90.0)),
+            ("vbap_elevation_resolution", RawOptionValue::Number(45.0)),
+            ("vbap_distance_res", RawOptionValue::Number(4.0)),
+            ("vbap_distance_max", RawOptionValue::Number(3.0)),
+            (
+                "render_evaluation_position_interpolation",
+                RawOptionValue::Bool(false),
+            ),
+            ("render_backend", RawOptionValue::Str("barycenter")),
+            (
+                "hybrid_external_backend",
+                RawOptionValue::Str("experimental_distance"),
+            ),
+            ("hybrid_internal_backend", RawOptionValue::Str("vbap")),
+            ("hybrid_curve_smoothing", RawOptionValue::Number(0.5)),
+            ("hybrid_metric", RawOptionValue::Str("spherical")),
         ]
     }
 
@@ -349,13 +423,14 @@ mod registry {
     fn legacy_addresses_are_catalogued_and_resolvable() {
         for spec in options::LIVE_OPTIONS {
             assert!(
-                osc_contract::ALL_CONTROL.contains(&spec.legacy_control_addr),
+                legacy_addr_is_catalogued(spec.legacy_control_addr),
                 "{}: legacy address missing from ALL_CONTROL",
                 spec.key
             );
             assert!(options::find(spec.key).is_some(), "{}", spec.key);
             assert!(
-                options::find_by_legacy_addr(spec.legacy_control_addr).is_some(),
+                options::find_by_legacy_addr(&legacy_addr_example(spec.legacy_control_addr))
+                    .is_some(),
                 "{}",
                 spec.key
             );
@@ -382,6 +457,11 @@ mod registry {
             let value = block
                 .get(spec.key)
                 .unwrap_or_else(|| panic!("{}: missing from the options block", spec.key));
+            if schema_entry["default"].is_null() {
+                // The build's value (`OptionDefault::Build`): nothing fixed to
+                // compare with.
+                continue;
+            }
             assert_eq!(
                 value, &schema_entry["default"],
                 "{}: snapshot default != declared schema default",
@@ -401,7 +481,7 @@ mod registry {
             for spec in options::LIVE_OPTIONS {
                 let raw = sample_for(spec.key);
                 assert!(
-                    (spec.set)(&mut live, &raw).is_some(),
+                    (spec.set)(&mut live, &raw, &env(&control)).is_some(),
                     "{}: sample value rejected",
                     spec.key
                 );
@@ -410,13 +490,13 @@ mod registry {
         let mut render = RenderConfig::default();
         {
             let live = control.live.read();
-            options::store_live_to_config(&mut render, &live);
+            options::store_live_to_config(&mut render, &live, &env(&control));
         }
 
         let fresh = fixture_control();
         {
             let mut live = fresh.live.write();
-            options::seed_live_from_config(&mut live, &render);
+            options::seed_live_from_config(&mut live, &render, &env(&fresh));
         }
         let changed = control.live.read();
         let seeded = fresh.live.read();
@@ -528,12 +608,15 @@ mod registry {
         let control = fixture_control();
         let mut live = control.live.write();
         for spec in options::LIVE_OPTIONS {
-            (spec.set)(&mut live, &sample_for(spec.key)).expect("sample accepted");
+            (spec.set)(&mut live, &sample_for(spec.key), &env(&control)).expect("sample accepted");
         }
-        options::reset_live_to_defaults(&mut live);
+        options::reset_live_to_defaults(&mut live, &env(&control));
         let schema: serde_json::Value =
             serde_json::from_str(&options::schema_json()).expect("valid schema");
         for (spec, entry) in options::LIVE_OPTIONS.iter().zip(schema.as_array().unwrap()) {
+            if entry["default"].is_null() {
+                continue; // left to the incoming profile's seed
+            }
             assert_eq!(
                 (spec.get_json)(&live),
                 entry["default"],
@@ -622,7 +705,7 @@ mod registry {
         assert_eq!(render.room_ratio_center_blend, Some(0.3));
 
         let fresh = fixture_control();
-        options::seed_live_from_config(&mut fresh.live.write(), &render);
+        options::seed_live_from_config(&mut fresh.live.write(), &render, &env(&fresh));
         let live = fresh.live.read();
         let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
         assert!(close(live.room_ratio[1], 1.8) && close(live.room_ratio[2], 0.9));
@@ -639,7 +722,7 @@ mod registry {
         let mut live = control.live.write();
         for spec in options::LIVE_OPTIONS {
             let raw = sample_for(spec.key);
-            let canonical = (spec.set)(&mut live, &raw);
+            let canonical = (spec.set)(&mut live, &raw, &env(&control));
             assert!(canonical.is_some(), "{}: sample rejected", spec.key);
             if let options::OptionKind::Enum(values) = spec.kind {
                 let canonical = canonical.unwrap();
@@ -650,7 +733,12 @@ mod registry {
                     canonical
                 );
                 assert!(
-                    (spec.set)(&mut live, &RawOptionValue::Str("no_such_value_xyz")).is_none(),
+                    (spec.set)(
+                        &mut live,
+                        &RawOptionValue::Str("no_such_value_xyz"),
+                        &env(&control)
+                    )
+                    .is_none(),
                     "{}: junk value accepted",
                     spec.key
                 );
@@ -675,7 +763,7 @@ fn legacy_fixed_channel_options_migrate_without_reactivating_host_mode() {
 
     {
         let mut live = control.live.write();
-        renderer::options::seed_live_from_config(&mut live, &legacy);
+        renderer::options::seed_live_from_config(&mut live, &legacy, &env(&control));
         assert_eq!(
             live.channel_render_mode,
             renderer::live_params::ChannelRenderMode::Spatial
@@ -683,7 +771,7 @@ fn legacy_fixed_channel_options_migrate_without_reactivating_host_mode() {
         assert!(live.synthetic_objects_enabled);
         assert_eq!(live.phantom_extract_mode, PhantomExtractMode::Spectral);
         assert!(!live.phantom_params.contains_key("method"));
-        renderer::options::store_live_to_config(&mut legacy, &live);
+        renderer::options::store_live_to_config(&mut legacy, &live, &env(&control));
     }
 
     assert_eq!(legacy.channel_render_mode, None);
@@ -710,14 +798,14 @@ fn disabled_synthesis_master_preserves_non_off_child_selections() {
         live.synthetic_objects_enabled = false;
         live.object_generator_id = "dirac".to_string();
         live.phantom_extract_mode = PhantomExtractMode::Broadband;
-        renderer::options::store_live_to_config(&mut saved, &live);
+        renderer::options::store_live_to_config(&mut saved, &live, &env(&control));
     }
     assert_eq!(saved.synthetic_objects_enabled, Some(false));
 
     let restored = fixture_control();
     {
         let mut live = restored.live.write();
-        renderer::options::seed_live_from_config(&mut live, &saved);
+        renderer::options::seed_live_from_config(&mut live, &saved, &env(&restored));
         assert!(!live.synthetic_objects_enabled);
         assert_eq!(live.object_generator_id, "dirac");
         assert_eq!(live.phantom_extract_mode, PhantomExtractMode::Broadband);

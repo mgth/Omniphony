@@ -40,9 +40,11 @@ function resolvesInEn(key) {
   return typeof node === 'string';
 }
 
-const KINDS = new Set(['bool', 'enum', 'string', 'float', 'float_array']);
+const KINDS = new Set(['bool', 'enum', 'string', 'float', 'int', 'float_array', 'dynamic_enum']);
 const GROUP_MODES = new Set(['live']);
 const GROUP_EFFECTS = new Set(['none', 'replan', 'topology', 'evaluation']);
+// Sets a dynamic_enum option draws its values from at runtime.
+const DYNAMIC_SOURCES = new Set(['backends']);
 const failures = [];
 const fail = (msg) => {
   failures.push(msg);
@@ -78,6 +80,9 @@ for (const spec of schema) {
       fail(`${key}: default '${spec.default}' not in values`);
     }
   }
+  if (spec.kind === 'dynamic_enum' && !DYNAMIC_SOURCES.has(spec.source)) {
+    fail(`${key}: dynamic_enum with unknown source '${spec.source}'`);
+  }
   if (spec.kind === 'float_array') {
     if (!Number.isInteger(spec.len) || spec.len < 1) {
       fail(`${key}: float_array without a length`);
@@ -97,6 +102,7 @@ for (const spec of schema) {
       }
     }
   }
+  // `null` is a declared default too: the value the renderer was built with.
   if (spec.default === undefined) fail(`${key}: missing default`);
   if (!Array.isArray(spec.flags)) fail(`${key}: missing flags`);
   if (typeof spec.i18nKey !== 'string' || !resolvesInEn(spec.i18nKey)) {

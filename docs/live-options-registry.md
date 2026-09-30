@@ -36,8 +36,12 @@ Progress:
   the registry declares today.
 - **Groups, step 1 landed**: `OptionGroup` (mode + apply effect), the
   `FloatArray` kind, `apply_batch` and the grouped `/control/options`
-  setter, validated on the `room` group (see "Groups" below). Next steps, one
-  PR each: the evaluation, distance and backend groups; the binaural groups
+  setter, validated on the `room` group (see "Groups" below).
+- **Groups, step 2 landed**: the `distance_model`, `distance_diffuse`,
+  `evaluation` and `backend` groups (+ the ungrouped position
+  interpolation); `OptionEnv`, `LegacyAddr::Prefixed`, the `Int` and
+  `DynamicEnum` kinds and the `Build` default; the rebuilding rows seeded
+  before the first rebuild. Next steps, one PR each: the binaural groups
   (HRIR source, BRIR, crossover, head tracking) and the ungrouped binaural
   scalars; then `Staged` groups declared by the host (audio output, live
   input), with the JSON patches and their `/apply` as exact aliases and the
@@ -68,6 +72,26 @@ Declared options (`renderer::options::LIVE_OPTIONS`):
 | `room_ratio_rear` | `Float` 0.01–100, step 0.01 | `2` | group `room` | `/control/room_ratio_rear` |
 | `room_ratio_lower` | `Float` 0.01–100, step 0.01 | `0.5` | group `room` | `/control/room_ratio_lower` |
 | `room_ratio_center_blend` | `Float` 0–1, step 0.01 | `0.5` | group `room` | `/control/room_ratio_center_blend` |
+| `vbap_distance_model` | `Enum` none / linear / quadratic / inverse-square | `none` | group `distance_model` | `/control/distance_model` |
+| `distance_model_metric` | `Enum` spherical / chebyshev | `spherical` | group `distance_model` | `/control/distance_model_metric` |
+| `distance_diffuse` | `Bool` | `false` | group `distance_diffuse` | `/control/distance_diffuse/enabled` |
+| `distance_diffuse_threshold` | `Float` 1e-6–100 | `1` | group `distance_diffuse` | `/control/distance_diffuse/threshold` |
+| `distance_diffuse_curve` | `Float` 0–100 | `1` | group `distance_diffuse` | `/control/distance_diffuse/curve` |
+| `distance_diffuse_metric` | `Enum` spherical / chebyshev | `spherical` | group `distance_diffuse` | `/control/distance_diffuse/metric` |
+| `distance_diffuse_mirror_axes` | `Enum` none / x / … / xyz | `xy` | group `distance_diffuse` | `/control/distance_diffuse/mirror_axes` |
+| `render_evaluation_mode` | `Enum` auto / realtime / precomputed_polar / precomputed_cartesian | `auto` | group `evaluation` | `/control/render_evaluation_mode` |
+| `evaluation_object_size_intervals` | `Int` ≥ 0 | `0` | group `evaluation` | `/control/render_evaluation/object_size_intervals` |
+| `evaluation_cartesian_{x,y,z,z_neg}_size` | `Int` ≥ 1 | build | group `evaluation` | `/control/render_evaluation/cartesian/…` |
+| `vbap_azimuth_resolution` | `Int` ≥ 1 | `360` | group `evaluation` | `/control/render_evaluation/polar/azimuth_resolution` |
+| `vbap_elevation_resolution` | `Int` ≥ 1 | build | group `evaluation` | `/control/render_evaluation/polar/elevation_resolution` |
+| `vbap_distance_res` | `Int` ≥ 1 | `8` | group `evaluation` | `/control/render_evaluation/polar/distance_res` |
+| `vbap_distance_max` | `Float` 0.01–1000 | `2` | group `evaluation` | `/control/render_evaluation/polar/distance_max` |
+| `render_evaluation_position_interpolation` | `Bool` | `true` | — | `/control/render_evaluation/position_interpolation` |
+| `render_backend` | `DynamicEnum` backends | `vbap` | group `backend` | `/control/render_backend` |
+| `hybrid_external_backend` | `DynamicEnum` backends | `vbap` | group `backend` | `/control/hybrid/external_backend` |
+| `hybrid_internal_backend` | `DynamicEnum` backends | `barycenter` | group `backend` | `/control/hybrid/internal_backend` |
+| `hybrid_curve_smoothing` | `Float` 0–1 | `0` | group `backend` | `/control/hybrid/curve_smoothing` |
+| `hybrid_metric` | `Enum` spherical / chebyshev | `chebyshev` | group `backend` | `/control/hybrid/metric` |
 
 (Aliases are under `/omniphony`; the contract constants live in
 `osc-contract/src/lib.rs`.) Every other live setting is still a hand-wired
@@ -80,7 +104,22 @@ What the implementation settled on, where it differs from the proposal below:
   `Float { min, max, step }` (the proposal's `F32`; `step` is a UI hint,
   the setter clamps to `[min, max]`) and `FloatArray { len, min, max, step }`
   (`len` numbers set together, each clamped; `len` wire arguments — the
-  kind's `arity()`).
+  kind's `arity()`), `Int { min, max }` (a number rounded to the nearest
+  integer, clamped) and `DynamicEnum { source }` (one of a set the host
+  provides at runtime — `backends` — validated against the running host).
+- **Defaults**: `OptionDefault::Build` declares no fixed default — the value
+  the renderer was built with (the cartesian grid the bridge suggests, the
+  polar elevation count, which depends on whether negative elevations are
+  rendered). It is published as `null`, and a profile reset leaves the option
+  to the incoming profile's seed.
+- **Environment**: every `set` / `config_seed` / `config_store` receives an
+  `OptionEnv`: the registered backends (`has_backend`) and the facts the
+  running renderer was built with (`build_facts`: preferred evaluation mode,
+  negative elevations). Never the live params — a setter runs under their
+  write lock. `OptionEnv::detached()` serves code without a control.
+- **Aliases**: `LegacyAddr::Exact(addr)` for a whole address,
+  `LegacyAddr::Prefixed { prefix, tail }` for the contract's prefix families
+  (`distance_diffuse/…`, `hybrid/…`, `render_evaluation/{cartesian,polar}/…`).
 - **Flags**: only `REPLAN` (bump `RendererControl::options_epoch` on a real
   change). `NEEDS_TOPOLOGY` and `ADVANCED` were never needed and do not exist.
   `PERSIST`, a write to `config.yaml` on every OSC set, was removed: options
@@ -141,6 +180,24 @@ The profile switch and a config load already apply a whole config as one
 batch: `apply_render_config_live` resets and seeds every option, then
 `apply_switched_profile` triggers a single rebuild; at boot the renderer is
 built from the resolved config and seeded before its first rebuild.
+
+The rows whose group asks for a rebuild must be in place before that first
+rebuild, and must say whether they call for it. `seed_control_from_render_config`
+(the construction path, replayed by the profile switch) therefore runs
+`options::seed_rebuilding_rows_from_config`, which seeds those rows and
+returns the widest `Rebuild` their changes ask for: a backend, hybrid leg or
+metric the construction did not apply forces the models to be rebuilt, a
+realtime evaluation or object-size intervals the evaluation layer. What the
+construction already applied (the room, the distance model and diffuse, the
+grids — the polar grid laid out with the build's own quantization) seeds to
+the same values and asks for nothing, so a boot is not rebuilt twice
+(`renderer_build` tests: `the_seed_rebuilds_only_for_what_the_construction_left_out`,
+and `a_profile_switch_lands_where_a_boot_on_the_same_config_lands`).
+
+Kept out of the registry, as structured data: the hybrid curve (a point
+list; the grouped setter's arity-based parser cannot delimit it) and the
+per-backend parameter bag (`/control/backend/param`, keys declared by each
+backend's own schema).
 
 The schema entry of a grouped option carries its group:
 `"group": {"key", "mode", "effect", "i18nKey"}` — enough for Studio to draw a

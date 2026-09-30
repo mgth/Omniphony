@@ -1129,13 +1129,20 @@ pub struct HybridLiveParams {
     pub metric: crate::spatial_vbap::DistanceMetric,
 }
 
+/// The hybrid backend's default outer leg (blend ratio 1).
+pub const HYBRID_DEFAULT_EXTERNAL_BACKEND_ID: &str = "vbap";
+/// The hybrid backend's default inner leg (blend ratio 0).
+pub const HYBRID_DEFAULT_INTERNAL_BACKEND_ID: &str = "barycenter";
+/// Piecewise-linear by default.
+pub const HYBRID_DEFAULT_CURVE_SMOOTHING: f32 = 0.0;
+
 impl Default for HybridLiveParams {
     fn default() -> Self {
         Self {
-            external_backend_id: "vbap".to_string(),
-            internal_backend_id: "barycenter".to_string(),
+            external_backend_id: HYBRID_DEFAULT_EXTERNAL_BACKEND_ID.to_string(),
+            internal_backend_id: HYBRID_DEFAULT_INTERNAL_BACKEND_ID.to_string(),
             curve: vec![[0.0, 0.0], [1.0, 1.0]],
-            curve_smoothing: 0.0,
+            curve_smoothing: HYBRID_DEFAULT_CURVE_SMOOTHING,
             metric: crate::spatial_vbap::DistanceMetric::Chebyshev,
         }
     }

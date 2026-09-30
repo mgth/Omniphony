@@ -3,9 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use renderer::config::RenderConfig;
-use renderer::live_params::{
-    LiveEvaluationMode, LiveParams, PreferredEvaluationMode, RendererControl,
-};
+use renderer::live_params::{LiveParams, RendererControl};
 
 use crate::HostControlHandler;
 
@@ -99,62 +97,8 @@ pub fn store_live_into_config(
     let master_gain_db = 20.0_f32 * live.master_gain.log10();
     renderer::config_fields::master_gain::store(render, master_gain_db);
 
-    renderer::config_fields::vbap_azimuth_resolution::store(
-        render,
-        live.evaluation.polar.azimuth_values.max(1),
-    );
-    renderer::config_fields::vbap_elevation_resolution::store(
-        render,
-        live.evaluation.polar.elevation_values.max(1),
-    );
-    renderer::config_fields::vbap_distance_res::store(
-        render,
-        live.evaluation.polar.distance_res.max(1),
-    );
-    renderer::config_fields::vbap_distance_max::store(
-        render,
-        live.evaluation.polar.distance_max.max(0.01),
-    );
-    renderer::config_fields::render_evaluation_position_interpolation::store(
-        render,
-        live.evaluation.position_interpolation,
-    );
-    render.render_backend = match live.backend_id() {
-        "vbap" => None,
-        other => Some(other.to_string()),
-    };
     // Generic per-backend param values, persisted verbatim (empty map is skipped).
     render.backend_params = control.all_backend_params();
-    render.render_evaluation_mode = match live.requested_evaluation_mode() {
-        LiveEvaluationMode::Auto => None,
-        other => Some(other.as_str().to_string()),
-    };
-    let effective_cartesian = match live.requested_evaluation_mode() {
-        LiveEvaluationMode::PrecomputedCartesian => true,
-        LiveEvaluationMode::PrecomputedPolar => false,
-        LiveEvaluationMode::Realtime => false,
-        LiveEvaluationMode::Auto => matches!(
-            control
-                .backend_rebuild_params()
-                .map(|p| p.preferred_evaluation_mode),
-            Some(PreferredEvaluationMode::PrecomputedCartesian)
-        ),
-    };
-    if effective_cartesian {
-        render.evaluation_cartesian_x_size = Some(live.evaluation.cartesian.x_size.max(1));
-        render.evaluation_cartesian_y_size = Some(live.evaluation.cartesian.y_size.max(1));
-        render.evaluation_cartesian_z_size = Some(live.evaluation.cartesian.z_size.max(1));
-        render.evaluation_cartesian_z_neg_size = Some(live.evaluation.cartesian.z_neg_size);
-    } else {
-        render.evaluation_cartesian_x_size = None;
-        render.evaluation_cartesian_y_size = None;
-        render.evaluation_cartesian_z_size = None;
-        render.evaluation_cartesian_z_neg_size = None;
-    }
-    // Object-size interval count applies to both precomputed modes; persist it
-    // only when enabled (0 is the default and stays out of the file).
-    render.evaluation_object_size_intervals = (live.evaluation.object_size_intervals > 0)
-        .then_some(live.evaluation.object_size_intervals);
     // VBAP spread tuning (min/max, from_distance, distance range/curve, size
     // policy) now lives in the generic param bag (`render.backend_params`,
     // written above via `all_backend_params`). Drop the legacy dedicated keys on
@@ -170,36 +114,15 @@ pub fn store_live_into_config(
     // virtual bed: one call covers what the OSC targeted persists cover, so
     // the full save and the per-option writes cannot drift. After the layout:
     // the room is written in metres against its radius.
-    renderer::options::store_live_to_config(render, &live);
-    renderer::config_fields::vbap_distance_model::store(render, live.distance_model.to_string());
+    renderer::options::store_live_to_config(
+        render,
+        &live,
+        &renderer::options::OptionEnv::of(control),
+    );
     // Monitoring cadences: the renderer is the source of truth, so always
     // persist the current values (read lock-free from RendererControl).
     render.meter_rate = Some(round6(control.meter_rate_hz()));
     render.diag_rate = Some(round6(control.diag_rate_hz()));
-    renderer::config_fields::distance_diffuse::store(render, live.use_distance_diffuse);
-    renderer::config_fields::distance_diffuse_threshold::store(
-        render,
-        live.distance_diffuse_threshold,
-    );
-    renderer::config_fields::distance_diffuse_curve::store(render, live.distance_diffuse_curve);
-    let default_metric = renderer::spatial_vbap::DistanceMetric::default();
-    render.distance_model_metric = if live.distance_model_metric != default_metric {
-        Some(live.distance_model_metric.to_string())
-    } else {
-        None
-    };
-    render.distance_diffuse_metric = if live.distance_diffuse_metric != default_metric {
-        Some(live.distance_diffuse_metric.to_string())
-    } else {
-        None
-    };
-    let default_mirror_axes = renderer::spatial_vbap::MirrorAxes::default();
-    render.distance_diffuse_mirror_axes =
-        if live.distance_diffuse_mirror_axes != default_mirror_axes {
-            Some(live.distance_diffuse_mirror_axes.to_string())
-        } else {
-            None
-        };
     // Binaural (headphone) stage: persist the live selection so it survives a
     // restart — output mode, HRIR source (+ SOFA path), isotropic scale, the
     // head-tracking input and the room (reflections, reverb).
@@ -285,35 +208,10 @@ pub fn store_live_into_config(
     render.experimental_distance_position_error_floor = None;
     render.experimental_distance_position_error_nearest_scale = None;
     render.experimental_distance_position_error_span_scale = None;
-    let hybrid_defaults = renderer::live_params::HybridLiveParams::default();
-    render.hybrid_external_backend =
-        if live.hybrid.external_backend_id != hybrid_defaults.external_backend_id {
-            Some(live.hybrid.external_backend_id.clone())
-        } else {
-            None
-        };
-    render.hybrid_internal_backend =
-        if live.hybrid.internal_backend_id != hybrid_defaults.internal_backend_id {
-            Some(live.hybrid.internal_backend_id.clone())
-        } else {
-            None
-        };
-    render.hybrid_curve = if live.hybrid.curve != hybrid_defaults.curve {
-        Some(live.hybrid.curve.clone())
-    } else {
-        None
-    };
-    render.hybrid_curve_smoothing =
-        if (live.hybrid.curve_smoothing - hybrid_defaults.curve_smoothing).abs() > 1e-4 {
-            Some(live.hybrid.curve_smoothing)
-        } else {
-            None
-        };
-    render.hybrid_metric = if live.hybrid.metric != hybrid_defaults.metric {
-        Some(live.hybrid.metric.to_string())
-    } else {
-        None
-    };
+    // The hybrid curve is a point list, kept out of the registry; the legs,
+    // smoothing and metric are registry rows (stored above).
+    let default_curve = renderer::live_params::HybridLiveParams::default().curve;
+    render.hybrid_curve = (live.hybrid.curve != default_curve).then(|| live.hybrid.curve.clone());
     render.barycenter_localize = None;
 
     drop(live);
