@@ -58,6 +58,14 @@ pub enum OptionKind {
     /// the wire, clamped to `[min, max]` by the setter. `step` is a UI hint
     /// for the Studio control, not a validation grid.
     Float { min: f32, max: f32, step: f32 },
+    /// One of a set the host provides at runtime, not the registry: `source`
+    /// names it (`"backends"`: the ids in the `/state/renderer` snapshot's
+    /// `renderBackendState.available_backends`). The setter validates against
+    /// the running host.
+    DynamicEnum { source: &'static str },
+    /// Bounded integer (a grid size, a count). Accepts a number (rounded to
+    /// the nearest integer) or a parseable string, clamped to `[min, max]`.
+    Int { min: i64, max: i64 },
     /// `len` bounded numbers set together (e.g. the room's width, length and
     /// height). On the wire: `len` numeric arguments; each is clamped to
     /// `[min, max]` like a `Float`.
@@ -143,8 +151,51 @@ pub static ROOM: OptionGroup = OptionGroup {
     i18n_key: "room.title",
 };
 
+/// Distance attenuation: the model and the metric it measures distance
+/// with, baked into the backend at a topology build.
+pub static DISTANCE_MODEL: OptionGroup = OptionGroup {
+    key: "distance_model",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::Topology,
+    i18n_key: "distance.model",
+};
+
+/// Distance diffuse: the mirrored blend and its shape, baked into the
+/// backend at a topology build.
+pub static DISTANCE_DIFFUSE: OptionGroup = OptionGroup {
+    key: "distance_diffuse",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::Topology,
+    i18n_key: "distance.title",
+};
+
+/// The evaluation layer: the table mode, its grids and the object-size
+/// intervals. A change re-samples the tables and reuses the backend's gain
+/// models.
+pub static EVALUATION: OptionGroup = OptionGroup {
+    key: "evaluation",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::Evaluation,
+    i18n_key: "evaluation.title",
+};
+
+/// The render backend and the hybrid backend's legs and blend: a change
+/// builds new gain models.
+pub static BACKEND: OptionGroup = OptionGroup {
+    key: "backend",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::Topology,
+    i18n_key: "backend.title",
+};
+
 /// Every declared group.
-pub static OPTION_GROUPS: &[&OptionGroup] = &[&ROOM];
+pub static OPTION_GROUPS: &[&OptionGroup] = &[
+    &ROOM,
+    &DISTANCE_MODEL,
+    &DISTANCE_DIFFUSE,
+    &EVALUATION,
+    &BACKEND,
+];
 
 /// The rebuild a set of changes asks the engine for, widest first merged in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -187,7 +238,14 @@ pub enum OptionDefault {
     Bool(bool),
     Str(&'static str),
     Float(f32),
+    Int(i64),
     FloatArray(&'static [f32]),
+    /// No fixed default: the value the renderer was built with (a cartesian
+    /// grid size the bridge suggests, a polar elevation count that depends on
+    /// whether negative elevations are rendered). Published as `null`; a
+    /// profile reset leaves the option alone and the incoming profile's seed
+    /// decides.
+    Build,
 }
 
 impl OptionDefault {
@@ -196,7 +254,9 @@ impl OptionDefault {
             Self::Bool(b) => b.into(),
             Self::Str(s) => s.into(),
             Self::Float(f) => f.into(),
+            Self::Int(i) => i.into(),
             Self::FloatArray(values) => values.into(),
+            Self::Build => serde_json::Value::Null,
         }
     }
 }
@@ -228,19 +288,78 @@ pub struct OptionSpec {
     pub help_i18n_key: Option<&'static str>,
     /// The pre-registry dedicated control address, kept as an alias of
     /// `/omniphony/control/option` so existing clients keep working.
-    pub legacy_control_addr: &'static str,
+    pub legacy_control_addr: LegacyAddr,
     /// Validate and apply a client value. Returns the canonical value applied
     /// (for logging/echo), or `None` when the value is invalid — the engine
     /// drops bad input rather than erroring, per the OSC contract.
-    pub set: fn(&mut LiveParams, &RawOptionValue) -> Option<String>,
+    pub set: fn(&mut LiveParams, &RawOptionValue, &OptionEnv) -> Option<String>,
     /// Current value, for the snapshot `options` block.
     pub get_json: fn(&LiveParams) -> serde_json::Value,
     /// Write the live value into the config (skip-if-default descriptors keep
     /// the key out of the file at the default).
-    pub config_store: fn(&mut RenderConfig, &LiveParams),
+    pub config_store: fn(&mut RenderConfig, &LiveParams, &OptionEnv),
     /// Seed the live value from a loaded config; an absent key is a no-op
     /// (the constructed default stays).
-    pub config_seed: fn(&mut LiveParams, &RenderConfig),
+    pub config_seed: fn(&mut LiveParams, &RenderConfig, &OptionEnv),
+}
+
+/// A pre-registry control address kept as an alias of an option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyAddr {
+    /// A whole address, listed in `osc_contract::ALL_CONTROL`.
+    Exact(&'static str),
+    /// A tail under one of the contract's prefix families (e.g.
+    /// `CONTROL_DISTANCE_DIFFUSE_PREFIX` + `"threshold"`), which the contract
+    /// names by prefix only.
+    Prefixed {
+        prefix: &'static str,
+        tail: &'static str,
+    },
+}
+
+impl LegacyAddr {
+    /// Whether `addr` is this alias.
+    pub fn matches(self, addr: &str) -> bool {
+        match self {
+            Self::Exact(exact) => addr == exact,
+            Self::Prefixed { prefix, tail } => addr.strip_prefix(prefix) == Some(tail),
+        }
+    }
+}
+
+/// What a row may consult besides the live params: the backends the host
+/// registered and the facts the renderer was built with. It never reaches
+/// the live params themselves — a setter runs under their write lock.
+#[derive(Clone, Copy)]
+pub struct OptionEnv<'a> {
+    control: Option<&'a crate::live_params::RendererControl>,
+}
+
+impl<'a> OptionEnv<'a> {
+    /// The environment of a running control.
+    pub fn of(control: &'a crate::live_params::RendererControl) -> Self {
+        Self {
+            control: Some(control),
+        }
+    }
+
+    /// No control: only the built-in backends exist and no build facts are
+    /// known. For code that works on bare `LiveParams` (tests, tools).
+    pub const fn detached() -> Self {
+        Self { control: None }
+    }
+
+    /// Whether a backend with this id is registered.
+    pub fn has_backend(&self, id: &str) -> bool {
+        self.control.is_some_and(|control| control.has_backend(id))
+    }
+
+    /// What the running renderer was built with (preferred evaluation mode,
+    /// negative elevations, …), once known.
+    pub fn build_facts(&self) -> Option<crate::live_params::BackendRebuildParams> {
+        self.control
+            .and_then(|control| control.backend_rebuild_params())
+    }
 }
 
 /// A boolean from the raw shapes a `Bool` option accepts: a bool, or a number
@@ -277,6 +396,20 @@ fn raw_float(raw: &RawOptionValue, kind: OptionKind) -> Option<f32> {
         RawOptionValue::Bool(_) | RawOptionValue::Numbers(_) => return None,
     };
     value.is_finite().then(|| clamp_to(kind, value))
+}
+
+/// An `Int` option value: a finite number rounded to the nearest integer, or
+/// a parseable string, clamped to the bounds declared by `kind`.
+fn raw_int(raw: &RawOptionValue, kind: OptionKind) -> Option<i64> {
+    let value = match raw {
+        RawOptionValue::Number(n) if n.is_finite() => n.round() as i64,
+        RawOptionValue::Str(s) => s.trim().parse::<i64>().ok()?,
+        _ => return None,
+    };
+    match kind {
+        OptionKind::Int { min, max } => Some(value.clamp(min, max)),
+        _ => Some(value),
+    }
 }
 
 /// A `FloatArray` option value: exactly `N` finite numbers, each clamped to
@@ -346,6 +479,134 @@ const ROOM_CENTER_BLEND_KIND: OptionKind = OptionKind::Float {
     step: 0.01,
 };
 
+const DISTANCE_MODELS: &[&str] = &["none", "linear", "quadratic", "inverse-square"];
+const DISTANCE_METRICS: &[&str] = &["spherical", "chebyshev"];
+const MIRROR_AXES: &[&str] = &["none", "x", "y", "z", "xy", "xz", "yz", "xyz"];
+/// The diffuse threshold is a distance: above zero (the old handler's floor),
+/// bounded far beyond the unit cube.
+const DISTANCE_DIFFUSE_THRESHOLD_KIND: OptionKind = OptionKind::Float {
+    min: 1e-6,
+    max: 100.0,
+    step: 0.01,
+};
+const DISTANCE_DIFFUSE_CURVE_KIND: OptionKind = OptionKind::Float {
+    min: 0.0,
+    max: 100.0,
+    step: 0.05,
+};
+
+/// Grid sizes and counts: at least one cell, as the old handlers floored them.
+const GRID_CELLS_KIND: OptionKind = OptionKind::Int {
+    min: 1,
+    max: i32::MAX as i64,
+};
+const OBJECT_SIZE_INTERVALS_KIND: OptionKind = OptionKind::Int {
+    min: 0,
+    max: i32::MAX as i64,
+};
+/// The polar grid's distance range: above zero, as the old handler floored it.
+const POLAR_DISTANCE_MAX_KIND: OptionKind = OptionKind::Float {
+    min: 0.01,
+    max: 1000.0,
+    step: 0.1,
+};
+const EVALUATION_MODES: &[&str] = &[
+    "auto",
+    "realtime",
+    "precomputed_polar",
+    "precomputed_cartesian",
+];
+
+/// The polar grid as the renderer build lays it out for a config: the cell
+/// counts become integer degree / distance steps and back, so e.g. 100
+/// azimuth cells land as 90 values (a 4° step). Negative elevations follow
+/// the config's pin, else what the running renderer was built with. The seed
+/// must round-trip exactly like the build, or a profile switch and a restart
+/// into the same profile disagree on the grid.
+fn configured_polar_grid(
+    render: &RenderConfig,
+    env: &OptionEnv,
+) -> crate::live_params::PolarEvaluationParams {
+    use crate::config_fields::{
+        vbap_azimuth_resolution, vbap_distance_max, vbap_distance_res, vbap_elevation_resolution,
+    };
+    let allow_negative_z = render.vbap_allow_negative_z.unwrap_or_else(|| {
+        env.build_facts()
+            .map(|facts| facts.allow_negative_z)
+            .unwrap_or(false)
+    });
+    let azimuth_cells =
+        vbap_azimuth_resolution::get(render).unwrap_or(vbap_azimuth_resolution::DEFAULT);
+    let elevation_cells =
+        vbap_elevation_resolution::get(render).unwrap_or(vbap_elevation_resolution::DEFAULT);
+    let distance_cells = vbap_distance_res::get(render).unwrap_or(vbap_distance_res::DEFAULT);
+    let distance_max = vbap_distance_max::get(render)
+        .unwrap_or(vbap_distance_max::DEFAULT)
+        .max(0.01);
+    let azimuth_step_deg = (360.0f32 / (azimuth_cells.max(1) as f32)).max(1.0).round() as i32;
+    let elevation_range = if allow_negative_z { 180.0f32 } else { 90.0 };
+    let elevation_step_deg = (elevation_range / (elevation_cells.max(1) as f32))
+        .max(1.0)
+        .round() as i32;
+    let distance_step = distance_max / (distance_cells.max(1) as f32);
+    crate::live_params::PolarEvaluationParams {
+        azimuth_values: (360.0 / azimuth_step_deg.max(1) as f32).round() as i32,
+        elevation_values: (elevation_range / elevation_step_deg.max(1) as f32).round() as i32,
+        distance_res: (distance_max / distance_step.max(0.01)).round() as i32,
+        distance_max,
+    }
+}
+
+/// Whether a save writes the cartesian grid: when the evaluation in force is
+/// the cartesian table — asked for, or chosen by `auto` because the renderer
+/// was built preferring it.
+fn cartesian_in_force(live: &LiveParams, env: &OptionEnv) -> bool {
+    use crate::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
+    match live.requested_evaluation_mode() {
+        LiveEvaluationMode::PrecomputedCartesian => true,
+        LiveEvaluationMode::PrecomputedPolar | LiveEvaluationMode::Realtime => false,
+        LiveEvaluationMode::Auto => matches!(
+            env.build_facts()
+                .map(|facts| facts.preferred_evaluation_mode),
+            Some(PreferredEvaluationMode::PrecomputedCartesian)
+        ),
+    }
+}
+
+const BACKENDS: OptionKind = OptionKind::DynamicEnum { source: "backends" };
+const HYBRID_CURVE_SMOOTHING_KIND: OptionKind = OptionKind::Float {
+    min: 0.0,
+    max: 1.0,
+    step: 0.01,
+};
+
+/// A backend id as a client or a config names it: a built-in id or alias
+/// (`distance` → `experimental_distance`), else any registered backend.
+fn resolve_backend(raw: &str, env: &OptionEnv) -> Option<String> {
+    crate::render_backend::canonical_builtin_backend_id(raw)
+        .map(str::to_string)
+        .or_else(|| env.has_backend(raw).then(|| raw.to_string()))
+}
+
+/// A hybrid leg: any registered backend but a nested hybrid (which would
+/// recurse), lowercased.
+fn resolve_hybrid_leg(raw: &str, env: &OptionEnv) -> Option<String> {
+    let id = raw.trim().to_ascii_lowercase();
+    (!id.is_empty() && id != "hybrid" && env.has_backend(&id)).then_some(id)
+}
+
+/// A string value parsed by the type's own `FromStr`, which accepts its
+/// aliases (`euclidean`, `inversesquare`, `x+y`, …); the setters report the
+/// canonical `Display` spelling back.
+fn raw_parse<T: std::str::FromStr>(raw: &RawOptionValue) -> Option<T> {
+    raw_str(raw)?.parse().ok()
+}
+
+/// A config string parsed the same way; `None` when absent or invalid.
+fn config_parse<T: std::str::FromStr>(value: Option<&str>) -> Option<T> {
+    value?.parse().ok()
+}
+
 /// The room a config describes, for the room rows' seeds. `None` for a
 /// malformed `room_ratio`, which leaves the live room alone: the renderer
 /// build and the profile switch reject such a config before any seed runs.
@@ -369,17 +630,17 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "twoDSources.surroundLabel",
         help_i18n_key: None,
-        legacy_control_addr: osc_contract::CONTROL_SURROUND_PLACEMENT,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_SURROUND_PLACEMENT),
+        set: |live, raw, _env| {
             let placement = SurroundPlacement::from_str(raw_str(raw)?)?;
             live.surround_placement = placement;
             Some(placement.as_str().to_string())
         },
         get_json: |live| live.surround_placement.as_str().into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::surround_placement::store(render, live.surround_placement)
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(placement) = crate::config_fields::surround_placement::get(render) {
                 live.surround_placement = placement;
             }
@@ -393,8 +654,8 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "twoDSources.syntheticObjectsLabel",
         help_i18n_key: Some("help.syntheticObjects"),
-        legacy_control_addr: osc_contract::CONTROL_SYNTHETIC_OBJECTS,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_SYNTHETIC_OBJECTS),
+        set: |live, raw, _env| {
             let enabled = raw_bool(raw)?;
             live.synthetic_objects_enabled = enabled;
             Some(bool_canonical(enabled))
@@ -402,10 +663,10 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         get_json: |live| live.synthetic_objects_enabled.into(),
         // Always persist this master, including false: an explicit false must
         // continue to suppress remembered non-off child selections after reload.
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             render.synthetic_objects_enabled = Some(live.synthetic_objects_enabled);
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(enabled) = render.synthetic_objects_enabled {
                 live.synthetic_objects_enabled = enabled;
             }
@@ -420,17 +681,17 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "renderer.decodeThreadLabel",
         help_i18n_key: Some("help.decodeThread"),
-        legacy_control_addr: osc_contract::CONTROL_DECODE_THREAD,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_DECODE_THREAD),
+        set: |live, raw, _env| {
             let enabled = raw_bool(raw)?;
             live.decode_thread = enabled;
             Some(bool_canonical(enabled))
         },
         get_json: |live| live.decode_thread.into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::decode_thread::store(render, live.decode_thread)
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(enabled) = crate::config_fields::decode_thread::get(render) {
                 live.decode_thread = enabled;
             }
@@ -444,17 +705,17 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "audio.channelMapping",
         help_i18n_key: None,
-        legacy_control_addr: osc_contract::CONTROL_OUTPUT_CHANNEL_MAPPING,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_OUTPUT_CHANNEL_MAPPING),
+        set: |live, raw, _env| {
             let mapping = OutputChannelMapping::from_str(raw_str(raw)?)?;
             live.output_channel_mapping = mapping;
             Some(mapping.as_str().to_string())
         },
         get_json: |live| live.output_channel_mapping.as_str().into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::output_channel_mapping::store(render, live.output_channel_mapping)
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(mapping) = crate::config_fields::output_channel_mapping::get(render) {
                 live.output_channel_mapping = mapping;
             }
@@ -468,8 +729,8 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "twoDSources.objectGeneratorLabel",
         help_i18n_key: Some("help.objectGenerator"),
-        legacy_control_addr: osc_contract::CONTROL_OBJECT_GENERATOR,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_OBJECT_GENERATOR),
+        set: |live, raw, _env| {
             let id = raw_str(raw)?;
             if live.object_generator_id != id {
                 // New generator: drop the previous one's param overrides so
@@ -480,10 +741,10 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
             Some(id.to_string())
         },
         get_json: |live| live.object_generator_id.as_str().into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::object_generator_id::store(render, &live.object_generator_id)
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(id) = crate::config_fields::object_generator_id::get(render) {
                 live.object_generator_id = id;
             }
@@ -497,8 +758,8 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "twoDSources.phantomLabel",
         help_i18n_key: Some("help.phantomExtract"),
-        legacy_control_addr: osc_contract::CONTROL_PHANTOM_EXTRACT,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_PHANTOM_EXTRACT),
+        set: |live, raw, _env| {
             let mode = match raw {
                 RawOptionValue::Str(s) => PhantomExtractMode::from_str(s)?,
                 // Backward compatibility for the old boolean legacy OSC
@@ -518,7 +779,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
             Some(mode.as_str().to_string())
         },
         get_json: |live| live.phantom_extract_mode.as_str().into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::phantom_extract_mode::store(render, live.phantom_extract_mode);
             render.phantom_enabled = None;
             if let Some(params) = render.phantom_params.as_mut() {
@@ -528,7 +789,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
                 }
             }
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(mode) = crate::config_fields::phantom_extract_mode::get(render) {
                 live.phantom_extract_mode = mode;
             }
@@ -545,17 +806,17 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "renderer.crossoverTypeLabel",
         help_i18n_key: Some("help.crossoverType"),
-        legacy_control_addr: osc_contract::CONTROL_CROSSOVER_TYPE,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_CROSSOVER_TYPE),
+        set: |live, raw, _env| {
             let crossover_type = CrossoverType::from_str(raw_str(raw)?)?;
             live.crossover_type = crossover_type;
             Some(crossover_type.as_str().to_string())
         },
         get_json: |live| live.crossover_type.as_str().into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::crossover_type::store(render, live.crossover_type)
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(crossover_type) = crate::config_fields::crossover_type::get(render) {
                 live.crossover_type = crossover_type;
             }
@@ -572,20 +833,22 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "renderer.crossoverTransitionLabel",
         help_i18n_key: Some("help.crossoverFirTransition"),
-        legacy_control_addr: osc_contract::CONTROL_CROSSOVER_FIR_TRANSITION_RATIO,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(
+            osc_contract::CONTROL_CROSSOVER_FIR_TRANSITION_RATIO,
+        ),
+        set: |live, raw, _env| {
             let v = raw_float(raw, CROSSOVER_FIR_TRANSITION_RATIO_KIND)?;
             live.crossover_fir_transition_ratio = v;
             Some(format!("{v}"))
         },
         get_json: |live| live.crossover_fir_transition_ratio.into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::crossover_fir_transition_ratio::store(
                 render,
                 live.crossover_fir_transition_ratio,
             )
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(ratio) = crate::config_fields::crossover_fir_transition_ratio::get(render) {
                 live.crossover_fir_transition_ratio =
                     clamp_to(CROSSOVER_FIR_TRANSITION_RATIO_KIND, ratio);
@@ -602,20 +865,20 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "binaural.hrirUpdateLatticeLabel",
         help_i18n_key: Some("help.hrirUpdateLattice"),
-        legacy_control_addr: osc_contract::CONTROL_BINAURAL_HRIR_UPDATE_LATTICE,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_HRIR_UPDATE_LATTICE),
+        set: |live, raw, _env| {
             let lattice = HrirUpdateLattice::from_str(raw_str(raw)?)?;
             live.binaural.hrir_update_lattice = lattice;
             Some(lattice.as_str().to_string())
         },
         get_json: |live| live.binaural.hrir_update_lattice.as_str().into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::hrir_update_lattice::store(
                 render,
                 live.binaural.hrir_update_lattice,
             )
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(lattice) = crate::config_fields::hrir_update_lattice::get(render) {
                 live.binaural.hrir_update_lattice = lattice;
             }
@@ -637,15 +900,17 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "autoGain.title",
         help_i18n_key: Some("help.master.autoGain"),
-        legacy_control_addr: osc_contract::CONTROL_AUTO_GAIN,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_AUTO_GAIN),
+        set: |live, raw, _env| {
             let enabled = raw_bool(raw)?;
             live.auto_gain = enabled;
             Some(bool_canonical(enabled))
         },
         get_json: |live| live.auto_gain.into(),
-        config_store: |render, live| crate::config_fields::auto_gain::store(render, live.auto_gain),
-        config_seed: |live, render| {
+        config_store: |render, live, _env| {
+            crate::config_fields::auto_gain::store(render, live.auto_gain)
+        },
+        config_seed: |live, render, _env| {
             if let Some(enabled) = crate::config_fields::auto_gain::get(render) {
                 live.auto_gain = enabled;
             }
@@ -659,19 +924,19 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "autoGain.ceiling",
         help_i18n_key: Some("help.master.ceiling"),
-        legacy_control_addr: osc_contract::CONTROL_AUTO_GAIN_CEILING,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_AUTO_GAIN_CEILING),
+        set: |live, raw, _env| {
             let db = raw_float(raw, AUTO_GAIN_CEILING_DB_KIND)?;
             live.auto_gain_ceiling_db = db;
             Some(format!("{db}"))
         },
         get_json: |live| live.auto_gain_ceiling_db.into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::auto_gain_ceiling_db::store(render, live.auto_gain_ceiling_db)
         },
         // Seeded as configured (not clamped), exactly as before the
         // migration; only a client write is bounded.
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(db) = crate::config_fields::auto_gain_ceiling_db::get(render) {
                 live.auto_gain_ceiling_db = db;
             }
@@ -685,17 +950,17 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "section.loudness",
         help_i18n_key: Some("help.drc.loudness"),
-        legacy_control_addr: osc_contract::CONTROL_LOUDNESS,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_LOUDNESS),
+        set: |live, raw, _env| {
             let enabled = raw_bool(raw)?;
             live.use_loudness = enabled;
             Some(bool_canonical(enabled))
         },
         get_json: |live| live.use_loudness.into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::use_loudness::store(render, live.use_loudness)
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(enabled) = crate::config_fields::use_loudness::get(render) {
                 live.use_loudness = enabled;
             }
@@ -709,17 +974,17 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "audio.rampMode",
         help_i18n_key: None,
-        legacy_control_addr: osc_contract::CONTROL_RAMP_MODE,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_RAMP_MODE),
+        set: |live, raw, _env| {
             let mode = RampMode::from_str(raw_str(raw)?)?;
             live.ramp_mode = mode;
             Some(mode.as_str().to_string())
         },
         get_json: |live| live.ramp_mode.as_str().into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::ramp_mode::store(render, live.ramp_mode.as_str())
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(mode) = crate::config_fields::ramp_mode::get(render)
                 .as_deref()
                 .and_then(RampMode::from_str)
@@ -738,8 +1003,8 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "input.drc",
         help_i18n_key: Some("help.drc.mode"),
-        legacy_control_addr: osc_contract::CONTROL_INPUT_DRC_MODE,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_INPUT_DRC_MODE),
+        set: |live, raw, _env| {
             let mode = raw_str(raw)?;
             if live.drc_mode != mode {
                 live.drc_mode = mode.to_string();
@@ -747,10 +1012,10 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
             Some(mode.to_string())
         },
         get_json: |live| live.drc_mode.as_str().into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             render.drc_mode = (live.drc_mode != "Off").then(|| live.drc_mode.clone());
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(mode) = render.drc_mode.as_ref() {
                 live.drc_mode = mode.clone();
             }
@@ -764,18 +1029,18 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: None,
         i18n_key: "input.drc_weight",
         help_i18n_key: Some("help.drc.weight"),
-        legacy_control_addr: osc_contract::CONTROL_INPUT_DRC_WEIGHT,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_INPUT_DRC_WEIGHT),
+        set: |live, raw, _env| {
             let weight = raw_float(raw, DRC_WEIGHT_KIND)?;
             live.drc_weight = weight;
             Some(format!("{weight}"))
         },
         get_json: |live| live.drc_weight.into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             render.drc_weight =
                 ((live.drc_weight - 1.0).abs() > 1e-4).then(|| round6(live.drc_weight));
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(weight) = render.drc_weight {
                 live.drc_weight = clamp_to(DRC_WEIGHT_KIND, weight);
             }
@@ -795,20 +1060,20 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: Some(&ROOM),
         i18n_key: "room.summary.ratio",
         help_i18n_key: None,
-        legacy_control_addr: osc_contract::CONTROL_ROOM_RATIO,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_ROOM_RATIO),
+        set: |live, raw, _env| {
             let ratio = raw_floats::<3>(raw, ROOM_RATIO_KIND)?;
             live.room_ratio = ratio;
             Some(format!("{},{},{}", ratio[0], ratio[1], ratio[2]))
         },
         get_json: |live| live.room_ratio.as_slice().into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::room::store_ratio(render, live.room_ratio)
         },
         // Seeded as configured (not clamped), exactly as the renderer build
         // reads it; only a client write is bounded. The same holds for the
         // other room rows.
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(room) = configured_room(render) {
                 live.room_ratio = room.ratio;
             }
@@ -822,18 +1087,18 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: Some(&ROOM),
         i18n_key: "room.axis.rear",
         help_i18n_key: Some("help.room.rear"),
-        legacy_control_addr: osc_contract::CONTROL_ROOM_RATIO_REAR,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_ROOM_RATIO_REAR),
+        set: |live, raw, _env| {
             let v = raw_float(raw, ROOM_EXTENT_KIND)?;
             live.room_ratio_rear = v;
             Some(format!("{v}"))
         },
         get_json: |live| live.room_ratio_rear.into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::room::store_rear(render, live.room_ratio_rear)
         },
         // An absent rear follows the configured length (`room::parse`).
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(room) = configured_room(render) {
                 live.room_ratio_rear = room.rear;
             }
@@ -847,17 +1112,17 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: Some(&ROOM),
         i18n_key: "room.axis.lower",
         help_i18n_key: Some("help.room.lower"),
-        legacy_control_addr: osc_contract::CONTROL_ROOM_RATIO_LOWER,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_ROOM_RATIO_LOWER),
+        set: |live, raw, _env| {
             let v = raw_float(raw, ROOM_EXTENT_KIND)?;
             live.room_ratio_lower = v;
             Some(format!("{v}"))
         },
         get_json: |live| live.room_ratio_lower.into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::room::store_lower(render, live.room_ratio_lower)
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(room) = configured_room(render) {
                 live.room_ratio_lower = room.lower;
             }
@@ -871,20 +1136,734 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         group: Some(&ROOM),
         i18n_key: "room.centerBlend",
         help_i18n_key: Some("help.room.centerBlend"),
-        legacy_control_addr: osc_contract::CONTROL_ROOM_RATIO_CENTER_BLEND,
-        set: |live, raw| {
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_ROOM_RATIO_CENTER_BLEND),
+        set: |live, raw, _env| {
             let v = raw_float(raw, ROOM_CENTER_BLEND_KIND)?;
             live.room_ratio_center_blend = v;
             Some(format!("{v}"))
         },
         get_json: |live| live.room_ratio_center_blend.into(),
-        config_store: |render, live| {
+        config_store: |render, live, _env| {
             crate::config_fields::room::store_center_blend(render, live.room_ratio_center_blend)
         },
-        config_seed: |live, render| {
+        config_seed: |live, render, _env| {
             if let Some(room) = configured_room(render) {
                 live.room_ratio_center_blend = room.center_blend;
             }
+        },
+    },
+    // ── Distance ────────────────────────────────────────────────────────
+    //
+    // The distance model and the distance diffuse: both baked into the
+    // backend at a topology build. Their dedicated addresses stay as aliases
+    // (the diffuse ones under `CONTROL_DISTANCE_DIFFUSE_PREFIX`) and the
+    // snapshot keeps `distanceModel`, `distanceModelMetric` and the
+    // `distanceDiffuse` block.
+    OptionSpec {
+        key: "vbap_distance_model",
+        kind: OptionKind::Enum(DISTANCE_MODELS),
+        default: OptionDefault::Str(crate::config_fields::vbap_distance_model::DEFAULT),
+        flags: OptionFlags::NONE,
+        group: Some(&DISTANCE_MODEL),
+        i18n_key: "distance.model",
+        help_i18n_key: None,
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_DISTANCE_MODEL),
+        set: |live, raw, _env| {
+            let model: crate::spatial_vbap::DistanceModel = raw_parse(raw)?;
+            live.distance_model = model;
+            Some(model.to_string())
+        },
+        get_json: |live| live.distance_model.to_string().into(),
+        config_store: |render, live, _env| {
+            crate::config_fields::vbap_distance_model::store(
+                render,
+                live.distance_model.to_string(),
+            )
+        },
+        // A malformed model fails the renderer build and the profile switch
+        // before any seed runs; here it is left alone.
+        config_seed: |live, render, _env| {
+            if let Some(model) =
+                config_parse(crate::config_fields::vbap_distance_model::get(render).as_deref())
+            {
+                live.distance_model = model;
+            }
+        },
+    },
+    OptionSpec {
+        key: "distance_model_metric",
+        kind: OptionKind::Enum(DISTANCE_METRICS),
+        default: OptionDefault::Str("spherical"),
+        flags: OptionFlags::NONE,
+        group: Some(&DISTANCE_MODEL),
+        i18n_key: "distance.metric",
+        help_i18n_key: Some("help.distanceModel.metric"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_DISTANCE_MODEL_METRIC),
+        set: |live, raw, _env| {
+            let metric: crate::spatial_vbap::DistanceMetric = raw_parse(raw)?;
+            live.distance_model_metric = metric;
+            Some(metric.to_string())
+        },
+        get_json: |live| live.distance_model_metric.to_string().into(),
+        config_store: |render, live, _env| {
+            render.distance_model_metric = (live.distance_model_metric
+                != crate::spatial_vbap::DistanceMetric::default())
+            .then(|| live.distance_model_metric.to_string());
+        },
+        config_seed: |live, render, _env| {
+            if let Some(metric) = config_parse(render.distance_model_metric.as_deref()) {
+                live.distance_model_metric = metric;
+            }
+        },
+    },
+    OptionSpec {
+        key: "distance_diffuse",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(crate::config_fields::distance_diffuse::DEFAULT),
+        flags: OptionFlags::NONE,
+        group: Some(&DISTANCE_DIFFUSE),
+        i18n_key: "distance.enable",
+        help_i18n_key: None,
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            tail: "enabled",
+        },
+        set: |live, raw, _env| {
+            let enabled = raw_bool(raw)?;
+            live.use_distance_diffuse = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.use_distance_diffuse.into(),
+        config_store: |render, live, _env| {
+            crate::config_fields::distance_diffuse::store(render, live.use_distance_diffuse)
+        },
+        config_seed: |live, render, _env| {
+            if let Some(enabled) = crate::config_fields::distance_diffuse::get(render) {
+                live.use_distance_diffuse = enabled;
+            }
+        },
+    },
+    OptionSpec {
+        key: "distance_diffuse_threshold",
+        kind: DISTANCE_DIFFUSE_THRESHOLD_KIND,
+        default: OptionDefault::Float(crate::config_fields::distance_diffuse_threshold::DEFAULT),
+        flags: OptionFlags::NONE,
+        group: Some(&DISTANCE_DIFFUSE),
+        i18n_key: "distance.threshold",
+        help_i18n_key: Some("help.distanceDiffuse.threshold"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            tail: "threshold",
+        },
+        set: |live, raw, _env| {
+            let v = raw_float(raw, DISTANCE_DIFFUSE_THRESHOLD_KIND)?;
+            live.distance_diffuse_threshold = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.distance_diffuse_threshold.into(),
+        config_store: |render, live, _env| {
+            crate::config_fields::distance_diffuse_threshold::store(
+                render,
+                live.distance_diffuse_threshold,
+            )
+        },
+        // Seeded as configured, as the renderer build reads it.
+        config_seed: |live, render, _env| {
+            if let Some(v) = crate::config_fields::distance_diffuse_threshold::get(render) {
+                live.distance_diffuse_threshold = v;
+            }
+        },
+    },
+    OptionSpec {
+        key: "distance_diffuse_curve",
+        kind: DISTANCE_DIFFUSE_CURVE_KIND,
+        default: OptionDefault::Float(crate::config_fields::distance_diffuse_curve::DEFAULT),
+        flags: OptionFlags::NONE,
+        group: Some(&DISTANCE_DIFFUSE),
+        i18n_key: "distance.curve",
+        help_i18n_key: Some("help.distanceDiffuse.curve"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            tail: "curve",
+        },
+        set: |live, raw, _env| {
+            let v = raw_float(raw, DISTANCE_DIFFUSE_CURVE_KIND)?;
+            live.distance_diffuse_curve = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.distance_diffuse_curve.into(),
+        config_store: |render, live, _env| {
+            crate::config_fields::distance_diffuse_curve::store(render, live.distance_diffuse_curve)
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = crate::config_fields::distance_diffuse_curve::get(render) {
+                live.distance_diffuse_curve = v;
+            }
+        },
+    },
+    OptionSpec {
+        key: "distance_diffuse_metric",
+        kind: OptionKind::Enum(DISTANCE_METRICS),
+        default: OptionDefault::Str("spherical"),
+        flags: OptionFlags::NONE,
+        group: Some(&DISTANCE_DIFFUSE),
+        i18n_key: "distance.metric",
+        help_i18n_key: Some("help.distanceDiffuse.metric"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            tail: "metric",
+        },
+        set: |live, raw, _env| {
+            let metric: crate::spatial_vbap::DistanceMetric = raw_parse(raw)?;
+            live.distance_diffuse_metric = metric;
+            Some(metric.to_string())
+        },
+        get_json: |live| live.distance_diffuse_metric.to_string().into(),
+        config_store: |render, live, _env| {
+            render.distance_diffuse_metric = (live.distance_diffuse_metric
+                != crate::spatial_vbap::DistanceMetric::default())
+            .then(|| live.distance_diffuse_metric.to_string());
+        },
+        config_seed: |live, render, _env| {
+            if let Some(metric) = config_parse(render.distance_diffuse_metric.as_deref()) {
+                live.distance_diffuse_metric = metric;
+            }
+        },
+    },
+    OptionSpec {
+        key: "distance_diffuse_mirror_axes",
+        kind: OptionKind::Enum(MIRROR_AXES),
+        default: OptionDefault::Str("xy"),
+        flags: OptionFlags::NONE,
+        group: Some(&DISTANCE_DIFFUSE),
+        i18n_key: "distance.mirrorAxes",
+        help_i18n_key: Some("help.distanceDiffuse.mirrorAxes"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            tail: "mirror_axes",
+        },
+        set: |live, raw, _env| {
+            let axes: crate::spatial_vbap::MirrorAxes = raw_parse(raw)?;
+            live.distance_diffuse_mirror_axes = axes;
+            Some(axes.to_string())
+        },
+        get_json: |live| live.distance_diffuse_mirror_axes.to_string().into(),
+        config_store: |render, live, _env| {
+            render.distance_diffuse_mirror_axes = (live.distance_diffuse_mirror_axes
+                != crate::spatial_vbap::MirrorAxes::default())
+            .then(|| live.distance_diffuse_mirror_axes.to_string());
+        },
+        config_seed: |live, render, _env| {
+            if let Some(axes) = config_parse(render.distance_diffuse_mirror_axes.as_deref()) {
+                live.distance_diffuse_mirror_axes = axes;
+            }
+        },
+    },
+    // ── Evaluation ──────────────────────────────────────────────────────
+    //
+    // The evaluation layer: the table mode, the cartesian and polar grids,
+    // and the object-size intervals. A change re-samples the tables and
+    // reuses the backend's gain models. Their dedicated addresses stay as
+    // aliases (the grids under their prefixes); the snapshot keeps its
+    // `evaluation` block and the per-grid state addresses.
+    OptionSpec {
+        key: "render_evaluation_mode",
+        kind: OptionKind::Enum(EVALUATION_MODES),
+        default: OptionDefault::Str("auto"),
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.title",
+        help_i18n_key: None,
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_RENDER_EVALUATION_MODE),
+        set: |live, raw, _env| {
+            let mode = crate::live_params::LiveEvaluationMode::from_str(raw_str(raw)?)?;
+            live.set_evaluation_mode(mode);
+            Some(mode.as_str().to_string())
+        },
+        get_json: |live| live.requested_evaluation_mode().as_str().into(),
+        config_store: |render, live, _env| {
+            render.render_evaluation_mode = match live.requested_evaluation_mode() {
+                crate::live_params::LiveEvaluationMode::Auto => None,
+                other => Some(other.as_str().to_string()),
+            };
+        },
+        config_seed: |live, render, _env| {
+            if let Some(mode) = render
+                .render_evaluation_mode
+                .as_deref()
+                .and_then(crate::live_params::LiveEvaluationMode::from_str)
+            {
+                live.set_evaluation_mode(mode);
+            }
+        },
+    },
+    OptionSpec {
+        key: "evaluation_object_size_intervals",
+        kind: OBJECT_SIZE_INTERVALS_KIND,
+        default: OptionDefault::Int(0),
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.objectSizeIntervals",
+        help_i18n_key: Some("help.eval.objectSizeIntervals"),
+        legacy_control_addr: LegacyAddr::Exact(
+            osc_contract::CONTROL_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS,
+        ),
+        set: |live, raw, _env| {
+            let intervals = raw_int(raw, OBJECT_SIZE_INTERVALS_KIND)?;
+            live.evaluation.object_size_intervals = intervals as usize;
+            Some(intervals.to_string())
+        },
+        get_json: |live| live.evaluation.object_size_intervals.into(),
+        // 0 is the default and stays out of the file.
+        config_store: |render, live, _env| {
+            render.evaluation_object_size_intervals = (live.evaluation.object_size_intervals > 0)
+                .then_some(live.evaluation.object_size_intervals);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(intervals) = render.evaluation_object_size_intervals {
+                live.evaluation.object_size_intervals = intervals;
+            }
+        },
+    },
+    OptionSpec {
+        key: "evaluation_cartesian_x_size",
+        kind: GRID_CELLS_KIND,
+        default: OptionDefault::Build,
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.cartesian.xSize",
+        help_i18n_key: Some("help.eval.cartesianGrid"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+            tail: "x_size",
+        },
+        set: |live, raw, _env| {
+            let cells = raw_int(raw, GRID_CELLS_KIND)?;
+            live.evaluation.cartesian.x_size = cells as usize;
+            Some(cells.to_string())
+        },
+        get_json: |live| live.evaluation.cartesian.x_size.into(),
+        config_store: |render, live, env| {
+            render.evaluation_cartesian_x_size =
+                cartesian_in_force(live, env).then_some(live.evaluation.cartesian.x_size.max(1));
+        },
+        // Only a pinned size: otherwise the build's (the bridge's) stays.
+        config_seed: |live, render, _env| {
+            if let Some(cells) = render.evaluation_cartesian_x_size {
+                live.evaluation.cartesian.x_size = cells.max(1);
+            }
+        },
+    },
+    OptionSpec {
+        key: "evaluation_cartesian_y_size",
+        kind: GRID_CELLS_KIND,
+        default: OptionDefault::Build,
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.cartesian.ySize",
+        help_i18n_key: Some("help.eval.cartesianGrid"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+            tail: "y_size",
+        },
+        set: |live, raw, _env| {
+            let cells = raw_int(raw, GRID_CELLS_KIND)?;
+            live.evaluation.cartesian.y_size = cells as usize;
+            Some(cells.to_string())
+        },
+        get_json: |live| live.evaluation.cartesian.y_size.into(),
+        config_store: |render, live, env| {
+            render.evaluation_cartesian_y_size =
+                cartesian_in_force(live, env).then_some(live.evaluation.cartesian.y_size.max(1));
+        },
+        // Only a pinned size: otherwise the build's (the bridge's) stays.
+        config_seed: |live, render, _env| {
+            if let Some(cells) = render.evaluation_cartesian_y_size {
+                live.evaluation.cartesian.y_size = cells.max(1);
+            }
+        },
+    },
+    OptionSpec {
+        key: "evaluation_cartesian_z_size",
+        kind: GRID_CELLS_KIND,
+        default: OptionDefault::Build,
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.cartesian.zSize",
+        help_i18n_key: Some("help.eval.cartesianGrid"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+            tail: "z_size",
+        },
+        set: |live, raw, _env| {
+            let cells = raw_int(raw, GRID_CELLS_KIND)?;
+            live.evaluation.cartesian.z_size = cells as usize;
+            Some(cells.to_string())
+        },
+        get_json: |live| live.evaluation.cartesian.z_size.into(),
+        config_store: |render, live, env| {
+            render.evaluation_cartesian_z_size =
+                cartesian_in_force(live, env).then_some(live.evaluation.cartesian.z_size.max(1));
+        },
+        // Only a pinned size: otherwise the build's (the bridge's) stays.
+        config_seed: |live, render, _env| {
+            if let Some(cells) = render.evaluation_cartesian_z_size {
+                live.evaluation.cartesian.z_size = cells.max(1);
+            }
+        },
+    },
+    OptionSpec {
+        key: "evaluation_cartesian_z_neg_size",
+        kind: GRID_CELLS_KIND,
+        default: OptionDefault::Build,
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.cartesian.zNegSize",
+        help_i18n_key: Some("help.eval.cartesianGrid"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+            tail: "z_neg_size",
+        },
+        set: |live, raw, _env| {
+            let cells = raw_int(raw, GRID_CELLS_KIND)?;
+            live.evaluation.cartesian.z_neg_size = cells as usize;
+            Some(cells.to_string())
+        },
+        get_json: |live| live.evaluation.cartesian.z_neg_size.into(),
+        config_store: |render, live, env| {
+            render.evaluation_cartesian_z_neg_size =
+                cartesian_in_force(live, env).then_some(live.evaluation.cartesian.z_neg_size);
+        },
+        // Only a pinned size: otherwise the build's (the bridge's) stays.
+        config_seed: |live, render, _env| {
+            if let Some(cells) = render.evaluation_cartesian_z_neg_size {
+                live.evaluation.cartesian.z_neg_size = cells;
+            }
+        },
+    },
+    OptionSpec {
+        key: "vbap_azimuth_resolution",
+        kind: GRID_CELLS_KIND,
+        default: OptionDefault::Int(crate::config_fields::vbap_azimuth_resolution::DEFAULT as i64),
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.polar.azimuth",
+        help_i18n_key: Some("help.eval.polarGrid"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+            tail: "azimuth_resolution",
+        },
+        set: |live, raw, _env| {
+            let cells = raw_int(raw, GRID_CELLS_KIND)?;
+            live.evaluation.polar.azimuth_values = cells as i32;
+            Some(cells.to_string())
+        },
+        get_json: |live| live.evaluation.polar.azimuth_values.into(),
+        config_store: |render, live, _env| {
+            crate::config_fields::vbap_azimuth_resolution::store(
+                render,
+                live.evaluation.polar.azimuth_values.max(1),
+            )
+        },
+        // Always seeded, laid out as the build lays it out.
+        config_seed: |live, render, env| {
+            live.evaluation.polar.azimuth_values =
+                configured_polar_grid(render, env).azimuth_values;
+        },
+    },
+    OptionSpec {
+        key: "vbap_elevation_resolution",
+        kind: GRID_CELLS_KIND,
+        default: OptionDefault::Build,
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.polar.elevation",
+        help_i18n_key: Some("help.eval.polarGrid"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+            tail: "elevation_resolution",
+        },
+        set: |live, raw, _env| {
+            let cells = raw_int(raw, GRID_CELLS_KIND)?;
+            live.evaluation.polar.elevation_values = cells as i32;
+            Some(cells.to_string())
+        },
+        get_json: |live| live.evaluation.polar.elevation_values.into(),
+        config_store: |render, live, _env| {
+            crate::config_fields::vbap_elevation_resolution::store(
+                render,
+                live.evaluation.polar.elevation_values.max(1),
+            )
+        },
+        // Always seeded, laid out as the build lays it out.
+        config_seed: |live, render, env| {
+            live.evaluation.polar.elevation_values =
+                configured_polar_grid(render, env).elevation_values;
+        },
+    },
+    OptionSpec {
+        key: "vbap_distance_res",
+        kind: GRID_CELLS_KIND,
+        default: OptionDefault::Int(crate::config_fields::vbap_distance_res::DEFAULT as i64),
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.polar.distanceRes",
+        help_i18n_key: Some("help.eval.polarGrid"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+            tail: "distance_res",
+        },
+        set: |live, raw, _env| {
+            let cells = raw_int(raw, GRID_CELLS_KIND)?;
+            live.evaluation.polar.distance_res = cells as i32;
+            Some(cells.to_string())
+        },
+        get_json: |live| live.evaluation.polar.distance_res.into(),
+        config_store: |render, live, _env| {
+            crate::config_fields::vbap_distance_res::store(
+                render,
+                live.evaluation.polar.distance_res.max(1),
+            )
+        },
+        // Always seeded, laid out as the build lays it out.
+        config_seed: |live, render, env| {
+            live.evaluation.polar.distance_res = configured_polar_grid(render, env).distance_res;
+        },
+    },
+    OptionSpec {
+        key: "vbap_distance_max",
+        kind: POLAR_DISTANCE_MAX_KIND,
+        default: OptionDefault::Float(crate::config_fields::vbap_distance_max::DEFAULT),
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.polar.distanceMax",
+        help_i18n_key: Some("help.eval.polarGrid"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+            tail: "distance_max",
+        },
+        set: |live, raw, _env| {
+            let v = raw_float(raw, POLAR_DISTANCE_MAX_KIND)?;
+            live.evaluation.polar.distance_max = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.evaluation.polar.distance_max.into(),
+        config_store: |render, live, _env| {
+            crate::config_fields::vbap_distance_max::store(
+                render,
+                live.evaluation.polar.distance_max.max(0.01),
+            )
+        },
+        config_seed: |live, render, env| {
+            live.evaluation.polar.distance_max = configured_polar_grid(render, env).distance_max;
+        },
+    },
+    // Read at table-read time (nearest cell or trilinear), synced into the
+    // evaluators every frame: no rebuild, so no group.
+    OptionSpec {
+        key: "render_evaluation_position_interpolation",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(
+            crate::config_fields::render_evaluation_position_interpolation::DEFAULT,
+        ),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "vbap.positionInterpolation",
+        help_i18n_key: Some("help.vbap.positionInterpolation"),
+        legacy_control_addr: LegacyAddr::Exact(
+            osc_contract::CONTROL_RENDER_EVALUATION_POSITION_INTERPOLATION,
+        ),
+        set: |live, raw, _env| {
+            let enabled = raw_bool(raw)?;
+            live.evaluation.position_interpolation = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.evaluation.position_interpolation.into(),
+        config_store: |render, live, _env| {
+            crate::config_fields::render_evaluation_position_interpolation::store(
+                render,
+                live.evaluation.position_interpolation,
+            )
+        },
+        config_seed: |live, render, _env| {
+            if let Some(enabled) =
+                crate::config_fields::render_evaluation_position_interpolation::get(render)
+            {
+                live.evaluation.position_interpolation = enabled;
+            }
+        },
+    },
+    // ── Backend ─────────────────────────────────────────────────────────
+    //
+    // The render backend and the hybrid backend's legs, curve smoothing and
+    // metric. The hybrid curve (a list of points) and the per-backend param
+    // bag (`/control/backend/param`, keys declared by each backend's own
+    // schema) stay hand-wired. The dedicated addresses stay as aliases; the
+    // snapshot keeps `renderBackend` and `renderBackendState.hybrid`.
+    OptionSpec {
+        key: "render_backend",
+        kind: BACKENDS,
+        default: OptionDefault::Str("vbap"),
+        flags: OptionFlags::NONE,
+        group: Some(&BACKEND),
+        i18n_key: "backend.title",
+        help_i18n_key: None,
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_RENDER_BACKEND),
+        set: |live, raw, env| {
+            let raw = raw_str(raw)?.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let id = resolve_backend(raw, env)?;
+            live.backend_id = id.clone();
+            Some(id)
+        },
+        get_json: |live| live.backend_id().into(),
+        config_store: |render, live, _env| {
+            render.render_backend =
+                (live.backend_id() != "vbap").then(|| live.backend_id().to_string());
+        },
+        config_seed: |live, render, env| {
+            if let Some(id) = render
+                .render_backend
+                .as_deref()
+                .and_then(|raw| resolve_backend(raw, env))
+            {
+                live.backend_id = id;
+            }
+        },
+    },
+    OptionSpec {
+        key: "hybrid_external_backend",
+        kind: BACKENDS,
+        default: OptionDefault::Str(crate::live_params::HYBRID_DEFAULT_EXTERNAL_BACKEND_ID),
+        flags: OptionFlags::NONE,
+        group: Some(&BACKEND),
+        i18n_key: "hybrid.external",
+        help_i18n_key: Some("help.hybrid.external"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_HYBRID_PREFIX,
+            tail: "external_backend",
+        },
+        set: |live, raw, env| {
+            let id = resolve_hybrid_leg(raw_str(raw)?, env)?;
+            live.hybrid.external_backend_id = id.clone();
+            Some(id)
+        },
+        get_json: |live| live.hybrid.external_backend_id.as_str().into(),
+        config_store: |render, live, _env| {
+            render.hybrid_external_backend = (live.hybrid.external_backend_id
+                != crate::live_params::HYBRID_DEFAULT_EXTERNAL_BACKEND_ID)
+                .then(|| live.hybrid.external_backend_id.clone());
+        },
+        // Always seeded: an absent, unregistered or nested-hybrid leg falls
+        // back to the default, as the construction path always did.
+        config_seed: |live, render, env| {
+            live.hybrid.external_backend_id = render
+                .hybrid_external_backend
+                .clone()
+                .filter(|id| id != "hybrid" && env.has_backend(id))
+                .unwrap_or_else(|| {
+                    crate::live_params::HYBRID_DEFAULT_EXTERNAL_BACKEND_ID.to_string()
+                });
+        },
+    },
+    OptionSpec {
+        key: "hybrid_internal_backend",
+        kind: BACKENDS,
+        default: OptionDefault::Str(crate::live_params::HYBRID_DEFAULT_INTERNAL_BACKEND_ID),
+        flags: OptionFlags::NONE,
+        group: Some(&BACKEND),
+        i18n_key: "hybrid.internal",
+        help_i18n_key: Some("help.hybrid.internal"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_HYBRID_PREFIX,
+            tail: "internal_backend",
+        },
+        set: |live, raw, env| {
+            let id = resolve_hybrid_leg(raw_str(raw)?, env)?;
+            live.hybrid.internal_backend_id = id.clone();
+            Some(id)
+        },
+        get_json: |live| live.hybrid.internal_backend_id.as_str().into(),
+        config_store: |render, live, _env| {
+            render.hybrid_internal_backend = (live.hybrid.internal_backend_id
+                != crate::live_params::HYBRID_DEFAULT_INTERNAL_BACKEND_ID)
+                .then(|| live.hybrid.internal_backend_id.clone());
+        },
+        // Always seeded: an absent, unregistered or nested-hybrid leg falls
+        // back to the default, as the construction path always did.
+        config_seed: |live, render, env| {
+            live.hybrid.internal_backend_id = render
+                .hybrid_internal_backend
+                .clone()
+                .filter(|id| id != "hybrid" && env.has_backend(id))
+                .unwrap_or_else(|| {
+                    crate::live_params::HYBRID_DEFAULT_INTERNAL_BACKEND_ID.to_string()
+                });
+        },
+    },
+    OptionSpec {
+        key: "hybrid_curve_smoothing",
+        kind: HYBRID_CURVE_SMOOTHING_KIND,
+        default: OptionDefault::Float(crate::live_params::HYBRID_DEFAULT_CURVE_SMOOTHING),
+        flags: OptionFlags::NONE,
+        group: Some(&BACKEND),
+        i18n_key: "hybrid.smoothing",
+        help_i18n_key: Some("help.hybrid.smoothing"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_HYBRID_PREFIX,
+            tail: "curve_smoothing",
+        },
+        set: |live, raw, _env| {
+            let v = raw_float(raw, HYBRID_CURVE_SMOOTHING_KIND)?;
+            // The old handler's tolerance: float noise is no change.
+            if (live.hybrid.curve_smoothing - v).abs() > 1e-6 {
+                live.hybrid.curve_smoothing = v;
+            }
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.hybrid.curve_smoothing.into(),
+        config_store: |render, live, _env| {
+            render.hybrid_curve_smoothing = ((live.hybrid.curve_smoothing
+                - crate::live_params::HYBRID_DEFAULT_CURVE_SMOOTHING)
+                .abs()
+                > 1e-4)
+                .then_some(live.hybrid.curve_smoothing);
+        },
+        config_seed: |live, render, _env| {
+            live.hybrid.curve_smoothing = render
+                .hybrid_curve_smoothing
+                .map(|v| v.clamp(0.0, 1.0))
+                .unwrap_or(crate::live_params::HYBRID_DEFAULT_CURVE_SMOOTHING);
+        },
+    },
+    OptionSpec {
+        key: "hybrid_metric",
+        kind: OptionKind::Enum(DISTANCE_METRICS),
+        default: OptionDefault::Str("chebyshev"),
+        flags: OptionFlags::NONE,
+        group: Some(&BACKEND),
+        i18n_key: "distance.metric",
+        help_i18n_key: Some("help.hybrid.metric"),
+        legacy_control_addr: LegacyAddr::Prefixed {
+            prefix: osc_contract::CONTROL_HYBRID_PREFIX,
+            tail: "metric",
+        },
+        set: |live, raw, _env| {
+            let metric: crate::spatial_vbap::DistanceMetric = raw_parse(raw)?;
+            live.hybrid.metric = metric;
+            Some(metric.to_string())
+        },
+        get_json: |live| live.hybrid.metric.to_string().into(),
+        config_store: |render, live, _env| {
+            render.hybrid_metric = (live.hybrid.metric
+                != crate::live_params::HybridLiveParams::default().metric)
+                .then(|| live.hybrid.metric.to_string());
+        },
+        config_seed: |live, render, _env| {
+            live.hybrid.metric = config_parse(render.hybrid_metric.as_deref())
+                .unwrap_or(crate::live_params::HybridLiveParams::default().metric);
         },
     },
 ];
@@ -972,11 +1951,12 @@ pub fn apply_batch(
         ..BatchApplied::default()
     };
     let mut replan = false;
+    let env = OptionEnv::of(control);
     {
         let mut live = control.live.write();
         for (spec, raw) in items {
             let before = (spec.get_json)(&live);
-            let Some(canonical) = (spec.set)(&mut live, raw) else {
+            let Some(canonical) = (spec.set)(&mut live, raw, &env) else {
                 batch.results.push(None);
                 continue;
             };
@@ -1002,7 +1982,7 @@ pub fn apply_batch(
 pub fn find_by_legacy_addr(addr: &str) -> Option<&'static OptionSpec> {
     LIVE_OPTIONS
         .iter()
-        .find(|spec| spec.legacy_control_addr == addr)
+        .find(|spec| spec.legacy_control_addr.matches(addr))
 }
 
 /// Reset every declared option — plus the param bags and the virtual bed —
@@ -1012,13 +1992,16 @@ pub fn find_by_legacy_addr(addr: &str) -> Option<&'static OptionSpec> {
 /// (live starts at defaults) but on a running control would silently keep
 /// the previous profile's value for any field the incoming profile stores
 /// as absent (the skip-if-default persist convention).
-pub fn reset_live_to_defaults(live: &mut LiveParams) {
+pub fn reset_live_to_defaults(live: &mut LiveParams, env: &OptionEnv) {
     for spec in LIVE_OPTIONS {
         let mut numbers = [0.0f64; MAX_ARRAY_LEN];
         let raw = match spec.default {
             OptionDefault::Bool(b) => RawOptionValue::Bool(b),
             OptionDefault::Str(s) => RawOptionValue::Str(s),
             OptionDefault::Float(f) => RawOptionValue::Number(f as f64),
+            OptionDefault::Int(i) => RawOptionValue::Number(i as f64),
+            // Left to the incoming profile's seed.
+            OptionDefault::Build => continue,
             OptionDefault::FloatArray(values) => {
                 let len = values.len().min(MAX_ARRAY_LEN);
                 for (slot, value) in numbers.iter_mut().zip(values) {
@@ -1027,7 +2010,7 @@ pub fn reset_live_to_defaults(live: &mut LiveParams) {
                 RawOptionValue::Numbers(&numbers[..len])
             }
         };
-        if (spec.set)(live, &raw).is_none() {
+        if (spec.set)(live, &raw, env).is_none() {
             // A spec whose default fails its own validation is a registry bug.
             log::warn!("live option '{}' rejected its declared default", spec.key);
         }
@@ -1041,9 +2024,9 @@ pub fn reset_live_to_defaults(live: &mut LiveParams) {
 /// registry doesn't model (the two param bags and the virtual bed) — from a
 /// loaded config. Shared by the CLI bootstrap and `Engine::from_paths` so the
 /// two boot paths cannot drift (the FFI/CLI parity bug class).
-pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig) {
+pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig, env: &OptionEnv) {
     for spec in LIVE_OPTIONS {
-        (spec.config_seed)(live, render);
+        (spec.config_seed)(live, render, env);
     }
     // Param bags: absent = the stage's declared defaults.
     if let Some(params) = render.object_generator_params.clone() {
@@ -1089,12 +2072,38 @@ pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig) {
     }
 }
 
+/// Seed the options whose groups shape the topology or the evaluation layer
+/// — the part of a config the renderer must hold before its first rebuild —
+/// and report the one rebuild the seeded changes ask for. Called by the
+/// construction path before it decides whether to rebuild; the full
+/// [`seed_live_from_config`] that follows seeds these rows again, to the
+/// same values.
+pub fn seed_rebuilding_rows_from_config(
+    live: &mut LiveParams,
+    render: &RenderConfig,
+    env: &OptionEnv,
+) -> Rebuild {
+    let mut rebuild = Rebuild::None;
+    for spec in LIVE_OPTIONS {
+        let effect = rebuild_for(spec);
+        if effect == Rebuild::None {
+            continue;
+        }
+        let before = (spec.get_json)(live);
+        (spec.config_seed)(live, render, env);
+        if (spec.get_json)(live) != before {
+            rebuild = rebuild.max(effect);
+        }
+    }
+    rebuild
+}
+
 /// Write every declared live option — plus the param bags and the virtual
 /// bed — into a config. Used by the full live-state save; the OSC targeted
 /// persist stores single options through `OptionSpec::config_store`.
-pub fn store_live_to_config(render: &mut RenderConfig, live: &LiveParams) {
+pub fn store_live_to_config(render: &mut RenderConfig, live: &LiveParams, env: &OptionEnv) {
     for spec in LIVE_OPTIONS {
-        (spec.config_store)(render, live);
+        (spec.config_store)(render, live, env);
     }
     // Param bags: `None` keeps the key out of the file so each stage falls
     // back to its declared defaults.
@@ -1143,6 +2152,8 @@ pub fn schema_json() -> String {
                 OptionKind::Enum(values) => ("enum", Some(values)),
                 OptionKind::Str => ("string", None),
                 OptionKind::Float { .. } => ("float", None),
+                OptionKind::Int { .. } => ("int", None),
+                OptionKind::DynamicEnum { .. } => ("dynamic_enum", None),
                 OptionKind::FloatArray { .. } => ("float_array", None),
             };
             let mut flags = Vec::new();
@@ -1164,6 +2175,13 @@ pub fn schema_json() -> String {
                     obj["min"] = min.into();
                     obj["max"] = max.into();
                     obj["step"] = step.into();
+                }
+                OptionKind::Int { min, max } => {
+                    obj["min"] = min.into();
+                    obj["max"] = max.into();
+                }
+                OptionKind::DynamicEnum { source } => {
+                    obj["source"] = source.into();
                 }
                 OptionKind::FloatArray {
                     len,
@@ -1209,8 +2227,15 @@ mod tests {
                 "option key {} is not snake_case",
                 spec.key
             );
+            let prefix = match spec.legacy_control_addr {
+                LegacyAddr::Exact(addr) => addr,
+                LegacyAddr::Prefixed { prefix, tail } => {
+                    assert!(prefix.ends_with('/') && !tail.contains('/'), "{}", spec.key);
+                    prefix
+                }
+            };
             assert!(
-                spec.legacy_control_addr.starts_with("/omniphony/control/"),
+                prefix.starts_with("/omniphony/control/"),
                 "{}: bad legacy address",
                 spec.key
             );

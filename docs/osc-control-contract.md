@@ -76,13 +76,13 @@ rebuild the topology.
 | `/control/spread/distance_range` | f `>0` | Distance at which distance-derived spread reaches 0. |
 | `/control/spread/distance_curve` | f `≥0` | Curve exponent for distance-derived spread. |
 | `/control/spread/size_to_spread_mode` | s | `max` \| `mean` \| `projection_perpendicular`. |
-| `/control/distance_model` | s | `none` \| `linear` \| `quadratic` \| `inverse-square`. |
-| `/control/distance_model_metric` | s | `spherical` \| `chebyshev`. |
-| `/control/distance_diffuse/enabled` | int bool | Enable the mirrored distance-diffuse blend. |
-| `/control/distance_diffuse/threshold` | f `>0` | ADM distance at which the blend reaches 100 % direct. |
-| `/control/distance_diffuse/curve` | f `≥0` | Blend-weight curve exponent. |
-| `/control/distance_diffuse/metric` | s | `spherical` \| `chebyshev`. |
-| `/control/distance_diffuse/mirror_axes` | s | ADM axes negated to build the mirror image: any combination of `x`, `y`, `z` (`xy` — the default half-turn about the vertical axis — `y` for a front/back reflection, `xyz` for an inversion through the origin), or `none`. |
+| `/control/distance_model` | s | `none` \| `linear` \| `quadratic` \| `inverse-square`. Registry option `vbap_distance_model` (group `distance_model`). |
+| `/control/distance_model_metric` | s | `spherical` \| `chebyshev`. Registry option `distance_model_metric` (group `distance_model`). |
+| `/control/distance_diffuse/enabled` | int bool | Enable the mirrored distance-diffuse blend. Registry option `distance_diffuse` (group `distance_diffuse`). |
+| `/control/distance_diffuse/threshold` | f `>0` | ADM distance at which the blend reaches 100 % direct. Registry option `distance_diffuse_threshold` (group `distance_diffuse`). |
+| `/control/distance_diffuse/curve` | f `≥0` | Blend-weight curve exponent. Registry option `distance_diffuse_curve` (group `distance_diffuse`). |
+| `/control/distance_diffuse/metric` | s | `spherical` \| `chebyshev`. Registry option `distance_diffuse_metric` (group `distance_diffuse`). |
+| `/control/distance_diffuse/mirror_axes` | s | ADM axes negated to build the mirror image: any combination of `x`, `y`, `z` (`xy` — the default half-turn about the vertical axis — `y` for a front/back reflection, `xyz` for an inversion through the origin), or `none`. Registry option `distance_diffuse_mirror_axes` (group `distance_diffuse`). |
 | `/control/room_ratio` | f×3 `[0.01,100]` | Room proportions `[w, l, h]` used to scale ADM coords. Registry option alias (group `room`). |
 | `/control/room_ratio_rear` | f `[0.01,100]` | Rear scaling factor. Registry option alias (group `room`). |
 | `/control/room_ratio_lower` | f `[0.01,100]` | Lower-hemisphere scaling factor. Registry option alias (group `room`). |
@@ -92,14 +92,14 @@ rebuild the topology.
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/control/render_backend` | s | Select active backend by id (built-in or contributor). |
+| `/control/render_backend` | s | Select active backend by id (built-in or contributor). Registry option `render_backend` (group `backend`). |
 | `/control/render_backend/restore` | — | No longer supported: logged and ignored. |
 | `/control/backend/param` | `[key, value]` or `[backend_id, key, value]` | Generic backend parameter setter (schema-driven). With an explicit backend id, targets that backend (e.g. a hybrid inner backend); otherwise the selected one. |
-| `/control/hybrid/external_backend` | s | Hybrid outer backend id. |
-| `/control/hybrid/internal_backend` | s | Hybrid inner backend id. |
-| `/control/hybrid/metric` | s | `spherical` \| `chebyshev`. |
-| `/control/hybrid/curve_smoothing` | f `[0,1]` | Blend-curve smoothing. |
-| `/control/hybrid/curve` | f×2N | Flattened `(x,y)` blend control points, each `[0,1]`. |
+| `/control/hybrid/external_backend` | s | Hybrid outer backend id. Registry option `hybrid_external_backend` (group `backend`). |
+| `/control/hybrid/internal_backend` | s | Hybrid inner backend id. Registry option `hybrid_internal_backend` (group `backend`). |
+| `/control/hybrid/metric` | s | `spherical` \| `chebyshev`. Registry option `hybrid_metric` (group `backend`). |
+| `/control/hybrid/curve_smoothing` | f `[0,1]` | Blend-curve smoothing. Registry option `hybrid_curve_smoothing` (group `backend`). |
+| `/control/hybrid/curve` | f×2N | Flattened `(x,y)` blend control points, each `[0,1]`. Not a registry option (a point list). |
 | `/control/backend/file/get` | backend_id s, key s, name s?, request_id s? | Read an editable backend file (e.g. the scriptable backend's `.lua`) — `name` from the managed store, else the param's current handle. Replies point-to-point on `/state/backend/file/content` or `/state/backend/file/error`. |
 | `/control/backend/file/list` | backend_id s | List the managed store's files; replies `/state/backend/file/list` `[backend_id, json array]`. |
 | `/control/backend/file/put` | backend_id s, key s, name s, content s, request_id s? | Write the file (≤ 60 000 bytes), set the param to its handle and rebuild the backend; replies `/state/backend/file/content` as the save ack. An absolute path is only honoured from a loopback client. |
@@ -112,15 +112,15 @@ payload shape.
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/control/render_evaluation_mode` | s | `auto` \| `realtime` \| `precomputed_polar` \| `precomputed_cartesian`. |
+| `/control/render_evaluation_mode` | s | `auto` \| `realtime` \| `precomputed_polar` \| `precomputed_cartesian`. Registry option `render_evaluation_mode` (group `evaluation`). |
 | `/control/render_evaluation_mode/from_file` | — | No longer supported: logged and ignored. |
-| `/control/render_evaluation/position_interpolation` | int bool | Nearest-cell vs trilinear table lookup. |
-| `/control/render_evaluation/cartesian/{x_size,y_size,z_size,z_neg_size}` | int `≥1` (z_neg `≥0`) | Cartesian table resolution per axis. |
-| `/control/render_evaluation/polar/azimuth_resolution` | int `≥1` | Azimuth cells. |
-| `/control/render_evaluation/polar/elevation_resolution` | int `≥1` | Elevation cells. |
-| `/control/render_evaluation/polar/distance_res` | int `≥1` | Distance cells. |
-| `/control/render_evaluation/polar/distance_max` | f `>0` | Max table distance. |
-| `/control/render_evaluation/object_size_intervals` | int `≥0` | Object-size interval count of the precomputed tables (`0` = off). |
+| `/control/render_evaluation/position_interpolation` | int bool | Nearest-cell vs trilinear table lookup. Registry option `render_evaluation_position_interpolation` (no group: read at lookup time, no rebuild). |
+| `/control/render_evaluation/cartesian/{x_size,y_size,z_size,z_neg_size}` | int `≥1` | Cartesian table resolution per axis (a config may set `z_neg` to 0; a control write is floored at 1, as it always was). Registry options `evaluation_cartesian_{x,y,z,z_neg}_size` (group `evaluation`). |
+| `/control/render_evaluation/polar/azimuth_resolution` | int `≥1` | Azimuth cells. Registry option `vbap_azimuth_resolution` (group `evaluation`). |
+| `/control/render_evaluation/polar/elevation_resolution` | int `≥1` | Elevation cells. Registry option `vbap_elevation_resolution` (group `evaluation`). |
+| `/control/render_evaluation/polar/distance_res` | int `≥1` | Distance cells. Registry option `vbap_distance_res` (group `evaluation`). |
+| `/control/render_evaluation/polar/distance_max` | f `>0` | Max table distance. Registry option `vbap_distance_max` (group `evaluation`). |
+| `/control/render_evaluation/object_size_intervals` | int `≥0` | Object-size interval count of the precomputed tables (`0` = off). Registry option `evaluation_object_size_intervals` (group `evaluation`). |
 
 ### Gain, mute & loudness
 
@@ -255,19 +255,20 @@ objects stages (height generator, phantom extraction).
 option's kind takes: one, or `len` numbers for a `float_array` option such as
 `room_ratio`; anything after it is ignored. Every option waits for
 `/control/save_config`, and a set marks the config dirty only when the value
-actually changed. The nineteen dedicated addresses marked "Registry
-option alias" above are aliases of it: `synthetic_objects`,
-`object_generator`, `phantom_extract`, `surround_placement`,
-`output_channel_mapping`, `crossover_type`, `crossover_fir_transition_ratio`,
-`decode_thread`, `binaural/hrir_update_lattice`, `auto_gain`,
-`auto_gain_ceiling`, `loudness`, `ramp_mode`, `input/drc_mode`,
-`input/drc_weight`, `room_ratio`, `room_ratio_rear`, `room_ratio_lower`,
-`room_ratio_center_blend`. See `docs/live-options-registry.md`.
+actually changed. Every dedicated address marked "Registry option" above
+is an alias of it, with the same arguments and bounds; the keys are the
+`render.*` config keys (`vbap_distance_model` for `/control/distance_model`,
+`evaluation_cartesian_x_size` for `…/cartesian/x_size`, …) and the schema
+lists them all. An option of kind `int` takes a number rounded to the
+nearest integer; a `dynamic_enum` takes one of the ids of the set its
+`source` names (`backends`: `renderBackendState.available_backends` in
+`/state/renderer`). See `docs/live-options-registry.md`.
 
 `/control/options [key, value, key, value, …]` sets several at once. Every
 valid pair is applied before anything is rebuilt, and the whole message costs
-at most one rebuild (the widest its options' groups ask for: a `room` change
-rebuilds the topology) and one live-state bundle. An unknown key or a
+at most one rebuild (the widest its options' groups ask for: an `evaluation`
+change re-samples the tables and keeps the gain models, a `room`, distance or
+`backend` change rebuilds the topology) and one live-state bundle. An unknown key or a
 truncated value drops the whole message — past it, where the next key starts
 is unknowable; an invalid value drops only its own pair. A change of an
 option whose group asks for no rebuild is read where it is used, as with

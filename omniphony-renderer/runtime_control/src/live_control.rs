@@ -570,6 +570,134 @@ mod tests {
         assert!(effects.mark_dirty);
     }
 
+    /// A grid edit re-samples the tables and keeps the gain models; a batch
+    /// that also moves the geometry asks for the full rebuild, once.
+    #[test]
+    fn a_batch_asks_for_the_widest_rebuild_of_its_groups() {
+        let ctx = ctx();
+        let grid = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTIONS,
+                vec![
+                    s("render_evaluation_mode"),
+                    s("precomputed_cartesian"),
+                    s("evaluation_cartesian_x_size"),
+                    OscType::Int(11),
+                    s("evaluation_cartesian_z_neg_size"),
+                    OscType::Float(2.4),
+                ],
+            ),
+            &ctx,
+        )
+        .expect("handled");
+        assert!(grid.trigger_layout_recompute && grid.evaluation_only);
+        {
+            let live = ctx.renderer.live.read();
+            assert_eq!(live.evaluation.cartesian.x_size, 11);
+            assert_eq!(live.evaluation.cartesian.z_neg_size, 2, "rounded");
+        }
+
+        let mixed = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTIONS,
+                vec![
+                    s("evaluation_cartesian_y_size"),
+                    OscType::Int(12),
+                    s("distance_diffuse_mirror_axes"),
+                    s("z+y"),
+                ],
+            ),
+            &ctx,
+        )
+        .expect("handled");
+        assert!(mixed.trigger_layout_recompute && !mixed.evaluation_only);
+        assert_eq!(
+            ctx.renderer
+                .live
+                .read()
+                .distance_diffuse_mirror_axes
+                .to_string(),
+            "yz"
+        );
+    }
+
+    /// The prefix-family addresses are exact aliases of their rows.
+    #[test]
+    fn the_prefixed_legacy_addresses_are_aliases() {
+        let ctx = ctx();
+        let send = |addr: String, arg: OscType| {
+            apply_live_control(&msg(&addr, vec![arg]), &ctx).expect("handled")
+        };
+        let effects = send(
+            format!("{}threshold", osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX),
+            OscType::Float(0.0),
+        );
+        assert!(effects.trigger_layout_recompute && !effects.evaluation_only);
+        assert_eq!(ctx.renderer.live.read().distance_diffuse_threshold, 1e-6);
+
+        let effects = send(
+            format!(
+                "{}distance_max",
+                osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX
+            ),
+            OscType::Int(3),
+        );
+        assert!(effects.evaluation_only);
+        assert_eq!(ctx.renderer.live.read().evaluation.polar.distance_max, 3.0);
+
+        let effects = send(
+            format!("{}external_backend", osc_contract::CONTROL_HYBRID_PREFIX),
+            s(" Barycenter "),
+        );
+        assert!(effects.mark_dirty && effects.trigger_layout_recompute);
+        assert_eq!(
+            ctx.renderer.live.read().hybrid.external_backend_id,
+            "barycenter"
+        );
+        // A nested hybrid would recurse: refused, as before.
+        let effects = send(
+            format!("{}internal_backend", osc_contract::CONTROL_HYBRID_PREFIX),
+            s("hybrid"),
+        );
+        assert!(!effects.mark_dirty);
+        // The curve is not a registry row: left to the hand-wired handler.
+        assert!(
+            apply_live_control(
+                &msg(
+                    &format!("{}curve", osc_contract::CONTROL_HYBRID_PREFIX),
+                    vec![OscType::Float(0.0); 4]
+                ),
+                &ctx
+            )
+            .is_none()
+        );
+    }
+
+    /// The backend resolves built-in aliases and refuses an unknown id.
+    #[test]
+    fn the_backend_accepts_aliases_and_refuses_unknown_ids() {
+        let ctx = ctx();
+        let set = |id: &str| {
+            apply_live_control(
+                &msg(osc_contract::CONTROL_RENDER_BACKEND, vec![s(id)]),
+                &ctx,
+            )
+            .expect("handled")
+        };
+        let effects = set("distance");
+        assert!(effects.trigger_layout_recompute && !effects.evaluation_only);
+        assert_eq!(
+            ctx.renderer.live.read().backend_id(),
+            "experimental_distance"
+        );
+        assert!(!set("no_such_backend").mark_dirty);
+        assert!(!set("").mark_dirty);
+        assert_eq!(
+            ctx.renderer.live.read().backend_id(),
+            "experimental_distance"
+        );
+    }
+
     #[test]
     fn placement_mode_bumps_the_options_epoch_only_on_a_real_change() {
         let ctx = ctx();
