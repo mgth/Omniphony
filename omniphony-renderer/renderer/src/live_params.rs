@@ -1361,12 +1361,6 @@ pub struct LiveParams {
     /// `/omniphony/control/object_generator`.
     pub object_generator_id: String,
 
-    /// Live-tunable parameter overrides for the active object generator, keyed by
-    /// the param `key` the generator declares in its schema. Sparse: an absent key
-    /// uses the generator's built-in default. Cleared when the active generator
-    /// changes. Set via `/omniphony/control/object_generator/param`.
-    pub object_generator_params: std::collections::HashMap<String, f32>,
-
     /// Global permission for renderer-synthesized objects. When false, both the
     /// phantom extractor and height generator are bypassed without clearing
     /// their configured selections or parameters.
@@ -1383,12 +1377,6 @@ pub struct LiveParams {
     /// Phantom-source extraction algorithm. `Off` disables only this stage;
     /// the global synthesized-object master may independently suppress it.
     pub phantom_extract_mode: PhantomExtractMode,
-
-    /// Live-tunable parameter overrides for the phantom-extraction stage, keyed by
-    /// the param `key` it declares (`strength` / `passes` / `lift`). Sparse: an
-    /// absent key uses the stage's default. Set via
-    /// `/omniphony/control/phantom_extract/param`.
-    pub phantom_params: std::collections::HashMap<String, f32>,
 }
 
 impl LiveParams {
@@ -1719,22 +1707,26 @@ pub struct RendererControl {
     /// is already shared); only read off the audio hot path (topology rebuild).
     backend_registry: RwLock<BackendRegistry>,
 
-    /// Host-set backend parameter values, keyed by `backend_id` then param key
-    /// (see [`crate::backend_params`]). Generic so a backend's params need no
-    /// typed field here. Read at topology-build time, never on the audio hot path.
-    backend_params: RwLock<HashMap<String, HashMap<String, crate::backend_params::ParamValue>>>,
+    /// Every plugin's host-set parameter values — backends, object generators,
+    /// the phantom-extraction stage — keyed by kind, plugin id, then param key
+    /// (see [`crate::plugin`]). Generic so a plugin's params need no typed field
+    /// here. Read by a backend at topology-build time and by a synthesizing
+    /// stage when [`plugin_params_generation`](Self::plugin_params_generation)
+    /// moves, never on the audio hot path.
+    plugin_params: RwLock<crate::plugin::PluginParams>,
 
-    /// JSON schema (`[{id,label,i18nKey,params:[…]}]`) of the available bed→height
-    /// object generators, set by the engine from its registry (which lives in
-    /// `orender_engine` and so can't be held here as a typed registry). Published
-    /// to Studio so host-registered (out-of-tree) generators appear too. `"[]"`
-    /// until the engine sets it.
-    object_generators_schema: RwLock<String>,
+    /// Bumped by every write to `plugin_params`, so a stage that applies its
+    /// parameters can tell with one atomic load per frame that none changed.
+    plugin_params_generation: std::sync::atomic::AtomicU64,
 
-    /// JSON schema (`[{key,label,i18nKey,…}]`) of the phantom-extraction stage's
-    /// declared params, set by the engine so Studio builds its sliders. `"[]"`
-    /// until the engine sets it.
-    phantom_schema: RwLock<String>,
+    /// The listings (`id`, label, declared params) of the bed→height object
+    /// generators and of the phantom-extraction stage, set by the engine from
+    /// its registry (which lives in `orender_engine` and so can't be held here
+    /// as a typed registry). Published to Studio so host-registered
+    /// (out-of-tree) generators appear too, and used to read an incoming value
+    /// in the type its parameter declares. Empty until the engine sets them.
+    object_generator_listings: RwLock<Vec<crate::plugin::PluginListing>>,
+    phantom_listing: RwLock<Option<crate::plugin::PluginListing>>,
 
     /// Canonical fixed-channel editor catalogue supplied by the engine. Kept as
     /// JSON because the canonical poses live in `orender_engine`, above this
@@ -1813,9 +1805,10 @@ impl RendererControl {
             meter_rate_default_hz_bits: std::sync::atomic::AtomicU32::new(50.0_f32.to_bits()),
             diag_rate_default_hz_bits: std::sync::atomic::AtomicU32::new(50.0_f32.to_bits()),
             backend_registry: RwLock::new(BackendRegistry::builtin()),
-            backend_params: RwLock::new(HashMap::new()),
-            object_generators_schema: RwLock::new("[]".to_string()),
-            phantom_schema: RwLock::new("[]".to_string()),
+            plugin_params: RwLock::new(Default::default()),
+            plugin_params_generation: std::sync::atomic::AtomicU64::new(0),
+            object_generator_listings: RwLock::new(Vec::new()),
+            phantom_listing: RwLock::new(None),
             fixed_channel_catalog: RwLock::new("[]".to_string()),
             fixed_channel_processing: RwLock::new(
                 r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
@@ -1830,13 +1823,15 @@ impl RendererControl {
         *self.profiles_info.lock() = info;
     }
 
-    /// Drop every host-set backend parameter. The live profile switch calls
-    /// this before replaying the incoming profile's `backend_params`: the
-    /// replay only inserts, so without the clear the outgoing profile's keys
-    /// would survive the switch and be committed into the incoming profile by
-    /// the next save.
-    pub fn clear_backend_params(&self) {
-        self.backend_params.write().clear();
+    /// Drop every host-set plugin parameter. The live profile switch calls
+    /// this before replaying the incoming profile's param keys: the replay
+    /// only inserts, so without the clear the outgoing profile's keys would
+    /// survive the switch and be committed into the incoming profile by the
+    /// next save.
+    pub fn clear_plugin_params(&self) {
+        *self.plugin_params.write() = Default::default();
+        self.plugin_params_generation
+            .fetch_add(1, Ordering::Release);
     }
 
     /// Current client-visible profiles view (active name + name list).
@@ -1852,25 +1847,86 @@ impl RendererControl {
         self.backend_registry.write().register(factory);
     }
 
-    /// Set the published object-generator schema JSON (called by the engine from
-    /// its registry, so any host-registered out-of-tree generators are included).
-    pub fn set_object_generators_schema(&self, json: String) {
-        *self.object_generators_schema.write() = json;
+    /// Set the object-generator listings (called by the engine from its
+    /// registry, so any host-registered out-of-tree generators are included)
+    /// and read the values already stored for them in their declared types.
+    pub fn set_object_generator_listings(&self, listings: Vec<crate::plugin::PluginListing>) {
+        self.plugin_params
+            .write()
+            .canonicalize(crate::plugin::PluginKind::ObjectGenerator, &listings);
+        *self.object_generator_listings.write() = listings;
+        self.plugin_params_generation
+            .fetch_add(1, Ordering::Release);
     }
 
-    /// The published object-generator schema JSON (`"[]"` until the engine sets it).
-    pub fn object_generators_schema(&self) -> String {
-        self.object_generators_schema.read().clone()
+    /// The object-generator listings (empty until the engine sets them).
+    pub fn object_generator_listings(&self) -> Vec<crate::plugin::PluginListing> {
+        self.object_generator_listings.read().clone()
     }
 
-    /// Set the published phantom-extraction param schema JSON (called by the engine).
-    pub fn set_phantom_schema(&self, json: String) {
-        *self.phantom_schema.write() = json;
+    /// Set the phantom-extraction stage's listing (called by the engine) and
+    /// read the values already stored for it in their declared types.
+    pub fn set_phantom_listing(&self, listing: crate::plugin::PluginListing) {
+        self.plugin_params.write().canonicalize(
+            crate::plugin::PluginKind::PhantomExtract,
+            std::slice::from_ref(&listing),
+        );
+        *self.phantom_listing.write() = Some(listing);
+        self.plugin_params_generation
+            .fetch_add(1, Ordering::Release);
     }
 
-    /// The published phantom-extraction schema JSON (`"[]"` until the engine sets it).
-    pub fn phantom_schema(&self) -> String {
-        self.phantom_schema.read().clone()
+    /// The phantom-extraction stage's listing (`None` until the engine sets it).
+    pub fn phantom_listing(&self) -> Option<crate::plugin::PluginListing> {
+        self.phantom_listing.read().clone()
+    }
+
+    /// The published generator listings as the JSON `/state/object_generators`
+    /// carries.
+    pub fn object_generators_json(&self) -> String {
+        serde_json::to_string(&*self.object_generator_listings.read())
+            .unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// The phantom stage's listing as the JSON `/state/phantom` carries
+    /// (`null` until the engine sets it).
+    pub fn phantom_json(&self) -> String {
+        serde_json::to_string(&*self.phantom_listing.read()).unwrap_or_else(|_| "null".to_string())
+    }
+
+    /// The declared parameter `key` of plugin `id`, if the plugin is known
+    /// and declares it. A backend's static schema only: a dynamic one (the
+    /// scriptable backend's) is not known before its build.
+    pub fn plugin_param_spec(
+        &self,
+        kind: crate::plugin::PluginKind,
+        id: &str,
+        key: &str,
+    ) -> Option<crate::backend_params::ParamSpec> {
+        use crate::plugin::PluginKind;
+        match kind {
+            PluginKind::Backend => self
+                .backend_registry
+                .read()
+                .get(id)?
+                .param_schema()
+                .into_iter()
+                .find(|spec| spec.key == key),
+            PluginKind::ObjectGenerator => self
+                .object_generator_listings
+                .read()
+                .iter()
+                .find(|listing| listing.id == id)?
+                .spec(key)
+                .cloned(),
+            PluginKind::PhantomExtract => self
+                .phantom_listing
+                .read()
+                .as_ref()
+                .filter(|listing| listing.id == id)?
+                .spec(key)
+                .cloned(),
+        }
     }
 
     pub fn set_fixed_channel_catalog(&self, json: String) {
@@ -1902,7 +1958,7 @@ impl RendererControl {
 
     /// Id + label of every registered backend, for the host to publish so the UI
     /// can list the selectable backends (built-in and contributor-registered).
-    pub fn available_backends(&self) -> Vec<crate::backend_registry::BackendListing> {
+    pub fn available_backends(&self) -> Vec<crate::plugin::PluginListing> {
         // Resolve dynamic schemas (e.g. the scriptable backend's, which depends
         // on its selected file) against the current param store, with File-kind
         // handles resolved to absolute renderer paths so the schema reader can open
@@ -1910,68 +1966,134 @@ impl RendererControl {
         // of the selection combo regardless of registration order (see `hybrid_last`).
         let registry = self.backend_registry.read();
         let resolved = self.resolved_backend_params(&registry);
-        let listings = registry.available_with(&resolved);
+        let listings = registry.listings_with(&resolved);
         crate::backend_registry::hybrid_last(listings)
     }
 
     /// Resolve File-kind param handles to absolute renderer paths so backend
     /// factories read a real path (see [`crate::backend_files`]). Takes the
     /// already-held registry guard to avoid re-locking it.
-    fn resolved_backend_params(
-        &self,
-        registry: &BackendRegistry,
-    ) -> HashMap<String, HashMap<String, crate::backend_params::ParamValue>> {
+    fn resolved_backend_params(&self, registry: &BackendRegistry) -> crate::plugin::ParamBag {
         let config_dir = self
             .config_path()
             .and_then(|path| path.parent().map(|dir| dir.to_path_buf()));
-        let raw = self.backend_params.read();
-        crate::backend_files::resolve_file_params(&raw, config_dir.as_deref(), |backend_id, key| {
-            registry
-                .get(backend_id)
-                .map(|factory| {
-                    factory.param_schema().iter().any(|spec| {
-                        spec.key == key
-                            && matches!(spec.kind, crate::backend_params::ParamKind::File { .. })
+        let raw = self.plugin_params.read();
+        crate::backend_files::resolve_file_params(
+            raw.bag(crate::plugin::PluginKind::Backend),
+            config_dir.as_deref(),
+            |backend_id, key| {
+                registry
+                    .get(backend_id)
+                    .map(|factory| {
+                        factory.param_schema().iter().any(|spec| {
+                            spec.key == key
+                                && matches!(
+                                    spec.kind,
+                                    crate::backend_params::ParamKind::File { .. }
+                                )
+                        })
                     })
-                })
-                .unwrap_or(false)
-        })
+                    .unwrap_or(false)
+            },
+        )
     }
 
-    /// Set one backend parameter value (host/OSC). Stored generically and applied
-    /// at the next topology rebuild.
+    /// Set one plugin parameter value (host/OSC), in the type the parameter
+    /// declares when it is known ([`ParamSpec::coerce`]). Returns `false`,
+    /// storing nothing, when a declared parameter cannot read the value; an
+    /// undeclared key is stored as it comes (a dynamic schema is not known
+    /// before its build). A backend reads it at the next topology rebuild, a
+    /// stage on its next frame.
+    ///
+    /// [`ParamSpec::coerce`]: crate::backend_params::ParamSpec::coerce
+    pub fn set_plugin_param(
+        &self,
+        kind: crate::plugin::PluginKind,
+        id: &str,
+        key: &str,
+        value: crate::backend_params::ParamValue,
+    ) -> bool {
+        let value = match self.plugin_param_spec(kind, id, key) {
+            Some(spec) => match spec.coerce(&value) {
+                Some(value) => value,
+                None => return false,
+            },
+            None => value,
+        };
+        self.plugin_params.write().set(kind, id, key, value);
+        self.plugin_params_generation
+            .fetch_add(1, Ordering::Release);
+        true
+    }
+
+    /// Set one backend parameter value — [`set_plugin_param`] for a backend.
+    ///
+    /// [`set_plugin_param`]: Self::set_plugin_param
     pub fn set_backend_param(
         &self,
         backend_id: &str,
         key: &str,
         value: crate::backend_params::ParamValue,
-    ) {
-        self.backend_params
-            .write()
-            .entry(backend_id.to_string())
-            .or_default()
-            .insert(key.to_string(), value);
+    ) -> bool {
+        self.set_plugin_param(crate::plugin::PluginKind::Backend, backend_id, key, value)
     }
 
-    /// A clone of the stored param values for `backend_id` (empty if none set),
-    /// for the host to publish alongside the backend's schema.
-    pub fn backend_params_for(
-        &self,
-        backend_id: &str,
-    ) -> HashMap<String, crate::backend_params::ParamValue> {
-        self.backend_params
-            .read()
-            .get(backend_id)
-            .cloned()
-            .unwrap_or_default()
+    /// A clone of one kind's stored values (`plugin id -> key -> value`), for
+    /// the host to publish alongside the schemas.
+    pub fn plugin_param_bag(&self, kind: crate::plugin::PluginKind) -> crate::plugin::ParamBag {
+        self.plugin_params.read().bag(kind).clone()
     }
 
-    /// A clone of the entire backend-param store (`backend_id -> key -> value`),
-    /// for the host to persist to config.
-    pub fn all_backend_params(
-        &self,
-    ) -> HashMap<String, HashMap<String, crate::backend_params::ParamValue>> {
-        self.backend_params.read().clone()
+    /// The backend-param store (`backend_id -> key -> value`).
+    pub fn all_backend_params(&self) -> crate::plugin::ParamBag {
+        self.plugin_param_bag(crate::plugin::PluginKind::Backend)
+    }
+
+    /// Merge values read from a config ([`PluginParams::from_config`]) into
+    /// the store, each in its parameter's declared type when the plugin is
+    /// already known. Never drops a value: one a declared parameter cannot
+    /// read is kept as the file had it, and the plugin falls back to its
+    /// default for it.
+    ///
+    /// [`PluginParams::from_config`]: crate::plugin::PluginParams::from_config
+    pub fn seed_plugin_params(&self, mut incoming: crate::plugin::PluginParams) {
+        use crate::plugin::PluginKind;
+        incoming.canonicalize(
+            PluginKind::Backend,
+            &self.backend_registry.read().listings(),
+        );
+        incoming.canonicalize(
+            PluginKind::ObjectGenerator,
+            &self.object_generator_listings.read(),
+        );
+        if let Some(listing) = self.phantom_listing.read().as_ref() {
+            incoming.canonicalize(PluginKind::PhantomExtract, std::slice::from_ref(listing));
+        }
+        let mut store = self.plugin_params.write();
+        for kind in PluginKind::ALL {
+            for (id, values) in incoming.bag_mut(kind).drain() {
+                store.bag_mut(kind).entry(id).or_default().extend(values);
+            }
+        }
+        drop(store);
+        self.plugin_params_generation
+            .fetch_add(1, Ordering::Release);
+    }
+
+    /// A clone of every stored plugin value, for the host to persist to config.
+    pub fn plugin_params(&self) -> crate::plugin::PluginParams {
+        self.plugin_params.read().clone()
+    }
+
+    /// Run `f` on the stored plugin values under one read lock, without
+    /// cloning them — how a stage applies its parameters.
+    pub fn with_plugin_params<R>(&self, f: impl FnOnce(&crate::plugin::PluginParams) -> R) -> R {
+        f(&self.plugin_params.read())
+    }
+
+    /// Bumped on every plugin-parameter write (see `plugin_params_generation`).
+    pub fn plugin_params_generation(&self) -> u64 {
+        self.plugin_params_generation.load(Ordering::Acquire)
     }
 
     /// Shared meter-cadence atomic (Hz bits) for `AudioMeter::new_with_rate_atomic`.

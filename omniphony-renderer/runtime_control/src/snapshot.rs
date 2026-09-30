@@ -25,7 +25,7 @@ pub struct RenderBackendStateSnapshot {
     pub effective_label: String,
     /// Every selectable backend (built-in + host-registered) with its param
     /// schema, for the UI list and control generation.
-    pub available_backends: Vec<renderer::backend_registry::BackendListing>,
+    pub available_backends: Vec<renderer::plugin::PluginListing>,
     /// Host-set param values for *every* backend, keyed by backend id then param
     /// key. The UI reads each backend's values from here, including an inner
     /// backend (e.g. the hybrid barycenter tab) that is not the active selection.
@@ -62,7 +62,7 @@ fn allowed_evaluation_modes(
 pub fn build_render_backend_state_snapshot(
     live: &LiveParams,
     active_topology: &RenderTopology,
-    available_backends: Vec<renderer::backend_registry::BackendListing>,
+    available_backends: Vec<renderer::plugin::PluginListing>,
     backend_param_values_by_id: std::collections::HashMap<
         String,
         std::collections::HashMap<String, renderer::backend_params::ParamValue>,
@@ -95,7 +95,7 @@ pub fn build_render_backend_state_snapshot(
 pub fn build_render_backend_state_json(
     live: &LiveParams,
     active_topology: &RenderTopology,
-    available_backends: Vec<renderer::backend_registry::BackendListing>,
+    available_backends: Vec<renderer::plugin::PluginListing>,
     backend_param_values_by_id: std::collections::HashMap<
         String,
         std::collections::HashMap<String, renderer::backend_params::ParamValue>,
@@ -114,11 +114,10 @@ pub fn build_renderer_state_json(
     live: &LiveParams,
     active_topology: &RenderTopology,
     room_scale_m: f32,
-    available_backends: Vec<renderer::backend_registry::BackendListing>,
-    backend_param_values_by_id: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, renderer::backend_params::ParamValue>,
-    >,
+    available_backends: Vec<renderer::plugin::PluginListing>,
+    // Every plugin's stored parameter values (backends, object generators,
+    // the phantom stage).
+    plugin_params: renderer::plugin::PluginParams,
     // Speaker names that can't be routed by position in by_name mode (computed by
     // the engine, which owns the name→label classifier). Shown as a warning.
     unroutable_speaker_names: &[String],
@@ -133,15 +132,16 @@ pub fn build_renderer_state_json(
     // The spread addresses write the "vbap" param bag, not the live fields, so
     // resolve the block the way the backend build does (bag value, live
     // fallback) — the live fields alone go stale after the first edit.
+    use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind};
     let spread = renderer::backend_registry::resolve_vbap_spread_params(
         live,
-        backend_param_values_by_id.get("vbap"),
+        plugin_params.bag(PluginKind::Backend).get("vbap"),
     );
     let render_backend_state_json = build_render_backend_state_json(
         live,
         active_topology,
         available_backends,
-        backend_param_values_by_id,
+        plugin_params.bag(PluginKind::Backend).clone(),
     );
     let fixed_channel_catalog =
         serde_json::from_str::<serde_json::Value>(fixed_channel_catalog_json)
@@ -163,11 +163,13 @@ pub fn build_renderer_state_json(
         "syntheticObjectsEnabled": live.synthetic_objects_enabled,
         // Active fixed-bed→height object generator id; empty = off.
         "objectGeneratorId": live.object_generator_id.as_str(),
-        // Live param overrides for the active generator (key → value), for the
-        // Studio sliders. The schema itself is published separately by the engine
-        // on `/omniphony/state/object_generators`.
-        "objectGeneratorParams":
-            serde_json::to_value(&live.object_generator_params).unwrap_or(serde_json::Value::Null),
+        // Stored param values of every generator (`{ id: { key: value } }`),
+        // as `renderBackendState.backendParamValuesById` carries the
+        // backends'. The listings are published separately by the engine on
+        // `/omniphony/state/object_generators`.
+        "objectGeneratorParamValuesById":
+            serde_json::to_value(plugin_params.bag(PluginKind::ObjectGenerator))
+                .unwrap_or(serde_json::Value::Null),
         // Whether the active output layout has a top speaker. Generators are a
         // strict no-op without one; Studio still leaves them editable for
         // offline configuration and reports the applicability reason.
@@ -181,8 +183,15 @@ pub fn build_renderer_state_json(
         "phantomExtractMode": live.phantom_extract_mode.as_str(),
         "phantomEnabled": live.synthetic_objects_enabled
             && live.phantom_extract_mode != renderer::live_params::PhantomExtractMode::Off,
-        "phantomParams":
-            serde_json::to_value(&live.phantom_params).unwrap_or(serde_json::Value::Null),
+        // Stored param values of the phantom stage (`{ key: value }`); its
+        // listing is published on `/omniphony/state/phantom`.
+        "phantomParamValues": serde_json::to_value(
+            plugin_params
+                .plugin(PluginKind::PhantomExtract, PHANTOM_EXTRACT_ID)
+                .cloned()
+                .unwrap_or_default(),
+        )
+        .unwrap_or(serde_json::Value::Null),
         "surroundPlacement": live.surround_placement.as_str(),
         "outputChannelMapping": live.output_channel_mapping.as_str(),
         "outputChannelMappingUnroutable": unroutable_speaker_names,
@@ -573,7 +582,7 @@ pub fn build_live_state_bundle_with_host(
         &active_topology,
         editable_layout.radius_m,
         control.available_backends(),
-        control.all_backend_params(),
+        control.plugin_params(),
         // The name→label classifier lives in orender_engine (bridge_api types),
         // which runtime_control can't reach; the engine's recompute broadcast
         // (fired on topology build and every layout edit) carries the real list.

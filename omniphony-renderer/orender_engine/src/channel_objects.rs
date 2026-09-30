@@ -17,15 +17,17 @@
 //! The owner holds the one planar pool both stages write into and builds the
 //! extended buffer once, whichever stages ran; the hosts drive it through
 //! [`ChannelObjectStages::sync_from_control`], one read of the live params
-//! per frame.
+//! per frame. Both stages are plugins ([`renderer::plugin`]): their parameter
+//! values live in `RendererControl`'s plugin store, and reach the stages only
+//! when they change or a stage is rebuilt.
 //!
 //! [`Engine`]: crate::engine::Engine
 
-use std::collections::HashMap;
-
 use bridge_api::RChannelLabel;
+use renderer::backend_params::ParamValue;
 use renderer::live_params::{PhantomExtractMode, RendererControl};
 use renderer::placement::SourceFamily;
+use renderer::plugin::{PHANTOM_EXTRACT_ID, ParamMap, PluginKind, PluginListing, PluginParams};
 use renderer::spatial_renderer::SpatialChannelEvent;
 
 use crate::object_gen::{ObjectGenStage, ObjectGeneratorFactory, PrepareCtx, SynthObjectSpec};
@@ -48,8 +50,7 @@ impl StageSelection<'_> {
     /// Whether a generator is selected at all, independent of the master —
     /// what the diagnostic state reports as the generator being "on".
     pub fn generator_selected(&self) -> bool {
-        let id = self.generator_id.trim();
-        !id.is_empty() && !id.eq_ignore_ascii_case("none")
+        crate::object_gen::generator_selected(self.generator_id)
     }
 }
 
@@ -88,7 +89,7 @@ pub struct StageSync {
 /// One synthesizing stage, as the owner runs it once planned: its live
 /// parameters, and its per-frame DSP into the owner's planar pool.
 trait ChannelObjectStage {
-    fn set_param(&mut self, key: &str, value: f32, sample_rate: u32);
+    fn set_param(&mut self, key: &str, value: &ParamValue, sample_rate: u32);
 
     /// Write this frame's object audio into `out` (one zeroed buffer of
     /// `sample_count` samples per spec). A stage may modify `bed` in place:
@@ -104,7 +105,7 @@ trait ChannelObjectStage {
 }
 
 impl ChannelObjectStage for PhantomExtractStage {
-    fn set_param(&mut self, key: &str, value: f32, sample_rate: u32) {
+    fn set_param(&mut self, key: &str, value: &ParamValue, sample_rate: u32) {
         PhantomExtractStage::set_param(self, key, value, sample_rate);
     }
 
@@ -121,7 +122,7 @@ impl ChannelObjectStage for PhantomExtractStage {
 }
 
 impl ChannelObjectStage for ObjectGenStage {
-    fn set_param(&mut self, key: &str, value: f32, sample_rate: u32) {
+    fn set_param(&mut self, key: &str, value: &ParamValue, sample_rate: u32) {
         ObjectGenStage::set_param(self, key, value, sample_rate);
     }
 
@@ -170,6 +171,16 @@ pub struct ChannelObjectStages {
     /// The extended interleaved buffer: `bed | phantom objects | height
     /// objects`.
     pcm_ext: Vec<f32>,
+    /// What the stages were last handed their parameters for: the plugin
+    /// store's generation and the generator instance. `None` until the first
+    /// frame that runs a stage.
+    params_applied: Option<ParamsApplied>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ParamsApplied {
+    generation: u64,
+    generator_builds: u64,
 }
 
 impl ChannelObjectStages {
@@ -179,6 +190,7 @@ impl ChannelObjectStages {
             object_gen: ObjectGenStage::new(),
             planar: Vec::new(),
             pcm_ext: Vec::new(),
+            params_applied: None,
         }
     }
 
@@ -188,15 +200,8 @@ impl ChannelObjectStages {
     }
 
     /// The generator catalogue, as published to Studio.
-    pub fn generator_listings_json(&self) -> String {
-        self.object_gen.registry().listings_json()
-    }
-
-    /// The phantom-extraction parameter schema, as published to Studio's
-    /// sliders. Alongside the catalogue so a host publishes both from one
-    /// place, or neither.
-    pub fn phantom_schema_json() -> String {
-        crate::phantom_extract::phantom_schema_json()
+    pub fn generator_listings(&self) -> Vec<PluginListing> {
+        self.object_gen.registry().listings()
     }
 
     /// (Re)plan both stages for this frame and return what each will synthesize.
@@ -233,8 +238,8 @@ impl ChannelObjectStages {
     /// catalogue (every channel label with its default poses). Both hosts call
     /// it once their stages exist, and again after registering a generator.
     pub fn publish_static_state(&self, control: &RendererControl) {
-        control.set_object_generators_schema(self.generator_listings_json());
-        control.set_phantom_schema(Self::phantom_schema_json());
+        control.set_object_generator_listings(self.generator_listings());
+        control.set_phantom_listing(crate::phantom_extract::phantom_listing());
         control.set_fixed_channel_catalog(crate::virtual_bed::fixed_channel_catalog_json());
     }
 
@@ -257,9 +262,11 @@ impl ChannelObjectStages {
         }
     }
 
-    /// Read the stage selection and parameters off the live params (one read
-    /// lock, nothing cloned), (re)plan both stages and push their parameters —
-    /// what both hosts do on every channel frame.
+    /// Read the stage selection off the live params (one read lock, nothing
+    /// cloned), (re)plan both stages and hand them their parameters when those
+    /// changed or the generator was rebuilt — what both hosts do on every
+    /// channel frame. In steady state that is one atomic load: the plugin
+    /// store is only locked when something moved.
     pub fn sync_from_control(&mut self, control: &RendererControl, ctx: &PrepareCtx) -> StageSync {
         let options_epoch = control.options_epoch();
         let live = control.live.read();
@@ -270,11 +277,14 @@ impl ChannelObjectStages {
         };
         let counts = self.sync(ctx, &selection, options_epoch);
         if counts.any() {
-            self.push_params(
-                &live.phantom_params,
-                &live.object_generator_params,
-                ctx.sample_rate,
-            );
+            let applied = ParamsApplied {
+                generation: control.plugin_params_generation(),
+                generator_builds: self.object_gen.builds(),
+            };
+            if self.params_applied != Some(applied) {
+                control.with_plugin_params(|params| self.push_params(params, ctx.sample_rate));
+                self.params_applied = Some(applied);
+            }
         }
         StageSync {
             counts,
@@ -285,22 +295,20 @@ impl ChannelObjectStages {
         }
     }
 
-    /// Push each stage's live parameter overrides.
+    /// Hand each stage its stored parameter values: the phantom stage's, and
+    /// those of the generator the current plan was built for.
     ///
-    /// Sparse: absent keys keep the stage default. Cheap and idempotent, so a
-    /// freshly rebuilt stage re-receives them on the next frame.
-    pub fn push_params(
-        &mut self,
-        phantom_params: &HashMap<String, f32>,
-        generator_params: &HashMap<String, f32>,
-        sample_rate: u32,
-    ) {
-        let stages: [(&mut dyn ChannelObjectStage, &HashMap<String, f32>); 2] = [
-            (&mut self.phantom, phantom_params),
-            (&mut self.object_gen, generator_params),
+    /// Sparse: absent keys keep the stage default. Idempotent, so applying
+    /// the same values again changes nothing.
+    pub fn push_params(&mut self, params: &PluginParams, sample_rate: u32) {
+        let phantom = params.plugin(PluginKind::PhantomExtract, PHANTOM_EXTRACT_ID);
+        let generator = params.plugin(PluginKind::ObjectGenerator, self.object_gen.active_id());
+        let stages: [(&mut dyn ChannelObjectStage, Option<&ParamMap>); 2] = [
+            (&mut self.phantom, phantom),
+            (&mut self.object_gen, generator),
         ];
-        for (stage, params) in stages {
-            for (key, &value) in params.iter() {
+        for (stage, values) in stages {
+            for (key, value) in values.into_iter().flatten() {
                 stage.set_param(key, value, sample_rate);
             }
         }
@@ -664,8 +672,8 @@ mod tests {
         let control = renderer.renderer_control();
         ChannelObjectStages::new().publish_static_state(&control);
         for (what, json) in [
-            ("generators", control.object_generators_schema()),
-            ("phantom", control.phantom_schema()),
+            ("generators", control.object_generators_json()),
+            ("phantom", control.phantom_json()),
             ("catalogue", control.fixed_channel_catalog()),
         ] {
             let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");

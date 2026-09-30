@@ -116,6 +116,7 @@ use renderer::backend_params::{ParamSpec, ParamValue};
 use renderer::backend_registry::{
     BackendBuildCtx, BackendBuildPlan, BackendFactory, DynamicBackendPlan,
 };
+use renderer::plugin::PluginFactory;
 use renderer::render_backend::{
     BackendCapabilities, GainModel, RenderRequest, RenderResponse, room_scaled_position,
 };
@@ -721,17 +722,13 @@ fn params_table(lua: &Lua, params: &[(String, f64)]) -> mlua::Result<Table> {
 /// Registers [`ScriptBackend`] under the id `"script"`.
 pub struct ScriptFactory;
 
-impl BackendFactory for ScriptFactory {
+impl PluginFactory for ScriptFactory {
     fn id(&self) -> &'static str {
         "script"
     }
 
     fn label(&self) -> &'static str {
         "Script"
-    }
-
-    fn realtime_capable(&self) -> bool {
-        false
     }
 
     fn param_schema(&self) -> Vec<ParamSpec> {
@@ -759,6 +756,12 @@ impl BackendFactory for ScriptFactory {
             }
         }
         schema
+    }
+}
+
+impl BackendFactory for ScriptFactory {
+    fn realtime_capable(&self) -> bool {
+        false
     }
 
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {

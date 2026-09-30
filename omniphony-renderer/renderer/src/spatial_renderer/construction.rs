@@ -447,14 +447,12 @@ impl SpatialRenderer {
             // for channel content. Empty / "none" = disabled.
             object_generator_id: String::new(),
             // Empty = each generator uses its declared param defaults.
-            object_generator_params: std::collections::HashMap::new(),
             // Renderer-synthesized objects and phantom extraction are both off
             // by default; their selections remain independent so the master can
             // temporarily bypass processing without losing setup.
             synthetic_objects_enabled: false,
             decode_thread: false,
             phantom_extract_mode: crate::live_params::PhantomExtractMode::Off,
-            phantom_params: std::collections::HashMap::new(),
         }
     }
 

@@ -352,7 +352,7 @@ mod tests {
             control.meter_rate_hz(),
             crate::engine::EMBEDDED_METER_RATE_HZ
         );
-        assert!(!control.object_generators_schema().is_empty());
+        assert!(!control.object_generator_listings().is_empty());
         assert!(runtime.into_parts().1.is_none(), "no OSC before start_osc");
     }
 

@@ -94,12 +94,14 @@ pub fn store_live_into_config(
     render.current_layout = Some(layout_snapshot);
     render.speaker_layout = None;
 
-    // Generic per-backend param values, persisted verbatim (empty map is skipped).
-    render.backend_params = control.all_backend_params();
+    // Every plugin's param values — backends, object generators, the phantom
+    // stage — persisted verbatim (an empty map is skipped); the legacy keys
+    // they were migrated from are dropped.
+    control.plugin_params().store_to_config(render);
     // VBAP spread tuning (min/max, from_distance, distance range/curve, size
     // policy) now lives in the generic param bag (`render.backend_params`,
-    // written above via `all_backend_params`). Drop the legacy dedicated keys on
-    // save; an old config carrying them is still migrated into the bag on load.
+    // written above). Drop the legacy dedicated keys on save; an old config
+    // carrying them is still migrated into the bag on load.
     render.vbap_spread_min = None;
     render.vbap_spread_max = None;
     render.spread_from_distance = None;

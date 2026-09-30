@@ -372,6 +372,22 @@ pub fn parse_f32_arg(arg: Option<&OscType>) -> Option<f32> {
     numeric(arg?).map(|v| v as f32)
 }
 
+/// A plugin parameter value from an OSC argument, as sent: a number, a bool
+/// or a string. A non-finite number is refused; the store reads the rest in
+/// the parameter's declared type.
+pub fn parse_param_value(arg: &OscType) -> Option<renderer::backend_params::ParamValue> {
+    use renderer::backend_params::ParamValue;
+    match arg {
+        OscType::Float(f) => f.is_finite().then_some(ParamValue::Float(*f)),
+        OscType::Double(d) => d.is_finite().then_some(ParamValue::Float(*d as f32)),
+        OscType::Int(i) => Some(ParamValue::Int(*i as i64)),
+        OscType::Long(i) => Some(ParamValue::Int(*i)),
+        OscType::Bool(b) => Some(ParamValue::Bool(*b)),
+        OscType::String(s) => Some(ParamValue::Text(s.clone())),
+        _ => None,
+    }
+}
+
 pub fn parse_string_arg(arg: Option<&OscType>) -> Option<String> {
     match arg {
         Some(OscType::String(s)) => {
@@ -1324,15 +1340,7 @@ pub fn apply_simple_osc_control(
         } else {
             (None, parse_string_arg(msg.args.first()), msg.args.get(1))
         };
-        let value = value_arg.and_then(|arg| match arg {
-            OscType::Float(f) => Some(renderer::backend_params::ParamValue::Float(*f)),
-            OscType::Double(d) => Some(renderer::backend_params::ParamValue::Float(*d as f32)),
-            OscType::Int(i) => Some(renderer::backend_params::ParamValue::Int(*i as i64)),
-            OscType::Long(i) => Some(renderer::backend_params::ParamValue::Int(*i)),
-            OscType::Bool(b) => Some(renderer::backend_params::ParamValue::Bool(*b)),
-            OscType::String(s) => Some(renderer::backend_params::ParamValue::Text(s.clone())),
-            _ => None,
-        });
+        let value = value_arg.and_then(parse_param_value);
         if let (Some(key), Some(value)) = (key, value) {
             let (backend_id, active, hybrid_legs) = {
                 let live = ctx.renderer.live.read();
@@ -1345,7 +1353,12 @@ pub fn apply_simple_osc_control(
                     ),
                 )
             };
-            ctx.renderer.set_backend_param(&backend_id, &key, value);
+            if !ctx.renderer.set_backend_param(&backend_id, &key, value) {
+                effects.log_message = Some(format!(
+                    "OSC: backend param {backend_id}.{key} refused (not a value of its declared type)"
+                ));
+                return Some(effects);
+            }
             effects.mark_dirty = true;
             // Recompute only when the edited backend participates in the
             // active topology (the selection itself, or a leg of an active

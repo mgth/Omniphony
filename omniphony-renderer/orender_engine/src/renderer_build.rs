@@ -394,7 +394,7 @@ pub fn seed_control_from_render_config(
                 .filter(|points| points.len() >= 2)
                 .unwrap_or_else(|| renderer::live_params::HybridLiveParams::default().curve)
         });
-        // Replay persisted generic backend param values, and migrate the legacy
+        // Replay persisted generic plugin param values, and migrate the legacy
         // dedicated keys (barycenter_localize / experimental_distance_*) into the
         // same bag so old configs keep working. All are read at the rebuild below
         // via each backend's schema.
@@ -403,11 +403,9 @@ pub fn seed_control_from_render_config(
             if !cfg.backend_params.is_empty() {
                 model_changed = true;
             }
-            for (backend_id, params) in &cfg.backend_params {
-                for (key, value) in params {
-                    control.set_backend_param(backend_id, key, value.clone());
-                }
-            }
+            // Every plugin kind's values (the generators' and the phantom
+            // stage's legacy keys migrated), in one store.
+            control.seed_plugin_params(renderer::plugin::PluginParams::from_config(cfg));
             let mut migrate = |backend_id: &str, key: &str, value: Option<ParamValue>| {
                 if let Some(value) = value {
                     control.set_backend_param(backend_id, key, value);
@@ -747,9 +745,9 @@ pub fn apply_render_config_live(
         live.spread_distance_curve = params.spread_distance_curve;
     }
     // The replay in `seed_control_from_render_config` only inserts; without
-    // the clear, the outgoing profile's backend params would survive the
+    // the clear, the outgoing profile's plugin params would survive the
     // switch (and be committed into the incoming profile on the next save).
-    control.clear_backend_params();
+    control.clear_plugin_params();
     seed_control_from_render_config(control, Some(render_cfg));
     seed_runtime_state_from_render_config(control, Some(render_cfg));
     Ok(())

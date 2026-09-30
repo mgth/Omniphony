@@ -1134,11 +1134,11 @@ mod tests {
             .collect();
         state.insert(
             "object_generators".into(),
-            vec![rosc::OscType::String(control.object_generators_schema())],
+            vec![rosc::OscType::String(control.object_generators_json())],
         );
         state.insert(
             "phantom".into(),
-            vec![rosc::OscType::String(control.phantom_schema())],
+            vec![rosc::OscType::String(control.phantom_json())],
         );
         state
     }
