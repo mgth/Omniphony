@@ -117,6 +117,10 @@ pub enum ApplyEffect {
     Topology,
     /// Rebuild the evaluation layer only, reusing the backend's gain models.
     Evaluation,
+    /// The stage that uses the value reloads or rebuilds by itself when it
+    /// sees it change (the HRIR grid, the BRIR set, the crossover bank):
+    /// nothing for the engine to trigger, but the change is not instant.
+    Reload,
 }
 
 impl ApplyEffect {
@@ -126,6 +130,7 @@ impl ApplyEffect {
             Self::Replan => "replan",
             Self::Topology => "topology",
             Self::Evaluation => "evaluation",
+            Self::Reload => "reload",
         }
     }
 }
@@ -195,7 +200,46 @@ pub static OPTION_GROUPS: &[&OptionGroup] = &[
     &DISTANCE_DIFFUSE,
     &EVALUATION,
     &BACKEND,
+    &HRIR_SOURCE,
+    &BRIR,
+    &CROSSOVER,
+    &HEAD_TRACKING,
 ];
+
+/// The binaural stage's HRIR set and how finely it follows a moving source.
+/// The render thread rebuilds the grid when the source changes.
+pub static HRIR_SOURCE: OptionGroup = OptionGroup {
+    key: "hrir_source",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::Reload,
+    i18n_key: "binaural.hrtfSource",
+};
+
+/// How a BRIR set is loaded; a change reloads it on the renderer's worker.
+pub static BRIR: OptionGroup = OptionGroup {
+    key: "brir",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::Reload,
+    i18n_key: "binaural.brirTitle",
+};
+
+/// The speaker crossover: the speaker stage compares the live values against
+/// the bank it built every frame and rebuilds the bank itself.
+pub static CROSSOVER: OptionGroup = OptionGroup {
+    key: "crossover",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::Reload,
+    i18n_key: "renderer.crossoverTypeLabel",
+};
+
+/// The head-tracking input. Every incoming packet is matched against the
+/// address and decoded with the format as it arrives: nothing to restart.
+pub static HEAD_TRACKING: OptionGroup = OptionGroup {
+    key: "head_tracking",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::None,
+    i18n_key: "binaural.headTrackingTitle",
+};
 
 /// The rebuild a set of changes asks the engine for, widest first merged in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -315,6 +359,10 @@ pub enum LegacyAddr {
         prefix: &'static str,
         tail: &'static str,
     },
+    /// No dedicated address of its own (the generic setters only): a value
+    /// whose pre-registry address takes another shape (e.g. one ear of a
+    /// pair, which stays hand-wired).
+    None,
 }
 
 impl LegacyAddr {
@@ -323,6 +371,7 @@ impl LegacyAddr {
         match self {
             Self::Exact(exact) => addr == exact,
             Self::Prefixed { prefix, tail } => addr.strip_prefix(prefix) == Some(tail),
+            Self::None => false,
         }
     }
 }
@@ -573,6 +622,171 @@ fn cartesian_in_force(live: &LiveParams, env: &OptionEnv) -> bool {
     }
 }
 
+/// A `Float` value that must pass `accept` before it is clamped — the
+/// binaural handlers rejected, rather than clamped, a zero room size or a
+/// negative pre-delay.
+fn raw_float_if(raw: &RawOptionValue, kind: OptionKind, accept: fn(f32) -> bool) -> Option<f32> {
+    let value = match raw {
+        RawOptionValue::Number(n) => *n as f32,
+        RawOptionValue::Str(s) => s.trim().parse::<f32>().ok()?,
+        _ => return None,
+    };
+    (value.is_finite() && accept(value)).then(|| clamp_to(kind, value))
+}
+
+fn positive(v: f32) -> bool {
+    v > 0.0
+}
+
+fn non_negative(v: f32) -> bool {
+    v >= 0.0
+}
+
+fn any_value(_: f32) -> bool {
+    true
+}
+
+fn binaural_cfg(render: &RenderConfig) -> Option<&crate::config::BinauralConfig> {
+    render.binaural.as_ref()
+}
+
+fn binaural_cfg_mut(render: &mut RenderConfig) -> &mut crate::config::BinauralConfig {
+    render.binaural.get_or_insert_with(Default::default)
+}
+
+fn reflections_cfg(render: &RenderConfig) -> Option<&crate::config::ReflectionsConfig> {
+    binaural_cfg(render)?.reflections.as_ref()
+}
+
+fn reflections_cfg_mut(render: &mut RenderConfig) -> &mut crate::config::ReflectionsConfig {
+    binaural_cfg_mut(render)
+        .reflections
+        .get_or_insert_with(Default::default)
+}
+
+fn reverb_cfg(render: &RenderConfig) -> Option<&crate::config::ReverbConfig> {
+    binaural_cfg(render)?.reverb.as_ref()
+}
+
+fn reverb_cfg_mut(render: &mut RenderConfig) -> &mut crate::config::ReverbConfig {
+    binaural_cfg_mut(render)
+        .reverb
+        .get_or_insert_with(Default::default)
+}
+
+fn head_tracking_cfg(render: &RenderConfig) -> Option<&crate::config::HeadTrackingConfig> {
+    binaural_cfg(render)?.head_tracking.as_ref()
+}
+
+fn head_tracking_cfg_mut(render: &mut RenderConfig) -> &mut crate::config::HeadTrackingConfig {
+    binaural_cfg_mut(render)
+        .head_tracking
+        .get_or_insert_with(Default::default)
+}
+
+/// The selector string of an HRIR source, which `HrirSource::from_str` reads
+/// back to the same source: `saf`, `sofa:<path>`, `pinna:<preset>:<d>:<depth>`, …
+fn hrir_selector(source: &crate::binaural::HrirSource) -> String {
+    use crate::binaural::HrirSource;
+    match source {
+        HrirSource::Sofa(path) if !path.is_empty() => format!("sofa:{path}"),
+        HrirSource::Brir(path) if !path.is_empty() => format!("brir:{path}"),
+        HrirSource::Pinna {
+            preset,
+            d_scale_pct,
+            depth_pct,
+        } => format!("pinna:{}:{d_scale_pct}:{depth_pct}", preset.as_str()),
+        HrirSource::Prtf {
+            freq_scale_pct,
+            depth_pct,
+        } => format!("prtf:{freq_scale_pct}:{depth_pct}"),
+        other => other.as_str().to_string(),
+    }
+}
+
+/// `auto` (follow the head-tracking address), `on` (every orientation) or
+/// `off` (the front one only).
+fn brir_head_tracking_str(value: Option<bool>) -> &'static str {
+    match value {
+        None => "auto",
+        Some(true) => "on",
+        Some(false) => "off",
+    }
+}
+
+const BRIR_MAX_LENGTH_KIND: OptionKind = OptionKind::Float {
+    min: 0.0,
+    max: 10.0,
+    step: 0.1,
+};
+const BRIR_TAIL_FLOOR_KIND: OptionKind = OptionKind::Float {
+    min: 20.0,
+    max: 120.0,
+    step: 1.0,
+};
+const UNIT_SCALE_KIND: OptionKind = OptionKind::Float {
+    min: 0.01,
+    max: 100.0,
+    step: 0.01,
+};
+const HEAD_RADIUS_KIND: OptionKind = OptionKind::Float {
+    min: 0.05,
+    max: 0.15,
+    step: 0.001,
+};
+const UNIT_LEVEL_KIND: OptionKind = OptionKind::Float {
+    min: 0.0,
+    max: 1.0,
+    step: 0.01,
+};
+const WALL_CUTOFF_KIND: OptionKind = OptionKind::Float {
+    min: crate::binaural::reflections::MIN_WALL_CUTOFF_HZ,
+    max: crate::binaural::reflections::MAX_WALL_CUTOFF_HZ,
+    step: 100.0,
+};
+const REFLECTION_ROOM_KIND: OptionKind = OptionKind::Float {
+    min: crate::binaural::reflections::MIN_ROOM_M,
+    max: crate::binaural::reflections::MAX_ROOM_M,
+    step: 0.1,
+};
+const RT60_KIND: OptionKind = OptionKind::Float {
+    min: 0.1,
+    max: 3.0,
+    step: 0.01,
+};
+const PREDELAY_KIND: OptionKind = OptionKind::Float {
+    min: 0.0,
+    max: 100.0,
+    step: 1.0,
+};
+const REVERB_SIZE_KIND: OptionKind = OptionKind::Float {
+    min: crate::binaural::reverb::SIZE_MIN,
+    max: crate::binaural::reverb::SIZE_MAX,
+    step: 0.05,
+};
+const RT60_RATIO_KIND: OptionKind = OptionKind::Float {
+    min: crate::binaural::reverb::RT60_RATIO_MIN,
+    max: crate::binaural::reverb::RT60_RATIO_MAX,
+    step: 0.05,
+};
+const TRACKING_SMOOTHING_KIND: OptionKind = OptionKind::Float {
+    min: 0.0,
+    max: 0.999,
+    step: 0.01,
+};
+const EAR_GAINS_KIND: OptionKind = OptionKind::FloatArray {
+    len: 2,
+    min: 0.0,
+    max: 4.0,
+    step: 0.01,
+};
+/// Linear master gain: at most +60 dB.
+const MASTER_GAIN_KIND: OptionKind = OptionKind::Float {
+    min: 0.0,
+    max: 1000.0,
+    step: 0.01,
+};
+
 const BACKENDS: OptionKind = OptionKind::DynamicEnum { source: "backends" };
 const HYBRID_CURVE_SMOOTHING_KIND: OptionKind = OptionKind::Float {
     min: 0.0,
@@ -803,7 +1017,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         // bank it built every frame and rebuilds the filter bank itself; no
         // synthesized-object topology depends on it.
         flags: OptionFlags::NONE,
-        group: None,
+        group: Some(&CROSSOVER),
         i18n_key: "renderer.crossoverTypeLabel",
         help_i18n_key: Some("help.crossoverType"),
         legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_CROSSOVER_TYPE),
@@ -830,7 +1044,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         // live value against the bank it built every frame and rebuilds the
         // FIR bank itself when it moves.
         flags: OptionFlags::NONE,
-        group: None,
+        group: Some(&CROSSOVER),
         i18n_key: "renderer.crossoverTransitionLabel",
         help_i18n_key: Some("help.crossoverFirTransition"),
         legacy_control_addr: LegacyAddr::Exact(
@@ -862,7 +1076,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         // No REPLAN: the lattice only gates a per-block cache in the binaural
         // stage, it does not change any synthesized-object topology.
         flags: OptionFlags::NONE,
-        group: None,
+        group: Some(&HRIR_SOURCE),
         i18n_key: "binaural.hrirUpdateLatticeLabel",
         help_i18n_key: Some("help.hrirUpdateLattice"),
         legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_HRIR_UPDATE_LATTICE),
@@ -1866,6 +2080,874 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
                 .unwrap_or(crate::live_params::HybridLiveParams::default().metric);
         },
     },
+    // ── Binaural ────────────────────────────────────────────────────────
+    //
+    // The headphone stage. Grouped: the HRIR source (with the update
+    // lattice above), the BRIR load options, the head-tracking input and the
+    // crossover (above). The rest are independent scalars read every block.
+    // The dedicated addresses stay as aliases; the snapshot keeps its
+    // `binaural` block. Kept hand-wired: the ear mutes, the manual head pose,
+    // the recenter / axis calibration (written at once, by exception) and
+    // the SOFA upload.
+    OptionSpec {
+        key: "output_mode",
+        kind: OptionKind::Enum(&["speaker", "binaural"]),
+        default: OptionDefault::Str("speaker"),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "outputMode.selectTitle",
+        help_i18n_key: Some("help.outputMode"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_OUTPUT_MODE),
+        set: |live, raw, _env| {
+            let mode = crate::live_params::OutputMode::from_str(raw_str(raw)?)?;
+            live.binaural.output_mode = mode;
+            Some(mode.as_str().to_string())
+        },
+        get_json: |live| live.binaural.output_mode.as_str().into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).output_mode =
+                Some(live.binaural.output_mode.as_str().to_string());
+        },
+        config_seed: |live, render, _env| {
+            if let Some(mode) = binaural_cfg(render)
+                .and_then(|b| b.output_mode.as_deref())
+                .and_then(crate::live_params::OutputMode::from_str)
+            {
+                live.binaural.output_mode = mode;
+            }
+        },
+    },
+    OptionSpec {
+        key: "binaural_mode",
+        kind: OptionKind::Enum(&["direct", "cascaded"]),
+        default: OptionDefault::Str("direct"),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.mode",
+        help_i18n_key: None,
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_MODE),
+        set: |live, raw, _env| {
+            let mode = crate::live_params::BinauralMode::from_str(raw_str(raw)?)?;
+            live.binaural.mode = mode;
+            Some(mode.as_str().to_string())
+        },
+        get_json: |live| live.binaural.mode.as_str().into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).mode = Some(live.binaural.mode.as_str().to_string());
+        },
+        config_seed: |live, render, _env| {
+            if let Some(mode) = binaural_cfg(render)
+                .and_then(|b| b.mode.as_deref())
+                .and_then(crate::live_params::BinauralMode::from_str)
+            {
+                live.binaural.mode = mode;
+            }
+        },
+    },
+    OptionSpec {
+        key: "hrir_source",
+        kind: OptionKind::Str,
+        default: OptionDefault::Str("saf"),
+        flags: OptionFlags::NONE,
+        group: Some(&HRIR_SOURCE),
+        i18n_key: "binaural.hrtfSource",
+        help_i18n_key: Some("help.binaural.hrtf"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_HRIR_SOURCE),
+        set: |live, raw, _env| {
+            let raw = raw_str(raw)?.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let source = crate::binaural::HrirSource::from_str(raw)?;
+            let canonical = hrir_selector(&source);
+            live.binaural.hrir_source = source;
+            Some(canonical)
+        },
+        get_json: |live| hrir_selector(&live.binaural.hrir_source).into(),
+        // The selector, with a SOFA or BRIR file in its own key.
+        config_store: |render, live, _env| {
+            use crate::binaural::HrirSource;
+            let (selector, sofa, brir) = match &live.binaural.hrir_source {
+                HrirSource::Sofa(p) if !p.is_empty() => {
+                    ("sofa".to_string(), Some(std::path::PathBuf::from(p)), None)
+                }
+                HrirSource::Brir(p) if !p.is_empty() => {
+                    ("brir".to_string(), None, Some(std::path::PathBuf::from(p)))
+                }
+                other => (hrir_selector(other), None, None),
+            };
+            let bin = binaural_cfg_mut(render);
+            bin.hrir_source = Some(selector);
+            bin.hrtf_sofa_path = sofa;
+            bin.brir_sofa_path = brir;
+        },
+        // A bare "sofa" / "brir" takes its file from its own key, and falls
+        // back to the embedded KEMAR set without one.
+        config_seed: |live, render, _env| {
+            use crate::binaural::HrirSource;
+            let Some(bin) = binaural_cfg(render) else {
+                return;
+            };
+            let Some(source) = bin.hrir_source.as_deref().and_then(HrirSource::from_str) else {
+                return;
+            };
+            let file =
+                |path: Option<&std::path::PathBuf>| path.map(|p| p.to_string_lossy().into_owned());
+            live.binaural.hrir_source =
+                match source {
+                    HrirSource::Sofa(p) if p.is_empty() => file(bin.hrtf_sofa_path.as_ref())
+                        .map_or(HrirSource::SafKemar, HrirSource::Sofa),
+                    HrirSource::Brir(p) if p.is_empty() => file(bin.brir_sofa_path.as_ref())
+                        .map_or(HrirSource::SafKemar, HrirSource::Brir),
+                    other => other,
+                };
+        },
+    },
+    OptionSpec {
+        key: "brir_head_tracking",
+        kind: OptionKind::Enum(&["auto", "on", "off"]),
+        default: OptionDefault::Str("auto"),
+        flags: OptionFlags::NONE,
+        group: Some(&BRIR),
+        i18n_key: "binaural.brirHeadTracking",
+        help_i18n_key: Some("help.binaural.brirHeadTracking"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_BRIR_HEAD_TRACKING),
+        // `auto` follows the head-tracking address; a bool (or on / off)
+        // forces every orientation resident, or only the front one.
+        set: |live, raw, _env| {
+            let value = match raw {
+                RawOptionValue::Str(s) => match s.trim().to_ascii_lowercase().as_str() {
+                    "auto" => None,
+                    "on" | "true" | "all" => Some(true),
+                    "off" | "false" | "front" => Some(false),
+                    _ => return None,
+                },
+                other => Some(raw_bool(other)?),
+            };
+            live.binaural.brir.head_tracking = value;
+            Some(brir_head_tracking_str(value).to_string())
+        },
+        get_json: |live| brir_head_tracking_str(live.binaural.brir.head_tracking).into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).brir_head_tracking = live.binaural.brir.head_tracking;
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = binaural_cfg(render).and_then(|b| b.brir_head_tracking) {
+                live.binaural.brir.head_tracking = Some(v);
+            }
+        },
+    },
+    OptionSpec {
+        key: "brir_max_length_s",
+        kind: BRIR_MAX_LENGTH_KIND,
+        default: OptionDefault::Float(2.0),
+        flags: OptionFlags::NONE,
+        group: Some(&BRIR),
+        i18n_key: "binaural.brirMaxLength",
+        help_i18n_key: Some("help.binaural.brirMaxLength"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_BRIR_MAX_LENGTH),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, BRIR_MAX_LENGTH_KIND, non_negative)?;
+            live.binaural.brir.max_length_s = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.brir.max_length_s.into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).brir_max_length_s = Some(live.binaural.brir.max_length_s);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = binaural_cfg(render).and_then(|b| b.brir_max_length_s)
+                && v.is_finite()
+                && v >= 0.0
+            {
+                live.binaural.brir.max_length_s = v;
+            }
+        },
+    },
+    OptionSpec {
+        key: "brir_tail_floor_db",
+        kind: BRIR_TAIL_FLOOR_KIND,
+        default: OptionDefault::Float(60.0),
+        flags: OptionFlags::NONE,
+        group: Some(&BRIR),
+        i18n_key: "binaural.brirTailFloor",
+        help_i18n_key: Some("help.binaural.brirTailFloor"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_BRIR_TAIL_FLOOR),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, BRIR_TAIL_FLOOR_KIND, positive)?;
+            live.binaural.brir.tail_floor_db = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.brir.tail_floor_db.into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).brir_tail_floor_db = Some(live.binaural.brir.tail_floor_db);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = binaural_cfg(render).and_then(|b| b.brir_tail_floor_db)
+                && v.is_finite()
+                && v > 0.0
+            {
+                live.binaural.brir.tail_floor_db = v.clamp(20.0, 120.0);
+            }
+        },
+    },
+    OptionSpec {
+        key: "binaural_unit_scale_m",
+        kind: UNIT_SCALE_KIND,
+        default: OptionDefault::Float(1.0),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.distanceScale",
+        help_i18n_key: Some("help.binaural.distanceScale"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_UNIT_SCALE),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, UNIT_SCALE_KIND, positive)?;
+            live.binaural.unit_scale_m = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.unit_scale_m.into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).unit_scale_m = Some(live.binaural.unit_scale_m);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = binaural_cfg(render).and_then(|b| b.unit_scale_m)
+                && v.is_finite()
+                && v > 0.0
+            {
+                live.binaural.unit_scale_m = v;
+            }
+        },
+    },
+    OptionSpec {
+        key: "binaural_head_radius_m",
+        kind: HEAD_RADIUS_KIND,
+        default: OptionDefault::Float(crate::binaural::itd::DEFAULT_HEAD_RADIUS_M),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.headRadius",
+        help_i18n_key: Some("help.binaural.headRadius"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_HEAD_RADIUS),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, HEAD_RADIUS_KIND, positive)?;
+            live.binaural.head_radius_m = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.head_radius_m.into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).head_radius_m = Some(live.binaural.head_radius_m);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = binaural_cfg(render).and_then(|b| b.head_radius_m)
+                && v.is_finite()
+                && v > 0.0
+            {
+                live.binaural.head_radius_m = v.clamp(0.05, 0.15);
+            }
+        },
+    },
+    OptionSpec {
+        key: "binaural_air_absorption",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(true),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.airAbsorption",
+        help_i18n_key: Some("help.binaural.airAbsorption"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_AIR_ABSORPTION),
+        set: |live, raw, _env| {
+            let enabled = raw_bool(raw)?;
+            live.binaural.air_absorption = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.binaural.air_absorption.into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).air_absorption = Some(live.binaural.air_absorption);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = binaural_cfg(render).and_then(|b| b.air_absorption) {
+                live.binaural.air_absorption = v;
+            }
+        },
+    },
+    OptionSpec {
+        key: "binaural_diffuse_field_eq",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(false),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.diffuseFieldEq",
+        help_i18n_key: Some("help.binaural.diffuseFieldEq"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_DIFFUSE_FIELD_EQ),
+        set: |live, raw, _env| {
+            let enabled = raw_bool(raw)?;
+            live.binaural.diffuse_field_eq = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.binaural.diffuse_field_eq.into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).diffuse_field_eq = Some(live.binaural.diffuse_field_eq);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = binaural_cfg(render).and_then(|b| b.diffuse_field_eq) {
+                live.binaural.diffuse_field_eq = v;
+            }
+        },
+    },
+    OptionSpec {
+        key: "reflections_enabled",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(false),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.earlyReflections",
+        help_i18n_key: Some("help.binaural.earlyReflections"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_REFLECTIONS_ENABLED),
+        set: |live, raw, _env| {
+            let enabled = raw_bool(raw)?;
+            live.binaural.reflections.enabled = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.binaural.reflections.enabled.into(),
+        config_store: |render, live, _env| {
+            reflections_cfg_mut(render).enabled = Some(live.binaural.reflections.enabled);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reflections_cfg(render).and_then(|r| r.enabled) {
+                live.binaural.reflections.enabled = v;
+            }
+        },
+    },
+    OptionSpec {
+        key: "reflections_level",
+        kind: UNIT_LEVEL_KIND,
+        default: OptionDefault::Float(0.5),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.reflectionLevel",
+        help_i18n_key: Some("help.binaural.reflectionLevel"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_REFLECTIONS_LEVEL),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, UNIT_LEVEL_KIND, any_value)?;
+            live.binaural.reflections.level = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reflections.level.into(),
+        config_store: |render, live, _env| {
+            reflections_cfg_mut(render).level = Some(live.binaural.reflections.level);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reflections_cfg(render).and_then(|r| r.level)
+                && v.is_finite()
+                && true
+            {
+                live.binaural.reflections.level = v.clamp(0.0, 1.0);
+            }
+        },
+    },
+    OptionSpec {
+        key: "reflections_wall_cutoff_hz",
+        kind: WALL_CUTOFF_KIND,
+        default: OptionDefault::Float(6000.0),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.wallDamping",
+        help_i18n_key: Some("help.binaural.wallDamping"),
+        legacy_control_addr: LegacyAddr::Exact(
+            osc_contract::CONTROL_BINAURAL_REFLECTIONS_WALL_CUTOFF,
+        ),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, WALL_CUTOFF_KIND, any_value)?;
+            live.binaural.reflections.wall_cutoff_hz = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reflections.wall_cutoff_hz.into(),
+        config_store: |render, live, _env| {
+            reflections_cfg_mut(render).wall_cutoff_hz =
+                Some(live.binaural.reflections.wall_cutoff_hz);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reflections_cfg(render).and_then(|r| r.wall_cutoff_hz)
+                && v.is_finite()
+                && true
+            {
+                live.binaural.reflections.wall_cutoff_hz = v.clamp(
+                    crate::binaural::reflections::MIN_WALL_CUTOFF_HZ,
+                    crate::binaural::reflections::MAX_WALL_CUTOFF_HZ,
+                );
+            }
+        },
+    },
+    OptionSpec {
+        key: "reflections_room_width_m",
+        kind: REFLECTION_ROOM_KIND,
+        default: OptionDefault::Float(4.0),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.roomWidth",
+        help_i18n_key: Some("help.binaural.room"),
+        legacy_control_addr: LegacyAddr::Exact(
+            osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_WIDTH,
+        ),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, REFLECTION_ROOM_KIND, positive)?;
+            live.binaural.reflections.room_size_m[0] = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reflections.room_size_m[0].into(),
+        config_store: |render, live, _env| {
+            reflections_cfg_mut(render).room_width_m =
+                Some(live.binaural.reflections.room_size_m[0]);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reflections_cfg(render).and_then(|r| r.room_width_m)
+                && v.is_finite()
+                && v > 0.0
+            {
+                live.binaural.reflections.room_size_m[0] = v.clamp(
+                    crate::binaural::reflections::MIN_ROOM_M,
+                    crate::binaural::reflections::MAX_ROOM_M,
+                );
+            }
+        },
+    },
+    OptionSpec {
+        key: "reflections_room_depth_m",
+        kind: REFLECTION_ROOM_KIND,
+        default: OptionDefault::Float(5.0),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.roomDepth",
+        help_i18n_key: Some("help.binaural.room"),
+        legacy_control_addr: LegacyAddr::Exact(
+            osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_DEPTH,
+        ),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, REFLECTION_ROOM_KIND, positive)?;
+            live.binaural.reflections.room_size_m[1] = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reflections.room_size_m[1].into(),
+        config_store: |render, live, _env| {
+            reflections_cfg_mut(render).room_depth_m =
+                Some(live.binaural.reflections.room_size_m[1]);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reflections_cfg(render).and_then(|r| r.room_depth_m)
+                && v.is_finite()
+                && v > 0.0
+            {
+                live.binaural.reflections.room_size_m[1] = v.clamp(
+                    crate::binaural::reflections::MIN_ROOM_M,
+                    crate::binaural::reflections::MAX_ROOM_M,
+                );
+            }
+        },
+    },
+    OptionSpec {
+        key: "reflections_room_height_m",
+        kind: REFLECTION_ROOM_KIND,
+        default: OptionDefault::Float(2.7),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.roomHeight",
+        help_i18n_key: Some("help.binaural.room"),
+        legacy_control_addr: LegacyAddr::Exact(
+            osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_HEIGHT,
+        ),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, REFLECTION_ROOM_KIND, positive)?;
+            live.binaural.reflections.room_size_m[2] = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reflections.room_size_m[2].into(),
+        config_store: |render, live, _env| {
+            reflections_cfg_mut(render).room_height_m =
+                Some(live.binaural.reflections.room_size_m[2]);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reflections_cfg(render).and_then(|r| r.room_height_m)
+                && v.is_finite()
+                && v > 0.0
+            {
+                live.binaural.reflections.room_size_m[2] = v.clamp(
+                    crate::binaural::reflections::MIN_ROOM_M,
+                    crate::binaural::reflections::MAX_ROOM_M,
+                );
+            }
+        },
+    },
+    OptionSpec {
+        key: "reverb_enabled",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(false),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.lateReverb",
+        help_i18n_key: Some("help.binaural.lateReverb"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_REVERB_ENABLED),
+        set: |live, raw, _env| {
+            let enabled = raw_bool(raw)?;
+            live.binaural.reverb.enabled = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.binaural.reverb.enabled.into(),
+        config_store: |render, live, _env| {
+            reverb_cfg_mut(render).enabled = Some(live.binaural.reverb.enabled);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reverb_cfg(render).and_then(|r| r.enabled) {
+                live.binaural.reverb.enabled = v;
+            }
+        },
+    },
+    OptionSpec {
+        key: "reverb_level",
+        kind: UNIT_LEVEL_KIND,
+        default: OptionDefault::Float(0.25),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.reverbLevel",
+        help_i18n_key: Some("help.binaural.reverbLevel"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_REVERB_LEVEL),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, UNIT_LEVEL_KIND, any_value)?;
+            live.binaural.reverb.level = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reverb.level.into(),
+        config_store: |render, live, _env| {
+            reverb_cfg_mut(render).level = Some(live.binaural.reverb.level);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reverb_cfg(render).and_then(|r| r.level)
+                && v.is_finite()
+                && true
+            {
+                live.binaural.reverb.level = v.clamp(0.0, 1.0);
+            }
+        },
+    },
+    OptionSpec {
+        key: "reverb_rt60_s",
+        kind: RT60_KIND,
+        default: OptionDefault::Float(0.35),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.rt60",
+        help_i18n_key: Some("help.binaural.rt60"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_REVERB_RT60),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, RT60_KIND, positive)?;
+            live.binaural.reverb.rt60_s = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reverb.rt60_s.into(),
+        config_store: |render, live, _env| {
+            reverb_cfg_mut(render).rt60_s = Some(live.binaural.reverb.rt60_s);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reverb_cfg(render).and_then(|r| r.rt60_s)
+                && v.is_finite()
+                && v > 0.0
+            {
+                live.binaural.reverb.rt60_s = v.clamp(0.1, 3.0);
+            }
+        },
+    },
+    OptionSpec {
+        key: "reverb_predelay_ms",
+        kind: PREDELAY_KIND,
+        default: OptionDefault::Float(20.0),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.reverbPredelay",
+        help_i18n_key: None,
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_REVERB_PREDELAY),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, PREDELAY_KIND, non_negative)?;
+            live.binaural.reverb.predelay_ms = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reverb.predelay_ms.into(),
+        config_store: |render, live, _env| {
+            reverb_cfg_mut(render).predelay_ms = Some(live.binaural.reverb.predelay_ms);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reverb_cfg(render).and_then(|r| r.predelay_ms)
+                && v.is_finite()
+                && v >= 0.0
+            {
+                live.binaural.reverb.predelay_ms = v.clamp(0.0, 100.0);
+            }
+        },
+    },
+    OptionSpec {
+        key: "reverb_size",
+        kind: REVERB_SIZE_KIND,
+        default: OptionDefault::Float(1.0),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.reverbSize",
+        help_i18n_key: Some("help.binaural.reverbSize"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_REVERB_SIZE),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, REVERB_SIZE_KIND, positive)?;
+            live.binaural.reverb.size = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reverb.size.into(),
+        config_store: |render, live, _env| {
+            reverb_cfg_mut(render).size = Some(live.binaural.reverb.size);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reverb_cfg(render).and_then(|r| r.size)
+                && v.is_finite()
+                && v > 0.0
+            {
+                live.binaural.reverb.size = v.clamp(
+                    crate::binaural::reverb::SIZE_MIN,
+                    crate::binaural::reverb::SIZE_MAX,
+                );
+            }
+        },
+    },
+    OptionSpec {
+        key: "reverb_rt60_low_ratio",
+        kind: RT60_RATIO_KIND,
+        default: OptionDefault::Float(1.0),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.reverbBassDecay",
+        help_i18n_key: Some("help.binaural.reverbBassDecay"),
+        legacy_control_addr: LegacyAddr::Exact(
+            osc_contract::CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO,
+        ),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, RT60_RATIO_KIND, positive)?;
+            live.binaural.reverb.rt60_low_ratio = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reverb.rt60_low_ratio.into(),
+        config_store: |render, live, _env| {
+            reverb_cfg_mut(render).rt60_low_ratio = Some(live.binaural.reverb.rt60_low_ratio);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reverb_cfg(render).and_then(|r| r.rt60_low_ratio)
+                && v.is_finite()
+                && v > 0.0
+            {
+                live.binaural.reverb.rt60_low_ratio = v.clamp(
+                    crate::binaural::reverb::RT60_RATIO_MIN,
+                    crate::binaural::reverb::RT60_RATIO_MAX,
+                );
+            }
+        },
+    },
+    OptionSpec {
+        key: "reverb_rt60_high_ratio",
+        kind: RT60_RATIO_KIND,
+        default: OptionDefault::Float(1.0),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.reverbTrebleDecay",
+        help_i18n_key: Some("help.binaural.reverbTrebleDecay"),
+        legacy_control_addr: LegacyAddr::Exact(
+            osc_contract::CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO,
+        ),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, RT60_RATIO_KIND, positive)?;
+            live.binaural.reverb.rt60_high_ratio = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.reverb.rt60_high_ratio.into(),
+        config_store: |render, live, _env| {
+            reverb_cfg_mut(render).rt60_high_ratio = Some(live.binaural.reverb.rt60_high_ratio);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = reverb_cfg(render).and_then(|r| r.rt60_high_ratio)
+                && v.is_finite()
+                && v > 0.0
+            {
+                live.binaural.reverb.rt60_high_ratio = v.clamp(
+                    crate::binaural::reverb::RT60_RATIO_MIN,
+                    crate::binaural::reverb::RT60_RATIO_MAX,
+                );
+            }
+        },
+    },
+    OptionSpec {
+        key: "head_tracking_smoothing",
+        kind: TRACKING_SMOOTHING_KIND,
+        default: OptionDefault::Float(0.2),
+        flags: OptionFlags::NONE,
+        group: Some(&HEAD_TRACKING),
+        i18n_key: "binaural.trackSmoothing",
+        help_i18n_key: Some("help.binaural.trackSmoothing"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_HEAD_TRACKING_SMOOTHING),
+        set: |live, raw, _env| {
+            let v = raw_float_if(raw, TRACKING_SMOOTHING_KIND, any_value)?;
+            live.binaural.tracking.smoothing = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.binaural.tracking.smoothing.into(),
+        config_store: |render, live, _env| {
+            head_tracking_cfg_mut(render).smoothing = Some(live.binaural.tracking.smoothing);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = head_tracking_cfg(render).and_then(|h| h.smoothing)
+                && v.is_finite()
+                && true
+            {
+                live.binaural.tracking.smoothing = v.clamp(0.0, 0.999);
+            }
+        },
+    },
+    OptionSpec {
+        key: "head_tracking_invert",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(false),
+        flags: OptionFlags::NONE,
+        group: Some(&HEAD_TRACKING),
+        i18n_key: "binaural.invertRotation",
+        help_i18n_key: Some("help.binaural.invertRotation"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_HEAD_TRACKING_INVERT),
+        set: |live, raw, _env| {
+            let enabled = raw_bool(raw)?;
+            live.binaural.tracking.invert = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.binaural.tracking.invert.into(),
+        config_store: |render, live, _env| {
+            head_tracking_cfg_mut(render).invert = Some(live.binaural.tracking.invert);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = head_tracking_cfg(render).and_then(|h| h.invert) {
+                live.binaural.tracking.invert = v;
+            }
+        },
+    },
+    OptionSpec {
+        key: "head_tracking_osc_address",
+        kind: OptionKind::Str,
+        default: OptionDefault::Str(""),
+        flags: OptionFlags::NONE,
+        group: Some(&HEAD_TRACKING),
+        i18n_key: "binaural.oscAddressLabel",
+        help_i18n_key: Some("help.binaural.oscAddress"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_HEAD_TRACKING_ADDRESS),
+        // Empty disables tracking.
+        set: |live, raw, _env| {
+            let address = raw_str(raw)?.trim();
+            live.binaural.tracking.address = (!address.is_empty()).then(|| address.to_string());
+            Some(address.to_string())
+        },
+        get_json: |live| {
+            live.binaural
+                .tracking
+                .address
+                .as_deref()
+                .unwrap_or("")
+                .into()
+        },
+        config_store: |render, live, _env| {
+            head_tracking_cfg_mut(render).osc_address = live.binaural.tracking.address.clone();
+        },
+        config_seed: |live, render, _env| {
+            if let Some(address) = head_tracking_cfg(render).and_then(|h| h.osc_address.as_ref()) {
+                live.binaural.tracking.address = (!address.is_empty()).then(|| address.clone());
+            }
+        },
+    },
+    OptionSpec {
+        key: "head_tracking_format",
+        kind: OptionKind::Enum(&["auto", "quat", "rotvec", "euler"]),
+        default: OptionDefault::Str("auto"),
+        flags: OptionFlags::NONE,
+        group: Some(&HEAD_TRACKING),
+        i18n_key: "binaural.trackFormatLabel",
+        help_i18n_key: Some("help.binaural.trackFormat"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_HEAD_TRACKING_FORMAT),
+        set: |live, raw, _env| {
+            let format = crate::binaural::HeadTrackingFormat::from_str(raw_str(raw)?.trim())?;
+            live.binaural.tracking.format = format;
+            Some(format.as_str().to_string())
+        },
+        get_json: |live| live.binaural.tracking.format.as_str().into(),
+        config_store: |render, live, _env| {
+            head_tracking_cfg_mut(render).format =
+                Some(live.binaural.tracking.format.as_str().to_string());
+        },
+        config_seed: |live, render, _env| {
+            if let Some(format) = head_tracking_cfg(render)
+                .and_then(|h| h.format.as_deref())
+                .and_then(crate::binaural::HeadTrackingFormat::from_str)
+            {
+                live.binaural.tracking.format = format;
+            }
+        },
+    },
+    // Both ears at once. The pre-registry address sets one ear by index and
+    // stays hand-wired; this row has no dedicated address of its own.
+    OptionSpec {
+        key: "binaural_ear_gains",
+        kind: EAR_GAINS_KIND,
+        default: OptionDefault::FloatArray(&[1.0, 1.0]),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.earGains",
+        help_i18n_key: None,
+        legacy_control_addr: LegacyAddr::None,
+        set: |live, raw, _env| {
+            let [left, right] = raw_floats::<2>(raw, EAR_GAINS_KIND)?;
+            live.binaural.ears[0].gain = left;
+            live.binaural.ears[1].gain = right;
+            Some(format!("{left},{right}"))
+        },
+        get_json: |live| {
+            serde_json::json!([live.binaural.ears[0].gain, live.binaural.ears[1].gain])
+        },
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).ear_gains =
+                Some([live.binaural.ears[0].gain, live.binaural.ears[1].gain]);
+        },
+        // Each ear on its own: an out-of-range one is left alone.
+        config_seed: |live, render, _env| {
+            if let Some(gains) = binaural_cfg(render).and_then(|b| b.ear_gains) {
+                for (ear, gain) in live.binaural.ears.iter_mut().zip(gains) {
+                    if gain.is_finite() && (0.0..=4.0).contains(&gain) {
+                        ear.gain = gain;
+                    }
+                }
+            }
+        },
+    },
+    OptionSpec {
+        key: "master_gain",
+        kind: MASTER_GAIN_KIND,
+        default: OptionDefault::Float(1.0),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "master.title",
+        help_i18n_key: Some("help.master.gain"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_GAIN),
+        // Linear. A negative gain is a polarity flip, never what a gain
+        // control means: rejected, as `/control/realtime/master_gain` does.
+        set: |live, raw, _env| {
+            let gain = raw_float_if(raw, MASTER_GAIN_KIND, non_negative)?;
+            live.master_gain = gain;
+            Some(format!("{gain}"))
+        },
+        get_json: |live| live.master_gain.into(),
+        // The file stores decibels.
+        config_store: |render, live, _env| {
+            crate::config_fields::master_gain::store(render, 20.0_f32 * live.master_gain.log10())
+        },
+        config_seed: |live, render, _env| {
+            if let Some(db) = crate::config_fields::master_gain::get(render) {
+                live.master_gain = crate::dsp::db::db_to_linear(db);
+            }
+        },
+    },
 ];
 
 /// The longest `FloatArray` a row declares (checked by a test), so a default
@@ -1903,7 +2985,7 @@ fn rebuild_for(spec: &OptionSpec) -> Rebuild {
     match spec.group.map(|group| group.effect) {
         Some(ApplyEffect::Topology) => Rebuild::Topology,
         Some(ApplyEffect::Evaluation) => Rebuild::Evaluation,
-        Some(ApplyEffect::None | ApplyEffect::Replan) | None => Rebuild::None,
+        Some(ApplyEffect::None | ApplyEffect::Replan | ApplyEffect::Reload) | None => Rebuild::None,
     }
 }
 
@@ -2223,11 +3305,16 @@ mod tests {
         for spec in LIVE_OPTIONS {
             assert!(seen.insert(spec.key), "duplicate option key {}", spec.key);
             assert!(
-                spec.key.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                spec.key.starts_with(|c: char| c.is_ascii_lowercase())
+                    && spec
+                        .key
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
                 "option key {} is not snake_case",
                 spec.key
             );
             let prefix = match spec.legacy_control_addr {
+                LegacyAddr::None => continue,
                 LegacyAddr::Exact(addr) => addr,
                 LegacyAddr::Prefixed { prefix, tail } => {
                     assert!(prefix.ends_with('/') && !tail.contains('/'), "{}", spec.key);
