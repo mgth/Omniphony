@@ -51,7 +51,11 @@ pub(crate) fn handle_control_message(
     // Pure live-state writes (declared live options, monitoring cadences,
     // generator/phantom params, placement): validated and applied by the core;
     // notified and persisted here.
-    if let Some(effects) = runtime_control::live_control::apply_live_control(msg, &runtime_ctx) {
+    if let Some(effects) = runtime_control::live_control::apply_live_control(
+        msg,
+        &runtime_ctx,
+        host.map(|h| h.as_ref()),
+    ) {
         apply_control_effects(effects, control, host, socket, clients, gaintable_cache);
         return;
     }

@@ -70,7 +70,11 @@ A control handler returns `ControlEffects`, and the class picks its shape:
   other clients, `ControlEffects::default()` for a pure action.
 
 Registry options (`/control/option`) are render state: dirty on a real change,
-saved by the Save. Profile operations write the profile list, never the unsaved
+saved by the Save — the host's too (audio output, live input). Applying a
+staged group (`/control/options/apply`, and its aliases `/control/input/apply`
+and `/control/config/input/apply`) is transient: it hands the staged values to
+the input and publishes the new state; the staged writes already lit the Save
+button. Profile operations write the profile list, never the unsaved
 edits: a switch discards them unless it carries `"save"` (the full Save first,
 no switch if it fails), create copies the live state into the new profile
 only, rename and delete leave them pending.
