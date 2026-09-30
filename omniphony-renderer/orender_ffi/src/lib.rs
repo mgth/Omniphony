@@ -14,8 +14,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use orender_engine::{
-    DecodeThreadMode, DegradedReporter, Engine, OscOptions, OscOverrides, OscSettings,
-    start_degraded_reporter,
+    DecodeThreadMode, Engine, NoBridgeRuntime, NoBridgeSetup, OscOptions, OscOverrides, OscSettings,
 };
 
 use anyhow::Result;
@@ -30,19 +29,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // Process-global decoder-less OSC reporter, brought up when the bridge can't be
 // loaded so Studio can show a red banner (orender_create still returns NULL, so
 // mpv falls back to its native decoder). One per process; lives until a real
-// engine starts (which reclaims the OSC port) or the host exits.
-static DEGRADED_REPORTER: Mutex<Option<DegradedReporter>> = Mutex::new(None);
+// engine starts (which reclaims the OSC port) or the host exits. The runtime
+// itself is the one the CLI idles on (`orender_engine::degraded`); keeping it
+// alive is this host's part.
+static DEGRADED_REPORTER: Mutex<Option<NoBridgeRuntime>> = Mutex::new(None);
 static DEGRADED_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+// Build the no-bridge runtime and start its OSC server — never asking a
+// holder of the port to yield: it is only a banner and must not evict a
+// healthy standby renderer.
+fn start_degraded_reporter(setup: NoBridgeSetup, opts: &OscOptions) -> Result<NoBridgeRuntime> {
+    let mut runtime = NoBridgeRuntime::build(setup)?;
+    runtime.start_osc(opts, None, false)?;
+    Ok(runtime)
+}
 
 // Bring up the degraded reporter once. The renderer build (VBAP table) takes a
 // moment, so do it on a detached thread — the caller returns NULL immediately
 // and mpv falls back without waiting.
-fn start_degraded_reporter_global(
-    config_path: Option<PathBuf>,
-    sample_rate: u32,
-    opts: OscOptions,
-    message: String,
-) {
+fn start_degraded_reporter_global(setup: NoBridgeSetup, opts: OscOptions) {
     // Claim the single slot; bail if a reporter is already active/starting.
     if DEGRADED_ACTIVE
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -50,25 +55,17 @@ fn start_degraded_reporter_global(
     {
         return;
     }
-    std::thread::spawn(move || {
-        match start_degraded_reporter(
-            config_path.as_deref(),
-            sample_rate,
-            opts,
-            message,
-            Some((ORENDER_ABI_MAJOR, ORENDER_ABI_MINOR)),
-        ) {
-            Ok(reporter) => {
-                // A real engine may have started while we were building; only
-                // keep ours if the slot is still claimed (else drop → free port).
-                if DEGRADED_ACTIVE.load(Ordering::SeqCst) {
-                    *DEGRADED_REPORTER.lock().unwrap() = Some(reporter);
-                }
+    std::thread::spawn(move || match start_degraded_reporter(setup, &opts) {
+        Ok(reporter) => {
+            // A real engine may have started while we were building; only
+            // keep ours if the slot is still claimed (else drop → free port).
+            if DEGRADED_ACTIVE.load(Ordering::SeqCst) {
+                *DEGRADED_REPORTER.lock().unwrap() = Some(reporter);
             }
-            Err(e) => {
-                eprintln!("degraded reporter failed to start: {e:#}");
-                DEGRADED_ACTIVE.store(false, Ordering::SeqCst);
-            }
+        }
+        Err(e) => {
+            eprintln!("degraded reporter failed to start: {e:#}");
+            DEGRADED_ACTIVE.store(false, Ordering::SeqCst);
         }
     });
 }
@@ -357,11 +354,19 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
             // OSC reporter so Studio can show *why* spatial didn't engage —
             // Studio registers normally, so its address is known (no guessing).
             if let Some(opts) = osc_opts {
+                // The same inputs `Engine::from_paths` just used, so the
+                // banner comes with the state the engine would have shown.
                 start_degraded_reporter_global(
-                    config_path.clone(),
-                    sample_rate,
+                    NoBridgeSetup::embedded(
+                        config_path.clone(),
+                        render_cfg,
+                        layout_path.map(PathBuf::from),
+                        bridge_path.map(PathBuf::from),
+                        sample_rate,
+                        format!("{e:#}{}", host_launch_diagnostics()),
+                        Some((ORENDER_ABI_MAJOR, ORENDER_ABI_MINOR)),
+                    ),
                     opts,
-                    format!("{e:#}{}", host_launch_diagnostics()),
                 );
             }
             return Err(e);
@@ -1462,5 +1467,126 @@ mod source_label_tests {
             assert_eq!(orender_source_label(ptr::null(), buf.as_mut_ptr(), 8), 0);
         }
         assert_eq!(buf[0], 0x7f, "nothing written for a NULL handle");
+    }
+}
+
+#[cfg(test)]
+mod degraded_reporter_tests {
+    use super::*;
+    use std::ffi::CString;
+    use std::net::UdpSocket;
+    use std::time::{Duration, Instant};
+
+    /// Far above the no-bridge renderer build, even in a debug build.
+    const READY_DEADLINE: Duration = Duration::from_secs(120);
+    const BRIDGE: &str = "/nonexistent/libnone_bridge.so";
+
+    fn free_port() -> u16 {
+        UdpSocket::bind("127.0.0.1:0")
+            .and_then(|socket| socket.local_addr())
+            .expect("free port")
+            .port()
+    }
+
+    /// `/omniphony/register <port>`, OSC-encoded by hand (this crate does not
+    /// link an OSC library).
+    fn register_message(port: u16) -> Vec<u8> {
+        let mut out = b"/omniphony/register\0".to_vec();
+        out.extend_from_slice(b",i\0\0");
+        out.extend_from_slice(&i32::from(port).to_be_bytes());
+        out
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// A bridge that cannot be loaded: `orender_create` still returns NULL
+    /// (mpv falls back to its native decoder), and the shared no-bridge
+    /// runtime comes up behind it, publishing the bridge error with the host's
+    /// launch diagnostics, the bridge path it was asked for and the C-ABI, and
+    /// answering a registration over OSC. A real engine start tears it down.
+    #[test]
+    fn an_unloadable_bridge_returns_null_and_keeps_the_degraded_reporter() {
+        let dir = std::env::temp_dir().join(format!("orender-ffi-degraded-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let config_path = dir.join("config.yaml");
+        // A small evaluation grid, so the renderer builds fast in a debug run.
+        std::fs::write(
+            &config_path,
+            "render:\n  evaluation_cartesian_x_size: 9\n  evaluation_cartesian_y_size: 9\n  evaluation_cartesian_z_size: 5\n",
+        )
+        .expect("write config");
+        let config = CString::new(config_path.to_str().expect("utf-8 path")).unwrap();
+        let bridge = CString::new(BRIDGE).unwrap();
+        let port_in = free_port();
+        let cfg = OrenderConfig {
+            sample_rate: 48_000,
+            config_yaml_path: config.as_ptr(),
+            speaker_layout_path: ptr::null(),
+            bridge_path: bridge.as_ptr(),
+            codec: ptr::null(),
+            osc_enabled: 1,
+            osc_port_in: port_in,
+            osc_port_out: free_port(),
+            osc_bind: ptr::null(),
+            osc_host: ptr::null(),
+        };
+
+        // SAFETY: `cfg` and the strings it points to outlive the call.
+        let handle = unsafe { orender_create(&cfg) };
+        assert!(handle.is_null(), "no session without a bridge");
+
+        let started = Instant::now();
+        let control = loop {
+            if let Some(runtime) = DEGRADED_REPORTER.lock().unwrap().as_ref() {
+                break runtime.control();
+            }
+            assert!(
+                DEGRADED_ACTIVE.load(Ordering::SeqCst),
+                "the degraded reporter failed to start"
+            );
+            assert!(
+                started.elapsed() < READY_DEADLINE,
+                "no degraded reporter after {READY_DEADLINE:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let error = control.bridge_error().expect("bridge error published");
+        assert!(error.contains(BRIDGE), "{error}");
+        assert!(error.contains("Working dir:"), "{error}");
+        assert_eq!(control.bridge_path(), Some(PathBuf::from(BRIDGE)));
+        assert_eq!(
+            control.host_abi(),
+            Some((ORENDER_ABI_MAJOR, ORENDER_ABI_MINOR))
+        );
+        assert_eq!(control.config_path(), Some(config_path));
+
+        let client = UdpSocket::bind("127.0.0.1:0").expect("client socket");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let client_port = client.local_addr().unwrap().port();
+        client
+            .send_to(&register_message(client_port), ("127.0.0.1", port_in))
+            .expect("register");
+        let mut buf = vec![0u8; 65_536];
+        let mut answered = false;
+        for _ in 0..64 {
+            let Ok((len, _)) = client.recv_from(&mut buf) else {
+                break;
+            };
+            if contains(&buf[..len], b"/omniphony/state/render/bridge_error")
+                && contains(&buf[..len], BRIDGE.as_bytes())
+            {
+                answered = true;
+                break;
+            }
+        }
+        assert!(answered, "no bridge error in the registration answer");
+
+        stop_degraded_reporter_global();
+        assert!(DEGRADED_REPORTER.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

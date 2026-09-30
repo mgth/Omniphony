@@ -31,8 +31,8 @@ use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 /// Lower than the CLI's: embedded in a player, the only consumer is the
 /// in-process overlay, and the host is the one that may be running on
 /// constrained hardware.
-const EMBEDDED_METER_RATE_HZ: f32 = 10.0;
-const EMBEDDED_DIAG_RATE_HZ: f32 = 10.0;
+pub(crate) const EMBEDDED_METER_RATE_HZ: f32 = 10.0;
+pub(crate) const EMBEDDED_DIAG_RATE_HZ: f32 = 10.0;
 
 /// Options for the engine's OSC live-control server.
 pub struct OscOptions {

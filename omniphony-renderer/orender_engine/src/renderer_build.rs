@@ -892,6 +892,61 @@ pub fn record_bridge_path(
     control.set_bridge_path(recorded.map(std::path::Path::to_path_buf));
 }
 
+/// What a host records on a freshly built renderer's control besides the
+/// renderer itself. See [`seed_host_state`].
+pub struct HostStateSeed<'a> {
+    /// The config file the host runs on: its path and load status (About),
+    /// its profiles view, and where Save writes.
+    pub config_path: Option<&'a std::path::Path>,
+    /// The render section the host resolved (the file, live-handoff sidecar
+    /// included, plus the host's own overrides).
+    pub render_cfg: Option<&'a RenderConfig>,
+    /// The bridge path the host itself was asked for (a CLI flag, the C
+    /// config's field); the config's own comes from `render_cfg`.
+    pub requested_bridge_path: Option<&'a std::path::Path>,
+    /// This host's monitoring cadence fallback, meter then diag, in Hz.
+    pub cadence_defaults_hz: (f32, f32),
+}
+
+/// Record the host-side state every live-state bundle carries: the bridge path
+/// ([`record_bridge_path`]), the config path, load status and profiles view,
+/// the unsaved mark of a restored live handoff, the cadence fallback and the
+/// runtime seed ([`seed_runtime_state_from_render_config`]).
+///
+/// Shared by the CLI's render bootstrap and the no-bridge runtime of both
+/// hosts ([`crate::degraded::NoBridgeRuntime`]), so a renderer that came up
+/// without a decoder publishes — and saves — the same state as one that did.
+pub fn seed_host_state(control: &RendererControl, seed: &HostStateSeed<'_>) {
+    record_bridge_path(
+        control,
+        seed.requested_bridge_path,
+        seed.render_cfg.and_then(|c| c.bridge_path.as_deref()),
+    );
+    if let Some(path) = seed.config_path {
+        // State restored from a live-handoff sidecar is by definition unsaved.
+        if renderer::config::live_overlay_active(path) {
+            control.mark_dirty();
+        }
+        control.set_config_path(path.to_path_buf());
+        // Whether the config actually loaded, so Studio's About can compare
+        // hosts; `render_cfg` can't tell, `load_or_default` collapses a
+        // missing or broken file into defaults.
+        control.set_config_status(Some(
+            renderer::config::Config::load_status(path)
+                .as_str()
+                .to_string(),
+        ));
+        // Client-visible profiles view (active name + list); see
+        // docs/config-profiles.md.
+        control.set_profiles_info(renderer::config::Config::load_or_default(path).profiles_info());
+    }
+    // Declared before the seed, which falls back to it; a later profile
+    // switch, which replays the same seed, falls back to it too.
+    let (meter_hz, diag_hz) = seed.cadence_defaults_hz;
+    control.set_cadence_defaults_hz(meter_hz, diag_hz);
+    seed_runtime_state_from_render_config(control, seed.render_cfg);
+}
+
 /// Re-apply a render config to a RUNNING engine — the live profile switch
 /// (docs/config-profiles.md). Covers the construction-path seeding minus what
 /// needs a new renderer instance (input plumbing, output device, bridge):
