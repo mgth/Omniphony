@@ -254,6 +254,10 @@ pub struct SpatialRenderer {
     /// The BRIR stage of the cascaded path, used while the HRIR source is a
     /// room response ([`crate::binaural::HrirSource::Brir`]).
     brir: crate::binaural::BrirStage,
+    /// Whether the two stages above build on the render thread — see
+    /// [`Self::set_synchronous_stage_builds`]. Kept here so a sample-rate
+    /// change, which rebuilds them, carries it over.
+    synchronous_stage_builds: bool,
 
     /// Cascaded binaural geometry (`binaural.mode == Cascaded`): binaural
     /// input positions/flags derived from the app layout + the virtual bus
@@ -380,6 +384,21 @@ impl SpatialRenderer {
     /// frames until this returns `false`.
     pub fn binaural_rebuild_pending(&self) -> bool {
         self.binaural.rebuild_pending()
+    }
+
+    /// Build the binaural stages' data (the HRIR grid, the BRIR set and its
+    /// orientation banks) on the render thread, so a change takes effect on
+    /// the frame that asks for it rather than whenever a worker finishes.
+    ///
+    /// Offline renders turn this on: with the asynchronous swap the grid
+    /// lands at a timing-dependent block, and two renders of the same file
+    /// differ. Live hosts leave it off (the default) — the builds allocate
+    /// and read files, which the audio thread must never wait for. It costs
+    /// nothing per frame either way. Set it before the first frame.
+    pub fn set_synchronous_stage_builds(&mut self, on: bool) {
+        self.synchronous_stage_builds = on;
+        self.binaural.set_synchronous_builds(on);
+        self.brir.set_synchronous_builds(on);
     }
 
     pub fn set_ramp_strategy(&mut self, strategy: Arc<dyn RampStrategy>) {

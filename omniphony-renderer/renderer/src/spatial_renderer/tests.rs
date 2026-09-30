@@ -2773,3 +2773,32 @@ fn brir_source_forces_the_cascade_and_convolves_the_set() {
         "a hard-right object favours the right ear through the set: L {e_l:.4} R {e_r:.4}"
     );
 }
+
+/// Synchronous stage builds (offline renders): a source change is live on the
+/// frame that requests it, and the setting survives the stage rebuild a
+/// sample-rate change does. Without it the same frame still renders the old
+/// grid — the swap only happens on a later frame, whenever the worker is done.
+#[test]
+fn synchronous_stage_builds_land_on_the_requesting_frame() {
+    let first_frame_pending = |synchronous: bool| {
+        let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+        r.set_synchronous_stage_builds(synchronous);
+        r.set_sample_rate(44_100).unwrap();
+        {
+            let mut live = r.control.live.write();
+            live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+            live.binaural.hrir_source = crate::binaural::HrirSource::Synthetic;
+        }
+        let pcm = vec![0.0f32; 40];
+        r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+        r.binaural_rebuild_pending()
+    };
+    assert!(
+        !first_frame_pending(true),
+        "a synchronous build is live on the frame that asked for it"
+    );
+    assert!(
+        first_frame_pending(false),
+        "the live path hands the build to the worker"
+    );
+}

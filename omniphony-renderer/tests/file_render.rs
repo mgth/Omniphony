@@ -49,19 +49,20 @@ fn wav_frame_count(wav: &[u8]) -> u64 {
     panic!("no data chunk");
 }
 
-/// A non-continuous file render ends by itself once the input is exhausted,
-/// successfully, with every input frame rendered. The CLI used to keep a frame
-/// sender of its own beside the decoder thread's, so the channel never closed
-/// at the end of the file and the process idled until it was killed.
-#[test]
-fn file_render_exits_at_end_of_input_with_full_output() {
+/// Render the demo offline with `config` (a `config.yaml`, or none) through
+/// the 7.1.4 layout, in a fresh work directory named `name`; returns the raw
+/// f32 output. Panics when the run fails or does not end on its own.
+fn render_demo(name: &str, config: Option<&str>) -> Vec<u8> {
     let input = manifest_dir().join("assets/demo/spatial-demo.wav");
     let layout = manifest_dir().join("../layouts/7.1.4.yaml");
-    let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join("file_render_exits_at_eof");
+    let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     let _ = std::fs::remove_dir_all(&work);
-    // An empty config directory keeps the run off any per-user config.
+    // A config directory of its own keeps the run off any per-user config.
     let config_dir = work.join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
+    if let Some(config) = config {
+        std::fs::write(config_dir.join("config.yaml"), config).unwrap();
+    }
     let output = work.join("out.f32");
     let log = work.join("stderr.log");
 
@@ -104,12 +105,52 @@ fn file_render_exits_at_end_of_input_with_full_output() {
         "orender exited with {status}\n{}",
         std::fs::read_to_string(&log).unwrap_or_default()
     );
+    std::fs::read(&output).unwrap()
+}
 
+/// A non-continuous file render ends by itself once the input is exhausted,
+/// successfully, with every input frame rendered. The CLI used to keep a frame
+/// sender of its own beside the decoder thread's, so the channel never closed
+/// at the end of the file and the process idled until it was killed.
+#[test]
+fn file_render_exits_at_end_of_input_with_full_output() {
+    let output = render_demo("file_render_exits_at_eof", None);
+    let input = manifest_dir().join("assets/demo/spatial-demo.wav");
     let frames = wav_frame_count(&std::fs::read(&input).unwrap());
-    let written = std::fs::metadata(&output).unwrap().len();
     assert_eq!(
-        written,
+        output.len() as u64,
         frames * LAYOUT_CHANNELS * 4,
         "rendered output is not the whole input ({frames} frames x {LAYOUT_CHANNELS} channels)"
+    );
+}
+
+/// An offline binaural render is reproducible, and renders the HRIR set it
+/// was asked for from its first frame. The set is built off the audio thread
+/// for a live stream; an offline render used to take the swap at whichever
+/// block the build happened to finish by, so it opened on the default set
+/// and two renders of one file differed.
+#[test]
+fn binaural_file_render_is_deterministic_from_the_first_frame() {
+    const PINNA: &str = "render:\n  binaural:\n    output_mode: binaural\n    \
+                         hrir_source: \"pinna:rd:120:70\"\n";
+    const DEFAULT_SET: &str = "render:\n  binaural:\n    output_mode: binaural\n";
+    let first = render_demo("binaural_determinism_a", Some(PINNA));
+    let second = render_demo("binaural_determinism_b", Some(PINNA));
+    assert!(
+        first == second,
+        "two offline renders of the same file differ"
+    );
+    let default_set = render_demo("binaural_determinism_default", Some(DEFAULT_SET));
+    assert_eq!(first.len(), default_set.len());
+    // The demo is not silent at its start: the requested set shows from the
+    // first stereo frame (8 bytes), not once a build lands.
+    let first_difference = first
+        .iter()
+        .zip(&default_set)
+        .position(|(a, b)| a != b)
+        .expect("the requested set is never heard");
+    assert!(
+        first_difference < 8 * 480,
+        "the render opens on the default set (first difference at byte {first_difference})"
     );
 }
