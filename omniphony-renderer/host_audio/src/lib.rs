@@ -218,6 +218,10 @@ pub struct HostAudio {
     pub renderer: Arc<RendererControl>,
     pub audio: Arc<AudioControl>,
     pub input: Arc<InputControl>,
+    /// Whether the live input holds staged values not applied yet: set by a
+    /// write that changes one, cleared by the apply. The `pending` flag of
+    /// the `live_input` group in `/state/host_options`.
+    input_staged: std::sync::atomic::AtomicBool,
 }
 
 impl HostAudio {
@@ -230,6 +234,7 @@ impl HostAudio {
             renderer,
             audio,
             input,
+            input_staged: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -589,6 +594,8 @@ impl HostControlHandler for HostAudio {
         if addr == osc_contract::CONTROL_INPUT_LIVE_LAYOUT_IMPORT {
             let requested = parse_input_layout_arg(msg.args.first());
             input.set_requested_current_layout(requested);
+            self.input_staged
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             effects.mark_dirty = true;
             return Some(effects);
         }
@@ -714,7 +721,18 @@ impl HostControlHandler for HostAudio {
     }
 
     fn apply_options(&self, items: &[(&str, RawOptionValue)]) -> HostBatchApplied {
-        renderer::options::host_apply_batch(self, options::HOST_OPTIONS, items)
+        let batch = renderer::options::host_apply_batch(self, options::HOST_OPTIONS, items);
+        let staged = items.iter().zip(&batch.results).any(|((key, _), result)| {
+            result.as_ref().is_some_and(|applied| applied.changed)
+                && renderer::options::find_host(options::HOST_OPTIONS, key)
+                    .and_then(|spec| spec.group)
+                    .is_some_and(|group| std::ptr::eq(group, &options::LIVE_INPUT))
+        });
+        if staged {
+            self.input_staged
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        batch
     }
 
     fn apply_option_group(&self, group: &str) -> Option<ControlEffects> {
@@ -723,6 +741,8 @@ impl HostControlHandler for HostAudio {
             // Staged: every value requested since the last apply, at once.
             // An action, not an edit: the writes already lit Save.
             self.input.request_apply();
+            self.input_staged
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             effects.log_message = Some("OSC: input config apply requested".to_string());
             return Some(effects);
         }
@@ -746,7 +766,10 @@ impl HostControlHandler for HostAudio {
     }
 
     fn option_groups_pending(&self) -> Vec<(&'static str, bool)> {
-        vec![(options::LIVE_INPUT.key, self.input.is_apply_pending())]
+        vec![(
+            options::LIVE_INPUT.key,
+            self.input_staged.load(std::sync::atomic::Ordering::Relaxed),
+        )]
     }
 
     fn amend_saved_config(&self, render: &mut renderer::config::RenderConfig) {
@@ -1215,7 +1238,8 @@ mod tests {
         );
         assert_eq!(requested.node_name.as_deref(), Some("in"));
         assert!(!host.input.is_apply_pending());
-        assert_eq!(host.option_groups_pending(), vec![("live_input", false)]);
+        // Staged values wait for the apply.
+        assert_eq!(host.option_groups_pending(), vec![("live_input", true)]);
         // Requested and in force side by side.
         let applied = host.options_applied_json();
         assert_eq!(applied["input_mode"], "pipe_bridge");
@@ -1229,7 +1253,20 @@ mod tests {
             assert!(!effects.mark_dirty, "{addr}: an apply is an action");
             assert!(effects.publish_only);
             assert!(host.input.take_apply_pending());
+            assert_eq!(host.option_groups_pending(), vec![("live_input", false)]);
         }
+        // A write that changes nothing stages nothing.
+        host.handle(
+            osc_contract::CONTROL_INPUT_LIVE_CHANNELS,
+            &msg(
+                osc_contract::CONTROL_INPUT_LIVE_CHANNELS,
+                vec![OscType::Int(12)],
+            ),
+        );
+        assert_eq!(host.option_groups_pending(), vec![("live_input", false)]);
+        // An audio-output write is not the input's.
+        host.apply_options(&[("output_device", RawOptionValue::Str("hw:9"))]);
+        assert_eq!(host.option_groups_pending(), vec![("live_input", false)]);
         assert!(host.apply_option_group("live_input").is_some());
         assert!(host.input.take_apply_pending());
         // A live group has nothing waiting: acknowledged, nothing staged.
