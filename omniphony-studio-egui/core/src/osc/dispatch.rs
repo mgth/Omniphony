@@ -100,8 +100,12 @@ pub struct Live {
     /// (`/state/host_options`: `options`, `applied`, `pending`). `None` for
     /// the embedded engine, which declares none.
     pub host_options: Option<serde_json::Value>,
-    pub object_generators_schema: Option<serde_json::Value>,
-    pub phantom_schema: Option<serde_json::Value>,
+    /// The object generators' listings (`/state/object_generators`): `[{ id,
+    /// label, i18nKey?, params: [ParamSpec] }]`, the format of the backends'
+    /// `availableBackends`.
+    pub object_generator_listings: Option<serde_json::Value>,
+    /// The phantom stage's listing (`/state/phantom`), in the same format.
+    pub phantom_listing: Option<serde_json::Value>,
     pub drc_gain: Option<f64>,
     pub ear_levels: HashMap<String, Meter>,
     /// Last clip report: speaker index and when it arrived.
@@ -528,8 +532,8 @@ impl Live {
             backend_file_error: None,
             options_schema: None,
             host_options: None,
-            object_generators_schema: None,
-            phantom_schema: None,
+            object_generator_listings: None,
+            phantom_listing: None,
             drc_gain: None,
             ear_levels: HashMap::new(),
             clip: None,
@@ -1022,11 +1026,11 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             Change::Scene
         }
         OscEvent::StateObjectGenerators { value } => {
-            live.object_generators_schema = serde_json::from_str(&value).ok();
+            live.object_generator_listings = serde_json::from_str(&value).ok();
             Change::None
         }
         OscEvent::StatePhantom { value } => {
-            live.phantom_schema = serde_json::from_str(&value).ok();
+            live.phantom_listing = serde_json::from_str(&value).ok();
             Change::None
         }
         OscEvent::StateOptionsSchema { value } => {

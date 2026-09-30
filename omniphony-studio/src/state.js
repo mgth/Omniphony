@@ -236,22 +236,22 @@ export const app = {
   // Audio
   audioSampleRate: null,
   rampMode: 'sample',
-  // Declared bed→height generator schema, published by the renderer on
-  // /omniphony/state/object_generators: [{id,label,i18nKey,requiresHeightLayer,
-  // params:[{key,label,i18nKey,min,max,step,default,unit}]}]. Studio builds the
-  // selector + parameter sliders from this.
+  // The bed→height generators' listings, published by the renderer on
+  // /omniphony/state/object_generators in the format of the backends'
+  // `availableBackends`: [{id,label,i18nKey?,params:[ParamSpec]}]. Studio
+  // builds the selector + parameter controls from this.
   objectGenerators: [],
-  // Live param overrides for the active generator (key → value).
-  objectGeneratorParams: {},
+  // Stored param values of every generator ({ id: { key: value } }).
+  objectGeneratorParamValuesById: {},
   // Whether the active output layout has top speakers; when false a configured
   // height generator remains editable but cannot run. Assume yes until the
   // renderer reports otherwise.
   objectGeneratorLayoutHasHeight: true,
-  // Declared phantom-extraction param schema, published on /omniphony/state/phantom
-  // as [{key,label,i18nKey,min,max,step,default,unit}]. Studio builds the sliders.
-  phantomSchema: [],
-  // Live param overrides for the phantom stage (key → value).
-  phantomParams: {},
+  // The phantom-extraction stage's listing, published on /omniphony/state/phantom
+  // in the same format ({id,label,params:[ParamSpec]}), or null.
+  phantomListing: null,
+  // Stored param values of the phantom stage ({ key: value }).
+  phantomParamValues: {},
   // Canonical fixed-channel catalogue and current applicability state supplied
   // by the renderer. They keep the editor useful without a compatible stream.
   fixedChannelCatalog: [],

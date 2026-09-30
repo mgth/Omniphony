@@ -745,8 +745,8 @@ export function setupTauriBridge() {
     app.diagValues = parseDiagPayload(payload);
   });
 
-  // Declared fixed-bed→height object-generator schema → build the selector +
-  // parameter sliders dynamically.
+  // The fixed-bed→height object generators' listings → build the selector +
+  // parameter controls dynamically.
   listen('objectGenerators:schema', ({ payload }) => {
     try {
       app.objectGenerators = JSON.parse(payload?.value ?? '[]') || [];
@@ -756,12 +756,13 @@ export function setupTauriBridge() {
     rebuildObjectGeneratorControls();
   });
 
-  // Declared phantom-extraction param schema → build its sliders dynamically.
+  // The phantom-extraction stage's listing → build its controls dynamically.
   listen('phantom:schema', ({ payload }) => {
     try {
-      app.phantomSchema = JSON.parse(payload?.value ?? '[]') || [];
+      const listing = JSON.parse(payload?.value ?? 'null');
+      app.phantomListing = listing && typeof listing === 'object' ? listing : null;
     } catch (_) {
-      app.phantomSchema = [];
+      app.phantomListing = null;
     }
     rebuildPhantomControls();
   });
