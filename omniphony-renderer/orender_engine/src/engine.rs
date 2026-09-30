@@ -526,6 +526,9 @@ impl Engine {
         // resolved one: an auto-discovered bridge next to the host binary must
         // not end up in the shared config on the next save.
         crate::renderer_build::record_bridge_path(&control, bridge_path, config_bridge.as_deref());
+        // This host reads its input from the player, not from a pipe: keep the
+        // config's `render.input_pipe` as is on the next save.
+        crate::renderer_build::record_input_path(&control, render_cfg.as_ref());
         if let Some(info) = profiles_info {
             control.set_profiles_info(info);
         }
