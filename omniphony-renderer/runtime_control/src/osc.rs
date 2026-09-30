@@ -819,23 +819,6 @@ pub fn apply_simple_osc_control(
     // RendererControl — the single source of truth for both, persisted to
     // config as view state.
 
-    if addr == osc_contract::CONTROL_OUTPUT_MODE {
-        // Switch between the classic speaker (VBAP) path and the independent
-        // binaural (headphone) stage. No topology recompute: the binaural path
-        // does not use the speaker topology.
-        if let Some(mode) = parse_string_arg(msg.args.first())
-            .and_then(|v| renderer::live_params::OutputMode::from_str(&v))
-        {
-            let mut live = ctx.renderer.live.write();
-            if live.binaural.output_mode != mode {
-                live.binaural.output_mode = mode;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: output_mode -> {}", mode.as_str()));
-            }
-        }
-        return Some(effects);
-    }
-
     if addr == osc_contract::CONTROL_SPEAKER_TEST {
         // Start/stop the per-speaker test signal. A negative index stops: the
         // client owns the trigger policy (hold, fixed burst, toggle), so the
@@ -1095,24 +1078,6 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == osc_contract::CONTROL_BINAURAL_MODE {
-        // Switch the binaural stage between per-object HRTF ("direct") and the
-        // virtual-speaker cascade ("cascaded"). No topology recompute: the
-        // cascade stage builds its own virtual topology lazily on the render
-        // thread when first needed.
-        if let Some(mode) = parse_string_arg(msg.args.first())
-            .and_then(|v| renderer::live_params::BinauralMode::from_str(&v))
-        {
-            let mut live = ctx.renderer.live.write();
-            if live.binaural.mode != mode {
-                live.binaural.mode = mode;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: binaural_mode -> {}", mode.as_str()));
-            }
-        }
-        return Some(effects);
-    }
-
     if addr == osc_contract::CONTROL_BINAURAL_EAR_GAIN {
         // Headphone L/R output gain: [ear_idx (0|1), linear_gain]. Dedicated
         // params — the ears no longer ride the first two per-speaker slots
@@ -1175,23 +1140,6 @@ pub fn apply_simple_osc_control(
         // A manual pose, like the tracker's, is transient: never saved.
         effects.publish_only = true;
         effects.log_message = Some("OSC: head/quat".to_string());
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_HRIR_SOURCE {
-        // "synthetic" | "saf"/"kemar" | "sofa:<path>" | "pinna[:<size>:<depth>]".
-        // No topology rebuild; the render thread rebuilds the HRIR grid lazily
-        // when the source changes.
-        if let Some(src) = parse_string_arg(msg.args.first())
-            .and_then(|s| renderer::binaural::HrirSource::from_str(&s))
-        {
-            let mut live = ctx.renderer.live.write();
-            if live.binaural.hrir_source != src {
-                live.binaural.hrir_source = src.clone();
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: hrir_source -> {}", src.as_str()));
-            }
-        }
         return Some(effects);
     }
 
@@ -1297,230 +1245,6 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == osc_contract::CONTROL_BINAURAL_UNIT_SCALE {
-        // Metres per ADM unit (isotropic distance scale for the binaural stage).
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                let v = v.clamp(0.01, 100.0);
-                ctx.renderer.live.write().binaural.unit_scale_m = v;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: binaural/unit_scale -> {v}"));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_HEAD_RADIUS {
-        // Effective head radius (m) for the ITD model — half the inter-ear
-        // distance. Human range is roughly 6–12 cm.
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                let v = v.clamp(0.05, 0.15);
-                ctx.renderer.live.write().binaural.head_radius_m = v;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: binaural/head_radius -> {v}"));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REFLECTIONS_ENABLED {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.reflections.enabled = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/reflections/enabled -> {v}"));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REFLECTIONS_LEVEL {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() {
-                ctx.renderer.live.write().binaural.reflections.level = v.clamp(0.0, 1.0);
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REFLECTIONS_WALL_CUTOFF {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() {
-                ctx.renderer
-                    .live
-                    .write()
-                    .binaural
-                    .reflections
-                    .wall_cutoff_hz = v.clamp(
-                    renderer::binaural::reflections::MIN_WALL_CUTOFF_HZ,
-                    renderer::binaural::reflections::MAX_WALL_CUTOFF_HZ,
-                );
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if let Some(axis) = match addr {
-        osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_WIDTH => Some(0usize),
-        osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_DEPTH => Some(1),
-        osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_HEIGHT => Some(2),
-        _ => None,
-    } {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                let v = v.clamp(
-                    renderer::binaural::reflections::MIN_ROOM_M,
-                    renderer::binaural::reflections::MAX_ROOM_M,
-                );
-                ctx.renderer.live.write().binaural.reflections.room_size_m[axis] = v;
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REVERB_ENABLED {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.reverb.enabled = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/reverb/enabled -> {v}"));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REVERB_LEVEL {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() {
-                ctx.renderer.live.write().binaural.reverb.level = v.clamp(0.0, 1.0);
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REVERB_RT60 {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                ctx.renderer.live.write().binaural.reverb.rt60_s = v.clamp(0.1, 3.0);
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REVERB_PREDELAY {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v >= 0.0 {
-                ctx.renderer.live.write().binaural.reverb.predelay_ms = v.clamp(0.0, 100.0);
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REVERB_SIZE {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                ctx.renderer.live.write().binaural.reverb.size = v.clamp(
-                    renderer::binaural::reverb::SIZE_MIN,
-                    renderer::binaural::reverb::SIZE_MAX,
-                );
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if let Some(low) = match addr {
-        osc_contract::CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO => Some(true),
-        osc_contract::CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO => Some(false),
-        _ => None,
-    } {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                let v = v.clamp(
-                    renderer::binaural::reverb::RT60_RATIO_MIN,
-                    renderer::binaural::reverb::RT60_RATIO_MAX,
-                );
-                let mut live = ctx.renderer.live.write();
-                if low {
-                    live.binaural.reverb.rt60_low_ratio = v;
-                } else {
-                    live.binaural.reverb.rt60_high_ratio = v;
-                }
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_DIFFUSE_FIELD_EQ {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.diffuse_field_eq = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/diffuse_field_eq -> {v}"));
-        }
-        return Some(effects);
-    }
-
-    // ── BRIR load options (a `brir:<path>` HRIR source) ─────────────────────
-    // A change reloads the set on the renderer's worker.
-    if addr == osc_contract::CONTROL_BINAURAL_BRIR_HEAD_TRACKING {
-        // Which measured head orientations stay resident: "auto" follows the
-        // head-tracking address, a bool forces all (true) or front only.
-        let value = match msg.args.first() {
-            Some(OscType::String(s)) if s.eq_ignore_ascii_case("auto") => Some(None),
-            other => parse_bool_arg(other).map(Some),
-        };
-        if let Some(v) = value {
-            ctx.renderer.live.write().binaural.brir.head_tracking = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!(
-                "OSC: binaural/brir/head_tracking -> {}",
-                v.map_or("auto".to_string(), |b| b.to_string())
-            ));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_BRIR_MAX_LENGTH {
-        // Longest response kept, seconds (0 = whole responses).
-        if let Some(v) = parse_f32_arg(msg.args.first())
-            && v.is_finite()
-            && v >= 0.0
-        {
-            let v = v.clamp(0.0, 10.0);
-            ctx.renderer.live.write().binaural.brir.max_length_s = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/brir/max_length -> {v}"));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_BRIR_TAIL_FLOOR {
-        // Decibels below a response's total energy at which its tail is cut.
-        if let Some(v) = parse_f32_arg(msg.args.first())
-            && v.is_finite()
-            && v > 0.0
-        {
-            let v = v.clamp(20.0, 120.0);
-            ctx.renderer.live.write().binaural.brir.tail_floor_db = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/brir/tail_floor -> {v}"));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_AIR_ABSORPTION {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.air_absorption = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/air_absorption -> {v}"));
-        }
-        return Some(effects);
-    }
-
     if addr == osc_contract::CONTROL_HEAD_CALIBRATE {
         let step = msg.args.first().and_then(|a| match a {
             rosc::OscType::String(s) => renderer::binaural::CalibrationStep::from_str(s),
@@ -1572,47 +1296,6 @@ pub fn apply_simple_osc_control(
         effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
         effects.publish_only = true;
         effects.log_message = Some("OSC: head/recenter".to_string());
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_TRACKING_ADDRESS {
-        // Empty string disables tracking.
-        let raw = parse_string_arg(msg.args.first()).unwrap_or_default();
-        let mut live = ctx.renderer.live.write();
-        live.binaural.tracking.address = if raw.is_empty() {
-            None
-        } else {
-            Some(raw.clone())
-        };
-        effects.mark_dirty = true;
-        effects.log_message = Some(format!("OSC: head/tracking/address -> {raw:?}"));
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_TRACKING_FORMAT {
-        if let Some(fmt) = parse_string_arg(msg.args.first())
-            .and_then(|s| renderer::binaural::HeadTrackingFormat::from_str(&s))
-        {
-            ctx.renderer.live.write().binaural.tracking.format = fmt;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: head/tracking/format -> {}", fmt.as_str()));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_TRACKING_SMOOTHING {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.tracking.smoothing = v.clamp(0.0, 0.999);
-            effects.mark_dirty = true;
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_TRACKING_INVERT {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.tracking.invert = v;
-            effects.mark_dirty = true;
-        }
         return Some(effects);
     }
 
@@ -1696,18 +1379,6 @@ pub fn apply_simple_osc_control(
                 .with_editable_layout(|layout| layout.radius_m = v);
             effects.mark_dirty = true;
             effects.log_message = Some(format!("OSC: layout radius_m → {}", v));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_GAIN {
-        // Same setter as `/control/realtime/master_gain` (engine dispatch):
-        // one validation, one field.
-        if parse_f32_arg(msg.args.first())
-            .and_then(|gain| set_master_gain(&ctx.renderer, gain))
-            .is_some()
-        {
-            effects.mark_dirty = true;
         }
         return Some(effects);
     }

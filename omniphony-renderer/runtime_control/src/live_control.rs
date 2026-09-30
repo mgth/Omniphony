@@ -698,6 +698,105 @@ mod tests {
         );
     }
 
+    /// The binaural addresses keep their old validation: a value the old
+    /// handler rejected is still rejected, not clamped.
+    #[test]
+    fn the_binaural_aliases_keep_their_rejections() {
+        let ctx = ctx();
+        let send = |addr: &str, arg: OscType| {
+            apply_live_control(&msg(addr, vec![arg]), &ctx).expect("handled")
+        };
+        let before = ctx.renderer.live.read().binaural.unit_scale_m;
+        assert!(
+            !send(
+                osc_contract::CONTROL_BINAURAL_UNIT_SCALE,
+                OscType::Float(0.0)
+            )
+            .mark_dirty
+        );
+        assert!(
+            !send(
+                osc_contract::CONTROL_BINAURAL_REVERB_PREDELAY,
+                OscType::Float(-1.0)
+            )
+            .mark_dirty
+        );
+        assert!(!send(osc_contract::CONTROL_GAIN, OscType::Float(-0.5)).mark_dirty);
+        assert_eq!(ctx.renderer.live.read().binaural.unit_scale_m, before);
+
+        // In range after the check: clamped, as before.
+        let effects = send(
+            osc_contract::CONTROL_BINAURAL_HEAD_RADIUS,
+            OscType::Float(0.3),
+        );
+        assert!(effects.mark_dirty && !effects.trigger_layout_recompute);
+        assert_eq!(ctx.renderer.live.read().binaural.head_radius_m, 0.15);
+
+        // Tri-state: `auto`, or a bool.
+        send(
+            osc_contract::CONTROL_BINAURAL_BRIR_HEAD_TRACKING,
+            OscType::Int(1),
+        );
+        assert_eq!(
+            ctx.renderer.live.read().binaural.brir.head_tracking,
+            Some(true)
+        );
+        send(osc_contract::CONTROL_BINAURAL_BRIR_HEAD_TRACKING, s("auto"));
+        assert_eq!(ctx.renderer.live.read().binaural.brir.head_tracking, None);
+
+        // An empty tracking address disables tracking.
+        send(
+            osc_contract::CONTROL_HEAD_TRACKING_ADDRESS,
+            s(" /rotation "),
+        );
+        assert_eq!(
+            ctx.renderer
+                .live
+                .read()
+                .binaural
+                .tracking
+                .address
+                .as_deref(),
+            Some("/rotation")
+        );
+        send(osc_contract::CONTROL_HEAD_TRACKING_ADDRESS, s(""));
+        assert_eq!(ctx.renderer.live.read().binaural.tracking.address, None);
+    }
+
+    /// The HRIR source reports its selector, the SOFA file included, and
+    /// none of the binaural groups asks the engine for a rebuild: their
+    /// stages reload by themselves.
+    #[test]
+    fn a_binaural_batch_asks_for_no_rebuild() {
+        let ctx = ctx();
+        let effects = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTIONS,
+                vec![
+                    s("hrir_source"),
+                    s("sofa:/data/hrtf/test.sofa"),
+                    s("brir_max_length_s"),
+                    OscType::Float(1.0),
+                    s("crossover_type"),
+                    s("fir"),
+                    s("binaural_ear_gains"),
+                    OscType::Float(0.5),
+                    OscType::Float(0.75),
+                ],
+            ),
+            &ctx,
+        )
+        .expect("handled");
+        assert!(effects.mark_dirty && !effects.trigger_layout_recompute);
+        let live = ctx.renderer.live.read();
+        assert_eq!(
+            renderer::options::options_json(&live)["hrir_source"],
+            "sofa:/data/hrtf/test.sofa"
+        );
+        assert_eq!(live.binaural.ears[0].gain, 0.5);
+        assert_eq!(live.binaural.ears[1].gain, 0.75);
+    }
+
     #[test]
     fn placement_mode_bumps_the_options_epoch_only_on_a_real_change() {
         let ctx = ctx();

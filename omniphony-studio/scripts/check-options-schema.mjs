@@ -42,7 +42,7 @@ function resolvesInEn(key) {
 
 const KINDS = new Set(['bool', 'enum', 'string', 'float', 'int', 'float_array', 'dynamic_enum']);
 const GROUP_MODES = new Set(['live']);
-const GROUP_EFFECTS = new Set(['none', 'replan', 'topology', 'evaluation']);
+const GROUP_EFFECTS = new Set(['none', 'replan', 'topology', 'evaluation', 'reload']);
 // Sets a dynamic_enum option draws its values from at runtime.
 const DYNAMIC_SOURCES = new Set(['backends']);
 const failures = [];
@@ -66,7 +66,7 @@ if (!Array.isArray(schema) || schema.length === 0) {
 const seen = new Set();
 for (const spec of schema) {
   const key = spec.key;
-  if (typeof key !== 'string' || !/^[a-z][a-z_]*$/.test(key)) {
+  if (typeof key !== 'string' || !/^[a-z][a-z0-9_]*$/.test(key)) {
     fail(`bad option key: ${JSON.stringify(key)}`);
     continue;
   }

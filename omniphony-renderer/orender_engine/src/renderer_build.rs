@@ -521,148 +521,19 @@ pub fn seed_control_from_render_config(
             {
                 live.auto_gain_ceiling_db = ceiling;
             }
-            // Binaural (headphone) stage: seed from config so a saved mode/scale is
-            // honoured at startup. No topology rebuild — the binaural path does not
-            // use the speaker topology.
+            // Binaural: the options are registry rows (seeded with the others
+            // by `seed_live_from_config`). Seeded here: the ear mutes, and the
+            // persisted recenter reference and axis calibration, so the
+            // centering survives an engine rebuild (mpv track change) and a
+            // restart. `head_pose` / `last_raw` stay at their defaults: the
+            // first incoming OSC packet re-derives the centered pose.
             if let Some(bin) = render_cfg.and_then(|cfg| cfg.binaural.as_ref()) {
-                if let Some(mode) = bin
-                    .output_mode
-                    .as_deref()
-                    .and_then(renderer::live_params::OutputMode::from_str)
-                {
-                    live.binaural.output_mode = mode;
-                }
-                if let Some(mode) = bin
-                    .mode
-                    .as_deref()
-                    .and_then(renderer::live_params::BinauralMode::from_str)
-                {
-                    live.binaural.mode = mode;
-                }
-                if let Some(gains) = bin.ear_gains {
-                    for (ear, gain) in live.binaural.ears.iter_mut().zip(gains) {
-                        if gain.is_finite() && (0.0..=4.0).contains(&gain) {
-                            ear.gain = gain;
-                        }
-                    }
-                }
                 if let Some(mutes) = bin.ear_mutes {
                     for (ear, muted) in live.binaural.ears.iter_mut().zip(mutes) {
                         ear.muted = muted;
                     }
                 }
-                if let Some(scale) = bin.unit_scale_m {
-                    if scale.is_finite() && scale > 0.0 {
-                        live.binaural.unit_scale_m = scale;
-                    }
-                }
-                if let Some(radius) = bin.head_radius_m {
-                    if radius.is_finite() && radius > 0.0 {
-                        live.binaural.head_radius_m = radius.clamp(0.05, 0.15);
-                    }
-                }
-                if let Some(refl) = bin.reflections.as_ref() {
-                    let r = &mut live.binaural.reflections;
-                    if let Some(en) = refl.enabled {
-                        r.enabled = en;
-                    }
-                    for (slot, v) in [
-                        (0usize, refl.room_width_m),
-                        (1, refl.room_depth_m),
-                        (2, refl.room_height_m),
-                    ] {
-                        if let Some(v) = v {
-                            if v.is_finite() && v > 0.0 {
-                                r.room_size_m[slot] = v.clamp(
-                                    renderer::binaural::reflections::MIN_ROOM_M,
-                                    renderer::binaural::reflections::MAX_ROOM_M,
-                                );
-                            }
-                        }
-                    }
-                    if let Some(level) = refl.level {
-                        if level.is_finite() {
-                            r.level = level.clamp(0.0, 1.0);
-                        }
-                    }
-                    if let Some(fc) = refl.wall_cutoff_hz {
-                        if fc.is_finite() {
-                            r.wall_cutoff_hz = fc.clamp(
-                                renderer::binaural::reflections::MIN_WALL_CUTOFF_HZ,
-                                renderer::binaural::reflections::MAX_WALL_CUTOFF_HZ,
-                            );
-                        }
-                    }
-                }
-                if let Some(rev) = bin.reverb.as_ref() {
-                    let r = &mut live.binaural.reverb;
-                    if let Some(en) = rev.enabled {
-                        r.enabled = en;
-                    }
-                    if let Some(level) = rev.level {
-                        if level.is_finite() {
-                            r.level = level.clamp(0.0, 1.0);
-                        }
-                    }
-                    if let Some(rt60) = rev.rt60_s {
-                        if rt60.is_finite() && rt60 > 0.0 {
-                            r.rt60_s = rt60.clamp(0.1, 3.0);
-                        }
-                    }
-                    if let Some(pd) = rev.predelay_ms {
-                        if pd.is_finite() && pd >= 0.0 {
-                            r.predelay_ms = pd.clamp(0.0, 100.0);
-                        }
-                    }
-                    use renderer::binaural::reverb::{
-                        RT60_RATIO_MAX, RT60_RATIO_MIN, SIZE_MAX, SIZE_MIN,
-                    };
-                    if let Some(size) = rev.size {
-                        if size.is_finite() && size > 0.0 {
-                            r.size = size.clamp(SIZE_MIN, SIZE_MAX);
-                        }
-                    }
-                    if let Some(ratio) = rev.rt60_low_ratio {
-                        if ratio.is_finite() && ratio > 0.0 {
-                            r.rt60_low_ratio = ratio.clamp(RT60_RATIO_MIN, RT60_RATIO_MAX);
-                        }
-                    }
-                    if let Some(ratio) = rev.rt60_high_ratio {
-                        if ratio.is_finite() && ratio > 0.0 {
-                            r.rt60_high_ratio = ratio.clamp(RT60_RATIO_MIN, RT60_RATIO_MAX);
-                        }
-                    }
-                }
-                if let Some(air) = bin.air_absorption {
-                    live.binaural.air_absorption = air;
-                }
-                if let Some(eq) = bin.diffuse_field_eq {
-                    live.binaural.diffuse_field_eq = eq;
-                }
                 if let Some(ht) = bin.head_tracking.as_ref() {
-                    if let Some(addr) = ht.osc_address.as_ref() {
-                        live.binaural.tracking.address = (!addr.is_empty()).then(|| addr.clone());
-                    }
-                    if let Some(fmt) = ht
-                        .format
-                        .as_deref()
-                        .and_then(renderer::binaural::HeadTrackingFormat::from_str)
-                    {
-                        live.binaural.tracking.format = fmt;
-                    }
-                    // Same bound as the OSC setter.
-                    if let Some(s) = ht.smoothing
-                        && s.is_finite()
-                    {
-                        live.binaural.tracking.smoothing = s.clamp(0.0, 0.999);
-                    }
-                    if let Some(invert) = ht.invert {
-                        live.binaural.tracking.invert = invert;
-                    }
-                    // Restore the persisted recenter reference so the centering
-                    // survives an engine rebuild (mpv track change) and a restart.
-                    // `head_pose`/`last_raw` stay at their defaults: the first
-                    // incoming OSC packet re-derives the centered pose.
                     if let Some(q) = ht.reference_quat {
                         live.binaural.tracking.reference =
                             renderer::binaural::HeadPose::from_quat_array(q);
@@ -671,50 +542,6 @@ pub fn seed_control_from_render_config(
                         live.binaural.tracking.axes =
                             renderer::binaural::HeadPose::from_quat_array(q);
                     }
-                }
-                // HRIR source: a "sofa" selector resolves its path from
-                // `hrtf_sofa_path` (or an inline "sofa:<path>").
-                if let Some(src) = bin
-                    .hrir_source
-                    .as_deref()
-                    .and_then(renderer::binaural::HrirSource::from_str)
-                {
-                    live.binaural.hrir_source = match src {
-                        renderer::binaural::HrirSource::Sofa(p) if p.is_empty() => {
-                            match bin.hrtf_sofa_path.as_ref() {
-                                Some(path) => renderer::binaural::HrirSource::Sofa(
-                                    path.to_string_lossy().into_owned(),
-                                ),
-                                None => renderer::binaural::HrirSource::SafKemar,
-                            }
-                        }
-                        // Likewise "brir" resolves its file from
-                        // `brir_sofa_path` (or an inline "brir:<path>").
-                        renderer::binaural::HrirSource::Brir(p) if p.is_empty() => {
-                            match bin.brir_sofa_path.as_ref() {
-                                Some(path) => renderer::binaural::HrirSource::Brir(
-                                    path.to_string_lossy().into_owned(),
-                                ),
-                                None => renderer::binaural::HrirSource::SafKemar,
-                            }
-                        }
-                        other => other,
-                    };
-                }
-                if let Some(v) = bin.brir_head_tracking {
-                    live.binaural.brir.head_tracking = Some(v);
-                }
-                if let Some(v) = bin.brir_max_length_s
-                    && v.is_finite()
-                    && v >= 0.0
-                {
-                    live.binaural.brir.max_length_s = v;
-                }
-                if let Some(v) = bin.brir_tail_floor_db
-                    && v.is_finite()
-                    && v > 0.0
-                {
-                    live.binaural.brir.tail_floor_db = v.clamp(20.0, 120.0);
                 }
             }
         }
@@ -909,7 +736,6 @@ pub fn apply_render_config_live(
         // Construction-time scalars that also exist as live params: the same
         // values `SpatialRenderer::new` would receive for this config
         // (`params` already encodes the config defaults for absent keys).
-        live.master_gain = renderer::dsp::db::db_to_linear(params.master_gain);
         live.auto_gain = params.auto_gain;
         live.use_loudness = params.use_loudness;
         // Spread fallbacks (used when the vbap param bag has no entry) —
@@ -1063,6 +889,46 @@ mod tests {
                     distance_diffuse: Some(true),
                     distance_diffuse_threshold: Some(0.5),
                     distance_diffuse_curve: Some(2.0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "binaural and master gain",
+                RenderConfig {
+                    master_gain: Some(-6.0),
+                    binaural: Some(renderer::config::BinauralConfig {
+                        output_mode: Some("binaural".into()),
+                        mode: Some("cascaded".into()),
+                        ear_gains: Some([0.8, 1.2]),
+                        ear_mutes: Some([false, true]),
+                        unit_scale_m: Some(2.0),
+                        head_radius_m: Some(0.2),
+                        hrir_source: Some("sofa".into()),
+                        hrtf_sofa_path: Some("/data/hrtf/test.sofa".into()),
+                        brir_head_tracking: Some(false),
+                        brir_max_length_s: Some(1.5),
+                        brir_tail_floor_db: Some(200.0),
+                        head_tracking: Some(renderer::config::HeadTrackingConfig {
+                            osc_address: Some("/rotation".into()),
+                            format: Some("euler".into()),
+                            smoothing: Some(0.5),
+                            invert: Some(true),
+                            ..Default::default()
+                        }),
+                        reverb: Some(renderer::config::ReverbConfig {
+                            enabled: Some(true),
+                            rt60_s: Some(9.0),
+                            predelay_ms: Some(10.0),
+                            ..Default::default()
+                        }),
+                        reflections: Some(renderer::config::ReflectionsConfig {
+                            enabled: Some(true),
+                            room_width_m: Some(50.0),
+                            wall_cutoff_hz: Some(8000.0),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             ),

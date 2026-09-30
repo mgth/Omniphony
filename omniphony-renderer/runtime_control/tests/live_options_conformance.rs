@@ -237,6 +237,8 @@ fn env(control: &Arc<RendererControl>) -> renderer::options::OptionEnv<'_> {
 fn legacy_addr_is_catalogued(addr: renderer::options::LegacyAddr) -> bool {
     use renderer::options::LegacyAddr;
     match addr {
+        // Nothing to catalogue: the generic setters only.
+        LegacyAddr::None => true,
         LegacyAddr::Exact(addr) => osc_contract::ALL_CONTROL.contains(&addr),
         LegacyAddr::Prefixed { prefix, .. } => [
             osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
@@ -248,12 +250,13 @@ fn legacy_addr_is_catalogued(addr: renderer::options::LegacyAddr) -> bool {
     }
 }
 
-/// The address a client sends for a legacy alias.
-fn legacy_addr_example(addr: renderer::options::LegacyAddr) -> String {
+/// The address a client sends for a legacy alias, if the option has one.
+fn legacy_addr_example(addr: renderer::options::LegacyAddr) -> Option<String> {
     use renderer::options::LegacyAddr;
     match addr {
-        LegacyAddr::Exact(addr) => addr.to_string(),
-        LegacyAddr::Prefixed { prefix, tail } => format!("{prefix}{tail}"),
+        LegacyAddr::None => None,
+        LegacyAddr::Exact(addr) => Some(addr.to_string()),
+        LegacyAddr::Prefixed { prefix, tail } => Some(format!("{prefix}{tail}")),
     }
 }
 
@@ -408,6 +411,44 @@ mod registry {
             ("hybrid_internal_backend", RawOptionValue::Str("vbap")),
             ("hybrid_curve_smoothing", RawOptionValue::Number(0.5)),
             ("hybrid_metric", RawOptionValue::Str("spherical")),
+            ("output_mode", RawOptionValue::Str("binaural")),
+            ("binaural_mode", RawOptionValue::Str("cascaded")),
+            // A SOFA file: its path rides its own config key.
+            (
+                "hrir_source",
+                RawOptionValue::Str("sofa:/data/hrtf/test.sofa"),
+            ),
+            ("brir_head_tracking", RawOptionValue::Str("on")),
+            ("brir_max_length_s", RawOptionValue::Number(1.5)),
+            ("brir_tail_floor_db", RawOptionValue::Number(70.0)),
+            ("binaural_unit_scale_m", RawOptionValue::Number(2.0)),
+            ("binaural_head_radius_m", RawOptionValue::Number(0.09)),
+            ("binaural_air_absorption", RawOptionValue::Bool(false)),
+            ("binaural_diffuse_field_eq", RawOptionValue::Bool(true)),
+            ("reflections_enabled", RawOptionValue::Bool(true)),
+            ("reflections_level", RawOptionValue::Number(0.7)),
+            ("reflections_wall_cutoff_hz", RawOptionValue::Number(8000.0)),
+            ("reflections_room_width_m", RawOptionValue::Number(5.0)),
+            ("reflections_room_depth_m", RawOptionValue::Number(6.0)),
+            ("reflections_room_height_m", RawOptionValue::Number(3.0)),
+            ("reverb_enabled", RawOptionValue::Bool(true)),
+            ("reverb_level", RawOptionValue::Number(0.4)),
+            ("reverb_rt60_s", RawOptionValue::Number(0.8)),
+            ("reverb_predelay_ms", RawOptionValue::Number(10.0)),
+            ("reverb_size", RawOptionValue::Number(1.5)),
+            ("reverb_rt60_low_ratio", RawOptionValue::Number(1.5)),
+            ("reverb_rt60_high_ratio", RawOptionValue::Number(0.5)),
+            (
+                "head_tracking_osc_address",
+                RawOptionValue::Str("/rotation"),
+            ),
+            ("head_tracking_format", RawOptionValue::Str("quat")),
+            ("head_tracking_smoothing", RawOptionValue::Number(0.5)),
+            ("head_tracking_invert", RawOptionValue::Bool(true)),
+            ("binaural_ear_gains", RawOptionValue::Numbers(&[0.8, 1.2])),
+            // +20 dB: the file stores decibels, and 10 survives the trip
+            // exactly.
+            ("master_gain", RawOptionValue::Number(10.0)),
         ]
     }
 
@@ -428,12 +469,13 @@ mod registry {
                 spec.key
             );
             assert!(options::find(spec.key).is_some(), "{}", spec.key);
-            assert!(
-                options::find_by_legacy_addr(&legacy_addr_example(spec.legacy_control_addr))
-                    .is_some(),
-                "{}",
-                spec.key
-            );
+            if let Some(addr) = legacy_addr_example(spec.legacy_control_addr) {
+                assert!(
+                    options::find_by_legacy_addr(&addr).is_some_and(|found| found.key == spec.key),
+                    "{}: its legacy address resolves to another option",
+                    spec.key
+                );
+            }
         }
         assert!(
             osc_contract::ALL_CONTROL.contains(&osc_contract::CONTROL_OPTION),

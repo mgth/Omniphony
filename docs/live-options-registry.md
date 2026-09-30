@@ -41,11 +41,16 @@ Progress:
   `evaluation` and `backend` groups (+ the ungrouped position
   interpolation); `OptionEnv`, `LegacyAddr::Prefixed`, the `Int` and
   `DynamicEnum` kinds and the `Build` default; the rebuilding rows seeded
-  before the first rebuild. Next steps, one PR each: the binaural groups
-  (HRIR source, BRIR, crossover, head tracking) and the ungrouped binaural
-  scalars; then `Staged` groups declared by the host (audio output, live
-  input), with the JSON patches and their `/apply` as exact aliases and the
-  options published per host (`decode_thread` by the embedded engine only).
+  before the first rebuild.
+- **Groups, step 3 landed**: the binaural stage — the `hrir_source`,
+  `brir`, `crossover` (the two existing crossover rows) and `head_tracking`
+  groups, the ungrouped binaural scalars (output and binaural modes, unit
+  scale, head radius, air absorption, diffuse-field EQ, reflections, reverb,
+  both ear gains) and the master gain; the `Reload` effect and
+  `LegacyAddr::None`. Next step: `Staged` groups declared by the host (audio
+  output, live input), with the JSON patches and their `/apply` as exact
+  aliases and the options published per host (`decode_thread` by the
+  embedded engine only).
 
 ### Current state
 
@@ -92,6 +97,24 @@ Declared options (`renderer::options::LIVE_OPTIONS`):
 | `hybrid_internal_backend` | `DynamicEnum` backends | `barycenter` | group `backend` | `/control/hybrid/internal_backend` |
 | `hybrid_curve_smoothing` | `Float` 0–1 | `0` | group `backend` | `/control/hybrid/curve_smoothing` |
 | `hybrid_metric` | `Enum` spherical / chebyshev | `chebyshev` | group `backend` | `/control/hybrid/metric` |
+| `output_mode` | `Enum` speaker / binaural | `speaker` | — | `/control/output_mode` |
+| `binaural_mode` | `Enum` direct / cascaded | `direct` | — | `/control/binaural_mode` |
+| `hrir_source` | `Str` (a selector: `saf`, `sofa:<path>`, `pinna:<preset>:<d>:<depth>`, …) | `saf` | group `hrir_source` | `/control/binaural/hrir_source` |
+| `hrir_update_lattice` (above) | | | group `hrir_source` | |
+| `crossover_type`, `crossover_fir_transition_ratio` (above) | | | group `crossover` | |
+| `brir_head_tracking` | `Enum` auto / on / off | `auto` | group `brir` | `/control/binaural/brir/head_tracking` |
+| `brir_max_length_s` | `Float` 0–10 | `2` | group `brir` | `/control/binaural/brir/max_length` |
+| `brir_tail_floor_db` | `Float` 20–120 | `60` | group `brir` | `/control/binaural/brir/tail_floor` |
+| `head_tracking_osc_address` | `Str` (empty = off) | `""` | group `head_tracking` | `/control/head/tracking/address` |
+| `head_tracking_format` | `Enum` auto / quat / rotvec / euler | `auto` | group `head_tracking` | `/control/head/tracking/format` |
+| `head_tracking_smoothing` | `Float` 0–0.999 | `0.2` | group `head_tracking` | `/control/head/tracking/smoothing` |
+| `head_tracking_invert` | `Bool` | `false` | group `head_tracking` | `/control/head/tracking/invert` |
+| `binaural_unit_scale_m`, `binaural_head_radius_m` | `Float` | `1`, `0.0875` | — | `/control/binaural/{unit_scale,head_radius}` |
+| `binaural_air_absorption`, `binaural_diffuse_field_eq` | `Bool` | `true`, `false` | — | `/control/binaural/{air_absorption,diffuse_field_eq}` |
+| `reflections_{enabled,level,wall_cutoff_hz,room_width_m,room_depth_m,room_height_m}` | `Bool` / `Float` | off, 0.5, 6 kHz, 4 × 5 × 2.7 m | — | `/control/binaural/reflections/…` |
+| `reverb_{enabled,level,rt60_s,predelay_ms,size,rt60_low_ratio,rt60_high_ratio}` | `Bool` / `Float` | off, 0.25, 0.35 s, 20 ms, 1, 1, 1 | — | `/control/binaural/reverb/…` |
+| `binaural_ear_gains` | `FloatArray` ×2, 0–4 | `[1, 1]` | — | none (`/control/binaural/ear_gain` sets one ear and stays hand-wired) |
+| `master_gain` | `Float` 0–1000, linear | `1` | — | `/control/gain` |
 
 (Aliases are under `/omniphony`; the contract constants live in
 `osc-contract/src/lib.rs`.) Every other live setting is still a hand-wired
@@ -193,6 +216,20 @@ grids — the polar grid laid out with the build's own quantization) seeds to
 the same values and asks for nothing, so a boot is not rebuilt twice
 (`renderer_build` tests: `the_seed_rebuilds_only_for_what_the_construction_left_out`,
 and `a_profile_switch_lands_where_a_boot_on_the_same_config_lands`).
+
+The binaural groups' effect is `Reload`: the HRIR grid, the BRIR set and
+the crossover bank are rebuilt by the stage that uses them when it sees the
+value change, so the engine has nothing to trigger — the effect is declared
+so a client knows the change is not instant. `head_tracking` has none: each
+incoming packet is matched against the address as it arrives. Rows whose
+pre-registry address takes another shape (one ear of the pair, by index)
+declare `LegacyAddr::None` and are reached through the generic setters only.
+
+Kept hand-wired on purpose (docs/persistence-policy.md): the ear mutes and
+the manual head pose (transient state), the head-tracking recenter and axis
+calibration (written at once, the policy's exception; `persist` still
+carries them through an explicit Save and `seed_control_from_render_config`
+still seeds them) and the SOFA upload.
 
 Kept out of the registry, as structured data: the hybrid curve (a point
 list; the grouped setter's arity-based parser cannot delimit it) and the

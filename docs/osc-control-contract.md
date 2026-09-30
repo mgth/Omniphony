@@ -128,7 +128,7 @@ payload shape.
 |---|---|---|
 | `/control/realtime/master_gain` | f `≥0` (linear), seq int | Master gain; echoed on `/state/realtime/master_gain`. Studio sends `[0,2]`. |
 | `/control/realtime/speaker_gain` | id int, f `≥0` (linear), seq int | Per-speaker output gain; echoed on `/state/realtime/speaker_gain`. Saved as the layout speaker's `gain_db` (0.1 dB), which seeds it at the next start. |
-| `/control/gain` | f `≥0` (linear) | Master gain without a sequence number (scripts). Same field as the realtime address. |
+| `/control/gain` | f `≥0` (linear) | Master gain without a sequence number (scripts). Same field as the realtime address. Registry option `master_gain` (the file stores dB). |
 | `/control/object/{id}/mute` | int bool | Per-object mute. Transient: never saved. |
 | `/control/config/speakers` | json | Speaker edits: delay (saved) and mute (transient, never saved). |
 | `/control/loudness` | int bool | Dialogue-norm / loudness correction. Registry option alias (`use_loudness`). |
@@ -181,10 +181,10 @@ contract address. See `omniphony-renderer/BINAURAL.md`.
 | `/control/head/quat` | f×4 | Set head pose directly (quaternion). Transient. |
 | `/control/head/recenter` | — | Capture the current orientation as "front" (persisted to `config.yaml` right away). |
 | `/control/head/calibrate` | s | Three-pose sensor-axis calibration, one step per message: `front` (also recenters), `left`, `up`, or `reset`. The result is persisted right away. |
-| `/control/head/tracking/address` | s | Feed address the engine listens on (`""` disables tracking). |
-| `/control/head/tracking/format` | s | `auto` \| `quat` \| `rotvec` \| `euler`. |
-| `/control/head/tracking/smoothing` | f `[0,0.999]` | Pose smoothing (higher = smoother/laggier). |
-| `/control/head/tracking/invert` | int bool | Mirror the applied rotation. |
+| `/control/head/tracking/address` | s | Feed address the engine listens on (`""` disables tracking). Registry option `head_tracking_osc_address` (group `head_tracking`). |
+| `/control/head/tracking/format` | s | `auto` \| `quat` \| `rotvec` \| `euler`. Registry option `head_tracking_format` (group `head_tracking`). |
+| `/control/head/tracking/smoothing` | f `[0,0.999]` | Pose smoothing (higher = smoother/laggier). Registry option `head_tracking_smoothing` (group `head_tracking`). |
+| `/control/head/tracking/invert` | int bool | Mirror the applied rotation. Registry option `head_tracking_invert` (group `head_tracking`). |
 
 ### Binaural (headphone) stage
 
@@ -194,31 +194,31 @@ values are dropped.
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/control/output_mode` | s | `speaker` (render to the layout) \| `binaural` (stereo for headphones). |
-| `/control/binaural_mode` | s | `direct` (one HRIR pair per object) \| `cascaded` (pan onto a virtual layout, binauralise its speakers). |
-| `/control/binaural/hrir_source` | s | `synthetic` \| `saf_kemar` \| `sofa[:<path>]` \| `brir[:<path>]` \| `pinna[:<preset>:<d_scale %>:<depth %>]` \| `prtf[:<freq_scale %>:<depth %>]`. |
+| `/control/output_mode` | s | `speaker` (render to the layout) \| `binaural` (stereo for headphones). Registry option `output_mode`. |
+| `/control/binaural_mode` | s | `direct` (one HRIR pair per object) \| `cascaded` (pan onto a virtual layout, binauralise its speakers). Registry option `binaural_mode`. |
+| `/control/binaural/hrir_source` | s | `synthetic` \| `saf_kemar` \| `sofa[:<path>]` \| `brir[:<path>]` \| `pinna[:<preset>:<d_scale %>:<depth %>]` \| `prtf[:<freq_scale %>:<depth %>]`. Registry option `hrir_source` (group `hrir_source`). |
 | `/control/binaural/hrtf_upload/begin` | name s, total_bytes int | Start uploading a SOFA file (≤ 1 GiB; one upload at a time). |
 | `/control/binaural/hrtf_upload/chunk` | index int, blob | One chunk, in order. |
 | `/control/binaural/hrtf_upload/end` | chunk_count int | Finish: the file is written to `hrtf/` next to the default config file and selected as the `sofa` source. |
-| `/control/binaural/unit_scale` | f `[0.01,100]` m | Metres per ADM unit. |
-| `/control/binaural/head_radius` | f `[0.05,0.15]` m | Head radius for the ITD model. |
-| `/control/binaural/ear_gain` | ear int (`0` L, `1` R), f `[0,4]` | Headphone output gain per ear. |
+| `/control/binaural/unit_scale` | f `[0.01,100]` m | Metres per ADM unit. Registry option `binaural_unit_scale_m`. |
+| `/control/binaural/head_radius` | f `[0.05,0.15]` m | Head radius for the ITD model. Registry option `binaural_head_radius_m`. |
+| `/control/binaural/ear_gain` | ear int (`0` L, `1` R), f `[0,4]` | Headphone output gain per ear. Hand-wired (one ear by index); both ears at once is the registry option `binaural_ear_gains`. |
 | `/control/binaural/ear_mute` | ear int, int bool | Headphone mute per ear. |
-| `/control/binaural/reflections/enabled` | int bool | Early reflections of the virtual room. |
-| `/control/binaural/reflections/level` | f `[0,1]` | Reflection level relative to the direct sound. |
-| `/control/binaural/reflections/wall_cutoff` | f `[1000,20000]` Hz | Wall absorption low-pass. |
-| `/control/binaural/reflections/{room_width,room_depth,room_height}` | f `[1,20]` m | Virtual room size. |
-| `/control/binaural/reverb/enabled` | int bool | Late reverb. |
-| `/control/binaural/reverb/level` | f `[0,1]` | Reverb level. |
-| `/control/binaural/reverb/rt60` | f `[0.1,3]` s | Decay time. |
-| `/control/binaural/reverb/predelay` | f `[0,100]` ms | Pre-delay. |
-| `/control/binaural/reverb/size` | f `[0.5,2]` | Room-size factor. |
-| `/control/binaural/reverb/{rt60_low_ratio,rt60_high_ratio}` | f `[0.25,4]` | Low / high band decay relative to `rt60`. |
-| `/control/binaural/diffuse_field_eq` | int bool | Diffuse-field equalisation of the HRIR set. |
-| `/control/binaural/air_absorption` | int bool | Distance-dependent air absorption. |
-| `/control/binaural/brir/head_tracking` | int bool, or `auto` | Which measured head orientations of a room response stay resident: all (`1`), front only (`0`), or `auto` (all when a head-tracking address is set). |
-| `/control/binaural/brir/max_length` | f `[0,10]` s | Truncate the room response (`0` = whole). |
-| `/control/binaural/brir/tail_floor` | f `[20,120]` dB | Cut the tail this far below the response's energy. |
+| `/control/binaural/reflections/enabled` | int bool | Early reflections of the virtual room. Registry option `reflections_enabled`. |
+| `/control/binaural/reflections/level` | f `[0,1]` | Reflection level relative to the direct sound. Registry option `reflections_level`. |
+| `/control/binaural/reflections/wall_cutoff` | f `[1000,20000]` Hz | Wall absorption low-pass. Registry option `reflections_wall_cutoff_hz`. |
+| `/control/binaural/reflections/{room_width,room_depth,room_height}` | f `[1,20]` m | Virtual room size. Registry options `reflections_room_{width,depth,height}_m`. |
+| `/control/binaural/reverb/enabled` | int bool | Late reverb. Registry option `reverb_enabled`. |
+| `/control/binaural/reverb/level` | f `[0,1]` | Reverb level. Registry option `reverb_level`. |
+| `/control/binaural/reverb/rt60` | f `[0.1,3]` s | Decay time. Registry option `reverb_rt60_s`. |
+| `/control/binaural/reverb/predelay` | f `[0,100]` ms | Pre-delay. Registry option `reverb_predelay_ms`. |
+| `/control/binaural/reverb/size` | f `[0.5,2]` | Room-size factor. Registry option `reverb_size`. |
+| `/control/binaural/reverb/{rt60_low_ratio,rt60_high_ratio}` | f `[0.25,4]` | Low / high band decay relative to `rt60`. Registry options `reverb_rt60_{low,high}_ratio`. |
+| `/control/binaural/diffuse_field_eq` | int bool | Diffuse-field equalisation of the HRIR set. Registry option `binaural_diffuse_field_eq`. |
+| `/control/binaural/air_absorption` | int bool | Distance-dependent air absorption. Registry option `binaural_air_absorption`. |
+| `/control/binaural/brir/head_tracking` | int bool, or `auto` | Which measured head orientations of a room response stay resident: all (`1`), front only (`0`), or `auto` (all when a head-tracking address is set). Registry option `brir_head_tracking` (`auto` \| `on` \| `off`; group `brir`). |
+| `/control/binaural/brir/max_length` | f `[0,10]` s | Truncate the room response (`0` = whole). Registry option `brir_max_length_s` (group `brir`). |
+| `/control/binaural/brir/tail_floor` | f `[20,120]` dB | Cut the tail this far below the response's energy. Registry option `brir_tail_floor_db` (group `brir`). |
 | `/control/binaural/hrir_update_lattice` | s | `exact` \| `fine` \| `balanced` \| `coarse` — how far an object must turn before its HRIR is rebuilt. Registry option alias (see [Live options](#live-options)). |
 
 ### Fixed-channel sources
@@ -268,7 +268,10 @@ nearest integer; a `dynamic_enum` takes one of the ids of the set its
 valid pair is applied before anything is rebuilt, and the whole message costs
 at most one rebuild (the widest its options' groups ask for: an `evaluation`
 change re-samples the tables and keeps the gain models, a `room`, distance or
-`backend` change rebuilds the topology) and one live-state bundle. An unknown key or a
+`backend` change rebuilds the topology; the binaural groups — `hrir_source`,
+`brir`, `crossover` — reload in their own stage and `head_tracking` needs
+nothing) and one live-state bundle. `binaural_ear_gains` (both ears) has no
+dedicated address and is set through these two setters only. An unknown key or a
 truncated value drops the whole message — past it, where the next key starts
 is unknowable; an invalid value drops only its own pair. A change of an
 option whose group asks for no rebuild is read where it is used, as with
