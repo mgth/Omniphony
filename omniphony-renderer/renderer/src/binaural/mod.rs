@@ -2317,4 +2317,96 @@ mod tests {
         );
         assert!(out.iter().all(|&x| x == 0.0));
     }
+
+    /// The room stage depends on which content sits at which position, not
+    /// on the slot a channel arrives in nor on where the caller cuts its
+    /// blocks. The same bed read from two WAV files that differ only in
+    /// their channel order and header length used to render −66 dB apart
+    /// with the reverb on: the longer header moved the file reader's block
+    /// boundaries, and the reverb restarted its modulation schedule at every
+    /// block. What remains is float rounding — the same as flipping one
+    /// low bit of one input sample, measured at about −112 dB.
+    #[test]
+    fn the_room_does_not_depend_on_slot_order_or_block_cuts() {
+        let positions: [[f64; 3]; 4] = [
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.7, -0.7, 0.0],
+            [-0.7, 0.7, 0.7],
+        ];
+        let len = 12_000; // the reverb returns ~2 000 samples in
+        let mut state = 0x2468_ace1u32;
+        let content: Vec<Vec<f32>> = (0..positions.len())
+            .map(|_| {
+                (0..len)
+                    .map(|_| {
+                        state ^= state << 13;
+                        state ^= state >> 17;
+                        state ^= state << 5;
+                        (state as f32 / u32::MAX as f32 - 0.5) * 0.5
+                    })
+                    .collect()
+            })
+            .collect();
+        let params = BinauralFrameParams {
+            unit_scale_m: 3.0,
+            reflections: BinauralReflections {
+                enabled: true,
+                level: 0.4,
+                ..Default::default()
+            },
+            reverb: BinauralReverb {
+                enabled: true,
+                level: 0.2,
+                rt60_s: 0.3,
+                ..Default::default()
+            },
+            air_absorption: true,
+            ..dry_params()
+        };
+        // `order[slot]` is the content (and position) carried by `slot`.
+        let render = |order: [usize; 4], blocks: &[usize]| -> Vec<f32> {
+            let mut r = BinauralRenderer::new(48_000);
+            let pos: Vec<[f64; 3]> = order.iter().map(|&k| positions[k]).collect();
+            let gains = [ChannelGain::flat(1.0); 4];
+            let mut out = vec![0.0f32; len * 2];
+            let (mut at, mut b) = (0, 0);
+            while at < len {
+                let n = blocks[b % blocks.len()].min(len - at);
+                b += 1;
+                let pcm: Vec<f32> = (0..n)
+                    .flat_map(|s| order.iter().map(move |&k| (k, at + s)))
+                    .map(|(k, i)| content[k][i])
+                    .collect();
+                r.render_frame(
+                    &pcm,
+                    4,
+                    n,
+                    &params,
+                    &pos,
+                    &gains,
+                    &[],
+                    None,
+                    &mut out[at * 2..(at + n) * 2],
+                );
+                at += n;
+            }
+            out
+        };
+        // Block sizes as the WAV reader cuts them: 2048 and whatever is left
+        // of a 64 KiB read, shifted by one sample between the two files.
+        let a = render([0, 1, 2, 3], &[2048, 680, 2048, 683]);
+        let b = render([0, 2, 1, 3], &[2048, 679, 2048, 683]);
+        let peak = a.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let diff = a
+            .iter()
+            .zip(&b)
+            .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+        let db = 20.0 * (diff / peak).max(1e-30).log10();
+        assert!(
+            db < -100.0,
+            "the same scene in another slot order and other block cuts \
+             rendered {db:.1} dB apart (re peak); rounding alone is ~−112 dB"
+        );
+    }
 }
