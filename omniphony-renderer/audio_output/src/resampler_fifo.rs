@@ -146,6 +146,30 @@ impl ResamplerFifoEngine {
         discard_count
     }
 
+    /// Move whole frames of `channels` interleaved samples into `dest`, whose
+    /// frames are `dest_channels` wide (`>= channels`; the extra device
+    /// channels are zeroed). Moves as many frames as both hold and returns
+    /// that count. Allocation-free, for the realtime callback.
+    pub fn drain_frames_into(
+        &mut self,
+        dest: &mut [f32],
+        channels: usize,
+        dest_channels: usize,
+    ) -> usize {
+        debug_assert!(channels > 0 && dest_channels >= channels);
+        let frames = (dest.len() / dest_channels).min(self.output_fifo.len() / channels);
+        for (dst, src) in dest
+            .chunks_exact_mut(dest_channels)
+            .zip(self.output_fifo.chunks_exact(channels))
+            .take(frames)
+        {
+            dst[..channels].copy_from_slice(src);
+            dst[channels..].fill(0.0);
+        }
+        self.output_fifo.drain(0..frames * channels);
+        frames
+    }
+
     pub fn drain_to_vec(&mut self, sample_count: usize) -> Vec<f32> {
         let count = sample_count.min(self.output_fifo.len());
         self.output_fifo.drain(0..count).collect()
@@ -158,6 +182,26 @@ mod tests {
     use rubato::{SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
     const CHANNELS: usize = 2;
+
+    /// Whole frames land on the device's wider layout, extra channels zeroed,
+    /// and a partial frame is never split.
+    #[test]
+    fn drain_frames_into_maps_onto_a_wider_device_layout() {
+        let mut engine = ResamplerFifoEngine::new(2);
+        engine
+            .output_fifo
+            .extend_from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut dest = [9.0f32; 9];
+        let frames = engine.drain_frames_into(&mut dest, 2, 3);
+        assert_eq!(frames, 2);
+        assert_eq!(dest[..6], [1.0, 2.0, 0.0, 3.0, 4.0, 0.0]);
+        assert_eq!(
+            dest[6..],
+            [9.0, 9.0, 9.0],
+            "untouched past the moved frames"
+        );
+        assert_eq!(engine.output_len(), 1, "the half frame stays queued");
+    }
 
     fn resampler(ratio: f64) -> SincFixedIn<f32> {
         SincFixedIn::<f32>::new(
