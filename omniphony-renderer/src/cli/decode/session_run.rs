@@ -959,6 +959,13 @@ fn run_prepared_render(
     // node beside the running renderer's, and feed its capture into the render.
     let offline =
         effective_args.output_backend == Some(OutputBackend::File) && !effective_args.continuous;
+    // Nor any use for the binaural stages' background builds: an HRIR grid or
+    // BRIR set would land at whichever block the worker finished by, and two
+    // renders of the same file would differ there. Nothing waits on the
+    // output, so the build can hold the frame that asks for it.
+    if offline && let Some(renderer) = handler.spatial_renderer.as_mut() {
+        renderer.set_synchronous_stage_builds(true);
+    }
     // Taken whether the manager starts or not: when it does not, the decoder
     // thread is left the only producer, and the loop below ends once it has
     // delivered the last frame of the input.

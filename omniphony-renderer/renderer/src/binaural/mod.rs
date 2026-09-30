@@ -469,6 +469,11 @@ pub struct BinauralRenderer {
     /// freed there: the last reference to a grid must not drop on the audio
     /// thread (half a megabyte and up).
     retire_tx: std::sync::mpsc::Sender<std::sync::Arc<Grid>>,
+    /// Where build statuses go; the synchronous path reports through it too.
+    status_sink: HrirStatusSink,
+    /// Build grids on the calling thread instead of the worker — see
+    /// [`Self::set_synchronous_builds`].
+    synchronous_builds: bool,
     /// Per-input-channel DSP state, indexed directly by channel. The first
     /// [`PREALLOC_CHANNELS`] slots are built at construction; a wider stream
     /// grows the vector and fills the extra slots on first use.
@@ -555,6 +560,8 @@ impl BinauralRenderer {
             incoming,
             rebuild_tx,
             retire_tx,
+            status_sink: sink,
+            synchronous_builds: false,
             // Every state a stream up to PREALLOC_CHANNELS wide can need,
             // built here on the control thread.
             channels: (0..PREALLOC_CHANNELS)
@@ -571,6 +578,20 @@ impl BinauralRenderer {
             reverb_bus_l: Vec::with_capacity(REVERB_BUS_CAPACITY),
             reverb_bus_r: Vec::with_capacity(REVERB_BUS_CAPACITY),
         }
+    }
+
+    /// Build requested grids on the calling thread, inside
+    /// [`Self::ensure_source`], so a source change takes effect on the very
+    /// frame that requests it.
+    ///
+    /// For offline renders: the asynchronous swap lands at whichever block
+    /// the worker happens to finish by, so two renders of the same input
+    /// would differ. A live host must leave this off — a build allocates and
+    /// may read a SOFA file, which the audio thread must never wait for. The
+    /// steady-state per-frame cost is the same either way. Set it before the
+    /// first frame: a build already handed to the worker still lands late.
+    pub fn set_synchronous_builds(&mut self, on: bool) {
+        self.synchronous_builds = on;
     }
 
     /// Identity of the active HRIR grid (tests observe the async swap with it).
@@ -721,7 +742,8 @@ impl BinauralRenderer {
     /// an actual change it only pushes a request to the rebuild worker — the
     /// grid build (allocations, provider renders, SOFA file I/O) never runs
     /// here (issue #153). Frames keep rendering with the previous grid until
-    /// the worker's result lands.
+    /// the worker's result lands — unless [`Self::set_synchronous_builds`] is
+    /// on, in which case the grid is built here and live on this frame.
     pub fn ensure_source(
         &mut self,
         source: &HrirSource,
@@ -729,14 +751,7 @@ impl BinauralRenderer {
         diffuse_field_eq: bool,
     ) {
         if let Some(grid) = self.incoming.swap(None) {
-            let retired = std::mem::replace(&mut self.hrir, grid);
-            // The old grid goes back to the worker to be freed; dropping it
-            // here would free its megabytes on the audio thread. (`send`
-            // allocates one queue node, as the request below does — rare.)
-            let _ = self.retire_tx.send(retired);
-            // Invalidates every channel's cached lattice direction at once —
-            // the new grid answers differently for the same key.
-            self.hrir_generation = self.hrir_generation.wrapping_add(1);
+            self.install_grid(grid);
         }
         // The head radius only matters to the parametric sources: a measured
         // set was measured on its own head, and a live radius tweak must not
@@ -748,6 +763,17 @@ impl BinauralRenderer {
             self.source = source.clone();
             self.head_radius_mm = radius_mm;
             self.diffuse_field_eq = diffuse_field_eq;
+            if self.synchronous_builds {
+                let grid = Self::build_grid(
+                    source.clone(),
+                    head_radius_m,
+                    diffuse_field_eq,
+                    self.sample_rate,
+                );
+                (self.status_sink)(grid.status());
+                self.install_grid(std::sync::Arc::new(grid));
+                return;
+            }
             // `send` allocates one queue node — rare (a user-initiated source,
             // radius or equalisation change), unlike the megabytes+I/O of the
             // build it replaces.
@@ -761,6 +787,18 @@ impl BinauralRenderer {
             // parametric one builds with the current head, not a stale one.
             self.head_radius_mm = radius_mm;
         }
+    }
+
+    /// Make `grid` the one convolved from this frame on.
+    fn install_grid(&mut self, grid: std::sync::Arc<Grid>) {
+        let retired = std::mem::replace(&mut self.hrir, grid);
+        // The old grid goes back to the worker to be freed; dropping it
+        // here would free its megabytes on the audio thread. (`send`
+        // allocates one queue node, as a rebuild request does — rare.)
+        let _ = self.retire_tx.send(retired);
+        // Invalidates every channel's cached lattice direction at once —
+        // the new grid answers differently for the same key.
+        self.hrir_generation = self.hrir_generation.wrapping_add(1);
     }
 
     /// Render one frame to interleaved stereo.
@@ -1501,6 +1539,38 @@ mod tests {
         assert_eq!(last.effective, HrirSource::SafKemar);
         let err = last.error.expect("the failure must carry a reason");
         assert!(!err.is_empty());
+    }
+
+    /// With synchronous builds (offline renders) the requested grid is built
+    /// inside `ensure_source` and swapped in before it returns, its status
+    /// reported on the way: nothing is left for a later frame to pick up.
+    #[test]
+    fn synchronous_builds_swap_the_grid_on_the_requesting_call() {
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<HrirStatus>>> = Default::default();
+        let sink: HrirStatusSink = {
+            let seen = std::sync::Arc::clone(&seen);
+            std::sync::Arc::new(move |st| seen.lock().unwrap().push(st))
+        };
+        let mut r = BinauralRenderer::with_status_sink(48_000, sink);
+        r.set_synchronous_builds(true);
+        let g0 = r.hrir_grid_id();
+        let generation = r.hrir_generation;
+        r.ensure_source(&HrirSource::Synthetic, itd::DEFAULT_HEAD_RADIUS_M, false);
+        assert!(!r.rebuild_pending());
+        assert_ne!(r.hrir_grid_id(), g0, "the new grid is the live one");
+        assert_eq!(r.hrir_generation, generation.wrapping_add(1));
+        assert_eq!(
+            seen.lock().unwrap().last().map(|s| s.effective.clone()),
+            Some(HrirSource::Synthetic)
+        );
+        // Steady state: no rebuild, no swap.
+        let g1 = r.hrir_grid_id();
+        r.ensure_source(&HrirSource::Synthetic, itd::DEFAULT_HEAD_RADIUS_M, false);
+        assert_eq!(r.hrir_grid_id(), g1);
+        // Every build input is covered: head radius and equalisation too.
+        r.ensure_source(&HrirSource::Synthetic, 0.1, true);
+        assert!(!r.rebuild_pending());
+        assert_ne!(r.hrir_grid_id(), g1);
     }
 
     /// A head-radius change rebuilds a parametric grid (its shelf corner

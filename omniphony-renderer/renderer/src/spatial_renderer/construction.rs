@@ -524,6 +524,7 @@ impl SpatialRenderer {
             ramp_strategy_override: None,
             binaural,
             brir,
+            synchronous_stage_builds: false,
             cascade: None,
             last_mix_num_speakers: 0,
             last_output_latency: 0,
@@ -592,6 +593,7 @@ impl SpatialRenderer {
         )?;
         self.binaural = Self::build_binaural_stage(&self.control, sample_rate);
         self.brir = Self::build_brir_stage(&self.control, sample_rate);
+        self.set_synchronous_stage_builds(self.synchronous_stage_builds);
         // Re-derived on the next cascaded frame against the new stages.
         self.cascade = None;
         self.last_mix_num_speakers = 0;
