@@ -34,6 +34,14 @@ Progress:
 - **Phase 3 (in progress)**: remaining `LiveParams` scalars fold in
   opportunistically, as they get touched. See "Current state" below for what
   the registry declares today.
+- **Groups, step 1 landed**: `OptionGroup` (mode + apply effect), the
+  `FloatArray` kind, `apply_batch` and the grouped `/control/options`
+  setter, validated on the `room` group (see "Groups" below). Next steps, one
+  PR each: the evaluation, distance and backend groups; the binaural groups
+  (HRIR source, BRIR, crossover, head tracking) and the ungrouped binaural
+  scalars; then `Staged` groups declared by the host (audio output, live
+  input), with the JSON patches and their `/apply` as exact aliases and the
+  options published per host (`decode_thread` by the embedded engine only).
 
 ### Current state
 
@@ -56,6 +64,10 @@ Declared options (`renderer::options::LIVE_OPTIONS`):
 | `ramp_mode` | `Enum` off / frame / interp / sample | `frame` | — | `/control/ramp_mode` |
 | `drc_mode` | `Str` (the bridge's modes) | `Off` | — | `/control/input/drc_mode` |
 | `drc_weight` | `Float` 0–1, step 0.01 | `1` | — | `/control/input/drc_weight` |
+| `room_ratio` | `FloatArray` ×3, 0.01–100, step 0.01 | `[1, 2, 1]` | group `room` | `/control/room_ratio` |
+| `room_ratio_rear` | `Float` 0.01–100, step 0.01 | `2` | group `room` | `/control/room_ratio_rear` |
+| `room_ratio_lower` | `Float` 0.01–100, step 0.01 | `0.5` | group `room` | `/control/room_ratio_lower` |
+| `room_ratio_center_blend` | `Float` 0–1, step 0.01 | `0.5` | group `room` | `/control/room_ratio_center_blend` |
 
 (Aliases are under `/omniphony`; the contract constants live in
 `osc-contract/src/lib.rs`.) Every other live setting is still a hand-wired
@@ -64,9 +76,11 @@ table of the hand-wired options that predate the registry.
 
 What the implementation settled on, where it differs from the proposal below:
 
-- **Kinds**: `Bool`, `Enum(&[&str])`, `Str` (free-form, e.g. a registry id)
-  and `Float { min, max, step }` (the proposal's `F32`; `step` is a UI hint,
-  the setter clamps to `[min, max]`).
+- **Kinds**: `Bool`, `Enum(&[&str])`, `Str` (free-form, e.g. a registry id),
+  `Float { min, max, step }` (the proposal's `F32`; `step` is a UI hint,
+  the setter clamps to `[min, max]`) and `FloatArray { len, min, max, step }`
+  (`len` numbers set together, each clamped; `len` wire arguments — the
+  kind's `arity()`).
 - **Flags**: only `REPLAN` (bump `RendererControl::options_epoch` on a real
   change). `NEEDS_TOPOLOGY` and `ADVANCED` were never needed and do not exist.
   `PERSIST`, a write to `config.yaml` on every OSC set, was removed: options
@@ -88,9 +102,55 @@ What the implementation settled on, where it differs from the proposal below:
   profile's `seed_live_from_config`, because a seed only assigns the keys the
   config pins — a skip-if-default key would otherwise keep the previous
   profile's value.
+- **Groups**: see "Groups" below.
 - **Not built**: the phase-3 check "a config key outside the registry and the
   known legacy list fails" does not exist; the conformance net only proves
   that each declared (or hand-wired) option reaches every layer.
+
+### Groups
+
+Some options only make sense together — the room's width, length, height,
+rear, lower and centre blend; later a backend and its parameters, or an
+output device, its rate and its buffer. Written one address at a time, each
+write started its own topology rebuild, the first one on a half-written room
+(`trigger_layout_recompute` queues one catch-up rebuild behind a running one,
+but cannot know more writes are coming).
+
+An `OptionGroup` is declared once in `options.rs` and named by its member
+rows (`OptionSpec::group`). It carries:
+
+- a **mode**: `Live` — applied as it arrives, a multi-key write applied as
+  one. (`Staged` — requested value ≠ applied value, a pending flag, applied
+  atomically on command — arrives with the host-declared audio groups.)
+- an **apply effect** (`ApplyEffect`): `None` (read where it is used, or
+  compared by the stage that built from it), `Replan` (bump the options
+  epoch, like the `REPLAN` flag), `Topology` (rebuild backend geometry and
+  evaluation) or `Evaluation` (rebuild the evaluation layer, reuse the gain
+  models). Reload and restart effects join with the groups that need them.
+
+`options::apply_batch` applies a list of (option, value) pairs under one
+write lock, then — only if something changed — marks the config dirty once,
+bumps the options epoch at most once, and returns the widest `Rebuild` any
+changed option's group asks for. `/control/option`, the legacy aliases and
+`/control/options` all go through it (`runtime_control::live_control`), so a
+rebuild is only asked for when a value actually moved: Studio still sends the
+four room addresses on every room edit, and now only the one that changed
+rebuilds.
+
+The profile switch and a config load already apply a whole config as one
+batch: `apply_render_config_live` resets and seeds every option, then
+`apply_switched_profile` triggers a single rebuild; at boot the renderer is
+built from the resolved config and seeded before its first rebuild.
+
+The schema entry of a grouped option carries its group:
+`"group": {"key", "mode", "effect", "i18nKey"}` — enough for Studio to draw a
+generic group header or, for a `Staged` group, an Apply button.
+
+The room keeps its file representation: `config_fields::room` writes metres
+against the layout radius (`store_ratio` / `store_rear` / `store_lower`) and
+reads ratios back through `room::resolve`, the single reading shared by the
+renderer build, the live seed and the profile switch — so the dependent
+default (an absent rear follows the length) lives in one place.
 
 ## Adding a live option today (post-phase-2)
 

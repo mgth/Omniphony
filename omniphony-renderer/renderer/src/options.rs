@@ -27,6 +27,13 @@
 //! fields it points at, + Studio i18n keys). The conformance net in
 //! `runtime_control/tests/live_options_conformance.rs` fails when a row is
 //! missing a layer.
+//!
+//! Options that only make sense together belong to an [`OptionGroup`], which
+//! declares what applying a change costs (an [`ApplyEffect`]: a topology
+//! rebuild, an evaluation-only rebuild, …). Several keys written in one go
+//! (`/omniphony/control/options`, [`apply_batch`]) are applied under one lock
+//! and cost one rebuild and one notification, never one per key — so a
+//! rebuild never starts on a half-written group.
 
 use crate::config::RenderConfig;
 use crate::live_params::{
@@ -51,6 +58,103 @@ pub enum OptionKind {
     /// the wire, clamped to `[min, max]` by the setter. `step` is a UI hint
     /// for the Studio control, not a validation grid.
     Float { min: f32, max: f32, step: f32 },
+    /// `len` bounded numbers set together (e.g. the room's width, length and
+    /// height). On the wire: `len` numeric arguments; each is clamped to
+    /// `[min, max]` like a `Float`.
+    FloatArray {
+        len: usize,
+        min: f32,
+        max: f32,
+        step: f32,
+    },
+}
+
+impl OptionKind {
+    /// How many wire arguments a value of this kind takes — what lets
+    /// `/omniphony/control/options` walk a list of key/value pairs.
+    pub const fn arity(self) -> usize {
+        match self {
+            Self::FloatArray { len, .. } => len,
+            _ => 1,
+        }
+    }
+}
+
+/// When a group's writes take effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupMode {
+    /// Applied as it arrives; a multi-key write is applied as one.
+    Live,
+}
+
+impl GroupMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+        }
+    }
+}
+
+/// What applying a changed option costs beyond storing it. The effects of a
+/// batch merge: one rebuild of the widest kind any changed key asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyEffect {
+    /// Nothing: the value is read where it is used (per frame, or compared
+    /// against what a stage built, which rebuilds itself).
+    None,
+    /// Re-plan the synthesized-object stages (`RendererControl::options_epoch`),
+    /// like the `REPLAN` flag of an ungrouped option.
+    Replan,
+    /// Rebuild the speaker topology: backend geometry and evaluation.
+    Topology,
+    /// Rebuild the evaluation layer only, reusing the backend's gain models.
+    Evaluation,
+}
+
+impl ApplyEffect {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Replan => "replan",
+            Self::Topology => "topology",
+            Self::Evaluation => "evaluation",
+        }
+    }
+}
+
+/// Options applied together (see the module docs). Declared once; every
+/// member row points at it.
+#[derive(Debug)]
+pub struct OptionGroup {
+    /// Canonical group name, published in the schema.
+    pub key: &'static str,
+    pub mode: GroupMode,
+    pub effect: ApplyEffect,
+    /// Studio i18n key for the group's title.
+    pub i18n_key: &'static str,
+}
+
+/// Room proportions: they scale every position before panning, so a change
+/// rebuilds the topology.
+pub static ROOM: OptionGroup = OptionGroup {
+    key: "room",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::Topology,
+    i18n_key: "room.title",
+};
+
+/// Every declared group.
+pub static OPTION_GROUPS: &[&OptionGroup] = &[&ROOM];
+
+/// The rebuild a set of changes asks the engine for, widest first merged in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Rebuild {
+    #[default]
+    None,
+    /// Evaluation layer only ([`ApplyEffect::Evaluation`]).
+    Evaluation,
+    /// Full topology ([`ApplyEffect::Topology`]).
+    Topology,
 }
 
 /// Behaviour flags, interpreted generically by the plumbing layers.
@@ -83,14 +187,16 @@ pub enum OptionDefault {
     Bool(bool),
     Str(&'static str),
     Float(f32),
+    FloatArray(&'static [f32]),
 }
 
 impl OptionDefault {
-    fn to_json(self) -> serde_json::Value {
+    pub fn to_json(self) -> serde_json::Value {
         match self {
             Self::Bool(b) => b.into(),
             Self::Str(s) => s.into(),
             Self::Float(f) => f.into(),
+            Self::FloatArray(values) => values.into(),
         }
     }
 }
@@ -102,6 +208,8 @@ pub enum RawOptionValue<'a> {
     Str(&'a str),
     Number(f64),
     Bool(bool),
+    /// The values of a `FloatArray` option, in order.
+    Numbers(&'a [f64]),
 }
 
 /// One live option, declared once.
@@ -112,6 +220,8 @@ pub struct OptionSpec {
     /// Canonical default; the config key is omitted at this value.
     pub default: OptionDefault,
     pub flags: OptionFlags,
+    /// The group the option is applied with, if any.
+    pub group: Option<&'static OptionGroup>,
     /// Studio i18n key for the control label.
     pub i18n_key: &'static str,
     /// Studio i18n key for the help text (`None` = no help entry yet).
@@ -139,7 +249,7 @@ fn raw_bool(raw: &RawOptionValue) -> Option<bool> {
     match raw {
         RawOptionValue::Number(n) => Some(*n != 0.0),
         RawOptionValue::Bool(b) => Some(*b),
-        RawOptionValue::Str(_) => None,
+        RawOptionValue::Str(_) | RawOptionValue::Numbers(_) => None,
     }
 }
 
@@ -164,15 +274,38 @@ fn raw_float(raw: &RawOptionValue, kind: OptionKind) -> Option<f32> {
     let value = match raw {
         RawOptionValue::Number(n) => *n as f32,
         RawOptionValue::Str(s) => s.trim().parse::<f32>().ok()?,
-        RawOptionValue::Bool(_) => return None,
+        RawOptionValue::Bool(_) | RawOptionValue::Numbers(_) => return None,
     };
     value.is_finite().then(|| clamp_to(kind, value))
 }
 
-/// Clamp `value` to the bounds of a `Float` kind (identity for other kinds).
+/// A `FloatArray` option value: exactly `N` finite numbers, each clamped to
+/// the bounds declared by `kind`.
+fn raw_floats<const N: usize>(raw: &RawOptionValue, kind: OptionKind) -> Option<[f32; N]> {
+    let RawOptionValue::Numbers(values) = raw else {
+        return None;
+    };
+    if values.len() != N {
+        return None;
+    }
+    let mut out = [0.0; N];
+    for (slot, value) in out.iter_mut().zip(values.iter()) {
+        let value = *value as f32;
+        if !value.is_finite() {
+            return None;
+        }
+        *slot = clamp_to(kind, value);
+    }
+    Some(out)
+}
+
+/// Clamp `value` to the bounds of a `Float` / `FloatArray` kind (identity for
+/// other kinds).
 fn clamp_to(kind: OptionKind, value: f32) -> f32 {
     match kind {
-        OptionKind::Float { min, max, .. } => value.clamp(min, max),
+        OptionKind::Float { min, max, .. } | OptionKind::FloatArray { min, max, .. } => {
+            value.clamp(min, max)
+        }
         _ => value,
     }
 }
@@ -194,6 +327,32 @@ const DRC_WEIGHT_KIND: OptionKind = OptionKind::Float {
     step: 0.01,
 };
 
+/// Room ratios: floored like the geometry floors them, bounded far above any
+/// real room so a typo cannot blow the scene up.
+const ROOM_RATIO_KIND: OptionKind = OptionKind::FloatArray {
+    len: 3,
+    min: crate::config_fields::room::MIN_RATIO,
+    max: 100.0,
+    step: 0.01,
+};
+const ROOM_EXTENT_KIND: OptionKind = OptionKind::Float {
+    min: crate::config_fields::room::MIN_RATIO,
+    max: 100.0,
+    step: 0.01,
+};
+const ROOM_CENTER_BLEND_KIND: OptionKind = OptionKind::Float {
+    min: 0.0,
+    max: 1.0,
+    step: 0.01,
+};
+
+/// The room a config describes, for the room rows' seeds. `None` for a
+/// malformed `room_ratio`, which leaves the live room alone: the renderer
+/// build and the profile switch reject such a config before any seed runs.
+fn configured_room(render: &RenderConfig) -> Option<crate::config_fields::room::Room> {
+    crate::config_fields::room::resolve(render).ok()
+}
+
 #[inline]
 fn round6(v: f32) -> f32 {
     (v * 1_000_000.0).round() / 1_000_000.0
@@ -207,6 +366,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Enum(&["side", "back"]),
         default: OptionDefault::Str("side"),
         flags: OptionFlags::REPLAN,
+        group: None,
         i18n_key: "twoDSources.surroundLabel",
         help_i18n_key: None,
         legacy_control_addr: osc_contract::CONTROL_SURROUND_PLACEMENT,
@@ -230,6 +390,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Bool,
         default: OptionDefault::Bool(false),
         flags: OptionFlags::REPLAN,
+        group: None,
         i18n_key: "twoDSources.syntheticObjectsLabel",
         help_i18n_key: Some("help.syntheticObjects"),
         legacy_control_addr: osc_contract::CONTROL_SYNTHETIC_OBJECTS,
@@ -256,6 +417,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         default: OptionDefault::Bool(false),
         // No REPLAN: nothing synthesized depends on where decoding runs.
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "renderer.decodeThreadLabel",
         help_i18n_key: Some("help.decodeThread"),
         legacy_control_addr: osc_contract::CONTROL_DECODE_THREAD,
@@ -279,6 +441,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Enum(&["by_index", "by_name"]),
         default: OptionDefault::Str("by_index"),
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "audio.channelMapping",
         help_i18n_key: None,
         legacy_control_addr: osc_contract::CONTROL_OUTPUT_CHANNEL_MAPPING,
@@ -302,6 +465,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Str,
         default: OptionDefault::Str(""),
         flags: OptionFlags::REPLAN,
+        group: None,
         i18n_key: "twoDSources.objectGeneratorLabel",
         help_i18n_key: Some("help.objectGenerator"),
         legacy_control_addr: osc_contract::CONTROL_OBJECT_GENERATOR,
@@ -330,6 +494,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Enum(&["off", "broadband", "spectral"]),
         default: OptionDefault::Str("off"),
         flags: OptionFlags::REPLAN,
+        group: None,
         i18n_key: "twoDSources.phantomLabel",
         help_i18n_key: Some("help.phantomExtract"),
         legacy_control_addr: osc_contract::CONTROL_PHANTOM_EXTRACT,
@@ -347,6 +512,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
                 }
                 RawOptionValue::Bool(false) => PhantomExtractMode::Off,
                 RawOptionValue::Bool(true) => PhantomExtractMode::Broadband,
+                RawOptionValue::Numbers(_) => return None,
             };
             live.phantom_extract_mode = mode;
             Some(mode.as_str().to_string())
@@ -376,6 +542,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         // bank it built every frame and rebuilds the filter bank itself; no
         // synthesized-object topology depends on it.
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "renderer.crossoverTypeLabel",
         help_i18n_key: Some("help.crossoverType"),
         legacy_control_addr: osc_contract::CONTROL_CROSSOVER_TYPE,
@@ -402,6 +569,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         // live value against the bank it built every frame and rebuilds the
         // FIR bank itself when it moves.
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "renderer.crossoverTransitionLabel",
         help_i18n_key: Some("help.crossoverFirTransition"),
         legacy_control_addr: osc_contract::CONTROL_CROSSOVER_FIR_TRANSITION_RATIO,
@@ -431,6 +599,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         // No REPLAN: the lattice only gates a per-block cache in the binaural
         // stage, it does not change any synthesized-object topology.
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "binaural.hrirUpdateLatticeLabel",
         help_i18n_key: Some("help.hrirUpdateLattice"),
         legacy_control_addr: osc_contract::CONTROL_BINAURAL_HRIR_UPDATE_LATTICE,
@@ -465,6 +634,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Bool,
         default: OptionDefault::Bool(crate::config_fields::auto_gain::DEFAULT),
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "autoGain.title",
         help_i18n_key: Some("help.master.autoGain"),
         legacy_control_addr: osc_contract::CONTROL_AUTO_GAIN,
@@ -486,6 +656,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: AUTO_GAIN_CEILING_DB_KIND,
         default: OptionDefault::Float(crate::config_fields::auto_gain_ceiling_db::DEFAULT),
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "autoGain.ceiling",
         help_i18n_key: Some("help.master.ceiling"),
         legacy_control_addr: osc_contract::CONTROL_AUTO_GAIN_CEILING,
@@ -511,6 +682,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Bool,
         default: OptionDefault::Bool(crate::config_fields::use_loudness::DEFAULT),
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "section.loudness",
         help_i18n_key: Some("help.drc.loudness"),
         legacy_control_addr: osc_contract::CONTROL_LOUDNESS,
@@ -534,6 +706,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Enum(&["off", "frame", "interp", "sample"]),
         default: OptionDefault::Str(crate::config_fields::ramp_mode::DEFAULT),
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "audio.rampMode",
         help_i18n_key: None,
         legacy_control_addr: osc_contract::CONTROL_RAMP_MODE,
@@ -562,6 +735,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Str,
         default: OptionDefault::Str("Off"),
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "input.drc",
         help_i18n_key: Some("help.drc.mode"),
         legacy_control_addr: osc_contract::CONTROL_INPUT_DRC_MODE,
@@ -587,6 +761,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         kind: DRC_WEIGHT_KIND,
         default: OptionDefault::Float(1.0),
         flags: OptionFlags::NONE,
+        group: None,
         i18n_key: "input.drc_weight",
         help_i18n_key: Some("help.drc.weight"),
         legacy_control_addr: osc_contract::CONTROL_INPUT_DRC_WEIGHT,
@@ -606,7 +781,117 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
             }
         },
     },
+    // ── Room ────────────────────────────────────────────────────────────
+    //
+    // The room group: the proportions every position is scaled by before
+    // panning. The file stores them in metres (`config_fields::room`); the
+    // dedicated addresses stay as aliases and the snapshot's `roomRatio`
+    // block is still emitted.
+    OptionSpec {
+        key: "room_ratio",
+        kind: ROOM_RATIO_KIND,
+        default: OptionDefault::FloatArray(&[1.0, 2.0, 1.0]),
+        flags: OptionFlags::NONE,
+        group: Some(&ROOM),
+        i18n_key: "room.summary.ratio",
+        help_i18n_key: None,
+        legacy_control_addr: osc_contract::CONTROL_ROOM_RATIO,
+        set: |live, raw| {
+            let ratio = raw_floats::<3>(raw, ROOM_RATIO_KIND)?;
+            live.room_ratio = ratio;
+            Some(format!("{},{},{}", ratio[0], ratio[1], ratio[2]))
+        },
+        get_json: |live| live.room_ratio.as_slice().into(),
+        config_store: |render, live| {
+            crate::config_fields::room::store_ratio(render, live.room_ratio)
+        },
+        // Seeded as configured (not clamped), exactly as the renderer build
+        // reads it; only a client write is bounded. The same holds for the
+        // other room rows.
+        config_seed: |live, render| {
+            if let Some(room) = configured_room(render) {
+                live.room_ratio = room.ratio;
+            }
+        },
+    },
+    OptionSpec {
+        key: "room_ratio_rear",
+        kind: ROOM_EXTENT_KIND,
+        default: OptionDefault::Float(2.0),
+        flags: OptionFlags::NONE,
+        group: Some(&ROOM),
+        i18n_key: "room.axis.rear",
+        help_i18n_key: Some("help.room.rear"),
+        legacy_control_addr: osc_contract::CONTROL_ROOM_RATIO_REAR,
+        set: |live, raw| {
+            let v = raw_float(raw, ROOM_EXTENT_KIND)?;
+            live.room_ratio_rear = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.room_ratio_rear.into(),
+        config_store: |render, live| {
+            crate::config_fields::room::store_rear(render, live.room_ratio_rear)
+        },
+        // An absent rear follows the configured length (`room::parse`).
+        config_seed: |live, render| {
+            if let Some(room) = configured_room(render) {
+                live.room_ratio_rear = room.rear;
+            }
+        },
+    },
+    OptionSpec {
+        key: "room_ratio_lower",
+        kind: ROOM_EXTENT_KIND,
+        default: OptionDefault::Float(crate::config_fields::room::DEFAULT_LOWER),
+        flags: OptionFlags::NONE,
+        group: Some(&ROOM),
+        i18n_key: "room.axis.lower",
+        help_i18n_key: Some("help.room.lower"),
+        legacy_control_addr: osc_contract::CONTROL_ROOM_RATIO_LOWER,
+        set: |live, raw| {
+            let v = raw_float(raw, ROOM_EXTENT_KIND)?;
+            live.room_ratio_lower = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.room_ratio_lower.into(),
+        config_store: |render, live| {
+            crate::config_fields::room::store_lower(render, live.room_ratio_lower)
+        },
+        config_seed: |live, render| {
+            if let Some(room) = configured_room(render) {
+                live.room_ratio_lower = room.lower;
+            }
+        },
+    },
+    OptionSpec {
+        key: "room_ratio_center_blend",
+        kind: ROOM_CENTER_BLEND_KIND,
+        default: OptionDefault::Float(crate::config_fields::room::DEFAULT_CENTER_BLEND),
+        flags: OptionFlags::NONE,
+        group: Some(&ROOM),
+        i18n_key: "room.centerBlend",
+        help_i18n_key: Some("help.room.centerBlend"),
+        legacy_control_addr: osc_contract::CONTROL_ROOM_RATIO_CENTER_BLEND,
+        set: |live, raw| {
+            let v = raw_float(raw, ROOM_CENTER_BLEND_KIND)?;
+            live.room_ratio_center_blend = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.room_ratio_center_blend.into(),
+        config_store: |render, live| {
+            crate::config_fields::room::store_center_blend(render, live.room_ratio_center_blend)
+        },
+        config_seed: |live, render| {
+            if let Some(room) = configured_room(render) {
+                live.room_ratio_center_blend = room.center_blend;
+            }
+        },
+    },
 ];
+
+/// The longest `FloatArray` a row declares (checked by a test), so a default
+/// can be widened on the stack.
+const MAX_ARRAY_LEN: usize = 4;
 
 /// Look an option up by its canonical key (the `/control/option` key argument).
 pub fn find(key: &str) -> Option<&'static OptionSpec> {
@@ -622,34 +907,95 @@ pub struct Applied {
     pub changed: bool,
 }
 
+/// What [`apply_batch`] made of a list of client values.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BatchApplied {
+    /// One entry per input, in order: `None` for a rejected value.
+    pub results: Vec<Option<Applied>>,
+    /// Whether any value changed.
+    pub changed: bool,
+    /// The one rebuild the changed options ask the engine for, merged over
+    /// their groups' effects. `Rebuild::None` when nothing changed.
+    pub rebuild: Rebuild,
+}
+
+/// The rebuild a changed option asks for, from its group.
+fn rebuild_for(spec: &OptionSpec) -> Rebuild {
+    match spec.group.map(|group| group.effect) {
+        Some(ApplyEffect::Topology) => Rebuild::Topology,
+        Some(ApplyEffect::Evaluation) => Rebuild::Evaluation,
+        Some(ApplyEffect::None | ApplyEffect::Replan) | None => Rebuild::None,
+    }
+}
+
+/// Whether a changed option re-plans the synthesized-object stages.
+fn replans(spec: &OptionSpec) -> bool {
+    spec.flags.contains(OptionFlags::REPLAN)
+        || spec
+            .group
+            .is_some_and(|group| group.effect == ApplyEffect::Replan)
+}
+
 /// Apply a client value to a control's live params through `spec`: validate +
 /// set, and — only when the option **actually changed value** — mark the
-/// config dirty and bump the replan epoch of a `REPLAN`-flagged option. A
+/// config dirty and bump the replan epoch of a re-planning option. A
 /// redundant re-send (Studio reconnecting, a client echoing state back) must
 /// neither light the Save button nor force a re-plan, which can carry an
 /// audible re-prime transient. Returns `None` when the value was rejected.
 ///
-/// Client notification stays with the transport layer (the OSC dispatcher),
-/// which alone knows the subscriber list.
+/// A rebuild the option's group asks for is the caller's to trigger; use
+/// [`apply_batch`] to learn it. Client notification stays with the transport
+/// layer (the OSC dispatcher), which alone knows the subscriber list.
 pub fn apply_to_control(
     control: &crate::live_params::RendererControl,
     spec: &OptionSpec,
     raw: &RawOptionValue,
 ) -> Option<Applied> {
-    let (canonical, changed) = {
-        let mut live = control.live.write();
-        let before = (spec.get_json)(&live);
-        let canonical = (spec.set)(&mut live, raw)?;
-        let changed = (spec.get_json)(&live) != before;
-        (canonical, changed)
+    apply_batch(control, &[(spec, *raw)])
+        .results
+        .pop()
+        .flatten()
+}
+
+/// Apply several client values at once: all of them under one write lock, so
+/// neither the audio thread nor a rebuild ever sees half of the batch; then,
+/// if anything changed, one dirty mark, at most one replan-epoch bump, and one
+/// merged [`Rebuild`] for the caller to trigger. A rejected value is skipped
+/// (and reported as `None`); the others still apply. A later entry for the
+/// same key wins.
+pub fn apply_batch(
+    control: &crate::live_params::RendererControl,
+    items: &[(&OptionSpec, RawOptionValue)],
+) -> BatchApplied {
+    let mut batch = BatchApplied {
+        results: Vec::with_capacity(items.len()),
+        ..BatchApplied::default()
     };
-    if changed {
+    let mut replan = false;
+    {
+        let mut live = control.live.write();
+        for (spec, raw) in items {
+            let before = (spec.get_json)(&live);
+            let Some(canonical) = (spec.set)(&mut live, raw) else {
+                batch.results.push(None);
+                continue;
+            };
+            let changed = (spec.get_json)(&live) != before;
+            if changed {
+                batch.changed = true;
+                batch.rebuild = batch.rebuild.max(rebuild_for(spec));
+                replan |= replans(spec);
+            }
+            batch.results.push(Some(Applied { canonical, changed }));
+        }
+    }
+    if batch.changed {
         control.mark_dirty();
-        if spec.flags.contains(OptionFlags::REPLAN) {
+        if replan {
             control.bump_options_epoch();
         }
     }
-    Some(Applied { canonical, changed })
+    batch
 }
 
 /// Look an option up by its pre-registry dedicated control address.
@@ -668,10 +1014,18 @@ pub fn find_by_legacy_addr(addr: &str) -> Option<&'static OptionSpec> {
 /// as absent (the skip-if-default persist convention).
 pub fn reset_live_to_defaults(live: &mut LiveParams) {
     for spec in LIVE_OPTIONS {
+        let mut numbers = [0.0f64; MAX_ARRAY_LEN];
         let raw = match spec.default {
             OptionDefault::Bool(b) => RawOptionValue::Bool(b),
             OptionDefault::Str(s) => RawOptionValue::Str(s),
             OptionDefault::Float(f) => RawOptionValue::Number(f as f64),
+            OptionDefault::FloatArray(values) => {
+                let len = values.len().min(MAX_ARRAY_LEN);
+                for (slot, value) in numbers.iter_mut().zip(values) {
+                    *slot = *value as f64;
+                }
+                RawOptionValue::Numbers(&numbers[..len])
+            }
         };
         if (spec.set)(live, &raw).is_none() {
             // A spec whose default fails its own validation is a registry bug.
@@ -789,6 +1143,7 @@ pub fn schema_json() -> String {
                 OptionKind::Enum(values) => ("enum", Some(values)),
                 OptionKind::Str => ("string", None),
                 OptionKind::Float { .. } => ("float", None),
+                OptionKind::FloatArray { .. } => ("float_array", None),
             };
             let mut flags = Vec::new();
             if spec.flags.contains(OptionFlags::REPLAN) {
@@ -804,10 +1159,32 @@ pub fn schema_json() -> String {
             if let Some(values) = values {
                 obj["values"] = values.into();
             }
-            if let OptionKind::Float { min, max, step } = spec.kind {
-                obj["min"] = min.into();
-                obj["max"] = max.into();
-                obj["step"] = step.into();
+            match spec.kind {
+                OptionKind::Float { min, max, step } => {
+                    obj["min"] = min.into();
+                    obj["max"] = max.into();
+                    obj["step"] = step.into();
+                }
+                OptionKind::FloatArray {
+                    len,
+                    min,
+                    max,
+                    step,
+                } => {
+                    obj["len"] = len.into();
+                    obj["min"] = min.into();
+                    obj["max"] = max.into();
+                    obj["step"] = step.into();
+                }
+                _ => {}
+            }
+            if let Some(group) = spec.group {
+                obj["group"] = serde_json::json!({
+                    "key": group.key,
+                    "mode": group.mode.as_str(),
+                    "effect": group.effect.as_str(),
+                    "i18nKey": group.i18n_key,
+                });
             }
             if let Some(help) = spec.help_i18n_key {
                 obj["helpI18nKey"] = help.into();
@@ -881,6 +1258,90 @@ mod tests {
     }
 
     #[test]
+    fn float_arrays_take_exactly_their_length_and_are_bounded() {
+        let kind = ROOM_RATIO_KIND;
+        assert_eq!(
+            raw_floats::<3>(&RawOptionValue::Numbers(&[1.0, 500.0, 0.0]), kind),
+            Some([1.0, 100.0, crate::config_fields::room::MIN_RATIO])
+        );
+        assert_eq!(
+            raw_floats::<3>(&RawOptionValue::Numbers(&[1.0, 2.0]), kind),
+            None
+        );
+        assert_eq!(
+            raw_floats::<3>(&RawOptionValue::Numbers(&[1.0, f64::NAN, 1.0]), kind),
+            None
+        );
+        assert_eq!(raw_floats::<3>(&RawOptionValue::Number(1.0), kind), None);
+        // No scalar kind takes an array.
+        assert_eq!(raw_float(&RawOptionValue::Numbers(&[1.0]), kind), None);
+        assert_eq!(raw_bool(&RawOptionValue::Numbers(&[1.0])), None);
+    }
+
+    #[test]
+    fn array_rows_fit_the_reset_buffer_and_their_defaults_match_their_kind() {
+        for spec in LIVE_OPTIONS {
+            let OptionKind::FloatArray { len, min, max, .. } = spec.kind else {
+                continue;
+            };
+            assert!(len <= MAX_ARRAY_LEN, "{}: raise MAX_ARRAY_LEN", spec.key);
+            assert_eq!(spec.kind.arity(), len);
+            let OptionDefault::FloatArray(values) = spec.default else {
+                panic!("{}: an array option needs an array default", spec.key);
+            };
+            assert_eq!(values.len(), len, "{}: default length", spec.key);
+            assert!(
+                values.iter().all(|v| (min..=max).contains(v)),
+                "{}: default out of bounds",
+                spec.key
+            );
+        }
+    }
+
+    #[test]
+    fn every_group_is_listed_and_every_listed_group_has_members() {
+        let listed = |group: &OptionGroup| OPTION_GROUPS.iter().any(|g| std::ptr::eq(*g, group));
+        for spec in LIVE_OPTIONS {
+            if let Some(group) = spec.group {
+                assert!(
+                    listed(group),
+                    "{}: group {} not listed",
+                    spec.key,
+                    group.key
+                );
+            }
+        }
+        let mut keys = std::collections::HashSet::new();
+        for group in OPTION_GROUPS {
+            assert!(keys.insert(group.key), "duplicate group {}", group.key);
+            assert!(
+                LIVE_OPTIONS
+                    .iter()
+                    .any(|spec| spec.group.is_some_and(|g| std::ptr::eq(g, *group))),
+                "group {} has no member",
+                group.key
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_merges_the_widest_rebuild_of_what_changed() {
+        assert_eq!(Rebuild::None.max(Rebuild::Evaluation), Rebuild::Evaluation);
+        assert_eq!(
+            Rebuild::Topology.max(Rebuild::Evaluation),
+            Rebuild::Topology
+        );
+        let room = find("room_ratio_rear").expect("registered");
+        assert_eq!(rebuild_for(room), Rebuild::Topology);
+        assert_eq!(
+            rebuild_for(find("ramp_mode").expect("registered")),
+            Rebuild::None
+        );
+        assert!(replans(find("surround_placement").expect("registered")));
+        assert!(!replans(room));
+    }
+
+    #[test]
     fn schema_json_parses_and_covers_every_spec() {
         let schema: serde_json::Value =
             serde_json::from_str(&schema_json()).expect("schema is valid JSON");
@@ -893,6 +1354,17 @@ mod tests {
             assert!(entry["flags"].is_array());
             if matches!(spec.kind, OptionKind::Enum(_)) {
                 assert!(entry["values"].is_array(), "{}: missing values", spec.key);
+            }
+            if let OptionKind::FloatArray { len, .. } = spec.kind {
+                assert_eq!(entry["len"], len, "{}", spec.key);
+            }
+            match spec.group {
+                Some(group) => {
+                    assert_eq!(entry["group"]["key"], group.key, "{}", spec.key);
+                    assert_eq!(entry["group"]["mode"], group.mode.as_str());
+                    assert_eq!(entry["group"]["effect"], group.effect.as_str());
+                }
+                None => assert!(entry.get("group").is_none(), "{}", spec.key),
             }
         }
     }

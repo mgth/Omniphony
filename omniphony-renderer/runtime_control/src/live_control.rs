@@ -29,18 +29,23 @@ pub fn apply_live_control(msg: &OscMessage, ctx: &RuntimeControlContext) -> Opti
     // heard, so they reach config.yaml through the Save button only
     // (docs/persistence-policy.md); a handoff to another renderer instance
     // carries them unsaved in the live-handoff sidecar.
-    if addr == osc_contract::CONTROL_OPTION {
-        let Some(OscType::String(key)) = msg.args.first() else {
+    //
+    // `/control/options [key, value, key, value, …]` writes several at once:
+    // one lock, one rebuild, one notification (`renderer::options` groups).
+    if addr == osc_contract::CONTROL_OPTION || addr == osc_contract::CONTROL_OPTIONS {
+        // `/control/option` takes one pair; anything after it is ignored.
+        let single = addr == osc_contract::CONTROL_OPTION;
+        let Some(pairs) = parse_option_pairs(&msg.args, single) else {
             return Some(ControlEffects::default());
         };
-        let Some(spec) = renderer::options::find(key) else {
-            log::warn!("OSC option: unknown key '{}'", key);
-            return Some(ControlEffects::default());
-        };
-        return Some(apply_option(ctx, spec, msg.args.get(1)));
+        return Some(apply_options(ctx, &pairs));
     }
     if let Some(spec) = renderer::options::find_by_legacy_addr(addr) {
-        return Some(apply_option(ctx, spec, msg.args.first()));
+        let Some(value) = msg.args.get(..spec.kind.arity()) else {
+            log::warn!("OSC option {}: missing value", spec.key);
+            return Some(ControlEffects::default());
+        };
+        return Some(apply_options(ctx, &[(spec, value)]));
     }
 
     // Monitoring cadences live on RendererControl (the source of truth): both
@@ -122,51 +127,154 @@ pub fn apply_live_control(msg: &OscMessage, ctx: &RuntimeControlContext) -> Opti
     None
 }
 
-/// Map a client-supplied OSC argument onto the registry's transport-agnostic
-/// raw value. `None` for shapes no option accepts (blobs, arrays, …).
-fn raw_option_value(arg: Option<&OscType>) -> Option<renderer::options::RawOptionValue<'_>> {
-    use renderer::options::RawOptionValue;
-    match arg? {
-        OscType::String(s) => Some(RawOptionValue::Str(s)),
-        OscType::Int(i) => Some(RawOptionValue::Number(*i as f64)),
-        OscType::Long(l) => Some(RawOptionValue::Number(*l as f64)),
-        OscType::Float(f) => Some(RawOptionValue::Number(*f as f64)),
-        OscType::Double(d) => Some(RawOptionValue::Number(*d)),
-        OscType::Bool(b) => Some(RawOptionValue::Bool(*b)),
+/// Split `[key, value, key, value, …]` into (option, value arguments) pairs,
+/// each value as many arguments as its option's kind takes; only the first
+/// pair when `single`. `None` — the whole message dropped — on an unknown
+/// key or a truncated value: past either, where the next key starts is
+/// unknowable.
+fn parse_option_pairs(
+    args: &[OscType],
+    single: bool,
+) -> Option<Vec<(&'static renderer::options::OptionSpec, &[OscType])>> {
+    let mut pairs = Vec::new();
+    let mut rest = args;
+    while let Some((key, tail)) = rest.split_first() {
+        let OscType::String(key) = key else {
+            log::warn!("OSC options: expected a key, got {key:?}");
+            return None;
+        };
+        let Some(spec) = renderer::options::find(key) else {
+            log::warn!("OSC option: unknown key '{}'", key);
+            return None;
+        };
+        let arity = spec.kind.arity();
+        if tail.len() < arity {
+            log::warn!("OSC option {}: missing value", spec.key);
+            return None;
+        }
+        let (value, next) = tail.split_at(arity);
+        pairs.push((spec, value));
+        if single {
+            break;
+        }
+        rest = next;
+    }
+    if pairs.is_empty() {
+        log::warn!("OSC options: no key");
+        return None;
+    }
+    Some(pairs)
+}
+
+/// A client value in the owned shape [`RawOptionValue`] borrows from: the
+/// numbers of an array option are collected here first.
+///
+/// [`RawOptionValue`]: renderer::options::RawOptionValue
+enum WireValue<'a> {
+    Scalar(renderer::options::RawOptionValue<'a>),
+    Numbers(Vec<f64>),
+    Invalid,
+}
+
+impl<'a> WireValue<'a> {
+    /// Map the OSC arguments of one value onto the registry's
+    /// transport-agnostic raw value. A shape no option accepts (blobs, arrays,
+    /// a non-number inside an array value, …) is `Invalid`.
+    fn from_args(kind: renderer::options::OptionKind, args: &'a [OscType]) -> Self {
+        use renderer::options::{OptionKind, RawOptionValue};
+        if let OptionKind::FloatArray { .. } = kind {
+            let numbers: Option<Vec<f64>> = args.iter().map(number).collect();
+            return numbers.map_or(Self::Invalid, Self::Numbers);
+        }
+        let raw = match args.first() {
+            Some(OscType::String(s)) => RawOptionValue::Str(s),
+            Some(OscType::Bool(b)) => RawOptionValue::Bool(*b),
+            Some(other) => match number(other) {
+                Some(n) => RawOptionValue::Number(n),
+                None => return Self::Invalid,
+            },
+            None => return Self::Invalid,
+        };
+        Self::Scalar(raw)
+    }
+
+    fn raw(&self) -> Option<renderer::options::RawOptionValue<'_>> {
+        match self {
+            Self::Scalar(raw) => Some(*raw),
+            Self::Numbers(values) => Some(renderer::options::RawOptionValue::Numbers(values)),
+            Self::Invalid => None,
+        }
+    }
+}
+
+fn number(arg: &OscType) -> Option<f64> {
+    match arg {
+        OscType::Int(i) => Some(*i as f64),
+        OscType::Long(l) => Some(*l as f64),
+        OscType::Float(f) => Some(*f as f64),
+        OscType::Double(d) => Some(*d),
         _ => None,
     }
 }
 
-/// Registry-driven application of a declared live option: validate + apply via
-/// `options::apply_to_control` (which marks dirty and bumps the replan epoch
-/// on a real change), then ask for a live-state bundle. Invalid values are
-/// dropped with a warning, per the OSC contract.
+/// Registry-driven application of declared live options: validate + apply
+/// them together via `options::apply_batch` (which marks dirty and bumps the
+/// replan epoch on a real change), ask for the one rebuild their groups
+/// need, then for a live-state bundle. Invalid values are dropped with a
+/// warning, per the OSC contract; the rest of the message still applies.
 ///
 /// The bundle goes out with the acknowledgement: without it a client that did
 /// not send the message never learns the value moved, and the one that did
 /// never learns what the setter made of it — an option clamped on arrival
 /// would keep displaying the number the user typed.
-fn apply_option(
+fn apply_options(
     ctx: &RuntimeControlContext,
-    spec: &'static renderer::options::OptionSpec,
-    arg: Option<&OscType>,
+    pairs: &[(&'static renderer::options::OptionSpec, &[OscType])],
 ) -> ControlEffects {
-    let Some(applied) = raw_option_value(arg)
-        .and_then(|raw| renderer::options::apply_to_control(&ctx.renderer, spec, &raw))
-    else {
-        log::warn!("OSC option {}: rejected value", spec.key);
+    use renderer::options::Rebuild;
+    let values: Vec<WireValue> = pairs
+        .iter()
+        .map(|(spec, args)| WireValue::from_args(spec.kind, args))
+        .collect();
+    let mut items = Vec::with_capacity(pairs.len());
+    for ((spec, _), value) in pairs.iter().zip(&values) {
+        match value.raw() {
+            Some(raw) => items.push((*spec, raw)),
+            None => log::warn!("OSC option {}: rejected value", spec.key),
+        }
+    }
+    if items.is_empty() {
         return ControlEffects::default();
-    };
-    if !applied.changed {
+    }
+    let batch = renderer::options::apply_batch(&ctx.renderer, &items);
+    let mut applied = Vec::new();
+    for ((spec, _), result) in items.iter().zip(&batch.results) {
+        match result {
+            Some(result) if result.changed => {
+                applied.push(format!("{} set to '{}'", spec.key, result.canonical));
+            }
+            Some(_) => {}
+            None => log::warn!("OSC option {}: rejected value", spec.key),
+        }
+    }
+    if !batch.changed {
+        if batch.results.iter().all(Option::is_none) {
+            return ControlEffects::default();
+        }
         // Still published: a value clamped back onto the current one must
         // reach the client that typed it.
         return ControlEffects::transient(Notify::Snapshot);
     }
     let mut effects = ControlEffects::dirty(Notify::Snapshot);
-    effects.log_message = Some(format!(
-        "OSC option {} set to '{}'",
-        spec.key, applied.canonical
-    ));
+    effects.log_message = Some(format!("OSC option {}", applied.join(", ")));
+    match batch.rebuild {
+        Rebuild::None => {}
+        Rebuild::Evaluation => {
+            effects.trigger_layout_recompute = true;
+            effects.evaluation_only = true;
+        }
+        Rebuild::Topology => effects.trigger_layout_recompute = true,
+    }
     effects
 }
 
@@ -282,6 +390,184 @@ mod tests {
             addr: addr.to_string(),
             args,
         }
+    }
+
+    fn room(ctx: &RuntimeControlContext) -> ([f32; 3], f32, f32, f32) {
+        let live = ctx.renderer.live.read();
+        (
+            live.room_ratio,
+            live.room_ratio_rear,
+            live.room_ratio_lower,
+            live.room_ratio_center_blend,
+        )
+    }
+
+    fn s(v: &str) -> OscType {
+        OscType::String(v.into())
+    }
+
+    /// The whole room in one message: every key applied before anything is
+    /// rebuilt, and one topology rebuild for all of them.
+    #[test]
+    fn a_grouped_room_write_is_one_topology_rebuild() {
+        let ctx = ctx();
+        let write = msg(
+            osc_contract::CONTROL_OPTIONS,
+            vec![
+                s("room_ratio"),
+                OscType::Float(1.0),
+                OscType::Float(3.0),
+                OscType::Int(2),
+                s("room_ratio_rear"),
+                OscType::Double(2.5),
+                s("room_ratio_center_blend"),
+                OscType::Float(0.25),
+            ],
+        );
+        let effects = apply_live_control(&write, &ctx).expect("handled");
+        assert!(effects.mark_dirty);
+        assert_eq!(effects.notify, Notify::Snapshot);
+        assert!(effects.trigger_layout_recompute);
+        assert!(!effects.evaluation_only, "the room moves the geometry");
+        let (ratio, rear, _, blend) = room(&ctx);
+        assert_eq!(ratio, [1.0, 3.0, 2.0]);
+        assert_eq!(rear, 2.5);
+        assert_eq!(blend, 0.25);
+
+        // The same message again changes nothing: no rebuild, no Save.
+        let again = apply_live_control(&write, &ctx).expect("handled");
+        assert!(!again.mark_dirty);
+        assert!(!again.trigger_layout_recompute);
+        assert!(again.publish_only, "still acknowledged");
+    }
+
+    /// The pre-registry room addresses are exact aliases, and an unchanged
+    /// value no longer rebuilds the topology (Studio re-sends all four on
+    /// every edit).
+    #[test]
+    fn the_legacy_room_addresses_are_aliases() {
+        let ctx = ctx();
+        let before = room(&ctx);
+        let fff = msg(
+            osc_contract::CONTROL_ROOM_RATIO,
+            vec![
+                OscType::Float(before.0[0]),
+                OscType::Float(before.0[1]),
+                OscType::Float(before.0[2]),
+            ],
+        );
+        let effects = apply_live_control(&fff, &ctx).expect("handled");
+        assert!(!effects.trigger_layout_recompute, "unchanged: no rebuild");
+
+        let rear = msg(
+            osc_contract::CONTROL_ROOM_RATIO_REAR,
+            vec![OscType::Float(before.1 + 1.0)],
+        );
+        let effects = apply_live_control(&rear, &ctx).expect("handled");
+        assert!(effects.mark_dirty && effects.trigger_layout_recompute);
+        assert_eq!(room(&ctx).1, before.1 + 1.0);
+
+        // The old handlers' bounds: rear/lower floored, the blend clamped.
+        let lower = msg(
+            osc_contract::CONTROL_ROOM_RATIO_LOWER,
+            vec![OscType::Float(-1.0)],
+        );
+        apply_live_control(&lower, &ctx).expect("handled");
+        assert_eq!(room(&ctx).2, 0.01);
+        let blend = msg(
+            osc_contract::CONTROL_ROOM_RATIO_CENTER_BLEND,
+            vec![OscType::Float(3.0)],
+        );
+        apply_live_control(&blend, &ctx).expect("handled");
+        assert_eq!(room(&ctx).3, 1.0);
+
+        // A short ratio is dropped, as before.
+        let short = msg(osc_contract::CONTROL_ROOM_RATIO, vec![OscType::Float(1.0)]);
+        let effects = apply_live_control(&short, &ctx).expect("handled");
+        assert!(!effects.mark_dirty && !effects.publish_only);
+    }
+
+    /// Past an unknown key or a truncated value, where the next key starts is
+    /// unknowable: the whole message is dropped. An invalid value only drops
+    /// its own pair.
+    #[test]
+    fn a_grouped_write_is_parsed_whole_before_anything_applies() {
+        let ctx = ctx();
+        let before = room(&ctx);
+        for args in [
+            vec![
+                s("room_ratio_rear"),
+                OscType::Float(3.0),
+                s("no_such_option"),
+                OscType::Int(1),
+            ],
+            vec![
+                s("room_ratio_rear"),
+                OscType::Float(3.0),
+                s("room_ratio"),
+                OscType::Float(1.0),
+            ],
+            vec![OscType::Float(3.0)],
+            vec![],
+        ] {
+            let effects =
+                apply_live_control(&msg(osc_contract::CONTROL_OPTIONS, args.clone()), &ctx)
+                    .expect("handled");
+            assert!(!effects.mark_dirty, "{args:?}");
+            assert_eq!(room(&ctx), before, "{args:?}: nothing may apply");
+        }
+
+        let effects = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTIONS,
+                vec![
+                    s("room_ratio"),
+                    s("wide"),
+                    OscType::Float(1.0),
+                    OscType::Float(1.0),
+                    s("room_ratio_lower"),
+                    OscType::Float(0.75),
+                ],
+            ),
+            &ctx,
+        )
+        .expect("handled");
+        assert!(effects.mark_dirty);
+        assert_eq!(room(&ctx).0, before.0, "the invalid ratio is dropped");
+        assert_eq!(room(&ctx).2, 0.75, "its neighbour still applies");
+    }
+
+    /// Options with no group effect ride the same batch without a rebuild,
+    /// and the single-pair form keeps ignoring trailing arguments.
+    #[test]
+    fn ungrouped_options_batch_without_a_rebuild() {
+        let ctx = ctx();
+        let effects = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTIONS,
+                vec![
+                    s("ramp_mode"),
+                    s("interp"),
+                    s("auto_gain"),
+                    OscType::Bool(true),
+                ],
+            ),
+            &ctx,
+        )
+        .expect("handled");
+        assert!(effects.mark_dirty);
+        assert!(!effects.trigger_layout_recompute);
+        assert!(ctx.renderer.live.read().auto_gain);
+
+        let effects = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTION,
+                vec![s("use_loudness"), OscType::Int(1), s("ignored")],
+            ),
+            &ctx,
+        )
+        .expect("handled");
+        assert!(effects.mark_dirty);
     }
 
     #[test]

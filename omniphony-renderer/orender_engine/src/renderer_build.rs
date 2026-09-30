@@ -26,8 +26,9 @@ pub enum EvalMode {
 
 /// Room proportions (`width,length,height`) when neither the config nor a flag
 /// sets `room_ratio`. Shared by the config resolution below and the CLI's
-/// `--room-ratio` default so the two cannot drift.
-pub const DEFAULT_ROOM_RATIO: &str = "1.0,2.0,1.0";
+/// `--room-ratio` default so the two cannot drift; declared with the rest of
+/// the room's config reading in `renderer::config_fields::room`.
+pub const DEFAULT_ROOM_RATIO: &str = renderer::config_fields::room::DEFAULT_RATIO;
 
 /// Parse a configured evaluation table mode (`render.render_evaluation_mode`)
 /// into the precomputed-table choice, or `None` for anything else (`auto`,
@@ -181,40 +182,17 @@ impl SpatialRendererParams {
     }
 }
 
+/// The room `params` describe, read by the same rule as the live seed
+/// (`renderer::config_fields::room`).
 fn parse_room_ratio(params: &SpatialRendererParams) -> Result<([f32; 3], f32, f32, f32)> {
-    let parts: Vec<&str> = params.room_ratio.split(',').collect();
-    if parts.len() != 3 {
-        bail!(
-            "Invalid room-ratio format '{}'. Expected 'width,length,height' (e.g., '1.0,2.0,0.5')",
-            params.room_ratio
-        );
-    }
-    let room_ratio = [
-        parts[0]
-            .trim()
-            .parse::<f32>()
-            .map_err(|_| anyhow!("Invalid room-ratio width: '{}'", parts[0]))?,
-        parts[1]
-            .trim()
-            .parse::<f32>()
-            .map_err(|_| anyhow!("Invalid room-ratio length: '{}'", parts[1]))?,
-        parts[2]
-            .trim()
-            .parse::<f32>()
-            .map_err(|_| anyhow!("Invalid room-ratio height: '{}'", parts[2]))?,
-    ];
-    let room_ratio_rear = params.room_ratio_rear.unwrap_or(room_ratio[1]).max(0.01);
-    let room_ratio_lower = params.room_ratio_lower.unwrap_or(0.5).max(0.01);
-    let room_ratio_center_blend = params
-        .room_ratio_center_blend
-        .unwrap_or(0.5)
-        .clamp(0.0, 1.0);
-    Ok((
-        room_ratio,
-        room_ratio_rear,
-        room_ratio_lower,
-        room_ratio_center_blend,
-    ))
+    let room = renderer::config_fields::room::parse(
+        &params.room_ratio,
+        params.room_ratio_rear,
+        params.room_ratio_lower,
+        params.room_ratio_center_blend,
+    )
+    .map_err(|e| anyhow!(e))?;
+    Ok((room.ratio, room.rear, room.lower, room.center_blend))
 }
 
 fn resolve_evaluation_table_mode(
@@ -973,8 +951,9 @@ pub fn apply_render_config_live(
     render_cfg: &RenderConfig,
 ) -> Result<()> {
     let params = SpatialRendererParams::from_render_config(Some(render_cfg));
-    let (room_ratio, room_ratio_rear, room_ratio_lower, room_ratio_center_blend) =
-        parse_room_ratio(&params)?;
+    // A malformed room fails the switch, as it fails a build; the room
+    // itself is a declared option, reset and seeded with the others below.
+    parse_room_ratio(&params)?;
     let distance_model = DistanceModel::from_str(&params.vbap_distance_model)
         .map_err(|e| anyhow!("Invalid distance model: {}", e))?;
     // Boot-parity quantization of the polar grid: construction converts the
@@ -1036,10 +1015,6 @@ pub fn apply_render_config_live(
         live.use_distance_diffuse = params.distance_diffuse;
         live.distance_diffuse_threshold = params.distance_diffuse_threshold;
         live.distance_diffuse_curve = params.distance_diffuse_curve;
-        live.room_ratio = room_ratio;
-        live.room_ratio_rear = room_ratio_rear;
-        live.room_ratio_lower = room_ratio_lower;
-        live.room_ratio_center_blend = room_ratio_center_blend;
         // Spread fallbacks (used when the vbap param bag has no entry) —
         // construction seeds these from the same params.
         live.spread_min = params.vbap_spread_min;

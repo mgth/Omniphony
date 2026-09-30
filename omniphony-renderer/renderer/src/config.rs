@@ -647,21 +647,47 @@ impl RenderConfig {
     /// unchanged. Width is the reference: `radius = Width/2` (so width ratio is
     /// always 1). A no-op when the metre fields are absent (legacy config).
     pub fn normalize_room_meters(&mut self) {
-        let Some(width_m) = self.room_width_m else {
+        let Some(derived) = self.room_ratios_from_meters() else {
             return;
         };
+        self.room_ratio = Some(derived.ratio);
+        self.room_ratio_rear = Some(derived.rear);
+        self.room_ratio_lower = Some(derived.lower);
+        if let Some(layout) = self.current_layout.as_mut() {
+            layout.radius_m = derived.radius;
+        }
+    }
+
+    /// The ratio keys and layout radius the metre fields stand for, without
+    /// writing them (see [`Self::normalize_room_meters`]). `None` when the
+    /// room is not stored in metres.
+    pub fn room_ratios_from_meters(&self) -> Option<RoomFromMeters> {
+        let width_m = self.room_width_m?;
         let radius = (width_m / 2.0).max(0.01);
         let front = self.room_front_m.unwrap_or(2.0 * radius).max(0.0);
         let rear = self.room_rear_m.unwrap_or(radius).max(0.0);
         let height = self.room_height_m.unwrap_or(radius).max(0.0);
         let lower = self.room_lower_m.unwrap_or(0.5 * radius).max(0.0);
-        self.room_ratio = Some(format!("1.0,{:.6},{:.6}", front / radius, height / radius));
-        self.room_ratio_rear = Some((rear / radius).max(0.01));
-        self.room_ratio_lower = Some((lower / radius).max(0.01));
-        if let Some(layout) = self.current_layout.as_mut() {
-            layout.radius_m = radius;
-        }
+        Some(RoomFromMeters {
+            ratio: format!("1.0,{:.6},{:.6}", front / radius, height / radius),
+            rear: (rear / radius).max(0.01),
+            lower: (lower / radius).max(0.01),
+            radius,
+        })
     }
+}
+
+/// The renderer-facing room derived from the metre fields
+/// ([`RenderConfig::room_ratios_from_meters`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoomFromMeters {
+    /// The `room_ratio` string (`"1.0,length,height"`, six decimals — the
+    /// width is the reference).
+    pub ratio: String,
+    pub rear: f32,
+    pub lower: f32,
+    /// The layout radius: half the width.
+    pub radius: f32,
 }
 
 /// Outcome of resolving a config file, for diagnostics (see [`Config::load_status`]).

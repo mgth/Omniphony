@@ -460,6 +460,141 @@ pub mod hrir_update_lattice {
     }
 }
 
+/// Room proportions (`render.room_*`). Bespoke: the file stores metres
+/// (`room_width_m` … `room_lower_m`, with width as the reference and the
+/// layout radius as the scale) while the renderer works in ratios, and the
+/// legacy ratio keys (`room_ratio` as a `"w,l,h"` string, `room_ratio_rear`,
+/// `room_ratio_lower`) are still read. `room_ratio_center_blend` is stored as
+/// is.
+///
+/// [`resolve`] is the one reading of a render section into ratios: the
+/// renderer construction, the live seed and the profile switch all go through
+/// it, so they cannot disagree on a default (rear falls back to the length,
+/// lower and the centre blend to one half).
+pub mod room {
+    use super::RenderConfig;
+
+    /// `width,length,height` when the config sets no room.
+    pub const DEFAULT_RATIO: &str = "1.0,2.0,1.0";
+    /// Lower extent when the config sets none.
+    pub const DEFAULT_LOWER: f32 = 0.5;
+    /// Front/rear depth-scale blend at the listener when the config sets none.
+    pub const DEFAULT_CENTER_BLEND: f32 = 0.5;
+    /// Floor of the rear and lower ratios as read from a config.
+    pub const MIN_RATIO: f32 = omniphony_geometry::f32::MIN_ROOM_RATIO;
+
+    /// A room as the renderer consumes it.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Room {
+        /// `[width, length (front), height]`.
+        pub ratio: [f32; 3],
+        pub rear: f32,
+        pub lower: f32,
+        pub center_blend: f32,
+    }
+
+    /// Read a room from its ratio representation: a `"w,l,h"` string and the
+    /// optional rear / lower / centre-blend values. An absent rear follows the
+    /// length. `Err` names the malformed part of the string.
+    pub fn parse(
+        ratio: &str,
+        rear: Option<f32>,
+        lower: Option<f32>,
+        center_blend: Option<f32>,
+    ) -> Result<Room, String> {
+        let parts: Vec<&str> = ratio.split(',').collect();
+        if parts.len() != 3 {
+            return Err(format!(
+                "Invalid room-ratio format '{ratio}'. Expected 'width,length,height' (e.g., '1.0,2.0,0.5')"
+            ));
+        }
+        let axis = |index: usize, name: &str| {
+            parts[index]
+                .trim()
+                .parse::<f32>()
+                .map_err(|_| format!("Invalid room-ratio {name}: '{}'", parts[index]))
+        };
+        let ratio = [axis(0, "width")?, axis(1, "length")?, axis(2, "height")?];
+        Ok(Room {
+            ratio,
+            rear: rear.unwrap_or(ratio[1]).max(MIN_RATIO),
+            lower: lower.unwrap_or(DEFAULT_LOWER).max(MIN_RATIO),
+            center_blend: center_blend.unwrap_or(DEFAULT_CENTER_BLEND).clamp(0.0, 1.0),
+        })
+    }
+
+    /// The room a render section describes. `Config::load` derives the ratio
+    /// keys from the metres, and a host's explicit ratio overrides land on
+    /// those keys, so they win; the metres are read directly only for a
+    /// section that never went through a load (a save being read back in
+    /// memory).
+    pub fn resolve(cfg: &RenderConfig) -> Result<Room, String> {
+        if cfg.room_ratio.is_none()
+            && let Some(derived) = cfg.room_ratios_from_meters()
+        {
+            return parse(
+                &derived.ratio,
+                Some(derived.rear),
+                Some(derived.lower),
+                cfg.room_ratio_center_blend,
+            );
+        }
+        parse(
+            cfg.room_ratio.as_deref().unwrap_or(DEFAULT_RATIO),
+            cfg.room_ratio_rear,
+            cfg.room_ratio_lower,
+            cfg.room_ratio_center_blend,
+        )
+    }
+
+    /// The room scale the metres are written against: the radius of the
+    /// layout stored in the same section (stored before the room, see
+    /// `runtime_control::persist`), 1 without one.
+    fn radius(cfg: &RenderConfig) -> f32 {
+        cfg.current_layout
+            .as_ref()
+            .map(|layout| layout.radius_m)
+            .unwrap_or(1.0)
+    }
+
+    #[inline]
+    fn round6(v: f32) -> f32 {
+        (v * 1_000_000.0).round() / 1_000_000.0
+    }
+
+    // Stored in metres: width is the reference and the room scale is
+    // Width/2 = the layout radius, so metres = ratio × radius (× 2 for the
+    // width). Each store drops its legacy ratio key; `Config::load` re-derives
+    // the ratios from the metres.
+
+    /// Store `[width, length, height]` as `room_width_m` / `room_front_m` /
+    /// `room_height_m`.
+    pub fn store_ratio(cfg: &mut RenderConfig, [w, l, h]: [f32; 3]) {
+        let radius = radius(cfg);
+        cfg.room_width_m = Some(round6(w * radius * 2.0));
+        cfg.room_front_m = Some(round6(l * radius));
+        cfg.room_height_m = Some(round6(h * radius));
+        cfg.room_ratio = None;
+    }
+
+    /// Store the rear ratio as `room_rear_m`.
+    pub fn store_rear(cfg: &mut RenderConfig, rear: f32) {
+        cfg.room_rear_m = Some(round6(rear * radius(cfg)));
+        cfg.room_ratio_rear = None;
+    }
+
+    /// Store the lower ratio as `room_lower_m`.
+    pub fn store_lower(cfg: &mut RenderConfig, lower: f32) {
+        cfg.room_lower_m = Some(round6(lower * radius(cfg)));
+        cfg.room_ratio_lower = None;
+    }
+
+    /// Store the centre blend (always written, the default included).
+    pub fn store_center_blend(cfg: &mut RenderConfig, center_blend: f32) {
+        cfg.room_ratio_center_blend = Some(round6(center_blend));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::RenderConfig;
