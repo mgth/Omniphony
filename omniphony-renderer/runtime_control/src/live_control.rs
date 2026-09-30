@@ -103,30 +103,46 @@ pub fn apply_live_control(
         return Some(effects);
     }
 
-    // Live object-generator (PAD: strength / hpf_hz / gain_db) and
-    // phantom-extraction (strength / passes / lift) parameters.
+    // Object-generator and phantom-extraction parameters: aliases of the
+    // plugin store, as `/backend/param` is for backends. `[key, value]`
+    // addresses the selected generator (the phantom stage);
+    // `[generator_id, key, value]` a named generator, selected or not. The
+    // value is read in the type the parameter declares, so a float-only
+    // client still drives a switch (on at >= 0.5).
     let generator = addr == osc_contract::CONTROL_OBJECT_GENERATOR_PARAM;
     if generator || addr == osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM {
-        let key = match msg.args.first() {
+        use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind};
+        let (target, key, value) = if generator && msg.args.len() >= 3 {
+            (
+                crate::osc::parse_string_arg(msg.args.first()),
+                msg.args.get(1),
+                msg.args.get(2),
+            )
+        } else {
+            (None, msg.args.first(), msg.args.get(1))
+        };
+        let key = match key {
             Some(OscType::String(s)) => s.trim().to_ascii_lowercase(),
             _ => return Some(ControlEffects::default()),
         };
-        let Some(value) = parse_f32_arg(msg.args.get(1)) else {
+        let Some(value) = value.and_then(crate::osc::parse_param_value) else {
             return Some(ControlEffects::default());
         };
-        if key.is_empty() || !value.is_finite() {
+        let (kind, id) = if generator {
+            let id = target
+                .unwrap_or_else(|| control.live.read().object_generator_id.clone())
+                .trim()
+                .to_string();
+            // "No generator" is a selection, not a plugin with values.
+            if id.is_empty() || id.eq_ignore_ascii_case("none") {
+                return Some(ControlEffects::default());
+            }
+            (PluginKind::ObjectGenerator, id)
+        } else {
+            (PluginKind::PhantomExtract, PHANTOM_EXTRACT_ID.to_string())
+        };
+        if key.is_empty() || !control.set_plugin_param(kind, &id, &key, value) {
             return Some(ControlEffects::default());
-        }
-        // Store the override generically; the stage validates and clamps it by
-        // key when the render thread applies it (declared-schema design).
-        {
-            let mut live = control.live.write();
-            let params = if generator {
-                &mut live.object_generator_params
-            } else {
-                &mut live.phantom_params
-            };
-            params.insert(key, value);
         }
         // Params are NOT persisted immediately (a slider drag is a burst of
         // updates — no config write per tick), so the Save button is the only
@@ -1161,26 +1177,100 @@ mod tests {
 
     #[test]
     fn param_writes_are_coalesced_and_non_finite_values_dropped() {
+        use renderer::backend_params::ParamValue;
+        use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind};
         let ctx = ctx();
-        let write = |addr: &str, value: f32| {
+        ctx.renderer.live.write().object_generator_id = "pad".to_string();
+        let write = |addr: &str, args: Vec<OscType>| {
+            apply_live_control(&msg(addr, args), &ctx, None).expect("handled")
+        };
+        let effects = write(
+            osc_contract::CONTROL_OBJECT_GENERATOR_PARAM,
+            vec![OscType::String(" Strength ".into()), OscType::Float(0.25)],
+        );
+        assert!(effects.mark_dirty);
+        assert_eq!(effects.notify, Notify::CoalescedSnapshot);
+        let effects = write(
+            osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM,
+            vec![OscType::String("strength".into()), OscType::Float(f32::NAN)],
+        );
+        assert!(!effects.mark_dirty);
+        // The explicit form addresses a generator that is not selected.
+        write(
+            osc_contract::CONTROL_OBJECT_GENERATOR_PARAM,
+            vec![
+                OscType::String("dirac".into()),
+                OscType::String("amount".into()),
+                OscType::Double(0.5),
+            ],
+        );
+        let params = ctx.renderer.plugin_params();
+        assert_eq!(
+            params.get(PluginKind::ObjectGenerator, "pad", "strength"),
+            Some(&ParamValue::Float(0.25))
+        );
+        assert_eq!(
+            params.get(PluginKind::ObjectGenerator, "dirac", "amount"),
+            Some(&ParamValue::Float(0.5))
+        );
+        assert!(
+            params
+                .plugin(PluginKind::PhantomExtract, PHANTOM_EXTRACT_ID)
+                .is_none()
+        );
+
+        // Without a generator selected there is nothing to address.
+        ctx.renderer.live.write().object_generator_id = "none".to_string();
+        let effects = write(
+            osc_contract::CONTROL_OBJECT_GENERATOR_PARAM,
+            vec![OscType::String("strength".into()), OscType::Float(0.5)],
+        );
+        assert!(!effects.mark_dirty);
+    }
+
+    /// A declared switch or integer is stored in its type whatever the
+    /// client sends — a float from an older client, a bool from a new one —
+    /// and a value it cannot read is refused.
+    #[test]
+    fn param_values_are_stored_in_their_declared_type() {
+        use renderer::backend_params::{ParamSpec, ParamValue};
+        use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind, PluginListing};
+        let ctx = ctx();
+        ctx.renderer.set_phantom_listing(PluginListing {
+            id: PHANTOM_EXTRACT_ID,
+            label: "Phantom",
+            i18n_key: None,
+            params: vec![
+                ParamSpec::bool("center", "Center", false),
+                ParamSpec::int("passes", "Passes", 1, 3, 1),
+            ],
+        });
+        let write = |key: &str, value: OscType| {
             apply_live_control(
                 &msg(
-                    addr,
-                    vec![OscType::String(" Strength ".into()), OscType::Float(value)],
+                    osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM,
+                    vec![OscType::String(key.into()), value],
                 ),
                 &ctx,
                 None,
             )
             .expect("handled")
         };
-        let effects = write(osc_contract::CONTROL_OBJECT_GENERATOR_PARAM, 0.25);
-        assert!(effects.mark_dirty);
-        assert_eq!(effects.notify, Notify::CoalescedSnapshot);
-        let effects = write(osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM, f32::NAN);
+        let get = |key: &str| {
+            ctx.renderer
+                .plugin_params()
+                .get(PluginKind::PhantomExtract, PHANTOM_EXTRACT_ID, key)
+                .cloned()
+        };
+        write("center", OscType::Float(1.0));
+        assert_eq!(get("center"), Some(ParamValue::Bool(true)));
+        write("center", OscType::Bool(false));
+        assert_eq!(get("center"), Some(ParamValue::Bool(false)));
+        write("passes", OscType::Float(2.0));
+        assert_eq!(get("passes"), Some(ParamValue::Int(2)));
+        let effects = write("passes", OscType::String("many".into()));
         assert!(!effects.mark_dirty);
-        let live = ctx.renderer.live.read();
-        assert_eq!(live.object_generator_params.get("strength"), Some(&0.25));
-        assert!(live.phantom_params.is_empty());
+        assert_eq!(get("passes"), Some(ParamValue::Int(2)));
     }
 
     #[test]

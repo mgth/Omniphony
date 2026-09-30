@@ -22,22 +22,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { app, dirty, getLiveOption } from './state.js';
 import { scheduleUIFlush } from './flush.js';
 
-// Option-specific UI side effects on a local set. Everything the audio-format
-// render repaints (row visibility, summaries, param sliders) is covered by the
-// generic flush below — only state the render can't derive belongs here.
-const AFTER_SET = {
-  // Switching generators drops the previous one's overrides (the renderer does
-  // the same) so the new generator shows its declared defaults.
-  object_generator_id: () => {
-    app.objectGeneratorParams = {};
-  },
-};
-
 function setOption(key, value) {
   // Optimistic local write: the renderer echoes the canonical value on the
   // next snapshot, but the UI must not lag the click.
   app.options[key] = value;
-  if (AFTER_SET[key]) AFTER_SET[key]();
   invoke('control_option', { key, value }).catch((err) => {
     // An optimistically-reflected control must never hide a dead send chain.
     console.error(`control_option ${key} failed:`, err);

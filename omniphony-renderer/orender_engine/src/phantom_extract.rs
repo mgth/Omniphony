@@ -32,9 +32,11 @@
 
 use crate::object_gen::ObjectKind;
 use bridge_api::RChannelLabel;
+use renderer::backend_params::{ParamSpec, ParamValue};
 use renderer::live_params::PhantomExtractMode;
+use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginFactory, PluginListing};
 
-use crate::object_gen::{ObjectGenParamSpec, PrepareCtx, SynthObjectSpec, one_pole_coeff};
+use crate::object_gen::{PrepareCtx, SynthObjectSpec, one_pole_coeff};
 use crate::phantom_spectral::SpectralExtractor;
 
 /// Time constant (ms) of the one-pole smoothers for the inter-channel statistics.
@@ -54,112 +56,71 @@ const PHANTOM_MAX_PASSES: usize = 3;
 const PHANTOM_GAIN_DB: i8 = 0;
 const PHANTOM_SIZE: [f32; 3] = [0.3, 0.3, 0.3];
 
-/// Live-tunable params this stage declares (the schema the UI builds sliders from).
-pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 7] = [
-    ObjectGenParamSpec {
-        key: "strength",
-        label: "Extraction",
-        i18n_key: "twoDSources.phantomStrength",
-        min: 0.0,
-        max: 1.0,
-        step: 0.01,
-        default: PHANTOM_DEFAULT_STRENGTH,
-        unit: "",
-    },
-    ObjectGenParamSpec {
-        key: "passes",
-        label: "Passes",
-        i18n_key: "twoDSources.phantomPasses",
-        min: 1.0,
-        max: 3.0,
-        step: 1.0,
-        default: 1.0,
-        unit: "",
-    },
-    ObjectGenParamSpec {
-        key: "lift",
-        label: "Lift",
-        i18n_key: "twoDSources.phantomLift",
-        min: 0.0,
-        max: 1.0,
-        step: 0.01,
-        default: 0.0,
-        unit: "",
-    },
-    // Binary mode (rendered as a switch by Studio): replace the front L-C-R split
-    // (two phantoms) with a single relocalized centre. See `RelocalizeArc`.
-    ObjectGenParamSpec {
-        key: "center",
-        label: "Relocalize center",
-        i18n_key: "twoDSources.phantomCenter",
-        min: 0.0,
-        max: 1.0,
-        step: 1.0,
-        default: 0.0,
-        unit: "",
-    },
-    // Binary mode: in 7.1, relocate each surround (Ls between L/Lb, Rs between
-    // R/Rb) as a single object instead of the joint side arcs. No-op without back
-    // channels (5.1 and below).
-    ObjectGenParamSpec {
-        key: "sides",
-        label: "Relocalize sides",
-        i18n_key: "twoDSources.phantomSides",
-        min: 0.0,
-        max: 1.0,
-        step: 1.0,
-        default: 0.0,
-        unit: "",
-    },
-    // Binary mode (spectral only): include the input's height channels in the
-    // 3D analysis (up dipole + high sector ring) instead of passing them
-    // through untouched. No-op for bed-only inputs.
-    ObjectGenParamSpec {
-        key: "heights",
-        label: "Extract heights",
-        i18n_key: "twoDSources.phantomHeights",
-        min: 0.0,
-        max: 1.0,
-        step: 1.0,
-        default: 1.0,
-        unit: "",
-    },
-    // Spectral only: reference elevation (degrees) of the floor↔high ring
-    // split — the elevation that reads as "fully high". Lower values push
-    // content toward the ceiling. Default ≈ the corner-top channel elevation
-    // (atan(1/√2)). Applies live, no re-plan.
-    ObjectGenParamSpec {
-        key: "height_split",
-        label: "Height split",
-        i18n_key: "twoDSources.phantomHeightSplit",
-        min: 15.0,
-        max: 75.0,
-        step: 1.0,
-        default: 35.0,
-        unit: "°",
-    },
-];
+/// The phantom-extraction stage as a plugin: one built-in, listed and stored
+/// under [`PHANTOM_EXTRACT_ID`] with the parameters it declares. Its method is
+/// the `phantom_extract_mode` option, not a parameter; a parameter only one
+/// method reads `requires` that method (`"broadband"` / `"spectral"`), which
+/// the UI shows as such while the other one runs.
+pub struct PhantomExtractPlugin;
 
-/// JSON array of the declared params, published over OSC so Studio can build the
-/// phantom-extraction sliders dynamically (same shape as the object-generator
-/// `params` array).
-pub fn phantom_schema_json() -> String {
-    let arr: Vec<serde_json::Value> = PHANTOM_PARAM_SPECS
-        .iter()
-        .map(|p| {
-            serde_json::json!({
-                "key": p.key,
-                "label": p.label,
-                "i18nKey": p.i18n_key,
-                "min": p.min,
-                "max": p.max,
-                "step": p.step,
-                "default": p.default,
-                "unit": p.unit,
-            })
-        })
-        .collect();
-    serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
+impl PluginFactory for PhantomExtractPlugin {
+    fn id(&self) -> &'static str {
+        PHANTOM_EXTRACT_ID
+    }
+    fn label(&self) -> &'static str {
+        "Phantom extraction"
+    }
+    fn i18n_key(&self) -> Option<&'static str> {
+        Some("twoDSources.phantomLabel")
+    }
+    fn param_schema(&self) -> Vec<ParamSpec> {
+        vec![
+            ParamSpec::float(
+                "strength",
+                "Extraction",
+                0.0,
+                1.0,
+                0.01,
+                PHANTOM_DEFAULT_STRENGTH,
+            )
+            .i18n("twoDSources.phantomStrength"),
+            ParamSpec::int("passes", "Passes", 1, PHANTOM_MAX_PASSES as i64, 1)
+                .i18n("twoDSources.phantomPasses")
+                .requires("broadband"),
+            ParamSpec::float("lift", "Lift", 0.0, 1.0, 0.01, 0.0).i18n("twoDSources.phantomLift"),
+            // Replace the front L-C-R split (two phantoms) with a single
+            // relocalized centre. See `RelocalizeArc`.
+            ParamSpec::bool("center", "Relocalize center", false)
+                .i18n("twoDSources.phantomCenter")
+                .requires("broadband"),
+            // In 7.1, relocate each surround (Ls between L/Lb, Rs between
+            // R/Rb) as a single object instead of the joint side arcs. No-op
+            // without back channels (5.1 and below).
+            ParamSpec::bool("sides", "Relocalize sides", false)
+                .i18n("twoDSources.phantomSides")
+                .requires("broadband"),
+            // Include the input's height channels in the 3D analysis (up
+            // dipole + high sector ring) instead of passing them through
+            // untouched. No-op for bed-only inputs.
+            ParamSpec::bool("heights", "Extract heights", true)
+                .i18n("twoDSources.phantomHeights")
+                .requires("spectral"),
+            // Reference elevation (degrees) of the floor↔high ring split — the
+            // elevation that reads as "fully high". Lower values push content
+            // toward the ceiling. Default ≈ the corner-top channel elevation
+            // (atan(1/√2)). Applies live, no re-plan.
+            ParamSpec::float("height_split", "Height split", 15.0, 75.0, 1.0, 35.0)
+                .i18n("twoDSources.phantomHeightSplit")
+                .unit("°")
+                .requires("spectral"),
+        ]
+    }
+}
+
+/// The stage's listing, as published over OSC (`/state/phantom`) so Studio
+/// builds its controls from it — the format every plugin publishes.
+pub fn phantom_listing() -> PluginListing {
+    PluginListing::of(&PhantomExtractPlugin)
 }
 
 /// One extracted phantom: the two source channels, the planar output slot, the two
@@ -763,18 +724,45 @@ impl PhantomExtractStage {
     }
 
     /// Apply one declared parameter in place. A `passes` change re-plans on the next
-    /// `sync`.
-    pub fn set_param(&mut self, key: &str, value: f32, _sample_rate: u32) {
+    /// `sync`. Read leniently: a switch may still come as a number (on at
+    /// `>= 0.5`), as the float-only schema spelled it.
+    pub fn set_param(&mut self, key: &str, value: &ParamValue, _sample_rate: u32) {
+        let number = || value.as_f32().filter(|v| !v.is_nan());
         match key {
-            "strength" => self.strength = value.clamp(0.0, 1.0),
-            "passes" => {
-                self.passes = (value.round() as i64).clamp(1, PHANTOM_MAX_PASSES as i64) as usize
+            "strength" => {
+                if let Some(v) = number() {
+                    self.strength = v.clamp(0.0, 1.0);
+                }
             }
-            "lift" => self.lift = value.clamp(0.0, 1.0),
-            "center" => self.center_relocalize = value >= 0.5,
-            "sides" => self.sides_relocalize = value >= 0.5,
-            "heights" => self.heights = value >= 0.5,
+            "passes" => {
+                if let Some(v) = number() {
+                    self.passes = (v.round() as i64).clamp(1, PHANTOM_MAX_PASSES as i64) as usize;
+                }
+            }
+            "lift" => {
+                if let Some(v) = number() {
+                    self.lift = v.clamp(0.0, 1.0);
+                }
+            }
+            "center" => {
+                if let Some(on) = value.as_switch() {
+                    self.center_relocalize = on;
+                }
+            }
+            "sides" => {
+                if let Some(on) = value.as_switch() {
+                    self.sides_relocalize = on;
+                }
+            }
+            "heights" => {
+                if let Some(on) = value.as_switch() {
+                    self.heights = on;
+                }
+            }
             "height_split" => {
+                let Some(value) = number() else {
+                    return;
+                };
                 self.el_top = value.clamp(15.0, 75.0).to_radians();
                 if let Some(ext) = self.spectral.as_mut() {
                     ext.set_el_top(self.el_top);
@@ -1106,11 +1094,11 @@ mod tests {
 
     #[test]
     fn schema_exposes_parameters_but_not_the_algorithm_selector() {
-        let schema: serde_json::Value =
-            serde_json::from_str(&phantom_schema_json()).expect("valid phantom schema");
-        let keys: Vec<&str> = schema
+        let listing = serde_json::to_value(phantom_listing()).expect("valid phantom listing");
+        assert_eq!(listing["id"], "phantom_extract");
+        let keys: Vec<&str> = listing["params"]
             .as_array()
-            .expect("schema array")
+            .expect("params array")
             .iter()
             .map(|entry| entry["key"].as_str().expect("parameter key"))
             .collect();
@@ -1127,6 +1115,30 @@ mod tests {
             ]
         );
         assert!(!keys.contains(&"method"));
+        // Switches are switches and passes an integer, each gated by the one
+        // method that reads it.
+        let params = &listing["params"];
+        assert_eq!(params[1]["kind"]["type"], "int");
+        assert_eq!(params[1]["requires"], "broadband");
+        assert_eq!(params[3]["kind"]["type"], "bool");
+        assert_eq!(params[3]["default"], false);
+        assert_eq!(params[5]["requires"], "spectral");
+        assert!(params[0].get("requires").is_none());
+    }
+
+    /// A switch set from a number (an older client's float-only control, or
+    /// a config written before the schema was typed) reads as before.
+    #[test]
+    fn switches_read_a_number_or_a_bool() {
+        let mut st = PhantomExtractStage::new();
+        st.set_param("center", &ParamValue::Float(1.0), 48_000);
+        assert!(st.center_relocalize);
+        st.set_param("center", &ParamValue::Bool(false), 48_000);
+        assert!(!st.center_relocalize);
+        st.set_param("passes", &ParamValue::Int(2), 48_000);
+        assert_eq!(st.passes, 2);
+        st.set_param("passes", &ParamValue::Text("x".into()), 48_000);
+        assert_eq!(st.passes, 2, "an unreadable value is ignored");
     }
 
     #[test]
@@ -1149,7 +1161,7 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         let ring = st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
-        st.set_param("passes", 2.0, 48_000);
+        st.set_param("passes", &ParamValue::Float(2.0), 48_000);
         let widened = st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         assert!(
             widened > ring,
@@ -1161,7 +1173,7 @@ mod tests {
     fn extracts_panned_source_and_removes_it() {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.set_param("strength", 1.0, 48_000);
+        st.set_param("strength", &ParamValue::Float(1.0), 48_000);
         st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         // A correlated source panned between adjacent channels L and C (0.8 / 0.2).
         let c = 6usize;
@@ -1208,7 +1220,7 @@ mod tests {
     fn leaves_decorrelated_pair() {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.set_param("strength", 1.0, 48_000);
+        st.set_param("strength", &ParamValue::Float(1.0), 48_000);
         st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let c = 6usize;
         let n = 6000usize;
@@ -1248,7 +1260,7 @@ mod tests {
         // from L and R symmetrically and place two phantoms straddling the centre.
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.set_param("strength", 1.0, 48_000);
+        st.set_param("strength", &ParamValue::Float(1.0), 48_000);
         st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let c = 6usize;
         let n = 6000usize;
@@ -1327,7 +1339,7 @@ mod tests {
         // arc must reduce the two ends (L and Lb) symmetrically.
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.set_param("strength", 1.0, 48_000);
+        st.set_param("strength", &ParamValue::Float(1.0), 48_000);
         st.sync(true, &ctx!(&LABELS_7_1, &layout), 0);
         let c = 8usize; // L=0, Ls=4, Lb=6
         let n = 6000usize;
@@ -1363,7 +1375,7 @@ mod tests {
         // "Phantom_C": the L-C / C-R phantoms are gone and the ring count drops by one.
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.set_param("center", 1.0, 48_000);
+        st.set_param("center", &ParamValue::Float(1.0), 48_000);
         let n_specs = st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let names: Vec<&str> = st.specs().iter().map(|s| s.name.as_str()).collect();
         assert!(
@@ -1387,8 +1399,8 @@ mod tests {
         // localized object near the centre, and the C channel is vacated.
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.set_param("center", 1.0, 48_000);
-        st.set_param("strength", 1.0, 48_000);
+        st.set_param("center", &ParamValue::Float(1.0), 48_000);
+        st.set_param("strength", &ParamValue::Float(1.0), 48_000);
         st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let c = 6usize;
         let n = 6000usize;
@@ -1440,7 +1452,7 @@ mod tests {
         // split is untouched.
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.set_param("sides", 1.0, 48_000);
+        st.set_param("sides", &ParamValue::Float(1.0), 48_000);
         let n_specs = st.sync(true, &ctx!(&LABELS_7_1, &layout), 0);
         let names: Vec<&str> = st.specs().iter().map(|s| s.name.as_str()).collect();
         assert!(
@@ -1472,8 +1484,8 @@ mod tests {
         // localized object, and the Ls channel is vacated.
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.set_param("sides", 1.0, 48_000);
-        st.set_param("strength", 1.0, 48_000);
+        st.set_param("sides", &ParamValue::Float(1.0), 48_000);
+        st.set_param("strength", &ParamValue::Float(1.0), 48_000);
         st.sync(true, &ctx!(&LABELS_7_1, &layout), 0);
         let c = 8usize;
         let n = 6000usize;
@@ -1507,7 +1519,7 @@ mod tests {
     fn lift_raises_phantom_z() {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.set_param("lift", 0.8, 48_000);
+        st.set_param("lift", &ParamValue::Float(0.8), 48_000);
         st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         assert!(
             st.specs()
@@ -1641,7 +1653,7 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         st.set_mode(PhantomExtractMode::Spectral);
-        st.set_param("strength", 1.0, 48_000);
+        st.set_param("strength", &ParamValue::Float(1.0), 48_000);
         st.sync(true, &ctx!(&LABELS_5_1, &layout), 0);
         let c = 6usize;
         let n = 24_000usize;

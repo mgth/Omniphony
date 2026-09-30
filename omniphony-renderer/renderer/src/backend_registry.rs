@@ -5,6 +5,7 @@ use anyhow::Result;
 use crate::live_params::{
     BackendRebuildParams, LiveEvaluationMode, LiveParams, PreferredEvaluationMode, RenderTopology,
 };
+use crate::plugin::{PluginFactory, PluginListing, PluginRegistry};
 use crate::render_backend::{
     BlendCurve, DegenerateVbapBackend, EffectiveEvaluationMode, EvaluationBuildConfig, GainModel,
     HybridBackend, PreparedRenderEngine, build_prepared_render_engine, wrap_prepared_engine,
@@ -827,38 +828,17 @@ impl BackendBuildCtx<'_> {
     }
 }
 
-/// A render backend's registration entry: a stable id plus how to build its gain
-/// model plan for a given context.
+/// A render backend's registration entry: its plugin identity and declared
+/// parameters ([`PluginFactory`]) plus how to build its gain model plan for a
+/// given context.
 ///
-/// Implement this and `register` it into a [`BackendRegistry`] to add a backend
-/// without editing the central dispatch. Identity is data (a string id), not an
-/// enum variant, so a backend can live in its own crate.
-pub trait BackendFactory: Send + Sync {
-    /// Stable identifier matched against `LiveParams::backend_id()` (e.g. `"vbap"`).
-    fn id(&self) -> &'static str;
-    /// Human-facing name shown in the UI. Defaults to the id.
-    fn label(&self) -> &'static str {
-        self.id()
-    }
-    /// Tunable parameters this backend exposes, as data. The host stores values
-    /// generically and the UI renders controls from this; the backend reads the
-    /// values via [`BackendBuildCtx::param`] when building. Defaults to none.
-    fn param_schema(&self) -> Vec<crate::backend_params::ParamSpec> {
-        Vec::new()
-    }
-    /// Like [`param_schema`](BackendFactory::param_schema), but with access to the
-    /// backend's currently stored param values, so a backend whose schema depends
-    /// on its own state can report a *dynamic* schema. The scriptable backend
-    /// uses this to expose the params its currently-selected `.lua` declares.
-    /// Defaults to the static schema. Called by the host whenever it publishes
-    /// the backend list (i.e. after every param change).
-    fn param_schema_for(
-        &self,
-        params: &std::collections::HashMap<String, crate::backend_params::ParamValue>,
-    ) -> Vec<crate::backend_params::ParamSpec> {
-        let _ = params;
-        self.param_schema()
-    }
+/// Implement both and `register` it into a [`BackendRegistry`] to add a
+/// backend without editing the central dispatch. Identity is data (a string
+/// id, matched against `LiveParams::backend_id()`), not an enum variant, so a
+/// backend can live in its own crate. The host stores its parameter values
+/// generically and the UI renders controls from its schema; the backend reads
+/// the values via [`BackendBuildCtx::backend_param`] when building.
+pub trait BackendFactory: PluginFactory {
     /// Whether this backend can run in the realtime (per-sample) evaluation mode.
     /// A backend whose `compute_gains` is not hot-path-safe (allocates, locks,
     /// crosses into an interpreter — e.g. the scriptable backend) returns `false`
@@ -871,41 +851,22 @@ pub trait BackendFactory: Send + Sync {
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan>;
 }
 
-/// A registered backend's UI-facing identity, reported by
-/// [`BackendRegistry::available`] so a host can list the selectable backends
-/// (built-in and contributor-registered alike) without a hard-coded table.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct BackendListing {
-    pub id: &'static str,
-    pub label: &'static str,
-    /// This backend's declared tunable parameters, so the UI can render controls
-    /// for it when selected.
-    pub params: Vec<crate::backend_params::ParamSpec>,
-}
-
 /// Reorder a published backend list so the composite `hybrid` backend always
 /// comes last in the selection combo, regardless of registration order
 /// (contributor backends register after the builtins, so registration order
 /// alone does not keep hybrid last). Stable: every other backend keeps its
 /// registration order. The bool key sorts `false` (non-hybrid) before `true`.
-pub fn hybrid_last(mut listings: Vec<BackendListing>) -> Vec<BackendListing> {
+pub fn hybrid_last(mut listings: Vec<PluginListing>) -> Vec<PluginListing> {
     listings.sort_by_key(|listing| listing.id == "hybrid");
     listings
 }
 
-/// Ordered set of backend factories keyed by id. Use [`BackendRegistry::builtin`]
-/// for the shipped backends; a host can `register` additional ones at startup.
-pub struct BackendRegistry {
-    factories: Vec<Box<dyn BackendFactory>>,
-}
+/// The render backends, keyed by id. Use [`BackendRegistry::builtin`] for the
+/// shipped backends; a host can `register` additional ones at startup (a later
+/// registration with the same id replaces the earlier one).
+pub type BackendRegistry = PluginRegistry<dyn BackendFactory>;
 
-impl BackendRegistry {
-    pub fn new() -> Self {
-        Self {
-            factories: Vec::new(),
-        }
-    }
-
+impl PluginRegistry<dyn BackendFactory> {
     /// Registry preloaded with the built-in backends.
     pub fn builtin() -> Self {
         let mut registry = Self::new();
@@ -915,74 +876,16 @@ impl BackendRegistry {
         registry.register(Box::new(HybridFactory));
         registry
     }
-
-    /// Register a backend. A later registration with the same id replaces the
-    /// earlier one, so a host can override a built-in.
-    pub fn register(&mut self, factory: Box<dyn BackendFactory>) {
-        let id = factory.id();
-        match self.factories.iter_mut().find(|f| f.id() == id) {
-            Some(slot) => *slot = factory,
-            None => self.factories.push(factory),
-        }
-    }
-
-    /// Look up a factory by id.
-    pub fn get(&self, id: &str) -> Option<&dyn BackendFactory> {
-        self.factories
-            .iter()
-            .find(|f| f.id() == id)
-            .map(|f| f.as_ref())
-    }
-
-    /// Ids of all registered backends, in registration order.
-    pub fn ids(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.factories.iter().map(|f| f.id())
-    }
-
-    /// Id + label of every registered backend, in registration order — the list
-    /// a host publishes so the UI can offer them for selection.
-    pub fn available(&self) -> Vec<BackendListing> {
-        self.factories
-            .iter()
-            .map(|f| BackendListing {
-                id: f.id(),
-                label: f.label(),
-                params: f.param_schema(),
-            })
-            .collect()
-    }
-
-    /// Like [`available`](BackendRegistry::available) but resolving each
-    /// backend's *dynamic* schema against the current param store, so a backend
-    /// whose controls depend on its own state (the scriptable backend) reports
-    /// the right schema. `params_by_backend` is keyed by backend id.
-    pub fn available_with(
-        &self,
-        params_by_backend: &std::collections::HashMap<
-            String,
-            std::collections::HashMap<String, crate::backend_params::ParamValue>,
-        >,
-    ) -> Vec<BackendListing> {
-        let empty = std::collections::HashMap::new();
-        self.factories
-            .iter()
-            .map(|f| BackendListing {
-                id: f.id(),
-                label: f.label(),
-                params: f.param_schema_for(params_by_backend.get(f.id()).unwrap_or(&empty)),
-            })
-            .collect()
-    }
 }
 
-impl Default for BackendRegistry {
+impl Default for PluginRegistry<dyn BackendFactory> {
     fn default() -> Self {
         Self::builtin()
     }
 }
 
 struct VbapFactory;
-impl BackendFactory for VbapFactory {
+impl PluginFactory for VbapFactory {
     fn id(&self) -> &'static str {
         "vbap"
     }
@@ -1034,6 +937,8 @@ impl BackendFactory for VbapFactory {
             ParamSpec {
                 key: "size_to_spread_mode",
                 label: "Object-size policy",
+                i18n_key: None,
+                unit: None,
                 kind: ParamKind::Enum {
                     options: vec![
                         enum_option("max", "Max axis"),
@@ -1052,6 +957,8 @@ impl BackendFactory for VbapFactory {
             ParamSpec {
                 key: "out_of_hull_mode",
                 label: "Out-of-hull mode",
+                i18n_key: None,
+                unit: None,
                 kind: ParamKind::Enum {
                     options: vec![
                         enum_option("virtual_poles", "Virtual poles (BS.2127)"),
@@ -1078,13 +985,16 @@ impl BackendFactory for VbapFactory {
             ),
         ]
     }
+}
+
+impl BackendFactory for VbapFactory {
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
         build_inner_backend_plan(ctx, self.id())
     }
 }
 
 struct BarycenterFactory;
-impl BackendFactory for BarycenterFactory {
+impl PluginFactory for BarycenterFactory {
     fn id(&self) -> &'static str {
         "barycenter"
     }
@@ -1101,13 +1011,16 @@ impl BackendFactory for BarycenterFactory {
                 ),
         ]
     }
+}
+
+impl BackendFactory for BarycenterFactory {
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
         build_inner_backend_plan(ctx, self.id())
     }
 }
 
 struct ExperimentalDistanceFactory;
-impl BackendFactory for ExperimentalDistanceFactory {
+impl PluginFactory for ExperimentalDistanceFactory {
     fn id(&self) -> &'static str {
         "experimental_distance"
     }
@@ -1175,19 +1088,25 @@ impl BackendFactory for ExperimentalDistanceFactory {
             .help("How much energy spreads to more speakers as position error grows."),
         ]
     }
+}
+
+impl BackendFactory for ExperimentalDistanceFactory {
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
         build_inner_backend_plan(ctx, self.id())
     }
 }
 
 struct HybridFactory;
-impl BackendFactory for HybridFactory {
+impl PluginFactory for HybridFactory {
     fn id(&self) -> &'static str {
         "hybrid"
     }
     fn label(&self) -> &'static str {
         "Hybrid"
     }
+}
+
+impl BackendFactory for HybridFactory {
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
         // The hybrid backend composes two inner backends, resolved through the
         // registry so any registered backend can be an inner model (nested hybrid
@@ -1465,10 +1384,13 @@ mod tests {
     }
 
     struct DummyFactory(&'static str);
-    impl BackendFactory for DummyFactory {
+    impl PluginFactory for DummyFactory {
         fn id(&self) -> &'static str {
             self.0
         }
+    }
+
+    impl BackendFactory for DummyFactory {
         fn build_plan(&self, _ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
             None
         }
@@ -1504,10 +1426,13 @@ mod tests {
     /// builder constructs an arbitrary `GainModel`, with no dedicated enum variant
     /// and no central `match` edit.
     struct DynamicFactory;
-    impl BackendFactory for DynamicFactory {
+    impl PluginFactory for DynamicFactory {
         fn id(&self) -> &'static str {
             "dynamic_example"
         }
+    }
+
+    impl BackendFactory for DynamicFactory {
         fn build_plan(&self, _ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
             Some(BackendBuildPlan::Dynamic(DynamicBackendPlan::new(
                 "dynamic_example",
@@ -1536,7 +1461,7 @@ mod tests {
 
     #[test]
     fn available_lists_id_and_label() {
-        let listings = BackendRegistry::builtin().available();
+        let listings = BackendRegistry::builtin().listings();
         let vbap = listings
             .iter()
             .find(|l| l.id == "vbap")
@@ -1549,10 +1474,13 @@ mod tests {
     /// A registered factory that is not hot-path-safe (mirrors the scriptable
     /// backend), used to check the recursive realtime gate for hybrid inners.
     struct NonRealtimeFactory;
-    impl BackendFactory for NonRealtimeFactory {
+    impl PluginFactory for NonRealtimeFactory {
         fn id(&self) -> &'static str {
             "non_realtime"
         }
+    }
+
+    impl BackendFactory for NonRealtimeFactory {
         fn realtime_capable(&self) -> bool {
             false
         }
@@ -1583,9 +1511,10 @@ mod tests {
 
     #[test]
     fn hybrid_last_moves_hybrid_to_the_end() {
-        let mk = |id: &'static str| BackendListing {
+        let mk = |id: &'static str| PluginListing {
             id,
             label: id,
+            i18n_key: None,
             params: Vec::new(),
         };
         // Hybrid sits mid-list, with backends registered after it (example,
@@ -1597,9 +1526,10 @@ mod tests {
 
     #[test]
     fn hybrid_last_keeps_order_when_no_hybrid() {
-        let mk = |id: &'static str| BackendListing {
+        let mk = |id: &'static str| PluginListing {
             id,
             label: id,
+            i18n_key: None,
             params: Vec::new(),
         };
         let out = hybrid_last(vec![mk("vbap"), mk("barycenter"), mk("example")]);

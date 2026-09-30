@@ -4,8 +4,8 @@
  * is open at a time across the whole UI, and it closes on any click outside it.
  *
  * Two entry points share the single open-panel state so the "one at a time" rule
- * holds across both the schema-generated backend params (see `buildParamControl`
- * in `vbap.js`) and the hand-written renderer params (wired declaratively from
+ * holds across both the schema-generated plugin params (see `buildParamControl`
+ * in `plugin-params.js`) and the hand-written renderer params (wired declaratively from
  * markup via `wireInlineHelpFromMarkup`).
  */
 

@@ -13,10 +13,11 @@ import {
   hasProducerDomain
 } from '../state.js';
 import { reflectBoundOptions } from '../options-binder.js';
-import { t, tf } from '../i18n.js';
+import { t, tf, i18nState } from '../i18n.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inAudioPanel, inRendererPanel } from '../ui/panel-roots.js';
 import { syncVirtualBedObjects, renderChannelEditor, renderPlacementPanel } from './virtual-bed.js';
+import { renderParamForm } from './plugin-params.js';
 
 function getAudioFormatInfoEl() { return inAudioPanel('audioFormatInfo'); }
 function getAudioOutputDeviceSelectEl() { return inAudioPanel('audioOutputDeviceSelect'); }
@@ -444,23 +445,8 @@ export function updateFixedChannelProcessingUI() {
   if (phantomStatus) phantomStatus.textContent = processingReason(effectivePhantomReason());
 }
 
-// The generator id whose param sliders are currently built into the DOM.
-let builtParamGenId = null;
-
-// Format a parameter value for display: decimals derived from the schema step,
-// plus an optional unit suffix.
-function fmtParamValue(spec, v) {
-  const n = Number(v);
-  const step = Number(spec.step) || 0;
-  let s;
-  if (step >= 1) s = String(Math.round(n));
-  else if (step >= 0.1) s = n.toFixed(1);
-  else s = n.toFixed(2);
-  return spec.unit ? `${s} ${spec.unit}` : s;
-}
-
 // Localized label from an i18n key when it resolves, else the English label the
-// schema carries (so out-of-tree generators still get a readable label).
+// listing carries (so out-of-tree generators still get a readable label).
 function schemaLabel(i18nKey, fallback) {
   if (i18nKey) {
     const localized = t(i18nKey);
@@ -469,13 +455,14 @@ function schemaLabel(i18nKey, fallback) {
   return fallback || '';
 }
 
-function activeGeneratorSchema() {
+function activeGeneratorListing() {
   const id = getLiveOption('object_generator_id') || 'none';
   return (app.objectGenerators || []).find((g) => g && g.id === id) || null;
 }
 
-// (Re)build the generator selector from the declared schema. The hardcoded HTML
-// options stay as a fallback until the schema arrives / for older renderers.
+// (Re)build the generator selector from the published listings. The hardcoded
+// HTML options stay as a fallback until the listings arrive / for older
+// renderers.
 export function rebuildObjectGeneratorControls() {
   const sel = document.getElementById('objectGeneratorSelect');
   const list = app.objectGenerators || [];
@@ -494,53 +481,18 @@ export function rebuildObjectGeneratorControls() {
     }
     sel.value = current;
   }
-  builtParamGenId = null; // force the param sliders to rebuild
+  const row = document.getElementById('objectGenParamsRow');
+  if (row) row.dataset.buildKey = ''; // force the param controls to rebuild
   updateObjectGeneratorUI();
 }
 
-function buildParamSliders(schema) {
-  const row = document.getElementById('objectGenParamsRow');
-  if (!row) return;
-  row.innerHTML = '';
-  const params = (schema && schema.params) || [];
-  for (const spec of params) {
-    const label = document.createElement('label');
-    label.style.cssText = 'display:flex;align-items:center;gap:0.5rem;font-size:11px';
-    const name = document.createElement('span');
-    name.style.cssText = 'flex:0 0 auto;min-width:96px';
-    name.textContent = schemaLabel(spec.i18nKey, spec.label);
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = String(spec.min);
-    slider.max = String(spec.max);
-    slider.step = String(spec.step);
-    slider.style.cssText = 'flex:1;min-width:0';
-    slider.dataset.paramKey = spec.key;
-    const valEl = document.createElement('span');
-    valEl.style.cssText =
-      'flex:0 0 auto;width:48px;text-align:right;font-variant-numeric:tabular-nums';
-    const stored = app.objectGeneratorParams && app.objectGeneratorParams[spec.key];
-    const initial = stored != null ? stored : spec.default;
-    slider.value = String(initial);
-    valEl.textContent = fmtParamValue(spec, initial);
-    slider.addEventListener('input', () => {
-      valEl.textContent = fmtParamValue(spec, slider.value);
-      applyObjectGeneratorParamNow(spec.key, slider.value);
-    });
-    label.appendChild(name);
-    label.appendChild(slider);
-    label.appendChild(valEl);
-    row.appendChild(label);
-  }
-  builtParamGenId = schema ? schema.id : null;
-}
-
-// Reflect the active generator + its parameter sliders. Rebuilds the sliders
-// when the active generator (or its schema) changes; otherwise just refreshes
-// values without disturbing an in-progress drag.
+// Reflect the active generator + its parameter controls, generated from its
+// listing the way a backend's are. Rebuilt when the active generator (or its
+// listing, or the locale) changes; otherwise the values are refreshed without
+// disturbing an in-progress drag.
 export function updateObjectGeneratorUI() {
   const sel = document.getElementById('objectGeneratorSelect');
-  // (Re)set after a schema-driven rebuild; the binder reflects the same value.
+  // (Re)set after a listing-driven rebuild; the binder reflects the same value.
   if (sel && document.activeElement !== sel) sel.value = getLiveOption('object_generator_id') || 'none';
   // Applicability never disables configuration. The renderer reports why a
   // selected generator is currently inactive while offline edits remain valid.
@@ -552,190 +504,80 @@ export function updateObjectGeneratorUI() {
     note.style.display = reason && reason !== 'active' && reason !== 'off' ? 'inline' : 'none';
     note.textContent = processingReason(reason || (hasHeight ? 'off' : 'output_has_no_height'));
   }
-  const schema = activeGeneratorSchema();
+  const listing = activeGeneratorListing();
   const row = document.getElementById('objectGenParamsRow');
-  const show = !!(schema && (schema.params || []).length);
-  if (row) row.style.display = show ? 'flex' : 'none';
-  const wantId = schema ? schema.id : null;
-  if (wantId !== builtParamGenId) {
-    buildParamSliders(schema);
-  } else if (row) {
-    for (const slider of row.querySelectorAll('input[type=range]')) {
-      const key = slider.dataset.paramKey;
-      const spec = (schema.params || []).find((p) => p.key === key);
-      if (!spec) continue;
-      const stored = app.objectGeneratorParams && app.objectGeneratorParams[key];
-      const v = stored != null ? stored : spec.default;
-      if (document.activeElement !== slider) slider.value = String(v);
-      const valEl = slider.nextElementSibling;
-      if (valEl) valEl.textContent = fmtParamValue(spec, v);
-    }
+  if (!row) return;
+  const params = (listing && listing.params) || [];
+  row.style.display = params.length ? 'flex' : 'none';
+  if (!listing) {
+    row.dataset.buildKey = '';
+    row.replaceChildren();
+    return;
   }
+  const values = (app.objectGeneratorParamValuesById || {})[listing.id] || {};
+  renderParamForm(
+    row,
+    params,
+    values,
+    (key, value) => applyObjectGeneratorParamNow(listing.id, key, value),
+    { buildKey: `${listing.id}|${i18nState.locale}`, live: true },
+  );
 }
 
-// Commit a generator parameter change live (slider drag): store the override and
-// push it to the engine, which validates/clamps and applies it by key without
-// resetting DSP state.
-export function applyObjectGeneratorParamNow(key, value) {
-  const v = Number(value);
-  if (!Number.isFinite(v)) return;
-  if (!app.objectGeneratorParams || typeof app.objectGeneratorParams !== 'object') {
-    app.objectGeneratorParams = {};
-  }
-  app.objectGeneratorParams[key] = v;
-  invoke('control_object_generator_param', { key, value: v });
+// Commit a generator parameter change live (slider drag): store it for the
+// generator the form shows and push it to the engine, addressed by id, which
+// reads it in its declared type and applies it without resetting DSP state.
+function applyObjectGeneratorParamNow(generator, key, value) {
+  const byId = app.objectGeneratorParamValuesById || (app.objectGeneratorParamValuesById = {});
+  byId[generator] = { ...(byId[generator] || {}), [key]: value };
+  invoke('control_object_generator_param', { generator, key, value });
 }
 
 // ── Phantom-source extraction pre-stage ──
 // Runs before the height lift: extracts the correlated/primary content of channel
 // pairs as discrete objects at their real panned position and reduces the bed.
 
-let builtPhantomParams = false;
-
-// Whether a declared param is a binary (on/off) toggle — rendered as a switch
-// rather than a slider, per the switches-not-checkboxes rule.
-function isBinaryParam(spec) {
-  return Number(spec.min) === 0 && Number(spec.max) === 1 && Number(spec.step) === 1;
+// A parameter only one method reads declares it (`requires`): the engine
+// ignores the other method's changes while it is active (see
+// phantom_extract.rs sync — no pointless re-prime). Keep them editable for
+// offline configuration, but visually identify that they do not affect the
+// current mode.
+function phantomGate(requires) {
+  const spectral = getLiveOption('phantom_extract_mode') === 'spectral';
+  if (requires === 'broadband' && spectral) return t('twoDSources.phantomBroadbandOnly');
+  if (requires === 'spectral' && !spectral) return t('twoDSources.phantomSpectralOnly');
+  return null;
 }
 
-// Params that only shape one method's plan: the engine deliberately ignores
-// the other method's changes while it is active (see phantom_extract.rs sync —
-// no pointless re-prime). Keep them editable for offline configuration, but
-// visually identify that they do not affect the current mode.
-const PHANTOM_BROADBAND_ONLY = new Set(['passes', 'center', 'sides']);
-const PHANTOM_SPECTRAL_ONLY = new Set(['heights', 'height_split']);
-
-function phantomMethodIsSpectral() {
-  return getLiveOption('phantom_extract_mode') === 'spectral';
-}
-
-// Reflect a param row's method-only gating on its container + control.
-function applyPhantomParamGate(container, control, key, spectral) {
-  const broadbandGated = spectral && PHANTOM_BROADBAND_ONLY.has(key);
-  const spectralGated = !spectral && PHANTOM_SPECTRAL_ONLY.has(key);
-  const gated = broadbandGated || spectralGated;
-  control.disabled = false;
-  container.style.opacity = gated ? '0.7' : '';
-  if (broadbandGated) {
-    container.title = t('twoDSources.phantomBroadbandOnly');
-  } else if (spectralGated) {
-    container.title = t('twoDSources.phantomSpectralOnly');
-  } else {
-    container.removeAttribute('title');
-  }
-}
-
-// Build the phantom param controls from the declared schema (app.phantomSchema is
-// the param-spec array directly). Continuous params render as sliders; binary
-// params (min 0, max 1, step 1) render as a switch. Mirrors buildParamSliders.
-function buildPhantomParamSliders() {
-  const row = document.getElementById('phantomParamsRow');
-  if (!row) return;
-  row.innerHTML = '';
-  const params = app.phantomSchema || [];
-  const spectral = phantomMethodIsSpectral();
-  for (const spec of params) {
-    const stored = app.phantomParams && app.phantomParams[spec.key];
-    const initial = stored != null ? stored : spec.default;
-    if (isBinaryParam(spec)) {
-      const label = document.createElement('label');
-      label.className = 'switch-row';
-      label.style.cssText = 'font-size:11px;cursor:pointer;margin-top:0';
-      const name = document.createElement('span');
-      name.textContent = schemaLabel(spec.i18nKey, spec.label);
-      const toggle = document.createElement('input');
-      toggle.type = 'checkbox';
-      toggle.dataset.paramKey = spec.key;
-      toggle.checked = Number(initial) >= 0.5;
-      toggle.addEventListener('change', () => {
-        applyPhantomParamNow(spec.key, toggle.checked ? 1 : 0);
-      });
-      applyPhantomParamGate(label, toggle, spec.key, spectral);
-      label.appendChild(name);
-      label.appendChild(toggle);
-      row.appendChild(label);
-      continue;
-    }
-    const label = document.createElement('label');
-    label.style.cssText = 'display:flex;align-items:center;gap:0.5rem;font-size:11px';
-    const name = document.createElement('span');
-    name.style.cssText = 'flex:0 0 auto;min-width:96px';
-    name.textContent = schemaLabel(spec.i18nKey, spec.label);
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = String(spec.min);
-    slider.max = String(spec.max);
-    slider.step = String(spec.step);
-    slider.style.cssText = 'flex:1;min-width:0';
-    slider.dataset.paramKey = spec.key;
-    const valEl = document.createElement('span');
-    valEl.style.cssText =
-      'flex:0 0 auto;width:48px;text-align:right;font-variant-numeric:tabular-nums';
-    slider.value = String(initial);
-    valEl.textContent = fmtParamValue(spec, initial);
-    slider.addEventListener('input', () => {
-      valEl.textContent = fmtParamValue(spec, slider.value);
-      applyPhantomParamNow(spec.key, slider.value);
-    });
-    applyPhantomParamGate(label, slider, spec.key, spectral);
-    label.appendChild(name);
-    label.appendChild(slider);
-    label.appendChild(valEl);
-    row.appendChild(label);
-  }
-  builtPhantomParams = (app.phantomSchema || []).length > 0;
-}
-
-// (Re)build the phantom controls when the schema arrives.
+// (Re)build the phantom controls when the listing arrives.
 export function rebuildPhantomControls() {
-  builtPhantomParams = false;
+  const row = document.getElementById('phantomParamsRow');
+  if (row) row.dataset.buildKey = '';
   updatePhantomUI();
 }
 
-// Show/hide + refresh the phantom parameter sliders.
+// Show/hide + refresh the phantom parameter controls, generated from the
+// stage's listing the way a backend's are.
 export function updatePhantomUI() {
-  const params = app.phantomSchema || [];
+  const params = (app.phantomListing && app.phantomListing.params) || [];
   const row = document.getElementById('phantomParamsRow');
-  const show =
-    getLiveOption('phantom_extract_mode') !== 'off' &&
-    params.length > 0;
-  if (row) row.style.display = show ? 'flex' : 'none';
-  if (!builtPhantomParams && params.length > 0) {
-    buildPhantomParamSliders();
-  } else if (row) {
-    const spectral = phantomMethodIsSpectral();
-    for (const slider of row.querySelectorAll('input[type=range]')) {
-      const key = slider.dataset.paramKey;
-      const spec = params.find((p) => p.key === key);
-      if (!spec) continue;
-      const stored = app.phantomParams && app.phantomParams[key];
-      const v = stored != null ? stored : spec.default;
-      if (document.activeElement !== slider) slider.value = String(v);
-      const valEl = slider.nextElementSibling;
-      if (valEl) valEl.textContent = fmtParamValue(spec, v);
-      applyPhantomParamGate(slider.parentElement, slider, key, spectral);
-    }
-    for (const toggle of row.querySelectorAll('input[type=checkbox][data-param-key]')) {
-      const key = toggle.dataset.paramKey;
-      const spec = params.find((p) => p.key === key);
-      if (!spec) continue;
-      const stored = app.phantomParams && app.phantomParams[key];
-      const v = stored != null ? stored : spec.default;
-      toggle.checked = Number(v) >= 0.5;
-      applyPhantomParamGate(toggle.closest('label') || toggle.parentElement, toggle, key, spectral);
-    }
-  }
+  if (!row) return;
+  const show = getLiveOption('phantom_extract_mode') !== 'off' && params.length > 0;
+  row.style.display = show ? 'flex' : 'none';
+  if (!params.length) return;
+  renderParamForm(
+    row,
+    params,
+    app.phantomParamValues || {},
+    applyPhantomParamNow,
+    { buildKey: i18nState.locale, live: true, gate: phantomGate },
+  );
 }
 
-// Commit a phantom parameter change live (slider drag).
-export function applyPhantomParamNow(key, value) {
-  const v = Number(value);
-  if (!Number.isFinite(v)) return;
-  if (!app.phantomParams || typeof app.phantomParams !== 'object') {
-    app.phantomParams = {};
-  }
-  app.phantomParams[key] = v;
-  invoke('control_phantom_extract_param', { key, value: v });
+// Commit a phantom parameter change live (slider drag, switch).
+function applyPhantomParamNow(key, value) {
+  app.phantomParamValues = { ...(app.phantomParamValues || {}), [key]: value };
+  invoke('control_phantom_extract_param', { key, value });
 }
 
 // Show a warning when by-name mapping can't route some speakers (non-standard

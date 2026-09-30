@@ -88,41 +88,12 @@ const HAND_WIRED_OPTIONS: &[LiveOptionRow] = &[
         config_reflects: |r| r.object_generator_id.as_deref() == Some("copy_up"),
     },
     LiveOptionRow {
-        key: "object_generator_params",
-        control_addr: osc_contract::CONTROL_OBJECT_GENERATOR_PARAM,
-        snapshot_key: "objectGeneratorParams",
-        set_non_default: |live| {
-            live.object_generator_params
-                .insert("strength".to_string(), 0.5);
-        },
-        snapshot_reflects: |v| v["strength"] == 0.5,
-        config_reflects: |r| {
-            r.object_generator_params
-                .as_ref()
-                .is_some_and(|m| m.get("strength") == Some(&0.5))
-        },
-    },
-    LiveOptionRow {
         key: "phantom_extract_mode",
         control_addr: osc_contract::CONTROL_PHANTOM_EXTRACT,
         snapshot_key: "phantomExtractMode",
         set_non_default: |live| live.phantom_extract_mode = PhantomExtractMode::Spectral,
         snapshot_reflects: |v| v == "spectral",
         config_reflects: |r| r.phantom_extract_mode == Some(PhantomExtractMode::Spectral),
-    },
-    LiveOptionRow {
-        key: "phantom_params",
-        control_addr: osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM,
-        snapshot_key: "phantomParams",
-        set_non_default: |live| {
-            live.phantom_params.insert("strength".to_string(), 0.75);
-        },
-        snapshot_reflects: |v| v["strength"] == 0.75,
-        config_reflects: |r| {
-            r.phantom_params
-                .as_ref()
-                .is_some_and(|m| m.get("strength") == Some(&0.75))
-        },
     },
     LiveOptionRow {
         key: "placement.generic.layout",
@@ -267,7 +238,7 @@ fn snapshot_json(control: &Arc<RendererControl>) -> serde_json::Value {
         &control.active_topology(),
         1.0,
         control.available_backends(),
-        control.all_backend_params(),
+        control.plugin_params(),
         &[],
         "[]",
         "{}",
@@ -812,7 +783,6 @@ fn legacy_fixed_channel_options_migrate_without_reactivating_host_mode() {
         );
         assert!(live.synthetic_objects_enabled);
         assert_eq!(live.phantom_extract_mode, PhantomExtractMode::Spectral);
-        assert!(!live.phantom_params.contains_key("method"));
         renderer::options::store_live_to_config(&mut legacy, &live, &env(&control));
     }
 
@@ -894,6 +864,81 @@ fn config_save_covers_every_live_option_and_omits_defaults() {
         );
     }
 
+    let _ = std::fs::remove_file(&out);
+}
+
+/// The plugin parameter values — the object generators' and the phantom
+/// stage's, beside the backends' — are on every layer: the two control
+/// addresses, the snapshot (per plugin), and the saved config at their new
+/// keys, the legacy ones migrated and dropped without losing a value or a key
+/// the file had that nothing reads.
+#[test]
+fn plugin_params_reach_the_catalogue_the_snapshot_and_the_saved_config() {
+    use renderer::backend_params::ParamValue;
+    use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind, PluginParams};
+    for addr in [
+        osc_contract::CONTROL_OBJECT_GENERATOR_PARAM,
+        osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM,
+        osc_contract::CONTROL_BACKEND_PARAM,
+    ] {
+        assert!(osc_contract::ALL_CONTROL.contains(&addr), "{addr}");
+    }
+
+    let control = fixture_control();
+    let at_defaults = snapshot_json(&control);
+    assert_eq!(
+        at_defaults["objectGeneratorParamValuesById"],
+        serde_json::json!({})
+    );
+    assert_eq!(at_defaults["phantomParamValues"], serde_json::json!({}));
+
+    // A config written before the store: one flat map for the selected
+    // generator, a float-only phantom map with the old method entry, and a
+    // key of its own nothing here reads.
+    let base = temp_path("plugin-legacy");
+    let out = temp_path("plugin-out");
+    std::fs::write(
+        &base,
+        "render:\n  object_generator_id: pad\n  object_generator_params:\n    strength: 0.8\n    \
+         hpf_hz: 400.0\n  phantom_params:\n    method: 1.0\n    center: 1.0\n    passes: 2.0\n  \
+         some_future_key: kept\n",
+    )
+    .unwrap();
+    let legacy = Config::load_or_default(&base).render.unwrap();
+    control.seed_plugin_params(PluginParams::from_config(&legacy));
+    control.live.write().object_generator_id = "pad".to_string();
+
+    let snapshot = snapshot_json(&control);
+    assert_eq!(
+        snapshot["objectGeneratorParamValuesById"]["pad"]["strength"],
+        serde_json::json!(0.8f32)
+    );
+    assert_eq!(snapshot["phantomParamValues"]["passes"], 2.0);
+
+    save_live_config_to_path(&control, None, &base, &out).expect("save");
+    let yaml = std::fs::read_to_string(&out).unwrap();
+    assert!(!yaml.contains("object_generator_params"), "{yaml}");
+    assert!(!yaml.contains("phantom_params:"), "{yaml}");
+    assert!(yaml.contains("some_future_key: kept"), "{yaml}");
+    let saved = Config::load_or_default(&out).render.unwrap();
+    let reloaded = PluginParams::from_config(&saved);
+    assert_eq!(
+        reloaded.get(PluginKind::ObjectGenerator, "pad", "strength"),
+        Some(&ParamValue::Float(0.8))
+    );
+    assert_eq!(
+        reloaded.get(PluginKind::ObjectGenerator, "pad", "hpf_hz"),
+        Some(&ParamValue::Float(400.0))
+    );
+    let phantom = reloaded
+        .plugin(PluginKind::PhantomExtract, PHANTOM_EXTRACT_ID)
+        .unwrap();
+    assert_eq!(phantom.len(), 2, "center and passes, without the method");
+    assert_eq!(phantom["center"], ParamValue::Float(1.0));
+    // A second save of the reloaded file writes the same values.
+    assert_eq!(reloaded, control.plugin_params());
+
+    let _ = std::fs::remove_file(&base);
     let _ = std::fs::remove_file(&out);
 }
 

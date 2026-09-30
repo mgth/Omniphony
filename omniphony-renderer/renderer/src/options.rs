@@ -1017,12 +1017,10 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         help_i18n_key: Some("help.objectGenerator"),
         legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_OBJECT_GENERATOR),
         set: |live, raw, _env| {
+            // Each generator keeps its own parameter values (the plugin
+            // store is keyed by generator id), so a change of selection has
+            // nothing to clear.
             let id = raw_str(raw)?;
-            if live.object_generator_id != id {
-                // New generator: drop the previous one's param overrides so
-                // the new generator starts at its declared defaults.
-                live.object_generator_params.clear();
-            }
             live.object_generator_id = id.to_string();
             Some(id.to_string())
         },
@@ -3146,8 +3144,9 @@ pub fn find_by_legacy_addr(addr: &str) -> Option<&'static OptionSpec> {
         .find(|spec| spec.legacy_control_addr.matches(addr))
 }
 
-/// Reset every declared option — plus the param bags and the virtual bed —
-/// to its declared default. The live profile switch runs this before
+/// Reset every declared option — plus the placement — to its declared
+/// default (the plugin parameter store is `RendererControl`'s, cleared by
+/// `clear_plugin_params`). The live profile switch runs this before
 /// [`seed_live_from_config`]: the per-option `config_seed` closures only
 /// assign when the config pins a value, which is correct at construction
 /// (live starts at defaults) but on a running control would silently keep
@@ -3177,31 +3176,26 @@ pub fn reset_live_to_defaults(live: &mut LiveParams, env: &OptionEnv) {
             log::warn!("live option '{}' rejected its declared default", spec.key);
         }
     }
-    live.object_generator_params.clear();
-    live.phantom_params.clear();
     live.placement = crate::placement::PlacementState::default();
 }
 
-/// Seed every declared live option — plus the document-valued companions the
-/// registry doesn't model (the two param bags and the virtual bed) — from a
-/// loaded config. Shared by the CLI bootstrap and `Engine::from_paths` so the
+/// Seed every declared live option — plus the document-valued companion the
+/// registry doesn't model (the placement) — from a loaded config. The plugin
+/// parameter values are `RendererControl`'s
+/// (`seed_plugin_params(PluginParams::from_config(..))`). Shared by the CLI bootstrap and `Engine::from_paths` so the
 /// two boot paths cannot drift (the FFI/CLI parity bug class).
 pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig, env: &OptionEnv) {
     for spec in LIVE_OPTIONS {
         (spec.config_seed)(live, render, env);
     }
-    // Param bags: absent = the stage's declared defaults.
-    if let Some(params) = render.object_generator_params.clone() {
-        live.object_generator_params = params;
-    }
-    if let Some(params) = render.phantom_params.clone() {
-        live.phantom_params = params;
-    }
     // Migrate the old phantom boolean + `phantom_params.method` split into the
     // explicit three-position mode. A remembered method remains available even
     // if the old enable switch was off.
     if render.phantom_extract_mode.is_none() {
-        let legacy_method = live.phantom_params.get("method").copied();
+        let legacy_method = render
+            .phantom_params
+            .as_ref()
+            .and_then(|params| params.get("method").copied());
         live.phantom_extract_mode = match (render.phantom_enabled, legacy_method) {
             (Some(true), Some(v)) if v >= 0.5 => PhantomExtractMode::Spectral,
             (Some(true), _) => PhantomExtractMode::Broadband,
@@ -3210,7 +3204,6 @@ pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig, env: 
             _ => PhantomExtractMode::Off,
         };
     }
-    live.phantom_params.remove("method");
 
     // Old configs had no global master. Infer it once from an active child so
     // upgrading preserves audible behaviour; new configs always persist the
@@ -3260,8 +3253,9 @@ pub fn seed_rebuilding_rows_from_config(
     rebuild
 }
 
-/// Write every declared live option — plus the param bags and the virtual
-/// bed — into a config. Used by the full live-state save; the OSC targeted
+/// Write every declared live option — plus the placement — into a config
+/// (the plugin parameter values are `RendererControl`'s:
+/// `PluginParams::store_to_config`). Used by the full live-state save; the OSC targeted
 /// persist stores single options through `OptionSpec::config_store`.
 pub fn store_live_to_config(render: &mut RenderConfig, live: &LiveParams, env: &OptionEnv) {
     // An option this host does not offer keeps what the file says, for the
@@ -3269,20 +3263,6 @@ pub fn store_live_to_config(render: &mut RenderConfig, live: &LiveParams, env: &
     for spec in LIVE_OPTIONS.iter().filter(|spec| env.offers(spec)) {
         (spec.config_store)(render, live, env);
     }
-    // Param bags: `None` keeps the key out of the file so each stage falls
-    // back to its declared defaults.
-    render.object_generator_params = if live.object_generator_params.is_empty() {
-        None
-    } else {
-        Some(live.object_generator_params.clone())
-    };
-    let mut phantom_params = live.phantom_params.clone();
-    phantom_params.remove("method");
-    render.phantom_params = if phantom_params.is_empty() {
-        None
-    } else {
-        Some(phantom_params)
-    };
     // Legacy global-host and phantom boolean keys are read-only migrations.
     render.channel_render_mode = None;
     render.phantom_enabled = None;

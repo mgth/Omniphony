@@ -24,17 +24,21 @@
 //!
 //! ## Selecting it at runtime
 //!
-//! Implement [`BackendFactory`] (see [`ExampleFactory`]) and a host registers it
-//! with `RendererControl::register_backend`; selecting `backend_id = "example"`
-//! then routes a topology rebuild through it — no central enum or `match` to edit.
-//! The backend's identity lives entirely on this crate: its `backend_id`,
-//! `backend_label` and parameter schema come from the [`GainModel`] impl and
-//! [`BackendFactory`], with no closed enum in `renderer` to extend.
+//! Implement [`PluginFactory`] (its id, label and parameter schema — the
+//! contract every plugin shares, object generators included) and
+//! [`BackendFactory`] (how to build it; see [`ExampleFactory`]), and a host
+//! registers it with `RendererControl::register_backend`; selecting
+//! `backend_id = "example"` then routes a topology rebuild through it — no
+//! central enum or `match` to edit. The backend's identity lives entirely on
+//! this crate: its `backend_id`, `backend_label` and parameter schema come from
+//! the [`GainModel`] impl and [`PluginFactory`], with no closed enum in
+//! `renderer` to extend.
 
 use renderer::backend_params::{ParamSpec, ParamValue};
 use renderer::backend_registry::{
     BackendBuildCtx, BackendBuildPlan, BackendFactory, DynamicBackendPlan,
 };
+use renderer::plugin::PluginFactory;
 use renderer::render_backend::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
 use renderer::spatial_vbap::{Gains, spherical_to_adm};
 use renderer::speaker_layout::SpeakerLayout;
@@ -153,7 +157,7 @@ impl GainModel for ExampleBackend {
 /// [`BackendBuildPlan::Dynamic`] whose closure builds the model from the layout.
 pub struct ExampleFactory;
 
-impl BackendFactory for ExampleFactory {
+impl PluginFactory for ExampleFactory {
     fn id(&self) -> &'static str {
         "example"
     }
@@ -170,7 +174,9 @@ impl BackendFactory for ExampleFactory {
                 .help("Cosine-lobe exponent: higher = tighter localisation, lower = more spread."),
         ]
     }
+}
 
+impl BackendFactory for ExampleFactory {
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
         // Capture the spatializable speaker directions now (build thread), so the
         // model builder closure owns everything it needs and the hot path does no
