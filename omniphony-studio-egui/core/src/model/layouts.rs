@@ -159,7 +159,7 @@ fn clamp(v: f64, min: f64, max: f64) -> f64 {
     v.max(min).min(max)
 }
 
-// Coordinate conversions come from `omniphony-geometry`, which the renderer
+// Coordinate conversions come from `omniphony_geometry`, which the renderer
 // shares. They used to live here, and applied the Three.js scene-space formula
 // (`az = atan2(z, x)`, elevation off +Y) to layout files written in the ADM
 // frame the renderer uses (`az = atan2(x, y)`, elevation off +Z). The axes were
@@ -639,7 +639,7 @@ pub fn sanitize_export_name(name: &str) -> String {
 /// the rules for a valid stored speaker lived in two places — and the one that
 /// mattered on *import* (`normalize_speaker`) was not the one applied on
 /// export. Both now clamp the same way and derive the missing coordinate
-/// representation through `omniphony-geometry`.
+/// representation through `omniphony_geometry`.
 pub fn normalize_for_export(speaker: &mut Speaker) {
     speaker.x = clamp(speaker.x, -1.0, 1.0);
     speaker.y = clamp(speaker.y, -1.0, 1.0);

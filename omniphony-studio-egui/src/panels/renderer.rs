@@ -83,9 +83,10 @@ impl BackendPathDrafts {
     }
 }
 
-/// Which half of the panel is showing (`body.studio-tab-binaural`). UI state,
-/// not persisted, Renderer first.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+/// Which half of the panel is showing (`body.studio-tab-binaural`). View
+/// state, kept in the preferences; Renderer first.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RendererTab {
     #[default]
     Renderer,
@@ -447,198 +448,275 @@ impl StudioSpike {
         else {
             return;
         };
+        self.plugin_params_form(
+            ui,
+            ParamTarget::Backend(backend),
+            params,
+            values.get(backend),
+            |_| None,
+        );
+    }
+
+    /// One control per declared parameter of a plugin — a backend, an object
+    /// generator or the phantom stage, which all publish the same
+    /// `ParamSpec` schema — seeded from `values` (the plugin's stored
+    /// `{ key: value }`) or the declared default. `gate` reads a parameter's
+    /// `requires` and returns the i18n key of the note shown, dimmed, while
+    /// that requirement is not met; the control stays editable, the
+    /// configuration being kept for when it is.
+    pub(crate) fn plugin_params_form(
+        &mut self,
+        ui: &mut Ui,
+        target: ParamTarget<'_>,
+        params: &[serde_json::Value],
+        values: Option<&serde_json::Value>,
+        gate: impl Fn(&str) -> Option<&'static str>,
+    ) {
         let context_current = self.backend_path_edits.sync_context(&self.host);
-        let stored = values.get(backend);
+        let salt = target.salt();
         for spec in params {
             let Some(key) = spec.get("key").and_then(|v| v.as_str()) else {
                 continue;
             };
-            let value = stored
+            let value = values
                 .and_then(|v| v.get(key))
                 .cloned()
                 .or_else(|| spec.get("default").cloned())
                 .unwrap_or(serde_json::Value::Null);
-            let label = param_label(key, spec);
-            // The backend's own description, or the Studio's translation of
-            // it; opened from the parameter's name, not always on show.
-            let help_text = param_help(key, spec);
-            let help = Help::text(
-                ("backend-param", backend, key),
-                help_text.as_deref().unwrap_or(""),
-            );
-            let kind = spec.get("kind");
-            let kind_type = kind
-                .and_then(|k| k.get("type"))
+            let gated = spec
+                .get("requires")
                 .and_then(|v| v.as_str())
-                .unwrap_or("float");
-            let sent = match kind_type {
-                "bool" => {
-                    let mut on = value.as_bool().unwrap_or(false);
-                    widgets::switch_row_help(ui, &label, help, &mut on)
-                        .then(|| serde_json::json!(on))
+                .and_then(&gate);
+            let row = ui.scope(|ui| {
+                if gated.is_some() {
+                    ui.multiply_opacity(0.7);
                 }
-                "enum" => {
-                    let current = value.as_str().unwrap_or("").to_owned();
-                    let options: Vec<(String, String)> = kind
-                        .and_then(|k| k.get("options"))
-                        .and_then(|o| o.as_array())
-                        .map(|list| {
-                            list.iter()
-                                .map(|o| {
-                                    let v = o
-                                        .get("value")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_owned();
-                                    let l = option_label(key, &v, o);
-                                    (v, l)
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let mut chosen = current.clone();
-                    widgets::label_row_help(ui, &label, help, |ui| {
-                        widgets::bounded_combo(ui, 150.0, |ui, w| {
-                            egui::ComboBox::from_id_salt(("backend-param", key))
-                                .selected_text(
-                                    options
-                                        .iter()
-                                        .find(|(v, _)| *v == current)
-                                        .map(|(_, l)| l.clone())
-                                        .unwrap_or_else(|| current.clone()),
-                                )
-                                .width(w)
-                                .truncate()
-                                .show_ui(ui, |ui| {
-                                    for (v, l) in &options {
-                                        ui.selectable_value(&mut chosen, v.clone(), l);
-                                    }
-                                })
-                        });
-                    });
-                    (chosen != current).then(|| serde_json::json!(chosen))
-                }
-                "path" | "file" => {
-                    let source = value.as_str().unwrap_or("");
-                    let mut committed = None;
-                    let extensions: Vec<String> = kind
-                        .and_then(|k| k.get("extensions"))
-                        .and_then(|v| v.as_array())
-                        .map(|list| {
-                            list.iter()
-                                .filter_map(|e| e.as_str().map(str::to_owned))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let editable = kind
-                        .and_then(|k| k.get("editable"))
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false);
-                    let language = kind
-                        .and_then(|k| k.get("language"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned);
-                    // A path only means something to the renderer when it is
-                    // the renderer's own filesystem, so Browse is offered only
-                    // then; the editor works either way, because it moves the
-                    // bytes rather than the path.
-                    let local = crate::host::commands::app::renderer_is_local(&self.host);
-                    let mut browse = false;
-                    let mut edit = false;
-                    let epoch = self
-                        .osc_stats
-                        .connection_epoch
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    ui.add_enabled_ui(context_current, |ui| {
-                        widgets::label_row_help(ui, &label, help, |ui| {
-                            if editable {
-                                edit = ui.button(t("backend.file.edit")).clicked();
-                            }
-                            if local {
-                                browse = ui.button(t("backend.file.browse")).clicked();
-                            }
-                            let draft = self.backend_path_edits.field(
-                                ui.make_persistent_id(("backend-file", backend, key, epoch)),
-                                epoch,
-                                ui.ctx().cumulative_frame_nr(),
-                            );
-                            if edit || browse {
-                                draft.discard();
-                            }
-                            let hint = match extensions.first() {
-                                Some(ext) => format!("name.{ext}"),
-                                None if kind_type == "path" => "/path/to/backend.lua".to_owned(),
-                                None => "name.ext".to_owned(),
-                            };
-                            committed = draft.show(
-                                ui,
-                                ("backend-file", backend, key, epoch),
-                                source,
-                                &hint,
-                                120.0,
-                                true,
-                            );
-                        });
-                    });
-                    if edit {
-                        self.open_script_editor(backend, key, language, extensions.clone());
-                    }
-                    if browse {
-                        self.pick_files(
-                            ui.ctx(),
-                            crate::ui::file_dialogs::Purpose::Backend {
-                                backend: backend.to_owned(),
-                                key: key.to_owned(),
-                            },
-                            &extensions,
-                        );
-                    }
-                    committed.map(serde_json::Value::String)
-                }
-                _ => {
-                    let is_int = kind_type == "int";
-                    let min = kind
-                        .and_then(|k| k.get("min"))
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0) as f32;
-                    let max = kind
-                        .and_then(|k| k.get("max"))
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(1.0) as f32;
-                    let step = if is_int {
-                        1.0
-                    } else {
-                        kind.and_then(|k| k.get("step"))
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.01)
-                    };
-                    let mut number = value.as_f64().unwrap_or(min as f64) as f32;
-                    widgets::value_slider_help(
-                        ui,
-                        &label,
-                        help,
-                        &mut number,
-                        min..=max,
-                        step,
-                        move |v| {
-                            if is_int {
-                                format!("{}", v.round() as i64)
-                            } else {
-                                format!("{v:.3}")
-                            }
-                        },
-                    )
-                    .then(|| {
-                        if is_int {
-                            serde_json::json!(number.round() as i64)
-                        } else {
-                            serde_json::json!(number as f64)
-                        }
+                self.param_control(ui, &target, salt, key, spec, &value, context_current)
+            });
+            if let Some(note) = gated {
+                row.response.on_hover_text(t(note));
+            }
+            if let Some(sent) = row.inner {
+                self.send_plugin_param(&target, key, spec, sent);
+            }
+        }
+    }
+
+    /// The control of one declared parameter; `Some(value)` when it was
+    /// edited this frame.
+    #[allow(clippy::too_many_arguments)]
+    fn param_control(
+        &mut self,
+        ui: &mut Ui,
+        target: &ParamTarget<'_>,
+        salt: (&'static str, &str),
+        key: &str,
+        spec: &serde_json::Value,
+        value: &serde_json::Value,
+        context_current: bool,
+    ) -> Option<serde_json::Value> {
+        let label = param_label(key, spec);
+        // The plugin's own description, or the Studio's translation of it;
+        // opened from the parameter's name, not always on show.
+        let help_text = param_help(key, spec);
+        let help = Help::text(
+            ("plugin-param", salt, key),
+            help_text.as_deref().unwrap_or(""),
+        );
+        let kind = spec.get("kind");
+        let kind_type = kind
+            .and_then(|k| k.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("float");
+        match kind_type {
+            "bool" => {
+                let mut on = value.as_bool().unwrap_or(false);
+                widgets::switch_row_help(ui, &label, help, &mut on).then(|| serde_json::json!(on))
+            }
+            "enum" => {
+                let current = value.as_str().unwrap_or("").to_owned();
+                let options: Vec<(String, String)> = kind
+                    .and_then(|k| k.get("options"))
+                    .and_then(|o| o.as_array())
+                    .map(|list| {
+                        list.iter()
+                            .map(|o| {
+                                let v = o
+                                    .get("value")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_owned();
+                                let l = option_label(key, &v, o);
+                                (v, l)
+                            })
+                            .collect()
                     })
+                    .unwrap_or_default();
+                let mut chosen = current.clone();
+                widgets::label_row_help(ui, &label, help, |ui| {
+                    widgets::bounded_combo(ui, 150.0, |ui, w| {
+                        egui::ComboBox::from_id_salt(("plugin-param", salt, key))
+                            .selected_text(
+                                options
+                                    .iter()
+                                    .find(|(v, _)| *v == current)
+                                    .map(|(_, l)| l.clone())
+                                    .unwrap_or_else(|| current.clone()),
+                            )
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for (v, l) in &options {
+                                    ui.selectable_value(&mut chosen, v.clone(), l);
+                                }
+                            })
+                    });
+                });
+                (chosen != current).then(|| serde_json::json!(chosen))
+            }
+            // A file lives on the renderer and moves over the backend file
+            // controls, so only a backend can declare one.
+            "path" | "file" => {
+                let ParamTarget::Backend(backend) = *target else {
+                    return None;
+                };
+                let source = value.as_str().unwrap_or("");
+                let mut committed = None;
+                let extensions: Vec<String> = kind
+                    .and_then(|k| k.get("extensions"))
+                    .and_then(|v| v.as_array())
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|e| e.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let editable = kind
+                    .and_then(|k| k.get("editable"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let language = kind
+                    .and_then(|k| k.get("language"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                // A path only means something to the renderer when it is
+                // the renderer's own filesystem, so Browse is offered only
+                // then; the editor works either way, because it moves the
+                // bytes rather than the path.
+                let local = crate::host::commands::app::renderer_is_local(&self.host);
+                let mut browse = false;
+                let mut edit = false;
+                let epoch = self
+                    .osc_stats
+                    .connection_epoch
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                ui.add_enabled_ui(context_current, |ui| {
+                    widgets::label_row_help(ui, &label, help, |ui| {
+                        if editable {
+                            edit = ui.button(t("backend.file.edit")).clicked();
+                        }
+                        if local {
+                            browse = ui.button(t("backend.file.browse")).clicked();
+                        }
+                        let draft = self.backend_path_edits.field(
+                            ui.make_persistent_id(("backend-file", backend, key, epoch)),
+                            epoch,
+                            ui.ctx().cumulative_frame_nr(),
+                        );
+                        if edit || browse {
+                            draft.discard();
+                        }
+                        let hint = match extensions.first() {
+                            Some(ext) => format!("name.{ext}"),
+                            None if kind_type == "path" => "/path/to/backend.lua".to_owned(),
+                            None => "name.ext".to_owned(),
+                        };
+                        committed = draft.show(
+                            ui,
+                            ("backend-file", backend, key, epoch),
+                            source,
+                            &hint,
+                            120.0,
+                            true,
+                        );
+                    });
+                });
+                if edit {
+                    self.open_script_editor(backend, key, language, extensions.clone());
                 }
-            };
-            if let Some(value) = sent {
-                if matches!(kind_type, "path" | "file") {
+                if browse {
+                    self.pick_files(
+                        ui.ctx(),
+                        crate::ui::file_dialogs::Purpose::Backend {
+                            backend: backend.to_owned(),
+                            key: key.to_owned(),
+                        },
+                        &extensions,
+                    );
+                }
+                committed.map(serde_json::Value::String)
+            }
+            _ => {
+                let is_int = kind_type == "int";
+                let min = kind
+                    .and_then(|k| k.get("min"))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32;
+                let max = kind
+                    .and_then(|k| k.get("max"))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0) as f32;
+                let step = if is_int {
+                    1.0
+                } else {
+                    kind.and_then(|k| k.get("step"))
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.01)
+                };
+                let unit = spec
+                    .get("unit")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let mut number = value.as_f64().unwrap_or(min as f64) as f32;
+                widgets::value_slider_help(
+                    ui,
+                    &label,
+                    help,
+                    &mut number,
+                    min..=max,
+                    step,
+                    move |v| format_param_value(v, step, &unit),
+                )
+                .then(|| {
+                    if is_int {
+                        serde_json::json!(number.round() as i64)
+                    } else {
+                        serde_json::json!(number as f64)
+                    }
+                })
+            }
+        }
+    }
+
+    /// Send an edited value to its plugin: a backend's through
+    /// `/backend/param` (the renderer echoes it), a generator's or the
+    /// phantom stage's kept at once as well, so the slider does not snap
+    /// back until the echo arrives.
+    fn send_plugin_param(
+        &self,
+        target: &ParamTarget<'_>,
+        key: &str,
+        spec: &serde_json::Value,
+        value: serde_json::Value,
+    ) {
+        match *target {
+            ParamTarget::Backend(backend) => {
+                let kind_type = spec
+                    .get("kind")
+                    .and_then(|k| k.get("type"))
+                    .and_then(|v| v.as_str());
+                if matches!(kind_type, Some("path" | "file")) {
                     if let Some(context) = &self.backend_path_edits.context {
                         context.with_current(&self.host, || {
                             self.send_backend_param(backend, key, value)
@@ -648,6 +726,10 @@ impl StudioSpike {
                     self.send_backend_param(backend, key, value);
                 }
             }
+            ParamTarget::Generator(generator) => {
+                engine::set_object_generator_param(&self.host, generator, key, value)
+            }
+            ParamTarget::Phantom => engine::set_phantom_extract_param(&self.host, key, value),
         }
     }
 
@@ -1388,16 +1470,56 @@ fn backend_label(id: &str) -> String {
     .to_owned()
 }
 
-/// A translated parameter label wins over the schema's own.
-fn param_label(key: &str, spec: &serde_json::Value) -> String {
-    let translated = t(&format!("backendParam.{key}"));
-    if translated != format!("backendParam.{key}") {
-        return translated.to_owned();
+/// Which plugin a generated parameter form edits, and so where an edit goes.
+#[derive(Clone, Copy)]
+pub(crate) enum ParamTarget<'a> {
+    Backend(&'a str),
+    Generator(&'a str),
+    Phantom,
+}
+
+impl<'a> ParamTarget<'a> {
+    /// Keeps the controls of two plugins apart in egui's id space.
+    fn salt(&self) -> (&'static str, &'a str) {
+        match *self {
+            ParamTarget::Backend(id) => ("backend", id),
+            ParamTarget::Generator(id) => ("generator", id),
+            ParamTarget::Phantom => ("phantom", ""),
+        }
     }
-    spec.get("label")
+}
+
+/// The label of a declared parameter: the translation of the `i18nKey` it
+/// declares, else the Studio's own `backendParam.<key>`, else the English
+/// label the schema carries.
+fn param_label(key: &str, spec: &serde_json::Value) -> String {
+    spec.get("i18nKey")
         .and_then(|v| v.as_str())
-        .unwrap_or(key)
-        .to_owned()
+        .and_then(crate::i18n::lookup)
+        .or_else(|| crate::i18n::lookup(&format!("backendParam.{key}")))
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            spec.get("label")
+                .and_then(|v| v.as_str())
+                .unwrap_or(key)
+                .to_owned()
+        })
+}
+
+/// A numeric parameter's readout: as many decimals as its step means
+/// (`0.01` → 2, `0.5` → 1, `10` → 0, at most 3), then its unit.
+fn format_param_value(value: f32, step: f64, unit: &str) -> String {
+    let decimals = if step > 0.0 {
+        (-step.log10().floor()).clamp(0.0, 3.0) as usize
+    } else {
+        2
+    };
+    let text = format!("{value:.decimals$}");
+    if unit.is_empty() {
+        text
+    } else {
+        format!("{text} {unit}")
+    }
 }
 
 /// `setBackendInfoModalOpen`: the generic intro, then a paragraph on the

@@ -108,25 +108,28 @@ pub(crate) fn build_live_state(
 ) -> LiveStateDatagrams {
     let has_audio = host.is_some();
     let has_input = host.is_some();
-    let mut messages =
-        runtime_control::snapshot::build_live_state_bundle(control, has_audio, has_input);
+    let mut messages = runtime_control::snapshot::build_live_state_bundle_with_host(
+        control,
+        has_audio,
+        has_input,
+        host.map(|h| h.as_ref()),
+    );
     if let Some(h) = host {
         messages.extend(h.extend_snapshot());
     }
-    // Declared bed→height object-generator schema (id / label / param specs), so
-    // Studio builds the fixed-bed height-generator selector + parameter sliders
-    // dynamically. The
-    // engine publishes the JSON into `RendererControl` from its registry (which
-    // lives in this crate), so any host-registered out-of-tree generators are
-    // included.
+    // The bed→height object-generator listings (id / label / param specs, the
+    // format of `available_backends`), so Studio builds the fixed-bed
+    // height-generator selector + parameter controls dynamically. The engine
+    // publishes them into `RendererControl` from its registry (which lives in
+    // this crate), so any host-registered out-of-tree generators are included.
     messages.push(OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_OBJECT_GENERATORS.to_string(),
-        args: vec![OscType::String(control.object_generators_schema())],
+        args: vec![OscType::String(control.object_generators_json())],
     }));
-    // Declared phantom-extraction param schema, so Studio builds its sliders.
+    // The phantom-extraction stage's listing, so Studio builds its controls.
     messages.push(OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_PHANTOM.to_string(),
-        args: vec![OscType::String(control.phantom_schema())],
+        args: vec![OscType::String(control.phantom_json())],
     }));
     messages.push(OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_SNAPSHOT_COMPLETE.to_string(),
@@ -151,8 +154,17 @@ pub(crate) fn save_live_config(
             build_live_state(control, host).broadcast(socket, clients);
             log::info!("OSC: config saved to {}", result.path.display());
             if result.restart_required {
-                log::info!("OSC: render.bridge_path changed, requesting reload_config");
-                sys::shutdown::request_restart_from_config();
+                if sys::shutdown::is_restartable() {
+                    log::info!("OSC: render.bridge_path changed, requesting reload_config");
+                    sys::shutdown::request_restart_from_config();
+                } else {
+                    // An embedded host cannot swap its bridge in place, and a
+                    // restart request nobody consumes would stay latched and
+                    // suppress the live handoff at teardown.
+                    log::info!(
+                        "OSC: render.bridge_path changed; takes effect when the host restarts the renderer"
+                    );
+                }
             }
         }
         Err(e) => {

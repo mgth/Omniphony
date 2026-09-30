@@ -209,7 +209,7 @@ fn clamp_layout_value(value: f64, min: f64, max: f64) -> f64 {
     value.max(min).min(max)
 }
 
-// Conversions come from `omniphony-geometry`, shared with the renderer. The
+// Conversions come from `omniphony_geometry`, shared with the renderer. The
 // copies that lived here read the ADM coordinates the renderer publishes as if
 // they were Three.js scene coordinates — the same missing axis swizzle as
 // `layouts.rs`, but on the LIVE layout rather than a file.

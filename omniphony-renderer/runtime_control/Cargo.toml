@@ -6,16 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-omniphony-geometry.workspace = true
+omniphony_geometry.workspace = true
 omniphony-osc-contract.workspace = true
 anyhow.workspace = true
 log.workspace = true
 renderer.workspace = true
+live_log.workspace = true
 rosc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
-sys.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true

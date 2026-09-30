@@ -1,6 +1,6 @@
 use super::output::AudioWriter;
 use super::state::{
-    DecodeSessionState, OutputState, RuntimeOutputState, SpatialState, TelemetryState,
+    DecodeSessionState, OutputSource, OutputState, RuntimeOutputState, SpatialState, TelemetryState,
 };
 use crate::cli::command::{OutputBackend, OutputFileFormatArg};
 use anyhow::{Result, anyhow};
@@ -44,14 +44,18 @@ impl<'a> WriterLifecycleCoordinator<'a> {
         }
     }
 
+    /// Build the writer when there is none, for `channel_count` channels of
+    /// `output_source` — both from `DecodeHandler::output_shape`, the one
+    /// width decision.
     pub fn create_audio_writer_if_needed(
         &mut self,
         output_backend: OutputBackend,
         sample_rate: u32,
         channel_count: usize,
+        output_source: OutputSource,
     ) -> Result<()> {
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-        let _ = (output_backend, sample_rate, channel_count);
+        let _ = (output_backend, sample_rate, channel_count, output_source);
 
         if self.output.audio_writer.is_none() && !self.output.output_init_failed {
             // File/FIFO/stdout sink: cross-platform, no device clock, so no
@@ -59,7 +63,13 @@ impl<'a> WriterLifecycleCoordinator<'a> {
             // frame. This block must exist or the writer is never created and
             // the renderer silently produces no output.
             if output_backend == OutputBackend::File {
-                match self.build_audio_writer(output_backend, sample_rate, channel_count, None) {
+                match self.build_audio_writer(
+                    output_backend,
+                    sample_rate,
+                    channel_count,
+                    output_source,
+                    None,
+                ) {
                     Ok(writer) => {
                         log::info!(
                             "Writing rendered audio to '{}' ({} Hz, {} channels, format={:?})",
@@ -91,7 +101,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                     self.output
                         .bootstrap_started_at
                         .get_or_insert_with(Instant::now);
-                    if !self.spatial.has_objects {
+                    if !self.spatial.stream.has_objects {
                         self.output.bootstrap_frames_seen =
                             self.output.bootstrap_frames_seen.saturating_add(1);
                         if self.output.bootstrap_frames_seen < 8 {
@@ -115,7 +125,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                     sample_rate,
                     channel_count,
                     self.output.bootstrap_frames_seen,
-                    self.spatial.has_objects,
+                    self.spatial.stream.has_objects,
                     self.spatial.bed_indices,
                     self.session.decoded_frames,
                     self.session.decoded_samples,
@@ -126,22 +136,26 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                 );
 
                 // PipeWire channel naming follows the output channel mapping:
-                // `by_name` tags each channel with its speaker position (FC, …) so
-                // PipeWire routes positionally; `by_index` uses positionless AUX
-                // names so the link is 1:1 by index (port N → layout speaker N).
+                // `by_name` tags each channel with its position (FC, …) so
+                // PipeWire routes positionally — the renderer's output names,
+                // which are the binaural pair's in headphone mode, never the
+                // speaker list behind it; `by_index` uses positionless AUX
+                // names so the link is 1:1 by index (port N → layout speaker
+                // N). Decoded channels passed through keep PipeWire's default
+                // map for their count.
                 let mapping = self
                     .spatial_renderer
                     .map(|r| r.renderer_control().live.read().output_channel_mapping)
                     .unwrap_or_default();
                 let channel_names = match mapping {
                     renderer::live_params::OutputChannelMapping::ByName => {
-                        self.spatial_renderer.map(|renderer| {
-                            renderer
-                                .speaker_names()
-                                .iter()
-                                .map(|s| s.to_string())
-                                .collect::<Vec<_>>()
-                        })
+                        match (output_source, self.spatial_renderer) {
+                            (OutputSource::Rendered, Some(renderer)) => {
+                                Some(renderer.output_channel_names())
+                                    .filter(|names| names.len() == channel_count)
+                            }
+                            _ => None,
+                        }
                     }
                     renderer::live_params::OutputChannelMapping::ByIndex => Some(
                         (0..channel_count)
@@ -153,6 +167,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                     output_backend,
                     sample_rate,
                     channel_count,
+                    output_source,
                     channel_names,
                 ) {
                     Ok(writer) => {
@@ -195,7 +210,13 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                     );
                 }
 
-                match self.build_audio_writer(output_backend, sample_rate, channel_count, None) {
+                match self.build_audio_writer(
+                    output_backend,
+                    sample_rate,
+                    channel_count,
+                    output_source,
+                    None,
+                ) {
                     Ok(writer) => {
                         self.output.audio_writer = Some(writer);
                         self.output.audio_writer_channels = Some(channel_count);
@@ -273,6 +294,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
         output_backend: OutputBackend,
         sample_rate: u32,
         channel_count: usize,
+        output_source: OutputSource,
         #[cfg(target_os = "linux")] pipewire_channel_names: Option<Vec<String>>,
         #[cfg(not(target_os = "linux"))] _pipewire_channel_names: Option<Vec<String>>,
     ) -> Result<AudioWriter> {
@@ -336,20 +358,29 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                 };
                 // Embed the speaker geometry in the CAF `chan` chunk so the
                 // capture is self-describing for arbitrary spatial layouts.
-                let channel_descs = self.spatial_renderer.map(|renderer| {
-                    renderer
-                        .speaker_layout()
-                        .speakers
-                        .iter()
-                        .map(|s| {
-                            audio_output::CafChannelDesc::spherical(
-                                s.azimuth,
-                                s.elevation,
-                                s.distance,
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                });
+                // Only a speaker-array render maps onto the layout's speakers;
+                // a binaural pair or passed-through decoded channels do not.
+                let channel_descs = self
+                    .spatial_renderer
+                    .filter(|renderer| {
+                        output_source == OutputSource::Rendered
+                            && renderer.output_is_speaker_array()
+                            && renderer.output_channel_count() == channel_count
+                    })
+                    .map(|renderer| {
+                        renderer
+                            .speaker_layout()
+                            .speakers
+                            .iter()
+                            .map(|s| {
+                                audio_output::CafChannelDesc::spherical(
+                                    s.azimuth,
+                                    s.elevation,
+                                    s.distance,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    });
                 AudioWriter::create_file(
                     &self.runtime.output_file,
                     format,

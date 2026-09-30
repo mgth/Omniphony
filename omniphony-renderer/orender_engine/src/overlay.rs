@@ -1454,9 +1454,18 @@ mod tests {
 
     fn guard() -> std::sync::MutexGuard<'static, ()> {
         let g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let o = overlay();
+        // A test that panicked under a lock must not leave it poisoned: the
+        // production accessors treat a poisoned lock as "skip the write".
+        o.state.clear_poison();
+        o.prefs_path.clear_poison();
         // Detach any persistence path so tests never touch the filesystem.
-        *overlay().prefs_path.lock().unwrap() = None;
-        clear();
+        *o.prefs_path.lock().unwrap() = None;
+        // Reset the *whole* display state, not just the scene: a test that
+        // leaves e.g. the trail config behind would turn the next test's
+        // "this change must publish" write into a no-op, so the outcome would
+        // depend on which test happened to take the lock first.
+        *o.state.lock().unwrap() = OverlayState::default();
         set_enabled(true);
         set_rendering(true);
         set_labels_enabled(true);

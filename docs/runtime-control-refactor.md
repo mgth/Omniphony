@@ -1,5 +1,27 @@
 # Runtime Control Refactor
 
+> **Historical.** This is the plan as it was written; the refactor landed, but
+> not in exactly this shape. Where the code is today:
+>
+> - `audio_output::control` holds `AudioControl`, `RequestedAudioOutputConfig`,
+>   `AppliedAudioOutputState` and `OutputDeviceOption`, as planned, and
+>   `RendererControl` no longer owns any audio-domain state.
+> - There is no `RuntimeControl` container in decode. The split is by crate
+>   instead: the audio-free **`runtime_control`** crate (linked into
+>   `liborender`) holds the core OSC handlers (`runtime_control::osc`), the live-state snapshot
+>   (`runtime_control::snapshot`) and config persistence
+>   (`runtime_control::persist`); the audio and live-input domains live in the
+>   **`host_audio`** crate, whose `HostAudio` implements
+>   `runtime_control::HostControlHandler`. A host that owns audio (the `orender`
+>   CLI) registers it; the embedded host (mpv) registers nothing.
+> - `renderer::osc_output` no longer exists: the OSC server, transport and
+>   dispatcher live in `orender_engine::osc`, which runs the core handlers first
+>   and delegates what they do not recognise to the registered
+>   `HostControlHandler`. The CLI's `decode::handler` is
+>   `src/cli/decode/handler.rs`.
+> - The OSC address strings are named in the `osc-contract` crate; see
+>   `docs/osc-control-contract.md`.
+
 ## Goal
 
 Separate renderer-domain live control from audio-output-domain live control so the

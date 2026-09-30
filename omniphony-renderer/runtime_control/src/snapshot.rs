@@ -25,7 +25,7 @@ pub struct RenderBackendStateSnapshot {
     pub effective_label: String,
     /// Every selectable backend (built-in + host-registered) with its param
     /// schema, for the UI list and control generation.
-    pub available_backends: Vec<renderer::backend_registry::BackendListing>,
+    pub available_backends: Vec<renderer::plugin::PluginListing>,
     /// Host-set param values for *every* backend, keyed by backend id then param
     /// key. The UI reads each backend's values from here, including an inner
     /// backend (e.g. the hybrid barycenter tab) that is not the active selection.
@@ -62,7 +62,7 @@ fn allowed_evaluation_modes(
 pub fn build_render_backend_state_snapshot(
     live: &LiveParams,
     active_topology: &RenderTopology,
-    available_backends: Vec<renderer::backend_registry::BackendListing>,
+    available_backends: Vec<renderer::plugin::PluginListing>,
     backend_param_values_by_id: std::collections::HashMap<
         String,
         std::collections::HashMap<String, renderer::backend_params::ParamValue>,
@@ -95,7 +95,7 @@ pub fn build_render_backend_state_snapshot(
 pub fn build_render_backend_state_json(
     live: &LiveParams,
     active_topology: &RenderTopology,
-    available_backends: Vec<renderer::backend_registry::BackendListing>,
+    available_backends: Vec<renderer::plugin::PluginListing>,
     backend_param_values_by_id: std::collections::HashMap<
         String,
         std::collections::HashMap<String, renderer::backend_params::ParamValue>,
@@ -114,11 +114,10 @@ pub fn build_renderer_state_json(
     live: &LiveParams,
     active_topology: &RenderTopology,
     room_scale_m: f32,
-    available_backends: Vec<renderer::backend_registry::BackendListing>,
-    backend_param_values_by_id: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, renderer::backend_params::ParamValue>,
-    >,
+    available_backends: Vec<renderer::plugin::PluginListing>,
+    // Every plugin's stored parameter values (backends, object generators,
+    // the phantom stage).
+    plugin_params: renderer::plugin::PluginParams,
     // Speaker names that can't be routed by position in by_name mode (computed by
     // the engine, which owns the name→label classifier). Shown as a warning.
     unroutable_speaker_names: &[String],
@@ -130,11 +129,19 @@ pub fn build_renderer_state_json(
 ) -> String {
     let effective_backend = active_topology.backend.backend_id();
     let effective_evaluation_mode = active_topology.backend.evaluation_mode().as_str();
+    // The spread addresses write the "vbap" param bag, not the live fields, so
+    // resolve the block the way the backend build does (bag value, live
+    // fallback) — the live fields alone go stale after the first edit.
+    use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind};
+    let spread = renderer::backend_registry::resolve_vbap_spread_params(
+        live,
+        plugin_params.bag(PluginKind::Backend).get("vbap"),
+    );
     let render_backend_state_json = build_render_backend_state_json(
         live,
         active_topology,
         available_backends,
-        backend_param_values_by_id,
+        plugin_params.bag(PluginKind::Backend).clone(),
     );
     let fixed_channel_catalog =
         serde_json::from_str::<serde_json::Value>(fixed_channel_catalog_json)
@@ -156,11 +163,13 @@ pub fn build_renderer_state_json(
         "syntheticObjectsEnabled": live.synthetic_objects_enabled,
         // Active fixed-bed→height object generator id; empty = off.
         "objectGeneratorId": live.object_generator_id.as_str(),
-        // Live param overrides for the active generator (key → value), for the
-        // Studio sliders. The schema itself is published separately by the engine
-        // on `/omniphony/state/object_generators`.
-        "objectGeneratorParams":
-            serde_json::to_value(&live.object_generator_params).unwrap_or(serde_json::Value::Null),
+        // Stored param values of every generator (`{ id: { key: value } }`),
+        // as `renderBackendState.backendParamValuesById` carries the
+        // backends'. The listings are published separately by the engine on
+        // `/omniphony/state/object_generators`.
+        "objectGeneratorParamValuesById":
+            serde_json::to_value(plugin_params.bag(PluginKind::ObjectGenerator))
+                .unwrap_or(serde_json::Value::Null),
         // Whether the active output layout has a top speaker. Generators are a
         // strict no-op without one; Studio still leaves them editable for
         // offline configuration and reports the applicability reason.
@@ -174,8 +183,15 @@ pub fn build_renderer_state_json(
         "phantomExtractMode": live.phantom_extract_mode.as_str(),
         "phantomEnabled": live.synthetic_objects_enabled
             && live.phantom_extract_mode != renderer::live_params::PhantomExtractMode::Off,
-        "phantomParams":
-            serde_json::to_value(&live.phantom_params).unwrap_or(serde_json::Value::Null),
+        // Stored param values of the phantom stage (`{ key: value }`); its
+        // listing is published on `/omniphony/state/phantom`.
+        "phantomParamValues": serde_json::to_value(
+            plugin_params
+                .plugin(PluginKind::PhantomExtract, PHANTOM_EXTRACT_ID)
+                .cloned()
+                .unwrap_or_default(),
+        )
+        .unwrap_or(serde_json::Value::Null),
         "surroundPlacement": live.surround_placement.as_str(),
         "outputChannelMapping": live.output_channel_mapping.as_str(),
         "outputChannelMappingUnroutable": unroutable_speaker_names,
@@ -220,12 +236,12 @@ pub fn build_renderer_state_json(
             "scaleM": room_scale_m
         },
         "spread": {
-            "min": live.spread_min,
-            "max": live.spread_max,
-            "fromDistance": live.spread_from_distance,
-            "distanceRange": live.spread_distance_range,
-            "distanceCurve": live.spread_distance_curve,
-            "sizeToSpreadMode": live.size_to_spread_mode.as_str()
+            "min": spread.spread_min,
+            "max": spread.spread_max,
+            "fromDistance": spread.spread_from_distance,
+            "distanceRange": spread.spread_distance_range,
+            "distanceCurve": spread.spread_distance_curve,
+            "sizeToSpreadMode": spread.size_to_spread_mode.as_str()
         },
         "distanceDiffuse": {
             "enabled": live.use_distance_diffuse,
@@ -291,6 +307,10 @@ pub fn build_renderer_state_json(
             "airAbsorption": live.binaural.air_absorption,
             "diffuseFieldEq": live.binaural.diffuse_field_eq,
             "hrirSource": live.binaural.hrir_source.as_str(),
+            // The parametric sources' settings, which travel inside the
+            // source string: echoed so a client shows what is rendered (and
+            // saved) rather than its own defaults.
+            "hrirParams": hrir_params_json(&live.binaural.hrir_source),
             "hrtfSofaPath": match &live.binaural.hrir_source {
                 renderer::binaural::HrirSource::Sofa(p) => p.as_str(),
                 _ => "",
@@ -358,6 +378,62 @@ pub fn build_renderer_state_json(
 /// The embedded host (`liborender` inside mpv) owns no audio output or input
 /// stage — mpv does — so it attaches neither and advertises the reduced set,
 /// tagged `variant: "embedded"` / `host: "mpv"` for the connection label.
+/// The parametric HRIR sources' settings (`hrirParams`), `null` for the
+/// others.
+fn hrir_params_json(source: &renderer::binaural::HrirSource) -> serde_json::Value {
+    match source {
+        renderer::binaural::HrirSource::Pinna {
+            preset,
+            d_scale_pct,
+            depth_pct,
+        } => json!({
+            "preset": preset.as_str(),
+            "dScalePct": d_scale_pct,
+            "depthPct": depth_pct,
+        }),
+        renderer::binaural::HrirSource::Prtf {
+            freq_scale_pct,
+            depth_pct,
+        } => json!({
+            "freqScalePct": freq_scale_pct,
+            "depthPct": depth_pct,
+        }),
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// The options schema a host publishes: the core options it offers (a host
+/// with audio I/O leaves out the embedded engine's), then its own.
+fn options_schema_json(has_audio: bool, host: Option<&dyn crate::HostControlHandler>) -> String {
+    let mut entries = renderer::options::schema_entries(has_audio);
+    if let Some(host) = host {
+        entries.extend(host.options_schema());
+    }
+    serde_json::Value::Array(entries).to_string()
+}
+
+/// `/state/host_options`: the host's options, requested and applied, and its
+/// `Staged` groups' pending flags. `None` for a host that declares none.
+fn host_options_json(host: &dyn crate::HostControlHandler) -> Option<String> {
+    let options = host.options_json();
+    if options.is_empty() {
+        return None;
+    }
+    let pending: serde_json::Map<String, serde_json::Value> = host
+        .option_groups_pending()
+        .into_iter()
+        .map(|(group, pending)| (group.to_string(), pending.into()))
+        .collect();
+    Some(
+        json!({
+            "options": options,
+            "applied": host.options_applied_json(),
+            "pending": pending,
+        })
+        .to_string(),
+    )
+}
+
 fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String {
     let mut domains = vec!["renderer", "layout", "speakers", "loudness"];
     let mut control_config = vec!["layout", "speakers"];
@@ -441,7 +517,10 @@ pub fn build_speakers_state_json(
             let live_state = live.speakers.get(&idx);
             json!({
                 "id": idx,
-                "gain": live_state.map(|state| state.gain).unwrap_or(1.0),
+                "gain": live_state.map_or_else(
+                    || renderer::live_params::speaker_gain_linear(speaker.gain_db),
+                    |state| state.gain
+                ),
                 "delayMs": live_state
                     .map(|state| state.delay_ms)
                     .unwrap_or(speaker.delay_ms)
@@ -477,6 +556,18 @@ pub fn build_live_state_bundle(
     has_audio: bool,
     has_input: bool,
 ) -> Vec<OscPacket> {
+    build_live_state_bundle_with_host(control, has_audio, has_input, None)
+}
+
+/// [`build_live_state_bundle`] with the registered host handler, whose
+/// declared options join the published schema and go out in
+/// `/state/host_options`.
+pub fn build_live_state_bundle_with_host(
+    control: &Arc<RendererControl>,
+    has_audio: bool,
+    has_input: bool,
+    host: Option<&dyn crate::HostControlHandler>,
+) -> Vec<OscPacket> {
     let live = control.live.read();
     let active_topology = control.active_topology();
     let editable_layout = control.editable_layout();
@@ -491,7 +582,7 @@ pub fn build_live_state_bundle(
         &active_topology,
         editable_layout.radius_m,
         control.available_backends(),
-        control.all_backend_params(),
+        control.plugin_params(),
         // The name→label classifier lives in orender_engine (bridge_api types),
         // which runtime_control can't reach; the engine's recompute broadcast
         // (fired on topology build and every layout edit) carries the real list.
@@ -505,7 +596,7 @@ pub fn build_live_state_bundle(
 
     let mut messages = vec![
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/capabilities".to_string(),
+            addr: crate::osc_contract::STATE_CAPABILITIES.to_string(),
             args: vec![OscType::String(build_renderer_capabilities_json(
                 has_audio, has_input,
             ))],
@@ -515,7 +606,7 @@ pub fn build_live_state_bundle(
             // default, flags, i18n keys) — same pattern as the generator /
             // phantom param schemas, so clients can build controls from it.
             addr: crate::osc_contract::STATE_OPTIONS_SCHEMA.to_string(),
-            args: vec![OscType::String(renderer::options::schema_json())],
+            args: vec![OscType::String(options_schema_json(has_audio, host))],
         }),
         OscPacket::Message(OscMessage {
             // Named config profiles (docs/config-profiles.md): active + list,
@@ -524,19 +615,19 @@ pub fn build_live_state_bundle(
             args: vec![OscType::String(profiles_state_json(control))],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/renderer".to_string(),
+            addr: crate::osc_contract::STATE_RENDERER.to_string(),
             args: vec![OscType::String(renderer_state_json)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/layout".to_string(),
+            addr: crate::osc_contract::STATE_LAYOUT.to_string(),
             args: vec![OscType::String(layout_json)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/speakers".to_string(),
+            addr: crate::osc_contract::STATE_SPEAKERS.to_string(),
             args: vec![OscType::String(speakers_state_json)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/loudness".to_string(),
+            addr: crate::osc_contract::STATE_LOUDNESS.to_string(),
             args: vec![OscType::String(
                 json!({
                     "enabled": live.use_loudness,
@@ -549,7 +640,7 @@ pub fn build_live_state_bundle(
         OscPacket::Message(OscMessage {
             // Monitoring cadences — renderer is the source of truth so studio
             // syncs its UI from here instead of pushing its own localStorage.
-            addr: "/omniphony/state/monitoring".to_string(),
+            addr: crate::osc_contract::STATE_MONITORING.to_string(),
             args: vec![OscType::String(
                 json!({
                     "meterRateHz": control.meter_rate_hz(),
@@ -559,23 +650,23 @@ pub fn build_live_state_bundle(
             )],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render_evaluation/cartesian/x_size".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_X_SIZE.to_string(),
             args: vec![OscType::Int(live.evaluation.cartesian.x_size as i32)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render_evaluation/cartesian/y_size".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Y_SIZE.to_string(),
             args: vec![OscType::Int(live.evaluation.cartesian.y_size as i32)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render_evaluation/cartesian/z_size".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Z_SIZE.to_string(),
             args: vec![OscType::Int(live.evaluation.cartesian.z_size as i32)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render_evaluation/cartesian/z_neg_size".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Z_NEG_SIZE.to_string(),
             args: vec![OscType::Int(live.evaluation.cartesian.z_neg_size as i32)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render_evaluation/position_interpolation".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EVALUATION_POSITION_INTERPOLATION.to_string(),
             args: vec![OscType::Int(if live.evaluation.position_interpolation {
                 1
             } else {
@@ -583,33 +674,34 @@ pub fn build_live_state_bundle(
             })],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render_evaluation/object_size_intervals".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS.to_string(),
             args: vec![OscType::Int(live.evaluation.object_size_intervals as i32)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/log_level".to_string(),
+            addr: crate::osc_contract::STATE_LOG_LEVEL.to_string(),
             args: vec![OscType::String(
-                sys::live_log::current_runtime_level_name().to_string(),
+                live_log::current_runtime_level_name().to_string(),
             )],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render_evaluation/polar/azimuth_resolution".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EVALUATION_POLAR_AZIMUTH_RESOLUTION.to_string(),
             args: vec![OscType::Int(live.evaluation.polar.azimuth_values.max(1))],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render_evaluation/polar/elevation_resolution".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EVALUATION_POLAR_ELEVATION_RESOLUTION
+                .to_string(),
             args: vec![OscType::Int(live.evaluation.polar.elevation_values.max(1))],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render_evaluation/polar/distance_res".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EVALUATION_POLAR_DISTANCE_RES.to_string(),
             args: vec![OscType::Int(live.evaluation.polar.distance_res.max(1))],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render_evaluation/polar/distance_max".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EVALUATION_POLAR_DISTANCE_MAX.to_string(),
             args: vec![OscType::Float(live.evaluation.polar.distance_max.max(0.01))],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/allow_negative_z".to_string(),
+            addr: crate::osc_contract::STATE_VBAP_ALLOW_NEGATIVE_Z.to_string(),
             args: vec![OscType::Int(
                 if control
                     .backend_rebuild_params()
@@ -623,7 +715,7 @@ pub fn build_live_state_bundle(
             )],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/config/saved".to_string(),
+            addr: crate::osc_contract::STATE_CONFIG_SAVED.to_string(),
             args: vec![OscType::Int(
                 if control
                     .config_dirty
@@ -636,11 +728,11 @@ pub fn build_live_state_bundle(
             )],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/input_pipe".to_string(),
+            addr: crate::osc_contract::STATE_INPUT_PIPE.to_string(),
             args: vec![OscType::String(control.input_path().unwrap_or_default())],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/render/bridge_path".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_BRIDGE_PATH.to_string(),
             args: vec![OscType::String(
                 control
                     .bridge_path()
@@ -654,7 +746,7 @@ pub fn build_live_state_bundle(
             // this in About so a CLI-vs-host config mismatch (e.g. mpv falling
             // back to defaults while the CLI used ~/.config/omniphony) is
             // immediately visible.
-            addr: "/omniphony/state/render/config_path".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_CONFIG_PATH.to_string(),
             args: vec![OscType::String(
                 control
                     .config_path()
@@ -667,7 +759,7 @@ pub fn build_live_state_bundle(
             // "parse_error", or "" when no config path was given (defaults by
             // design). A non-"loaded" value means the renderer is on built-in
             // defaults despite config_path looking valid — Studio flags it red.
-            addr: "/omniphony/state/render/config_status".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_CONFIG_STATUS.to_string(),
             args: vec![OscType::String(control.config_status().unwrap_or_default())],
         }),
         OscPacket::Message(OscMessage {
@@ -675,7 +767,7 @@ pub fn build_live_state_bundle(
             // stamped into runtime_control which both the CLI binary and the
             // mpv-embedded liborender link). Studio shows it in About so a
             // liborender-vs-orender version skew is visible at a glance.
-            addr: "/omniphony/state/render/version".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_VERSION.to_string(),
             args: vec![OscType::String(crate::build_fingerprint())],
         }),
         OscPacket::Message(OscMessage {
@@ -683,7 +775,7 @@ pub fn build_live_state_bundle(
             // commit share a fingerprint, so only the path tells a client whether
             // the renderer answering on this port is the one it started or one
             // left behind by another environment.
-            addr: "/omniphony/state/render/executable".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_EXECUTABLE.to_string(),
             args: vec![OscType::String(crate::executable_path())],
         }),
         OscPacket::Message(OscMessage {
@@ -691,7 +783,7 @@ pub fn build_live_state_bundle(
             // engine, or "" when the engine is linked directly as a Rust crate
             // (the CLI — no C ABI involved). Studio shows it in About next to
             // the build fingerprint.
-            addr: "/omniphony/state/render/abi".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_ABI.to_string(),
             args: vec![OscType::String(
                 control
                     .host_abi()
@@ -706,10 +798,16 @@ pub fn build_live_state_bundle(
             // falls back to its native decoder), but a process-global degraded
             // reporter still serves OSC so Studio can show a red banner with this
             // message. Empty in normal operation.
-            addr: "/omniphony/state/render/bridge_error".to_string(),
+            addr: crate::osc_contract::STATE_RENDER_BRIDGE_ERROR.to_string(),
             args: vec![OscType::String(control.bridge_error().unwrap_or_default())],
         }),
     ];
+    if let Some(host_options) = host.and_then(host_options_json) {
+        messages.push(OscPacket::Message(OscMessage {
+            addr: crate::osc_contract::STATE_HOST_OPTIONS.to_string(),
+            args: vec![OscType::String(host_options)],
+        }));
+    }
 
     // DRC is a decode-stage control owned by the core (lives in liborender).
     // Always publish the DRC fields on /state/input. When a host_audio
@@ -718,7 +816,7 @@ pub fn build_live_state_bundle(
     // Tauri InputDomainState parser merges partial payloads, so two
     // /state/input messages in one bundle compose cleanly.
     messages.push(OscPacket::Message(OscMessage {
-        addr: "/omniphony/state/input".to_string(),
+        addr: crate::osc_contract::STATE_INPUT.to_string(),
         args: vec![OscType::String(
             json!({
                 "drcMode": live.drc_mode,
@@ -773,4 +871,31 @@ fn placement_json(state: &renderer::placement::PlacementState) -> serde_json::Va
         );
     }
     serde_json::Value::Object(families)
+}
+
+#[cfg(test)]
+mod hrir_params_tests {
+    use super::hrir_params_json;
+    use renderer::binaural::{HrirSource, PinnaPreset};
+
+    /// The parametric settings are echoed, so Studio shows what is rendered
+    /// and saved instead of its own defaults.
+    #[test]
+    fn parametric_sources_echo_their_settings() {
+        let pinna = hrir_params_json(&HrirSource::Pinna {
+            preset: PinnaPreset::Rd,
+            d_scale_pct: 110,
+            depth_pct: 60,
+        });
+        assert_eq!(pinna["preset"], "rd");
+        assert_eq!(pinna["dScalePct"], 110);
+        assert_eq!(pinna["depthPct"], 60);
+        let prtf = hrir_params_json(&HrirSource::Prtf {
+            freq_scale_pct: 95,
+            depth_pct: 40,
+        });
+        assert_eq!(prtf["freqScalePct"], 95);
+        assert_eq!(prtf["depthPct"], 40);
+        assert!(hrir_params_json(&HrirSource::SafKemar).is_null());
+    }
 }

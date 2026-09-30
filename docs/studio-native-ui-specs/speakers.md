@@ -13,7 +13,7 @@ Helpers that live in other files but that these visuals cannot be reproduced wit
 | Frame | Axes | Where |
 |---|---|---|
 | Omniphony/ADM normalised | `x` left(−1)/right(+1), `y` rear(−1)/front(+1), `z` down(−1)/up(+1); all clamped to [−1, 1] | layout JSON, gain-table grid, OSC |
-| Scene (three.js, Y-up) | `scene.x = adm.y` (depth, +x = front/screen), `scene.y = adm.z` (height), `scene.z = adm.x` (width, +z = right) | `coordinates.js:33-39` (`omniphonyToSceneCartesian`), crate `omniphony_geometry::adm_to_scene` (`omniphony-renderer/omniphony-geometry/src/lib.rs:88`) |
+| Scene (three.js, Y-up) | `scene.x = adm.y` (depth, +x = front/screen), `scene.y = adm.z` (height), `scene.z = adm.x` (width, +z = right) | `coordinates.js:33-39` (`omniphonyToSceneCartesian`), crate `omniphony_geometry::adm_to_scene` (`omniphony-renderer/omniphony_geometry/src/lib.rs:88`) |
 
 Room-ratio warp (`coordinates.js:106-135`, crate `map_depth` lib.rs:207 / `room_scaled_position` lib.rs:269):
 
@@ -305,7 +305,7 @@ band 0: values[cells]   band 1: values[cells] …   (cells = nx·ny·nz)
 cell index = xi + nx·(yi + ny·zi)          // xi fastest (live_params.rs:2218-2220, band_gaintable.rs:214)
 ```
 
-Grid axes (`live_params.rs:2166-2190`, `omniphony-geometry/src/lib.rs:322-352`): `x_positions = evenly_spaced_axis(x_size, −1, 1)` (**ADM x**, width), `y_positions = evenly_spaced_axis(y_size, −1, 1)` (ADM y, depth), `z_positions = cartesian_z_axis(z_size, z_neg_size)` = `z_neg_size` nodes at `−1 + i/z_neg_size` (covering [−1, 0)) followed by `z_size` evenly spaced nodes on [0, 1] — **not** symmetric, which is why the positions are shipped and must be used for the height lookup. Counts are node counts (already `interval + 1`); use the shipped positions, not the `render_evaluation` state events.
+Grid axes (`live_params.rs:2166-2190`, `omniphony_geometry/src/lib.rs:322-352`): `x_positions = evenly_spaced_axis(x_size, −1, 1)` (**ADM x**, width), `y_positions = evenly_spaced_axis(y_size, −1, 1)` (ADM y, depth), `z_positions = cartesian_z_axis(z_size, z_neg_size)` = `z_neg_size` nodes at `−1 + i/z_neg_size` (covering [−1, 0)) followed by `z_size` evenly spaced nodes on [0, 1] — **not** symmetric, which is why the positions are shipped and must be used for the height lookup. Counts are node counts (already `interval + 1`); use the shipped positions, not the `render_evaluation` state events.
 
 Value semantics per `speaker_index`:
 

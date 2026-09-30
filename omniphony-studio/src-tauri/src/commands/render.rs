@@ -279,6 +279,22 @@ pub fn control_render_backend(state: State<SharedState>, value: String) {
     );
 }
 
+/// A plugin parameter value as the OSC argument that carries it: the scalar
+/// type follows the JSON value (bool / number / string), which the renderer
+/// reads in the type the parameter's schema declares. `None` for anything
+/// else, or a number that is not finite.
+pub(crate) fn param_value_arg(value: &serde_json::Value) -> Option<rosc::OscType> {
+    match value {
+        serde_json::Value::Bool(b) => Some(rosc::OscType::Bool(*b)),
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .filter(|v| v.is_finite())
+            .map(|v| rosc::OscType::Float(v as f32)),
+        serde_json::Value::String(s) => Some(rosc::OscType::String(s.clone())),
+        _ => None,
+    }
+}
+
 /// Generic backend param setter. The scalar type follows the JSON value (bool /
 /// number / string), matching the param schema's kind. When `backend` is given,
 /// the value is applied to that specific backend (e.g. a hybrid inner backend);
@@ -290,11 +306,8 @@ pub fn control_backend_param(
     value: serde_json::Value,
     backend: Option<String>,
 ) {
-    let arg = match value {
-        serde_json::Value::Bool(b) => rosc::OscType::Bool(b),
-        serde_json::Value::Number(n) => rosc::OscType::Float(n.as_f64().unwrap_or(0.0) as f32),
-        serde_json::Value::String(s) => rosc::OscType::String(s),
-        _ => return,
+    let Some(arg) = param_value_arg(&value) else {
+        return;
     };
     let args = match backend {
         Some(backend) => vec![
@@ -526,7 +539,7 @@ pub fn control_render_input_pipe(state: State<SharedState>, value: String) {
 /// counts are intervals rather than nodes, and that the height axis is
 /// asymmetric (an optional negative half at its own resolution, stopping short
 /// of zero so both halves do not claim it). Both now come from
-/// `omniphony-geometry`, which is also what the renderer builds the table with.
+/// `omniphony_geometry`, which is also what the renderer builds the table with.
 #[tauri::command]
 pub fn get_vbap_grid_nodes(state: State<SharedState>) -> Option<serde_json::Value> {
     let cartesian = {

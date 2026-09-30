@@ -235,7 +235,7 @@ fn clamp_layout_value(value: f64, min: f64, max: f64) -> f64 {
     value.max(min).min(max)
 }
 
-// Conversions come from `omniphony-geometry`, shared with the renderer. The
+// Conversions come from `omniphony_geometry`, shared with the renderer. The
 // copies that lived here read the ADM coordinates the renderer publishes as if
 // they were Three.js scene coordinates — the same missing axis swizzle as
 // `layouts.rs`, but on the LIVE layout rather than a file.
@@ -1341,7 +1341,10 @@ fn handle_packet(
                                     // Producer swap behind an unbroken link → re-handshake.
                                     send_register(socket, host, osc_rx_port, listen_port);
                                     send_metering_enabled(
-                                        socket, host, osc_rx_port, metering_enabled,
+                                        socket,
+                                        host,
+                                        osc_rx_port,
+                                        metering_enabled,
                                     );
                                     *is_connected = false;
                                     emit_osc_status(app, state, "reconnecting");
@@ -2864,8 +2867,9 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
             OscEvent::StateObjectGenerators { value } => {
-                // Declared bed→height generator schema (id/label/param specs). JS
-                // parses the JSON once on arrival to build the selector + sliders.
+                // The bed→height generators' listings (id / label / ParamSpec
+                // params, the backends' format). JS parses the JSON once on
+                // arrival to build the selector + parameter controls.
                 (
                     Some((
                         "objectGenerators:schema",
@@ -2875,7 +2879,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
             OscEvent::StatePhantom { value } => {
-                // Declared phantom-extraction param schema. JS builds the sliders.
+                // The phantom-extraction stage's listing. JS builds its controls.
                 (
                     Some(("phantom:schema", serde_json::json!({ "value": value }))),
                     removed_ids,
@@ -2890,6 +2894,12 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateHostOptions { .. } => {
+                // The standalone host's declared options (requested, applied,
+                // pending per staged group). The web Studio has no staged-group
+                // Apply yet (the native Studio does), so nothing reads them here.
+                (None, removed_ids)
+            }
             OscEvent::StateDecodeTimeMs { value } => {
                 s.decode_time_ms = Some(value);
                 record_timing(TimingSeries::Decode, value);
@@ -2898,7 +2908,13 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
-            OscEvent::StateObjectTestPosition { x, y, z, peak_dbfs, rms_dbfs } => {
+            OscEvent::StateObjectTestPosition {
+                x,
+                y,
+                z,
+                peak_dbfs,
+                rms_dbfs,
+            } => {
                 // Straight through: this is the renderer telling the scene where
                 // the test source actually is, and nothing here needs to keep it.
                 (
@@ -3005,10 +3021,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     Some(value.clone())
                 };
                 (
-                    Some((
-                        "render:executable",
-                        serde_json::json!({ "value": value }),
-                    )),
+                    Some(("render:executable", serde_json::json!({ "value": value }))),
                     removed_ids,
                 )
             }
@@ -3438,14 +3451,12 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             queue_batched_emit(event, payload);
         } else {
             let duplicate = match event {
-                "state:snapshot_ready" => already_emitted(
-                    &mut state.lock().unwrap().last_snapshot_emit_hash,
-                    &payload,
-                ),
-                "overlay:state" => already_emitted(
-                    &mut state.lock().unwrap().last_overlay_emit_hash,
-                    &payload,
-                ),
+                "state:snapshot_ready" => {
+                    already_emitted(&mut state.lock().unwrap().last_snapshot_emit_hash, &payload)
+                }
+                "overlay:state" => {
+                    already_emitted(&mut state.lock().unwrap().last_overlay_emit_hash, &payload)
+                }
                 _ => false,
             };
             if !duplicate {

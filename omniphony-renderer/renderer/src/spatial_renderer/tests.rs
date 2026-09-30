@@ -369,6 +369,22 @@ fn eval_mode_change_reuses_geometry() {
         !Arc::ptr_eq(&model0, &rebuilt.backend.decorated_model().unwrap()),
         "a geometry change must rebuild the gain model"
     );
+
+    // Backend switch at an unchanged generation (a config applied after
+    // construction): the vbap model must not be re-wrapped for barycenter.
+    control.live.write().backend_id = "barycenter".to_string();
+    let plan3 = control.prepare_topology_rebuild().expect("rebuild plan 3");
+    let switched = plan3
+        .build_topology_reusing(Some(&rebuilt))
+        .expect("backend switch build");
+    assert_eq!(switched.model_backend_id, "barycenter");
+    assert!(
+        !Arc::ptr_eq(
+            &rebuilt.backend.decorated_model().unwrap(),
+            &switched.backend.decorated_model().unwrap()
+        ),
+        "a backend switch must build the new backend's gain model"
+    );
 }
 
 #[test]
@@ -1781,7 +1797,6 @@ fn interp_survives_speaker_cascade_width_switch() {
     let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
     {
         let ctrl = r.control.clone();
-        ctrl.set_requested_ramp_mode(crate::live_params::RampMode::Interp);
         let mut live = ctrl.live.write();
         live.ramp_mode = crate::live_params::RampMode::Interp;
         live.binaural.mode = crate::live_params::BinauralMode::Cascaded;
@@ -2756,5 +2771,34 @@ fn brir_source_forces_the_cascade_and_convolves_the_set() {
     assert!(
         e_r > 1.5 * e_l,
         "a hard-right object favours the right ear through the set: L {e_l:.4} R {e_r:.4}"
+    );
+}
+
+/// Synchronous stage builds (offline renders): a source change is live on the
+/// frame that requests it, and the setting survives the stage rebuild a
+/// sample-rate change does. Without it the same frame still renders the old
+/// grid — the swap only happens on a later frame, whenever the worker is done.
+#[test]
+fn synchronous_stage_builds_land_on_the_requesting_frame() {
+    let first_frame_pending = |synchronous: bool| {
+        let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+        r.set_synchronous_stage_builds(synchronous);
+        r.set_sample_rate(44_100).unwrap();
+        {
+            let mut live = r.control.live.write();
+            live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+            live.binaural.hrir_source = crate::binaural::HrirSource::Synthetic;
+        }
+        let pcm = vec![0.0f32; 40];
+        r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+        r.binaural_rebuild_pending()
+    };
+    assert!(
+        !first_frame_pending(true),
+        "a synchronous build is live on the frame that asked for it"
+    );
+    assert!(
+        first_frame_pending(false),
+        "the live path hands the build to the worker"
     );
 }

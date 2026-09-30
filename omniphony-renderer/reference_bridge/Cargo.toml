@@ -3,7 +3,7 @@ name = "reference_bridge"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-license = "GPL-3.0-only"
+license.workspace = true
 description = "Reference decoder bridge: presents a multichannel WAV/PCM file as a channel bed for the orender spatial renderer (no proprietary decoder, no external player)"
 repository.workspace = true
 

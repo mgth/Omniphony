@@ -1,13 +1,14 @@
 use super::decoder_thread::DecodedSource;
 use super::handler::{BedChannelMapper, ChannelCountCalculator};
+use super::output::AudioLatencySnapshot;
 use super::output::AudioSamples;
 use super::state::{DecodeSessionState, OutputState, SpatialState, TelemetryState};
 use anyhow::Result;
 use audio_input::InputControl;
 use bridge_api::RChannelLabel;
 use bridge_api::RDecodedFrame;
-use orender_engine::render::fill_pcm_f32_drc;
-use orender_engine::virtual_bed::{BedPlanKind, OwnedPlacement, build_virtual_bed_objects};
+use orender_engine::render_metering::{meter_render_input, meter_render_output};
+use orender_engine::virtual_bed::BedPlanKind;
 use std::time::Instant;
 
 pub struct SampleWriteCoordinator<'a> {
@@ -20,17 +21,9 @@ pub struct SampleWriteCoordinator<'a> {
 }
 
 impl<'a> SampleWriteCoordinator<'a> {
-    /// Whether this frame carries objects, and so takes the object render path.
-    ///
-    /// Derived from the frame's source, not from `spatial.has_objects` alone:
-    /// that flag latches on the first frame carrying metadata and is only
-    /// cleared at a segment reset, so once an object stream has played, plain
-    /// channel content arriving afterwards would keep taking the object path.
-    /// The sink switches between encoded and linear PCM at will, so that
-    /// happens in one session. A live PCM frame is channel content by
-    /// construction — fixed labels, no metadata — whatever played before it.
+    /// Whether this frame carries objects (see [`SpatialState::frame_has_objects`]).
     pub fn frame_has_objects(&self, source: DecodedSource) -> bool {
-        self.spatial.has_objects && !matches!(source, DecodedSource::Live)
+        self.spatial.frame_has_objects(source)
     }
 
     pub fn new(
@@ -70,21 +63,10 @@ impl<'a> SampleWriteCoordinator<'a> {
             .audio_writer
             .as_ref()
             .and_then(|w| w.latency_snapshot());
-        let current_latency_instant_ms = latency_snapshot.map(|snapshot| snapshot.final_latency_ms);
         let current_latency_control_ms =
             latency_snapshot.and_then(|snapshot| snapshot.control_latency_ms);
-        let current_latency_smoothed_ms =
-            latency_snapshot.and_then(|snapshot| snapshot.smoothed_control_latency_ms);
         let current_latency_target_ms =
             latency_snapshot.and_then(|snapshot| snapshot.target_control_latency_ms);
-        let current_latency_downstream_ms =
-            latency_snapshot.and_then(|snapshot| snapshot.downstream_latency_ms);
-        let current_latency_avail_input_ms =
-            latency_snapshot.and_then(|snapshot| snapshot.avail_input_latency_ms);
-        let current_latency_output_fifo_ms =
-            latency_snapshot.and_then(|snapshot| snapshot.output_fifo_latency_ms);
-        let current_latency_resampler_pending_ms =
-            latency_snapshot.and_then(|snapshot| snapshot.resampler_pending_latency_ms);
         // Diag publication runs on its own cadence and per-client enable
         // flag, independent of the audio meter bundle. Gated by
         // `has_diag_clients` so we skip the JSON serialisation entirely
@@ -132,6 +114,12 @@ impl<'a> SampleWriteCoordinator<'a> {
             .audio_writer
             .as_ref()
             .and_then(|w| w.adaptive_runtime_state());
+        let output_figures = OutputFigures {
+            latency: latency_snapshot,
+            resample_ratio: current_resample_ratio,
+            adaptive_band: current_adaptive_band,
+            adaptive_state: current_adaptive_state,
+        };
 
         // DIAG output: wire the backend's pre-allocated diag atomics into
         // the registry. register_external is idempotent: second call (and
@@ -181,8 +169,7 @@ impl<'a> SampleWriteCoordinator<'a> {
             .unwrap_or(false)
             || current_resample_ratio
                 .map(|ratio| (ratio - 1.0).abs() >= 0.03)
-                .unwrap_or(false)
-            || matches!(current_adaptive_band, Some("hard"));
+                .unwrap_or(false);
         if let Some(total_ms) = self.output.audio_writer.as_ref().and_then(|w| {
             w.measured_audio_delay_ms()
                 .or_else(|| w.target_audio_delay_ms())
@@ -228,7 +215,7 @@ impl<'a> SampleWriteCoordinator<'a> {
             if let Some(ref mut renderer) = self.spatial_renderer {
                 log::trace!(
                     "VBAP check: has_objects={}, metadata.len()={}, channel_count={}",
-                    self.spatial.has_objects,
+                    self.spatial.stream.has_objects,
                     frame.metadata.len(),
                     channel_count
                 );
@@ -240,21 +227,6 @@ impl<'a> SampleWriteCoordinator<'a> {
                     );
                 }
 
-                let drc_weight = renderer
-                    .renderer_control()
-                    .live
-                    .read()
-                    .drc_weight
-                    .clamp(0.0, 1.0);
-                self.output.drc_target_gain = if drc_weight >= 1.0 {
-                    frame.drc_gain
-                } else if drc_weight <= 0.0 {
-                    1.0
-                } else {
-                    frame.drc_gain.powf(drc_weight)
-                };
-                self.output.drc_ramp_samples_remaining = frame.drc_ramp_duration;
-
                 if frame_has_objects {
                     log::trace!(
                         "Using VBAP spatial rendering (metadata source: {})",
@@ -264,15 +236,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                             "current frame"
                         }
                     );
-
-                    fill_pcm_f32_drc(
-                        &mut pcm_f32_scratch,
-                        &frame.pcm,
-                        channel_count,
-                        &mut self.output.drc_gain,
-                        self.output.drc_target_gain,
-                        &mut self.output.drc_ramp_samples_remaining,
-                    );
+                    let control = renderer.renderer_control();
+                    let stream = &mut self.spatial.stream;
+                    stream.publish_object_stream_processing(&control, &frame.channel_labels);
+                    stream
+                        .drc
+                        .fill_pcm_f32(&mut pcm_f32_scratch, frame, &control);
                     let pcm_data_f32 = &pcm_f32_scratch;
 
                     let has_metering_clients = self
@@ -282,131 +251,41 @@ impl<'a> SampleWriteCoordinator<'a> {
                         .is_some_and(|sender| sender.has_metering_clients());
                     if has_metering_clients {
                         if let Some(ref mut meter) = self.telemetry.audio_meter {
-                            meter.update_channel_count(channel_count);
-                            for chunk in pcm_data_f32.chunks_exact(channel_count) {
-                                meter.process_objects(chunk, channel_count);
-                            }
+                            meter_render_input(meter, pcm_data_f32, channel_count);
                         }
                     }
 
-                    let pending_events = std::mem::take(&mut self.spatial.frame_events);
                     let donated_buf = std::mem::take(&mut self.output.render_buf);
                     let render_started_at = Instant::now();
                     let rendered = renderer.render_frame(
-                        &pcm_data_f32,
+                        pcm_data_f32,
                         channel_count,
-                        &pending_events,
+                        &stream.frame_events,
                         donated_buf,
                         has_metering_clients,
                     )?;
-
-                    let num_speakers = renderer.num_speakers();
-
-                    // Feed the PipeWire bridge sink's advertised latency:
-                    // render DSP latency (constant, e.g. the linear-phase FIR
-                    // crossover) plus the measured output-chain latency (ring
-                    // + pacer FIFO + graph delay to the DAC). The client-node
-                    // backend republishes the sink's Latency/ProcessLatency
-                    // params when this moves, so upstream players stay in
-                    // A/V sync.
-                    if let Some(ic) = self.input_control {
-                        let rate = frame.sampling_frequency.max(1) as u64;
-                        let dsp_ns =
-                            renderer.output_latency_samples() as u64 * 1_000_000_000 / rate;
-                        let out_ns = current_latency_instant_ms
-                            .map_or(0, |ms| (ms.max(0.0) as f64 * 1e6) as u64);
-                        ic.set_downstream_latency_ns(dsp_ns + out_ns);
-                    }
-
-                    let meter_snapshot = if has_metering_clients {
-                        // Which accumulators the frame belongs in depends on what
-                        // was rendered, not on the layout: a binaural frame is a
-                        // stereo pair and metering it as `num_speakers` speakers
-                        // strides through it wrongly and leaves the ear gauges
-                        // dead. Same policy as the engine host.
-                        let virtual_bus = renderer.virtual_bus();
-                        let binaural = renderer.output_is_binaural();
-                        self.telemetry.audio_meter.as_mut().and_then(|m| {
-                            match (virtual_bus, binaural) {
-                                (Some((bus, n_bus)), _) => {
-                                    m.process_speakers(bus, n_bus);
-                                    m.process_ears(&rendered.samples);
-                                }
-                                (None, true) => m.process_ears(&rendered.samples),
-                                (None, false) => {
-                                    m.process_speakers(&rendered.samples, rendered.n_channels)
-                                }
-                            }
-                            m.poll()
-                        })
-                    } else {
-                        None
-                    };
                     let render_time_ms = render_started_at.elapsed().as_secs_f32() * 1000.0;
-                    let sent_meter_bundle = if let (Some(snapshot), Some(osc_sender)) =
-                        (meter_snapshot, &self.telemetry.osc_sender)
-                    {
-                        if let Err(e) = osc_sender.send_meter_bundle(
-                            &snapshot,
-                            &rendered.object_gains,
-                            &rendered.object_band_gains,
-                            rendered.object_test_position,
-                            rendered.object_test_level,
-                            Some(decode_time_ms),
-                            Some(rendered.crossover_time_ms),
-                            Some(render_time_ms),
-                            None,
-                            Some(frame_duration_ms),
-                            current_latency_instant_ms,
-                            current_latency_control_ms,
-                            current_latency_smoothed_ms,
-                            current_latency_target_ms,
-                            current_latency_downstream_ms,
-                            current_latency_avail_input_ms,
-                            current_latency_output_fifo_ms,
-                            current_latency_resampler_pending_ms,
-                            current_resample_ratio,
-                            current_adaptive_band,
-                            current_adaptive_state,
-                            Some(self.output.drc_gain),
-                        ) {
-                            log::warn!("Failed to send meter OSC bundle: {}", e);
-                            false
-                        } else {
-                            true
-                        }
-                    } else {
-                        false
-                    };
+                    // Emptied, so the next frame's events land in the same
+                    // allocation.
+                    stream.frame_events.clear();
+                    let drc_gain = stream.drc.gain;
 
-                    log::trace!(
-                        "Writing {} samples ({} sample_count × {} speakers) to streaming output",
-                        rendered.samples.len(),
-                        sample_count,
-                        num_speakers
-                    );
-
-                    let samples_audio = AudioSamples::F32(rendered.samples);
-                    let write_started_at = Instant::now();
-                    self.output
-                        .audio_writer
-                        .as_mut()
-                        .expect("audio_writer present")
-                        .write_pcm_samples(&samples_audio, num_speakers)?;
-                    let write_time_ms = write_started_at.elapsed().as_secs_f32() * 1000.0;
-                    if sent_meter_bundle {
-                        if let Some(osc_sender) = &self.telemetry.osc_sender {
-                            if let Err(e) =
-                                osc_sender.send_timing_update(None, None, Some(write_time_ms))
-                            {
-                                log::warn!("Failed to send write timing OSC update: {}", e);
-                            }
-                        }
-                    }
-                    self.output.render_buf = match samples_audio {
-                        AudioSamples::F32(v) => v,
-                        _ => unreachable!(),
-                    };
+                    emit_rendered(
+                        self.output,
+                        self.telemetry,
+                        self.input_control,
+                        renderer,
+                        rendered,
+                        FrameTimings {
+                            decode_ms: decode_time_ms,
+                            render_ms: render_time_ms,
+                            frame_ms: frame_duration_ms,
+                            sample_rate: frame.sampling_frequency,
+                            drc_gain,
+                        },
+                        has_metering_clients,
+                        &output_figures,
+                    )?;
                     self.output.pcm_f32_buf = pcm_f32_scratch;
                     return Ok(());
                 } else {
@@ -415,34 +294,14 @@ impl<'a> SampleWriteCoordinator<'a> {
                     // params, so the planner reuses it until one of them
                     // actually changes, instead of rebuilding a label→speaker
                     // map and re-solving the depth warp on every frame.
-                    match self.spatial.bed_planner.plan(
-                        renderer,
-                        labels,
-                        self.spatial.source_family,
-                        &self.spatial.declared_poses,
-                    ) {
-                        BedPlanKind::Events => {
-                            // Spatial mode mixes per channel: direct channels
-                            // route one-hot by label, virtual channels render
-                            // as VBAP objects. The routing is applied by the
-                            // planner, on change only.
-                            self.spatial.bed_events.clear();
-                            self.spatial
-                                .bed_events
-                                .extend_from_slice(self.spatial.bed_planner.events());
-                        }
+                    match self.spatial.stream.plan_bed(renderer, labels) {
+                        BedPlanKind::Events => {}
                         BedPlanKind::HostPassthrough => {
                             // No spatialization: write the decoded channels
                             // straight to the sink (let the host/sink handle
-                            // them), mirroring mpv falling back to ad_lavc.
-                            self.output
-                                .audio_writer
-                                .as_mut()
-                                .expect("audio_writer present")
-                                .write_pcm_samples(
-                                    &AudioSamples::I32(frame.pcm.to_vec()),
-                                    channel_count,
-                                )?;
+                            // them), mirroring mpv falling back to ad_lavc. The
+                            // sink is sized for them (`output_shape`).
+                            write_decoded_pcm(self.output, &frame.pcm, channel_count)?;
                             self.output.pcm_f32_buf = pcm_f32_scratch;
                             return Ok(());
                         }
@@ -451,15 +310,23 @@ impl<'a> SampleWriteCoordinator<'a> {
                                 "No channel render mapping for labels {:?} - outputting silence",
                                 labels
                             );
-                            let num_speakers = renderer.num_speakers();
+                            // As wide as the sink: what the renderer would have
+                            // emitted (the binaural pair in headphone mode, not
+                            // the speaker count).
+                            let width = renderer.output_channel_count();
+                            let mut silence = std::mem::take(&mut self.output.render_buf);
+                            silence.clear();
+                            silence.resize(sample_count * width, 0.0);
+                            let samples_audio = AudioSamples::F32(silence);
                             self.output
                                 .audio_writer
                                 .as_mut()
                                 .expect("audio_writer present")
-                                .write_pcm_samples(
-                                    &AudioSamples::I32(vec![0i32; sample_count * num_speakers]),
-                                    num_speakers,
-                                )?;
+                                .write_pcm_samples(&samples_audio, width)?;
+                            self.output.render_buf = match samples_audio {
+                                AudioSamples::F32(v) => v,
+                                _ => unreachable!(),
+                            };
                             self.output.pcm_f32_buf = pcm_f32_scratch;
                             return Ok(());
                         }
@@ -467,64 +334,26 @@ impl<'a> SampleWriteCoordinator<'a> {
 
                     // Synthesize objects from the bed, as the embedded engine
                     // does: plan first so each object gets its channel event,
-                    // then extend the PCM below with its audio.
-                    let (master, phantom_mode, generator_id, options_epoch) = {
-                        let control = renderer.renderer_control();
-                        let live = control.live.read();
-                        (
-                            live.synthetic_objects_enabled,
-                            live.phantom_extract_mode,
-                            live.object_generator_id.clone(),
-                            control.options_epoch(),
-                        )
-                    };
-                    // Borrowed from the live topology rather than
-                    // `speaker_layout()`, which hands back a deep copy of the
-                    // whole layout.
-                    let topology = renderer.renderer_control().active_topology();
+                    // then extend the PCM below with its audio. The layout is
+                    // borrowed from the live topology rather than
+                    // `speaker_layout()`, which hands back a deep copy of it.
+                    let control = renderer.renderer_control();
+                    let topology = control.active_topology();
                     let output_layout = &topology.speaker_layout;
-                    let surround_placement =
-                        renderer.renderer_control().live.read().surround_placement;
-                    let stage_counts = {
-                        let ctx = orender_engine::object_gen::PrepareCtx {
-                            input_labels: labels,
-                            output_layout,
-                            sample_rate: frame.sampling_frequency,
-                            surround_placement,
-                        };
-                        let selection = orender_engine::channel_objects::StageSelection {
-                            synthetic_objects_enabled: master,
-                            phantom_mode,
-                            generator_id: generator_id.as_str(),
-                        };
-                        self.spatial
-                            .channel_objects
-                            .sync(&ctx, &selection, options_epoch)
-                    };
-                    if stage_counts.any() {
-                        {
-                            let control = renderer.renderer_control();
-                            let live = control.live.read();
-                            self.spatial.channel_objects.push_params(
-                                &live.phantom_params,
-                                &live.object_generator_params,
-                                frame.sampling_frequency,
-                            );
-                        }
-                        let events = self.spatial.channel_objects.events(channel_count);
-                        self.spatial.bed_events.extend(events);
-                    }
-
-                    fill_pcm_f32_drc(
-                        &mut pcm_f32_scratch,
-                        &frame.pcm,
+                    let stream = &mut self.spatial.stream;
+                    let stage_counts = stream.sync_channel_objects(
+                        &control,
+                        labels,
                         channel_count,
-                        &mut self.output.drc_gain,
-                        self.output.drc_target_gain,
-                        &mut self.output.drc_ramp_samples_remaining,
+                        output_layout,
+                        frame.sampling_frequency,
                     );
+
+                    stream
+                        .drc
+                        .fill_pcm_f32(&mut pcm_f32_scratch, frame, &control);
                     let (pcm_data_f32, render_channel_count) =
-                        self.spatial.channel_objects.process_and_extend(
+                        stream.channel_objects.process_and_extend(
                             &mut pcm_f32_scratch,
                             channel_count,
                             sample_count,
@@ -542,10 +371,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                     // width alone would walk through them wrongly.
                     if has_metering_clients {
                         if let Some(ref mut meter) = self.telemetry.audio_meter {
-                            meter.update_channel_count(render_channel_count);
-                            for chunk in pcm_data_f32.chunks_exact(render_channel_count) {
-                                meter.process_objects(chunk, render_channel_count);
-                            }
+                            meter_render_input(meter, pcm_data_f32, render_channel_count);
                         }
                     }
 
@@ -554,152 +380,45 @@ impl<'a> SampleWriteCoordinator<'a> {
                     let rendered = renderer.render_frame(
                         pcm_data_f32,
                         render_channel_count,
-                        &self.spatial.bed_events,
+                        &stream.bed_events,
                         donated_buf,
                         has_metering_clients,
                     )?;
-                    let num_speakers = renderer.num_speakers();
-
-                    // Same sink-latency feed as the object path above.
-                    if let Some(ic) = self.input_control {
-                        let rate = frame.sampling_frequency.max(1) as u64;
-                        let dsp_ns =
-                            renderer.output_latency_samples() as u64 * 1_000_000_000 / rate;
-                        let out_ns = current_latency_instant_ms
-                            .map_or(0, |ms| (ms.max(0.0) as f64 * 1e6) as u64);
-                        ic.set_downstream_latency_ns(dsp_ns + out_ns);
-                    }
-
-                    let meter_snapshot = if has_metering_clients {
-                        // Which accumulators the frame belongs in depends on what
-                        // was rendered, not on the layout: a binaural frame is a
-                        // stereo pair and metering it as `num_speakers` speakers
-                        // strides through it wrongly and leaves the ear gauges
-                        // dead. Same policy as the engine host.
-                        let virtual_bus = renderer.virtual_bus();
-                        let binaural = renderer.output_is_binaural();
-                        self.telemetry.audio_meter.as_mut().and_then(|m| {
-                            match (virtual_bus, binaural) {
-                                (Some((bus, n_bus)), _) => {
-                                    m.process_speakers(bus, n_bus);
-                                    m.process_ears(&rendered.samples);
-                                }
-                                (None, true) => m.process_ears(&rendered.samples),
-                                (None, false) => {
-                                    m.process_speakers(&rendered.samples, rendered.n_channels)
-                                }
-                            }
-                            m.poll()
-                        })
-                    } else {
-                        None
-                    };
                     let render_time_ms = render_started_at.elapsed().as_secs_f32() * 1000.0;
-                    let sent_meter_bundle = if let (Some(snapshot), Some(osc_sender)) =
-                        (meter_snapshot, &self.telemetry.osc_sender)
-                    {
-                        if let Err(e) = osc_sender.send_meter_bundle(
-                            &snapshot,
-                            &rendered.object_gains,
-                            &rendered.object_band_gains,
-                            rendered.object_test_position,
-                            rendered.object_test_level,
-                            Some(decode_time_ms),
-                            Some(rendered.crossover_time_ms),
-                            Some(render_time_ms),
-                            None,
-                            Some(frame_duration_ms),
-                            current_latency_instant_ms,
-                            current_latency_control_ms,
-                            current_latency_smoothed_ms,
-                            current_latency_target_ms,
-                            current_latency_downstream_ms,
-                            current_latency_avail_input_ms,
-                            current_latency_output_fifo_ms,
-                            current_latency_resampler_pending_ms,
-                            current_resample_ratio,
-                            current_adaptive_band,
-                            current_adaptive_state,
-                            Some(self.output.drc_gain),
-                        ) {
-                            log::warn!("Failed to send meter OSC bundle: {}", e);
-                            false
-                        } else {
-                            true
-                        }
-                    } else {
-                        false
-                    };
+                    let drc_gain = stream.drc.gain;
 
-                    let samples_audio = AudioSamples::F32(rendered.samples);
-                    let write_started_at = Instant::now();
-                    self.output
-                        .audio_writer
-                        .as_mut()
-                        .expect("audio_writer present")
-                        .write_pcm_samples(&samples_audio, num_speakers)?;
-                    let write_time_ms = write_started_at.elapsed().as_secs_f32() * 1000.0;
-                    if sent_meter_bundle {
-                        if let Some(osc_sender) = &self.telemetry.osc_sender {
-                            if let Err(e) =
-                                osc_sender.send_timing_update(None, None, Some(write_time_ms))
-                            {
-                                log::warn!("Failed to send write timing OSC update: {}", e);
-                            }
-                        }
-                    }
-                    self.output.render_buf = match samples_audio {
-                        AudioSamples::F32(v) => v,
-                        _ => unreachable!(),
-                    };
+                    emit_rendered(
+                        self.output,
+                        self.telemetry,
+                        self.input_control,
+                        renderer,
+                        rendered,
+                        FrameTimings {
+                            decode_ms: decode_time_ms,
+                            render_ms: render_time_ms,
+                            frame_ms: frame_duration_ms,
+                            sample_rate: frame.sampling_frequency,
+                            drc_gain,
+                        },
+                        has_metering_clients,
+                        &output_figures,
+                    )?;
                     self.output.pcm_f32_buf = pcm_f32_scratch;
 
-                    if self
+                    // The virtual bed and the synthesized objects: emitted
+                    // here they appear in Studio's 3D view, omitted they are
+                    // rendered but never shown.
+                    if let Some(osc_sender) = self
                         .telemetry
                         .osc_sender
-                        .as_ref()
-                        .is_some_and(|sender| sender.has_osc_clients())
+                        .as_mut()
+                        .filter(|sender| sender.has_osc_clients())
                     {
-                        // The synthesized objects ride the same frame as the
-                        // virtual bed: emitted here they appear in Studio's 3D
-                        // view, omitted they are rendered but never shown.
-                        let synthesized: Vec<_> =
-                            self.spatial.channel_objects.object_metas().collect();
-                        // Only the display path needs the bed layout and the
-                        // room ratios, so they are read (and the layout copied)
-                        // here rather than on every frame — with no client
-                        // attached, never.
-                        let (
-                            placement,
-                            room_ratio,
-                            room_ratio_rear,
-                            room_ratio_lower,
-                            room_ratio_center_blend,
-                        ) = {
-                            let control = renderer.renderer_control();
-                            let live = control.live.read();
-                            (
-                                OwnedPlacement::from_live(&live, self.spatial.source_family),
-                                live.room_ratio,
-                                live.room_ratio_rear,
-                                live.room_ratio_lower,
-                                live.room_ratio_center_blend,
-                            )
-                        };
-                        if let (Some(ref mut osc_sender), Some(mut objects)) = (
-                            self.telemetry.osc_sender.as_mut(),
-                            build_virtual_bed_objects(
-                                labels,
-                                &placement.policy(&self.spatial.declared_poses),
-                                Some(output_layout),
-                                room_ratio,
-                                room_ratio_rear,
-                                room_ratio_lower,
-                                room_ratio_center_blend,
-                                surround_placement,
-                            ),
-                        ) {
-                            objects.extend(synthesized);
+                        let objects =
+                            self.spatial
+                                .stream
+                                .bed_frame_metas(&control, labels, output_layout);
+                        if !objects.is_empty() {
                             let sample_pos = self
                                 .session
                                 .decoded_samples
@@ -723,11 +442,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                 channel_count
             );
 
-            self.output
-                .audio_writer
-                .as_mut()
-                .expect("audio_writer present")
-                .write_pcm_samples(&AudioSamples::I32(frame.pcm.to_vec()), channel_count)?;
+            write_decoded_pcm(self.output, &frame.pcm, channel_count)?;
             self.output.pcm_f32_buf = pcm_f32_scratch;
         }
         Ok(())
@@ -760,4 +475,151 @@ impl<'a> SampleWriteCoordinator<'a> {
         }
         Ok(())
     }
+}
+
+/// This frame's output-stage figures, read once before the render, for the
+/// meter bundle (the embedded host has no output stage: it sends none).
+struct OutputFigures {
+    latency: Option<AudioLatencySnapshot>,
+    resample_ratio: Option<f32>,
+    adaptive_band: Option<&'static str>,
+    adaptive_state: Option<&'static str>,
+}
+
+/// Timings of the frame being written, for the meter bundle.
+struct FrameTimings {
+    decode_ms: f32,
+    /// The render call alone (metering excluded), smoothed below.
+    render_ms: f32,
+    frame_ms: f32,
+    sample_rate: u32,
+    /// The DRC gain the frame ended on.
+    drc_gain: f32,
+}
+
+/// Everything after a render, for both render paths (objects, channel
+/// content): the sink latency feed, the output metering and meter bundle, and
+/// the write. The metering itself is the embedded engine's
+/// ([`meter_render_output`]); the reported render time is smoothed the same
+/// way ([`renderer::metering::DutyEma`]) — raw per-frame figures alias with
+/// the 40-sample TrueHD access units.
+#[allow(clippy::too_many_arguments)]
+fn emit_rendered(
+    output: &mut OutputState,
+    telemetry: &mut TelemetryState,
+    input_control: Option<&InputControl>,
+    renderer: &renderer::spatial_renderer::SpatialRenderer,
+    rendered: renderer::spatial_renderer::RenderedFrame,
+    timings: FrameTimings,
+    has_metering_clients: bool,
+    figures: &OutputFigures,
+) -> Result<()> {
+    let latency = figures.latency;
+    // Feed the PipeWire bridge sink's advertised latency: render DSP latency
+    // (constant, e.g. the linear-phase FIR crossover) plus the measured
+    // output-chain latency (ring + pacer FIFO + graph delay to the DAC). The
+    // client-node backend republishes the sink's Latency/ProcessLatency params
+    // when this moves, so upstream players stay in A/V sync.
+    if let Some(ic) = input_control {
+        let rate = timings.sample_rate.max(1) as u64;
+        let dsp_ns = renderer.output_latency_samples() as u64 * 1_000_000_000 / rate;
+        let out_ns = latency
+            .map(|l| l.final_latency_ms)
+            .map_or(0, |ms| (ms.max(0.0) as f64 * 1e6) as u64);
+        ic.set_downstream_latency_ns(dsp_ns + out_ns);
+    }
+
+    let render_time_ms = output
+        .render_duty
+        .update(timings.render_ms, timings.frame_ms);
+    let meter_snapshot = if has_metering_clients {
+        telemetry
+            .audio_meter
+            .as_mut()
+            .and_then(|meter| meter_render_output(meter, renderer, &rendered))
+    } else {
+        None
+    };
+    let sent_meter_bundle =
+        if let (Some(snapshot), Some(osc_sender)) = (meter_snapshot, &telemetry.osc_sender) {
+            if let Err(e) = osc_sender.send_meter_bundle(
+                &snapshot,
+                &rendered.object_gains,
+                &rendered.object_band_gains,
+                rendered.object_test_position,
+                rendered.object_test_level,
+                Some(timings.decode_ms),
+                Some(rendered.crossover_time_ms),
+                Some(render_time_ms),
+                None,
+                Some(timings.frame_ms),
+                latency.map(|l| l.final_latency_ms),
+                latency.and_then(|l| l.control_latency_ms),
+                latency.and_then(|l| l.smoothed_control_latency_ms),
+                latency.and_then(|l| l.target_control_latency_ms),
+                latency.and_then(|l| l.downstream_latency_ms),
+                latency.and_then(|l| l.avail_input_latency_ms),
+                latency.and_then(|l| l.output_fifo_latency_ms),
+                latency.and_then(|l| l.resampler_pending_latency_ms),
+                figures.resample_ratio,
+                figures.adaptive_band,
+                figures.adaptive_state,
+                Some(timings.drc_gain),
+            ) {
+                log::warn!("Failed to send meter OSC bundle: {}", e);
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+
+    log::trace!(
+        "Writing {} samples ({} channels) to streaming output",
+        rendered.samples.len(),
+        rendered.n_channels
+    );
+    // The width of what was rendered (the sink was sized from the same
+    // `output_channel_count` before the render).
+    let rendered_channels = rendered.n_channels;
+    let samples_audio = AudioSamples::F32(rendered.samples);
+    let write_started_at = Instant::now();
+    output
+        .audio_writer
+        .as_mut()
+        .expect("audio_writer present")
+        .write_pcm_samples(&samples_audio, rendered_channels)?;
+    let write_time_ms = write_started_at.elapsed().as_secs_f32() * 1000.0;
+    if sent_meter_bundle {
+        if let Some(osc_sender) = &telemetry.osc_sender {
+            if let Err(e) = osc_sender.send_timing_update(None, None, Some(write_time_ms)) {
+                log::warn!("Failed to send write timing OSC update: {}", e);
+            }
+        }
+    }
+    output.render_buf = match samples_audio {
+        AudioSamples::F32(v) => v,
+        _ => unreachable!(),
+    };
+    Ok(())
+}
+
+/// Write decoded PCM to the sink as it is (host passthrough, no renderer),
+/// through a buffer kept across frames rather than a fresh copy per frame.
+fn write_decoded_pcm(output: &mut OutputState, pcm: &[i32], channels: usize) -> Result<()> {
+    let mut buf = std::mem::take(&mut output.pcm_i32_buf);
+    buf.clear();
+    buf.extend_from_slice(pcm);
+    let samples = AudioSamples::I32(buf);
+    let result = output
+        .audio_writer
+        .as_mut()
+        .expect("audio_writer present")
+        .write_pcm_samples(&samples, channels);
+    output.pcm_i32_buf = match samples {
+        AudioSamples::I32(v) => v,
+        _ => unreachable!(),
+    };
+    result
 }

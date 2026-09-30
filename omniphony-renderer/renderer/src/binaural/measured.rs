@@ -337,6 +337,7 @@ impl MeasuredHrirData {
     /// its (minimum-phase, resampled) left and right responses. For
     /// offline analysis of a set — the PRTF fit reads the KEMAR median
     /// plane through it — not a render-path lookup.
+    #[cfg(test)]
     pub(super) fn nearest_measurement(
         &self,
         az_deg: f32,
@@ -547,9 +548,9 @@ impl MeasuredHrirData {
             if !keep(p) {
                 continue;
             }
-            let (x, y, z) = (p[0], p[1], p[2]);
             // SOFA +y is the listener's left; the renderer's +az is right.
-            let az = (-y).atan2(x).to_degrees().rem_euclid(360.0);
+            let [x, y, z] = omniphony_geometry::f32::sofa_to_adm(*p);
+            let az = x.atan2(y).to_degrees().rem_euclid(360.0);
             let el = z.atan2((x * x + y * y).sqrt()).to_degrees();
             dirs.push((az, el));
             kept.push(pair);
@@ -568,6 +569,7 @@ impl MeasuredHrirData {
 /// Below this peak a set is silence: [`HrirSet::new`](super::hrir::HrirSet::new)
 /// normalizes any usable set to unit mean energy, so a surviving one peaks
 /// around 1 — six orders of magnitude clear of this bound.
+#[cfg(any(test, feature = "sofa"))]
 const SILENT_PEAK: f32 = 1e-9;
 
 /// Refuse an HRIR set a SOFA file cannot actually drive.
@@ -584,6 +586,7 @@ const SILENT_PEAK: f32 = 1e-9;
 /// `Data.IR` as `[M][R][E][N]`; `sofar` reads it as `[M][R][N]`, takes the
 /// emitter count for the filter length, and so slices the handful of samples
 /// that *precede* the direct sound — all zeros, in every direction.
+#[cfg(any(test, feature = "sofa"))]
 fn check_loaded_set(
     set: &super::hrir::HrirSet,
     path: &str,
@@ -610,10 +613,8 @@ fn check_loaded_set(
 
 /// Unit vector for a direction (az 0 = front/+Y, +az = right/+X; el up = +Z).
 fn dir_vec(az_deg: f32, el_deg: f32) -> [f32; 3] {
-    let az = az_deg.to_radians();
-    let el = el_deg.to_radians();
-    let ce = el.cos();
-    [ce * az.sin(), ce * az.cos(), el.sin()]
+    let (x, y, z) = omniphony_geometry::f32::from_spherical(az_deg, el_deg, 1.0);
+    [x, y, z]
 }
 
 /// Half-width of the resampling kernel, in input samples.
@@ -691,6 +692,36 @@ impl ResampleKernel {
                 acc += x[k as usize] as f64 * tap;
             }
             out.push(acc as f32);
+        }
+    }
+
+    /// [`Self::resample_into`], but every output sample is divided by the
+    /// sum of the taps that actually landed on the input. That makes the DC
+    /// gain exactly 1, including at the edges where part of the kernel hangs
+    /// off the ends — what a signal (as opposed to an impulse response)
+    /// wants.
+    pub(crate) fn resample_normalized_into(&self, x: &[f32], out: &mut Vec<f32>) {
+        let out_len = self.out_len(x.len());
+        out.clear();
+        out.reserve(out_len);
+        for n in 0..out_len {
+            let k0 = (n as u64 * self.from as u64 / self.to as u64) as isize - HALF_WIDTH + 1;
+            let row = &self.taps[(n % self.phases) * KERNEL_WIDTH..][..KERNEL_WIDTH];
+            let mut acc = 0.0f64;
+            let mut norm = 0.0f64;
+            for (j, &tap) in row.iter().enumerate() {
+                let k = k0 + j as isize;
+                if k < 0 || k as usize >= x.len() {
+                    continue;
+                }
+                acc += x[k as usize] as f64 * tap;
+                norm += tap;
+            }
+            out.push(if norm.abs() > 1e-12 {
+                (acc / norm) as f32
+            } else {
+                0.0
+            });
         }
     }
 

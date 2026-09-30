@@ -70,9 +70,11 @@ only the renderer's public API:
 
 - **`GainModel`** — maps an object position (+ live render params) to a
   per-speaker gain vector. This is the realtime hot path.
-- **`BackendFactory`** — declares the backend's id, label, and a data-driven
-  parameter schema (Studio renders the controls automatically), and builds a
-  `GainModel` from a speaker layout.
+- **`PluginFactory` + `BackendFactory`** — declares the backend's id, label,
+  and a data-driven parameter schema (Studio renders the controls
+  automatically), and builds a `GainModel` from a speaker layout. The first
+  half is the contract every plugin shares, object generators included: see
+  [`docs/plugin-contract.md`](docs/plugin-contract.md).
 
 ### Steps
 
@@ -83,7 +85,8 @@ only the renderer's public API:
    [`docs/custom-render-backend-integration.md`](docs/custom-render-backend-integration.md),
    the full walk-through.
 
-2. **Implement `GainModel` + `BackendFactory`** for your panner.
+2. **Implement `GainModel`, `PluginFactory` and `BackendFactory`** for your
+   panner.
 
 3. **Register it** — one line where the engine wires up its backends
    (`orender_engine/src/renderer_build.rs`):
@@ -133,9 +136,21 @@ alternative client or host integration (rather than a backend), this is the
 surface you target. The full contract — every address, its direction, arguments
 and semantics — is documented in
 [`docs/osc-control-contract.md`](docs/osc-control-contract.md), and the address
-strings have named constants in
-`omniphony-renderer/runtime_control/src/osc_contract.rs` (the single source of
-truth; `ALL_CONTROL` / `ALL_STATE` are the exhaustive lists).
+strings have named constants in the dependency-free `osc-contract` crate
+(`osc-contract/src/lib.rs`, the single source of truth; `ALL_CONTROL` /
+`ALL_STATE` / `ALL_SESSION` are the exhaustive lists).
+
+## What gets saved, and when
+
+One rule, written down in
+[`docs/persistence-policy.md`](docs/persistence-policy.md): **display and
+cosmetic state is kept the moment it changes; anything that changes what is
+heard, or how the engine behaves, reaches `config.yaml` only through the Save
+button.** Classify a new setting or control before wiring it — the policy says
+how each class is plumbed on both sides. Two tripwires hold it:
+`runtime_control/tests/persistence_policy.rs` in the renderer (no new write
+that bypasses Save without a stated reason) and the `save-config` rule of the
+native Studio's architecture test.
 
 ## Coding conventions
 

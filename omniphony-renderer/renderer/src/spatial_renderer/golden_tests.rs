@@ -145,3 +145,49 @@ fn reset_runtime_state_erases_the_previous_stream() {
         dsp_fixtures::golden::RESIDUAL_GATE_DBFS
     );
 }
+
+/// Metering must not change the audio.
+///
+/// With `measure_breakdown` set the crossover runs as one timed block per
+/// object and the mix reads the band samples back from scratch; without it
+/// the bands are split sample by sample inside the mix loop. Both paths feed
+/// the same per-object mix, so every ramp mode must render the same bits
+/// either way.
+#[test]
+fn metering_path_renders_the_same_audio_in_every_ramp_mode() {
+    let render = |ramp_mode: RampMode, measure: bool| -> Vec<f32> {
+        let (mut r, pcm) = dsp_fixtures::scene::prepared_crossover(N_OBJECTS, ramp_mode);
+        let mut out = Vec::new();
+        let mut buf = Vec::new();
+        for round in 0..40 {
+            let events = if round % MOVE_EVERY == 0 {
+                dsp_fixtures::scene::move_events(N_OBJECTS, round as u64 + 1)
+            } else {
+                Vec::new()
+            };
+            let frame = r
+                .render_frame(&pcm, N_OBJECTS, &events, buf, measure)
+                .expect("render_frame");
+            out.extend_from_slice(&frame.samples);
+            buf = frame.samples;
+            buf.clear();
+        }
+        out
+    };
+    for ramp_mode in [
+        RampMode::Off,
+        RampMode::Frame,
+        RampMode::Sample,
+        RampMode::Interp,
+    ] {
+        let plain = render(ramp_mode, false);
+        let metered = render(ramp_mode, true);
+        assert!(
+            plain
+                .iter()
+                .map(|v| v.to_bits())
+                .eq(metered.iter().map(|v| v.to_bits())),
+            "{ramp_mode:?}: the metering path rendered different audio"
+        );
+    }
+}

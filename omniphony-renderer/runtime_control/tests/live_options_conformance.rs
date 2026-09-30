@@ -1,25 +1,26 @@
-//! Conformance net over the hand-wired live options (the "2D-sources family").
+//! Conformance net over the live options.
 //!
-//! Phase 0 of `docs/live-options-registry.md`: until the declared options
-//! registry exists, this table is the single list of live options and every
-//! test below iterates it. Adding a live option means adding ONE row here; the
-//! row then proves the option is visible on every layer it claims to be on:
+//! Two nets live here. The declared `renderer::options` registry (see
+//! `docs/live-options-registry.md`) is covered by the `registry` module below,
+//! which iterates the registry itself. The hand-wired options that predate it,
+//! or are not declared in it (the per-family placement, …), are covered by
+//! [`HAND_WIRED_OPTIONS`]: one row per option, and every test iterates the
+//! table, proving the option is visible on every layer it claims to be on:
 //!
 //! * the OSC control catalogue (`osc_contract::ALL_CONTROL`),
 //! * the `/omniphony/state/renderer` snapshot (key present, value tracked),
 //! * config persistence (saved when non-default, omitted when default).
 //!
-//! When the Phase-1 registry lands, these rows migrate into the registry and
-//! the tests iterate it instead.
+//! A row that migrates into the registry leaves the table; its registry row
+//! is then covered by the `registry` nets.
 //!
-//! Known gaps this net does NOT cover yet (Phase-1 targets, see the RFC and
+//! Known gaps this net does NOT cover yet (see the RFC and
 //! `docs/option-surface-parity.fr.md`):
 //! * CLI-vs-FFI seed parity for the remaining CLI-specific options, while
 //!   `Engine::from_paths` (FFI) seeds the whole family — exercising both boot
 //!   paths needs an engine fixture that doesn't exist yet.
-//! * OSC dispatcher acceptance: `handle_control_message` is crate-private to
-//!   `orender_engine` and needs a live socket; the generic Phase-1 handler
-//!   will be testable without one.
+//! * OSC dispatcher acceptance end to end (socket, notification, persistence)
+//!   is covered by `orender_engine::osc::dispatch`'s own tests, not here.
 
 use std::sync::Arc;
 
@@ -36,7 +37,8 @@ use runtime_control::osc_contract;
 use runtime_control::persist::save_live_config_to_path;
 use runtime_control::snapshot::build_renderer_state_json;
 
-/// One live option, declared once. Every conformance test iterates this table.
+/// One hand-wired live option, declared once. Every conformance test iterates
+/// [`HAND_WIRED_OPTIONS`].
 struct LiveOptionRow {
     /// Canonical option name (`render.*` config key and failure-message id).
     key: &'static str,
@@ -52,7 +54,7 @@ struct LiveOptionRow {
     config_reflects: fn(&RenderConfig) -> bool,
 }
 
-const LIVE_OPTIONS: &[LiveOptionRow] = &[
+const HAND_WIRED_OPTIONS: &[LiveOptionRow] = &[
     LiveOptionRow {
         key: "synthetic_objects_enabled",
         control_addr: osc_contract::CONTROL_SYNTHETIC_OBJECTS,
@@ -86,41 +88,12 @@ const LIVE_OPTIONS: &[LiveOptionRow] = &[
         config_reflects: |r| r.object_generator_id.as_deref() == Some("copy_up"),
     },
     LiveOptionRow {
-        key: "object_generator_params",
-        control_addr: osc_contract::CONTROL_OBJECT_GENERATOR_PARAM,
-        snapshot_key: "objectGeneratorParams",
-        set_non_default: |live| {
-            live.object_generator_params
-                .insert("strength".to_string(), 0.5);
-        },
-        snapshot_reflects: |v| v["strength"] == 0.5,
-        config_reflects: |r| {
-            r.object_generator_params
-                .as_ref()
-                .is_some_and(|m| m.get("strength") == Some(&0.5))
-        },
-    },
-    LiveOptionRow {
         key: "phantom_extract_mode",
         control_addr: osc_contract::CONTROL_PHANTOM_EXTRACT,
         snapshot_key: "phantomExtractMode",
         set_non_default: |live| live.phantom_extract_mode = PhantomExtractMode::Spectral,
         snapshot_reflects: |v| v == "spectral",
         config_reflects: |r| r.phantom_extract_mode == Some(PhantomExtractMode::Spectral),
-    },
-    LiveOptionRow {
-        key: "phantom_params",
-        control_addr: osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM,
-        snapshot_key: "phantomParams",
-        set_non_default: |live| {
-            live.phantom_params.insert("strength".to_string(), 0.75);
-        },
-        snapshot_reflects: |v| v["strength"] == 0.75,
-        config_reflects: |r| {
-            r.phantom_params
-                .as_ref()
-                .is_some_and(|m| m.get("strength") == Some(&0.75))
-        },
     },
     LiveOptionRow {
         key: "placement.generic.layout",
@@ -182,7 +155,8 @@ fn fixture_control() -> Arc<RendererControl> {
         48_000,
         1,
         1,
-        0.0,
+        // 8 distance cells over 2 units: the declared polar defaults.
+        0.25,
         2.0,
         VbapTableMode::Cartesian {
             x_size: 5,
@@ -192,17 +166,20 @@ fn fixture_control() -> Arc<RendererControl> {
         },
         false,
         true,
-        DistanceModel::Linear,
+        // The declared default (`config_fields::vbap_distance_model`).
+        DistanceModel::None,
         false,
         1.0,
         1.0,
         0.0,
         1.0,
         false,
-        [1.0, 1.0, 1.0],
-        1.0,
-        1.0,
-        0.0,
+        // The declared room defaults (`renderer::config_fields::room`), so
+        // the snapshot-vs-schema default net holds for the room rows.
+        [1.0, 2.0, 1.0],
+        2.0,
+        0.5,
+        0.5,
         0.0,
         false,
         false,
@@ -210,7 +187,8 @@ fn fixture_control() -> Arc<RendererControl> {
         1.0,
         1.0,
         PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
+        // The declared default mode.
+        LiveEvaluationMode::Auto,
         5,
         5,
         3,
@@ -220,6 +198,39 @@ fn fixture_control() -> Arc<RendererControl> {
     renderer.renderer_control()
 }
 
+/// The option environment of a fixture control.
+fn env(control: &Arc<RendererControl>) -> renderer::options::OptionEnv<'_> {
+    renderer::options::OptionEnv::of(control)
+}
+
+/// A legacy alias is in the control catalogue: a whole address in
+/// `ALL_CONTROL`, or a tail under one of the contract's prefix families.
+fn legacy_addr_is_catalogued(addr: renderer::options::LegacyAddr) -> bool {
+    use renderer::options::LegacyAddr;
+    match addr {
+        // Nothing to catalogue: the generic setters only.
+        LegacyAddr::None => true,
+        LegacyAddr::Exact(addr) => osc_contract::ALL_CONTROL.contains(&addr),
+        LegacyAddr::Prefixed { prefix, .. } => [
+            osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            osc_contract::CONTROL_HYBRID_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+        ]
+        .contains(&prefix),
+    }
+}
+
+/// The address a client sends for a legacy alias, if the option has one.
+fn legacy_addr_example(addr: renderer::options::LegacyAddr) -> Option<String> {
+    use renderer::options::LegacyAddr;
+    match addr {
+        LegacyAddr::None => None,
+        LegacyAddr::Exact(addr) => Some(addr.to_string()),
+        LegacyAddr::Prefixed { prefix, tail } => Some(format!("{prefix}{tail}")),
+    }
+}
+
 fn snapshot_json(control: &Arc<RendererControl>) -> serde_json::Value {
     let live = control.live.read();
     let json = build_renderer_state_json(
@@ -227,7 +238,7 @@ fn snapshot_json(control: &Arc<RendererControl>) -> serde_json::Value {
         &control.active_topology(),
         1.0,
         control.available_backends(),
-        control.all_backend_params(),
+        control.plugin_params(),
         &[],
         "[]",
         "{}",
@@ -250,7 +261,7 @@ fn temp_path(name: &str) -> std::path::PathBuf {
 /// exactly the silent-omission class the RFC describes.)
 #[test]
 fn every_live_option_is_in_the_control_catalogue() {
-    for row in LIVE_OPTIONS {
+    for row in HAND_WIRED_OPTIONS {
         assert!(
             osc_contract::ALL_CONTROL.contains(&row.control_addr),
             "{}: control address {} is not listed in osc_contract::ALL_CONTROL",
@@ -268,7 +279,7 @@ fn snapshot_carries_every_live_option() {
     let control = fixture_control();
 
     let at_defaults = snapshot_json(&control);
-    for row in LIVE_OPTIONS {
+    for row in HAND_WIRED_OPTIONS {
         assert!(
             at_defaults.get(row.snapshot_key).is_some(),
             "{}: snapshot key {} missing from /state/renderer at defaults",
@@ -279,12 +290,12 @@ fn snapshot_carries_every_live_option() {
 
     {
         let mut live = control.live.write();
-        for row in LIVE_OPTIONS {
+        for row in HAND_WIRED_OPTIONS {
             (row.set_non_default)(&mut live);
         }
     }
     let changed = snapshot_json(&control);
-    for row in LIVE_OPTIONS {
+    for row in HAND_WIRED_OPTIONS {
         assert!(
             (row.snapshot_reflects)(&changed[row.snapshot_key]),
             "{}: snapshot key {} does not reflect the live change (got {})",
@@ -318,6 +329,97 @@ mod registry {
                 RawOptionValue::Number(0.75),
             ),
             ("hrir_update_lattice", RawOptionValue::Str("coarse")),
+            ("auto_gain", RawOptionValue::Bool(true)),
+            ("auto_gain_ceiling_db", RawOptionValue::Number(-3.0)),
+            ("use_loudness", RawOptionValue::Bool(true)),
+            ("ramp_mode", RawOptionValue::Str("interp")),
+            ("drc_mode", RawOptionValue::Str("Standard")),
+            ("drc_weight", RawOptionValue::Number(0.5)),
+            // Width stays the reference (1): the file stores metres against
+            // it, so a width ratio is folded into the layout radius on reload.
+            ("room_ratio", RawOptionValue::Numbers(&[1.0, 3.0, 1.5])),
+            ("room_ratio_rear", RawOptionValue::Number(2.5)),
+            ("room_ratio_lower", RawOptionValue::Number(0.75)),
+            ("room_ratio_center_blend", RawOptionValue::Number(0.25)),
+            ("vbap_distance_model", RawOptionValue::Str("linear")),
+            ("distance_model_metric", RawOptionValue::Str("chebyshev")),
+            ("distance_diffuse", RawOptionValue::Bool(true)),
+            ("distance_diffuse_threshold", RawOptionValue::Number(0.5)),
+            ("distance_diffuse_curve", RawOptionValue::Number(1.5)),
+            ("distance_diffuse_metric", RawOptionValue::Str("chebyshev")),
+            ("distance_diffuse_mirror_axes", RawOptionValue::Str("xyz")),
+            // The cartesian table in force, so the grid below is saved.
+            (
+                "render_evaluation_mode",
+                RawOptionValue::Str("precomputed_cartesian"),
+            ),
+            (
+                "evaluation_object_size_intervals",
+                RawOptionValue::Number(3.0),
+            ),
+            ("evaluation_cartesian_x_size", RawOptionValue::Number(7.0)),
+            ("evaluation_cartesian_y_size", RawOptionValue::Number(6.0)),
+            ("evaluation_cartesian_z_size", RawOptionValue::Number(4.0)),
+            (
+                "evaluation_cartesian_z_neg_size",
+                RawOptionValue::Number(2.0),
+            ),
+            // Values the build's quantization keeps as they are (no negative
+            // elevations in the fixture: 45 cells over 90°).
+            ("vbap_azimuth_resolution", RawOptionValue::Number(90.0)),
+            ("vbap_elevation_resolution", RawOptionValue::Number(45.0)),
+            ("vbap_distance_res", RawOptionValue::Number(4.0)),
+            ("vbap_distance_max", RawOptionValue::Number(3.0)),
+            (
+                "render_evaluation_position_interpolation",
+                RawOptionValue::Bool(false),
+            ),
+            ("render_backend", RawOptionValue::Str("barycenter")),
+            (
+                "hybrid_external_backend",
+                RawOptionValue::Str("experimental_distance"),
+            ),
+            ("hybrid_internal_backend", RawOptionValue::Str("vbap")),
+            ("hybrid_curve_smoothing", RawOptionValue::Number(0.5)),
+            ("hybrid_metric", RawOptionValue::Str("spherical")),
+            ("output_mode", RawOptionValue::Str("binaural")),
+            ("binaural_mode", RawOptionValue::Str("cascaded")),
+            // A SOFA file: its path rides its own config key.
+            (
+                "hrir_source",
+                RawOptionValue::Str("sofa:/data/hrtf/test.sofa"),
+            ),
+            ("brir_head_tracking", RawOptionValue::Str("on")),
+            ("brir_max_length_s", RawOptionValue::Number(1.5)),
+            ("brir_tail_floor_db", RawOptionValue::Number(70.0)),
+            ("binaural_unit_scale_m", RawOptionValue::Number(2.0)),
+            ("binaural_head_radius_m", RawOptionValue::Number(0.09)),
+            ("binaural_air_absorption", RawOptionValue::Bool(false)),
+            ("binaural_diffuse_field_eq", RawOptionValue::Bool(true)),
+            ("reflections_enabled", RawOptionValue::Bool(true)),
+            ("reflections_level", RawOptionValue::Number(0.7)),
+            ("reflections_wall_cutoff_hz", RawOptionValue::Number(8000.0)),
+            ("reflections_room_width_m", RawOptionValue::Number(5.0)),
+            ("reflections_room_depth_m", RawOptionValue::Number(6.0)),
+            ("reflections_room_height_m", RawOptionValue::Number(3.0)),
+            ("reverb_enabled", RawOptionValue::Bool(true)),
+            ("reverb_level", RawOptionValue::Number(0.4)),
+            ("reverb_rt60_s", RawOptionValue::Number(0.8)),
+            ("reverb_predelay_ms", RawOptionValue::Number(10.0)),
+            ("reverb_size", RawOptionValue::Number(1.5)),
+            ("reverb_rt60_low_ratio", RawOptionValue::Number(1.5)),
+            ("reverb_rt60_high_ratio", RawOptionValue::Number(0.5)),
+            (
+                "head_tracking_osc_address",
+                RawOptionValue::Str("/rotation"),
+            ),
+            ("head_tracking_format", RawOptionValue::Str("quat")),
+            ("head_tracking_smoothing", RawOptionValue::Number(0.5)),
+            ("head_tracking_invert", RawOptionValue::Bool(true)),
+            ("binaural_ear_gains", RawOptionValue::Numbers(&[0.8, 1.2])),
+            // +20 dB: the file stores decibels, and 10 survives the trip
+            // exactly.
+            ("master_gain", RawOptionValue::Number(10.0)),
         ]
     }
 
@@ -333,16 +435,18 @@ mod registry {
     fn legacy_addresses_are_catalogued_and_resolvable() {
         for spec in options::LIVE_OPTIONS {
             assert!(
-                osc_contract::ALL_CONTROL.contains(&spec.legacy_control_addr),
+                legacy_addr_is_catalogued(spec.legacy_control_addr),
                 "{}: legacy address missing from ALL_CONTROL",
                 spec.key
             );
             assert!(options::find(spec.key).is_some(), "{}", spec.key);
-            assert!(
-                options::find_by_legacy_addr(spec.legacy_control_addr).is_some(),
-                "{}",
-                spec.key
-            );
+            if let Some(addr) = legacy_addr_example(spec.legacy_control_addr) {
+                assert!(
+                    options::find_by_legacy_addr(&addr).is_some_and(|found| found.key == spec.key),
+                    "{}: its legacy address resolves to another option",
+                    spec.key
+                );
+            }
         }
         assert!(
             osc_contract::ALL_CONTROL.contains(&osc_contract::CONTROL_OPTION),
@@ -366,6 +470,11 @@ mod registry {
             let value = block
                 .get(spec.key)
                 .unwrap_or_else(|| panic!("{}: missing from the options block", spec.key));
+            if schema_entry["default"].is_null() {
+                // The build's value (`OptionDefault::Build`): nothing fixed to
+                // compare with.
+                continue;
+            }
             assert_eq!(
                 value, &schema_entry["default"],
                 "{}: snapshot default != declared schema default",
@@ -385,7 +494,7 @@ mod registry {
             for spec in options::LIVE_OPTIONS {
                 let raw = sample_for(spec.key);
                 assert!(
-                    (spec.set)(&mut live, &raw).is_some(),
+                    (spec.set)(&mut live, &raw, &env(&control)).is_some(),
                     "{}: sample value rejected",
                     spec.key
                 );
@@ -394,13 +503,13 @@ mod registry {
         let mut render = RenderConfig::default();
         {
             let live = control.live.read();
-            options::store_live_to_config(&mut render, &live);
+            options::store_live_to_config(&mut render, &live, &env(&control));
         }
 
         let fresh = fixture_control();
         {
             let mut live = fresh.live.write();
-            options::seed_live_from_config(&mut live, &render);
+            options::seed_live_from_config(&mut live, &render, &env(&fresh));
         }
         let changed = control.live.read();
         let seeded = fresh.live.read();
@@ -409,6 +518,34 @@ mod registry {
                 (spec.get_json)(&changed),
                 (spec.get_json)(&seeded),
                 "{}: value lost in the store→seed round-trip",
+                spec.key
+            );
+        }
+    }
+
+    /// Every option: a real change lights the Save button, the same value
+    /// again does not (docs/persistence-policy.md) — Studio re-sends values
+    /// on reconnect, and a keepalive that dirtied the config once kept the
+    /// Save button lit for good.
+    #[test]
+    fn every_option_dirties_on_a_change_and_only_then() {
+        let dirty = |control: &Arc<RendererControl>| {
+            control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        for spec in options::LIVE_OPTIONS {
+            let control = fixture_control();
+            let sample = sample_for(spec.key);
+            let applied = options::apply_to_control(&control, spec, &sample).expect("accepted");
+            assert!(applied.changed, "{}: the sample is not a change", spec.key);
+            assert!(dirty(&control), "{}: a change must light Save", spec.key);
+            control.mark_clean();
+            let again = options::apply_to_control(&control, spec, &sample).expect("accepted");
+            assert!(!again.changed, "{}", spec.key);
+            assert!(
+                !dirty(&control),
+                "{}: the same value again lit Save",
                 spec.key
             );
         }
@@ -424,14 +561,27 @@ mod registry {
         let mapping = options::find("output_channel_mapping").expect("registered");
 
         let epoch = control.options_epoch();
-        assert_eq!(
-            options::apply_to_control(&control, placement, &RawOptionValue::Str("back")).as_deref(),
-            Some("back")
-        );
+        let applied = options::apply_to_control(&control, placement, &RawOptionValue::Str("back"))
+            .expect("accepted");
+        assert_eq!(applied.canonical, "back");
+        assert!(applied.changed);
         assert_eq!(control.options_epoch(), epoch + 1, "real change must bump");
-
         assert!(
-            options::apply_to_control(&control, placement, &RawOptionValue::Str("back")).is_some()
+            control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "a real change must mark the config dirty"
+        );
+        control.mark_clean();
+
+        let again = options::apply_to_control(&control, placement, &RawOptionValue::Str("back"))
+            .expect("accepted");
+        assert!(!again.changed);
+        assert!(
+            !control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "a redundant re-send must not light the Save button"
         );
         assert_eq!(
             control.options_epoch(),
@@ -460,8 +610,121 @@ mod registry {
             control
                 .config_dirty
                 .load(std::sync::atomic::Ordering::Relaxed),
-            "apply must mark the config dirty"
+            "a real change of a non-REPLAN option still marks the config dirty"
         );
+    }
+
+    /// A profile switch resets every row before seeding the incoming profile:
+    /// the reset must land each one on the default the schema publishes.
+    #[test]
+    fn a_reset_puts_every_row_back_on_its_declared_default() {
+        let control = fixture_control();
+        let mut live = control.live.write();
+        for spec in options::LIVE_OPTIONS {
+            (spec.set)(&mut live, &sample_for(spec.key), &env(&control)).expect("sample accepted");
+        }
+        options::reset_live_to_defaults(&mut live, &env(&control));
+        let schema: serde_json::Value =
+            serde_json::from_str(&options::schema_json()).expect("valid schema");
+        for (spec, entry) in options::LIVE_OPTIONS.iter().zip(schema.as_array().unwrap()) {
+            if entry["default"].is_null() {
+                continue; // left to the incoming profile's seed
+            }
+            assert_eq!(
+                (spec.get_json)(&live),
+                entry["default"],
+                "{}: reset missed the declared default",
+                spec.key
+            );
+        }
+    }
+
+    /// A batch over a group: every key applied, one dirty mark, one merged
+    /// rebuild — and nothing at all when it changes nothing.
+    #[test]
+    fn a_room_batch_costs_one_topology_rebuild() {
+        use renderer::options::Rebuild;
+        let control = fixture_control();
+        let ratio = options::find("room_ratio").expect("registered");
+        let rear = options::find("room_ratio_rear").expect("registered");
+        let items = [
+            (ratio, RawOptionValue::Numbers(&[1.0, 3.0, 1.5])),
+            (rear, RawOptionValue::Number(2.5)),
+        ];
+        let batch = options::apply_batch(&control, &items);
+        assert!(batch.changed);
+        assert_eq!(batch.rebuild, Rebuild::Topology);
+        assert!(
+            batch
+                .results
+                .iter()
+                .all(|r| r.as_ref().is_some_and(|r| r.changed))
+        );
+        {
+            let live = control.live.read();
+            assert_eq!(live.room_ratio, [1.0, 3.0, 1.5]);
+            assert_eq!(live.room_ratio_rear, 2.5);
+        }
+        control.mark_clean();
+
+        let again = options::apply_batch(&control, &items);
+        assert!(!again.changed);
+        assert_eq!(again.rebuild, Rebuild::None);
+        assert!(
+            !control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+
+        // A group without an effect of its own adds no rebuild to the batch.
+        let ramp = options::find("ramp_mode").expect("registered");
+        let batch = options::apply_batch(&control, &[(ramp, RawOptionValue::Str("interp"))]);
+        assert!(batch.changed);
+        assert_eq!(batch.rebuild, Rebuild::None);
+    }
+
+    /// The room reaches the file in metres against the layout radius, exactly
+    /// as the save wrote it before the room joined the registry, and a
+    /// config read back through `Config::load` seeds the same room.
+    #[test]
+    fn the_room_is_saved_in_metres_and_reloads_identically() {
+        let control = fixture_control();
+        {
+            let mut live = control.live.write();
+            live.room_ratio = [1.0, 1.8, 0.9];
+            live.room_ratio_rear = 1.2;
+            live.room_ratio_lower = 0.4;
+            live.room_ratio_center_blend = 0.3;
+        }
+        let base = temp_path("room-base-missing");
+        let out = temp_path("room-out");
+        save_live_config_to_path(&control, None, &base, &out).expect("save");
+        let yaml = std::fs::read_to_string(&out).expect("saved config readable");
+        let config = Config::load_or_default(&out);
+        let _ = std::fs::remove_file(&out);
+        assert!(!yaml.contains("room_ratio:"), "legacy ratio key written");
+        assert!(
+            !yaml.contains("room_ratio_rear:"),
+            "legacy rear key written"
+        );
+        let render = config.render.expect("render section");
+        let radius = render.current_layout.as_ref().expect("layout").radius_m;
+        let round6 = |v: f32| (v * 1_000_000.0).round() / 1_000_000.0;
+        assert_eq!(render.room_width_m, Some(round6(2.0 * radius)));
+        assert_eq!(render.room_front_m, Some(round6(1.8 * radius)));
+        assert_eq!(render.room_height_m, Some(round6(0.9 * radius)));
+        assert_eq!(render.room_rear_m, Some(round6(1.2 * radius)));
+        assert_eq!(render.room_lower_m, Some(round6(0.4 * radius)));
+        assert_eq!(render.room_ratio_center_blend, Some(0.3));
+
+        let fresh = fixture_control();
+        options::seed_live_from_config(&mut fresh.live.write(), &render, &env(&fresh));
+        let live = fresh.live.read();
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!(close(live.room_ratio[1], 1.8) && close(live.room_ratio[2], 0.9));
+        assert!(close(live.room_ratio_rear, 1.2));
+        assert!(close(live.room_ratio_lower, 0.4));
+        assert!(close(live.room_ratio_center_blend, 0.3));
     }
 
     /// Every declared option accepts its sample through the setter and reports
@@ -472,7 +735,7 @@ mod registry {
         let mut live = control.live.write();
         for spec in options::LIVE_OPTIONS {
             let raw = sample_for(spec.key);
-            let canonical = (spec.set)(&mut live, &raw);
+            let canonical = (spec.set)(&mut live, &raw, &env(&control));
             assert!(canonical.is_some(), "{}: sample rejected", spec.key);
             if let options::OptionKind::Enum(values) = spec.kind {
                 let canonical = canonical.unwrap();
@@ -483,7 +746,12 @@ mod registry {
                     canonical
                 );
                 assert!(
-                    (spec.set)(&mut live, &RawOptionValue::Str("no_such_value_xyz")).is_none(),
+                    (spec.set)(
+                        &mut live,
+                        &RawOptionValue::Str("no_such_value_xyz"),
+                        &env(&control)
+                    )
+                    .is_none(),
                     "{}: junk value accepted",
                     spec.key
                 );
@@ -508,15 +776,14 @@ fn legacy_fixed_channel_options_migrate_without_reactivating_host_mode() {
 
     {
         let mut live = control.live.write();
-        renderer::options::seed_live_from_config(&mut live, &legacy);
+        renderer::options::seed_live_from_config(&mut live, &legacy, &env(&control));
         assert_eq!(
             live.channel_render_mode,
             renderer::live_params::ChannelRenderMode::Spatial
         );
         assert!(live.synthetic_objects_enabled);
         assert_eq!(live.phantom_extract_mode, PhantomExtractMode::Spectral);
-        assert!(!live.phantom_params.contains_key("method"));
-        renderer::options::store_live_to_config(&mut legacy, &live);
+        renderer::options::store_live_to_config(&mut legacy, &live, &env(&control));
     }
 
     assert_eq!(legacy.channel_render_mode, None);
@@ -543,14 +810,14 @@ fn disabled_synthesis_master_preserves_non_off_child_selections() {
         live.synthetic_objects_enabled = false;
         live.object_generator_id = "dirac".to_string();
         live.phantom_extract_mode = PhantomExtractMode::Broadband;
-        renderer::options::store_live_to_config(&mut saved, &live);
+        renderer::options::store_live_to_config(&mut saved, &live, &env(&control));
     }
     assert_eq!(saved.synthetic_objects_enabled, Some(false));
 
     let restored = fixture_control();
     {
         let mut live = restored.live.write();
-        renderer::options::seed_live_from_config(&mut live, &saved);
+        renderer::options::seed_live_from_config(&mut live, &saved, &env(&restored));
         assert!(!live.synthetic_objects_enabled);
         assert_eq!(live.object_generator_id, "dirac");
         assert_eq!(live.phantom_extract_mode, PhantomExtractMode::Broadband);
@@ -568,7 +835,7 @@ fn config_save_covers_every_live_option_and_omits_defaults() {
 
     save_live_config_to_path(&control, None, &base, &out).expect("save at defaults");
     let yaml = std::fs::read_to_string(&out).expect("saved config readable");
-    for row in LIVE_OPTIONS {
+    for row in HAND_WIRED_OPTIONS {
         if row.key == "synthetic_objects_enabled" {
             assert!(yaml.contains("synthetic_objects_enabled: false"));
             continue;
@@ -582,14 +849,14 @@ fn config_save_covers_every_live_option_and_omits_defaults() {
 
     {
         let mut live = control.live.write();
-        for row in LIVE_OPTIONS {
+        for row in HAND_WIRED_OPTIONS {
             (row.set_non_default)(&mut live);
         }
     }
     save_live_config_to_path(&control, None, &base, &out).expect("save non-defaults");
     let config = Config::load_or_default(&out);
     let render = config.render.expect("saved config has a render section");
-    for row in LIVE_OPTIONS {
+    for row in HAND_WIRED_OPTIONS {
         assert!(
             (row.config_reflects)(&render),
             "{}: non-default value did not round-trip through the saved config",
@@ -598,4 +865,226 @@ fn config_save_covers_every_live_option_and_omits_defaults() {
     }
 
     let _ = std::fs::remove_file(&out);
+}
+
+/// The plugin parameter values — the object generators' and the phantom
+/// stage's, beside the backends' — are on every layer: the two control
+/// addresses, the snapshot (per plugin), and the saved config at their new
+/// keys, the legacy ones migrated and dropped without losing a value or a key
+/// the file had that nothing reads.
+#[test]
+fn plugin_params_reach_the_catalogue_the_snapshot_and_the_saved_config() {
+    use renderer::backend_params::ParamValue;
+    use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind, PluginParams};
+    for addr in [
+        osc_contract::CONTROL_OBJECT_GENERATOR_PARAM,
+        osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM,
+        osc_contract::CONTROL_BACKEND_PARAM,
+    ] {
+        assert!(osc_contract::ALL_CONTROL.contains(&addr), "{addr}");
+    }
+
+    let control = fixture_control();
+    let at_defaults = snapshot_json(&control);
+    assert_eq!(
+        at_defaults["objectGeneratorParamValuesById"],
+        serde_json::json!({})
+    );
+    assert_eq!(at_defaults["phantomParamValues"], serde_json::json!({}));
+
+    // A config written before the store: one flat map for the selected
+    // generator, a float-only phantom map with the old method entry, and a
+    // key of its own nothing here reads.
+    let base = temp_path("plugin-legacy");
+    let out = temp_path("plugin-out");
+    std::fs::write(
+        &base,
+        "render:\n  object_generator_id: pad\n  object_generator_params:\n    strength: 0.8\n    \
+         hpf_hz: 400.0\n  phantom_params:\n    method: 1.0\n    center: 1.0\n    passes: 2.0\n  \
+         some_future_key: kept\n",
+    )
+    .unwrap();
+    let legacy = Config::load_or_default(&base).render.unwrap();
+    control.seed_plugin_params(PluginParams::from_config(&legacy));
+    control.live.write().object_generator_id = "pad".to_string();
+
+    let snapshot = snapshot_json(&control);
+    assert_eq!(
+        snapshot["objectGeneratorParamValuesById"]["pad"]["strength"],
+        serde_json::json!(0.8f32)
+    );
+    assert_eq!(snapshot["phantomParamValues"]["passes"], 2.0);
+
+    save_live_config_to_path(&control, None, &base, &out).expect("save");
+    let yaml = std::fs::read_to_string(&out).unwrap();
+    assert!(!yaml.contains("object_generator_params"), "{yaml}");
+    assert!(!yaml.contains("phantom_params:"), "{yaml}");
+    assert!(yaml.contains("some_future_key: kept"), "{yaml}");
+    let saved = Config::load_or_default(&out).render.unwrap();
+    let reloaded = PluginParams::from_config(&saved);
+    assert_eq!(
+        reloaded.get(PluginKind::ObjectGenerator, "pad", "strength"),
+        Some(&ParamValue::Float(0.8))
+    );
+    assert_eq!(
+        reloaded.get(PluginKind::ObjectGenerator, "pad", "hpf_hz"),
+        Some(&ParamValue::Float(400.0))
+    );
+    let phantom = reloaded
+        .plugin(PluginKind::PhantomExtract, PHANTOM_EXTRACT_ID)
+        .unwrap();
+    assert_eq!(phantom.len(), 2, "center and passes, without the method");
+    assert_eq!(phantom["center"], ParamValue::Float(1.0));
+    // A second save of the reloaded file writes the same values.
+    assert_eq!(reloaded, control.plugin_params());
+
+    let _ = std::fs::remove_file(&base);
+    let _ = std::fs::remove_file(&out);
+}
+
+/// The snapshot `spread` block reports what the VBAP backend applies. The
+/// spread addresses write the "vbap" param bag, not the live fields, so a block
+/// built from the live fields went stale on the first edit.
+#[test]
+fn snapshot_spread_block_follows_the_vbap_param_bag() {
+    use renderer::backend_params::ParamValue;
+    let control = fixture_control();
+    let live_min = control.live.read().spread_min;
+    control.set_backend_param("vbap", "spread_min", ParamValue::Float(live_min + 0.25));
+    control.set_backend_param("vbap", "spread_from_distance", ParamValue::Bool(true));
+    control.set_backend_param(
+        "vbap",
+        "size_to_spread_mode",
+        ParamValue::Text("mean".into()),
+    );
+    let spread = &snapshot_json(&control)["spread"];
+    assert_eq!(spread["min"], serde_json::json!(live_min + 0.25));
+    assert_eq!(spread["fromDistance"], true);
+    assert_eq!(spread["sizeToSpreadMode"], "mean");
+    // Unset keys keep the live fallback, as in the backend build.
+    assert_eq!(
+        spread["max"],
+        serde_json::json!(control.live.read().spread_max)
+    );
+}
+
+/// Hosts scope the options: a host with audio I/O leaves the embedded
+/// engine's out of what it publishes and saves, and publishes its own.
+mod host_scope {
+    use super::*;
+    use rosc::{OscMessage, OscPacket, OscType};
+    use runtime_control::HostControlHandler;
+    use runtime_control::osc::ControlEffects;
+
+    /// A host declaring one option, `stub_rate`.
+    struct StubHost;
+
+    impl HostControlHandler for StubHost {
+        fn handle(&self, _addr: &str, _msg: &OscMessage) -> Option<ControlEffects> {
+            None
+        }
+        fn extend_snapshot(&self) -> Vec<OscPacket> {
+            Vec::new()
+        }
+        fn amend_saved_config(&self, _render: &mut RenderConfig) {}
+        fn options_schema(&self) -> Vec<serde_json::Value> {
+            vec![serde_json::json!({"key": "stub_rate", "kind": "optional_int"})]
+        }
+        fn options_json(&self) -> serde_json::Map<String, serde_json::Value> {
+            [("stub_rate".to_string(), serde_json::json!(48_000))]
+                .into_iter()
+                .collect()
+        }
+        fn options_applied_json(&self) -> serde_json::Map<String, serde_json::Value> {
+            [("stub_rate".to_string(), serde_json::Value::Null)]
+                .into_iter()
+                .collect()
+        }
+        fn option_groups_pending(&self) -> Vec<(&'static str, bool)> {
+            vec![("stub", true)]
+        }
+    }
+
+    fn published(
+        control: &Arc<RendererControl>,
+        host: Option<&dyn HostControlHandler>,
+    ) -> std::collections::HashMap<String, serde_json::Value> {
+        runtime_control::snapshot::build_live_state_bundle_with_host(
+            control,
+            host.is_some(),
+            host.is_some(),
+            host,
+        )
+        .into_iter()
+        .filter_map(|packet| match packet {
+            OscPacket::Message(OscMessage { addr, args }) => match args.first() {
+                Some(OscType::String(json)) => {
+                    serde_json::from_str(json).ok().map(|value| (addr, value))
+                }
+                _ => None,
+            },
+            OscPacket::Bundle(_) => None,
+        })
+        .collect()
+    }
+
+    fn schema_keys(state: &std::collections::HashMap<String, serde_json::Value>) -> Vec<String> {
+        state[osc_contract::STATE_OPTIONS_SCHEMA]
+            .as_array()
+            .expect("schema array")
+            .iter()
+            .map(|entry| entry["key"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn each_host_publishes_what_it_offers() {
+        let control = fixture_control();
+        let embedded = published(&control, None);
+        let keys = schema_keys(&embedded);
+        assert!(keys.iter().any(|k| k == "decode_thread"));
+        assert!(!keys.iter().any(|k| k == "stub_rate"));
+        assert!(!embedded.contains_key(osc_contract::STATE_HOST_OPTIONS));
+
+        let standalone = published(&control, Some(&StubHost));
+        let keys = schema_keys(&standalone);
+        assert!(!keys.iter().any(|k| k == "decode_thread"));
+        assert_eq!(keys.last().map(String::as_str), Some("stub_rate"));
+        let host_options = &standalone[osc_contract::STATE_HOST_OPTIONS];
+        assert_eq!(host_options["options"]["stub_rate"], 48_000);
+        assert!(host_options["applied"]["stub_rate"].is_null());
+        assert_eq!(host_options["pending"]["stub"], true);
+    }
+
+    /// A save by the standalone renderer keeps the embedded engine's
+    /// `decode_thread` as the file has it (the two share the config); the
+    /// embedded engine writes its own.
+    #[test]
+    fn a_host_save_keeps_the_options_it_does_not_offer() {
+        let control = fixture_control();
+        let base = temp_path("scope-base");
+        let out = temp_path("scope-out");
+        let mut config = Config::default();
+        config.render = Some(RenderConfig {
+            decode_thread: Some(true),
+            ..Default::default()
+        });
+        config.save(&base).expect("base written");
+        assert!(!control.live.read().decode_thread);
+
+        save_live_config_to_path(&control, Some(&StubHost), &base, &out).expect("save");
+        let saved = Config::load_or_default(&out).render.expect("render");
+        assert_eq!(saved.decode_thread, Some(true), "the file's value survives");
+
+        save_live_config_to_path(&control, None, &base, &out).expect("save");
+        let saved = Config::load_or_default(&out).render.expect("render");
+        assert_ne!(
+            saved.decode_thread,
+            Some(true),
+            "the embedded engine writes its own"
+        );
+
+        let _ = std::fs::remove_file(&base);
+        let _ = std::fs::remove_file(&out);
+    }
 }

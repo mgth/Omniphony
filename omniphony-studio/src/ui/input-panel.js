@@ -44,13 +44,6 @@ export function inputPanelMarkup() {
           <div id="inputLiveFields" class="input-panel-stack">
             <div class="input-panel-subtitle" data-i18n="input.liveSource">Live Source</div>
             <div class="input-panel-row">
-              <label for="inputBackendSelect" data-i18n="input.backend" data-help-i18n="help.input.backend">Backend</label>
-              <select id="inputBackendSelect" class="delay-input">
-                <option value="pipewire" data-i18n="input.backend.pipewire">PipeWire</option>
-                <option value="asio" data-i18n="input.backend.asio">ASIO</option>
-              </select>
-            </div>
-            <div class="input-panel-row">
               <label for="inputNodeInput" data-i18n="input.node" data-help-i18n="help.input.node">Node</label>
               <input id="inputNodeInput" class="delay-input" type="text" placeholder="omniphony" />
             </div>

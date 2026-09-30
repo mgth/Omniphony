@@ -41,6 +41,11 @@ pub use head_pose::HeadPose;
 pub use tracking::{CalibrationStep, HeadTracking, HeadTrackingFormat};
 
 use crate::delay_line::DelayLine;
+
+/// Gain of a direct (non-spatialized) bus into each ear: constant power, the
+/// binaural stage's standing policy for the LFE (issue #156). Shared by the
+/// direct and the BRIR paths.
+const DIRECT_EAR_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
 use crate::live_params::{BinauralReflections, BinauralReverb};
 use convolver::EarConvolver;
 use hrir::{DirectionKey, HRIR_LEN, HrirPair, HrirSet, ParametricPinnaHrir};
@@ -464,6 +469,11 @@ pub struct BinauralRenderer {
     /// freed there: the last reference to a grid must not drop on the audio
     /// thread (half a megabyte and up).
     retire_tx: std::sync::mpsc::Sender<std::sync::Arc<Grid>>,
+    /// Where build statuses go; the synchronous path reports through it too.
+    status_sink: HrirStatusSink,
+    /// Build grids on the calling thread instead of the worker — see
+    /// [`Self::set_synchronous_builds`].
+    synchronous_builds: bool,
     /// Per-input-channel DSP state, indexed directly by channel. The first
     /// [`PREALLOC_CHANNELS`] slots are built at construction; a wider stream
     /// grows the vector and fills the extra slots on first use.
@@ -550,6 +560,8 @@ impl BinauralRenderer {
             incoming,
             rebuild_tx,
             retire_tx,
+            status_sink: sink,
+            synchronous_builds: false,
             // Every state a stream up to PREALLOC_CHANNELS wide can need,
             // built here on the control thread.
             channels: (0..PREALLOC_CHANNELS)
@@ -566,6 +578,20 @@ impl BinauralRenderer {
             reverb_bus_l: Vec::with_capacity(REVERB_BUS_CAPACITY),
             reverb_bus_r: Vec::with_capacity(REVERB_BUS_CAPACITY),
         }
+    }
+
+    /// Build requested grids on the calling thread, inside
+    /// [`Self::ensure_source`], so a source change takes effect on the very
+    /// frame that requests it.
+    ///
+    /// For offline renders: the asynchronous swap lands at whichever block
+    /// the worker happens to finish by, so two renders of the same input
+    /// would differ. A live host must leave this off — a build allocates and
+    /// may read a SOFA file, which the audio thread must never wait for. The
+    /// steady-state per-frame cost is the same either way. Set it before the
+    /// first frame: a build already handed to the worker still lands late.
+    pub fn set_synchronous_builds(&mut self, on: bool) {
+        self.synchronous_builds = on;
     }
 
     /// Identity of the active HRIR grid (tests observe the async swap with it).
@@ -716,7 +742,8 @@ impl BinauralRenderer {
     /// an actual change it only pushes a request to the rebuild worker — the
     /// grid build (allocations, provider renders, SOFA file I/O) never runs
     /// here (issue #153). Frames keep rendering with the previous grid until
-    /// the worker's result lands.
+    /// the worker's result lands — unless [`Self::set_synchronous_builds`] is
+    /// on, in which case the grid is built here and live on this frame.
     pub fn ensure_source(
         &mut self,
         source: &HrirSource,
@@ -724,14 +751,7 @@ impl BinauralRenderer {
         diffuse_field_eq: bool,
     ) {
         if let Some(grid) = self.incoming.swap(None) {
-            let retired = std::mem::replace(&mut self.hrir, grid);
-            // The old grid goes back to the worker to be freed; dropping it
-            // here would free its megabytes on the audio thread. (`send`
-            // allocates one queue node, as the request below does — rare.)
-            let _ = self.retire_tx.send(retired);
-            // Invalidates every channel's cached lattice direction at once —
-            // the new grid answers differently for the same key.
-            self.hrir_generation = self.hrir_generation.wrapping_add(1);
+            self.install_grid(grid);
         }
         // The head radius only matters to the parametric sources: a measured
         // set was measured on its own head, and a live radius tweak must not
@@ -743,6 +763,17 @@ impl BinauralRenderer {
             self.source = source.clone();
             self.head_radius_mm = radius_mm;
             self.diffuse_field_eq = diffuse_field_eq;
+            if self.synchronous_builds {
+                let grid = Self::build_grid(
+                    source.clone(),
+                    head_radius_m,
+                    diffuse_field_eq,
+                    self.sample_rate,
+                );
+                (self.status_sink)(grid.status());
+                self.install_grid(std::sync::Arc::new(grid));
+                return;
+            }
             // `send` allocates one queue node — rare (a user-initiated source,
             // radius or equalisation change), unlike the megabytes+I/O of the
             // build it replaces.
@@ -756,6 +787,18 @@ impl BinauralRenderer {
             // parametric one builds with the current head, not a stale one.
             self.head_radius_mm = radius_mm;
         }
+    }
+
+    /// Make `grid` the one convolved from this frame on.
+    fn install_grid(&mut self, grid: std::sync::Arc<Grid>) {
+        let retired = std::mem::replace(&mut self.hrir, grid);
+        // The old grid goes back to the worker to be freed; dropping it
+        // here would free its megabytes on the audio thread. (`send`
+        // allocates one queue node, as a rebuild request does — rare.)
+        let _ = self.retire_tx.send(retired);
+        // Invalidates every channel's cached lattice direction at once —
+        // the new grid answers differently for the same key.
+        self.hrir_generation = self.hrir_generation.wrapping_add(1);
     }
 
     /// Render one frame to interleaved stereo.
@@ -908,8 +951,7 @@ impl BinauralRenderer {
                 }
                 for s in 0..span {
                     let g = gain.start + gain.step * s as f32;
-                    let v =
-                        src_pcm[s * src_stride + src_offset] * g * std::f32::consts::FRAC_1_SQRT_2;
+                    let v = src_pcm[s * src_stride + src_offset] * g * DIRECT_EAR_GAIN;
                     let o = s * 2;
                     out[o] += v;
                     out[o + 1] += v;
@@ -987,7 +1029,7 @@ impl BinauralRenderer {
             // distance (HF dies in air — true outdoors as much as indoors).
             // Bypass within 3 m; ~14 kHz at 10 m, ~5 kHz at 30 m, floor 2 kHz.
             dsp.air_coeff = match air_cutoff_hz(dist_m).filter(|_| air_absorption) {
-                Some(fc) => (-std::f32::consts::TAU * fc / self.sample_rate as f32).exp(),
+                Some(fc) => crate::dsp::iir::one_pole_pole(fc, self.sample_rate),
                 None => 0.0,
             };
 
@@ -1043,7 +1085,7 @@ impl BinauralRenderer {
                     .sqrt()
                     .max(MIN_DISTANCE_M);
                 let images = reflections::first_order_images(src_m, room_m);
-                let c_sound = reflections::speed_of_sound();
+                let c_sound = itd::SPEED_OF_SOUND;
                 for (i, img) in images.iter().enumerate() {
                     let d_img = (img[0] * img[0] + img[1] * img[1] + img[2] * img[2])
                         .sqrt()
@@ -1497,6 +1539,38 @@ mod tests {
         assert_eq!(last.effective, HrirSource::SafKemar);
         let err = last.error.expect("the failure must carry a reason");
         assert!(!err.is_empty());
+    }
+
+    /// With synchronous builds (offline renders) the requested grid is built
+    /// inside `ensure_source` and swapped in before it returns, its status
+    /// reported on the way: nothing is left for a later frame to pick up.
+    #[test]
+    fn synchronous_builds_swap_the_grid_on_the_requesting_call() {
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<HrirStatus>>> = Default::default();
+        let sink: HrirStatusSink = {
+            let seen = std::sync::Arc::clone(&seen);
+            std::sync::Arc::new(move |st| seen.lock().unwrap().push(st))
+        };
+        let mut r = BinauralRenderer::with_status_sink(48_000, sink);
+        r.set_synchronous_builds(true);
+        let g0 = r.hrir_grid_id();
+        let generation = r.hrir_generation;
+        r.ensure_source(&HrirSource::Synthetic, itd::DEFAULT_HEAD_RADIUS_M, false);
+        assert!(!r.rebuild_pending());
+        assert_ne!(r.hrir_grid_id(), g0, "the new grid is the live one");
+        assert_eq!(r.hrir_generation, generation.wrapping_add(1));
+        assert_eq!(
+            seen.lock().unwrap().last().map(|s| s.effective.clone()),
+            Some(HrirSource::Synthetic)
+        );
+        // Steady state: no rebuild, no swap.
+        let g1 = r.hrir_grid_id();
+        r.ensure_source(&HrirSource::Synthetic, itd::DEFAULT_HEAD_RADIUS_M, false);
+        assert_eq!(r.hrir_grid_id(), g1);
+        // Every build input is covered: head radius and equalisation too.
+        r.ensure_source(&HrirSource::Synthetic, 0.1, true);
+        assert!(!r.rebuild_pending());
+        assert_ne!(r.hrir_grid_id(), g1);
     }
 
     /// A head-radius change rebuilds a parametric grid (its shelf corner
@@ -2312,5 +2386,97 @@ mod tests {
             &mut out,
         );
         assert!(out.iter().all(|&x| x == 0.0));
+    }
+
+    /// The room stage depends on which content sits at which position, not
+    /// on the slot a channel arrives in nor on where the caller cuts its
+    /// blocks. The same bed read from two WAV files that differ only in
+    /// their channel order and header length used to render −66 dB apart
+    /// with the reverb on: the longer header moved the file reader's block
+    /// boundaries, and the reverb restarted its modulation schedule at every
+    /// block. What remains is float rounding — the same as flipping one
+    /// low bit of one input sample, measured at about −112 dB.
+    #[test]
+    fn the_room_does_not_depend_on_slot_order_or_block_cuts() {
+        let positions: [[f64; 3]; 4] = [
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.7, -0.7, 0.0],
+            [-0.7, 0.7, 0.7],
+        ];
+        let len = 12_000; // the reverb returns ~2 000 samples in
+        let mut state = 0x2468_ace1u32;
+        let content: Vec<Vec<f32>> = (0..positions.len())
+            .map(|_| {
+                (0..len)
+                    .map(|_| {
+                        state ^= state << 13;
+                        state ^= state >> 17;
+                        state ^= state << 5;
+                        (state as f32 / u32::MAX as f32 - 0.5) * 0.5
+                    })
+                    .collect()
+            })
+            .collect();
+        let params = BinauralFrameParams {
+            unit_scale_m: 3.0,
+            reflections: BinauralReflections {
+                enabled: true,
+                level: 0.4,
+                ..Default::default()
+            },
+            reverb: BinauralReverb {
+                enabled: true,
+                level: 0.2,
+                rt60_s: 0.3,
+                ..Default::default()
+            },
+            air_absorption: true,
+            ..dry_params()
+        };
+        // `order[slot]` is the content (and position) carried by `slot`.
+        let render = |order: [usize; 4], blocks: &[usize]| -> Vec<f32> {
+            let mut r = BinauralRenderer::new(48_000);
+            let pos: Vec<[f64; 3]> = order.iter().map(|&k| positions[k]).collect();
+            let gains = [ChannelGain::flat(1.0); 4];
+            let mut out = vec![0.0f32; len * 2];
+            let (mut at, mut b) = (0, 0);
+            while at < len {
+                let n = blocks[b % blocks.len()].min(len - at);
+                b += 1;
+                let pcm: Vec<f32> = (0..n)
+                    .flat_map(|s| order.iter().map(move |&k| (k, at + s)))
+                    .map(|(k, i)| content[k][i])
+                    .collect();
+                r.render_frame(
+                    &pcm,
+                    4,
+                    n,
+                    &params,
+                    &pos,
+                    &gains,
+                    &[],
+                    None,
+                    &mut out[at * 2..(at + n) * 2],
+                );
+                at += n;
+            }
+            out
+        };
+        // Block sizes as the WAV reader cuts them: 2048 and whatever is left
+        // of a 64 KiB read, shifted by one sample between the two files.
+        let a = render([0, 1, 2, 3], &[2048, 680, 2048, 683]);
+        let b = render([0, 2, 1, 3], &[2048, 679, 2048, 683]);
+        let peak = a.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let diff = a
+            .iter()
+            .zip(&b)
+            .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+        let db = 20.0 * (diff / peak).max(1e-30).log10();
+        assert!(
+            db < -100.0,
+            "the same scene in another slot order and other block cuts \
+             rendered {db:.1} dB apart (re peak); rounding alone is ~−112 dB"
+        );
     }
 }

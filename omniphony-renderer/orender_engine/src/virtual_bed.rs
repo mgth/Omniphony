@@ -20,6 +20,48 @@ use std::sync::OnceLock;
 
 use omniphony_geometry::f32::inverse_room_scaled_position;
 
+/// The room model in force: the ratios the live params carry for the room
+/// warp, taken together so a pose resolver reads one value instead of four.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoomRatios {
+    /// `[width, front, height]`.
+    pub ratio: [f32; 3],
+    pub rear: f32,
+    pub lower: f32,
+    pub center_blend: f32,
+}
+
+impl RoomRatios {
+    /// The unit cube: no warp at all.
+    pub const UNIT: Self = Self {
+        ratio: [1.0, 1.0, 1.0],
+        rear: 1.0,
+        lower: 1.0,
+        center_blend: 0.0,
+    };
+
+    pub fn from_live(live: &renderer::live_params::LiveParams) -> Self {
+        Self {
+            ratio: live.room_ratio,
+            rear: live.room_ratio_rear,
+            lower: live.room_ratio_lower,
+            center_blend: live.room_ratio_center_blend,
+        }
+    }
+
+    /// Inverse room warp of a real ADM position, clamped into the normalized
+    /// cube ([`inverse_room_scaled_position`]).
+    fn inverse(&self, position: [f32; 3]) -> [f32; 3] {
+        inverse_room_scaled_position(
+            position,
+            self.ratio,
+            self.rear,
+            self.lower,
+            self.center_blend,
+        )
+    }
+}
+
 #[derive(Clone)]
 struct VirtualBedLayouts {
     layout_5_1: Option<SpeakerLayout>,
@@ -182,17 +224,6 @@ impl OwnedPlacement {
     }
 }
 
-fn find_speaker_in_layout<'a>(
-    layout: &'a SpeakerLayout,
-    aliases: &[&str],
-) -> Option<&'a renderer::speaker_layout::Speaker> {
-    layout.speakers.iter().find(|speaker| {
-        aliases
-            .iter()
-            .any(|alias| speaker.name.eq_ignore_ascii_case(alias))
-    })
-}
-
 /// Convert a resolved bed speaker to a normalized ADM position in [-1, 1],
 /// honouring its `coord_mode` exactly like the output speakers do
 /// ([`SpeakerLayout::spatializable_positions_for_room`]):
@@ -207,10 +238,7 @@ fn find_speaker_in_layout<'a>(
 /// ratio. Using x/y/z directly matches how the output speakers are placed.
 fn speaker_pose_to_normalized(
     speaker: &renderer::speaker_layout::Speaker,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
+    room: RoomRatios,
 ) -> (String, f32, f32, f32) {
     if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
         (
@@ -225,13 +253,7 @@ fn speaker_pose_to_normalized(
             speaker.elevation,
             speaker.distance,
         );
-        let [x, y, z] = inverse_room_scaled_position(
-            [sx, sy, sz],
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-        );
+        let [x, y, z] = room.inverse([sx, sy, sz]);
         (speaker.name.clone(), x, y, z)
     }
 }
@@ -242,22 +264,9 @@ fn speaker_pose_to_normalized(
 /// that states an angle. A corner channel is deliberately carried around by
 /// the room warp; a channel stated as an angle — a pose the bridge declared,
 /// or a height-tier label — must land on that angle whatever the room is.
-fn angles_to_normalized(
-    azimuth_deg: f32,
-    elevation_deg: f32,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
-) -> (f32, f32, f32) {
+fn angles_to_normalized(azimuth_deg: f32, elevation_deg: f32, room: RoomRatios) -> (f32, f32, f32) {
     let (sx, sy, sz) = renderer::spatial_vbap::spherical_to_adm(azimuth_deg, elevation_deg, 1.0);
-    let [x, y, z] = inverse_room_scaled_position(
-        [sx, sy, sz],
-        room_ratio,
-        room_ratio_rear,
-        room_ratio_lower,
-        room_ratio_center_blend,
-    );
+    let [x, y, z] = room.inverse([sx, sy, sz]);
     (x, y, z)
 }
 
@@ -303,114 +312,41 @@ pub(crate) fn nominal_angle(label: RChannelLabel, use_7_1: bool) -> Option<(f32,
     })
 }
 
-fn label_aliases(label: RChannelLabel, use_7_1: bool) -> Option<&'static [&'static str]> {
-    match label {
-        RChannelLabel::L => Some(&["FL", "L", "FrontLeft", "LeftFront"]),
-        RChannelLabel::R => Some(&["FR", "R", "FrontRight", "RightFront"]),
-        RChannelLabel::C => Some(&["C", "FC", "Center", "Centre"]),
-        RChannelLabel::LFE => Some(&["LFE", "LFE1", "Sub", "Subwoofer", "SW"]),
-        RChannelLabel::LFE2 => Some(&["LFE2"]),
-        RChannelLabel::Ls => {
-            if use_7_1 {
-                Some(&["SL", "Ls", "LeftSurround", "SurroundLeft"])
-            } else {
-                Some(&[
-                    "SL",
-                    "Ls",
-                    "BL",
-                    "Lb",
-                    "LeftSurround",
-                    "SurroundLeft",
-                    "BackLeft",
-                    "LeftBack",
-                ])
-            }
-        }
-        RChannelLabel::Rs => {
-            if use_7_1 {
-                Some(&["SR", "Rs", "RightSurround", "SurroundRight"])
-            } else {
-                Some(&[
-                    "SR",
-                    "Rs",
-                    "BR",
-                    "Rb",
-                    "RightSurround",
-                    "SurroundRight",
-                    "BackRight",
-                    "RightBack",
-                ])
-            }
-        }
-        RChannelLabel::Lb => Some(&[
-            "BL", "Lb", "Lrs", "BackLeft", "LeftBack", "RearLeft", "LeftRear",
-        ]),
-        RChannelLabel::Rb => Some(&[
-            "BR",
-            "Rb",
-            "Rrs",
-            "BackRight",
-            "RightBack",
-            "RearRight",
-            "RightRear",
-        ]),
-        RChannelLabel::Cb => Some(&["BC", "Cb", "BackCenter", "RearCenter"]),
-        RChannelLabel::Lsc => Some(&["LSC", "FLC", "FrontLeftCenter", "LeftCenter"]),
-        RChannelLabel::Rsc => Some(&["RSC", "FRC", "FrontRightCenter", "RightCenter"]),
-        RChannelLabel::Lw => Some(&["Lw", "FWL", "WL", "WideLeft", "FrontWideLeft"]),
-        RChannelLabel::Rw => Some(&["Rw", "FWR", "WR", "WideRight", "FrontWideRight"]),
-        RChannelLabel::Lsd => Some(&["LSD"]),
-        RChannelLabel::Rsd => Some(&["RSD"]),
-        // Height layer. Aliases cover the common naming schemes (TFL/TBL,
-        // Dolby Ltf/Ltr, ADM Tp* / U* upper-layer) so a configured 7.1.4 layout
-        // resolves these to its named top speakers.
-        RChannelLabel::Tfl => Some(&[
-            "TFL",
-            "Tfl",
-            "Ltf",
-            "TpFL",
-            "TopFrontLeft",
-            "UpperFrontLeft",
-        ]),
-        RChannelLabel::Tfr => Some(&[
-            "TFR",
-            "Tfr",
-            "Rtf",
-            "TpFR",
-            "TopFrontRight",
-            "UpperFrontRight",
-        ]),
-        RChannelLabel::Tbl => Some(&[
-            "TBL",
-            "Tbl",
-            "Ltr",
-            "TpBL",
-            "TopBackLeft",
-            "TopRearLeft",
-            "UpperBackLeft",
-        ]),
-        RChannelLabel::Tbr => Some(&[
-            "TBR",
-            "Tbr",
-            "Rtr",
-            "TpBR",
-            "TopBackRight",
-            "TopRearRight",
-            "UpperBackRight",
-        ]),
-        RChannelLabel::Tsl => Some(&["TSL", "Tsl", "TpSL", "TopSideLeft", "UpperSideLeft"]),
-        RChannelLabel::Tsr => Some(&["TSR", "Tsr", "TpSR", "TopSideRight", "UpperSideRight"]),
-        RChannelLabel::Tc => Some(&["TC", "TpC", "TopCenter", "TopMiddleCenter"]),
-        RChannelLabel::Tfc => Some(&["TFC", "Tfc", "TpFC", "TopFrontCenter"]),
-        // Height tier (30° over the floor speaker of the same name). `HL`/`HR`
-        // are not here: they have always meant the top-front pair.
-        RChannelLabel::Lh => Some(&["Lh", "LeftHeight", "FrontHeightLeft", "FHL"]),
-        RChannelLabel::Rh => Some(&["Rh", "RightHeight", "FrontHeightRight", "FHR"]),
-        RChannelLabel::Ch => Some(&["Ch", "HC", "CenterHeight", "HeightCenter", "FHC"]),
-        RChannelLabel::Lhs => Some(&["Lhs", "HLs", "LeftHeightSurround", "HeightLeftSurround"]),
-        RChannelLabel::Rhs => Some(&["Rhs", "HRs", "RightHeightSurround", "HeightRightSurround"]),
-        _ => None,
-    }
+/// Whether the source carries back channels (`Lb`/`Rb`/`Cb`), i.e. is a
+/// 7.x bed. Without them the surround pair of a 4.x/5.x source has no
+/// canonical corner ([`surround_placement_override`]), and a bed's back
+/// entries stand in for its surround ones ([`find_bed_entry`]).
+pub(crate) fn source_has_back(labels: &[RChannelLabel]) -> bool {
+    labels
+        .iter()
+        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb))
+}
+
+/// The bed entry for a channel label: the first entry whose name is one of
+/// the label's spellings ([`bridge_api::labels::name_matches`], the same
+/// table the output channel map and Studio's catalogue use). A 4.x/5.x
+/// source (`use_7_1 == false`) has one surround pair where a 7.x bed has two,
+/// so its `Ls`/`Rs` fall back to the bed's back entry (`Lb`/`Rb`) when there
+/// is no surround one — the bundled 5.1 layout names its surrounds `BL`/`BR`.
+fn find_bed_entry(
+    layout: &SpeakerLayout,
+    label: RChannelLabel,
+    use_7_1: bool,
+) -> Option<&renderer::speaker_layout::Speaker> {
+    let find = |label: RChannelLabel| {
+        layout
+            .speakers
+            .iter()
+            .find(|speaker| bridge_api::labels::name_matches(&speaker.name, label))
+    };
+    find(label).or_else(|| {
+        let folded = match label {
+            RChannelLabel::Ls if !use_7_1 => RChannelLabel::Lb,
+            RChannelLabel::Rs if !use_7_1 => RChannelLabel::Rb,
+            _ => return None,
+        };
+        find(folded)
+    })
 }
 
 /// The room model's pose for a label, as a **normalized cartesian** corner:
@@ -424,7 +360,7 @@ fn label_aliases(label: RChannelLabel, use_7_1: bool) -> Option<&'static [&'stat
 /// horizontal distance`). `use_7_1` does not change these (the corners are
 /// layout-independent); the surround pair and the height above it are
 /// finalised by [`surround_placement_override`] for 4.x/5.x sources.
-pub(crate) fn fallback_virtual_bed_pose(
+fn fallback_virtual_bed_pose(
     label: RChannelLabel,
     _use_7_1: bool,
 ) -> Option<(String, f32, f32, f32)> {
@@ -519,7 +455,7 @@ pub fn fixed_channel_catalog_json() -> String {
 ///
 /// Room model only: a sphere direction, a declared angle and a user's own
 /// entry all say where the pair is, and are never overridden.
-pub(crate) fn surround_placement_override(
+fn surround_placement_override(
     label: RChannelLabel,
     use_7_1: bool,
     placement: SurroundPlacement,
@@ -586,56 +522,22 @@ fn direct_route_label(
 /// - room: the room model ([`room_pose`]);
 /// - sphere: the direction the format declared, else the nominal direction
 ///   of the label ([`sphere_pose`]).
-#[allow(clippy::too_many_arguments)]
 fn resolve_virtual_bed_pose(
     label: RChannelLabel,
     use_7_1: bool,
     policy: &PlacementPolicy<'_>,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
+    room: RoomRatios,
     surround_placement: SurroundPlacement,
 ) -> Option<(String, f32, f32, f32)> {
     match policy.mode {
         PlacementMode::Manual => {
             if let Some(found) = find_virtual_bed_entry(policy.layout, label, use_7_1) {
-                return Some(speaker_pose_to_normalized(
-                    found,
-                    room_ratio,
-                    room_ratio_rear,
-                    room_ratio_lower,
-                    room_ratio_center_blend,
-                ));
+                return Some(speaker_pose_to_normalized(found, room));
             }
-            room_pose(
-                label,
-                use_7_1,
-                room_ratio,
-                room_ratio_rear,
-                room_ratio_lower,
-                room_ratio_center_blend,
-                surround_placement,
-            )
+            room_pose(label, use_7_1, room, surround_placement)
         }
-        PlacementMode::Room => room_pose(
-            label,
-            use_7_1,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-            surround_placement,
-        ),
-        PlacementMode::Sphere => sphere_pose(
-            label,
-            use_7_1,
-            policy.declared,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-        ),
+        PlacementMode::Room => room_pose(label, use_7_1, room, surround_placement),
+        PlacementMode::Sphere => sphere_pose(label, use_7_1, policy.declared, room),
     }
 }
 
@@ -645,14 +547,10 @@ fn resolve_virtual_bed_pose(
 /// normalized position and is carried around by the room warp, the way an
 /// object at that position is: `L` is the front-left corner of *the* room,
 /// whatever angle that makes.
-#[allow(clippy::too_many_arguments)]
 fn room_pose(
     label: RChannelLabel,
     use_7_1: bool,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
+    room: RoomRatios,
     surround_placement: SurroundPlacement,
 ) -> Option<(String, f32, f32, f32)> {
     if let Some((ox, oy, oz)) = surround_placement_override(label, use_7_1, surround_placement) {
@@ -668,16 +566,8 @@ fn room_pose(
     } else {
         layouts.layout_5_1.as_ref()
     };
-    if let (Some(layout), Some(aliases)) = (layout_opt, label_aliases(label, use_7_1)) {
-        if let Some(found) = find_speaker_in_layout(layout, aliases) {
-            return Some(speaker_pose_to_normalized(
-                found,
-                room_ratio,
-                room_ratio_rear,
-                room_ratio_lower,
-                room_ratio_center_blend,
-            ));
-        }
+    if let Some(found) = layout_opt.and_then(|layout| find_bed_entry(layout, label, use_7_1)) {
+        return Some(speaker_pose_to_normalized(found, room));
     }
 
     // Cartesian corner: use x/y/z directly (clamped), exactly like the
@@ -701,24 +591,14 @@ fn sphere_pose(
     label: RChannelLabel,
     use_7_1: bool,
     declared: &[RChannelPose],
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
+    room: RoomRatios,
 ) -> Option<(String, f32, f32, f32)> {
     let (azimuth, elevation) = declared
         .iter()
         .find(|pose| pose.label == label)
         .map(|pose| (pose.azimuth_deg, pose.elevation_deg))
         .or_else(|| nominal_angle(label, use_7_1))?;
-    let (x, y, z) = angles_to_normalized(
-        azimuth,
-        elevation,
-        room_ratio,
-        room_ratio_rear,
-        room_ratio_lower,
-        room_ratio_center_blend,
-    );
+    let (x, y, z) = angles_to_normalized(azimuth, elevation, room);
     Some((
         bridge_api::labels::canonical_name(label).to_string(),
         x,
@@ -727,38 +607,65 @@ fn sphere_pose(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where the bed renders each channel under `policy`, as a normalized ADM
+/// position, in channel order: the pose [`plan_channel_render`] gives the
+/// channel when it is virtualized — whether or not this one is — so the
+/// same room corner, sphere direction or user entry. `None` for a label with
+/// no pose (`Object`, `Unknown`). `out` is cleared and refilled.
+///
+/// The channel-object stages place what they synthesize from these
+/// ([`crate::object_gen::PrepareCtx::bed_poses`]): a phantom between two
+/// channels sits between them wherever the family's policy put them.
+pub fn resolve_bed_poses(
+    channel_labels: &[RChannelLabel],
+    policy: &PlacementPolicy<'_>,
+    room: RoomRatios,
+    surround_placement: SurroundPlacement,
+    out: &mut Vec<Option<[f64; 3]>>,
+) {
+    let use_7_1 = source_has_back(channel_labels);
+    out.clear();
+    out.extend(channel_labels.iter().map(|&label| {
+        resolve_virtual_bed_pose(label, use_7_1, policy, room, surround_placement)
+            .map(|(_, x, y, z)| [x as f64, y as f64, z as f64])
+    }));
+}
+
+/// [`resolve_bed_poses`] under the room model with no entries: the poses a
+/// fresh install gives, for the tests of the stages that consume them.
+#[cfg(test)]
+pub(crate) fn room_bed_poses(
+    channel_labels: &[RChannelLabel],
+    surround_placement: SurroundPlacement,
+) -> Vec<Option<[f64; 3]>> {
+    let mut poses = Vec::new();
+    resolve_bed_poses(
+        channel_labels,
+        &PlacementPolicy::room(),
+        RoomRatios::UNIT,
+        surround_placement,
+        &mut poses,
+    );
+    poses
+}
+
 pub fn build_virtual_bed_events(
     channel_labels: &[RChannelLabel],
     policy: &PlacementPolicy<'_>,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
+    room: RoomRatios,
     surround_placement: SurroundPlacement,
 ) -> Option<Vec<renderer::spatial_renderer::SpatialChannelEvent>> {
-    let has_back = channel_labels
-        .iter()
-        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
-    let use_7_1 = has_back;
+    let use_7_1 = source_has_back(channel_labels);
 
     let mut events: Vec<renderer::spatial_renderer::SpatialChannelEvent> =
         Vec::with_capacity(channel_labels.len());
 
     for (channel_idx, label) in channel_labels.iter().enumerate() {
-        let (_name, x, y, z) = match resolve_virtual_bed_pose(
-            *label,
-            use_7_1,
-            policy,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-            surround_placement,
-        ) {
-            Some(v) => v,
-            None => continue,
-        };
+        let (_name, x, y, z) =
+            match resolve_virtual_bed_pose(*label, use_7_1, policy, room, surround_placement) {
+                Some(v) => v,
+                None => continue,
+            };
         events.push(renderer::spatial_renderer::SpatialChannelEvent {
             channel_idx,
             is_bed: false,
@@ -777,21 +684,14 @@ pub fn build_virtual_bed_events(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn build_virtual_bed_objects(
     channel_labels: &[RChannelLabel],
     policy: &PlacementPolicy<'_>,
     output_layout: Option<&SpeakerLayout>,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
+    room: RoomRatios,
     surround_placement: SurroundPlacement,
 ) -> Option<Vec<ObjectMeta>> {
-    let has_back = channel_labels
-        .iter()
-        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
-    let use_7_1 = has_back;
+    let use_7_1 = source_has_back(channel_labels);
 
     // Used to anchor a direct channel onto its output speaker so Studio shows it
     // snapped to that speaker (its `directSpeakerIndex` decoration).
@@ -803,19 +703,11 @@ pub fn build_virtual_bed_objects(
         // channels carry a free position, direct channels (e.g. LFE) carry a
         // `direct_speaker_index` so Studio anchors them onto their speaker.
         let spatialize = channel_is_spatialized(policy.layout, *label, use_7_1);
-        let (_source_name, x, y, z) = match resolve_virtual_bed_pose(
-            *label,
-            use_7_1,
-            policy,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-            surround_placement,
-        ) {
-            Some(v) => v,
-            None => continue,
-        };
+        let (_source_name, x, y, z) =
+            match resolve_virtual_bed_pose(*label, use_7_1, policy, room, surround_placement) {
+                Some(v) => v,
+                None => continue,
+            };
         let direct_speaker_index = if spatialize {
             None
         } else {
@@ -871,19 +763,13 @@ fn default_channel_spatialize(label: RChannelLabel) -> bool {
 }
 
 /// Find the virtual-bed entry (a [`renderer::speaker_layout::Speaker`]) for a
-/// channel label, matching by the same name aliases used to resolve poses.
+/// channel label in the family's entries, if it has any ([`find_bed_entry`]).
 fn find_virtual_bed_entry(
     layout: Option<&SpeakerLayout>,
     label: RChannelLabel,
     use_7_1: bool,
 ) -> Option<&renderer::speaker_layout::Speaker> {
-    let layout = layout?;
-    let aliases = label_aliases(label, use_7_1)?;
-    layout.speakers.iter().find(|speaker| {
-        aliases
-            .iter()
-            .any(|alias| speaker.name.eq_ignore_ascii_case(alias))
-    })
+    find_bed_entry(layout?, label, use_7_1)
 }
 
 /// The bed entry's `gain_db` as an audio-event gain: clamped into the event
@@ -947,16 +833,12 @@ pub enum ChannelRenderPlan {
 /// the same way. In `Spatial` mode the placement of each channel — direct to a
 /// speaker or virtualized at a position — is decided per channel by the
 /// family's placement `policy`.
-#[allow(clippy::too_many_arguments)]
 pub fn plan_channel_render(
     mode: renderer::live_params::ChannelRenderMode,
     channel_labels: &[RChannelLabel],
     policy: &PlacementPolicy<'_>,
     output_layout: Option<&SpeakerLayout>,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
+    room: RoomRatios,
     surround_placement: SurroundPlacement,
 ) -> ChannelRenderPlan {
     use renderer::live_params::ChannelRenderMode;
@@ -966,10 +848,7 @@ pub fn plan_channel_render(
             channel_labels,
             policy,
             output_layout,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
+            room,
             surround_placement,
         ),
     }
@@ -980,21 +859,14 @@ pub fn plan_channel_render(
 /// (a bed id in `bed_indices` + a bed event); a `spatialize:true` channel is
 /// virtualized at the bed's position (the `usize::MAX` sentinel in `bed_indices`
 /// + an object event carrying the position). A frame may freely mix the two.
-#[allow(clippy::too_many_arguments)]
 fn build_virtual_bed_plan(
     channel_labels: &[RChannelLabel],
     policy: &PlacementPolicy<'_>,
     output_layout: Option<&SpeakerLayout>,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
+    room: RoomRatios,
     surround_placement: SurroundPlacement,
 ) -> ChannelRenderPlan {
-    let has_back = channel_labels
-        .iter()
-        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
-    let use_7_1 = has_back;
+    let use_7_1 = source_has_back(channel_labels);
 
     // Label → output-speaker map, so a direct surround can be rerouted to a
     // back speaker (Back placement) only when the layout actually has one.
@@ -1010,16 +882,7 @@ fn build_virtual_bed_plan(
         let gain_db = bed_entry_gain_db(policy.layout, *label, use_7_1);
         if spatialize {
             // Virtualize: place an object at the policy's pose.
-            match resolve_virtual_bed_pose(
-                *label,
-                use_7_1,
-                policy,
-                room_ratio,
-                room_ratio_rear,
-                room_ratio_lower,
-                room_ratio_center_blend,
-                surround_placement,
-            ) {
+            match resolve_virtual_bed_pose(*label, use_7_1, policy, room, surround_placement) {
                 Some((_name, x, y, z)) => {
                     routes.push(renderer::spatial_renderer::ChannelRoute::Virtual);
                     events.push(renderer::spatial_renderer::SpatialChannelEvent {
@@ -1085,49 +948,44 @@ pub fn build_fixed_channel_objects(
         return None;
     }
     let control = renderer.renderer_control();
-    let (
-        placement,
-        surround_placement,
-        room_ratio,
-        room_ratio_rear,
-        room_ratio_lower,
-        room_ratio_center_blend,
-    ) = {
+    let (placement, surround_placement, room) = {
         let live = control.live.read();
         (
             OwnedPlacement::from_live(&live, family),
             live.surround_placement,
-            live.room_ratio,
-            live.room_ratio_rear,
-            live.room_ratio_lower,
-            live.room_ratio_center_blend,
+            RoomRatios::from_live(&live),
         )
     };
-    let layout = renderer.speaker_layout();
+    let topology = control.active_topology();
     build_virtual_bed_objects(
         fixed_labels,
         &placement.policy(declared_poses),
-        Some(&layout),
-        room_ratio,
-        room_ratio_rear,
-        room_ratio_lower,
-        room_ratio_center_blend,
+        Some(&topology.speaker_layout),
+        room,
         surround_placement,
     )
 }
 
-/// Everything [`plan_channel_render`] reads for a bed-only frame, kept so the
-/// next frame can tell whether replanning is needed at all.
+/// Everything [`plan_channel_render`] reads, kept so the next frame can tell
+/// whether replanning is needed at all. One key for both planners — the
+/// bed-only one and the fixed prefix of object streams — so the two cannot
+/// disagree about what invalidates a plan.
 ///
-/// The output layout is represented by `geometry_generation` rather than by a
-/// copy of the layout: it is bumped whenever a change reaches the speaker
-/// geometry (see the layout-recompute path in the OSC dispatcher), and the
-/// layout is the only thing the plan reads out of the topology. The family's
-/// placement is compared by value because editing it bumps nothing — it is a
-/// plain live param — so a generation counter would miss it and the bed would
-/// silently stop following Studio's editor.
+/// The output layout is represented by the `geometry_generation` of the
+/// topology the plan read it from rather than by a copy of the layout: every
+/// change that reaches the speaker geometry bumps the generation before the
+/// rebuild, and the rebuilt topology carries it
+/// ([`renderer::live_params::RenderTopology::geometry_generation`]). Reading it
+/// off the *active* topology rather than off the control matters: the control's
+/// counter moves when the rebuild is requested, while the layout the plan
+/// reads only changes once the rebuild lands — keyed on the former, a frame
+/// planned in between would cache the old layout's routes for good.
+///
+/// The family's placement is compared by value because editing it bumps
+/// nothing — it is a plain live param — so a generation counter would miss it
+/// and the bed would silently stop following Studio's editor.
 #[derive(Clone, PartialEq)]
-struct BedPlanKey {
+struct ChannelPlanKey {
     labels: Vec<RChannelLabel>,
     /// The poses the bridge declared for these labels. Declaration-level like
     /// the labels, so a steady stream compares a short slice per frame.
@@ -1136,11 +994,141 @@ struct BedPlanKey {
     mode: renderer::live_params::ChannelRenderMode,
     placement: OwnedPlacement,
     surround_placement: SurroundPlacement,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
-    geometry_generation: u64,
+    room: RoomRatios,
+    layout_generation: u64,
+}
+
+impl ChannelPlanKey {
+    fn capture(
+        live: &renderer::live_params::LiveParams,
+        mode: renderer::live_params::ChannelRenderMode,
+        channel_labels: &[RChannelLabel],
+        family: SourceFamily,
+        declared_poses: &[RChannelPose],
+        layout_generation: u64,
+    ) -> Self {
+        Self {
+            labels: channel_labels.to_vec(),
+            declared_poses: declared_poses.to_vec(),
+            family,
+            mode,
+            placement: OwnedPlacement::from_live(live, family),
+            surround_placement: live.surround_placement,
+            room: RoomRatios::from_live(live),
+            layout_generation,
+        }
+    }
+
+    /// Whether a plan built from this key is still valid for `live`.
+    ///
+    /// Ordered cheapest-first: the scalars and the label list reject almost
+    /// every real change before the virtual bed is compared element by element.
+    ///
+    /// The key is destructured rather than read field by field so that adding a
+    /// field to it without deciding how it compares here is a compile error, not
+    /// a silently stale plan.
+    fn matches(
+        &self,
+        live: &renderer::live_params::LiveParams,
+        mode: renderer::live_params::ChannelRenderMode,
+        channel_labels: &[RChannelLabel],
+        family: SourceFamily,
+        declared_poses: &[RChannelPose],
+        layout_generation: u64,
+    ) -> bool {
+        let Self {
+            labels,
+            declared_poses: planned_poses,
+            family: planned_family,
+            mode: planned_mode,
+            placement,
+            surround_placement,
+            room,
+            layout_generation: planned_generation,
+        } = self;
+
+        *planned_generation == layout_generation
+            && *planned_mode == mode
+            && *surround_placement == live.surround_placement
+            && *room == RoomRatios::from_live(live)
+            && *planned_family == family
+            && labels.as_slice() == channel_labels
+            && planned_poses.as_slice() == declared_poses
+            && placement.mode == live.placement.effective_mode(family)
+            && placement.layout.as_ref() == live.placement.effective_layout(family)
+    }
+}
+
+/// The key of the last plan plus the routing it applied: the part both
+/// planners share. [`lookup`](Self::lookup) is the per-frame check,
+/// [`apply_routes`](Self::apply_routes) the on-change renderer update.
+#[derive(Default)]
+struct PlanCache {
+    key: Option<ChannelPlanKey>,
+    applied_routes: Option<Vec<renderer::spatial_renderer::ChannelRoute>>,
+}
+
+impl PlanCache {
+    fn reset(&mut self) {
+        self.key = None;
+        self.applied_routes = None;
+    }
+
+    /// `None` when the cached plan still holds; otherwise the key to plan
+    /// against and the topology whose layout it was taken from. One lock
+    /// acquisition: compare first, and only clone the inputs into a fresh key
+    /// when the comparison actually failed.
+    fn lookup(
+        &self,
+        control: &renderer::live_params::RendererControl,
+        mode: Option<renderer::live_params::ChannelRenderMode>,
+        channel_labels: &[RChannelLabel],
+        family: SourceFamily,
+        declared_poses: &[RChannelPose],
+    ) -> Option<(
+        ChannelPlanKey,
+        std::sync::Arc<renderer::live_params::RenderTopology>,
+    )> {
+        let layout_generation = control.topology.load().geometry_generation;
+        let live = control.live.read();
+        let mode = mode.unwrap_or(live.channel_render_mode);
+        if self.key.as_ref().is_some_and(|key| {
+            key.matches(
+                &live,
+                mode,
+                channel_labels,
+                family,
+                declared_poses,
+                layout_generation,
+            )
+        }) {
+            return None;
+        }
+        // The layout the key's generation names. Loaded after the generation
+        // was read, so at worst it is newer than the key says — which replans
+        // once more on the next frame, never keeps a stale plan.
+        let topology = control.active_topology();
+        let key = ChannelPlanKey::capture(
+            &live,
+            mode,
+            channel_labels,
+            family,
+            declared_poses,
+            layout_generation,
+        );
+        Some((key, topology))
+    }
+
+    fn apply_routes(
+        &mut self,
+        renderer: &renderer::spatial_renderer::SpatialRenderer,
+        routes: Vec<renderer::spatial_renderer::ChannelRoute>,
+    ) {
+        if self.applied_routes.as_deref() != Some(routes.as_slice()) {
+            renderer.configure_channel_routing(&routes);
+            self.applied_routes = Some(routes);
+        }
+    }
 }
 
 /// What a planned bed-only frame turned out to be.
@@ -1170,10 +1158,13 @@ pub enum BedPlanKind {
 /// lock *before* anything is cloned.
 #[derive(Default)]
 pub struct BedChannelPlanner {
-    key: Option<BedPlanKey>,
+    cache: PlanCache,
     kind: Option<BedPlanKind>,
     events: Vec<renderer::spatial_renderer::SpatialChannelEvent>,
-    applied_routes: Option<Vec<renderer::spatial_renderer::ChannelRoute>>,
+    /// Where the bed renders each channel ([`resolve_bed_poses`]), for the
+    /// channel-object stages. Planned with the events, so it costs nothing
+    /// on a steady stream.
+    poses: Vec<Option<[f64; 3]>>,
 }
 
 impl BedChannelPlanner {
@@ -1187,16 +1178,25 @@ impl BedChannelPlanner {
     /// applied routing has to be forgotten too or the next plan would consider
     /// itself already applied.
     pub fn reset(&mut self) {
-        self.key = None;
+        self.cache.reset();
         self.kind = None;
         self.events.clear();
-        self.applied_routes = None;
+        self.poses.clear();
     }
 
     /// The events of the current plan, in channel order. Empty unless the last
     /// [`plan`](Self::plan) returned [`BedPlanKind::Events`].
     pub fn events(&self) -> &[renderer::spatial_renderer::SpatialChannelEvent] {
         &self.events
+    }
+
+    /// Where the bed renders each channel of the current plan, in channel
+    /// order ([`resolve_bed_poses`]) — what the channel-object stages place
+    /// their objects from ([`crate::object_gen::PrepareCtx::bed_poses`]).
+    /// Empty unless the last [`plan`](Self::plan) returned
+    /// [`BedPlanKind::Events`].
+    pub fn poses(&self) -> &[Option<[f64; 3]>] {
+        &self.poses
     }
 
     /// Plan this frame's bed mapping, reusing the previous plan when nothing it
@@ -1209,146 +1209,61 @@ impl BedChannelPlanner {
         declared_poses: &[RChannelPose],
     ) -> BedPlanKind {
         let control = renderer.renderer_control();
-        let geometry_generation = control.geometry_generation();
-
-        // One lock acquisition: compare first, and only clone the inputs into a
-        // fresh key when the comparison actually failed.
-        let key = {
-            let live = control.live.read();
-            if let (Some(previous), Some(kind)) = (self.key.as_ref(), self.kind)
-                && previous.matches(
-                    &live,
-                    channel_labels,
-                    family,
-                    declared_poses,
-                    geometry_generation,
-                )
-            {
-                return kind;
-            }
-            BedPlanKey {
-                labels: channel_labels.to_vec(),
-                declared_poses: declared_poses.to_vec(),
-                family,
-                mode: live.channel_render_mode,
-                placement: OwnedPlacement::from_live(&live, family),
-                surround_placement: live.surround_placement,
-                room_ratio: live.room_ratio,
-                room_ratio_rear: live.room_ratio_rear,
-                room_ratio_lower: live.room_ratio_lower,
-                room_ratio_center_blend: live.room_ratio_center_blend,
-                geometry_generation,
-            }
+        let lookup = self
+            .cache
+            .lookup(&control, None, channel_labels, family, declared_poses);
+        let Some((key, topology)) = lookup else {
+            // A hit means a previous plan, which set the kind with the key.
+            return self.kind.unwrap_or(BedPlanKind::Silence);
         };
 
-        let output_layout = renderer.speaker_layout();
+        let policy = key.placement.policy(&key.declared_poses);
         let kind = match plan_channel_render(
             key.mode,
             &key.labels,
-            &key.placement.policy(&key.declared_poses),
-            Some(&output_layout),
-            key.room_ratio,
-            key.room_ratio_rear,
-            key.room_ratio_lower,
-            key.room_ratio_center_blend,
+            &policy,
+            Some(&topology.speaker_layout),
+            key.room,
             key.surround_placement,
         ) {
             ChannelRenderPlan::Events { events, routes } => {
-                self.apply_routes(renderer, routes);
+                self.cache.apply_routes(renderer, routes);
                 self.events = events;
+                resolve_bed_poses(
+                    &key.labels,
+                    &policy,
+                    key.room,
+                    key.surround_placement,
+                    &mut self.poses,
+                );
                 BedPlanKind::Events
             }
             ChannelRenderPlan::HostPassthrough => {
                 self.events.clear();
+                self.poses.clear();
                 BedPlanKind::HostPassthrough
             }
             ChannelRenderPlan::Silence => {
                 self.events.clear();
+                self.poses.clear();
                 BedPlanKind::Silence
             }
         };
 
-        self.key = Some(key);
+        self.cache.key = Some(key);
         self.kind = Some(kind);
         kind
-    }
-
-    fn apply_routes(
-        &mut self,
-        renderer: &renderer::spatial_renderer::SpatialRenderer,
-        routes: Vec<renderer::spatial_renderer::ChannelRoute>,
-    ) {
-        if self.applied_routes.as_deref() != Some(routes.as_slice()) {
-            renderer.configure_channel_routing(&routes);
-            self.applied_routes = Some(routes);
-        }
-    }
-}
-
-impl BedPlanKey {
-    /// Whether a plan built from this key is still valid for `live`.
-    ///
-    /// Ordered cheapest-first: the scalars and the label list reject almost
-    /// every real change before the virtual bed is compared element by element.
-    ///
-    /// The key is destructured rather than read field by field so that adding a
-    /// field to it without deciding how it compares here is a compile error, not
-    /// a silently stale plan.
-    fn matches(
-        &self,
-        live: &renderer::live_params::LiveParams,
-        channel_labels: &[RChannelLabel],
-        family: SourceFamily,
-        declared_poses: &[RChannelPose],
-        geometry_generation: u64,
-    ) -> bool {
-        let Self {
-            labels,
-            declared_poses: planned_poses,
-            family: planned_family,
-            mode,
-            placement,
-            surround_placement,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-            geometry_generation: planned_geometry,
-        } = self;
-
-        *planned_geometry == geometry_generation
-            && *mode == live.channel_render_mode
-            && *surround_placement == live.surround_placement
-            && *room_ratio == live.room_ratio
-            && *room_ratio_rear == live.room_ratio_rear
-            && *room_ratio_lower == live.room_ratio_lower
-            && *room_ratio_center_blend == live.room_ratio_center_blend
-            && *planned_family == family
-            && labels == channel_labels
-            && planned_poses == declared_poses
-            && placement.mode == live.placement.effective_mode(family)
-            && placement.layout.as_ref() == live.placement.effective_layout(family)
     }
 }
 
 /// Shared fixed-channel planner for object streams (engine + CLI decode
 /// paths). Plans the fixed prefix of the channel list through
 /// [`plan_channel_render`] — virtualized by default, per-entry direct opt-in
-/// via the placement layout — caches the result on `(labels, options_epoch)`,
-/// and applies the routing to the renderer only on change.
+/// via the placement layout — caches the result on the same key as the
+/// bed-only planner, and applies the routing to the renderer only on change.
 #[derive(Default)]
 pub struct FixedChannelPlanner {
-    planned_labels: Vec<RChannelLabel>,
-    /// The poses the bridge declared for the planned labels (part of the key:
-    /// the same labels with other poses is another plan).
-    planned_poses: Vec<RChannelPose>,
-    /// The family and its effective placement the plan was built for: the
-    /// placement is compared by value on every frame, like the bed planner
-    /// does, so an edit that bumps nothing still replans.
-    planned_family: Option<SourceFamily>,
-    planned_placement: Option<OwnedPlacement>,
-    planned_epoch: Option<u64>,
-    applied_routes: Option<Vec<renderer::spatial_renderer::ChannelRoute>>,
+    cache: PlanCache,
     /// Bed-entry trim per fixed channel index, cached at plan time so the
     /// per-metadata-frame event build ([`crate::spatial::build_spatial_channel_events`])
     /// indexes a slice instead of re-matching label aliases.
@@ -1362,18 +1277,13 @@ impl FixedChannelPlanner {
 
     /// Forget everything (stream reset / new segment).
     pub fn reset(&mut self) {
-        self.planned_labels.clear();
-        self.planned_poses.clear();
-        self.planned_family = None;
-        self.planned_placement = None;
-        self.planned_epoch = None;
-        self.applied_routes = None;
+        self.cache.reset();
         self.trims.clear();
     }
 
     /// Fixed labels of the last planned prefix.
     pub fn fixed_labels(&self) -> &[RChannelLabel] {
-        &self.planned_labels
+        self.cache.key.as_ref().map_or(&[], |key| &key.labels)
     }
 
     /// Bed-entry trim (dB) per fixed channel index, from the last plan.
@@ -1392,10 +1302,7 @@ impl FixedChannelPlanner {
         renderer: &renderer::spatial_renderer::SpatialRenderer,
         routes: Vec<renderer::spatial_renderer::ChannelRoute>,
     ) {
-        if self.applied_routes.as_deref() != Some(routes.as_slice()) {
-            renderer.configure_channel_routing(&routes);
-            self.applied_routes = Some(routes);
-        }
+        self.cache.apply_routes(renderer, routes);
     }
 
     /// Plan the fixed prefix (labels before the first `Object` channel) of an
@@ -1404,7 +1311,6 @@ impl FixedChannelPlanner {
     /// applies to fixed-only streams. On replan the fixed channels' pose/gain
     /// events are appended to `out` (the renderer caches per-channel state,
     /// so they are only needed when the plan changes).
-    #[allow(clippy::too_many_arguments)]
     pub fn plan_object_stream_fixed(
         &mut self,
         channel_labels: &[RChannelLabel],
@@ -1420,76 +1326,44 @@ impl FixedChannelPlanner {
         let fixed = &channel_labels[..fixed_end];
 
         let control = renderer.renderer_control();
-        let epoch = control.options_epoch();
-        // One lock acquisition: compare first, clone only on a miss.
-        let (
-            placement,
-            surround_placement,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-        ) = {
-            let live = control.live.read();
-            if self.planned_epoch == Some(epoch)
-                && self.planned_family == Some(family)
-                && self.planned_labels == fixed
-                && self.planned_poses == declared_poses
-                && self.planned_placement.as_ref().is_some_and(|planned| {
-                    planned.mode == live.placement.effective_mode(family)
-                        && planned.layout.as_ref() == live.placement.effective_layout(family)
-                })
-            {
-                return;
-            }
-            (
-                OwnedPlacement::from_live(&live, family),
-                live.surround_placement,
-                live.room_ratio,
-                live.room_ratio_rear,
-                live.room_ratio_lower,
-                live.room_ratio_center_blend,
-            )
+        let Some((key, topology)) = self.cache.lookup(
+            &control,
+            Some(renderer::live_params::ChannelRenderMode::Spatial),
+            fixed,
+            family,
+            declared_poses,
+        ) else {
+            return;
         };
-        let output_layout = renderer.speaker_layout();
 
         // Trim per fixed channel, mirroring the gain the plan events carry, so
         // the hosts can fold it into the stream's recurring channel-gain events.
-        let has_back = fixed
-            .iter()
-            .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
+        let use_7_1 = source_has_back(fixed);
         self.trims.clear();
         self.trims.extend(
             fixed
                 .iter()
-                .map(|l| bed_entry_gain_db(placement.layout.as_ref(), *l, has_back)),
+                .map(|l| bed_entry_gain_db(key.placement.layout.as_ref(), *l, use_7_1)),
         );
 
         match plan_channel_render(
-            renderer::live_params::ChannelRenderMode::Spatial,
-            fixed,
-            &placement.policy(declared_poses),
-            Some(&output_layout),
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-            surround_placement,
+            key.mode,
+            &key.labels,
+            &key.placement.policy(&key.declared_poses),
+            Some(&topology.speaker_layout),
+            key.room,
+            key.surround_placement,
         ) {
             ChannelRenderPlan::Events { events, routes } => {
-                self.apply_routes(renderer, routes);
+                self.cache.apply_routes(renderer, routes);
                 out.extend(events);
             }
             ChannelRenderPlan::HostPassthrough | ChannelRenderPlan::Silence => {
-                self.apply_routes(renderer, Vec::new());
+                self.cache.apply_routes(renderer, Vec::new());
             }
         }
 
-        self.planned_labels = fixed.to_vec();
-        self.planned_poses = declared_poses.to_vec();
-        self.planned_family = Some(family);
-        self.planned_placement = Some(placement);
-        self.planned_epoch = Some(epoch);
+        self.cache.key = Some(key);
     }
 }
 
@@ -1498,6 +1372,15 @@ mod tests {
     use super::*;
 
     const UNIT_ROOM: [f32; 3] = [1.0, 1.0, 1.0];
+
+    fn ratios(ratio: [f32; 3], rear: f32, lower: f32, center_blend: f32) -> RoomRatios {
+        RoomRatios {
+            ratio,
+            rear,
+            lower,
+            center_blend,
+        }
+    }
 
     #[test]
     fn fixed_channel_catalog_covers_every_fixed_label_with_canonical_poses() {
@@ -1583,28 +1466,142 @@ mod tests {
         assert!(tfl.contains(&"HL"));
     }
 
-    /// The bed-planner matcher (label_aliases) must only accept spellings that the
-    /// bridge_api single source of truth also resolves to the same label, otherwise a
-    /// user-bed speaker name could earn a pose here while failing everywhere else. Only
-    /// the 7.1 lists are asserted: the 5.1 arms deliberately fold back surround into
-    /// Ls/Rs, which is context-dependent bed folding, not SoT-level tolerance.
-    #[test]
-    fn planner_aliases_resolve_through_the_so_t() {
+    /// Bed entries as a family's placement layout holds them: any count,
+    /// no triangulation requirement (unlike [`vbed`]).
+    fn entries(speakers: Vec<renderer::speaker_layout::Speaker>) -> SpeakerLayout {
+        SpeakerLayout {
+            radius_m: 1.0,
+            speakers,
+        }
+    }
+
+    const FIXED_LABELS: [RChannelLabel; 29] = {
         use RChannelLabel::*;
-        let fixed = [
+        [
             L, R, C, LFE, LFE2, Ls, Rs, Lb, Rb, Cb, Lsc, Rsc, Lw, Rw, Lsd, Rsd, Tfl, Tfr, Tsl, Tsr,
             Tbl, Tbr, Tc, Tfc, Lh, Rh, Ch, Lhs, Rhs,
-        ];
-        for label in fixed {
-            let aliases = label_aliases(label, true).expect("planner aliases");
-            for alias in aliases {
-                assert_eq!(
-                    bridge_api::labels::label_for_name(alias),
-                    label,
-                    "planner spelling {alias:?} no longer resolves to {label:?}"
-                );
+        ]
+    };
+
+    /// A bed entry is found by exactly the spellings the single source of
+    /// truth (`bridge_api::labels`) gives its label — the table the output
+    /// channel map and Studio's catalogue match with — whatever the case or
+    /// the separators, and by no other label's. The one exception is the
+    /// explicit 5.1 fold: a 4.x/5.x source's `Ls`/`Rs` read a back entry.
+    #[test]
+    fn bed_entries_match_the_so_t_spellings_both_ways() {
+        use RChannelLabel::*;
+        for entry_label in FIXED_LABELS {
+            for alias in bridge_api::labels::aliases_for(entry_label) {
+                // `ALIAS`, `alias` and `A_L_I_A_S`-style spellings alike.
+                let spaced: String = alias
+                    .chars()
+                    .flat_map(|c| ['_', c.to_ascii_lowercase()])
+                    .collect();
+                for name in [alias.to_string(), alias.to_ascii_lowercase(), spaced] {
+                    let bed = entries(vec![renderer::speaker_layout::Speaker::new(
+                        &name, 0.0, 0.0,
+                    )]);
+                    for use_7_1 in [true, false] {
+                        for label in FIXED_LABELS {
+                            let folded =
+                                !use_7_1 && matches!((label, entry_label), (Ls, Lb) | (Rs, Rb));
+                            assert_eq!(
+                                find_bed_entry(&bed, label, use_7_1).is_some(),
+                                label == entry_label || folded,
+                                "entry {name:?} ({entry_label:?}) looked up as {label:?}, \
+                                 use_7_1={use_7_1}"
+                            );
+                        }
+                    }
+                }
             }
         }
+    }
+
+    /// The bug: a bed entry spelled `Top_Front_Left` or `HL` resolved in the
+    /// output channel map but not for the bed's own gain, spatialize flag or
+    /// pose, which silently fell back to the defaults.
+    #[test]
+    fn bed_entry_spelled_another_way_still_reaches_the_plan() {
+        use renderer::speaker_layout::Speaker;
+        for name in ["Top_Front_Left", "HL", "top front left"] {
+            let mut tfl = Speaker::new(name, -40.0, 20.0);
+            tfl.gain_db = -4.5;
+            tfl.spatialize = false;
+            let bed = entries(vec![tfl]);
+            let labels = [RChannelLabel::L, RChannelLabel::Tfl];
+            let policy = PlacementPolicy::manual(&bed);
+            assert_eq!(
+                bed_entry_gain_db(Some(&bed), RChannelLabel::Tfl, false),
+                -4.5
+            );
+            assert!(!channel_is_spatialized(
+                Some(&bed),
+                RChannelLabel::Tfl,
+                false
+            ));
+            let (_, x, y, z) = resolve_virtual_bed_pose(
+                RChannelLabel::Tfl,
+                false,
+                &policy,
+                RoomRatios::UNIT,
+                SurroundPlacement::Side,
+            )
+            .expect("pose");
+            let corner = fallback_virtual_bed_pose(RChannelLabel::Tfl, false).expect("corner");
+            assert_ne!(
+                (x, y, z),
+                (corner.1, corner.2, corner.3),
+                "{name:?}: entry's own pose"
+            );
+            match plan_channel_render(
+                renderer::live_params::ChannelRenderMode::Spatial,
+                &labels,
+                &policy,
+                None,
+                RoomRatios::UNIT,
+                SurroundPlacement::Side,
+            ) {
+                ChannelRenderPlan::Events { events, routes } => {
+                    assert_eq!(
+                        routes[1],
+                        renderer::spatial_renderer::ChannelRoute::Direct(RChannelLabel::Tfl)
+                    );
+                    assert_eq!(events[1].gain_db, Some(-4.5));
+                }
+                other => panic!("expected events, got {:?}", PlanKind::from(&other)),
+            }
+        }
+    }
+
+    /// The 5.1 fold prefers a surround entry to a back one wherever the back
+    /// one sits in the bed, and a 7.x source never folds.
+    #[test]
+    fn five_one_surround_folds_onto_a_back_entry_only_as_a_fallback() {
+        use renderer::speaker_layout::Speaker;
+        let mut back = Speaker::new("BL", -135.0, 0.0);
+        back.gain_db = -3.0;
+        let mut side = Speaker::new("SL", -90.0, 0.0);
+        side.gain_db = -1.0;
+        let only_back = entries(vec![back.clone()]);
+        let both = entries(vec![back, side]);
+        assert_eq!(
+            bed_entry_gain_db(Some(&only_back), RChannelLabel::Ls, false),
+            -3.0
+        );
+        assert_eq!(
+            bed_entry_gain_db(Some(&only_back), RChannelLabel::Ls, true),
+            0.0
+        );
+        assert_eq!(
+            bed_entry_gain_db(Some(&both), RChannelLabel::Ls, false),
+            -1.0
+        );
+        assert_eq!(
+            bed_entry_gain_db(Some(&both), RChannelLabel::Lb, false),
+            -3.0
+        );
     }
 
     #[test]
@@ -1638,10 +1635,7 @@ mod tests {
         let events = build_virtual_bed_events(
             &labels,
             &PlacementPolicy::room(),
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         )
         .expect("5.1 bed must map to virtual events");
@@ -1680,10 +1674,7 @@ mod tests {
         let events = build_virtual_bed_events(
             &labels,
             &PlacementPolicy::room(),
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         )
         .expect("7.1.4 bed must map to virtual events");
@@ -1710,10 +1701,7 @@ mod tests {
         let events = build_virtual_bed_events(
             &labels,
             &PlacementPolicy::room(),
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         )
         .unwrap();
@@ -1730,10 +1718,7 @@ mod tests {
         let events = build_virtual_bed_events(
             &labels,
             &PlacementPolicy::room(),
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         )
         .unwrap();
@@ -1741,10 +1726,7 @@ mod tests {
             &labels,
             &PlacementPolicy::room(),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         )
         .unwrap();
@@ -1818,10 +1800,7 @@ mod tests {
                     label,
                     true,
                     &PlacementPolicy::sphere(&[]),
-                    room,
-                    rear,
-                    1.0,
-                    0.0,
+                    ratios(room, rear, 1.0, 0.0),
                     SurroundPlacement::Side,
                 )
                 .unwrap_or_else(|| panic!("no pose for {label:?}"));
@@ -1857,10 +1836,7 @@ mod tests {
                 RChannelLabel::Ls,
                 true,
                 policy,
-                room,
-                rear,
-                1.0,
-                0.0,
+                ratios(room, rear, 1.0, 0.0),
                 SurroundPlacement::Side,
             )
             .expect("Ls resolves");
@@ -1896,7 +1872,7 @@ mod tests {
     fn surround_placement_only_moves_room_corners() {
         let resolve = |label: RChannelLabel, policy: &PlacementPolicy<'_>, placement| {
             let (_, x, y, z) =
-                resolve_virtual_bed_pose(label, false, policy, UNIT_ROOM, 1.0, 1.0, 0.0, placement)
+                resolve_virtual_bed_pose(label, false, policy, RoomRatios::UNIT, placement)
                     .expect("resolves");
             (x, y, z)
         };
@@ -1957,10 +1933,7 @@ mod tests {
             &labels,
             &PlacementPolicy::room(),
             Some(&output),
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         )
         .expect("all channels emitted");
@@ -1998,10 +1971,7 @@ mod tests {
             &labels,
             &PlacementPolicy::manual(&bed),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         )
         .expect("all channels emitted");
@@ -2046,10 +2016,7 @@ mod tests {
             &labels,
             &PlacementPolicy::manual(&bed),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         );
         let ChannelRenderPlan::Events { events, .. } = plan else {
@@ -2090,10 +2057,7 @@ mod tests {
             &[RChannelLabel::L, RChannelLabel::C, RChannelLabel::R],
             &PlacementPolicy::manual(&bed),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         );
         let ChannelRenderPlan::Events { events, .. } = plan else {
@@ -2130,10 +2094,7 @@ mod tests {
             &labels,
             &PlacementPolicy::manual(&bed),
             None,
-            room,
-            1.0,
-            1.0,
-            0.5,
+            ratios(room, 1.0, 1.0, 0.5),
             SurroundPlacement::Side,
         )
         .expect("objects emitted");
@@ -2155,10 +2116,7 @@ mod tests {
             &labels,
             &PlacementPolicy::manual(&bed),
             None,
-            room,
-            1.0,
-            1.0,
-            0.5,
+            ratios(room, 1.0, 1.0, 0.5),
             SurroundPlacement::Side,
         );
         match plan {
@@ -2191,10 +2149,7 @@ mod tests {
             &labels,
             &PlacementPolicy::room(),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         )
         .unwrap();
@@ -2202,10 +2157,7 @@ mod tests {
             &labels,
             &PlacementPolicy::room(),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Back,
         )
         .unwrap();
@@ -2251,10 +2203,7 @@ mod tests {
             &labels,
             &PlacementPolicy::room(),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         )
         .unwrap();
@@ -2262,10 +2211,7 @@ mod tests {
             &labels,
             &PlacementPolicy::room(),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Back,
         )
         .unwrap();
@@ -2364,10 +2310,7 @@ mod tests {
             &BED_5_1,
             &PlacementPolicy::room(),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         );
         assert!(matches!(plan, ChannelRenderPlan::HostPassthrough));
@@ -2386,10 +2329,7 @@ mod tests {
             &BED_5_1,
             &PlacementPolicy::room(),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         );
         match plan {
@@ -2436,10 +2376,7 @@ mod tests {
             &BED_5_1,
             &PlacementPolicy::manual(&bed),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         );
         match plan {
@@ -2484,10 +2421,7 @@ mod tests {
             &labels,
             &PlacementPolicy::manual(&bed),
             None,
-            UNIT_ROOM,
-            1.0,
-            1.0,
-            0.0,
+            ratios(UNIT_ROOM, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         );
         match plan {
@@ -2548,10 +2482,7 @@ mod tests {
             &BED_5_1,
             &bed.map_or(PlacementPolicy::room(), PlacementPolicy::manual),
             None,
-            room_ratio,
-            1.0,
-            1.0,
-            0.0,
+            ratios(room_ratio, 1.0, 1.0, 0.0),
             SurroundPlacement::Side,
         )
     }
@@ -2718,6 +2649,188 @@ mod tests {
         out.clear();
         planner.plan_object_stream_fixed(&labels, SourceFamily::Dts, &[], &renderer, &mut out);
         assert!(!out.is_empty(), "a family change replans");
+    }
+
+    fn small_renderer(layout: SpeakerLayout) -> renderer::spatial_renderer::SpatialRenderer {
+        crate::renderer_build::build_spatial_renderer(
+            &crate::renderer_build::SpatialRendererParams::from_render_config(None),
+            layout,
+            48_000,
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 9,
+                y_size: 9,
+                z_size: 5,
+                allow_negative_z: true,
+            },
+            bridge_api::RVbapTableMode::Cartesian,
+            None,
+        )
+        .expect("renderer")
+    }
+
+    fn event_position(
+        events: &[renderer::spatial_renderer::SpatialChannelEvent],
+        channel_idx: usize,
+    ) -> Option<[f64; 3]> {
+        events
+            .iter()
+            .find(|e| e.channel_idx == channel_idx)
+            .and_then(|e| e.position)
+    }
+
+    /// A room-ratio edit moves the fixed prefix of a running object stream.
+    ///
+    /// Sphere mode places a channel at an angle *under the room in force*, so
+    /// its normalized pose depends on the ratios. The room OSC handler bumps
+    /// the geometry generation, not the options epoch the fixed planner used
+    /// to cache on: the prefix kept the old room's poses until the next track.
+    #[test]
+    fn room_ratio_edit_replans_an_object_stream_prefix() {
+        use renderer::placement::PlacementMode;
+        let renderer = small_renderer(SpeakerLayout::preset("7.1.4").expect("preset layout"));
+        let control = renderer.renderer_control();
+        control
+            .live
+            .write()
+            .placement
+            .family_mut(SourceFamily::Dolby)
+            .mode = Some(PlacementMode::Sphere);
+        let labels = [
+            RChannelLabel::L,
+            RChannelLabel::R,
+            RChannelLabel::C,
+            RChannelLabel::LFE,
+            RChannelLabel::Object,
+        ];
+
+        let mut planner = FixedChannelPlanner::new();
+        let mut out = Vec::new();
+        planner.plan_object_stream_fixed(&labels, SourceFamily::Dolby, &[], &renderer, &mut out);
+        let l_cube = event_position(&out, 0).expect("L event");
+
+        // What the room OSC handler does: new ratios, then a geometry bump.
+        {
+            let mut live = control.live.write();
+            live.room_ratio[1] *= 2.0;
+            live.room_ratio_rear *= 2.0;
+        }
+        control.bump_geometry_generation();
+        out.clear();
+        planner.plan_object_stream_fixed(&labels, SourceFamily::Dolby, &[], &renderer, &mut out);
+        let l_deep = event_position(&out, 0).expect("L event after the room edit");
+        assert_ne!(l_deep, l_cube, "a deeper room moves the sphere-mode L");
+
+        out.clear();
+        planner.plan_object_stream_fixed(&labels, SourceFamily::Dolby, &[], &renderer, &mut out);
+        assert!(out.is_empty(), "nothing changed since → cached plan");
+    }
+
+    /// A route that depends on the output layout — here `LFE2`, which folds
+    /// onto the `LFE` sub until the layout has a speaker of its own — follows
+    /// a layout edit once the rebuilt topology lands, in both planners.
+    ///
+    /// The edit bumps the control's geometry generation *before* the rebuild
+    /// runs; a frame planned in that window still sees the old layout. Keyed
+    /// on the control's counter, that frame's plan (old routes) was cached
+    /// for good; keyed on the active topology's, the landing replans.
+    #[test]
+    fn layout_rebuild_reroutes_both_planners_once_it_lands() {
+        use renderer::spatial_renderer::ChannelRoute;
+        let layout = SpeakerLayout::preset("7.1.4").expect("preset layout");
+        let renderer = small_renderer(layout.clone());
+        let control = renderer.renderer_control();
+        let prefix = [
+            RChannelLabel::L,
+            RChannelLabel::R,
+            RChannelLabel::C,
+            RChannelLabel::LFE,
+            RChannelLabel::LFE2,
+        ];
+        let object_labels = [&prefix[..], &[RChannelLabel::Object]].concat();
+
+        let mut fixed = FixedChannelPlanner::new();
+        let mut bed = BedChannelPlanner::new();
+        let mut out = Vec::new();
+        let plan_both =
+            |fixed: &mut FixedChannelPlanner, bed: &mut BedChannelPlanner, out: &mut Vec<_>| {
+                fixed.plan_object_stream_fixed(
+                    &object_labels,
+                    SourceFamily::Dolby,
+                    &[],
+                    &renderer,
+                    out,
+                );
+                assert_eq!(
+                    bed.plan(&renderer, &prefix, SourceFamily::Dolby, &[]),
+                    BedPlanKind::Events
+                );
+                (
+                    fixed.cache.applied_routes.clone().expect("fixed routes"),
+                    bed.cache.applied_routes.clone().expect("bed routes"),
+                )
+            };
+
+        let (fixed_routes, bed_routes) = plan_both(&mut fixed, &mut bed, &mut out);
+        assert_eq!(fixed_routes[4], ChannelRoute::Direct(RChannelLabel::LFE));
+        assert_eq!(bed_routes[4], ChannelRoute::Direct(RChannelLabel::LFE));
+
+        // The edit is requested: generation bumped, rebuild not landed yet.
+        control.bump_geometry_generation();
+        plan_both(&mut fixed, &mut bed, &mut out);
+
+        // The rebuild lands with an LFE2 speaker.
+        let mut with_lfe2 = layout;
+        let mut lfe2 = with_lfe2
+            .speakers
+            .iter()
+            .find(|s| s.name == "LFE")
+            .expect("preset LFE")
+            .clone();
+        lfe2.name = "LFE2".to_string();
+        with_lfe2.speakers.push(lfe2);
+        let plan = control
+            .prepare_topology_rebuild_for_layout(with_lfe2)
+            .expect("rebuild plan");
+        control.publish_topology(plan.build_topology().expect("topology"));
+
+        let (fixed_routes, bed_routes) = plan_both(&mut fixed, &mut bed, &mut out);
+        assert_eq!(fixed_routes[4], ChannelRoute::Direct(RChannelLabel::LFE2));
+        assert_eq!(bed_routes[4], ChannelRoute::Direct(RChannelLabel::LFE2));
+    }
+
+    /// The bed planner hands the stages the poses its own events carry, for
+    /// every channel (direct ones too), under the family's policy.
+    #[test]
+    fn bed_planner_publishes_the_poses_of_its_plan() {
+        use renderer::placement::PlacementMode;
+        let renderer = small_renderer(SpeakerLayout::preset("7.1.4").expect("preset layout"));
+        let control = renderer.renderer_control();
+        control
+            .live
+            .write()
+            .placement
+            .family_mut(SourceFamily::Dts)
+            .mode = Some(PlacementMode::Sphere);
+        let mut planner = BedChannelPlanner::new();
+        assert_eq!(
+            planner.plan(&renderer, &BED_5_1, SourceFamily::Dts, &[]),
+            BedPlanKind::Events
+        );
+        let poses = planner.poses().to_vec();
+        assert_eq!(poses.len(), BED_5_1.len());
+        assert!(poses.iter().all(Option::is_some), "LFE included: {poses:?}");
+        for event in planner.events() {
+            if let Some(position) = event.position {
+                assert_eq!(poses[event.channel_idx], Some(position));
+            }
+        }
+
+        control.live.write().channel_render_mode = renderer::live_params::ChannelRenderMode::Host;
+        assert_eq!(
+            planner.plan(&renderer, &BED_5_1, SourceFamily::Dts, &[]),
+            BedPlanKind::HostPassthrough
+        );
+        assert!(planner.poses().is_empty());
     }
 
     /// The bed comparison is a derived `PartialEq`; if it ever stopped looking

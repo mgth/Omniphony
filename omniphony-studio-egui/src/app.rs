@@ -38,6 +38,9 @@ pub struct StudioSpike {
     pub(crate) args: Args,
     pub(crate) osc_stats: Arc<OscStats>,
     pub(crate) camera: OrbitCamera,
+    /// The camera is still gliding (or being dragged): its resting place is
+    /// what the preferences keep, not every frame on the way.
+    pub(crate) camera_moving: bool,
     pub(crate) selection: Selection,
     pub(crate) settings: ViewSettings,
     pub(crate) frame_stats: FrameStats,
@@ -110,6 +113,9 @@ pub struct StudioSpike {
     pub(crate) pinna_depth: f32,
     pub(crate) prtf_depth: f32,
     pub(crate) prtf_freq_scale: f32,
+    /// The renderer's last echo of the parametric settings above, so a new
+    /// one (connect, profile switch, reload) is adopted once.
+    pub(crate) hrir_params_seen: Option<serde_json::Value>,
     /// Target latency being typed, until Apply.
     pub(crate) latency_target_edit: Option<f64>,
     /// Adaptive-controller fields edited but not yet applied.
@@ -214,6 +220,12 @@ pub struct StudioSpike {
     /// A close was asked for while a run was going; the run itself is the
     /// core's.
     pub(crate) auto_tune_quit_asked: bool,
+    /// The prompt held up by a close while the renderer has unsaved edits.
+    pub(crate) unsaved_quit: crate::panels::unsaved_quit::UnsavedQuit,
+    /// Why the last "save and quit" did not save, shown in the prompt.
+    pub(crate) unsaved_quit_error: Option<String>,
+    /// Reload was pressed with unsaved edits: the confirmation is open.
+    pub(crate) reload_confirm_open: bool,
     /// The host's own `SharedState`, kept for the whole session because the
     /// watchdog and the tracked child live in it: a fresh one per call would
     /// forget the renderer it just started.
@@ -396,13 +408,14 @@ impl StudioSpike {
         // nudges it, so an idle Studio wakes for nothing.
         let services = crate::host::services::spawn(host.clone(), repaint, clock)?;
 
-        Ok(Self {
+        let mut app = Self {
             listener,
             services,
             synthetic,
             args,
             osc_stats,
             camera: OrbitCamera::new(),
+            camera_moving: false,
             selection: Selection::default(),
             settings,
             frame_stats: FrameStats::new(),
@@ -451,6 +464,7 @@ impl StudioSpike {
             pinna_depth: 100.0,
             prtf_depth: 100.0,
             prtf_freq_scale: 100.0,
+            hrir_params_seen: None,
             latency_target_edit: None,
             adaptive_edits: Default::default(),
             file_picker: None,
@@ -503,7 +517,12 @@ impl StudioSpike {
             sofa_browser: None,
             script_editor: None,
             auto_tune_quit_asked: false,
-        })
+            unsaved_quit: Default::default(),
+            unsaved_quit_error: None,
+            reload_confirm_open: false,
+        };
+        app.restore_view(&cc.egui_ctx);
+        Ok(app)
     }
 
     /// Head pose: only while the renderer is in binaural output mode; the
@@ -611,9 +630,11 @@ impl StudioSpike {
         if !ui.ctx().text_edit_focused() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.selection = Selection::default();
         }
-        if self.camera.update() {
+        let gliding = self.camera.update();
+        if gliding {
             ui.ctx().request_repaint();
         }
+        self.camera_moving = gliding || ui.ctx().input(|i| i.pointer.any_down());
         self.ease_head_pose(ui.ctx());
 
         if response.clicked()
@@ -883,6 +904,8 @@ impl StudioSpike {
         self.script_editor_modal(ctx);
         self.auto_tune_modal(ctx);
         self.auto_tune_quit_guard(ctx);
+        self.unsaved_quit_modal(ctx);
+        self.reload_confirm_modal(ctx);
         if !layout_eq(&layout, &self.layout) {
             self.layout = layout;
             self.prefs.side_panels = layout;
@@ -902,6 +925,7 @@ impl StudioSpike {
             self.prefs.display = next;
             self.mark_prefs_dirty();
         }
+        self.remember_view(ctx, self.camera_moving);
     }
 
     /// Where the two side panels sit, in framebuffer pixels, so the renderer

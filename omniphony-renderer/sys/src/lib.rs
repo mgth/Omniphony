@@ -1,6 +1,4 @@
-pub mod diag;
 pub mod input;
-pub mod live_log;
 pub mod shutdown;
 
 #[cfg(windows)]

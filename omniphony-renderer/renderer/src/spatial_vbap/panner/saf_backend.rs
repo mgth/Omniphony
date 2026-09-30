@@ -4,8 +4,8 @@
 //! struct ([`SpartaVbapLayout`]) that computes VBAP gains directly via
 //! [`SpartaVbapLayout::vbap_gains`].
 
-use super::Gains;
 use super::saf_ffi;
+use super::{Gains, normalized_spread_to_degrees};
 use crate::spatial_vbap::vbap_native::prepare_effective_speaker_dirs;
 use std::ffi::c_int;
 
@@ -24,15 +24,6 @@ pub(crate) struct SpartaVbapLayout {
 }
 
 impl SpartaVbapLayout {
-    /// Maximum spread in degrees that SAF's `vbap3D` accepts.
-    /// The public API uses normalised [0, 1]; this constant maps 1.0 → 180°.
-    const NORMALIZED_SPREAD_MAX_DEG: f32 = 180.0;
-
-    #[inline]
-    fn normalized_spread_to_degrees(spread: f32) -> f32 {
-        spread.clamp(0.0, 1.0) * Self::NORMALIZED_SPREAD_MAX_DEG
-    }
-
     /// Build a layout from speaker directions (azimuth, elevation in degrees).
     ///
     /// The real layout is triangulated first. If that fails, virtual speakers at
@@ -112,7 +103,7 @@ impl SpartaVbapLayout {
         spread: f32,
     ) -> Result<Gains, String> {
         let mut src_dirs = [azimuth_deg, elevation_deg];
-        let spread_deg = Self::normalized_spread_to_degrees(spread);
+        let spread_deg = normalized_spread_to_degrees(spread);
         let mut gain_mtx: *mut f32 = std::ptr::null_mut();
         unsafe {
             saf_ffi::vbap3D(

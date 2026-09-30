@@ -1,5 +1,6 @@
 use crate::InputControl;
 use crate::bridge::LiveBridgeIngestRuntime;
+use crate::pipewire::AdvertisedLatency;
 use crate::pipewire::PipewireBridgeStreamConfig;
 use crate::pipewire_node_conflict::warn_on_duplicate_live_input_node;
 use crate::pipewire_pods::{
@@ -10,7 +11,8 @@ use crate::pipewire_pods::{
     build_pipewire_bridge_props_pod, build_pipewire_bridge_stream_properties,
     build_pipewire_bridge_tag_pod, clone_spa_pod_bytes, spa_param_info,
 };
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+use audio_output::pipewire_registry::{MainLoopConnection, connect_main_loop};
 use pipewire as pw;
 use pw::spa;
 use std::cell::RefCell;
@@ -21,9 +23,6 @@ use std::os::raw::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-
-const TRUEHD_ONLY_IEC958_CODECS_PROP: &str = "[ \"TRUEHD\" ]";
-const IEC958_AUDIO_POSITION_PROP: &str = "[ FL FR C LFE SL SR RL RR ]";
 
 #[allow(dead_code)]
 struct PipewireBridgeClientNodeState {
@@ -128,15 +127,13 @@ pub fn run_pipewire_bridge_client_node_backend(
     stop: Arc<AtomicBool>,
     ingest: LiveBridgeIngestRuntime,
 ) -> Result<()> {
-    pw::init();
-
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| anyhow!("Failed to create PipeWire main loop: {e:?}"))?;
-    let context = pw::context::ContextRc::new(&mainloop, None)
-        .map_err(|e| anyhow!("Failed to create PipeWire context: {e:?}"))?;
-    let core = context
-        .connect_rc(None)
-        .map_err(|e| anyhow!("Failed to connect to PipeWire core: {e:?}"))?;
+    // Dropped in reverse order at the end of the function: core, context,
+    // then the loop.
+    let MainLoopConnection {
+        mainloop,
+        context: _context,
+        core,
+    } = connect_main_loop()?;
 
     // Same check as the pw_stream backend: a foreign sink under this name
     // hijacks the default-sink resolution. One registry round trip on this
@@ -162,6 +159,10 @@ pub fn run_pipewire_bridge_client_node_backend(
         config.sample_rate_hz,
         &requested_latency,
     );
+    // Logged from the properties actually published, so the log cannot
+    // drift from them.
+    let published_codecs = props.get("iec958.codecs").unwrap_or_default().to_owned();
+    let published_position = props.get("audio.position").unwrap_or_default().to_owned();
     let props_raw = props.into_raw();
 
     let mut state = Box::new(PipewireBridgeClientNodeState {
@@ -493,8 +494,8 @@ pub fn run_pipewire_bridge_client_node_backend(
         config.channels,
         config.sample_rate_hz,
         requested_latency,
-        TRUEHD_ONLY_IEC958_CODECS_PROP,
-        IEC958_AUDIO_POSITION_PROP,
+        published_codecs,
+        published_position,
         client_node,
         pw_node
     );
@@ -565,7 +566,7 @@ pub fn run_pipewire_bridge_client_node_backend(
     // A/V sync. Checked once a second: the figure only steps on a crossover
     // engine flip and creeps with the drift servo, and each republish fans a
     // param-changed out to every subscriber.
-    let mut advertised_latency_ns: u64 = 0;
+    let mut advertised_latency = AdvertisedLatency::default();
     let mut latency_check_countdown = 0u32;
     while !state.stop.load(Ordering::Relaxed)
         && !sys::ShutdownHandle::is_requested()
@@ -578,9 +579,10 @@ pub fn run_pipewire_bridge_client_node_backend(
         }
         latency_check_countdown = 10;
         let target_ns = state.input_control.downstream_latency_ns();
-        if target_ns.abs_diff(advertised_latency_ns) >= 2_000_000 {
-            pipewire_bridge_client_node_publish_latency(&mut state, target_ns);
-            advertised_latency_ns = target_ns;
+        if advertised_latency.needs_update(target_ns)
+            && pipewire_bridge_client_node_publish_latency(&mut state, target_ns)
+        {
+            advertised_latency.published(target_ns);
         }
     }
 
@@ -843,10 +845,13 @@ fn pipewire_bridge_client_node_refresh_configured_state(
 /// Rebuild the Latency/ProcessLatency pods with `latency_ns` and re-emit the
 /// node + port params, bumping the params' serial so subscribers re-read them.
 /// Runs on the main-loop thread (called between loop iterations).
+/// Republish the node's Latency/ProcessLatency params at `latency_ns`.
+/// `false` when the pods could not be built or the update was refused, so
+/// the caller retries on its next check.
 fn pipewire_bridge_client_node_publish_latency(
     state: &mut PipewireBridgeClientNodeState,
     latency_ns: u64,
-) {
+) -> bool {
     let ns = latency_ns.min(i64::MAX as u64) as i64;
     let (latency_pod, process_pod) = match (
         build_pipewire_bridge_latency_pod(ns),
@@ -859,7 +864,7 @@ fn pipewire_bridge_client_node_publish_latency(
                 l.err(),
                 p.err()
             );
-            return;
+            return false;
         }
     };
     state.latency_param_bytes = latency_pod;
@@ -883,6 +888,7 @@ fn pipewire_bridge_client_node_publish_latency(
         state.config.node_name,
         res
     );
+    res >= 0
 }
 
 fn pipewire_bridge_client_node_find_mem(

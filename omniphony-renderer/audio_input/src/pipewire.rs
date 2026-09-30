@@ -9,6 +9,7 @@ use crate::pipewire_pods::{
 };
 use crate::{InputClockMode, InputControl};
 use anyhow::{Result, anyhow};
+use audio_output::pipewire_registry::{MainLoopConnection, connect_main_loop};
 use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::Pod;
@@ -395,17 +396,16 @@ where
     F: FnMut(&[u8]) -> (usize, usize) + 'static,
     P: FnMut(&[u8], u32, u32) + 'static,
 {
-    pw::init();
     let use_driver = bridge_stream_uses_driver(config.clock_mode);
 
     let log_prefix = "PipeWire bridge input";
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| anyhow!("Failed to create PipeWire main loop: {e:?}"))?;
-    let context = pw::context::ContextRc::new(&mainloop, None)
-        .map_err(|e| anyhow!("Failed to create PipeWire context: {e:?}"))?;
-    let core = context
-        .connect_rc(None)
-        .map_err(|e| anyhow!("Failed to connect to PipeWire core: {e:?}"))?;
+    // Dropped in reverse order at the end of the function: core, context,
+    // then the loop.
+    let MainLoopConnection {
+        mainloop,
+        context: _context,
+        core,
+    } = connect_main_loop()?;
 
     // Another client already holding this name wins the default-sink
     // resolution and takes every player with it, while this renderer looks
@@ -863,10 +863,7 @@ where
                     user_data.channels
                 );
             }
-            let has_spdif_sync = chunk.windows(4).any(|w| {
-                u16::from_le_bytes([w[0], w[1]]) == 0xF872
-                    && u16::from_le_bytes([w[2], w[3]]) == 0x4E1F
-            });
+            let has_spdif_sync = spdif::contains_sync(chunk);
             // DIAG iec958-chain: per-chunk arrival trace. Publishes the chunk
             // size and inter-chunk interval to atomics so the Studio plot can
             // show whether the 1 Hz sawtooth already exists in the PipeWire
@@ -1204,7 +1201,7 @@ where
     // upstream players (pipewire-pulse → browsers, …) re-time their A/V
     // sync. Checked once a second: the figure only steps on a crossover
     // engine flip and creeps with the drift servo.
-    let mut advertised_latency_ns: u64 = 0;
+    let mut advertised_latency = AdvertisedLatency::default();
     let mut latency_checked_at = Instant::now();
 
     while !stop.load(Ordering::Relaxed)
@@ -1240,7 +1237,7 @@ where
         if latency_checked_at.elapsed() >= Duration::from_secs(1) {
             latency_checked_at = Instant::now();
             let target_ns = input_control.downstream_latency_ns();
-            if target_ns.abs_diff(advertised_latency_ns) >= 2_000_000 {
+            if advertised_latency.needs_update(target_ns) {
                 match build_pipewire_bridge_latency_pod(target_ns.min(i64::MAX as u64) as i64) {
                     Ok(bytes) => {
                         if let Some(pod) = Pod::from_bytes(&bytes) {
@@ -1252,7 +1249,7 @@ where
                                         target_ns as f64 / 1e6,
                                         config.node_name,
                                     );
-                                    advertised_latency_ns = target_ns;
+                                    advertised_latency.published(target_ns);
                                 }
                                 Err(e) => log::warn!(
                                     "{} failed to update the Latency param: {e:?}",
@@ -1281,4 +1278,49 @@ where
     let _ = stream.disconnect();
     log::info!("{} stream disconnected", log_prefix);
     Ok(())
+}
+
+/// Hysteresis on the bridge sink's advertised latency, shared by the
+/// `pw_stream` and client-node backends: republish only once the downstream
+/// latency has moved by [`Self::HYSTERESIS_NS`] from the last *successful*
+/// publication. Each republish fans a param-changed out to every subscriber,
+/// and a failed one must be retried rather than taken as done.
+#[derive(Default)]
+pub(crate) struct AdvertisedLatency {
+    advertised_ns: u64,
+}
+
+impl AdvertisedLatency {
+    pub(crate) const HYSTERESIS_NS: u64 = 2_000_000;
+
+    /// Whether `target_ns` is far enough from the advertised figure to
+    /// republish.
+    pub(crate) fn needs_update(&self, target_ns: u64) -> bool {
+        target_ns.abs_diff(self.advertised_ns) >= Self::HYSTERESIS_NS
+    }
+
+    /// Record that `ns` is now what the sink advertises.
+    pub(crate) fn published(&mut self, ns: u64) {
+        self.advertised_ns = ns;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failed publication leaves the update pending; a successful one moves
+    /// the reference the hysteresis is measured from.
+    #[test]
+    fn advertised_latency_retries_until_published() {
+        let mut advertised = AdvertisedLatency::default();
+        assert!(!advertised.needs_update(1_999_999));
+        assert!(advertised.needs_update(5_000_000));
+        // Publishing failed: nothing recorded, the update is still due.
+        assert!(advertised.needs_update(5_000_000));
+        advertised.published(5_000_000);
+        assert!(!advertised.needs_update(6_500_000));
+        assert!(advertised.needs_update(7_000_000));
+        assert!(advertised.needs_update(3_000_000));
+    }
 }

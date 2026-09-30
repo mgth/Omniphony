@@ -2,8 +2,9 @@ use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
 use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
-use crate::spatial_vbap::Gains;
+use crate::spatial_vbap::{Gains, MAX_SPEAKERS};
 use crate::speaker_layout::SpeakerLayout;
+use omniphony_geometry::f32::vec3::distance as euclidean_distance;
 
 pub struct ExperimentalDistanceBackend {
     speaker_positions: Vec<[f32; 3]>,
@@ -17,6 +18,14 @@ struct ExperimentalSpeakerCandidate {
     index: usize,
     transformed_position: [f32; 3],
     distance: f32,
+}
+
+impl ExperimentalSpeakerCandidate {
+    const EMPTY: Self = Self {
+        index: 0,
+        transformed_position: [0.0; 3],
+        distance: 0.0,
+    };
 }
 
 impl ExperimentalDistanceBackend {
@@ -43,7 +52,17 @@ impl ExperimentalDistanceBackend {
             req.room_ratio_center_blend,
         );
 
-        let mut candidates = Vec::with_capacity(self.speaker_positions.len());
+        // Fixed-size scratch on the stack: this runs per object per frame
+        // when the backend is evaluated directly, so no heap allocation. The
+        // layout never exceeds `MAX_SPEAKERS` (the `Gains` capacity).
+        debug_assert!(
+            self.speaker_positions.len() <= MAX_SPEAKERS,
+            "experimental distance backend speaker count {} exceeds MAX_SPEAKERS {}",
+            self.speaker_positions.len(),
+            MAX_SPEAKERS
+        );
+        let mut candidate_buf = [ExperimentalSpeakerCandidate::EMPTY; MAX_SPEAKERS];
+        let mut candidate_count = 0usize;
         let mut nearest = None::<(usize, f32)>;
         for (index, speaker) in self.speaker_positions.iter().copied().enumerate() {
             let transformed_position = room_scaled_position(
@@ -58,12 +77,14 @@ impl ExperimentalDistanceBackend {
                 Some((_, best_distance)) if distance >= best_distance => {}
                 _ => nearest = Some((index, distance)),
             }
-            candidates.push(ExperimentalSpeakerCandidate {
+            candidate_buf[candidate_count] = ExperimentalSpeakerCandidate {
                 index,
                 transformed_position,
                 distance,
-            });
+            };
+            candidate_count += 1;
         }
+        let candidates = &mut candidate_buf[..candidate_count];
 
         let mut gains = Gains::zeroed(self.speaker_positions.len());
         let Some((nearest_index, nearest_distance)) = nearest else {
@@ -79,12 +100,7 @@ impl ExperimentalDistanceBackend {
         let active_count = select_experimental_active_count(target, &candidates, &self.params);
         let energy =
             write_experimental_subset_gains(&mut gains, &candidates[..active_count], &self.params);
-        if energy > 1e-12 {
-            let norm = energy.sqrt();
-            for gain in gains.iter_mut() {
-                *gain /= norm;
-            }
-        }
+        gains.normalize_to_unit_energy(energy);
 
         RenderResponse { gains }
     }
@@ -135,14 +151,6 @@ impl GainModel for ExperimentalDistanceBackend {
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         ExperimentalDistanceBackend::save_to_file(self, path, speaker_layout)
     }
-}
-
-#[inline]
-fn euclidean_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 #[inline]

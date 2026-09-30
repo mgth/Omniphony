@@ -19,6 +19,15 @@ short version:
   inside it (`ui::group::Group`), rows inside their insets. The group's key
   control goes in its bar, everything else in the inset; a heading is never a
   bare bold label with an `add_space` above it.
+- **What is remembered, and when**, follows
+  [`../docs/persistence-policy.md`](../docs/persistence-policy.md): display
+  and cosmetic state (view toggles, camera, window, open sections, tabs,
+  test-tool settings) goes into `prefs` the moment it changes; anything that
+  changes the render or the engine is only sent to the renderer, which keeps
+  it unsaved until the user presses Save. Only the Save button, the quit
+  prompt and the profile-switch prompt ever save (`save-config` rule). A new
+  `ViewSettings`/`VolumeSettings` field must be classified in
+  `prefs::display::every_display_setting_is_classified`.
 - **Periodic behaviour** is a service in `core/src/host/` with
   `tick(now) -> Option<Instant>`. It is never a `maintain_*` function in
   `panels/`.

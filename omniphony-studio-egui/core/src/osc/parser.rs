@@ -42,7 +42,7 @@ fn clamp(v: f64, min: f64, max: f64) -> f64 {
     v.max(min).min(max)
 }
 
-// Polar -> cartesian comes from `omniphony-geometry`, shared with the renderer.
+// Polar -> cartesian comes from `omniphony_geometry`, shared with the renderer.
 // The copy that lived here read the angles in the Three.js scene frame while
 // labelling the result as ADM, so an object sent at azimuth 90° (hard right)
 // was stored at ADM (0, 0, dist) — directly overhead. Objects arriving in polar
@@ -433,6 +433,10 @@ pub enum OscEvent {
     },
     #[serde(rename = "state:options_schema")]
     StateOptionsSchema {
+        value: String,
+    },
+    #[serde(rename = "state:host_options")]
+    StateHostOptions {
         value: String,
     },
     #[serde(rename = "state:decode_time_ms")]
@@ -932,6 +936,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (3, "options_schema") => Some(OscEvent::StateOptionsSchema {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
+        (3, "host_options") => Some(OscEvent::StateHostOptions {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (3, "diag_values") => Some(OscEvent::StateDiagValues {

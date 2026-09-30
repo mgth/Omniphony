@@ -108,7 +108,7 @@ pub(crate) fn broadcast_blob(
     }
 }
 
-pub(crate) fn encode_log_record(record: &sys::live_log::BufferedLogRecord) -> Option<Vec<u8>> {
+pub(crate) fn encode_log_record(record: &live_log::BufferedLogRecord) -> Option<Vec<u8>> {
     let packet = OscPacket::Message(OscMessage {
         addr: osc_contract::LOG.to_string(),
         args: vec![
@@ -122,7 +122,7 @@ pub(crate) fn encode_log_record(record: &sys::live_log::BufferedLogRecord) -> Op
 }
 
 pub(crate) fn send_buffered_logs_to_client(socket: &UdpSocket, client: SocketAddr, last_seq: u64) {
-    for record in sys::live_log::records_since(last_seq) {
+    for record in live_log::records_since(last_seq) {
         if let Some(bytes) = encode_log_record(&record) {
             if let Err(e) = socket.send_to(&bytes, client) {
                 log::warn!("Failed to send log record to {}: {}", client, e);
@@ -137,7 +137,7 @@ pub(crate) fn flush_pending_logs(
     clients: &OscClientRegistry,
     last_seq: &mut u64,
 ) {
-    let records = sys::live_log::records_since(*last_seq);
+    let records = live_log::records_since(*last_seq);
     if records.is_empty() {
         return;
     }

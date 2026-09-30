@@ -52,9 +52,9 @@ use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 
 use crate::object_gen::{
-    PrepareCtx, SynthObjectSpec, channel_3d_position, flush_denorm, input_has_back, one_pole_coeff,
+    PrepareCtx, SynthObjectSpec, flush_denorm, is_height_label, one_pole_coeff,
 };
-use crate::stft::{DelayLine, OlaFifo, sine_window};
+use crate::stft::{IntegerDelay, OlaFifo, sine_window};
 
 /// STFT size and 50% hop — matches the DirAC generator (≈21 ms frame at
 /// 48 kHz), and so does the fixed one-frame latency.
@@ -154,7 +154,7 @@ pub(crate) struct SpectralExtractor {
     enc: Vec<(usize, f32, f32, f32)>,
     /// Channels that bypass the STFT (LFE, unpositioned): delayed to stay
     /// aligned with the transformed ones.
-    other: Vec<(usize, DelayLine)>,
+    other: Vec<(usize, IntegerDelay)>,
     fft_fwd: Arc<dyn RealToComplex<f32>>,
     fft_inv: Arc<dyn ComplexToReal<f32>>,
     /// Sine (√Hann) window, applied on both analysis and synthesis (their
@@ -220,13 +220,14 @@ impl SpectralExtractor {
     /// `heights` opts the input's height channels into the analysis (3D DOA +
     /// high sector ring); off, they ride the bypass delay untouched.
     pub(crate) fn prepare(ctx: &PrepareCtx, heights: bool) -> Option<Self> {
-        let use_7_1 = input_has_back(ctx.input_labels);
         let mut enc = Vec::new();
         let mut other = Vec::new();
         let mut has_top = false;
         for (idx, &label) in ctx.input_labels.iter().enumerate() {
-            let pos = channel_3d_position(label, use_7_1, ctx.surround_placement)
-                .filter(|p| heights || p[2] <= 0.0);
+            // Where the bed renders the channel; a height channel only when
+            // the analysis includes them.
+            let height = is_height_label(label);
+            let pos = ctx.channel_pose(idx).filter(|_| heights || !height);
             match pos {
                 Some(pos) => {
                     let (x, y, z) = (pos[0] as f32, pos[1] as f32, pos[2] as f32);
@@ -236,10 +237,10 @@ impl SpectralExtractor {
                     } else {
                         (0.0, 0.0, 0.0)
                     };
-                    has_top |= z > 0.0;
+                    has_top |= height;
                     enc.push((idx, ca, sa, ua));
                 }
-                None => other.push((idx, DelayLine::new(SPEC_FFT_SIZE))),
+                None => other.push((idx, IntegerDelay::new(SPEC_FFT_SIZE))),
             }
         }
         if enc.len() < 2 {
@@ -383,7 +384,7 @@ impl SpectralExtractor {
             }
             for (ch, dl) in self.other.iter_mut() {
                 if *ch < c {
-                    bed[base + *ch] = dl.push_pop(bed[base + *ch]);
+                    bed[base + *ch] = dl.push(bed[base + *ch]);
                 }
             }
             self.widx = (self.widx + 1) % SPEC_FFT_SIZE;
@@ -660,13 +661,21 @@ mod tests {
         }
     }
 
-    fn ctx<'a>(labels: &'a [RChannelLabel], layout: &'a SpeakerLayout) -> PrepareCtx<'a> {
-        PrepareCtx {
-            input_labels: labels,
-            output_layout: layout,
-            sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
-        }
+    /// A room-model prepare context (Side surround placement). A macro, not
+    /// a function: the bed poses are a temporary that must outlive the call
+    /// the context is passed to.
+    macro_rules! ctx {
+        ($labels:expr, $layout:expr) => {
+            PrepareCtx {
+                input_labels: $labels,
+                output_layout: $layout,
+                sample_rate: 48_000,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    $labels,
+                    renderer::live_params::SurroundPlacement::Side,
+                ),
+            }
+        };
     }
 
     fn sine(f: f32) -> impl Fn(usize) -> f32 {
@@ -707,7 +716,7 @@ mod tests {
     fn plans_eight_sector_objects() {
         let layout = dummy_layout();
         for labels in [&LABELS_5_1[..], &LABELS_7_1[..]] {
-            let ext = SpectralExtractor::prepare(&ctx(labels, &layout), true).expect("prepare");
+            let ext = SpectralExtractor::prepare(&ctx!(labels, &layout), true).expect("prepare");
             let specs = ext.specs(0.0);
             assert_eq!(specs.len(), 8);
             assert_eq!(specs[0].name, "Direct_F");
@@ -721,7 +730,7 @@ mod tests {
     #[test]
     fn plans_high_ring_for_3d_input() {
         let layout = dummy_layout();
-        let ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+        let ext = SpectralExtractor::prepare(&ctx!(&LABELS_5_1_4, &layout), true).expect("prepare");
         let specs = ext.specs(0.0);
         assert_eq!(specs.len(), SPEC_MAX_SECTORS);
         assert_eq!(specs[8].name, "DirectH_FR");
@@ -737,7 +746,8 @@ mod tests {
             );
         }
         // With `heights` off the tops are bypassed: floor ring only.
-        let ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), false).expect("prepare");
+        let ext =
+            SpectralExtractor::prepare(&ctx!(&LABELS_5_1_4, &layout), false).expect("prepare");
         assert_eq!(ext.specs(0.0).len(), SPEC_AZ_SECTORS);
     }
 
@@ -745,7 +755,7 @@ mod tests {
     fn heights_off_passes_tops_through() {
         let layout = dummy_layout();
         let mut ext =
-            SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), false).expect("prepare");
+            SpectralExtractor::prepare(&ctx!(&LABELS_5_1_4, &layout), false).expect("prepare");
         let c = 10usize;
         let n = 24_000usize;
         let s = sine(700.0);
@@ -774,7 +784,7 @@ mod tests {
         // top channels and leaving the floor ring silent.
         let layout = dummy_layout();
         let mut ext =
-            SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+            SpectralExtractor::prepare(&ctx!(&LABELS_5_1_4, &layout), true).expect("prepare");
         let c = 10usize;
         let n = 24_000usize;
         let s = sine(700.0);
@@ -817,7 +827,7 @@ mod tests {
         // intermediate height, so the pair images between the planes.
         let layout = dummy_layout();
         let mut ext =
-            SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+            SpectralExtractor::prepare(&ctx!(&LABELS_5_1_4, &layout), true).expect("prepare");
         let c = 10usize;
         let n = 24_000usize;
         let s = sine(700.0);
@@ -867,7 +877,7 @@ mod tests {
         let layout = dummy_layout();
         for (el_top_deg, expect_high) in [(16.0f32, true), (70.0, false)] {
             let mut ext =
-                SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+                SpectralExtractor::prepare(&ctx!(&LABELS_5_1_4, &layout), true).expect("prepare");
             ext.set_el_top(el_top_deg.to_radians());
             let c = 10usize;
             let n = 24_000usize;
@@ -902,7 +912,7 @@ mod tests {
         let layout = dummy_layout();
         for strength in [0.0f32, 0.5, 1.0] {
             let mut ext =
-                SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+                SpectralExtractor::prepare(&ctx!(&LABELS_5_1_4, &layout), true).expect("prepare");
             let c = 10usize;
             let n = 12_000usize;
             let s = sine(440.0);
@@ -933,17 +943,33 @@ mod tests {
         }
     }
 
+    /// Wide, front-centre and surround-direct channels are analysed from
+    /// their bed poses; the LFE still rides the bypass.
+    #[test]
+    fn wide_channels_are_analysed_not_bypassed() {
+        use RChannelLabel::*;
+        let layout = dummy_layout();
+        let labels = [L, R, C, LFE, Ls, Rs, Lb, Rb, Lw, Rw, Lsc, Rsc, Lsd, Rsd];
+        let ext = SpectralExtractor::prepare(&ctx!(&labels, &layout), true).expect("prepare");
+        let analysed: Vec<usize> = ext.enc.iter().map(|e| e.0).collect();
+        let bypassed: Vec<usize> = ext.other.iter().map(|o| o.0).collect();
+        assert_eq!(bypassed, [3], "only the LFE bypasses");
+        for wide in 8..labels.len() {
+            assert!(analysed.contains(&wide), "{:?} analysed", labels[wide]);
+        }
+    }
+
     #[test]
     fn too_few_positionable_channels_is_none() {
         let layout = dummy_layout();
         let labels = [RChannelLabel::C, RChannelLabel::LFE];
-        assert!(SpectralExtractor::prepare(&ctx(&labels, &layout), true).is_none());
+        assert!(SpectralExtractor::prepare(&ctx!(&labels, &layout), true).is_none());
     }
 
     #[test]
     fn strength_zero_is_delayed_identity() {
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout), true).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx!(&LABELS_5_1, &layout), true).unwrap();
         let c = 6usize;
         let n = 8192usize;
         let mut state = 0x1234_5678u32;
@@ -973,7 +999,7 @@ mod tests {
     #[test]
     fn extracts_panned_source_per_band() {
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout), true).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx!(&LABELS_5_1, &layout), true).unwrap();
         let c = 6usize;
         let n = 24_000usize;
         let s = sine(700.0);
@@ -1014,7 +1040,7 @@ mod tests {
         // Each must land in its own sector with its own band, and each bed
         // channel must be reduced only where its source lives.
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout), true).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx!(&LABELS_5_1, &layout), true).unwrap();
         let c = 6usize;
         let n = 24_000usize;
         let (s1, s2) = (sine(400.0), sine(3200.0));
@@ -1070,7 +1096,7 @@ mod tests {
         // legitimately reads partly direct toward its mean direction; see the
         // module docs.
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_7_1, &layout), true).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx!(&LABELS_7_1, &layout), true).unwrap();
         let c = 8usize;
         let n = 24_000usize;
         let mut states = [1u32, 99, 12345, 777_777, 0xdead_beef, 0x00c0_ffee];
@@ -1112,7 +1138,7 @@ mod tests {
         // = 1), full strength must move the source to its sector object at
         // unity gain and empty the bed channel.
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout), true).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx!(&LABELS_5_1, &layout), true).unwrap();
         ext.force_direct = true;
         let c = 6usize;
         let n = 24_000usize;
@@ -1144,7 +1170,7 @@ mod tests {
     #[ignore = "perf probe — run explicitly in release"]
     fn perf_throughput_7_1() {
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_7_1, &layout), true).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx!(&LABELS_7_1, &layout), true).unwrap();
         let c = 8usize;
         let block = 512usize;
         let seconds = 60usize;
@@ -1172,7 +1198,7 @@ mod tests {
     fn finite_bounded_and_silence_decays() {
         let layout = dummy_layout();
         for strength in [0.0f32, 0.3, 0.7, 1.0] {
-            let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_7_1, &layout), true).unwrap();
+            let mut ext = SpectralExtractor::prepare(&ctx!(&LABELS_7_1, &layout), true).unwrap();
             let c = 8usize;
             let n = 12_000usize;
             let s = sine(440.0);

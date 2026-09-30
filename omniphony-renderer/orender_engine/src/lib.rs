@@ -19,19 +19,23 @@ pub mod engine;
 pub mod events;
 pub mod object_gen;
 pub mod osc;
+pub mod osc_settings;
 pub mod overlay;
 pub mod phantom_extract;
 mod phantom_spectral;
 pub mod render;
+pub mod render_metering;
 pub mod renderer_build;
 pub mod spatial;
 mod stft;
+pub mod stream_state;
 pub mod virtual_bed;
 
 pub use channel_layout::label_for_speaker_name;
-pub use degraded::{DegradedReporter, start_degraded_reporter};
+pub use degraded::{NoBridgeRuntime, NoBridgeSetup};
 pub use engine::{DecodeThreadMode, Engine, OscOptions, RenderedAudio};
 pub use osc::{ObjectMeta, OscSender};
+pub use osc_settings::{OscOverrides, OscSettings};
 /// The shared omniphony config (`~/.config/omniphony/config.yaml`) + its path,
 /// re-exported so hosts default to the SAME config as the `orender` CLI + studio
 /// (bridge path, layout, OSC settings, render params).
@@ -56,5 +60,5 @@ pub use virtual_bed::{build_virtual_bed_events, build_virtual_bed_objects};
 /// `/omniphony/control/log_level`). Returns `Err` if a global logger is already
 /// installed; callers should guard with their own `Once` and ignore that error.
 pub fn init_live_logging(level: log::LevelFilter, json: bool) -> Result<(), log::SetLoggerError> {
-    sys::live_log::init_logger(level, json)
+    live_log::init_logger(level, json)
 }

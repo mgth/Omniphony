@@ -4,6 +4,7 @@ use super::room_transform::room_scaled_position;
 use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
 use crate::spatial_vbap::{Gains, MAX_SPEAKERS};
 use crate::speaker_layout::SpeakerLayout;
+use omniphony_geometry::f32::vec3::{distance_sq, dot, sub};
 
 pub struct BarycenterBackend {
     speaker_positions: Vec<[f32; 3]>,
@@ -59,7 +60,7 @@ impl BarycenterBackend {
                 req.room_ratio_lower,
                 req.room_ratio_center_blend,
             );
-            if euclidean_distance_sq(target, transformed_speakers[index]) <= f32::EPSILON {
+            if distance_sq(target, transformed_speakers[index]) <= f32::EPSILON {
                 gains.set(index, 1.0);
                 return RenderResponse { gains };
             }
@@ -77,13 +78,13 @@ impl BarycenterBackend {
         let localize = self.localize;
         for _ in 0..MAX_PROJECTED_GRADIENT_ITERS {
             let rendered = weighted_position(&transformed_speakers, &weights, speaker_count);
-            let residual = subtract(rendered, target);
+            let residual = sub(rendered, target);
             if dot(residual, residual) <= RESIDUAL_TOLERANCE_SQ {
                 break;
             }
 
             for index in 0..speaker_count {
-                let local_distance_sq = euclidean_distance_sq(transformed_speakers[index], target);
+                let local_distance_sq = distance_sq(transformed_speakers[index], target);
                 gradient[index] =
                     2.0 * dot(transformed_speakers[index], residual) + localize * local_distance_sq;
                 trial_weights[index] = weights[index] - step_size * gradient[index];
@@ -157,24 +158,6 @@ impl GainModel for BarycenterBackend {
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         BarycenterBackend::save_to_file(self, path, speaker_layout)
     }
-}
-
-#[inline]
-fn euclidean_distance_sq(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    dx * dx + dy * dy + dz * dz
-}
-
-#[inline]
-fn subtract(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-#[inline]
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn weighted_position(

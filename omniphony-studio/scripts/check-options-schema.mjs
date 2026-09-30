@@ -4,15 +4,19 @@
 // The renderer dumps its declared live options (`cargo run -p renderer
 // --example dump_options_schema`); this script asserts every declared option
 // is actually surfaceable by the Studio:
-//   - the schema is well-formed (key, kind, default, flags),
-//   - every i18nKey / helpI18nKey resolves in src/i18n/en.json (the reference
-//     locale — per-locale parity is check-i18n.mjs's job).
+//   - the schema is well-formed (key, kind, default, flags, and for a grouped
+//     option its group's key, mode and effect),
+//   - every i18nKey / helpI18nKey — the group's too — resolves in
+//     src/i18n/en.json (the reference locale — per-locale parity is
+//     check-i18n.mjs's job).
 //
 // Unlike the warn-only i18n parity check, this is a hard gate: an option
 // declared engine-side but invisible to the UI is exactly the silent-omission
 // class the registry exists to kill.
 //
 // Usage: node scripts/check-options-schema.mjs <path-to-options-schema.json>
+// (run once per schema: the core's, and the standalone host's own options,
+// `host_audio`'s `dump_host_options_schema`).
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -38,7 +42,19 @@ function resolvesInEn(key) {
   return typeof node === 'string';
 }
 
-const KINDS = new Set(['bool', 'enum', 'string', 'float']);
+const KINDS = new Set(['bool', 'enum', 'string', 'float', 'int', 'optional_int', 'float_array', 'dynamic_enum']);
+const GROUP_MODES = new Set(['live', 'staged']);
+const GROUP_EFFECTS = new Set([
+  'none',
+  'replan',
+  'topology',
+  'evaluation',
+  'reload',
+  'restart_output',
+  'restart_input',
+]);
+// Sets a dynamic_enum option draws its values from at runtime.
+const DYNAMIC_SOURCES = new Set(['backends']);
 const failures = [];
 const fail = (msg) => {
   failures.push(msg);
@@ -60,7 +76,7 @@ if (!Array.isArray(schema) || schema.length === 0) {
 const seen = new Set();
 for (const spec of schema) {
   const key = spec.key;
-  if (typeof key !== 'string' || !/^[a-z][a-z_]*$/.test(key)) {
+  if (typeof key !== 'string' || !/^[a-z][a-z0-9_]*$/.test(key)) {
     fail(`bad option key: ${JSON.stringify(key)}`);
     continue;
   }
@@ -74,6 +90,29 @@ for (const spec of schema) {
       fail(`${key}: default '${spec.default}' not in values`);
     }
   }
+  if (spec.kind === 'dynamic_enum' && !DYNAMIC_SOURCES.has(spec.source)) {
+    fail(`${key}: dynamic_enum with unknown source '${spec.source}'`);
+  }
+  if (spec.kind === 'float_array') {
+    if (!Number.isInteger(spec.len) || spec.len < 1) {
+      fail(`${key}: float_array without a length`);
+    } else if (!Array.isArray(spec.default) || spec.default.length !== spec.len) {
+      fail(`${key}: default is not an array of ${spec.len} numbers`);
+    }
+  }
+  if (spec.group !== undefined) {
+    const g = spec.group;
+    if (g === null || typeof g !== 'object' || typeof g.key !== 'string' || !/^[a-z][a-z_]*$/.test(g.key)) {
+      fail(`${key}: bad group ${JSON.stringify(g)}`);
+    } else {
+      if (!GROUP_MODES.has(g.mode)) fail(`${key}: group ${g.key} has unknown mode '${g.mode}'`);
+      if (!GROUP_EFFECTS.has(g.effect)) fail(`${key}: group ${g.key} has unknown effect '${g.effect}'`);
+      if (typeof g.i18nKey !== 'string' || !resolvesInEn(g.i18nKey)) {
+        fail(`${key}: group i18nKey '${g.i18nKey}' does not resolve in en.json`);
+      }
+    }
+  }
+  // `null` is a declared default too: the value the renderer was built with.
   if (spec.default === undefined) fail(`${key}: missing default`);
   if (!Array.isArray(spec.flags)) fail(`${key}: missing flags`);
   if (typeof spec.i18nKey !== 'string' || !resolvesInEn(spec.i18nKey)) {

@@ -147,7 +147,7 @@ fn main() -> Result<()> {
 
     let base_level = cli.loglevel.to_level_filter();
 
-    sys::live_log::init_logger(base_level, matches!(cli.log_format, LogFormat::Json))?;
+    live_log::init_logger(base_level, matches!(cli.log_format, LogFormat::Json))?;
     std::panic::set_hook(Box::new(|panic_info| {
         let location = panic_info
             .location()

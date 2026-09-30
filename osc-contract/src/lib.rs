@@ -16,7 +16,8 @@
 //!
 //! The human-readable companion — direction, argument types and semantics for
 //! every address — lives in `docs/osc-control-contract.md`. Keep the two in
-//! sync when adding or changing an address.
+//! sync when adding or changing an address; a test fails when a catalogued
+//! address is missing from that document's index.
 //!
 //! ## Address families with a dynamic or prefixed tail
 //!
@@ -249,10 +250,25 @@ pub const CONTROL_PLACEMENT_LAYOUT: &str = "/omniphony/control/placement/layout"
 pub const CONTROL_BINAURAL_HRIR_UPDATE_LATTICE: &str =
     "/omniphony/control/binaural/hrir_update_lattice";
 /// Generic setter for any declared live option (`renderer::options`):
-/// args `[key (string), value]`. The per-option addresses listed above
-/// (`synthetic_objects`, `object_generator`, `phantom_extract`,
-/// `surround_placement`, `output_channel_mapping`) are legacy aliases of this.
+/// args `[key (string), value]` — `value` is as many arguments as the
+/// option's kind takes (three numbers for `room_ratio`). The per-option
+/// addresses listed above (`synthetic_objects`, `object_generator`,
+/// `phantom_extract`, `surround_placement`, `output_channel_mapping`, the
+/// `room_ratio*` family, …) are legacy aliases of this.
 pub const CONTROL_OPTION: &str = "/omniphony/control/option";
+/// Grouped setter: args `[key, value, key, value, …]`, each value as many
+/// arguments as its option's kind takes. Every valid pair is applied at once:
+/// one rebuild at most and one notification for the whole message, however
+/// many keys it carries. An unknown key or a truncated value drops the whole
+/// message; an invalid value drops only its pair.
+pub const CONTROL_OPTIONS: &str = "/omniphony/control/options";
+/// Apply a group of declared options: args `[group (string)]`. A `Staged`
+/// group (the standalone renderer's live input) applies every value staged
+/// since its last apply; a `Live` group has nothing waiting and is only
+/// acknowledged. The per-domain apply addresses (`/control/input/apply`,
+/// `/control/config/input/apply`, `/control/config/audio/apply`) are
+/// aliases of this for their group.
+pub const CONTROL_OPTIONS_APPLY: &str = "/omniphony/control/options/apply";
 /// Named config profiles (docs/config-profiles.md). `switch`/`create`/`delete`
 /// take `[name (string)]`; `rename` takes `[old (string), new (string)]`.
 /// Every mutation saves the config and re-broadcasts [`STATE_PROFILES`].
@@ -260,10 +276,6 @@ pub const CONTROL_PROFILE_SWITCH: &str = "/omniphony/control/profile/switch";
 pub const CONTROL_PROFILE_CREATE: &str = "/omniphony/control/profile/create";
 pub const CONTROL_PROFILE_DELETE: &str = "/omniphony/control/profile/delete";
 pub const CONTROL_PROFILE_RENAME: &str = "/omniphony/control/profile/rename";
-/// Overlay display preferences as JSON, republished whenever they change —
-/// including when an mpv keybind flips one through the FFI toggles. The overlay
-/// is a process-global singleton with two writers, so a client must read this
-/// rather than trust its own mirror.
 /// What the object test's clip is, after a [`CONTROL_OBJECT_TEST_CLIP`] request.
 ///
 /// Args: `[json: String]` — `{"name","path","seconds","sourceRate","channels",
@@ -271,6 +283,10 @@ pub const CONTROL_PROFILE_RENAME: &str = "/omniphony/control/profile/rename";
 /// and `{}` when it was cleared.
 pub const STATE_OBJECT_TEST_CLIP: &str = "/omniphony/state/object_test/clip";
 
+/// Overlay display preferences as JSON, republished whenever they change —
+/// including when an mpv keybind flips one through the FFI toggles. The overlay
+/// is a process-global singleton with two writers, so a client must read this
+/// rather than trust its own mirror.
 pub const STATE_OVERLAY: &str = "/omniphony/state/overlay";
 pub const CONTROL_OVERLAY_LABELS: &str = "/omniphony/control/overlay/labels";
 pub const CONTROL_OVERLAY_OBJECTS: &str = "/omniphony/control/overlay/objects";
@@ -281,6 +297,10 @@ pub const CONTROL_RAMP_MODE: &str = "/omniphony/control/ramp_mode";
 pub const CONTROL_REALTIME_MASTER_GAIN: &str = "/omniphony/control/realtime/master_gain";
 pub const CONTROL_REALTIME_SPEAKER_GAIN: &str = "/omniphony/control/realtime/speaker_gain";
 pub const CONTROL_RELOAD_CONFIG: &str = "/omniphony/control/reload_config";
+/// Restart the render pipeline, keeping the unsaved live state (it comes back
+/// unsaved). For a change only a restart applies, such as a new bridge.
+/// Honoured by a restartable (CLI) instance only.
+pub const CONTROL_RESTART: &str = "/omniphony/control/restart";
 /// Start or stop the per-speaker test signal (band-limited pink noise).
 ///
 /// Args: `[speaker_idx: Int, level: Float, isolation: String]`. A negative
@@ -468,6 +488,12 @@ pub const STATE_OBJECT_TEST_POSITION: &str = "/omniphony/state/object_test/posit
 /// Schema of the declared live options (`renderer::options` registry rows),
 /// as a JSON string. Same pattern as `/state/object_generators` / `/state/phantom`.
 pub const STATE_OPTIONS_SCHEMA: &str = "/omniphony/state/options_schema";
+/// The options a host declares (the standalone renderer's audio output and
+/// live input), as JSON: `{"options": {key: requested value}, "applied":
+/// {key: value in force}, "pending": {group: bool}}`. Sent with every
+/// live-state bundle by a host that declares any; the core options stay in
+/// the `/state/renderer` `options` block.
+pub const STATE_HOST_OPTIONS: &str = "/omniphony/state/host_options";
 pub const STATE_PHANTOM: &str = "/omniphony/state/phantom";
 /// Named config profiles view as JSON: `{"active": "...", "names": ["..."]}`.
 /// Broadcast in the state snapshot and after every profile mutation.
@@ -577,6 +603,8 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_OBJECT_GENERATOR,
     CONTROL_OBJECT_GENERATOR_PARAM,
     CONTROL_OPTION,
+    CONTROL_OPTIONS,
+    CONTROL_OPTIONS_APPLY,
     CONTROL_PROFILE_SWITCH,
     CONTROL_PROFILE_CREATE,
     CONTROL_PROFILE_DELETE,
@@ -641,6 +669,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_REALTIME_MASTER_GAIN,
     CONTROL_REALTIME_SPEAKER_GAIN,
     CONTROL_RELOAD_CONFIG,
+    CONTROL_RESTART,
     CONTROL_SPEAKER_TEST,
     CONTROL_SPEAKER_TEST_IDLE_FEED,
     CONTROL_RENDER_BACKEND,
@@ -744,6 +773,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_LOUDNESS,
     STATE_MONITORING,
     STATE_OPTIONS_SCHEMA,
+    STATE_HOST_OPTIONS,
     STATE_PROFILES,
     STATE_OSC_DIAG,
     STATE_OSC_METERING,
@@ -874,6 +904,7 @@ mod tests {
         const SOURCES: &[&str] = &[
             "../omniphony-renderer/runtime_control/src/osc.rs",
             "../omniphony-renderer/runtime_control/src/command.rs",
+            "../omniphony-renderer/runtime_control/src/live_control.rs",
             "../omniphony-renderer/host_audio/src/lib.rs",
             "../omniphony-renderer/orender_engine/src/osc.rs",
             "../omniphony-renderer/orender_engine/src/osc/dispatch.rs",
@@ -883,6 +914,11 @@ mod tests {
             "../omniphony-renderer/orender_engine/src/osc/state_emit.rs",
             "../omniphony-renderer/orender_engine/src/osc/metadata_emit.rs",
             "../omniphony-renderer/orender_engine/src/osc/profiles.rs",
+            // The core's handlers and snapshot producer, and the options
+            // registry's legacy aliases: whole directories, so a module added
+            // there is covered without anyone remembering to list it.
+            "../omniphony-renderer/runtime_control/src/",
+            "../omniphony-renderer/renderer/src/",
             // The client's send path. A directory, so a command module added
             // tomorrow is covered without anyone remembering to list it.
             "../omniphony-studio-egui/core/src/host/commands/",
@@ -908,34 +944,40 @@ mod tests {
             out
         }
 
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("crate root");
+        let root = root.as_path();
+        // A file can be reached through its own entry and its directory's:
+        // scan each once.
+        let files: std::collections::BTreeSet<std::path::PathBuf> = SOURCES
+            .iter()
+            .flat_map(|rel| sources(&root.join(rel)))
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .collect();
         let mut offenders = Vec::new();
-        for rel in SOURCES {
-            for path in sources(&root.join(rel)) {
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .into_owned();
-                let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                    panic!("guard is stale: cannot read {}: {e}", path.display())
-                });
-                for (n, line) in src.lines().enumerate() {
-                    if line.trim_start().starts_with("//") {
-                        continue;
+        for path in files {
+            // Shown relative to the repository root.
+            let rel = path
+                .strip_prefix(root.parent().unwrap_or(root))
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("guard is stale: cannot read {}: {e}", path.display()));
+            for (n, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let mut rest = line;
+                while let Some(i) = rest.find("\"/omniphony/") {
+                    let after = &rest[i + 1..];
+                    let Some(end) = after.find('"') else { break };
+                    let addr = &after[..end];
+                    // A prefix is matched with `starts_with`; a template is
+                    // filled in by `format!`. Neither is a whole address.
+                    if !addr.ends_with('/') && !addr.contains('{') {
+                        offenders.push(format!("{}:{}: {addr}", rel, n + 1));
                     }
-                    let mut rest = line;
-                    while let Some(i) = rest.find("\"/omniphony/") {
-                        let after = &rest[i + 1..];
-                        let Some(end) = after.find('"') else { break };
-                        let addr = &after[..end];
-                        // A prefix is matched with `starts_with`; a template is
-                        // filled in by `format!`. Neither is a whole address.
-                        if !addr.ends_with('/') && !addr.contains('{') {
-                            offenders.push(format!("{}:{}: {addr}", rel, n + 1));
-                        }
-                        rest = &after[end..];
-                    }
+                    rest = &after[end..];
                 }
             }
         }
@@ -944,6 +986,30 @@ mod tests {
             "OSC addresses spelled out instead of referencing this module \
              (add a constant here and use it):\n  {}",
             offenders.join("\n  ")
+        );
+    }
+
+    /// `docs/osc-control-contract.md` indexes every catalogued address, so an
+    /// address added here without documentation fails instead of drifting.
+    #[test]
+    fn every_catalogued_address_is_indexed_in_the_contract_doc() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../docs/osc-control-contract.md"
+        );
+        let doc = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("guard is stale: cannot read {path}: {e}"));
+        let missing: Vec<&str> = ALL_CONTROL
+            .iter()
+            .chain(ALL_STATE)
+            .chain(ALL_SESSION)
+            .copied()
+            .filter(|a| !doc.contains(&format!("`{a}`")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "addresses missing from the docs/osc-control-contract.md index:\n  {}",
+            missing.join("\n  ")
         );
     }
 

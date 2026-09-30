@@ -75,6 +75,7 @@ pub struct DisplayPrefs {
     pub object_sphere_size: Option<f32>,
     pub object_labels: Option<bool>,
     pub show_object_details: Option<bool>,
+    pub speakers_visible: Option<bool>,
     pub speaker_labels: Option<bool>,
     pub speaker_bands: Option<bool>,
     pub speaker_face_listener: Option<bool>,
@@ -100,6 +101,8 @@ pub struct DisplayPrefs {
     pub volume_smooth_interpolation: Option<bool>,
     pub object_custom_gradient_stops: Option<Vec<StopPref>>,
     pub speaker_custom_gradient_stops: Option<Vec<StopPref>>,
+    /// The "Grid" switch (`vbapCartesianFaceGridEnabled`).
+    pub vbap_grid: Option<bool>,
     pub trails: TrailPrefs,
 }
 
@@ -127,6 +130,7 @@ impl DisplayPrefs {
             object_sphere_size: Some(settings.object_sphere_size),
             object_labels: Some(settings.object_labels_enabled),
             show_object_details: Some(settings.show_object_details),
+            speakers_visible: Some(settings.speakers_visible),
             speaker_labels: Some(settings.speaker_labels_enabled),
             speaker_bands: Some(settings.speaker_band_bars_enabled),
             speaker_face_listener: Some(settings.speaker_face_listener_enabled),
@@ -156,6 +160,7 @@ impl DisplayPrefs {
             speaker_custom_gradient_stops: Some(
                 volume.speaker_stops.iter().map(StopPref::from).collect(),
             ),
+            vbap_grid: Some(settings.vbap_grid),
             trails: TrailPrefs {
                 enabled: Some(settings.trails.enabled),
                 mode: Some(settings.trails.mode),
@@ -176,6 +181,7 @@ impl DisplayPrefs {
             && self.object_sphere_size == Some(settings.object_sphere_size)
             && self.object_labels == Some(settings.object_labels_enabled)
             && self.show_object_details == Some(settings.show_object_details)
+            && self.speakers_visible == Some(settings.speakers_visible)
             && self.speaker_labels == Some(settings.speaker_labels_enabled)
             && self.speaker_bands == Some(settings.speaker_band_bars_enabled)
             && self.speaker_face_listener == Some(settings.speaker_face_listener_enabled)
@@ -201,6 +207,7 @@ impl DisplayPrefs {
             && self.volume_smooth_interpolation == Some(volume.smooth)
             && stops_eq(&self.object_custom_gradient_stops, &volume.object_stops)
             && stops_eq(&self.speaker_custom_gradient_stops, &volume.speaker_stops)
+            && self.vbap_grid == Some(settings.vbap_grid)
             && self.trails.enabled == Some(settings.trails.enabled)
             && self.trails.mode == Some(settings.trails.mode)
             && self.trails.duration_ms == Some(settings.trails.ttl.as_millis() as u64)
@@ -228,6 +235,7 @@ impl DisplayPrefs {
         );
         set!(settings.object_labels_enabled, self.object_labels);
         set!(settings.show_object_details, self.show_object_details);
+        set!(settings.speakers_visible, self.speakers_visible);
         set!(settings.speaker_labels_enabled, self.speaker_labels);
         set!(settings.speaker_band_bars_enabled, self.speaker_bands);
         set!(
@@ -327,6 +335,7 @@ impl DisplayPrefs {
         {
             volume.speaker_stops = stops;
         }
+        set!(settings.vbap_grid, self.vbap_grid);
         set!(settings.trails.enabled, self.trails.enabled);
         set!(settings.trails.mode, self.trails.mode);
         if let Some(ms) = self.trails.duration_ms {
@@ -340,6 +349,73 @@ impl DisplayPrefs {
                 .filter(|v| v.is_finite() && *v >= 0.0)
         );
     }
+}
+
+/// Every display setting is either kept by [`DisplayPrefs`] or named here as
+/// not kept, with the reason. The destructuring lists every field, so a new
+/// setting does not compile until someone decides which it is
+/// (docs/persistence-policy.md: view state is kept unless there is a reason).
+#[allow(dead_code)]
+fn every_display_setting_is_classified(settings: &ViewSettings, volume: &VolumeSettings) {
+    let ViewSettings {
+        // Kept.
+        objects_visible: _,
+        object_display_mode: _,
+        object_sphere_size: _,
+        object_colors_enabled: _,
+        object_labels_enabled: _,
+        show_object_details: _,
+        effective_render_enabled: _,
+        heatmap_band_index: _,
+        speakers_visible: _,
+        speaker_labels_enabled: _,
+        speaker_band_bars_enabled: _,
+        speaker_face_listener_enabled: _,
+        speaker_size: _,
+        vbap_grid: _,
+        trails:
+            crate::view::trails::TrailSettings {
+                enabled: _,
+                mode: _,
+                ttl: _,
+                teleport_threshold: _,
+            },
+        // Not kept: a copy of `VolumeSettings::all_bands`, made each frame.
+        heatmap_all_bands: _,
+        // Not kept: they follow the room panel being open, not a choice.
+        room_guides_visible: _,
+        // Not kept: the editor's work in progress (an armed gizmo, a selected
+        // curve point, positions pinned during a drag).
+        gizmo: _,
+        hybrid_point: _,
+        channel_edit_pin: _,
+        speaker_edit_pin: _,
+    } = settings;
+    let VolumeSettings {
+        // Kept.
+        resolution: _,
+        opacity: _,
+        mix: _,
+        gamma_accumulate: _,
+        gamma_mip: _,
+        refresh_ms: _,
+        smooth: _,
+        all_bands: _,
+        object_field_enabled: _,
+        object_colormap: _,
+        object_radius: _,
+        object_stops: _,
+        global_enabled: _,
+        global_scale_db: _,
+        speaker_enabled: _,
+        speaker_colormap: _,
+        speaker_stops: _,
+        discontinuity_enabled: _,
+        discontinuity_mode: _,
+        discontinuity_scale: _,
+        // Kept as `heatmap_band_index`, which it mirrors.
+        band_index: _,
+    } = volume;
 }
 
 #[cfg(test)]
@@ -359,6 +435,8 @@ mod tests {
         settings.trails.mode = TrailMode::Line;
         volume.object_colormap = Colormap::WhiteRed;
         volume.discontinuity_mode = DiscontinuityMode::Centroid;
+        settings.speakers_visible = false;
+        settings.vbap_grid = true;
         let json = serde_json::to_string(&DisplayPrefs::capture(&settings, &volume)).unwrap();
         let back: DisplayPrefs = serde_json::from_str(&json).unwrap();
         let mut s2 = ViewSettings::default();
@@ -372,6 +450,8 @@ mod tests {
         assert_eq!(s2.trails.mode, TrailMode::Line);
         assert_eq!(v2.object_colormap, Colormap::WhiteRed);
         assert_eq!(v2.discontinuity_mode, DiscontinuityMode::Centroid);
+        assert!(!s2.speakers_visible);
+        assert!(s2.vbap_grid);
     }
 
     /// The file speaks the web's language: its keys and its value spellings.

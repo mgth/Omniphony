@@ -21,7 +21,8 @@ use crate::view::gizmos::EditMode;
 use super::row_glyphs::Filter;
 
 /// Which tab of the editor is showing (`body.speaker-tab-test`).
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SpeakerTab {
     #[default]
     Edit,

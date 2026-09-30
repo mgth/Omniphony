@@ -10,7 +10,7 @@
 //! Regenerate after any change to the geometry:
 //!
 //! ```text
-//! cargo run -p omniphony-geometry --example dump_golden_vectors \
+//! cargo run -p omniphony_geometry --example dump_golden_vectors \
 //!   > ../omniphony-studio/scripts/golden/geometry.json
 //! ```
 //!
@@ -89,7 +89,7 @@ fn main() {
     out.push_str("{\n");
     out.push_str(
         "  \"_comment\": \"GENERATED — do not edit. \
-         cargo run -p omniphony-geometry --example dump_golden_vectors > this file. \
+         cargo run -p omniphony_geometry --example dump_golden_vectors > this file. \
          Asserted against src/coordinates.js by scripts/test-math.mjs.\",\n",
     );
 

@@ -188,6 +188,28 @@ jobs:
              -L target/debug -lorender -o target/debug/orender_smoke
           LD_LIBRARY_PATH=target/debug target/debug/orender_smoke
 
+      # orender_ffi's build.rs regenerates include/orender.h with cbindgen on
+      # every build (and fails the build in CI if it cannot), so after the
+      # builds above the checked-out header is what this commit's source
+      # generates. Any difference is a header that was not regenerated and
+      # committed with its source change — the file mpv compiles against.
+      - name: Check the committed C header is up to date
+        run: |
+          if ! git diff --exit-code -- omniphony-renderer/orender_ffi/include/orender.h; then
+            echo "orender_ffi/include/orender.h is stale: run 'cargo build -p orender_ffi' in omniphony-renderer and commit the regenerated header." >&2
+            exit 1
+          fi
+
+      # The header is consumed from C (mpv, C11) and must stay usable from C++:
+      # compile it standalone as strict ISO C and C++, warnings as errors.
+      - name: Check the C header compiles as strict C and C++
+        working-directory: omniphony-renderer/orender_ffi/include
+        run: |
+          printf '#include "orender.h"\nint main(void) { return 0; }\n' > "$RUNNER_TEMP/orender_h.c"
+          cp "$RUNNER_TEMP/orender_h.c" "$RUNNER_TEMP/orender_h.cpp"
+          gcc -std=c11 -Wall -Wextra -pedantic -Werror -fsyntax-only -I. "$RUNNER_TEMP/orender_h.c"
+          g++ -std=c++17 -Wall -Wextra -pedantic -Werror -fsyntax-only -I. "$RUNNER_TEMP/orender_h.cpp"
+
       # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
       # The phase-2 replacement of the web frontend. It is a separate workspace
       # (the egui app and its toolkit-free core, omniphony-studio-core)
@@ -331,6 +353,9 @@ jobs:
           cargo run -q -p renderer --example dump_options_schema --locked \
             --manifest-path omniphony-renderer/Cargo.toml > /tmp/options-schema.json
           node omniphony-studio/scripts/check-options-schema.mjs /tmp/options-schema.json
+          cargo run -q -p host_audio --example dump_host_options_schema --locked \
+            --manifest-path omniphony-renderer/Cargo.toml > /tmp/host-options-schema.json
+          node omniphony-studio/scripts/check-options-schema.mjs /tmp/host-options-schema.json
 
   build-macos:
     # macOS arm64 compile gate. The renderer workspace pulls the CoreAudio

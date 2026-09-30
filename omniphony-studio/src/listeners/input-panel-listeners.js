@@ -9,7 +9,6 @@ export function setupInputPanelListeners() {
   const inputPipeInputEl = document.getElementById('pipeStatus');
   const oscBridgePathInputEl = document.getElementById('oscBridgePathInput');
   const oscBridgeBrowseBtnEl = document.getElementById('oscBridgeBrowseBtn');
-  const inputBackendSelectEl = document.getElementById('inputBackendSelect');
   const inputNodeInputEl = document.getElementById('inputNodeInput');
   const inputDescriptionInputEl = document.getElementById('inputDescriptionInput');
   const inputClockModeSelectEl = document.getElementById('inputClockModeSelect');
@@ -71,15 +70,6 @@ export function setupInputPanelListeners() {
       app.renderBridgePath = value || null;
       updateInputControlUI();
       invoke('control_render_bridge_path', { value });
-    });
-  }
-
-  if (inputBackendSelectEl) {
-    inputBackendSelectEl.addEventListener('change', () => {
-      const value = inputBackendSelectEl.value === 'asio' ? 'asio' : 'pipewire';
-      app.liveInput.backend = value;
-      updateInputControlUI();
-      sendInputConfig();
     });
   }
 

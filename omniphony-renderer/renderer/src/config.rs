@@ -93,10 +93,7 @@ pub struct RenderConfig {
     /// keyed by backend id then param key. Lets a contributor backend's params
     /// round-trip through config without a typed field here.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub backend_params: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, crate::backend_params::ParamValue>,
-    >,
+    pub backend_params: crate::plugin::ParamBag,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_evaluation_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,11 +199,16 @@ pub struct RenderConfig {
     /// (`none` / `copy_up` / `pad` / …). Absent / empty = off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_generator_id: Option<String>,
-    /// Live parameter overrides for the active object generator (param key →
-    /// value), as declared by the generator's schema. Absent = each generator
-    /// uses its declared defaults.
+    /// Legacy flat parameter map of "the active object generator", read for
+    /// migration into `generator_params[object_generator_id]` and dropped on
+    /// save (see [`crate::plugin::PluginParams::from_config`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_generator_params: Option<std::collections::HashMap<String, f32>>,
+    /// Per-generator parameter values (see [`crate::plugin`]), keyed by
+    /// generator id then param key, as each generator's schema declares
+    /// them. Absent = every generator at its declared defaults.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub generator_params: crate::plugin::ParamBag,
     /// Global renderer-synthesized-object master. Kept explicit once migrated so
     /// an off master can retain non-off child selections.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -221,10 +223,14 @@ pub struct RenderConfig {
     /// Legacy phantom enable flag, read for migration and dropped on save.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phantom_enabled: Option<bool>,
-    /// Live parameter overrides for the phantom-extraction stage (`strength` /
-    /// `passes` / `lift`). Absent = the stage's declared defaults.
+    /// Legacy float-only parameter map of the phantom-extraction stage, read
+    /// for migration into `phantom_extract_params` and dropped on save.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phantom_params: Option<std::collections::HashMap<String, f32>>,
+    /// Parameter values of the phantom-extraction stage (param key → value),
+    /// as its schema declares them. Absent = the stage's declared defaults.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub phantom_extract_params: crate::plugin::ParamMap,
     /// Legacy single virtual bed for channel-based content, read for
     /// migration only: it becomes `placement.generic` in manual mode with
     /// these entries, and is dropped on the next save. See `placement`.
@@ -448,8 +454,6 @@ pub struct BinauralConfig {
     pub extra: Mapping,
 }
 
-/// Head-tracking OSC input configuration. The orientation arrives on an
-/// arbitrary OSC address (e.g. SensorsOSC `/android/rotationvector`), so both
 /// `render.binaural.reverb`: late-reverb (FDN) tail of the binaural stage.
 /// Models the (small, dry) listening room, not the scene's acoustics.
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -507,6 +511,8 @@ pub struct ReflectionsConfig {
     pub extra: Mapping,
 }
 
+/// Head-tracking OSC input configuration. The orientation arrives on an
+/// arbitrary OSC address (e.g. SensorsOSC `/android/rotationvector`), so both
 /// the address and the value format are configurable.
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct HeadTrackingConfig {
@@ -527,6 +533,14 @@ pub struct HeadTrackingConfig {
     /// head's).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub axes_quat: Option<[f32; 4]>,
+    /// Exponential orientation smoothing in [0, 0.999]: 0 = instant, higher =
+    /// smoother/laggier. Absent → the tracker default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smoothing: Option<f32>,
+    /// Flip the applied rotation, for sensors whose motion comes out mirrored.
+    /// Absent → false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invert: Option<bool>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,
@@ -548,7 +562,37 @@ pub enum InputModeConfig {
 #[serde(rename_all = "snake_case")]
 pub enum InputBackendConfig {
     Pipewire,
-    Asio,
+}
+
+/// Wire value of the retired ASIO live-input backend. It was accepted here
+/// while a Windows capture path was planned, but that path was never
+/// implemented and the value has been removed.
+const RETIRED_ASIO_INPUT_BACKEND: &str = "asio";
+
+/// `live_input.backend`, tolerant of the retired `asio` value: a config saved
+/// with it still loads, with the key dropped (the platform default applies)
+/// and a warning, instead of the whole file failing to parse. Any other
+/// unknown value is still an error, as before.
+fn deserialize_live_input_backend<'de, D>(
+    deserializer: D,
+) -> Result<Option<InputBackendConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        "pipewire" => Ok(Some(InputBackendConfig::Pipewire)),
+        RETIRED_ASIO_INPUT_BACKEND => {
+            log::warn!(
+                "config: live_input.backend 'asio' is no longer supported (the ASIO live-input \
+                 backend was never implemented); ignoring it and using the platform default"
+            );
+            Ok(None)
+        }
+        other => Err(serde::de::Error::unknown_variant(other, &["pipewire"])),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -575,7 +619,11 @@ pub enum InputClockModeConfig {
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct LiveInputConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_live_input_backend",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub backend: Option<InputBackendConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
@@ -605,21 +653,47 @@ impl RenderConfig {
     /// unchanged. Width is the reference: `radius = Width/2` (so width ratio is
     /// always 1). A no-op when the metre fields are absent (legacy config).
     pub fn normalize_room_meters(&mut self) {
-        let Some(width_m) = self.room_width_m else {
+        let Some(derived) = self.room_ratios_from_meters() else {
             return;
         };
+        self.room_ratio = Some(derived.ratio);
+        self.room_ratio_rear = Some(derived.rear);
+        self.room_ratio_lower = Some(derived.lower);
+        if let Some(layout) = self.current_layout.as_mut() {
+            layout.radius_m = derived.radius;
+        }
+    }
+
+    /// The ratio keys and layout radius the metre fields stand for, without
+    /// writing them (see [`Self::normalize_room_meters`]). `None` when the
+    /// room is not stored in metres.
+    pub fn room_ratios_from_meters(&self) -> Option<RoomFromMeters> {
+        let width_m = self.room_width_m?;
         let radius = (width_m / 2.0).max(0.01);
         let front = self.room_front_m.unwrap_or(2.0 * radius).max(0.0);
         let rear = self.room_rear_m.unwrap_or(radius).max(0.0);
         let height = self.room_height_m.unwrap_or(radius).max(0.0);
         let lower = self.room_lower_m.unwrap_or(0.5 * radius).max(0.0);
-        self.room_ratio = Some(format!("1.0,{:.6},{:.6}", front / radius, height / radius));
-        self.room_ratio_rear = Some((rear / radius).max(0.01));
-        self.room_ratio_lower = Some((lower / radius).max(0.01));
-        if let Some(layout) = self.current_layout.as_mut() {
-            layout.radius_m = radius;
-        }
+        Some(RoomFromMeters {
+            ratio: format!("1.0,{:.6},{:.6}", front / radius, height / radius),
+            rear: (rear / radius).max(0.01),
+            lower: (lower / radius).max(0.01),
+            radius,
+        })
     }
+}
+
+/// The renderer-facing room derived from the metre fields
+/// ([`RenderConfig::room_ratios_from_meters`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoomFromMeters {
+    /// The `room_ratio` string (`"1.0,length,height"`, six decimals — the
+    /// width is the reference).
+    pub ratio: String,
+    pub rear: f32,
+    pub lower: f32,
+    /// The layout radius: half the width.
+    pub radius: f32,
 }
 
 /// Outcome of resolving a config file, for diagnostics (see [`Config::load_status`]).
@@ -934,6 +1008,30 @@ pub fn clear_live_overlay_cache() {
     LIVE_OVERLAY.lock().unwrap().clear();
 }
 
+/// Apply a targeted config write to the live overlay for `config_path` — the
+/// consumed one this process caches and a sidecar still waiting on disk — so
+/// the pending unsaved state carries the written value instead of the stale
+/// one it was taken with. Everything else in the overlay is left alone.
+pub fn amend_live_overlay(config_path: &Path, amend: impl Fn(&mut Config)) {
+    if let Some(cfg) = LIVE_OVERLAY.lock().unwrap().get_mut(config_path) {
+        amend(cfg);
+    }
+    let sidecar = live_sidecar_path(config_path);
+    if !sidecar.exists() {
+        return;
+    }
+    match Config::load(&sidecar) {
+        Ok(mut cfg) => {
+            amend(&mut cfg);
+            if let Err(e) = cfg.save(&sidecar) {
+                log::warn!("failed to amend {}: {e}", sidecar.display());
+            }
+        }
+        // Unparsable: the next load deletes it without applying it anyway.
+        Err(e) => log::warn!("not amending unreadable {}: {e}", sidecar.display()),
+    }
+}
+
 /// Discard the live-handoff sidecar for `config_path`: remove the file AND
 /// clear the consumed-overlay cache. The two must happen together — clearing
 /// only one re-applies a superseded overlay on the next engine rebuild.
@@ -1088,6 +1186,29 @@ mod tests {
     }
 
     #[test]
+    fn head_tracking_smoothing_and_invert_round_trip_and_omit_when_absent() {
+        let ht = HeadTrackingConfig {
+            smoothing: Some(0.6),
+            invert: Some(true),
+            ..Default::default()
+        };
+        let yaml = serde_yaml_ng::to_string(&ht).unwrap();
+        let back: HeadTrackingConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(back.smoothing, Some(0.6));
+        assert_eq!(back.invert, Some(true));
+        assert!(
+            back.extra.is_empty(),
+            "known keys leaked into extra: {yaml}"
+        );
+
+        let yaml = serde_yaml_ng::to_string(&HeadTrackingConfig::default()).unwrap();
+        assert!(
+            !yaml.contains("smoothing") && !yaml.contains("invert"),
+            "None should omit the keys: {yaml}"
+        );
+    }
+
+    #[test]
     fn room_legacy_without_metres_is_noop() {
         let mut rc = RenderConfig {
             room_ratio: Some("1.0,2.0,1.0".to_string()),
@@ -1097,6 +1218,50 @@ mod tests {
         rc.normalize_room_meters();
         assert_eq!(rc.room_ratio.as_deref(), Some("1.0,2.0,1.0"));
         assert_eq!(rc.room_ratio_rear, Some(1.0));
+    }
+
+    #[test]
+    fn retired_asio_live_input_backend_still_loads_as_the_default() {
+        let yaml = "\
+render:
+  input_mode: pipewire
+  live_input:
+    backend: asio
+    node: omniphony-in
+";
+        let cfg: Config = serde_yaml_ng::from_str(yaml).expect("a legacy asio backend must parse");
+        let render = cfg.render.as_ref().unwrap();
+        let live_input = render.live_input.as_ref().unwrap();
+        assert_eq!(live_input.backend, None, "asio falls back to the default");
+        // The rest of the section is untouched.
+        assert_eq!(live_input.node.as_deref(), Some("omniphony-in"));
+        assert_eq!(render.input_mode, Some(InputModeConfig::Pipewire));
+        // The retired value is dropped, not carried back to disk as unknown.
+        let out = serde_yaml_ng::to_string(&cfg).expect("serialize");
+        assert!(
+            !out.contains("asio"),
+            "retired backend re-serialized:\n{out}"
+        );
+    }
+
+    #[test]
+    fn live_input_backend_round_trips_and_rejects_unknown_values() {
+        let cfg: Config =
+            serde_yaml_ng::from_str("render:\n  live_input:\n    backend: pipewire\n")
+                .expect("parse");
+        let live_input = cfg.render.as_ref().unwrap().live_input.as_ref().unwrap();
+        assert_eq!(live_input.backend, Some(InputBackendConfig::Pipewire));
+        let out = serde_yaml_ng::to_string(&cfg).expect("serialize");
+        assert!(out.contains("backend: pipewire"), "{out}");
+
+        let cfg: Config =
+            serde_yaml_ng::from_str("render:\n  live_input:\n    node: x\n").expect("parse");
+        let live_input = cfg.render.as_ref().unwrap().live_input.as_ref().unwrap();
+        assert_eq!(live_input.backend, None, "an absent key stays absent");
+
+        let err = serde_yaml_ng::from_str::<LiveInputConfig>("backend: coreaudio\n")
+            .expect_err("an unknown backend is still an error");
+        assert!(err.to_string().contains("coreaudio"), "{err}");
     }
 
     #[test]

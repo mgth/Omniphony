@@ -21,6 +21,8 @@ The repository also contains the supporting runtime stack:
 - `bridge_api`: ABI-stable interface for external bridge plugins
 - `reference_bridge`: a reference WAV/PCM bridge that powers the bundled demo
 - `sys`: platform integration, including Windows service support
+- `diag`: diagnostic-metric registry published to the Studio diag plot
+- `live_log`: process logger with a runtime-adjustable level and a buffer of recent records streamed over OSC
 
 ## Status
 
@@ -160,7 +162,8 @@ You can point to another file with `--config`, and persist the current effective
 
 - [BUILD.md](BUILD.md): build profiles and feature flags
 - [BINAURAL.md](BINAURAL.md): binaural headphone output, head tracking, tuning
-- [OSC_PROTOCOL.md](OSC_PROTOCOL.md): OSC message surface
+- [OSC_PROTOCOL.md](OSC_PROTOCOL.md): OSC session handshake and streams
+- [../docs/osc-control-contract.md](../docs/osc-control-contract.md): every OSC control and state address
 - [QUICKSTART.md](QUICKSTART.md): local bring-up notes
 - [../layouts/README.md](../layouts/README.md): speaker layout format
 - [BRIDGE_API.md](BRIDGE_API.md): runtime bridge ABI

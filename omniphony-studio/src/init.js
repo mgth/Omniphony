@@ -477,14 +477,14 @@ export function applyInitState(payload) {
   if (payload.options && typeof payload.options === 'object') {
     Object.assign(app.options, payload.options);
   }
-  if (payload.objectGeneratorParams && typeof payload.objectGeneratorParams === 'object') {
-    app.objectGeneratorParams = payload.objectGeneratorParams;
+  if (payload.objectGeneratorParamValuesById && typeof payload.objectGeneratorParamValuesById === 'object') {
+    app.objectGeneratorParamValuesById = payload.objectGeneratorParamValuesById;
   }
   if (typeof payload.objectGeneratorLayoutHasHeight === 'boolean') {
     app.objectGeneratorLayoutHasHeight = payload.objectGeneratorLayoutHasHeight;
   }
-  if (payload.phantomParams && typeof payload.phantomParams === 'object') {
-    app.phantomParams = payload.phantomParams;
+  if (payload.phantomParamValues && typeof payload.phantomParamValues === 'object') {
+    app.phantomParamValues = payload.phantomParamValues;
   }
   if (Array.isArray(payload.fixedChannelCatalog)) {
     app.fixedChannelCatalog = payload.fixedChannelCatalog;

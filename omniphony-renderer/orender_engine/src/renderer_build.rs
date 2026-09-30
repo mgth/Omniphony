@@ -10,7 +10,6 @@ use anyhow::{Result, anyhow, bail};
 use bridge_api::{RVbapCartesianDefaults, RVbapTableMode};
 use renderer::config::RenderConfig;
 use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode, RendererControl};
-use renderer::render_backend::canonical_builtin_backend_id;
 use renderer::spatial_renderer::SpatialRenderer;
 use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
 use renderer::speaker_layout::SpeakerLayout;
@@ -24,6 +23,28 @@ pub enum EvalMode {
     Cartesian,
 }
 
+/// Room proportions (`width,length,height`) when neither the config nor a flag
+/// sets `room_ratio`. Shared by the config resolution below and the CLI's
+/// `--room-ratio` default so the two cannot drift; declared with the rest of
+/// the room's config reading in `renderer::config_fields::room`.
+pub const DEFAULT_ROOM_RATIO: &str = renderer::config_fields::room::DEFAULT_RATIO;
+
+/// Parse a configured evaluation table mode (`render.render_evaluation_mode`)
+/// into the precomputed-table choice, or `None` for anything else (`auto`,
+/// `realtime`, unknown), which leaves the choice to the bridge.
+pub fn parse_eval_mode(value: &str) -> Option<EvalMode> {
+    if value.eq_ignore_ascii_case("precomputed_cartesian")
+        || value.eq_ignore_ascii_case("cartesian")
+    {
+        Some(EvalMode::Cartesian)
+    } else if value.eq_ignore_ascii_case("precomputed_polar") || value.eq_ignore_ascii_case("polar")
+    {
+        Some(EvalMode::Polar)
+    } else {
+        None
+    }
+}
+
 /// Host-neutral inputs to [`build_spatial_renderer`]. Field names and semantics
 /// mirror the `render` CLI args / config keys.
 #[derive(Debug, Clone)]
@@ -35,9 +56,10 @@ pub struct SpatialRendererParams {
     pub evaluation_polar_distance_max: f32,
     /// Evaluation table mode chosen by the user (CLI flag or config YAML).
     /// `None` means "no explicit choice" — the engine then follows the
-    /// `preferred_evaluation_mode` advertised by the format bridge.
+    /// `preferred_evaluation_mode` advertised by the format bridge and the
+    /// live evaluation mode starts at `Auto`; a choice also starts the live
+    /// mode on it.
     pub render_evaluation_mode: Option<EvalMode>,
-    pub evaluation_mode_explicit: bool,
     pub evaluation_cartesian_x_size: Option<usize>,
     pub evaluation_cartesian_y_size: Option<usize>,
     pub evaluation_cartesian_z_size: Option<usize>,
@@ -65,33 +87,22 @@ pub struct SpatialRendererParams {
 }
 
 impl SpatialRendererParams {
-    /// Resolve renderer params from a YAML render config, applying the same
-    /// defaults the CLI uses (mirrors `config_resolution::merge_render_config`)
-    /// so the FFI and CLI build an identical renderer from the same config.
+    /// Resolve renderer params from a YAML render config, applying the
+    /// built-in defaults for absent keys. This is the one config→params
+    /// resolution: the embedded engine uses it as is, the CLI lays its
+    /// explicit flags over it.
     ///
     /// `log_object_positions` and precomputed `vbap_table` loading are CLI-only
     /// and stay off here. `render_evaluation_mode` is `None` when the config
-    /// doesn't specify one — the engine then defers to the bridge's
-    /// preferred mode (cartesian for OAMD/spatial sources). A config-set mode
-    /// is honored but, like the CLI, not treated as "explicit" so the live
-    /// evaluation mode starts at `Auto`.
+    /// doesn't pick a precomputed table — the engine then defers to the
+    /// bridge's preferred mode (cartesian for OAMD/spatial sources). A
+    /// config-set table mode is an explicit choice: the live evaluation mode
+    /// starts on it, so the config seed that follows construction finds it
+    /// already applied and does not rebuild the topology a second time.
     pub fn from_render_config(cfg: Option<&RenderConfig>) -> Self {
-        let mode = cfg.and_then(|c| c.render_evaluation_mode.as_deref());
-        let render_evaluation_mode = match mode {
-            Some(v)
-                if v.eq_ignore_ascii_case("precomputed_cartesian")
-                    || v.eq_ignore_ascii_case("cartesian") =>
-            {
-                Some(EvalMode::Cartesian)
-            }
-            Some(v)
-                if v.eq_ignore_ascii_case("precomputed_polar")
-                    || v.eq_ignore_ascii_case("polar") =>
-            {
-                Some(EvalMode::Polar)
-            }
-            _ => None,
-        };
+        let render_evaluation_mode = cfg
+            .and_then(|c| c.render_evaluation_mode.as_deref())
+            .and_then(parse_eval_mode);
         Self {
             vbap_table: None,
             evaluation_polar_azimuth_resolution: cfg
@@ -107,7 +118,6 @@ impl SpatialRendererParams {
                 .and_then(renderer::config_fields::vbap_distance_max::get)
                 .unwrap_or(renderer::config_fields::vbap_distance_max::DEFAULT),
             render_evaluation_mode,
-            evaluation_mode_explicit: false,
             evaluation_cartesian_x_size: cfg.and_then(|c| c.evaluation_cartesian_x_size),
             evaluation_cartesian_y_size: cfg.and_then(|c| c.evaluation_cartesian_y_size),
             evaluation_cartesian_z_size: cfg.and_then(|c| c.evaluation_cartesian_z_size),
@@ -145,7 +155,7 @@ impl SpatialRendererParams {
             log_object_positions: false,
             room_ratio: cfg
                 .and_then(|c| c.room_ratio.clone())
-                .unwrap_or_else(|| "1.0,2.0,1.0".to_string()),
+                .unwrap_or_else(|| DEFAULT_ROOM_RATIO.to_string()),
             room_ratio_rear: cfg.and_then(|c| c.room_ratio_rear),
             room_ratio_lower: cfg.and_then(|c| c.room_ratio_lower),
             room_ratio_center_blend: cfg.and_then(|c| c.room_ratio_center_blend),
@@ -171,40 +181,17 @@ impl SpatialRendererParams {
     }
 }
 
+/// The room `params` describe, read by the same rule as the live seed
+/// (`renderer::config_fields::room`).
 fn parse_room_ratio(params: &SpatialRendererParams) -> Result<([f32; 3], f32, f32, f32)> {
-    let parts: Vec<&str> = params.room_ratio.split(',').collect();
-    if parts.len() != 3 {
-        bail!(
-            "Invalid room-ratio format '{}'. Expected 'width,length,height' (e.g., '1.0,2.0,0.5')",
-            params.room_ratio
-        );
-    }
-    let room_ratio = [
-        parts[0]
-            .trim()
-            .parse::<f32>()
-            .map_err(|_| anyhow!("Invalid room-ratio width: '{}'", parts[0]))?,
-        parts[1]
-            .trim()
-            .parse::<f32>()
-            .map_err(|_| anyhow!("Invalid room-ratio length: '{}'", parts[1]))?,
-        parts[2]
-            .trim()
-            .parse::<f32>()
-            .map_err(|_| anyhow!("Invalid room-ratio height: '{}'", parts[2]))?,
-    ];
-    let room_ratio_rear = params.room_ratio_rear.unwrap_or(room_ratio[1]).max(0.01);
-    let room_ratio_lower = params.room_ratio_lower.unwrap_or(0.5).max(0.01);
-    let room_ratio_center_blend = params
-        .room_ratio_center_blend
-        .unwrap_or(0.5)
-        .clamp(0.0, 1.0);
-    Ok((
-        room_ratio,
-        room_ratio_rear,
-        room_ratio_lower,
-        room_ratio_center_blend,
-    ))
+    let room = renderer::config_fields::room::parse(
+        &params.room_ratio,
+        params.room_ratio_rear,
+        params.room_ratio_lower,
+        params.room_ratio_center_blend,
+    )
+    .map_err(|e| anyhow!(e))?;
+    Ok((room.ratio, room.rear, room.lower, room.center_blend))
 }
 
 fn resolve_evaluation_table_mode(
@@ -340,16 +327,10 @@ pub fn build_spatial_renderer(
                 RVbapTableMode::Polar => PreferredEvaluationMode::PrecomputedPolar,
                 RVbapTableMode::Cartesian => PreferredEvaluationMode::PrecomputedCartesian,
             },
-            if params.evaluation_mode_explicit {
-                match params.render_evaluation_mode {
-                    Some(EvalMode::Polar) => LiveEvaluationMode::PrecomputedPolar,
-                    Some(EvalMode::Cartesian) => LiveEvaluationMode::PrecomputedCartesian,
-                    // evaluation_mode_explicit but no mode set is a logic error
-                    // upstream; fall back to Auto rather than panicking.
-                    None => LiveEvaluationMode::Auto,
-                }
-            } else {
-                LiveEvaluationMode::Auto
+            match params.render_evaluation_mode {
+                Some(EvalMode::Polar) => LiveEvaluationMode::PrecomputedPolar,
+                Some(EvalMode::Cartesian) => LiveEvaluationMode::PrecomputedCartesian,
+                None => LiveEvaluationMode::Auto,
             },
             params
                 .evaluation_cartesian_x_size
@@ -370,7 +351,9 @@ pub fn build_spatial_renderer(
     log::info!("VBAP spatial rendering enabled");
     {
         let control = renderer.renderer_control();
-        // Register the demonstration backend so `backend_id = "example"` resolves.
+        // The demonstration backend (`backend_id = "example"`), only in builds
+        // made with the `example-backend` feature.
+        #[cfg(feature = "example-backend")]
         control.register_backend(Box::new(example_backend::ExampleFactory));
         // User-scriptable (Lua) backend; selecting `backend_id = "script"` routes
         // a rebuild through it, reading its `.lua` path from the param store.
@@ -395,72 +378,38 @@ pub fn seed_control_from_render_config(
     control: &RendererControl,
     render_cfg: Option<&RenderConfig>,
 ) -> bool {
-    // Raw configured backend id; resolved against the enum aliases *and* the
-    // registry (so a registered out-of-tree backend id is selectable too).
-    let configured_backend_cfg = render_cfg.and_then(|cfg| cfg.render_backend.as_deref());
-    let configured_evaluation = render_cfg
-        .and_then(|cfg| cfg.render_evaluation_mode.as_deref())
-        .and_then(LiveEvaluationMode::from_str);
+    // `requires_rebuild`: evaluation-only changes (mode, size intervals) that a
+    // rebuild can serve by re-wrapping the current gain models. `model_changed`:
+    // the backend, its params or its metrics changed, so the models themselves
+    // must be rebuilt.
     let mut requires_rebuild = false;
+    let mut model_changed = false;
     {
-        // Resolved after registration so any registered backend (not just the
-        // historical concrete ones) is accepted as a hybrid inner model; a nested
-        // hybrid or an unregistered id falls back to the default.
-        let hybrid_cfg = render_cfg.map(|cfg| {
-            let defaults = renderer::live_params::HybridLiveParams::default();
-            let valid_inner = |id: &str| id != "hybrid" && control.has_backend(id);
-            renderer::live_params::HybridLiveParams {
-                external_backend_id: cfg
-                    .hybrid_external_backend
-                    .clone()
-                    .filter(|id| valid_inner(id))
-                    .unwrap_or(defaults.external_backend_id),
-                internal_backend_id: cfg
-                    .hybrid_internal_backend
-                    .clone()
-                    .filter(|id| valid_inner(id))
-                    .unwrap_or(defaults.internal_backend_id),
-                curve: cfg
-                    .hybrid_curve
-                    .clone()
-                    .filter(|points| points.len() >= 2)
-                    .unwrap_or(defaults.curve),
-                curve_smoothing: cfg
-                    .hybrid_curve_smoothing
-                    .map(|v| v.clamp(0.0, 1.0))
-                    .unwrap_or(defaults.curve_smoothing),
-                metric: cfg
-                    .hybrid_metric
-                    .as_deref()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(defaults.metric),
-            }
+        // The hybrid curve, a point list kept out of the registry (the legs,
+        // smoothing and metric are registry rows, seeded below). A curve of
+        // fewer than two points falls back to the default.
+        let hybrid_curve = render_cfg.map(|cfg| {
+            cfg.hybrid_curve
+                .clone()
+                .filter(|points| points.len() >= 2)
+                .unwrap_or_else(|| renderer::live_params::HybridLiveParams::default().curve)
         });
-        // Resolve the configured backend id: built-in ids/aliases first (e.g.
-        // "distance" -> experimental_distance), then any registered backend id.
-        let configured_backend = configured_backend_cfg.and_then(|raw| {
-            canonical_builtin_backend_id(raw)
-                .map(|id| id.to_string())
-                .or_else(|| control.has_backend(raw).then(|| raw.to_string()))
-        });
-        // Replay persisted generic backend param values, and migrate the legacy
+        // Replay persisted generic plugin param values, and migrate the legacy
         // dedicated keys (barycenter_localize / experimental_distance_*) into the
         // same bag so old configs keep working. All are read at the rebuild below
         // via each backend's schema.
         if let Some(cfg) = render_cfg {
             use renderer::backend_params::ParamValue;
             if !cfg.backend_params.is_empty() {
-                requires_rebuild = true;
+                model_changed = true;
             }
-            for (backend_id, params) in &cfg.backend_params {
-                for (key, value) in params {
-                    control.set_backend_param(backend_id, key, value.clone());
-                }
-            }
+            // Every plugin kind's values (the generators' and the phantom
+            // stage's legacy keys migrated), in one store.
+            control.seed_plugin_params(renderer::plugin::PluginParams::from_config(cfg));
             let mut migrate = |backend_id: &str, key: &str, value: Option<ParamValue>| {
                 if let Some(value) = value {
                     control.set_backend_param(backend_id, key, value);
-                    requires_rebuild = true;
+                    model_changed = true;
                 }
             };
             migrate(
@@ -540,60 +489,24 @@ pub fn seed_control_from_render_config(
         }
         {
             let mut live = control.live.write();
-            if let Some(configured_backend) = &configured_backend {
-                if live.backend_id() != configured_backend {
-                    live.backend_id = configured_backend.clone();
-                    requires_rebuild = true;
+            if let Some(curve) = hybrid_curve {
+                if live.hybrid.curve != curve {
+                    live.hybrid.curve = curve;
+                    model_changed = true;
                 }
             }
-            if let Some(configured_evaluation) = configured_evaluation {
-                if live.evaluation.mode != configured_evaluation {
-                    live.set_evaluation_mode(configured_evaluation);
-                    requires_rebuild = true;
-                }
-            }
-            if let Some(intervals) = render_cfg.and_then(|c| c.evaluation_object_size_intervals) {
-                if live.evaluation.object_size_intervals != intervals {
-                    live.evaluation.object_size_intervals = intervals;
-                    requires_rebuild = true;
-                }
-            }
-            if let Some(hybrid) = hybrid_cfg {
-                if live.hybrid.external_backend_id != hybrid.external_backend_id
-                    || live.hybrid.internal_backend_id != hybrid.internal_backend_id
-                    || live.hybrid.curve != hybrid.curve
-                    || (live.hybrid.curve_smoothing - hybrid.curve_smoothing).abs() > 1e-6
-                    || live.hybrid.metric != hybrid.metric
-                {
-                    live.hybrid = hybrid;
-                    requires_rebuild = true;
-                }
-            }
-            if let Some(metric) = render_cfg
-                .and_then(|cfg| cfg.distance_model_metric.as_deref())
-                .and_then(|s| s.parse::<renderer::spatial_vbap::DistanceMetric>().ok())
-            {
-                if live.distance_model_metric != metric {
-                    live.distance_model_metric = metric;
-                    requires_rebuild = true;
-                }
-            }
-            if let Some(metric) = render_cfg
-                .and_then(|cfg| cfg.distance_diffuse_metric.as_deref())
-                .and_then(|s| s.parse::<renderer::spatial_vbap::DistanceMetric>().ok())
-            {
-                if live.distance_diffuse_metric != metric {
-                    live.distance_diffuse_metric = metric;
-                    requires_rebuild = true;
-                }
-            }
-            if let Some(axes) = render_cfg
-                .and_then(|cfg| cfg.distance_diffuse_mirror_axes.as_deref())
-                .and_then(|s| s.parse::<renderer::spatial_vbap::MirrorAxes>().ok())
-            {
-                if live.distance_diffuse_mirror_axes != axes {
-                    live.distance_diffuse_mirror_axes = axes;
-                    requires_rebuild = true;
+            // Declared options whose groups shape the topology or the
+            // evaluation layer (room, distance, …): seeded here, before the
+            // caller decides whether to rebuild, and folded into that decision.
+            if let Some(render) = render_cfg {
+                match renderer::options::seed_rebuilding_rows_from_config(
+                    &mut live,
+                    render,
+                    &renderer::options::OptionEnv::of(control),
+                ) {
+                    renderer::options::Rebuild::Topology => model_changed = true,
+                    renderer::options::Rebuild::Evaluation => requires_rebuild = true,
+                    renderer::options::Rebuild::None => {}
                 }
             }
             // Per-frame live params (no topology rebuild): seed from config so a
@@ -606,139 +519,19 @@ pub fn seed_control_from_render_config(
             {
                 live.auto_gain_ceiling_db = ceiling;
             }
-            // Binaural (headphone) stage: seed from config so a saved mode/scale is
-            // honoured at startup. No topology rebuild — the binaural path does not
-            // use the speaker topology.
+            // Binaural: the options are registry rows (seeded with the others
+            // by `seed_live_from_config`). Seeded here: the ear mutes, and the
+            // persisted recenter reference and axis calibration, so the
+            // centering survives an engine rebuild (mpv track change) and a
+            // restart. `head_pose` / `last_raw` stay at their defaults: the
+            // first incoming OSC packet re-derives the centered pose.
             if let Some(bin) = render_cfg.and_then(|cfg| cfg.binaural.as_ref()) {
-                if let Some(mode) = bin
-                    .output_mode
-                    .as_deref()
-                    .and_then(renderer::live_params::OutputMode::from_str)
-                {
-                    live.binaural.output_mode = mode;
-                }
-                if let Some(mode) = bin
-                    .mode
-                    .as_deref()
-                    .and_then(renderer::live_params::BinauralMode::from_str)
-                {
-                    live.binaural.mode = mode;
-                }
-                if let Some(gains) = bin.ear_gains {
-                    for (ear, gain) in live.binaural.ears.iter_mut().zip(gains) {
-                        if gain.is_finite() && (0.0..=4.0).contains(&gain) {
-                            ear.gain = gain;
-                        }
-                    }
-                }
                 if let Some(mutes) = bin.ear_mutes {
                     for (ear, muted) in live.binaural.ears.iter_mut().zip(mutes) {
                         ear.muted = muted;
                     }
                 }
-                if let Some(scale) = bin.unit_scale_m {
-                    if scale.is_finite() && scale > 0.0 {
-                        live.binaural.unit_scale_m = scale;
-                    }
-                }
-                if let Some(radius) = bin.head_radius_m {
-                    if radius.is_finite() && radius > 0.0 {
-                        live.binaural.head_radius_m = radius.clamp(0.05, 0.15);
-                    }
-                }
-                if let Some(refl) = bin.reflections.as_ref() {
-                    let r = &mut live.binaural.reflections;
-                    if let Some(en) = refl.enabled {
-                        r.enabled = en;
-                    }
-                    for (slot, v) in [
-                        (0usize, refl.room_width_m),
-                        (1, refl.room_depth_m),
-                        (2, refl.room_height_m),
-                    ] {
-                        if let Some(v) = v {
-                            if v.is_finite() && v > 0.0 {
-                                r.room_size_m[slot] = v.clamp(
-                                    renderer::binaural::reflections::MIN_ROOM_M,
-                                    renderer::binaural::reflections::MAX_ROOM_M,
-                                );
-                            }
-                        }
-                    }
-                    if let Some(level) = refl.level {
-                        if level.is_finite() {
-                            r.level = level.clamp(0.0, 1.0);
-                        }
-                    }
-                    if let Some(fc) = refl.wall_cutoff_hz {
-                        if fc.is_finite() {
-                            r.wall_cutoff_hz = fc.clamp(
-                                renderer::binaural::reflections::MIN_WALL_CUTOFF_HZ,
-                                renderer::binaural::reflections::MAX_WALL_CUTOFF_HZ,
-                            );
-                        }
-                    }
-                }
-                if let Some(rev) = bin.reverb.as_ref() {
-                    let r = &mut live.binaural.reverb;
-                    if let Some(en) = rev.enabled {
-                        r.enabled = en;
-                    }
-                    if let Some(level) = rev.level {
-                        if level.is_finite() {
-                            r.level = level.clamp(0.0, 1.0);
-                        }
-                    }
-                    if let Some(rt60) = rev.rt60_s {
-                        if rt60.is_finite() && rt60 > 0.0 {
-                            r.rt60_s = rt60.clamp(0.1, 3.0);
-                        }
-                    }
-                    if let Some(pd) = rev.predelay_ms {
-                        if pd.is_finite() && pd >= 0.0 {
-                            r.predelay_ms = pd.clamp(0.0, 100.0);
-                        }
-                    }
-                    use renderer::binaural::reverb::{
-                        RT60_RATIO_MAX, RT60_RATIO_MIN, SIZE_MAX, SIZE_MIN,
-                    };
-                    if let Some(size) = rev.size {
-                        if size.is_finite() && size > 0.0 {
-                            r.size = size.clamp(SIZE_MIN, SIZE_MAX);
-                        }
-                    }
-                    if let Some(ratio) = rev.rt60_low_ratio {
-                        if ratio.is_finite() && ratio > 0.0 {
-                            r.rt60_low_ratio = ratio.clamp(RT60_RATIO_MIN, RT60_RATIO_MAX);
-                        }
-                    }
-                    if let Some(ratio) = rev.rt60_high_ratio {
-                        if ratio.is_finite() && ratio > 0.0 {
-                            r.rt60_high_ratio = ratio.clamp(RT60_RATIO_MIN, RT60_RATIO_MAX);
-                        }
-                    }
-                }
-                if let Some(air) = bin.air_absorption {
-                    live.binaural.air_absorption = air;
-                }
-                if let Some(eq) = bin.diffuse_field_eq {
-                    live.binaural.diffuse_field_eq = eq;
-                }
                 if let Some(ht) = bin.head_tracking.as_ref() {
-                    if let Some(addr) = ht.osc_address.as_ref() {
-                        live.binaural.tracking.address = (!addr.is_empty()).then(|| addr.clone());
-                    }
-                    if let Some(fmt) = ht
-                        .format
-                        .as_deref()
-                        .and_then(renderer::binaural::HeadTrackingFormat::from_str)
-                    {
-                        live.binaural.tracking.format = fmt;
-                    }
-                    // Restore the persisted recenter reference so the centering
-                    // survives an engine rebuild (mpv track change) and a restart.
-                    // `head_pose`/`last_raw` stay at their defaults: the first
-                    // incoming OSC packet re-derives the centered pose.
                     if let Some(q) = ht.reference_quat {
                         live.binaural.tracking.reference =
                             renderer::binaural::HeadPose::from_quat_array(q);
@@ -748,54 +541,17 @@ pub fn seed_control_from_render_config(
                             renderer::binaural::HeadPose::from_quat_array(q);
                     }
                 }
-                // HRIR source: a "sofa" selector resolves its path from
-                // `hrtf_sofa_path` (or an inline "sofa:<path>").
-                if let Some(src) = bin
-                    .hrir_source
-                    .as_deref()
-                    .and_then(renderer::binaural::HrirSource::from_str)
-                {
-                    live.binaural.hrir_source = match src {
-                        renderer::binaural::HrirSource::Sofa(p) if p.is_empty() => {
-                            match bin.hrtf_sofa_path.as_ref() {
-                                Some(path) => renderer::binaural::HrirSource::Sofa(
-                                    path.to_string_lossy().into_owned(),
-                                ),
-                                None => renderer::binaural::HrirSource::SafKemar,
-                            }
-                        }
-                        // Likewise "brir" resolves its file from
-                        // `brir_sofa_path` (or an inline "brir:<path>").
-                        renderer::binaural::HrirSource::Brir(p) if p.is_empty() => {
-                            match bin.brir_sofa_path.as_ref() {
-                                Some(path) => renderer::binaural::HrirSource::Brir(
-                                    path.to_string_lossy().into_owned(),
-                                ),
-                                None => renderer::binaural::HrirSource::SafKemar,
-                            }
-                        }
-                        other => other,
-                    };
-                }
-                if let Some(v) = bin.brir_head_tracking {
-                    live.binaural.brir.head_tracking = Some(v);
-                }
-                if let Some(v) = bin.brir_max_length_s
-                    && v.is_finite()
-                    && v >= 0.0
-                {
-                    live.binaural.brir.max_length_s = v;
-                }
-                if let Some(v) = bin.brir_tail_floor_db
-                    && v.is_finite()
-                    && v > 0.0
-                {
-                    live.binaural.brir.tail_floor_db = v.clamp(20.0, 120.0);
-                }
             }
         }
     }
-    requires_rebuild
+    if model_changed {
+        // Same rule as an OSC change to the model (`osc::dispatch`): bump the
+        // geometry generation so every rebuild after this seed, the crossover
+        // band renderers' included, builds new gain models instead of
+        // re-wrapping the ones built before the config was applied.
+        control.bump_geometry_generation();
+    }
+    requires_rebuild || model_changed
 }
 
 /// Seed the host-runtime live state (monitoring cadences, ramp mode, declared
@@ -823,13 +579,16 @@ pub fn seed_runtime_state_from_render_config(
         .as_deref()
         .and_then(renderer::live_params::RampMode::from_str)
         .unwrap_or(renderer::live_params::RampMode::Frame);
-    control.set_requested_ramp_mode(ramp_mode);
     control.live.write().ramp_mode = ramp_mode;
 
     // Declared live options (registry rows) plus their param bags and the
     // virtual bed: one shared registry seed, same call as the CLI bootstrap.
     if let Some(render) = render_cfg {
-        renderer::options::seed_live_from_config(&mut control.live.write(), render);
+        renderer::options::seed_live_from_config(
+            &mut control.live.write(),
+            render,
+            &renderer::options::OptionEnv::of(control),
+        );
     }
 
     // DRC selection. The decode-side mode is pushed to the bridge lazily by
@@ -847,6 +606,95 @@ pub fn seed_runtime_state_from_render_config(
     }
 }
 
+/// Record the bridge a host runs with as the live `render.bridge_path` — what
+/// Studio shows and edits, and what a save writes back. Every host records the
+/// path it was *asked* for: its own override (a CLI flag, the C config's
+/// `bridge_path`) else the config's. Never an auto-discovered one: a bridge
+/// found next to the host binary is that host's, and saving it would write,
+/// say, the mpv bundle's bridge into the config every host shares. A host
+/// override that differs from the config is unsaved state.
+pub fn record_bridge_path(
+    control: &RendererControl,
+    host_override: Option<&std::path::Path>,
+    config_bridge: Option<&std::path::Path>,
+) {
+    let recorded = host_override.or(config_bridge);
+    if recorded != config_bridge {
+        control.mark_dirty();
+    }
+    control.set_bridge_path(recorded.map(std::path::Path::to_path_buf));
+}
+
+/// Record the config's `render.input_pipe` as the live input path, so a save
+/// writes it back. A host that reads a different input records that one after
+/// this (the CLI records the path it actually opened). Without it, a host that
+/// never sets an input path — the embedded engine, its no-bridge runtime —
+/// saves an unset input path, which erases `render.input_pipe` from the
+/// config every host shares.
+pub fn record_input_path(control: &RendererControl, render_cfg: Option<&RenderConfig>) {
+    control.set_input_path(
+        render_cfg
+            .and_then(|cfg| cfg.input_pipe.as_deref())
+            .map(|path| path.display().to_string()),
+    );
+}
+
+/// What a host records on a freshly built renderer's control besides the
+/// renderer itself. See [`seed_host_state`].
+pub struct HostStateSeed<'a> {
+    /// The config file the host runs on: its path and load status (About),
+    /// its profiles view, and where Save writes.
+    pub config_path: Option<&'a std::path::Path>,
+    /// The render section the host resolved (the file, live-handoff sidecar
+    /// included, plus the host's own overrides).
+    pub render_cfg: Option<&'a RenderConfig>,
+    /// The bridge path the host itself was asked for (a CLI flag, the C
+    /// config's field); the config's own comes from `render_cfg`.
+    pub requested_bridge_path: Option<&'a std::path::Path>,
+    /// This host's monitoring cadence fallback, meter then diag, in Hz.
+    pub cadence_defaults_hz: (f32, f32),
+}
+
+/// Record the host-side state every live-state bundle carries: the bridge path
+/// ([`record_bridge_path`]), the config path, load status and profiles view,
+/// the unsaved mark of a restored live handoff, the cadence fallback and the
+/// runtime seed ([`seed_runtime_state_from_render_config`]).
+///
+/// Shared by the CLI's render bootstrap and the no-bridge runtime of both
+/// hosts ([`crate::degraded::NoBridgeRuntime`]), so a renderer that came up
+/// without a decoder publishes — and saves — the same state as one that did.
+pub fn seed_host_state(control: &RendererControl, seed: &HostStateSeed<'_>) {
+    record_bridge_path(
+        control,
+        seed.requested_bridge_path,
+        seed.render_cfg.and_then(|c| c.bridge_path.as_deref()),
+    );
+    record_input_path(control, seed.render_cfg);
+    if let Some(path) = seed.config_path {
+        // State restored from a live-handoff sidecar is by definition unsaved.
+        if renderer::config::live_overlay_active(path) {
+            control.mark_dirty();
+        }
+        control.set_config_path(path.to_path_buf());
+        // Whether the config actually loaded, so Studio's About can compare
+        // hosts; `render_cfg` can't tell, `load_or_default` collapses a
+        // missing or broken file into defaults.
+        control.set_config_status(Some(
+            renderer::config::Config::load_status(path)
+                .as_str()
+                .to_string(),
+        ));
+        // Client-visible profiles view (active name + list); see
+        // docs/config-profiles.md.
+        control.set_profiles_info(renderer::config::Config::load_or_default(path).profiles_info());
+    }
+    // Declared before the seed, which falls back to it; a later profile
+    // switch, which replays the same seed, falls back to it too.
+    let (meter_hz, diag_hz) = seed.cadence_defaults_hz;
+    control.set_cadence_defaults_hz(meter_hz, diag_hz);
+    seed_runtime_state_from_render_config(control, seed.render_cfg);
+}
+
 /// Re-apply a render config to a RUNNING engine — the live profile switch
 /// (docs/config-profiles.md). Covers the construction-path seeding minus what
 /// needs a new renderer instance (input plumbing, output device, bridge):
@@ -858,37 +706,12 @@ pub fn apply_render_config_live(
     render_cfg: &RenderConfig,
 ) -> Result<()> {
     let params = SpatialRendererParams::from_render_config(Some(render_cfg));
-    let (room_ratio, room_ratio_rear, room_ratio_lower, room_ratio_center_blend) =
-        parse_room_ratio(&params)?;
-    let distance_model = DistanceModel::from_str(&params.vbap_distance_model)
+    // A malformed room or distance model fails the switch, as it fails a
+    // build; both are declared options, reset and seeded with the others
+    // below.
+    parse_room_ratio(&params)?;
+    DistanceModel::from_str(&params.vbap_distance_model)
         .map_err(|e| anyhow!("Invalid distance model: {}", e))?;
-    // Boot-parity quantization of the polar grid: construction converts the
-    // configured cell counts to integer degree/metre steps and back
-    // (`build_spatial_renderer` → `SpatialRenderer::new`), so e.g. 100
-    // azimuth cells become a 4° step and land as 90 values. The live seed
-    // must round-trip the same way or a switch and a restart into the same
-    // profile disagree on the grid. `allow_negative_z` follows the config
-    // pin, falling back to the resolved value of the current build.
-    let allow_negative_z = if params.vbap_allow_negative_z {
-        true
-    } else if params.no_vbap_allow_negative_z {
-        false
-    } else {
-        control
-            .backend_rebuild_params()
-            .map(|p| p.allow_negative_z)
-            .unwrap_or(false)
-    };
-    let azimuth_step_deg = (360.0f32 / (params.evaluation_polar_azimuth_resolution.max(1) as f32))
-        .max(1.0)
-        .round() as i32;
-    let elevation_range = if allow_negative_z { 180.0f32 } else { 90.0 };
-    let elevation_step_deg = (elevation_range
-        / (params.evaluation_polar_elevation_resolution.max(1) as f32))
-        .max(1.0)
-        .round() as i32;
-    let distance_max = params.evaluation_polar_distance_max.max(0.01);
-    let distance_step = distance_max / (params.evaluation_polar_distance_res.max(1) as f32);
     {
         let mut live = control.live.write();
         // Absent-means-default first: the shared seeds below only assign the
@@ -899,32 +722,20 @@ pub fn apply_render_config_live(
         // next profile op would then commit that leak into the incoming
         // profile. Return every profile-covered field to its default before
         // seeding.
-        live.backend_id = "vbap".to_string();
-        live.set_evaluation_mode(LiveEvaluationMode::Auto);
-        live.evaluation.object_size_intervals = 0;
-        live.hybrid = renderer::live_params::HybridLiveParams::default();
-        live.distance_model_metric = renderer::spatial_vbap::DistanceMetric::default();
-        live.distance_diffuse_metric = renderer::spatial_vbap::DistanceMetric::default();
-        live.distance_diffuse_mirror_axes = renderer::spatial_vbap::MirrorAxes::default();
+        live.hybrid.curve = renderer::live_params::HybridLiveParams::default().curve;
         live.size_to_spread_mode = Default::default();
         live.auto_gain_ceiling_db = renderer::config_fields::auto_gain_ceiling_db::DEFAULT;
         live.binaural = renderer::live_params::BinauralLiveParams::default();
-        renderer::options::reset_live_to_defaults(&mut live);
+        renderer::options::reset_live_to_defaults(
+            &mut live,
+            &renderer::options::OptionEnv::of(control),
+        );
 
         // Construction-time scalars that also exist as live params: the same
         // values `SpatialRenderer::new` would receive for this config
         // (`params` already encodes the config defaults for absent keys).
-        live.master_gain = 10.0_f32.powf(params.master_gain / 20.0);
         live.auto_gain = params.auto_gain;
         live.use_loudness = params.use_loudness;
-        live.distance_model = distance_model;
-        live.use_distance_diffuse = params.distance_diffuse;
-        live.distance_diffuse_threshold = params.distance_diffuse_threshold;
-        live.distance_diffuse_curve = params.distance_diffuse_curve;
-        live.room_ratio = room_ratio;
-        live.room_ratio_rear = room_ratio_rear;
-        live.room_ratio_lower = room_ratio_lower;
-        live.room_ratio_center_blend = room_ratio_center_blend;
         // Spread fallbacks (used when the vbap param bag has no entry) —
         // construction seeds these from the same params.
         live.spread_min = params.vbap_spread_min;
@@ -932,33 +743,11 @@ pub fn apply_render_config_live(
         live.spread_from_distance = params.spread_from_distance;
         live.spread_distance_range = params.spread_distance_range;
         live.spread_distance_curve = params.spread_distance_curve;
-        live.evaluation.position_interpolation = params.render_evaluation_position_interpolation;
-        live.evaluation.polar.azimuth_values =
-            (360.0 / azimuth_step_deg.max(1) as f32).round() as i32;
-        live.evaluation.polar.elevation_values =
-            (elevation_range / elevation_step_deg.max(1) as f32).round() as i32;
-        live.evaluation.polar.distance_res =
-            (distance_max / distance_step.max(0.01)).round() as i32;
-        live.evaluation.polar.distance_max = distance_max;
-        // Cartesian grid sizes only when the profile pins them; otherwise the
-        // bridge-derived defaults from construction stay in effect.
-        if let Some(x) = params.evaluation_cartesian_x_size {
-            live.evaluation.cartesian.x_size = x.max(1);
-        }
-        if let Some(y) = params.evaluation_cartesian_y_size {
-            live.evaluation.cartesian.y_size = y.max(1);
-        }
-        if let Some(z) = params.evaluation_cartesian_z_size {
-            live.evaluation.cartesian.z_size = z.max(1);
-        }
-        if let Some(z_neg) = params.evaluation_cartesian_z_neg_size {
-            live.evaluation.cartesian.z_neg_size = z_neg;
-        }
     }
     // The replay in `seed_control_from_render_config` only inserts; without
-    // the clear, the outgoing profile's backend params would survive the
+    // the clear, the outgoing profile's plugin params would survive the
     // switch (and be committed into the incoming profile on the next save).
-    control.clear_backend_params();
+    control.clear_plugin_params();
     seed_control_from_render_config(control, Some(render_cfg));
     seed_runtime_state_from_render_config(control, Some(render_cfg));
     Ok(())
@@ -985,6 +774,318 @@ mod tests {
             None,
         )
         .expect("renderer")
+    }
+
+    /// A config-set evaluation table mode is where the live mode starts, so
+    /// the config seed that follows construction finds nothing left to
+    /// change. It used to start at `Auto` in the embedded host (unlike the
+    /// CLI), and every engine creation — every track a player opens — with
+    /// such a config then built the VBAP topology a second time.
+    #[test]
+    fn a_configured_table_mode_needs_no_second_topology_build() {
+        let cfg = RenderConfig {
+            render_evaluation_mode: Some("precomputed_cartesian".to_string()),
+            ..Default::default()
+        };
+        let params = SpatialRendererParams::from_render_config(Some(&cfg));
+        let renderer = build_spatial_renderer(
+            &params,
+            SpeakerLayout::preset("7.1.4").expect("preset layout"),
+            48_000,
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 9,
+                y_size: 9,
+                z_size: 5,
+                allow_negative_z: true,
+            },
+            // The bridge prefers the other table: the config must win.
+            bridge_api::RVbapTableMode::Polar,
+            None,
+        )
+        .expect("renderer");
+        let control = renderer.renderer_control();
+        assert_eq!(
+            control.live.read().evaluation.mode,
+            LiveEvaluationMode::PrecomputedCartesian
+        );
+        assert!(!seed_control_from_render_config(&control, Some(&cfg)));
+    }
+
+    /// A host that never sets an input path of its own (the embedded engine,
+    /// the no-bridge runtimes) must save the config's `render.input_pipe`
+    /// back as it was, not erase it.
+    #[test]
+    fn a_save_keeps_the_configured_input_pipe() {
+        let renderer = test_renderer();
+        let control = renderer.renderer_control();
+        let cfg = RenderConfig {
+            input_pipe: Some(std::path::PathBuf::from("/tmp/orender.pipe")),
+            ..Default::default()
+        };
+        seed_host_state(
+            &control,
+            &HostStateSeed {
+                config_path: None,
+                render_cfg: Some(&cfg),
+                requested_bridge_path: None,
+                cadence_defaults_hz: (10.0, 10.0),
+            },
+        );
+        assert_eq!(control.input_path().as_deref(), Some("/tmp/orender.pipe"));
+
+        let mut saved = renderer::config::Config::default();
+        runtime_control::persist::store_live_into_config(&control, None, &mut saved);
+        assert_eq!(
+            saved.render.and_then(|r| r.input_pipe),
+            Some(std::path::PathBuf::from("/tmp/orender.pipe"))
+        );
+    }
+
+    /// Configs whose declared options the renderer construction already
+    /// applies, and one per group that only the seed applies.
+    fn option_configs() -> Vec<(&'static str, RenderConfig)> {
+        vec![
+            (
+                "polar grid",
+                RenderConfig {
+                    render_evaluation_mode: Some("precomputed_polar".into()),
+                    vbap_azimuth_resolution: Some(100),
+                    vbap_elevation_resolution: Some(45),
+                    vbap_distance_res: Some(5),
+                    vbap_distance_max: Some(3.0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "polar grid, negative elevations",
+                RenderConfig {
+                    render_evaluation_mode: Some("precomputed_polar".into()),
+                    vbap_allow_negative_z: Some(true),
+                    vbap_elevation_resolution: Some(60),
+                    ..Default::default()
+                },
+            ),
+            (
+                "cartesian grid",
+                RenderConfig {
+                    render_evaluation_mode: Some("precomputed_cartesian".into()),
+                    evaluation_cartesian_x_size: Some(7),
+                    evaluation_cartesian_y_size: Some(6),
+                    evaluation_cartesian_z_size: Some(4),
+                    evaluation_cartesian_z_neg_size: Some(2),
+                    render_evaluation_position_interpolation: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "room and distance",
+                RenderConfig {
+                    room_ratio: Some("1.0,1.5,0.7".into()),
+                    room_ratio_lower: Some(0.3),
+                    room_ratio_center_blend: Some(0.2),
+                    vbap_distance_model: Some("linear".into()),
+                    distance_diffuse: Some(true),
+                    distance_diffuse_threshold: Some(0.5),
+                    distance_diffuse_curve: Some(2.0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "binaural and master gain",
+                RenderConfig {
+                    master_gain: Some(-6.0),
+                    binaural: Some(renderer::config::BinauralConfig {
+                        output_mode: Some("binaural".into()),
+                        mode: Some("cascaded".into()),
+                        ear_gains: Some([0.8, 1.2]),
+                        ear_mutes: Some([false, true]),
+                        unit_scale_m: Some(2.0),
+                        head_radius_m: Some(0.2),
+                        hrir_source: Some("sofa".into()),
+                        hrtf_sofa_path: Some("/data/hrtf/test.sofa".into()),
+                        brir_head_tracking: Some(false),
+                        brir_max_length_s: Some(1.5),
+                        brir_tail_floor_db: Some(200.0),
+                        head_tracking: Some(renderer::config::HeadTrackingConfig {
+                            osc_address: Some("/rotation".into()),
+                            format: Some("euler".into()),
+                            smoothing: Some(0.5),
+                            invert: Some(true),
+                            ..Default::default()
+                        }),
+                        reverb: Some(renderer::config::ReverbConfig {
+                            enabled: Some(true),
+                            rt60_s: Some(9.0),
+                            predelay_ms: Some(10.0),
+                            ..Default::default()
+                        }),
+                        reflections: Some(renderer::config::ReflectionsConfig {
+                            enabled: Some(true),
+                            room_width_m: Some(50.0),
+                            wall_cutoff_hz: Some(8000.0),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ),
+            (
+                "seed-only settings",
+                RenderConfig {
+                    render_evaluation_mode: Some("realtime".into()),
+                    evaluation_object_size_intervals: Some(2),
+                    distance_model_metric: Some("chebyshev".into()),
+                    distance_diffuse_metric: Some("chebyshev".into()),
+                    distance_diffuse_mirror_axes: Some("z".into()),
+                    render_backend: Some("hybrid".into()),
+                    hybrid_external_backend: Some("experimental_distance".into()),
+                    hybrid_internal_backend: Some("vbap".into()),
+                    hybrid_curve_smoothing: Some(0.5),
+                    hybrid_metric: Some("spherical".into()),
+                    ..Default::default()
+                },
+            ),
+        ]
+    }
+
+    fn built_with(cfg: Option<&RenderConfig>) -> renderer::spatial_renderer::SpatialRenderer {
+        let params = SpatialRendererParams::from_render_config(cfg);
+        build_spatial_renderer(
+            &params,
+            SpeakerLayout::preset("7.1.4").expect("preset layout"),
+            48_000,
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 9,
+                y_size: 9,
+                z_size: 5,
+                allow_negative_z: false,
+            },
+            bridge_api::RVbapTableMode::Cartesian,
+            cfg,
+        )
+        .expect("renderer")
+    }
+
+    /// The seed before the first rebuild asks for one only for what the
+    /// construction did not already apply: a renderer built from a config
+    /// finds the room, the distance model and diffuse, and the grids already
+    /// in force — laid out the same way, the polar grid's quantization
+    /// included — and is not rebuilt a second time at every boot.
+    #[test]
+    fn the_seed_rebuilds_only_for_what_the_construction_left_out() {
+        for (name, cfg) in option_configs() {
+            let params = SpatialRendererParams::from_render_config(Some(&cfg));
+            // Constructed without the config seed…
+            let renderer = build_spatial_renderer(
+                &params,
+                SpeakerLayout::preset("7.1.4").expect("preset layout"),
+                48_000,
+                bridge_api::RVbapCartesianDefaults {
+                    x_size: 9,
+                    y_size: 9,
+                    z_size: 5,
+                    allow_negative_z: false,
+                },
+                bridge_api::RVbapTableMode::Cartesian,
+                None,
+            )
+            .expect("renderer");
+            let control = renderer.renderer_control();
+            // …then seeded, as the build does.
+            let rebuild = seed_control_from_render_config(&control, Some(&cfg));
+            assert_eq!(rebuild, name == "seed-only settings", "{name}");
+        }
+    }
+
+    /// A live profile switch lands every declared option where a boot on the
+    /// same config lands (docs/config-profiles.md).
+    #[test]
+    fn a_profile_switch_lands_where_a_boot_on_the_same_config_lands() {
+        for (name, cfg) in option_configs() {
+            let booted = built_with(Some(&cfg));
+            let booted = booted.renderer_control();
+            seed_runtime_state_from_render_config(&booted, Some(&cfg));
+
+            let switched = built_with(None);
+            let switched = switched.renderer_control();
+            seed_runtime_state_from_render_config(&switched, None);
+            apply_render_config_live(&switched, &cfg).expect("switch");
+
+            let booted = renderer::options::options_json(&booted.live.read());
+            let switched = renderer::options::options_json(&switched.live.read());
+            assert_eq!(booted, switched, "{name}");
+        }
+    }
+
+    /// The demonstration backend is for contributors: a release build (no
+    /// `example-backend` feature) must not offer it.
+    #[test]
+    fn the_example_backend_is_registered_only_with_its_feature() {
+        let renderer = test_renderer();
+        assert_eq!(
+            renderer.renderer_control().has_backend("example"),
+            cfg!(feature = "example-backend")
+        );
+    }
+
+    /// A configured backend is applied after construction, so it must reach
+    /// every model built afterwards, the crossover band renderers' included:
+    /// the seed bumps the geometry generation, which they compare before
+    /// reusing a model. An evaluation-only change keeps the generation, so its
+    /// rebuild can still re-wrap the models.
+    #[test]
+    fn a_configured_backend_invalidates_the_models_built_before_it() {
+        let renderer = test_renderer();
+        let control = renderer.renderer_control();
+
+        let before = control.geometry_generation();
+        let eval_only = RenderConfig {
+            render_evaluation_mode: Some("realtime".to_string()),
+            ..Default::default()
+        };
+        assert!(seed_control_from_render_config(&control, Some(&eval_only)));
+        assert_eq!(control.geometry_generation(), before);
+
+        let backend = RenderConfig {
+            render_backend: Some("barycenter".to_string()),
+            ..Default::default()
+        };
+        assert!(seed_control_from_render_config(&control, Some(&backend)));
+        assert!(control.geometry_generation() > before);
+        let plan = control.prepare_topology_rebuild().expect("rebuild plan");
+        let rebuilt = plan
+            .build_topology_reusing(Some(&control.active_topology()))
+            .expect("rebuild");
+        assert_eq!(rebuilt.model_backend_id, "barycenter");
+    }
+
+    /// The recorded bridge path is the one asked for, and asking for another
+    /// than the config's is unsaved state.
+    #[test]
+    fn the_recorded_bridge_path_is_the_requested_one() {
+        use std::path::Path;
+        let renderer = test_renderer();
+        let control = renderer.renderer_control();
+        let dirty = || {
+            control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        let config = Path::new("/cfg/libbridge.so");
+
+        record_bridge_path(&control, None, Some(config));
+        assert_eq!(control.bridge_path().as_deref(), Some(config));
+        assert!(!dirty());
+
+        record_bridge_path(&control, None, None);
+        assert_eq!(control.bridge_path(), None);
+        assert!(!dirty());
+
+        let host = Path::new("/host/libbridge.so");
+        record_bridge_path(&control, Some(host), Some(config));
+        assert_eq!(control.bridge_path().as_deref(), Some(host));
+        assert!(dirty());
     }
 
     /// The shared runtime seed must not carry a cadence of its own.

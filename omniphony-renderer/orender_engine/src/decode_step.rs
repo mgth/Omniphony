@@ -1,10 +1,12 @@
 //! One packet through a format bridge, as every host of the renderer decodes
-//! it: the embedded engine, inline or on its decode thread (`engine.rs`), and
-//! the standalone renderer's decoder thread (`src/cli/decode/decoder_thread.rs`).
+//! it: the embedded engine, inline or on its decode thread (`engine.rs`), the
+//! standalone renderer's decoder thread (`src/cli/decode/decoder_thread.rs`)
+//! and its PipeWire sink's bridge worker (`src/cli/decode/live_bridge.rs`).
 //!
 //! What they have in common lives here, so the hosts cannot drift apart:
-//! timing the decode, the length of what it decoded, and when the bridge's
-//! declaration has to be read with the packet.
+//! timing the decode, the length of what it decoded, when the bridge's
+//! declaration has to be read with the packet, and when the DRC mode the user
+//! asked for has to be pushed to the bridge.
 
 use bridge_api::{
     FormatBridgeBox, RChannelLabel, RChannelPose, RDecodedFrame, RInputTransport, RPushResult,
@@ -123,26 +125,70 @@ pub fn frame_duration_secs(frame: &RDecodedFrame) -> f64 {
     f64::from(frame.sample_count) / f64::from(frame.sampling_frequency)
 }
 
-/// Push one packet through `bridge` and time it. With a `tracker`, the
-/// bridge's declaration is read after it when a frame needs it; without one
-/// the host reads the bridge live, which is right only when nothing else
-/// decodes in between.
+/// Push one packet through `bridge` and time it. The bridge's declaration is
+/// read right after it when `tracker` says a frame needs it, and travels with
+/// the packet: the host applies it from [`DecodedPacket::declaration_frame`]
+/// on, and keeps it until the next one.
 pub fn decode_packet(
     bridge: &mut FormatBridgeBox,
     data: &[u8],
     transport: RInputTransport,
     data_type: u8,
-    tracker: Option<&mut DeclarationTracker>,
+    tracker: &mut DeclarationTracker,
 ) -> DecodedPacket {
     let started = Instant::now();
     let result = bridge.push_packet(data.into(), transport, data_type);
     let decode_ms = started.elapsed().as_secs_f32() * 1000.0;
-    let declaration_frame = tracker.and_then(|t| t.first_frame_needing_it(&result));
+    let declaration_frame = tracker.first_frame_needing_it(&result);
     DecodedPacket {
         declaration: declaration_frame.map(|_| Declaration::read(bridge)),
         declaration_frame: declaration_frame.unwrap_or(0),
         result,
         decode_ms,
+    }
+}
+
+/// The DRC mode last pushed to a bridge, so a host pushes the one the user
+/// asked for only when it changes. The requested mode lives behind a lock the
+/// control thread writes; [`update`](Self::update) compares it where it
+/// stands, under the host's read lock, and copies it only on a change, so a
+/// steady stream neither allocates nor calls into the bridge.
+///
+/// The first update always reports a change: a bridge starts on its own
+/// default, which is not necessarily the one requested.
+#[derive(Debug, Default)]
+pub struct DrcModeSync {
+    mode: String,
+    synced: bool,
+}
+
+impl DrcModeSync {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether `requested` differs from the mode last recorded here (always
+    /// true the first time); when it does, it becomes [`mode`](Self::mode).
+    pub fn update(&mut self, requested: &str) -> bool {
+        if self.synced && self.mode == requested {
+            return false;
+        }
+        self.mode.clear();
+        self.mode.push_str(requested);
+        self.synced = true;
+        true
+    }
+
+    /// The mode last recorded by [`update`](Self::update); empty before it.
+    pub fn mode(&self) -> &str {
+        &self.mode
+    }
+
+    /// Bring `bridge` in line with `requested`: push it when it changed.
+    pub fn apply(&mut self, requested: &str, bridge: &mut FormatBridgeBox) {
+        if self.update(requested) {
+            bridge.set_drc_mode(self.mode.as_str().into());
+        }
     }
 }
 
@@ -210,6 +256,24 @@ mod tests {
             t.first_frame_needing_it(&push(vec![frame(&three, false)], false)),
             Some(0)
         );
+    }
+
+    #[test]
+    fn the_drc_mode_is_reported_first_and_then_on_changes_only() {
+        let mut sync = DrcModeSync::new();
+        assert_eq!(sync.mode(), "");
+        // First sight: even an empty request is pushed, the bridge's own
+        // default being unknown.
+        assert!(sync.update("Off"));
+        assert_eq!(sync.mode(), "Off");
+        assert!(!sync.update("Off"));
+        assert!(sync.update("Portable"));
+        assert_eq!(sync.mode(), "Portable");
+        assert!(!sync.update("Portable"));
+        assert!(sync.update("Off"));
+        let mut fresh = DrcModeSync::new();
+        assert!(fresh.update(""));
+        assert!(!fresh.update(""));
     }
 
     #[test]

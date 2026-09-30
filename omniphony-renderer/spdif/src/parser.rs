@@ -1,7 +1,28 @@
 // --- S/PDIF (IEC 61937) Constants ---
-// Syncwords in little-endian byte order.
-const SYNCWORD_PA: u16 = 0xF872;
-const SYNCWORD_PB: u16 = 0x4E1F;
+/// First burst-preamble word (Pa), as a little-endian 16-bit sample.
+pub const SYNCWORD_PA: u16 = 0xF872;
+/// Second burst-preamble word (Pb), as a little-endian 16-bit sample.
+pub const SYNCWORD_PB: u16 = 0x4E1F;
+/// Pa then Pb as they sit in a little-endian byte stream: what starts every
+/// IEC 61937 burst.
+pub const SYNC_BYTES: [u8; 4] = {
+    let [pa0, pa1] = SYNCWORD_PA.to_le_bytes();
+    let [pb0, pb1] = SYNCWORD_PB.to_le_bytes();
+    [pa0, pa1, pb0, pb1]
+};
+
+/// Offset of the first IEC 61937 burst preamble in `bytes`, if any.
+pub fn find_sync(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(SYNC_BYTES.len())
+        .position(|w| w == SYNC_BYTES)
+}
+
+/// Whether `bytes` holds an IEC 61937 burst preamble anywhere: how a host
+/// tells an encapsulated bitstream from PCM or a raw elementary stream.
+pub fn contains_sync(bytes: &[u8]) -> bool {
+    find_sync(bytes).is_some()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Iec61937Packet {
@@ -49,10 +70,7 @@ impl SpdifParser {
         loop {
             match self.state {
                 ParserState::WaitingForSync => {
-                    let sync_pos = self.buffer.windows(4).position(|w| {
-                        u16::from_le_bytes([w[0], w[1]]) == SYNCWORD_PA
-                            && u16::from_le_bytes([w[2], w[3]]) == SYNCWORD_PB
-                    });
+                    let sync_pos = find_sync(&self.buffer);
 
                     match sync_pos {
                         Some(pos) => {
@@ -136,7 +154,21 @@ impl Default for SpdifParser {
 
 #[cfg(test)]
 mod tests {
-    use super::{Iec61937Packet, SpdifParser};
+    use super::{Iec61937Packet, SYNC_BYTES, SpdifParser, contains_sync, find_sync};
+
+    /// The preamble as bytes is Pa then Pb in little-endian order, and it is
+    /// found wherever it sits, a burst resuming mid-chunk included.
+    #[test]
+    fn sync_is_found_anywhere_in_a_chunk() {
+        assert_eq!(SYNC_BYTES, [0x72, 0xF8, 0x1F, 0x4E]);
+        assert_eq!(find_sync(&[0x00, 0x72, 0xF8, 0x1F, 0x4E, 0x16]), Some(1));
+        assert!(contains_sync(&[0x72, 0xF8, 0x1F, 0x4E]));
+        // Pa alone, Pb before Pa, or a truncated preamble is not a burst.
+        assert!(!contains_sync(&[0x72, 0xF8, 0x00, 0x00, 0x1F, 0x4E]));
+        assert!(!contains_sync(&[0x1F, 0x4E, 0x72, 0xF8]));
+        assert!(!contains_sync(&[0x72, 0xF8, 0x1F]));
+        assert!(!contains_sync(&[]));
+    }
 
     #[test]
     fn extracts_single_packet() {

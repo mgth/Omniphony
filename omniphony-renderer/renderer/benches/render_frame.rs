@@ -241,7 +241,6 @@ fn bench_crossover(c: &mut Criterion) {
         let mut r = build_renderer(crossover_layout(), true, true);
         {
             let ctrl = r.renderer_control();
-            ctrl.set_requested_ramp_mode(mode);
             ctrl.live.write().ramp_mode = mode;
         }
         let pcm = make_pcm(N);
@@ -323,7 +322,6 @@ fn bench_polar_crossover(c: &mut Criterion) {
         let mut r = build_renderer(crossover_layout(), true, false);
         {
             let ctrl = r.renderer_control();
-            ctrl.set_requested_ramp_mode(mode);
             ctrl.live.write().ramp_mode = mode;
         }
         let pcm = make_pcm(N);

@@ -4,7 +4,9 @@
 //! set of synthesized height *objects* placed above the listener, so an output
 //! layout with top speakers (7.1.4, …) is exercised even when the source has
 //! none (DTS core, E-AC3, plain 5.1/7.1). It mirrors the render-backend
-//! extensibility: contributors add a compiled [`ObjectGeneratorFactory`] to the
+//! extensibility — both follow the one plugin contract of [`renderer::plugin`]:
+//! contributors add a compiled [`ObjectGeneratorFactory`] (a
+//! [`PluginFactory`] declaring its parameters as [`ParamSpec`]s) to the
 //! [`ObjectGeneratorRegistry`]; the realtime DSP runs per frame in
 //! [`ObjectGenerator::process`].
 //!
@@ -22,7 +24,9 @@ use std::sync::Arc;
 use bridge_api::RChannelLabel;
 use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
-use renderer::live_params::SurroundPlacement;
+use renderer::backend_params::{ParamSpec, ParamValue};
+use renderer::dsp::iir::Biquad;
+use renderer::plugin::{PluginFactory, PluginRegistry};
 use renderer::speaker_layout::SpeakerLayout;
 
 /// What a generator needs from its environment; lets the host gate the UI.
@@ -30,26 +34,6 @@ use renderer::speaker_layout::SpeakerLayout;
 pub struct ObjectGenCapabilities {
     /// The generator only produces output on a height-capable output layout.
     pub requires_height_layer: bool,
-}
-
-/// One live-tunable parameter a generator declares, so the host can build a
-/// control for it and the renderer can validate/apply it by key. Static per
-/// generator type — the schema, not a value.
-#[derive(Debug, Clone, Copy)]
-pub struct ObjectGenParamSpec {
-    /// Stable key used in the OSC param control and the value map.
-    pub key: &'static str,
-    /// English fallback label.
-    pub label: &'static str,
-    /// i18n key for a localized label in Studio (built-ins); empty for
-    /// out-of-tree generators (the host then shows `label`).
-    pub i18n_key: &'static str,
-    pub min: f32,
-    pub max: f32,
-    pub step: f32,
-    pub default: f32,
-    /// Display unit suffix (e.g. `"Hz"`, `"dB"`); empty for a bare number.
-    pub unit: &'static str,
 }
 
 /// What a synthesized object *is*, as the generator that made it knows.
@@ -119,9 +103,36 @@ pub struct PrepareCtx<'a> {
     /// The active output speaker layout.
     pub output_layout: &'a SpeakerLayout,
     pub sample_rate: u32,
-    /// Where a 4.x/5.x surround pair (`Ls`/`Rs`) sits — Side or Back — so the
-    /// synthesized objects track the same choice as the virtual bed.
-    pub surround_placement: SurroundPlacement,
+    /// Where the bed renders each input channel, parallel to `input_labels`:
+    /// a normalized ADM position under the family's placement policy (room
+    /// corner, sphere direction or the user's entry, Side/Back surround
+    /// placement included — [`crate::virtual_bed::resolve_bed_poses`]).
+    /// Synthesized objects are placed from these so they track the bed
+    /// they are extracted from. Read through [`channel_pose`](Self::channel_pose)
+    /// and [`floor_pose`](Self::floor_pose).
+    pub bed_poses: &'a [Option<[f64; 3]>],
+}
+
+impl PrepareCtx<'_> {
+    /// Where the bed renders input channel `idx`, for a channel objects can be
+    /// synthesized from: `None` for the LFE (never lifted nor extracted) and
+    /// for a channel with no pose.
+    pub fn channel_pose(&self, idx: usize) -> Option<[f64; 3]> {
+        match self.input_labels.get(idx)? {
+            RChannelLabel::LFE | RChannelLabel::LFE2 => None,
+            _ => self.bed_poses.get(idx).copied().flatten(),
+        }
+    }
+
+    /// [`channel_pose`](Self::channel_pose) for a floor-tier channel only:
+    /// `None` for a height channel. The ring the height lift and the
+    /// broadband phantom extraction work on.
+    pub fn floor_pose(&self, idx: usize) -> Option<[f64; 3]> {
+        if is_height_label(*self.input_labels.get(idx)?) {
+            return None;
+        }
+        self.channel_pose(idx)
+    }
 }
 
 /// One block of channel-based bed PCM handed to [`ObjectGenerator::process`].
@@ -149,127 +160,44 @@ pub trait ObjectGenerator: Send {
     /// last `prepare`. Must not allocate or panic.
     fn process(&mut self, bed: &BedFrame, out: &mut [Vec<f32>]);
 
-    /// The live-tunable parameters this generator declares (default: none). The
-    /// host builds a control per entry and validates incoming values against it.
-    fn param_schema(&self) -> &'static [ObjectGenParamSpec] {
-        &[]
-    }
-
-    /// Apply one parameter by `key`, in place (no DSP-state reset). Unknown keys
-    /// are ignored. Default: no params.
-    fn set_param(&mut self, _key: &str, _value: f32, _sample_rate: u32) {}
+    /// Apply one parameter by `key`, in place (no DSP-state reset). The host
+    /// hands over what its store holds for this generator — in the type the
+    /// factory's [`param_schema`](PluginFactory::param_schema) declares once
+    /// the schema is published; read it leniently (`as_f32`, `as_switch`) all
+    /// the same. Unknown keys and unreadable values are ignored. Called when a
+    /// value changes or the generator is rebuilt, never per sample — but in
+    /// the audio thread, so it must not allocate. Default: no params.
+    fn set_param(&mut self, _key: &str, _value: &ParamValue, _sample_rate: u32) {}
 }
 
-/// Factory for an [`ObjectGenerator`], keyed by a stable string id (mirrors the
-/// render-backend `BackendFactory`).
-pub trait ObjectGeneratorFactory: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn label(&self) -> &'static str;
+/// Factory for an [`ObjectGenerator`]: a plugin ([`PluginFactory`]: id, label,
+/// declared parameters) that builds a generator instance — the render-backend
+/// `BackendFactory` counterpart.
+pub trait ObjectGeneratorFactory: PluginFactory {
     fn requires_height_layer(&self) -> bool;
     fn build(&self) -> Box<dyn ObjectGenerator>;
-    /// i18n key for a localized name in Studio (built-ins); empty otherwise.
-    fn i18n_key(&self) -> &'static str {
-        ""
-    }
-    /// The parameter schema this generator exposes (default: none). Available
-    /// without building an instance, so the host can publish it to the UI.
-    fn param_schema(&self) -> &'static [ObjectGenParamSpec] {
-        &[]
-    }
 }
 
-/// String-keyed registry of generator factories: the shipped built-ins plus any
-/// contributor-registered factory.
-pub struct ObjectGeneratorRegistry {
-    factories: Vec<Box<dyn ObjectGeneratorFactory>>,
+/// The object generators, keyed by exact id: the shipped built-ins plus any
+/// contributor-registered factory — a later registration with the same id
+/// replaces the earlier one, so a host can override a built-in. The "no
+/// generator" choice (`""` / `"none"`) is a selection, not an entry.
+pub type ObjectGeneratorRegistry = PluginRegistry<dyn ObjectGeneratorFactory>;
+
+/// A registry with the shipped built-in generators.
+pub fn builtin_generators() -> ObjectGeneratorRegistry {
+    let mut registry = ObjectGeneratorRegistry::new();
+    registry.register(Box::new(CopyUpFactory));
+    registry.register(Box::new(PadFactory));
+    registry.register(Box::new(DiracFactory));
+    registry
 }
 
-impl ObjectGeneratorRegistry {
-    /// Registry with the shipped built-in generators.
-    pub fn with_builtins() -> Self {
-        Self {
-            factories: vec![
-                Box::new(CopyUpFactory),
-                Box::new(PadFactory),
-                Box::new(DiracFactory),
-            ],
-        }
-    }
-
-    /// Register a contributor factory (out-of-tree generators).
-    pub fn register(&mut self, factory: Box<dyn ObjectGeneratorFactory>) {
-        self.factories.push(factory);
-    }
-
-    /// Build the generator for `id`, or `None` for the off sentinel
-    /// (`""` / `"none"`) or an unknown id.
-    pub fn build(&self, id: &str) -> Option<Box<dyn ObjectGenerator>> {
-        let id = id.trim();
-        if id.is_empty() || id.eq_ignore_ascii_case("none") {
-            return None;
-        }
-        self.factories
-            .iter()
-            .find(|f| f.id().eq_ignore_ascii_case(id))
-            .map(|f| f.build())
-    }
-
-    /// `(id, label, requires_height_layer)` for each registered generator, for
-    /// state publication to the UI.
-    pub fn list(&self) -> Vec<(&'static str, &'static str, bool)> {
-        self.factories
-            .iter()
-            .map(|f| (f.id(), f.label(), f.requires_height_layer()))
-            .collect()
-    }
-
-    /// JSON array of `{id,label,i18nKey,requiresHeightLayer,params:[…]}` for each
-    /// registered generator, for the Studio UI to build the selector + the
-    /// per-generator parameter sliders.
-    pub fn listings_json(&self) -> String {
-        let arr: Vec<serde_json::Value> = self
-            .factories
-            .iter()
-            .map(|f| {
-                let params: Vec<serde_json::Value> = f
-                    .param_schema()
-                    .iter()
-                    .map(|p| {
-                        serde_json::json!({
-                            "key": p.key,
-                            "label": p.label,
-                            "i18nKey": p.i18n_key,
-                            "min": p.min,
-                            "max": p.max,
-                            "step": p.step,
-                            "default": p.default,
-                            "unit": p.unit,
-                        })
-                    })
-                    .collect();
-                serde_json::json!({
-                    "id": f.id(),
-                    "label": f.label(),
-                    "i18nKey": f.i18n_key(),
-                    "requiresHeightLayer": f.requires_height_layer(),
-                    "params": params,
-                })
-            })
-            .collect();
-        serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
-    }
-}
-
-/// JSON listing of the built-in generators (id/label/schema), for the host to
-/// publish to Studio over OSC without owning a registry instance.
-pub fn builtin_listings_json() -> String {
-    ObjectGeneratorRegistry::with_builtins().listings_json()
-}
-
-impl Default for ObjectGeneratorRegistry {
-    fn default() -> Self {
-        Self::with_builtins()
-    }
+/// Whether a generator selection names a generator at all: `""` and `"none"`
+/// (any case) are the off choice.
+pub fn generator_selected(id: &str) -> bool {
+    let id = id.trim();
+    !id.is_empty() && !id.eq_ignore_ascii_case("none")
 }
 
 // ─────────────────────────────── helpers ───────────────────────────────
@@ -284,24 +212,27 @@ pub fn layout_has_height(layout: &SpeakerLayout) -> bool {
 /// True when the input channel set already carries a height channel — then any
 /// upmix is suppressed (the content is already 3D).
 pub fn input_has_height(labels: &[RChannelLabel]) -> bool {
-    labels.iter().any(|l| {
-        matches!(
-            l,
-            RChannelLabel::Tfl
-                | RChannelLabel::Tfr
-                | RChannelLabel::Tsl
-                | RChannelLabel::Tsr
-                | RChannelLabel::Tbl
-                | RChannelLabel::Tbr
-                | RChannelLabel::Tc
-                | RChannelLabel::Tfc
-                | RChannelLabel::Lh
-                | RChannelLabel::Rh
-                | RChannelLabel::Ch
-                | RChannelLabel::Lhs
-                | RChannelLabel::Rhs
-        )
-    })
+    labels.iter().any(|&l| is_height_label(l))
+}
+
+/// True for a label of the top or the height tier.
+pub(crate) fn is_height_label(label: RChannelLabel) -> bool {
+    matches!(
+        label,
+        RChannelLabel::Tfl
+            | RChannelLabel::Tfr
+            | RChannelLabel::Tsl
+            | RChannelLabel::Tsr
+            | RChannelLabel::Tbl
+            | RChannelLabel::Tbr
+            | RChannelLabel::Tc
+            | RChannelLabel::Tfc
+            | RChannelLabel::Lh
+            | RChannelLabel::Rh
+            | RChannelLabel::Ch
+            | RChannelLabel::Lhs
+            | RChannelLabel::Rhs
+    )
 }
 
 pub(crate) fn find_channel(labels: &[RChannelLabel], want: RChannelLabel) -> Option<usize> {
@@ -313,88 +244,13 @@ pub(crate) fn find_channel(labels: &[RChannelLabel], want: RChannelLabel) -> Opt
 /// phantom extraction). Idiom shared with `audio_output::iir::step_one_pole`.
 pub(crate) fn one_pole_coeff(tc_ms: f32, fs: f32) -> f32 {
     let tau_samples = (tc_ms * 1.0e-3 * fs).max(1.0);
-    1.0 - (-1.0 / tau_samples).exp()
+    renderer::dsp::iir::one_pole_smoothing(1.0, tau_samples)
 }
 
-/// Canonical top position of a bed channel: its floor position raised to the
-/// height layer (`z = 1`). Mirrors the engine's channel→position convention
-/// (`renderer/src/virtual_bed.rs`): x = right, y = front. `None` for channels
-/// that should never be lifted (LFE) or carry no position (unknown).
-pub(crate) fn top_position(label: RChannelLabel) -> Option<[f64; 3]> {
-    use RChannelLabel::*;
-    let pos = match label {
-        L => [-1.0, 1.0, 1.0],
-        R => [1.0, 1.0, 1.0],
-        C => [0.0, 1.0, 1.0],
-        Ls => [-1.0, 0.0, 1.0],
-        Rs => [1.0, 0.0, 1.0],
-        Lb => [-1.0, -1.0, 1.0],
-        Rb => [1.0, -1.0, 1.0],
-        Cb => [0.0, -1.0, 1.0],
-        _ => return None,
-    };
-    Some(pos)
-}
-
-/// True when the input carries dedicated back-surround channels (7.x); then the
-/// side surrounds are unambiguous and `surround_placement` does not apply.
-pub(crate) fn input_has_back(labels: &[RChannelLabel]) -> bool {
-    labels
-        .iter()
-        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb))
-}
-
-/// Canonical top position of a bed channel, with a 4.x/5.x surround pair
-/// (`Ls`/`Rs`) moved to the side or back per `surround_placement` — matching the
-/// virtual bed — so synthesized objects track the same Side/Back choice.
-pub(crate) fn channel_top_position(
-    label: RChannelLabel,
-    use_7_1: bool,
-    placement: SurroundPlacement,
-) -> Option<[f64; 3]> {
-    let mut pos = top_position(label)?;
-    if let Some((x, y, _)) =
-        crate::virtual_bed::surround_placement_override(label, use_7_1, placement)
-    {
-        pos[0] = x as f64;
-        pos[1] = y as f64;
-    }
-    Some(pos)
-}
-
-/// Canonical 3D position of any positionable channel: bed channels on the floor
-/// (`z = 0`, honouring the Side/Back surround placement) and height channels at
-/// the ceiling (`z = 1`, the virtual-bed convention). `None` for LFE/unknown.
-pub(crate) fn channel_3d_position(
-    label: RChannelLabel,
-    use_7_1: bool,
-    placement: SurroundPlacement,
-) -> Option<[f64; 3]> {
-    use RChannelLabel::*;
-    // The height tier is on the wall above its floor speaker (the room
-    // model's corner for it), following the surround pair's Side/Back choice.
-    if matches!(label, Lh | Rh | Ch | Lhs | Rhs) {
-        let (_, x, y, z) = crate::virtual_bed::fallback_virtual_bed_pose(label, use_7_1)?;
-        let (x, y, z) = crate::virtual_bed::surround_placement_override(label, use_7_1, placement)
-            .unwrap_or((x, y, z));
-        return Some([x as f64, y as f64, z as f64]);
-    }
-    let top = match label {
-        Tfl => [-1.0, 1.0, 1.0],
-        Tfr => [1.0, 1.0, 1.0],
-        Tbl => [-1.0, -1.0, 1.0],
-        Tbr => [1.0, -1.0, 1.0],
-        Tsl => [-1.0, 0.0, 1.0],
-        Tsr => [1.0, 0.0, 1.0],
-        Tc => [0.0, 0.0, 1.0],
-        Tfc => [0.0, 1.0, 1.0],
-        _ => {
-            let mut pos = channel_top_position(label, use_7_1, placement)?;
-            pos[2] = 0.0;
-            return Some(pos);
-        }
-    };
-    Some(top)
+/// A floor pose raised to the height layer (`z = 1`): where the height lift
+/// puts what it takes from a floor channel.
+fn lifted(pose: [f64; 3]) -> [f64; 3] {
+    [pose[0], pose[1], 1.0]
 }
 
 // ───────────────────────── built-in: copy_up ─────────────────────────
@@ -406,21 +262,24 @@ pub(crate) fn channel_3d_position(
 /// natural result.
 struct CopyUpFactory;
 
-impl ObjectGeneratorFactory for CopyUpFactory {
+impl PluginFactory for CopyUpFactory {
     fn id(&self) -> &'static str {
         "copy_up"
     }
     fn label(&self) -> &'static str {
         "Direct copy to tops"
     }
+    fn i18n_key(&self) -> Option<&'static str> {
+        Some("twoDSources.objectGenCopyUp")
+    }
+}
+
+impl ObjectGeneratorFactory for CopyUpFactory {
     fn requires_height_layer(&self) -> bool {
         true
     }
     fn build(&self) -> Box<dyn ObjectGenerator> {
         Box::<CopyUpGenerator>::default()
-    }
-    fn i18n_key(&self) -> &'static str {
-        "twoDSources.objectGenCopyUp"
     }
 }
 
@@ -445,13 +304,11 @@ impl ObjectGenerator for CopyUpGenerator {
         }
         const GAIN_DB: i8 = -6;
         const SIZE: [f32; 3] = [0.3, 0.3, 0.3];
-        // Lift every spatializable bed channel (front, sides, back, center) to its
-        // canonical top position; LFE / unknown channels have no `top_position`.
-        let use_7_1 = input_has_back(ctx.input_labels);
+        // Lift every floor channel straight up from where the bed renders it;
+        // LFE / unknown channels have no pose to lift.
         let mut specs = Vec::new();
         for (ch, &label) in ctx.input_labels.iter().enumerate() {
-            let Some(position) = channel_top_position(label, use_7_1, ctx.surround_placement)
-            else {
+            let Some(position) = ctx.floor_pose(ch).map(lifted) else {
                 continue;
             };
             self.src_channels.push(ch);
@@ -482,59 +339,6 @@ impl ObjectGenerator for CopyUpGenerator {
 
 // ─────────────────────────── built-in: pad ───────────────────────────
 
-/// Minimal transposed-direct-form-II biquad, used by PAD to keep low frequencies
-/// out of the height layer (a mild psychoacoustic "elevation" lean: bass stays
-/// grounded, mids/highs rise).
-#[derive(Clone, Copy)]
-struct Biquad {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    z1: f32,
-    z2: f32,
-}
-
-impl Biquad {
-    /// RBJ high-pass at cutoff `fc` (Hz), quality `q`, sample rate `fs` (Hz).
-    fn highpass(fs: f32, fc: f32, q: f32) -> Self {
-        let mut b = Self {
-            b0: 0.0,
-            b1: 0.0,
-            b2: 0.0,
-            a1: 0.0,
-            a2: 0.0,
-            z1: 0.0,
-            z2: 0.0,
-        };
-        b.set_highpass(fs, fc, q);
-        b
-    }
-
-    /// Recompute the high-pass coefficients in place, preserving the filter state
-    /// (`z1`/`z2`) so a live cutoff change does not click.
-    fn set_highpass(&mut self, fs: f32, fc: f32, q: f32) {
-        let w0 = std::f32::consts::TAU * (fc / fs).clamp(1.0e-4, 0.49);
-        let (sin, cos) = w0.sin_cos();
-        let alpha = sin / (2.0 * q);
-        let a0 = 1.0 + alpha;
-        self.b0 = ((1.0 + cos) / 2.0) / a0;
-        self.b1 = (-(1.0 + cos)) / a0;
-        self.b2 = ((1.0 + cos) / 2.0) / a0;
-        self.a1 = (-2.0 * cos) / a0;
-        self.a2 = (1.0 - alpha) / a0;
-    }
-
-    #[inline]
-    fn process(&mut self, x: f32) -> f32 {
-        let y = self.b0 * x + self.z1;
-        self.z1 = self.b1 * x - self.a1 * y + self.z2;
-        self.z2 = self.b2 * x - self.a2 * y;
-        y
-    }
-}
-
 /// Primary-Ambient Decomposition generator: extracts the decorrelated *ambient*
 /// component of each floor pair (front L/R, surround L/R) with a 1-tap adaptive
 /// canceller (NLMS) and lifts it to the matching top corners. Correlated /
@@ -543,24 +347,27 @@ impl Biquad {
 /// is left untouched.
 struct PadFactory;
 
-impl ObjectGeneratorFactory for PadFactory {
+impl PluginFactory for PadFactory {
     fn id(&self) -> &'static str {
         "pad"
     }
     fn label(&self) -> &'static str {
         "Ambience to height (PAD)"
     }
+    fn i18n_key(&self) -> Option<&'static str> {
+        Some("twoDSources.objectGenPad")
+    }
+    fn param_schema(&self) -> Vec<ParamSpec> {
+        pad_param_schema()
+    }
+}
+
+impl ObjectGeneratorFactory for PadFactory {
     fn requires_height_layer(&self) -> bool {
         true
     }
     fn build(&self) -> Box<dyn ObjectGenerator> {
         Box::<PadGenerator>::default()
-    }
-    fn i18n_key(&self) -> &'static str {
-        "twoDSources.objectGenPad"
-    }
-    fn param_schema(&self) -> &'static [ObjectGenParamSpec] {
-        &PAD_PARAM_SPECS
     }
 }
 
@@ -596,58 +403,44 @@ const PAD_CENTER_HPF_MIN: f32 = 300.0;
 const PAD_CENTER_HPF_MAX: f32 = 8000.0;
 
 /// Live-tunable parameters PAD declares (the schema the UI builds sliders from).
-const PAD_PARAM_SPECS: [ObjectGenParamSpec; 5] = [
-    ObjectGenParamSpec {
-        key: "strength",
-        label: "Ambience strength",
-        i18n_key: "twoDSources.padStrength",
-        min: 0.0,
-        max: 1.0,
-        step: 0.01,
-        default: PAD_DEFAULT_STRENGTH,
-        unit: "",
-    },
-    ObjectGenParamSpec {
-        key: "hpf_hz",
-        label: "Bass cutoff",
-        i18n_key: "twoDSources.padHpf",
-        min: 20.0,
-        max: 2000.0,
-        step: 10.0,
-        default: PAD_HPF_HZ,
-        unit: "Hz",
-    },
-    ObjectGenParamSpec {
-        key: "gain_db",
-        label: "Height level",
-        i18n_key: "twoDSources.padGain",
-        min: -24.0,
-        max: 24.0,
-        step: 0.5,
-        default: 0.0,
-        unit: "dB",
-    },
-    ObjectGenParamSpec {
-        key: "center_amount",
-        label: "Center to height",
-        i18n_key: "twoDSources.padCenterAmount",
-        min: 0.0,
-        max: 1.0,
-        step: 0.01,
-        default: PAD_CENTER_DEFAULT_AMOUNT,
-        unit: "",
-    },
-    ObjectGenParamSpec {
-        key: "center_hpf_hz",
-        label: "Center bass cutoff",
-        i18n_key: "twoDSources.padCenterHpf",
-        min: PAD_CENTER_HPF_MIN,
-        max: PAD_CENTER_HPF_MAX,
-        step: 50.0,
-        default: PAD_CENTER_DEFAULT_HPF_HZ,
-        unit: "Hz",
-    },
-];
+fn pad_param_schema() -> Vec<ParamSpec> {
+    vec![
+        ParamSpec::float(
+            "strength",
+            "Ambience strength",
+            0.0,
+            1.0,
+            0.01,
+            PAD_DEFAULT_STRENGTH,
+        )
+        .i18n("twoDSources.padStrength"),
+        ParamSpec::float("hpf_hz", "Bass cutoff", 20.0, 2000.0, 10.0, PAD_HPF_HZ)
+            .i18n("twoDSources.padHpf")
+            .unit("Hz"),
+        ParamSpec::float("gain_db", "Height level", -24.0, 24.0, 0.5, 0.0)
+            .i18n("twoDSources.padGain")
+            .unit("dB"),
+        ParamSpec::float(
+            "center_amount",
+            "Center to height",
+            0.0,
+            1.0,
+            0.01,
+            PAD_CENTER_DEFAULT_AMOUNT,
+        )
+        .i18n("twoDSources.padCenterAmount"),
+        ParamSpec::float(
+            "center_hpf_hz",
+            "Center bass cutoff",
+            PAD_CENTER_HPF_MIN,
+            PAD_CENTER_HPF_MAX,
+            50.0,
+            PAD_CENTER_DEFAULT_HPF_HZ,
+        )
+        .i18n("twoDSources.padCenterHpf")
+        .unit("Hz"),
+    ]
+}
 
 /// One floor pair (L, R) → two height objects (ambient of L, ambient of R), with
 /// the slowly-smoothed inter-channel statistics and high-pass state that must
@@ -727,12 +520,12 @@ impl ObjectGenerator for PadGenerator {
         // One-pole smoothing coefficient for the statistics (τ = PAD_STAT_TC_MS).
         self.alpha = one_pole_coeff(PAD_STAT_TC_MS, fs);
         let labels = ctx.input_labels;
-        let use_7_1 = input_has_back(labels);
         let hpf = Biquad::highpass(fs, PAD_HPF_HZ, PAD_HPF_Q);
         const SIZE: [f32; 3] = [0.5, 0.5, 0.5];
 
-        // One decorrelated pair per top row, each lifted to its canonical position:
-        // front (L/R) → top-front, sides (Ls/Rs) → top-side, back (Lb/Rb) → top-back.
+        // One decorrelated pair per top row, each lifted straight up from where
+        // the bed renders it: front (L/R) → top-front, sides (Ls/Rs) → top-side,
+        // back (Lb/Rb) → top-back.
         // A pair is emitted only when both its channels exist (5.1 → front+side,
         // 7.1 → front+side+back).
         let pair_defs: [(&str, &str, RChannelLabel, RChannelLabel); 3] = [
@@ -764,8 +557,8 @@ impl ObjectGenerator for PadGenerator {
                 continue;
             };
             let (Some(pos_l), Some(pos_r)) = (
-                channel_top_position(label_l, use_7_1, ctx.surround_placement),
-                channel_top_position(label_r, use_7_1, ctx.surround_placement),
+                ctx.floor_pose(l_ch).map(lifted),
+                ctx.floor_pose(r_ch).map(lifted),
             ) else {
                 continue;
             };
@@ -801,10 +594,9 @@ impl ObjectGenerator for PadGenerator {
         // Center → a single top-center object (no stereo partner; a high-passed
         // send whose level is `center_amount` and cutoff `center_hpf_hz`). Planned
         // whenever C exists so it shows in the 3D view; silent at amount 0.
-        if let (Some(ch), Some(position)) = (
-            find_channel(labels, RChannelLabel::C),
-            channel_top_position(RChannelLabel::C, use_7_1, ctx.surround_placement),
-        ) {
+        if let Some(ch) = find_channel(labels, RChannelLabel::C)
+            && let Some(position) = ctx.floor_pose(ch).map(lifted)
+        {
             let out = specs.len();
             self.center = Some(CenterChannel {
                 ch,
@@ -876,14 +668,13 @@ impl ObjectGenerator for PadGenerator {
         }
     }
 
-    fn param_schema(&self) -> &'static [ObjectGenParamSpec] {
-        &PAD_PARAM_SPECS
-    }
-
-    fn set_param(&mut self, key: &str, value: f32, sample_rate: u32) {
+    fn set_param(&mut self, key: &str, value: &ParamValue, sample_rate: u32) {
+        let Some(value) = value.as_f32() else {
+            return;
+        };
         match key {
             "strength" => self.strength = value.clamp(0.0, 1.0),
-            "gain_db" => self.makeup = 10.0_f32.powf(value.clamp(-24.0, 24.0) / 20.0),
+            "gain_db" => self.makeup = renderer::dsp::db::db_to_linear(value.clamp(-24.0, 24.0)),
             "hpf_hz" => {
                 let fs = sample_rate.max(1) as f32;
                 let fc = value.clamp(20.0, 2000.0);
@@ -918,24 +709,27 @@ impl ObjectGenerator for PadGenerator {
 /// split is made independently per band. Additive: the floor mix is left untouched.
 struct DiracFactory;
 
-impl ObjectGeneratorFactory for DiracFactory {
+impl PluginFactory for DiracFactory {
     fn id(&self) -> &'static str {
         "dirac"
     }
     fn label(&self) -> &'static str {
         "Diffuse field to height (DirAC)"
     }
+    fn i18n_key(&self) -> Option<&'static str> {
+        Some("twoDSources.objectGenDirac")
+    }
+    fn param_schema(&self) -> Vec<ParamSpec> {
+        dirac_param_schema()
+    }
+}
+
+impl ObjectGeneratorFactory for DiracFactory {
     fn requires_height_layer(&self) -> bool {
         true
     }
     fn build(&self) -> Box<dyn ObjectGenerator> {
         Box::<DiracGenerator>::default()
-    }
-    fn i18n_key(&self) -> &'static str {
-        "twoDSources.objectGenDirac"
-    }
-    fn param_schema(&self) -> &'static [ObjectGenParamSpec] {
-        &DIRAC_PARAM_SPECS
     }
 }
 
@@ -968,38 +762,38 @@ const DIRAC_AP_G: f32 = 0.6;
 const DIRAC_SIZE: [f32; 3] = [0.6, 0.6, 0.6];
 
 /// Live-tunable parameters DirAC declares (the schema the UI builds sliders from).
-const DIRAC_PARAM_SPECS: [ObjectGenParamSpec; 3] = [
-    ObjectGenParamSpec {
-        key: "amount",
-        label: "Diffuse level",
-        i18n_key: "twoDSources.diracAmount",
-        min: 0.0,
-        max: 1.0,
-        step: 0.01,
-        default: DIRAC_DEFAULT_AMOUNT,
-        unit: "",
-    },
-    ObjectGenParamSpec {
-        key: "diffuse_bias",
-        label: "Diffuse bias",
-        i18n_key: "twoDSources.diracBias",
-        min: 0.0,
-        max: 1.0,
-        step: 0.01,
-        default: DIRAC_DEFAULT_BIAS,
-        unit: "",
-    },
-    ObjectGenParamSpec {
-        key: "hpf_hz",
-        label: "Bass cutoff",
-        i18n_key: "twoDSources.diracHpf",
-        min: DIRAC_HPF_MIN,
-        max: DIRAC_HPF_MAX,
-        step: 50.0,
-        default: DIRAC_DEFAULT_HPF_HZ,
-        unit: "Hz",
-    },
-];
+fn dirac_param_schema() -> Vec<ParamSpec> {
+    vec![
+        ParamSpec::float(
+            "amount",
+            "Diffuse level",
+            0.0,
+            1.0,
+            0.01,
+            DIRAC_DEFAULT_AMOUNT,
+        )
+        .i18n("twoDSources.diracAmount"),
+        ParamSpec::float(
+            "diffuse_bias",
+            "Diffuse bias",
+            0.0,
+            1.0,
+            0.01,
+            DIRAC_DEFAULT_BIAS,
+        )
+        .i18n("twoDSources.diracBias"),
+        ParamSpec::float(
+            "hpf_hz",
+            "Bass cutoff",
+            DIRAC_HPF_MIN,
+            DIRAC_HPF_MAX,
+            50.0,
+            DIRAC_DEFAULT_HPF_HZ,
+        )
+        .i18n("twoDSources.diracHpf")
+        .unit("Hz"),
+    ]
+}
 
 /// Flush sub-denormal magnitudes to zero — DirAC has feedback (all-pass) and long
 /// one-pole memory, so on silence its state decays into the denormal range and
@@ -1294,9 +1088,8 @@ impl ObjectGenerator for DiracGenerator {
 
         // Virtual horizontal B-format encoder: az = atan2(x, y) → cos = y/r (front),
         // sin = x/r (right); equivalent to the engine convention, no trig per sample.
-        let use_7_1 = input_has_back(ctx.input_labels);
-        for (idx, &label) in ctx.input_labels.iter().enumerate() {
-            if let Some(pos) = channel_top_position(label, use_7_1, ctx.surround_placement) {
+        for idx in 0..ctx.input_labels.len() {
+            if let Some(pos) = ctx.floor_pose(idx) {
                 let (x, y) = (pos[0] as f32, pos[1] as f32);
                 let r = (x * x + y * y).sqrt();
                 let (ca, sa) = if r > 1.0e-6 {
@@ -1417,11 +1210,10 @@ impl ObjectGenerator for DiracGenerator {
         self.enc = enc;
     }
 
-    fn param_schema(&self) -> &'static [ObjectGenParamSpec] {
-        &DIRAC_PARAM_SPECS
-    }
-
-    fn set_param(&mut self, key: &str, value: f32, sample_rate: u32) {
+    fn set_param(&mut self, key: &str, value: &ParamValue, sample_rate: u32) {
+        let Some(value) = value.as_f32() else {
+            return;
+        };
         match key {
             "amount" => self.amount = value.clamp(0.0, 1.0),
             "diffuse_bias" => self.diffuse_bias = value.clamp(0.0, 1.0),
@@ -1447,10 +1239,14 @@ struct PlanSig {
     out_n: usize,
     out_height: bool,
     labels: Vec<RChannelLabel>,
+    /// The bed poses the objects were placed from ([`PrepareCtx::bed_poses`]),
+    /// compared by value: a placement edit (mode, entries, room) moves them
+    /// without bumping anything.
+    poses: Vec<Option<[f64; 3]>>,
     rate: u32,
     /// `RendererControl::options_epoch` at plan time. Bumped whenever a
     /// `REPLAN`-flagged registry option actually changes value (e.g. the
-    /// Side/Back surround placement, which moves the planned positions), so a
+    /// phantom or generator selection), so a
     /// live toggle re-plans without this signature enumerating options field
     /// by field — a new re-planning option cannot be forgotten here (see
     /// `renderer::options`).
@@ -1463,22 +1259,20 @@ pub struct ObjectGenStage {
     registry: ObjectGeneratorRegistry,
     generator: Option<Box<dyn ObjectGenerator>>,
     specs: Vec<SynthObjectSpec>,
-    /// Per-object planar audio scratch (persistent; one Vec per planned object).
-    planar: Vec<Vec<f32>>,
-    /// Extended interleaved PCM (bed channels + synthesized object channels).
-    pcm_ext: Vec<f32>,
     sig: PlanSig,
+    /// Bumped whenever `generator` is replaced: a fresh instance starts at
+    /// its defaults and must be handed the stored parameters again.
+    builds: u64,
 }
 
 impl ObjectGenStage {
     pub fn new() -> Self {
         Self {
-            registry: ObjectGeneratorRegistry::with_builtins(),
+            registry: builtin_generators(),
             generator: None,
             specs: Vec::new(),
-            planar: Vec::new(),
-            pcm_ext: Vec::new(),
             sig: PlanSig::default(),
+            builds: 0,
         }
     }
 
@@ -1509,7 +1303,8 @@ impl ObjectGenStage {
             && self.sig.out_height == out_height
             && self.sig.rate == ctx.sample_rate
             && self.sig.options_epoch == options_epoch
-            && self.sig.labels.as_slice() == ctx.input_labels;
+            && self.sig.labels.as_slice() == ctx.input_labels
+            && self.sig.poses.as_slice() == ctx.bed_poses;
         if !unchanged {
             self.sig.id.clear();
             self.sig.id.push_str(did);
@@ -1519,42 +1314,56 @@ impl ObjectGenStage {
             self.sig.options_epoch = options_epoch;
             self.sig.labels.clear();
             self.sig.labels.extend_from_slice(ctx.input_labels);
+            self.sig.poses.clear();
+            self.sig.poses.extend_from_slice(ctx.bed_poses);
 
-            self.generator = self.registry.build(did);
+            self.generator = if generator_selected(did) {
+                self.registry.get(did).map(|factory| factory.build())
+            } else {
+                None
+            };
+            self.builds = self.builds.wrapping_add(1);
             self.specs = match self.generator.as_mut() {
                 Some(g) => g.prepare(ctx),
                 None => Vec::new(),
             };
-            self.planar.truncate(self.specs.len());
-            self.planar.resize_with(self.specs.len(), Vec::new);
         }
         self.specs.len()
     }
 
-    /// Apply one live-tunable parameter to the active generator (in place, no DSP
-    /// reset). Cheap and idempotent — the engine pushes the active generator's
-    /// params each frame, so a fresh generator (after a rebuild) re-receives them.
-    pub fn set_param(&mut self, key: &str, value: f32, sample_rate: u32) {
+    /// The id of the generator the current plan was built for (`""` or
+    /// `"none"` when off): whose values in the plugin store apply.
+    pub fn active_id(&self) -> &str {
+        &self.sig.id
+    }
+
+    /// How many times the generator instance was replaced — a fresh one must
+    /// be handed the stored parameters again.
+    pub fn builds(&self) -> u64 {
+        self.builds
+    }
+
+    /// Apply one live-tunable parameter to the active generator (in place, no
+    /// DSP reset). Idempotent — the host applies the stored values whenever
+    /// they change or the generator is rebuilt.
+    pub fn set_param(&mut self, key: &str, value: &ParamValue, sample_rate: u32) {
         if let Some(g) = self.generator.as_mut() {
             g.set_param(key, value, sample_rate);
         }
     }
 
-    /// Run the per-frame DSP and return the bed PCM extended with the
-    /// synthesized object channels, plus the new channel count. Call only when
-    /// [`sync`](Self::sync) returned `> 0`.
-    pub fn fill_and_extend(
+    /// Run the per-frame DSP: each planned object's audio is written to its
+    /// buffer of `out` (one per [`specs`](Self::specs) entry, zeroed,
+    /// `sample_count` samples long). Call only when [`sync`](Self::sync)
+    /// returned `> 0`.
+    pub fn process(
         &mut self,
         bed_pcm: &[f32],
         channel_count: usize,
         sample_count: usize,
         sample_rate: u32,
-    ) -> (&[f32], usize) {
-        let m = self.specs.len();
-        for buf in self.planar.iter_mut() {
-            buf.clear();
-            buf.resize(sample_count, 0.0);
-        }
+        out: &mut [Vec<f32>],
+    ) {
         if let Some(generator) = self.generator.as_mut() {
             let bed = BedFrame {
                 pcm: bed_pcm,
@@ -1562,20 +1371,8 @@ impl ObjectGenStage {
                 sample_count,
                 sample_rate,
             };
-            generator.process(&bed, &mut self.planar);
+            generator.process(&bed, out);
         }
-        let out_ch = channel_count + m;
-        self.pcm_ext.clear();
-        self.pcm_ext.resize(sample_count * out_ch, 0.0);
-        for s in 0..sample_count {
-            let src = &bed_pcm[s * channel_count..s * channel_count + channel_count];
-            let dst = &mut self.pcm_ext[s * out_ch..s * out_ch + out_ch];
-            dst[..channel_count].copy_from_slice(src);
-            for (k, buf) in self.planar.iter().enumerate().take(m) {
-                dst[channel_count + k] = buf[s];
-            }
-        }
-        (&self.pcm_ext, out_ch)
     }
 }
 
@@ -1639,7 +1436,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         assert!(specs.is_empty());
     }
@@ -1658,7 +1458,10 @@ mod tests {
             input_labels: &labels,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &labels,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         assert!(specs.is_empty());
     }
@@ -1671,7 +1474,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         // L, R, C, Ls, Rs lifted (LFE skipped) — sides + center now included.
         assert_eq!(specs.len(), 5);
@@ -1681,8 +1487,11 @@ mod tests {
         );
     }
 
+    /// A placement edit moves the bed without bumping the options epoch (a
+    /// placement entry, the family's mode, the room): the stage compares the
+    /// bed poses by value, so the objects follow on the next frame.
     #[test]
-    fn stage_replans_on_options_epoch_bump() {
+    fn stage_replans_when_the_bed_poses_move() {
         use renderer::live_params::SurroundPlacement;
         let mut stage = ObjectGenStage::new();
         let out = layout_7_1_4();
@@ -1690,7 +1499,7 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(&LABELS_5_1, SurroundPlacement::Side),
         };
         assert_eq!(stage.sync("copy_up", &ctx_side, 0), 5);
         let ls_y = |stage: &ObjectGenStage| {
@@ -1703,26 +1512,49 @@ mod tests {
         };
         let ls_y_side = ls_y(&stage);
         let ctx_back = PrepareCtx {
-            surround_placement: SurroundPlacement::Back,
+            bed_poses: &crate::virtual_bed::room_bed_poses(&LABELS_5_1, SurroundPlacement::Back),
             ..ctx_side
         };
-        // The ctx value alone must NOT re-plan: the options epoch is the
-        // invalidator (a redundant state echo must not re-prime the stages).
         assert_eq!(stage.sync("copy_up", &ctx_back, 0), 5);
-        assert_eq!(
-            ls_y(&stage),
-            ls_y_side,
-            "no epoch bump: the previous plan must be kept"
-        );
-        // The real flow: a live placement change is a REPLAN-flagged registry
-        // option, so it arrives together with an epoch bump → re-plan.
-        assert_eq!(stage.sync("copy_up", &ctx_back, 1), 5);
         let ls_y_back = ls_y(&stage);
         assert!(
             ls_y_side > ls_y_back + 0.5,
-            "Ls object must move to the back row on a live placement change \
+            "Ls object must move to the back row with the bed, epoch unchanged \
              (side y = {ls_y_side}, back y = {ls_y_back})"
         );
+    }
+
+    /// The lift follows the bed wherever the family's policy puts it: in
+    /// sphere mode each object sits straight above its channel's direction,
+    /// not above the room corner the old table assumed.
+    #[test]
+    fn lift_sits_above_the_bed_pose_of_the_policy() {
+        use crate::virtual_bed::{PlacementPolicy, RoomRatios, resolve_bed_poses};
+        use renderer::live_params::SurroundPlacement;
+        let mut poses = Vec::new();
+        resolve_bed_poses(
+            &LABELS_5_1,
+            &PlacementPolicy::sphere(&[]),
+            RoomRatios::UNIT,
+            SurroundPlacement::Side,
+            &mut poses,
+        );
+        let mut g = CopyUpGenerator::default();
+        let specs = g.prepare(&PrepareCtx {
+            input_labels: &LABELS_5_1,
+            output_layout: &layout_7_1_4(),
+            sample_rate: 48_000,
+            bed_poses: &poses,
+        });
+        assert_eq!(specs.len(), 5, "L R C Ls Rs lifted, LFE not");
+        for (spec, &ch) in specs.iter().zip(&g.src_channels) {
+            let bed = poses[ch].expect("bed pose");
+            assert_eq!(spec.position, [bed[0], bed[1], 1.0], "{}", spec.name);
+        }
+        // L at −30° on the sphere, not the front-left corner (−45°).
+        let l = specs.iter().find(|s| s.name.contains("_L_")).expect("L");
+        let az = l.position[0].atan2(l.position[1]).to_degrees();
+        assert!((az + 30.0).abs() < 0.5, "L lifted from −30°, got {az}");
     }
 
     #[test]
@@ -1733,7 +1565,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         // 2 sample frames, 6 channels: channel value = channel index + sample*10.
         let c = 6usize;
@@ -1777,12 +1612,15 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out_layout,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         // 5.1 → front (L/R) + side (Ls/Rs) + center (C) = 5 objects.
         assert_eq!(specs.len(), 5);
         // Full cancellation so the correlated/decorrelated contrast is maximal.
-        g.set_param("strength", 1.0, 48_000);
+        g.set_param("strength", &ParamValue::Float(1.0), 48_000);
         let c = 6usize;
         let mut pcm = vec![0.0f32; c * n];
         for s in 0..n {
@@ -1811,7 +1649,10 @@ mod tests {
                 input_labels: &LABELS_5_1,
                 output_layout: &out,
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &LABELS_5_1,
+                    renderer::live_params::SurroundPlacement::Side
+                ),
             })
             .is_empty()
         );
@@ -1825,7 +1666,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         // front L/R + side Ls/Rs + center C (no back pair in 5.1).
         assert_eq!(specs.len(), 5);
@@ -1855,7 +1699,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &layout_7_1_4(),
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Back,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Back,
+            ),
         });
         assert!(
             specs
@@ -1912,9 +1759,12 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out_layout,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
-        g.set_param("strength", 1.0, 48_000);
+        g.set_param("strength", &ParamValue::Float(1.0), 48_000);
         let mut out: Vec<Vec<f32>> = vec![vec![0.0; n]; 4];
         g.process(
             &BedFrame {
@@ -1970,9 +1820,12 @@ mod tests {
                 input_labels: &LABELS_5_1,
                 output_layout: &out_layout,
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &LABELS_5_1,
+                    renderer::live_params::SurroundPlacement::Side,
+                ),
             });
-            g.set_param("strength", strength, 48_000);
+            g.set_param("strength", &ParamValue::Float(strength), 48_000);
             let mut out: Vec<Vec<f32>> = vec![vec![0.0; n]; 4];
             g.process(
                 &BedFrame {
@@ -1999,9 +1852,9 @@ mod tests {
 
     #[test]
     fn pad_declares_five_params() {
-        let g = PadGenerator::default();
-        let keys: Vec<&str> = g.param_schema().iter().map(|p| p.key).collect();
-        assert_eq!(g.param_schema().len(), 5);
+        let schema = PadFactory.param_schema();
+        let keys: Vec<&str> = schema.iter().map(|p| p.key).collect();
+        assert_eq!(schema.len(), 5);
         for key in [
             "strength",
             "hpf_hz",
@@ -2030,7 +1883,10 @@ mod tests {
             input_labels: &labels,
             output_layout: &layout_7_1_4(),
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &labels,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         // front + side + back pairs (6) + center (1) = 7.
         assert_eq!(specs.len(), 7);
@@ -2063,11 +1919,14 @@ mod tests {
                 input_labels: &LABELS_5_1,
                 output_layout: &layout_7_1_4(),
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &LABELS_5_1,
+                    renderer::live_params::SurroundPlacement::Side,
+                ),
             });
             let center_idx = specs.iter().position(|s| s.name == "Ambience_TC").unwrap();
-            g.set_param("center_amount", amount, 48_000);
-            g.set_param("center_hpf_hz", hpf_hz, 48_000);
+            g.set_param("center_amount", &ParamValue::Float(amount), 48_000);
+            g.set_param("center_hpf_hz", &ParamValue::Float(hpf_hz), 48_000);
             let mut pcm = vec![0.0f32; c * n];
             for s in 0..n {
                 pcm[s * c + 2] = (std::f32::consts::TAU * freq * s as f32 / 48_000.0).sin() * 0.5;
@@ -2097,14 +1956,24 @@ mod tests {
     }
 
     #[test]
-    fn builtin_listings_json_includes_declared_schema() {
-        let json = builtin_listings_json();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(v.is_array());
-        assert!(json.contains("copy_up") && json.contains("\"pad\""));
-        for key in ["strength", "hpf_hz", "gain_db"] {
-            assert!(json.contains(key), "schema should declare {key}");
-        }
+    fn builtin_listings_publish_the_declared_schema() {
+        let v = serde_json::to_value(builtin_generators().listings()).unwrap();
+        let ids: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["copy_up", "pad", "dirac"]);
+        // The listing format backends publish: kind-tagged specs, i18n and unit.
+        let hpf = &v[1]["params"][1];
+        assert_eq!(hpf["key"], "hpf_hz");
+        assert_eq!(hpf["kind"]["type"], "float");
+        assert_eq!(hpf["kind"]["min"], 20.0);
+        assert_eq!(hpf["default"], 300.0);
+        assert_eq!(hpf["i18nKey"], "twoDSources.padHpf");
+        assert_eq!(hpf["unit"], "Hz");
+        assert_eq!(v[1]["i18nKey"], "twoDSources.objectGenPad");
     }
 
     #[test]
@@ -2123,10 +1992,13 @@ mod tests {
                 input_labels: &LABELS_5_1,
                 output_layout: &out_layout,
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &LABELS_5_1,
+                    renderer::live_params::SurroundPlacement::Side,
+                ),
             });
             if let Some(db) = gain_db {
-                g.set_param("gain_db", db, 48_000);
+                g.set_param("gain_db", &ParamValue::Float(db), 48_000);
             }
             let mut out: Vec<Vec<f32>> = vec![vec![0.0; n]; 4];
             g.process(
@@ -2149,18 +2021,7 @@ mod tests {
     }
 
     // A minimal out-of-tree generator, to prove host registration surfaces it in
-    // both the published schema and `build`.
-    static DUMMY_PARAMS: [ObjectGenParamSpec; 1] = [ObjectGenParamSpec {
-        key: "amount",
-        label: "Amount",
-        i18n_key: "",
-        min: 0.0,
-        max: 1.0,
-        step: 0.1,
-        default: 0.5,
-        unit: "",
-    }];
-
+    // both the published schema and the stage.
     struct DummyGenerator;
     impl ObjectGenerator for DummyGenerator {
         fn capabilities(&self) -> ObjectGenCapabilities {
@@ -2170,39 +2031,66 @@ mod tests {
             Vec::new()
         }
         fn process(&mut self, _bed: &BedFrame, _out: &mut [Vec<f32>]) {}
-        fn param_schema(&self) -> &'static [ObjectGenParamSpec] {
-            &DUMMY_PARAMS
-        }
     }
 
-    struct DummyFactory;
-    impl ObjectGeneratorFactory for DummyFactory {
+    struct DummyFactory(&'static str);
+    impl PluginFactory for DummyFactory {
         fn id(&self) -> &'static str {
-            "dummy"
+            self.0
         }
         fn label(&self) -> &'static str {
             "Dummy"
         }
+        fn param_schema(&self) -> Vec<ParamSpec> {
+            vec![ParamSpec::float("amount", "Amount", 0.0, 1.0, 0.1, 0.5)]
+        }
+    }
+    impl ObjectGeneratorFactory for DummyFactory {
         fn requires_height_layer(&self) -> bool {
             false
         }
         fn build(&self) -> Box<dyn ObjectGenerator> {
             Box::new(DummyGenerator)
         }
-        fn param_schema(&self) -> &'static [ObjectGenParamSpec] {
-            &DUMMY_PARAMS
-        }
     }
 
     #[test]
     fn registry_lists_and_builds_out_of_tree_generator() {
-        let mut reg = ObjectGeneratorRegistry::with_builtins();
-        reg.register(Box::new(DummyFactory));
-        let json = reg.listings_json();
+        let mut reg = builtin_generators();
+        reg.register(Box::new(DummyFactory("dummy")));
+        let json = serde_json::to_string(&reg.listings()).unwrap();
         assert!(json.contains("dummy") && json.contains("Amount"), "{json}");
-        assert!(reg.build("dummy").is_some());
+        assert!(reg.get("dummy").is_some());
         // The built-ins are still listed alongside the registered generator.
         assert!(json.contains("copy_up") && json.contains("\"pad\""));
+    }
+
+    /// One registry rule for every plugin: a later registration replaces the
+    /// earlier one, a built-in included, and ids are exact.
+    #[test]
+    fn a_host_generator_overrides_a_built_in_by_id() {
+        let mut stage = ObjectGenStage::new();
+        stage.register(Box::new(DummyFactory("pad")));
+        let listings = stage.registry().listings();
+        let ids: Vec<&str> = listings.iter().map(|l| l.id).collect();
+        assert_eq!(ids, ["copy_up", "pad", "dirac"], "replaced in place");
+        assert_eq!(listings[1].label, "Dummy");
+        assert!(stage.registry().get("PAD").is_none(), "ids are exact");
+        // The stage builds the override: the dummy plans nothing where PAD
+        // would lift the bed.
+        let out = layout_7_1_4();
+        let poses = crate::virtual_bed::room_bed_poses(
+            &LABELS_5_1,
+            renderer::live_params::SurroundPlacement::Side,
+        );
+        let ctx = PrepareCtx {
+            input_labels: &LABELS_5_1,
+            output_layout: &out,
+            sample_rate: 48_000,
+            bed_poses: &poses,
+        };
+        assert_eq!(stage.sync("pad", &ctx, 0), 0);
+        assert_eq!(ObjectGenStage::new().sync("pad", &ctx, 0), 5);
     }
 
     // ───────────────────────── DirAC diffuse→height ─────────────────────────
@@ -2225,7 +2113,10 @@ mod tests {
             input_labels: &LABELS_5_1,
             output_layout: &out_layout,
             sample_rate: 48_000,
-            surround_placement: renderer::live_params::SurroundPlacement::Side,
+            bed_poses: &crate::virtual_bed::room_bed_poses(
+                &LABELS_5_1,
+                renderer::live_params::SurroundPlacement::Side,
+            ),
         });
         (g, specs)
     }
@@ -2260,7 +2151,10 @@ mod tests {
                 input_labels: &LABELS_5_1,
                 output_layout: &out,
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &LABELS_5_1,
+                    renderer::live_params::SurroundPlacement::Side
+                ),
             })
             .is_empty()
         );
@@ -2282,7 +2176,10 @@ mod tests {
                 input_labels: &labels,
                 output_layout: &out,
                 sample_rate: 48_000,
-                surround_placement: renderer::live_params::SurroundPlacement::Side,
+                bed_poses: &crate::virtual_bed::room_bed_poses(
+                    &labels,
+                    renderer::live_params::SurroundPlacement::Side
+                ),
             })
             .is_empty()
         );
@@ -2309,7 +2206,7 @@ mod tests {
         // partly diffuse — distinct azimuths — which is correct, just not the contrast
         // we want here.)
         let (mut g, _) = dirac_on_7_1_4();
-        g.set_param("amount", 1.0, 48_000);
+        g.set_param("amount", &ParamValue::Float(1.0), 48_000);
         let mut src = xorshift(1);
         let mut pcm = vec![0.0f32; c * n];
         for s in 0..n {
@@ -2319,7 +2216,7 @@ mod tests {
 
         // Decorrelated: independent noise in L, R, Ls, Rs → diffuse field, ψ→1.
         let (mut g, _) = dirac_on_7_1_4();
-        g.set_param("amount", 1.0, 48_000);
+        g.set_param("amount", &ParamValue::Float(1.0), 48_000);
         let (mut a, mut b, mut d, mut e) = (xorshift(2), xorshift(3), xorshift(4), xorshift(5));
         let mut pcm = vec![0.0f32; c * n];
         for s in 0..n {
@@ -2345,8 +2242,8 @@ mod tests {
         let skip = 8_000usize;
         let (mut g, _) = dirac_on_7_1_4();
         g.force_diffuse = true;
-        g.set_param("amount", 1.0, 48_000);
-        g.set_param("hpf_hz", 300.0, 48_000);
+        g.set_param("amount", &ParamValue::Float(1.0), 48_000);
+        g.set_param("hpf_hz", &ParamValue::Float(300.0), 48_000);
         let mut pcm = vec![0.0f32; c * n];
         let mut in_e = 0.0f32;
         for s in 0..n {
@@ -2380,7 +2277,7 @@ mod tests {
         let lf = |s: usize| (std::f32::consts::TAU * 150.0 * s as f32 / fs).sin() * 0.4;
         let mut build = |with_lf: bool, with_hf: bool| -> f32 {
             let (mut g, _) = dirac_on_7_1_4();
-            g.set_param("amount", 1.0, 48_000);
+            g.set_param("amount", &ParamValue::Float(1.0), 48_000);
             let (mut na, mut nb) = (xorshift(11), xorshift(22));
             let mut hp_l = Biquad::highpass(fs, 2000.0, PAD_HPF_Q);
             let mut hp_r = Biquad::highpass(fs, 2000.0, PAD_HPF_Q);
@@ -2418,7 +2315,7 @@ mod tests {
         let n = 24_000usize;
         for amount in [0.0f32, 0.3, 0.7, 1.0] {
             let (mut g, _) = dirac_on_7_1_4();
-            g.set_param("amount", amount, 48_000);
+            g.set_param("amount", &ParamValue::Float(amount), 48_000);
             let mut src = xorshift(7);
             let mut pcm = vec![0.0f32; c * n];
             for s in 0..n {
@@ -2437,7 +2334,7 @@ mod tests {
         }
         // Silence in → output decays to ~0 (denormal / relative-eps guard).
         let (mut g, _) = dirac_on_7_1_4();
-        g.set_param("amount", 1.0, 48_000);
+        g.set_param("amount", &ParamValue::Float(1.0), 48_000);
         let pcm = vec![0.0f32; c * n];
         let out = dirac_run(&mut g, &pcm, c, n);
         let tail = ceiling_tail_energy(&out, n / 2);

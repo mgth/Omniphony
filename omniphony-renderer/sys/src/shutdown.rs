@@ -10,14 +10,26 @@
 //! Signal / event semantics:
 //! - **SIGTERM / SIGINT** (Unix), **Ctrl+C / close / shutdown** (Windows)
 //!   → stop decoding and exit cleanly (`is_requested`)
-//! - **SIGHUP** (Unix only) → interrupt current stream and restart (`is_reload_requested`)
+//! - **SIGHUP** (Unix), service user control 128 (Windows) → interrupt the
+//!   current stream and restart (`is_reload_requested`)
+//!
+//! The same requests can be raised programmatically (`request_shutdown`,
+//! `request_reload`, …), e.g. from the OSC control handler.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RESTART_FROM_CONFIG_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Set with [`RESTART_FROM_CONFIG_REQUESTED`] by
+/// [`request_restart_keeping_live`]: the restart hands the unsaved live state
+/// over to the new pipeline, the way a shutdown hands it to the next instance,
+/// instead of discarding it.
+static RESTART_KEEPS_LIVE: AtomicBool = AtomicBool::new(false);
 static YIELDABLE: AtomicBool = AtomicBool::new(false);
+/// Whether the host runs a restart loop that honours
+/// [`request_restart_from_config`]. See [`set_restartable`].
+static RESTARTABLE: AtomicBool = AtomicBool::new(false);
 /// Set by the yield handler on a `--osc-yield` instance: the render loop should
 /// drop its OSC port + audio output and idle in **standby** (without exiting),
 /// so an mpv-embedded renderer can take the port over. See `request_standby`.
@@ -37,6 +49,19 @@ pub fn set_yieldable(yieldable: bool) {
 /// Whether this instance honours `/omniphony/control/yield_port`.
 pub fn is_yieldable() -> bool {
     YIELDABLE.load(Ordering::Relaxed)
+}
+
+/// Mark this process as able to restart its render pipeline from config. Set
+/// by the CLI render loop, which consumes [`request_restart_from_config`];
+/// never set by embedded (FFI) hosts, whose lifecycle belongs to the host
+/// application — they must reload the config in place instead.
+pub fn set_restartable(restartable: bool) {
+    RESTARTABLE.store(restartable, Ordering::Relaxed);
+}
+
+/// Whether a [`request_restart_from_config`] would actually be acted on.
+pub fn is_restartable() -> bool {
+    RESTARTABLE.load(Ordering::Relaxed)
 }
 
 /// Take (and clear) a pending standby request. The render loop checks this and,
@@ -81,21 +106,13 @@ static SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 /// Handler for SIGTERM / SIGINT — triggers clean shutdown.
 #[cfg(unix)]
 extern "C" fn shutdown_handler(_sig: libc::c_int) {
-    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
-    let fd = SIGNAL_WRITE_FD.load(Ordering::Relaxed);
-    if fd >= 0 {
-        unsafe { libc::write(fd, b"\x00".as_ptr() as *const libc::c_void, 1) };
-    }
+    request_shutdown();
 }
 
 /// Handler for SIGHUP — triggers stream reload without process exit.
 #[cfg(unix)]
 extern "C" fn reload_handler(_sig: libc::c_int) {
-    RELOAD_REQUESTED.store(true, Ordering::Relaxed);
-    let fd = SIGNAL_WRITE_FD.load(Ordering::Relaxed);
-    if fd >= 0 {
-        unsafe { libc::write(fd, b"\x01".as_ptr() as *const libc::c_void, 1) };
-    }
+    request_reload();
 }
 
 /// Build a `sigaction` portably. The struct's fields differ across Unix targets
@@ -137,24 +154,18 @@ unsafe fn make_nonblock_cloexec_pipe(fds: *mut libc::c_int) -> libc::c_int {
 /// Ctrl event handler — Ctrl+C, Ctrl+Break, console close, system shutdown.
 #[cfg(windows)]
 unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> windows::Win32::Foundation::BOOL {
-    use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::Console::{
         CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
     };
-    use windows::Win32::System::Threading::SetEvent;
     if ctrl_type == CTRL_C_EVENT
         || ctrl_type == CTRL_BREAK_EVENT
         || ctrl_type == CTRL_CLOSE_EVENT
         || ctrl_type == CTRL_SHUTDOWN_EVENT
         || ctrl_type == CTRL_LOGOFF_EVENT
     {
-        SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
-        // Wake any thread blocked in WaitForMultipleObjects inside
+        // Wakes any thread blocked in WaitForMultipleObjects inside
         // process_chunks_with_shutdown.
-        let h = SHUTDOWN_EVENT_HANDLE.load(Ordering::Relaxed);
-        if h != 0 {
-            let _ = unsafe { SetEvent(HANDLE(h)) };
-        }
+        request_shutdown();
         windows::Win32::Foundation::BOOL(1) // handled
     } else {
         windows::Win32::Foundation::BOOL(0) // not handled — OS takes default action
@@ -307,7 +318,8 @@ impl ShutdownHandle {
         SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
     }
 
-    /// Returns `true` if SIGHUP has been received (Unix only; stream reload).
+    /// Returns `true` if a stream reload was requested: SIGHUP on Unix, the
+    /// service's user control 128 on Windows, or `request_reload`.
     #[inline]
     pub fn is_reload_requested() -> bool {
         RELOAD_REQUESTED.load(Ordering::Relaxed)
@@ -337,6 +349,14 @@ impl ShutdownHandle {
     #[inline]
     pub fn clear_restart_from_config() {
         RESTART_FROM_CONFIG_REQUESTED.store(false, Ordering::Relaxed);
+        RESTART_KEEPS_LIVE.store(false, Ordering::Relaxed);
+    }
+
+    /// Returns `true` if the pending restart keeps the unsaved live state
+    /// (see [`request_restart_keeping_live`]).
+    #[inline]
+    pub fn is_restart_keeping_live() -> bool {
+        RESTART_KEEPS_LIVE.load(Ordering::Relaxed)
     }
 
     /// Return a platform-agnostic shutdown signal suitable for passing to
@@ -388,95 +408,85 @@ impl Drop for ShutdownHandle {
     }
 }
 
-// ─── Programmatic shutdown / reload (Windows service control handler) ────────
+// ─── Programmatic requests (OSC control, Windows service control handler) ────
 
-/// Programmatically trigger a clean shutdown — equivalent of SIGTERM on Unix.
+/// Wake codes written to the Unix self-pipe, one per request. The reader only
+/// drains the pipe and then checks the flags, so the value is informational.
+const WAKE_SHUTDOWN: u8 = 0;
+const WAKE_RELOAD: u8 = 1;
+const WAKE_RESTART_FROM_CONFIG: u8 = 2;
+const WAKE_STANDBY: u8 = 3;
+
+/// Wake the render loop out of a blocking input read so it checks the request
+/// flags promptly, even when its input is idle: a byte on the self-pipe it
+/// polls on Unix, the overlapped-I/O event `process_chunks_with_shutdown`
+/// waits on under Windows.
 ///
-/// Sets `SHUTDOWN_REQUESTED` and signals the overlapped-I/O event so that
-/// `process_chunks_with_shutdown` wakes up immediately.
-/// Called by the Windows Service control handler on `ServiceControl::Stop`.
-#[cfg(unix)]
-pub fn request_shutdown() {
-    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
-    let fd = SIGNAL_WRITE_FD.load(Ordering::Relaxed);
-    if fd >= 0 {
-        unsafe { libc::write(fd, b"\x00".as_ptr() as *const libc::c_void, 1) };
-    }
-}
-
-/// Request that the render loop enter standby (release OSC port + audio, stay
-/// alive). Wakes the loop out of a blocking input read via the self-pipe, like
-/// `request_shutdown`, so it notices promptly even when its input is idle.
-#[cfg(unix)]
-pub fn request_standby() {
-    STANDBY_REQUESTED.store(true, Ordering::Relaxed);
-    let fd = SIGNAL_WRITE_FD.load(Ordering::Relaxed);
-    if fd >= 0 {
-        unsafe { libc::write(fd, b"\x03".as_ptr() as *const libc::c_void, 1) };
-    }
-}
-
-/// Programmatically trigger a clean shutdown — equivalent of SIGTERM on Unix.
-///
-/// Sets `SHUTDOWN_REQUESTED` and signals the overlapped-I/O event so that
-/// `process_chunks_with_shutdown` wakes up immediately.
-/// Called by the Windows Service control handler on `ServiceControl::Stop`.
-#[cfg(windows)]
-pub fn request_shutdown() {
-    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
-    signal_shutdown_event();
-}
-
-/// Request that the render loop enter standby (release OSC port + audio, stay
-/// alive). Signals the overlapped-I/O event so the loop wakes out of a blocking
-/// input read, like `request_shutdown`.
-#[cfg(windows)]
-pub fn request_standby() {
-    STANDBY_REQUESTED.store(true, Ordering::Relaxed);
-    signal_shutdown_event();
-}
-
-/// Programmatically trigger a stream reload — equivalent of SIGHUP on Unix.
-///
-/// Sets `RELOAD_REQUESTED` and signals the overlapped-I/O event.
-/// Called by the Windows Service control handler on `ServiceControl::Custom(128)`.
-#[cfg(windows)]
-pub fn request_reload() {
-    RELOAD_REQUESTED.store(true, Ordering::Relaxed);
-    signal_shutdown_event();
-}
-
-/// Programmatically trigger a full render restart so CLI/config resolution runs
-/// again before the stream is reopened.
-#[cfg(unix)]
-pub fn request_restart_from_config() {
-    RESTART_FROM_CONFIG_REQUESTED.store(true, Ordering::Relaxed);
-    let fd = SIGNAL_WRITE_FD.load(Ordering::Relaxed);
-    if fd >= 0 {
-        unsafe { libc::write(fd, b"\x02".as_ptr() as *const libc::c_void, 1) };
-    }
-}
-
-/// Programmatically trigger a full render restart so CLI/config resolution runs
-/// again before the stream is reopened.
-#[cfg(windows)]
-pub fn request_restart_from_config() {
-    RESTART_FROM_CONFIG_REQUESTED.store(true, Ordering::Relaxed);
-    signal_shutdown_event();
-}
-
-/// Signal `SHUTDOWN_EVENT_HANDLE` so that any thread blocked in
-/// `WaitForMultipleObjects` inside `process_chunks_with_shutdown` wakes up.
-#[cfg(windows)]
-fn signal_shutdown_event() {
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::Threading::SetEvent;
-    let h = SHUTDOWN_EVENT_HANDLE.load(Ordering::Relaxed);
-    if h != 0 {
-        unsafe {
-            let _ = SetEvent(HANDLE(h));
+/// Async-signal-safe on Unix (an atomic load and `write(2)`), so the signal
+/// handlers use it too.
+fn wake(code: u8) {
+    #[cfg(unix)]
+    {
+        let fd = SIGNAL_WRITE_FD.load(Ordering::Relaxed);
+        if fd >= 0 {
+            unsafe { libc::write(fd, [code].as_ptr() as *const libc::c_void, 1) };
         }
     }
+    #[cfg(windows)]
+    {
+        let _ = code;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Threading::SetEvent;
+        let h = SHUTDOWN_EVENT_HANDLE.load(Ordering::Relaxed);
+        if h != 0 {
+            unsafe {
+                let _ = SetEvent(HANDLE(h));
+            }
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = code;
+}
+
+/// Programmatically trigger a clean shutdown — the equivalent of SIGTERM.
+///
+/// Called by the OSC `quit` / yield handling and, on Windows, by the service
+/// control handler on `ServiceControl::Stop`.
+pub fn request_shutdown() {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+    wake(WAKE_SHUTDOWN);
+}
+
+/// Request that the render loop enter standby (release OSC port + audio, stay
+/// alive), waking it like `request_shutdown`.
+pub fn request_standby() {
+    STANDBY_REQUESTED.store(true, Ordering::Relaxed);
+    wake(WAKE_STANDBY);
+}
+
+/// Programmatically trigger a stream reload — the equivalent of SIGHUP.
+///
+/// Called by the Windows service control handler on the user control code 128
+/// (Windows has no SIGHUP); on Unix the signal itself is the usual route.
+pub fn request_reload() {
+    RELOAD_REQUESTED.store(true, Ordering::Relaxed);
+    wake(WAKE_RELOAD);
+}
+
+/// Programmatically trigger a full render restart so CLI/config resolution runs
+/// again before the stream is reopened.
+pub fn request_restart_from_config() {
+    RESTART_FROM_CONFIG_REQUESTED.store(true, Ordering::Relaxed);
+    wake(WAKE_RESTART_FROM_CONFIG);
+}
+
+/// Restart the render pipeline like [`request_restart_from_config`], but hand
+/// the unsaved live state over to it (the live-handoff sidecar) rather than
+/// discarding it: for a change only a restart applies, such as a new bridge,
+/// which must not force a Save of everything else.
+pub fn request_restart_keeping_live() {
+    RESTART_KEEPS_LIVE.store(true, Ordering::Relaxed);
+    request_restart_from_config();
 }
 
 // ─── systemd integration (Unix only) ─────────────────────────────────────────

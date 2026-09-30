@@ -12,9 +12,6 @@ name = "sys"
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
-env_logger.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

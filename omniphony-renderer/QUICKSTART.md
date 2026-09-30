@@ -132,7 +132,9 @@ Then reuse it instead of generating at startup:
   --osc --osc-host 127.0.0.1 --osc-port 9000
 ```
 
-See [OSC_PROTOCOL.md](OSC_PROTOCOL.md) for the full message surface.
+See [OSC_PROTOCOL.md](OSC_PROTOCOL.md) for the session handshake and streams, and
+[`docs/osc-control-contract.md`](../docs/osc-control-contract.md) for every
+control and state address.
 
 ## 8. Realtime (and file) output
 

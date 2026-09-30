@@ -1,8 +1,6 @@
 use crate::context::RuntimeControlContext;
 use crate::osc_contract;
 use omniphony_geometry::f32 as geometry;
-use renderer::live_params::LiveEvaluationMode;
-use renderer::render_backend::canonical_builtin_backend_id;
 use rosc::{OscMessage, OscType};
 use serde::Deserialize;
 use std::hash::{Hash, Hasher};
@@ -43,9 +41,46 @@ pub struct BroadcastUpdate {
     pub value: BroadcastValue,
 }
 
+/// How the clients learn that a control write changed the live state.
+///
+/// Every write that marks the config dirty goes through one notification path
+/// in the engine (`notify_changed` in `orender_engine::osc::dispatch`): mark
+/// the config dirty, broadcast `/state/config/saved = 0` so the Save button
+/// lights, then publish the new value to *every* registered client — not just
+/// the one that sent it, which already knows. A change no Save is for
+/// ([`ControlEffects::view`], [`ControlEffects::transient`]) takes the same
+/// publication without the first two steps. The variants only differ in how the value travels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Notify {
+    /// Broadcast the full live-state bundle right away. For discrete edits (a
+    /// toggle, a menu choice, a typed value).
+    #[default]
+    Snapshot,
+    /// Let the bundle ride the OSC loop's live-state poll
+    /// (`RendererControl::bump_live_state`, at most one bundle per poll tick),
+    /// so a slider drag's burst of writes coalesces into a few bundles instead
+    /// of one per tick.
+    CoalescedSnapshot,
+    /// Dirty flag and `/state/config/saved` only: the write publishes its value
+    /// through a dedicated state address of its own (in `broadcasts`), and the
+    /// next bundle carries it anyway.
+    DirtyOnly,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ControlEffects {
+    /// The write changed state the config file holds: mark it dirty and notify
+    /// the clients, the way [`ControlEffects::notify`] says.
     pub mark_dirty: bool,
+    /// The write changed live state that no Save is for
+    /// (docs/persistence-policy.md): view state, which `persist` writes right
+    /// away, or transient state, which is never written (a mute, a manual head
+    /// pose). Publish it the way [`ControlEffects::notify`] says and leave the
+    /// config clean.
+    pub publish_only: bool,
+    /// How clients learn about a `mark_dirty` or `publish_only` change.
+    /// Ignored otherwise.
+    pub notify: Notify,
     pub trigger_layout_recompute: bool,
     /// When `trigger_layout_recompute` is set, whether this change is
     /// evaluation-layer only (mode / grid resolution) — i.e. the backend geometry
@@ -56,13 +91,60 @@ pub struct ControlEffects {
     pub evaluation_only: bool,
     pub broadcasts: Vec<BroadcastUpdate>,
     pub log_message: Option<String>,
-    /// Head-tracking recenter reference `[w, x, y, z]` to write straight to
-    /// `config.yaml` (systematic save, like `surround_placement`). The engine
-    /// layer performs the I/O in `apply_control_effects`.
-    pub persist_head_center: Option<[f32; 4]>,
-    /// Sensor-to-head axis calibration `[w, x, y, z]` to write straight to
-    /// `config.yaml`, same mechanism (identity = drop the key).
-    pub persist_head_axes: Option<[f32; 4]>,
+    /// Config fields to write straight to `config.yaml` (a targeted write, see
+    /// [`crate::persist::persist_ops`]) instead of waiting for an explicit
+    /// Save. The engine layer performs the I/O in
+    /// `apply_control_effects`.
+    pub persist: Vec<crate::persist::PersistOp>,
+}
+
+impl ControlEffects {
+    /// A config edit announced the way `notify` says.
+    pub fn dirty(notify: Notify) -> Self {
+        Self {
+            mark_dirty: true,
+            notify,
+            ..Self::default()
+        }
+    }
+
+    /// A view change announced the way `notify` says, persisted right away by
+    /// `persist` and never marking the config dirty.
+    pub fn view(notify: Notify, persist: crate::persist::PersistOp) -> Self {
+        Self {
+            publish_only: true,
+            notify,
+            persist: vec![persist],
+            ..Self::default()
+        }
+    }
+
+    /// A transient change announced the way `notify` says: never persisted,
+    /// never marking the config dirty.
+    pub fn transient(notify: Notify) -> Self {
+        Self {
+            publish_only: true,
+            notify,
+            ..Self::default()
+        }
+    }
+}
+
+/// Validate and apply a master gain (linear) from any control address.
+///
+/// `/control/gain` and `/control/realtime/master_gain` used to write the field
+/// each in their own way — the realtime path with no check at all, so a NaN or
+/// negative gain went straight to the audio thread (and on to the config as a
+/// NaN dB value). Both now land here. Returns the applied gain, or `None` when
+/// the value is rejected (non-finite or negative: a negative linear gain is a
+/// polarity flip, never what a gain control means).
+pub fn set_master_gain(control: &renderer::live_params::RendererControl, gain: f32) -> Option<f32> {
+    if !gain.is_finite() || gain < 0.0 {
+        log::warn!("OSC master gain: rejected value {gain}");
+        return None;
+    }
+    control.live.write().master_gain = gain;
+    Some(gain)
 }
 
 // AdaptiveResamplingPatch / AudioConfigPatch / LiveInputPatch / InputConfigPatch
@@ -117,6 +199,8 @@ struct LayoutAddSpeakerPatch {
     distance: Option<f32>,
     spatialize: Option<bool>,
     delay_ms: Option<f32>,
+    /// The speaker's saved output gain, when the layout carries one.
+    gain_db: Option<f32>,
     #[serde(default, deserialize_with = "double_option")]
     freq_low: Option<Option<f32>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -286,6 +370,22 @@ pub fn parse_nonnegative_f32_arg(arg: Option<&OscType>) -> Option<f32> {
 
 pub fn parse_f32_arg(arg: Option<&OscType>) -> Option<f32> {
     numeric(arg?).map(|v| v as f32)
+}
+
+/// A plugin parameter value from an OSC argument, as sent: a number, a bool
+/// or a string. A non-finite number is refused; the store reads the rest in
+/// the parameter's declared type.
+pub fn parse_param_value(arg: &OscType) -> Option<renderer::backend_params::ParamValue> {
+    use renderer::backend_params::ParamValue;
+    match arg {
+        OscType::Float(f) => f.is_finite().then_some(ParamValue::Float(*f)),
+        OscType::Double(d) => d.is_finite().then_some(ParamValue::Float(*d as f32)),
+        OscType::Int(i) => Some(ParamValue::Int(*i as i64)),
+        OscType::Long(i) => Some(ParamValue::Int(*i)),
+        OscType::Bool(b) => Some(ParamValue::Bool(*b)),
+        OscType::String(s) => Some(ParamValue::Text(s.clone())),
+        _ => None,
+    }
 }
 
 pub fn parse_string_arg(arg: Option<&OscType>) -> Option<String> {
@@ -509,6 +609,9 @@ fn build_layout_speaker_from_patch(
     if let Some(freq_high) = patch.freq_high {
         speaker.freq_high = freq_high.filter(|value| *value > 0.0);
     }
+    if let Some(gain_db) = patch.gain_db.filter(|value| value.is_finite()) {
+        speaker.gain_db = gain_db.max(renderer::live_params::SPEAKER_GAIN_FLOOR_DB);
+    }
     if patch.coord_mode.as_deref().is_some() {
         speaker.coord_mode = normalize_coord_mode(patch.coord_mode.as_deref()).to_string();
     }
@@ -559,27 +662,18 @@ pub fn apply_simple_osc_control(
                     .map(|(idx, sp)| build_layout_speaker_from_patch(sp, format!("spk-{idx}")))
                     .collect();
                 // Per-speaker live params are keyed by position, so a wholesale
-                // swap invalidates every entry — capture the new delays before
-                // moving the speakers into the layout.
-                let delays: Vec<(usize, f32)> = new_speakers
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, spk)| spk.delay_ms > 0.0)
-                    .map(|(idx, spk)| (idx, spk.delay_ms))
-                    .collect();
-                ctx.renderer.with_editable_layout(|layout| {
+                // swap invalidates every entry: reseed them from the new
+                // speakers' delays and gains.
+                // (The live lock is taken after the layout's is released: the
+                // save path holds the live lock while it reads the layout.)
+                let speakers = ctx.renderer.with_editable_layout(|layout| {
                     if let Some(radius_m) = replace.radius_m {
                         layout.radius_m = radius_m.max(0.01);
                     }
                     layout.speakers = new_speakers;
+                    renderer::live_params::speaker_live_from_layout(layout)
                 });
-                {
-                    let mut live = ctx.renderer.live.write();
-                    live.speakers.clear();
-                    for (idx, delay_ms) in delays {
-                        live.speakers.entry(idx).or_default().delay_ms = delay_ms;
-                    }
-                }
+                ctx.renderer.live.write().speakers = speakers;
                 ctx.renderer.mark_speaker_params_dirty();
                 changed = true;
             }
@@ -715,6 +809,8 @@ pub fn apply_simple_osc_control(
                         ctx.renderer.mark_speaker_params_dirty();
                         changed = true;
                     }
+                    // A mute is a listening gesture, not a setting: it is
+                    // published, never saved (docs/persistence-policy.md).
                     if let Some(muted) = speaker_patch.muted {
                         ctx.renderer
                             .live
@@ -724,7 +820,7 @@ pub fn apply_simple_osc_control(
                             .or_default()
                             .muted = muted;
                         ctx.renderer.mark_speaker_params_dirty();
-                        changed = true;
+                        effects.publish_only = true;
                     }
                 }
             }
@@ -735,46 +831,9 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    // metering/rate_hz and diag/rate_hz are handled by the OSC layer
-    // (orender_engine::osc::dispatch) against RendererControl — the single
-    // source of truth for both, persisted to config.
-
-    if addr == osc_contract::CONTROL_RENDER_BACKEND {
-        // Accept built-in ids/aliases (e.g. "distance") and any registered backend
-        // id (e.g. a contributor's "example"), so the dropdown can offer them all.
-        let requested_id = parse_string_arg(msg.args.first()).and_then(|value| {
-            canonical_builtin_backend_id(&value)
-                .map(|id| id.to_string())
-                .or_else(|| ctx.renderer.has_backend(&value).then_some(value))
-        });
-        if let Some(requested_id) = requested_id {
-            let mut live = ctx.renderer.live.write();
-            if live.backend_id() != requested_id {
-                live.backend_id = requested_id.clone();
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-                effects.log_message = Some(format!("OSC: render_backend -> {requested_id}"));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_OUTPUT_MODE {
-        // Switch between the classic speaker (VBAP) path and the independent
-        // binaural (headphone) stage. No topology recompute: the binaural path
-        // does not use the speaker topology.
-        if let Some(mode) = parse_string_arg(msg.args.first())
-            .and_then(|v| renderer::live_params::OutputMode::from_str(&v))
-        {
-            let mut live = ctx.renderer.live.write();
-            if live.binaural.output_mode != mode {
-                live.binaural.output_mode = mode;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: output_mode -> {}", mode.as_str()));
-            }
-        }
-        return Some(effects);
-    }
+    // metering/rate_hz and diag/rate_hz are handled by `live_control` against
+    // RendererControl — the single source of truth for both, persisted to
+    // config as view state.
 
     if addr == osc_contract::CONTROL_SPEAKER_TEST {
         // Start/stop the per-speaker test signal. A negative index stops: the
@@ -1035,24 +1094,6 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == osc_contract::CONTROL_BINAURAL_MODE {
-        // Switch the binaural stage between per-object HRTF ("direct") and the
-        // virtual-speaker cascade ("cascaded"). No topology recompute: the
-        // cascade stage builds its own virtual topology lazily on the render
-        // thread when first needed.
-        if let Some(mode) = parse_string_arg(msg.args.first())
-            .and_then(|v| renderer::live_params::BinauralMode::from_str(&v))
-        {
-            let mut live = ctx.renderer.live.write();
-            if live.binaural.mode != mode {
-                live.binaural.mode = mode;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: binaural_mode -> {}", mode.as_str()));
-            }
-        }
-        return Some(effects);
-    }
-
     if addr == osc_contract::CONTROL_BINAURAL_EAR_GAIN {
         // Headphone L/R output gain: [ear_idx (0|1), linear_gain]. Dedicated
         // params — the ears no longer ride the first two per-speaker slots
@@ -1098,7 +1139,8 @@ pub fn apply_simple_osc_control(
         let roll = parse_f32_arg(msg.args.get(2)).unwrap_or(0.0);
         let mut live = ctx.renderer.live.write();
         live.binaural.head_pose = renderer::binaural::HeadPose::from_euler_deg(yaw, pitch, roll);
-        effects.mark_dirty = true;
+        // A manual pose, like the tracker's, is transient: never saved.
+        effects.publish_only = true;
         effects.log_message = Some(format!("OSC: head/orientation -> {yaw},{pitch},{roll}"));
         return Some(effects);
     }
@@ -1111,25 +1153,9 @@ pub fn apply_simple_osc_control(
         let z = parse_f32_arg(msg.args.get(3)).unwrap_or(0.0);
         let mut live = ctx.renderer.live.write();
         live.binaural.head_pose = renderer::binaural::HeadPose::from_quat(w, x, y, z);
-        effects.mark_dirty = true;
+        // A manual pose, like the tracker's, is transient: never saved.
+        effects.publish_only = true;
         effects.log_message = Some("OSC: head/quat".to_string());
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_HRIR_SOURCE {
-        // "synthetic" | "saf"/"kemar" | "sofa:<path>" | "pinna[:<size>:<depth>]".
-        // No topology rebuild; the render thread rebuilds the HRIR grid lazily
-        // when the source changes.
-        if let Some(src) = parse_string_arg(msg.args.first())
-            .and_then(|s| renderer::binaural::HrirSource::from_str(&s))
-        {
-            let mut live = ctx.renderer.live.write();
-            if live.binaural.hrir_source != src {
-                live.binaural.hrir_source = src.clone();
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: hrir_source -> {}", src.as_str()));
-            }
-        }
         return Some(effects);
     }
 
@@ -1235,230 +1261,6 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == osc_contract::CONTROL_BINAURAL_UNIT_SCALE {
-        // Metres per ADM unit (isotropic distance scale for the binaural stage).
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                let v = v.clamp(0.01, 100.0);
-                ctx.renderer.live.write().binaural.unit_scale_m = v;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: binaural/unit_scale -> {v}"));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_HEAD_RADIUS {
-        // Effective head radius (m) for the ITD model — half the inter-ear
-        // distance. Human range is roughly 6–12 cm.
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                let v = v.clamp(0.05, 0.15);
-                ctx.renderer.live.write().binaural.head_radius_m = v;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: binaural/head_radius -> {v}"));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REFLECTIONS_ENABLED {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.reflections.enabled = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/reflections/enabled -> {v}"));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REFLECTIONS_LEVEL {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() {
-                ctx.renderer.live.write().binaural.reflections.level = v.clamp(0.0, 1.0);
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REFLECTIONS_WALL_CUTOFF {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() {
-                ctx.renderer
-                    .live
-                    .write()
-                    .binaural
-                    .reflections
-                    .wall_cutoff_hz = v.clamp(
-                    renderer::binaural::reflections::MIN_WALL_CUTOFF_HZ,
-                    renderer::binaural::reflections::MAX_WALL_CUTOFF_HZ,
-                );
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if let Some(axis) = match addr {
-        osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_WIDTH => Some(0usize),
-        osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_DEPTH => Some(1),
-        osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_HEIGHT => Some(2),
-        _ => None,
-    } {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                let v = v.clamp(
-                    renderer::binaural::reflections::MIN_ROOM_M,
-                    renderer::binaural::reflections::MAX_ROOM_M,
-                );
-                ctx.renderer.live.write().binaural.reflections.room_size_m[axis] = v;
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REVERB_ENABLED {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.reverb.enabled = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/reverb/enabled -> {v}"));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REVERB_LEVEL {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() {
-                ctx.renderer.live.write().binaural.reverb.level = v.clamp(0.0, 1.0);
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REVERB_RT60 {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                ctx.renderer.live.write().binaural.reverb.rt60_s = v.clamp(0.1, 3.0);
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REVERB_PREDELAY {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v >= 0.0 {
-                ctx.renderer.live.write().binaural.reverb.predelay_ms = v.clamp(0.0, 100.0);
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_REVERB_SIZE {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                ctx.renderer.live.write().binaural.reverb.size = v.clamp(
-                    renderer::binaural::reverb::SIZE_MIN,
-                    renderer::binaural::reverb::SIZE_MAX,
-                );
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if let Some(low) = match addr {
-        osc_contract::CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO => Some(true),
-        osc_contract::CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO => Some(false),
-        _ => None,
-    } {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            if v.is_finite() && v > 0.0 {
-                let v = v.clamp(
-                    renderer::binaural::reverb::RT60_RATIO_MIN,
-                    renderer::binaural::reverb::RT60_RATIO_MAX,
-                );
-                let mut live = ctx.renderer.live.write();
-                if low {
-                    live.binaural.reverb.rt60_low_ratio = v;
-                } else {
-                    live.binaural.reverb.rt60_high_ratio = v;
-                }
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_DIFFUSE_FIELD_EQ {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.diffuse_field_eq = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/diffuse_field_eq -> {v}"));
-        }
-        return Some(effects);
-    }
-
-    // ── BRIR load options (a `brir:<path>` HRIR source) ─────────────────────
-    // A change reloads the set on the renderer's worker.
-    if addr == osc_contract::CONTROL_BINAURAL_BRIR_HEAD_TRACKING {
-        // Which measured head orientations stay resident: "auto" follows the
-        // head-tracking address, a bool forces all (true) or front only.
-        let value = match msg.args.first() {
-            Some(OscType::String(s)) if s.eq_ignore_ascii_case("auto") => Some(None),
-            other => parse_bool_arg(other).map(Some),
-        };
-        if let Some(v) = value {
-            ctx.renderer.live.write().binaural.brir.head_tracking = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!(
-                "OSC: binaural/brir/head_tracking -> {}",
-                v.map_or("auto".to_string(), |b| b.to_string())
-            ));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_BRIR_MAX_LENGTH {
-        // Longest response kept, seconds (0 = whole responses).
-        if let Some(v) = parse_f32_arg(msg.args.first())
-            && v.is_finite()
-            && v >= 0.0
-        {
-            let v = v.clamp(0.0, 10.0);
-            ctx.renderer.live.write().binaural.brir.max_length_s = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/brir/max_length -> {v}"));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_BRIR_TAIL_FLOOR {
-        // Decibels below a response's total energy at which its tail is cut.
-        if let Some(v) = parse_f32_arg(msg.args.first())
-            && v.is_finite()
-            && v > 0.0
-        {
-            let v = v.clamp(20.0, 120.0);
-            ctx.renderer.live.write().binaural.brir.tail_floor_db = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/brir/tail_floor -> {v}"));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_AIR_ABSORPTION {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.air_absorption = v;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: binaural/air_absorption -> {v}"));
-        }
-        return Some(effects);
-    }
-
     if addr == osc_contract::CONTROL_HEAD_CALIBRATE {
         let step = msg.args.first().and_then(|a| match a {
             rosc::OscType::String(s) => renderer::binaural::CalibrationStep::from_str(s),
@@ -1475,20 +1277,23 @@ pub fn apply_simple_osc_control(
                 if step == renderer::binaural::CalibrationStep::Front {
                     // Looking ahead is the recenter: snap and persist it.
                     live.binaural.head_pose = renderer::binaural::HeadPose::identity();
-                    effects.persist_head_center =
-                        Some(live.binaural.tracking.reference.to_quat_array());
+                    effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
                 }
                 if done || step == renderer::binaural::CalibrationStep::Reset {
-                    effects.persist_head_axes = Some(live.binaural.tracking.axes.to_quat_array());
+                    effects.persist.push(crate::persist::PersistOp::HEAD_AXES);
                 }
-                effects.mark_dirty = true;
+                // A calibration of the sensor on the listener's head: written
+                // at once, never behind the Save button
+                // (docs/persistence-policy.md).
+                effects.publish_only = true;
                 effects.log_message = Some(format!(
                     "OSC: head/calibrate {step:?}{}",
                     if done { " — axes calibrated" } else { "" }
                 ));
             }
             Err(reason) => {
-                effects.mark_dirty = true;
+                // Nothing changed, but the step's state is published.
+                effects.publish_only = true;
                 effects.log_message =
                     Some(format!("OSC: head/calibrate {step:?} refused: {reason}"));
             }
@@ -1504,50 +1309,9 @@ pub fn apply_simple_osc_control(
         live.binaural.head_pose = renderer::binaural::HeadPose::identity();
         // Persist the new reference to config right away so the centering survives
         // an engine rebuild (mpv track change) and a restart.
-        effects.persist_head_center = Some(live.binaural.tracking.reference.to_quat_array());
-        effects.mark_dirty = true;
+        effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
+        effects.publish_only = true;
         effects.log_message = Some("OSC: head/recenter".to_string());
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_TRACKING_ADDRESS {
-        // Empty string disables tracking.
-        let raw = parse_string_arg(msg.args.first()).unwrap_or_default();
-        let mut live = ctx.renderer.live.write();
-        live.binaural.tracking.address = if raw.is_empty() {
-            None
-        } else {
-            Some(raw.clone())
-        };
-        effects.mark_dirty = true;
-        effects.log_message = Some(format!("OSC: head/tracking/address -> {raw:?}"));
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_TRACKING_FORMAT {
-        if let Some(fmt) = parse_string_arg(msg.args.first())
-            .and_then(|s| renderer::binaural::HeadTrackingFormat::from_str(&s))
-        {
-            ctx.renderer.live.write().binaural.tracking.format = fmt;
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: head/tracking/format -> {}", fmt.as_str()));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_TRACKING_SMOOTHING {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.tracking.smoothing = v.clamp(0.0, 0.999);
-            effects.mark_dirty = true;
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_TRACKING_INVERT {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().binaural.tracking.invert = v;
-            effects.mark_dirty = true;
-        }
         return Some(effects);
     }
 
@@ -1576,15 +1340,7 @@ pub fn apply_simple_osc_control(
         } else {
             (None, parse_string_arg(msg.args.first()), msg.args.get(1))
         };
-        let value = value_arg.and_then(|arg| match arg {
-            OscType::Float(f) => Some(renderer::backend_params::ParamValue::Float(*f)),
-            OscType::Double(d) => Some(renderer::backend_params::ParamValue::Float(*d as f32)),
-            OscType::Int(i) => Some(renderer::backend_params::ParamValue::Int(*i as i64)),
-            OscType::Long(i) => Some(renderer::backend_params::ParamValue::Int(*i)),
-            OscType::Bool(b) => Some(renderer::backend_params::ParamValue::Bool(*b)),
-            OscType::String(s) => Some(renderer::backend_params::ParamValue::Text(s.clone())),
-            _ => None,
-        });
+        let value = value_arg.and_then(parse_param_value);
         if let (Some(key), Some(value)) = (key, value) {
             let (backend_id, active, hybrid_legs) = {
                 let live = ctx.renderer.live.read();
@@ -1597,7 +1353,12 @@ pub fn apply_simple_osc_control(
                     ),
                 )
             };
-            ctx.renderer.set_backend_param(&backend_id, &key, value);
+            if !ctx.renderer.set_backend_param(&backend_id, &key, value) {
+                effects.log_message = Some(format!(
+                    "OSC: backend param {backend_id}.{key} refused (not a value of its declared type)"
+                ));
+                return Some(effects);
+            }
             effects.mark_dirty = true;
             // Recompute only when the edited backend participates in the
             // active topology (the selection itself, or a leg of an active
@@ -1619,76 +1380,9 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == osc_contract::CONTROL_RENDER_EVALUATION_MODE {
-        let requested = parse_string_arg(msg.args.first())
-            .and_then(|value| LiveEvaluationMode::from_str(&value));
-        if let Some(requested) = requested {
-            let mut live = ctx.renderer.live.write();
-            if live.evaluation.mode != requested {
-                live.set_evaluation_mode(requested);
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-                // Changing only the evaluation mode leaves the backend geometry
-                // (triangulation + decorator metrics) untouched: reuse the gain
-                // models and rebuild only the evaluation wrapper (no re-triangulation).
-                effects.evaluation_only = true;
-            }
-            {
-                if live.backend_id() == "vbap" {
-                    effects.mark_dirty = true;
-                }
-                effects.log_message = Some(format!(
-                    "OSC: render_evaluation_mode -> {}",
-                    live.requested_evaluation_mode().as_str()
-                ));
-            }
-        }
-        return Some(effects);
-    }
-
     if addr == osc_contract::CONTROL_RENDER_EVALUATION_MODE_FROM_FILE {
         effects.log_message =
             Some("OSC: render_evaluation_mode/from_file is no longer supported".to_string());
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_INPUT_DRC_MODE {
-        let requested = parse_string_arg(msg.args.first());
-        if let Some(requested) = requested {
-            let mut live = ctx.renderer.live.write();
-            if live.drc_mode != requested {
-                live.drc_mode = requested.clone();
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: DRC mode staged → {}", requested));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_INPUT_DRC_WEIGHT {
-        if let Some(value) = parse_f32_arg(msg.args.first()) {
-            let clamped = value.clamp(0.0, 1.0);
-            let mut live = ctx.renderer.live.write();
-            if (live.drc_weight - clamped).abs() > f32::EPSILON {
-                live.drc_weight = clamped;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: DRC weight staged → {:.3}", clamped));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_RAMP_MODE {
-        let Some(mode) = msg.args.first().and_then(|arg| match arg {
-            OscType::String(s) => renderer::live_params::RampMode::from_str(s),
-            _ => None,
-        }) else {
-            return Some(effects);
-        };
-        ctx.renderer.set_requested_ramp_mode(mode);
-        ctx.renderer.live.write().ramp_mode = mode;
-        effects.mark_dirty = true;
-        effects.log_message = Some(format!("OSC: ramp_mode → {}", mode.as_str()));
         return Some(effects);
     }
 
@@ -1698,14 +1392,6 @@ pub fn apply_simple_osc_control(
                 .with_editable_layout(|layout| layout.radius_m = v);
             effects.mark_dirty = true;
             effects.log_message = Some(format!("OSC: layout radius_m → {}", v));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_GAIN {
-        if let Some(gain) = parse_f32_arg(msg.args.first()) {
-            ctx.renderer.live.write().master_gain = gain;
-            effects.mark_dirty = true;
         }
         return Some(effects);
     }
@@ -1775,249 +1461,12 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == osc_contract::CONTROL_AUTO_GAIN {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().auto_gain = v;
-            effects.mark_dirty = true;
-            // Per-frame gain-stage flag: no topology recompute.
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_AUTO_GAIN_CEILING {
-        if let Some(v) = parse_f32_arg(msg.args.first()) {
-            // dBFS target; clamp to a sane range (ceiling at or below 0 dBFS).
-            ctx.renderer.live.write().auto_gain_ceiling_db = v.clamp(-12.0, 0.0);
-            effects.mark_dirty = true;
-            // Per-frame gain-stage value: no topology recompute.
-        }
-        return Some(effects);
-    }
-
-    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX)
-    {
-        let size = match msg.args.first() {
-            Some(OscType::Int(i)) => Some((*i).max(1) as usize),
-            Some(OscType::Float(f)) => Some((*f).round().max(1.0) as usize),
-            _ => None,
-        };
-        if let Some(size) = size {
-            let state_addr = match rest {
-                "x_size" => {
-                    ctx.renderer.live.write().evaluation.cartesian.x_size = size;
-                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_X_SIZE)
-                }
-                "y_size" => {
-                    ctx.renderer.live.write().evaluation.cartesian.y_size = size;
-                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Y_SIZE)
-                }
-                "z_size" => {
-                    ctx.renderer.live.write().evaluation.cartesian.z_size = size;
-                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Z_SIZE)
-                }
-                "z_neg_size" => {
-                    ctx.renderer.live.write().evaluation.cartesian.z_neg_size = size;
-                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Z_NEG_SIZE)
-                }
-                _ => None,
-            };
-            if let Some(state_addr) = state_addr {
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-                // Cartesian grid resolution is evaluation-layer only: re-sample the
-                // table, reuse the backend geometry.
-                effects.evaluation_only = true;
-                effects.broadcasts.push(BroadcastUpdate {
-                    addr: state_addr.to_string(),
-                    value: BroadcastValue::Int(size as i32),
-                });
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_RENDER_EVALUATION_POSITION_INTERPOLATION {
-        if let Some(enabled) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().evaluation.position_interpolation = enabled;
-            // No layout recompute: this flag only selects nearest-cell vs
-            // trilinear at table-read time. The precomputed table content is
-            // independent of it, and the renderer syncs the live value into the
-            // evaluators each frame (see SpatialRenderer::render_frame). Rebuilding
-            // the whole grid here just produced an identical table.
-            effects.mark_dirty = true;
-            effects.broadcasts.push(BroadcastUpdate {
-                addr: osc_contract::STATE_RENDER_EVALUATION_POSITION_INTERPOLATION.to_string(),
-                value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
-            });
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS {
-        let intervals = match msg.args.first() {
-            Some(OscType::Int(i)) => Some((*i).max(0) as usize),
-            Some(OscType::Float(f)) => Some(f.round().max(0.0) as usize),
-            _ => None,
-        };
-        if let Some(intervals) = intervals {
-            ctx.renderer.live.write().evaluation.object_size_intervals = intervals;
-            effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
-            // Object-size interval count is evaluation-layer only: re-sample the
-            // tables, reuse the backend geometry.
-            effects.evaluation_only = true;
-            effects.broadcasts.push(BroadcastUpdate {
-                addr: osc_contract::STATE_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS.to_string(),
-                value: BroadcastValue::Int(intervals as i32),
-            });
-        }
-        return Some(effects);
-    }
-
-    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX) {
-        match rest {
-            "azimuth_resolution" | "elevation_resolution" => {
-                let res = match msg.args.first() {
-                    Some(OscType::Int(i)) => Some((*i).max(1)),
-                    Some(OscType::Float(f)) => Some((*f as i32).max(1)),
-                    _ => None,
-                };
-                if let Some(res) = res {
-                    let state_addr = match rest {
-                        "azimuth_resolution" => {
-                            ctx.renderer.live.write().evaluation.polar.azimuth_values = res;
-                            Some(osc_contract::STATE_RENDER_EVALUATION_POLAR_AZIMUTH_RESOLUTION)
-                        }
-                        "elevation_resolution" => {
-                            ctx.renderer.live.write().evaluation.polar.elevation_values = res;
-                            Some(osc_contract::STATE_RENDER_EVALUATION_POLAR_ELEVATION_RESOLUTION)
-                        }
-                        _ => None,
-                    };
-                    if let Some(state_addr) = state_addr {
-                        effects.mark_dirty = true;
-                        effects.trigger_layout_recompute = true;
-                        // Polar grid resolution is evaluation-layer only.
-                        effects.evaluation_only = true;
-                        effects.broadcasts.push(BroadcastUpdate {
-                            addr: state_addr.to_string(),
-                            value: BroadcastValue::Int(res),
-                        });
-                    }
-                }
-            }
-            "distance_res" => {
-                let res = match msg.args.first() {
-                    Some(OscType::Int(i)) => Some((*i).max(1)),
-                    Some(OscType::Float(f)) => Some((*f as i32).max(1)),
-                    _ => None,
-                };
-                if let Some(res) = res {
-                    ctx.renderer.live.write().evaluation.polar.distance_res = res;
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                    effects.evaluation_only = true;
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: osc_contract::STATE_RENDER_EVALUATION_POLAR_DISTANCE_RES.to_string(),
-                        value: BroadcastValue::Int(res),
-                    });
-                }
-            }
-            "distance_max" => {
-                let max_v = match msg.args.first() {
-                    Some(OscType::Int(i)) => Some((*i as f32).max(0.01)),
-                    Some(OscType::Float(f)) => Some((*f).max(0.01)),
-                    _ => None,
-                };
-                if let Some(max_v) = max_v {
-                    ctx.renderer.live.write().evaluation.polar.distance_max = max_v;
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                    effects.evaluation_only = true;
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: osc_contract::STATE_RENDER_EVALUATION_POLAR_DISTANCE_MAX.to_string(),
-                        value: BroadcastValue::Float(max_v),
-                    });
-                }
-            }
-            _ => {}
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_LOUDNESS {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().use_loudness = v;
-            effects.mark_dirty = true;
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_DISTANCE_MODEL {
-        if let Some(OscType::String(model)) = msg.args.first() {
-            if let Ok(model) = model.parse::<renderer::spatial_vbap::DistanceModel>() {
-                ctx.renderer.live.write().distance_model = model;
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_DISTANCE_MODEL_METRIC {
-        if let Some(OscType::String(metric)) = msg.args.first() {
-            if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {
-                ctx.renderer.live.write().distance_model_metric = metric;
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-            }
-        }
-        return Some(effects);
-    }
-
+    // The hybrid curve: a point list, kept out of the registry. The legs,
+    // smoothing and metric under the same prefix are registry aliases.
     if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_HYBRID_PREFIX) {
         let mut live = ctx.renderer.live.write();
         let mut changed = false;
         match rest {
-            "external_backend" | "internal_backend" => {
-                if let Some(value) = parse_string_arg(msg.args.first()) {
-                    let normalized = value.trim().to_ascii_lowercase();
-                    // Any registered backend is a valid inner model, except a
-                    // nested hybrid (which would recurse).
-                    if normalized != "hybrid" && ctx.renderer.has_backend(&normalized) {
-                        let slot = if rest == "external_backend" {
-                            &mut live.hybrid.external_backend_id
-                        } else {
-                            &mut live.hybrid.internal_backend_id
-                        };
-                        if *slot != normalized {
-                            *slot = normalized.clone();
-                            changed = true;
-                            effects.log_message =
-                                Some(format!("OSC: hybrid/{rest} -> {normalized}"));
-                        }
-                    }
-                }
-            }
-            "curve_smoothing" => {
-                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.clamp(0.0, 1.0)) {
-                    if (live.hybrid.curve_smoothing - v).abs() > 1e-6 {
-                        live.hybrid.curve_smoothing = v;
-                        changed = true;
-                        effects.log_message = Some(format!("OSC: hybrid/curve_smoothing -> {v}"));
-                    }
-                }
-            }
-            "metric" => {
-                if let Some(OscType::String(metric)) = msg.args.first() {
-                    if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {
-                        if live.hybrid.metric != metric {
-                            live.hybrid.metric = metric;
-                            changed = true;
-                        }
-                    }
-                }
-            }
             "curve" => {
                 // Flat list of (x, y) pairs: x0, y0, x1, y1, …
                 let mut values: Vec<f32> = Vec::with_capacity(msg.args.len());
@@ -2053,101 +1502,6 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == osc_contract::CONTROL_ROOM_RATIO {
-        if msg.args.len() >= 3 {
-            let w = parse_f32_arg(msg.args.first());
-            let l = parse_f32_arg(msg.args.get(1));
-            let h = parse_f32_arg(msg.args.get(2));
-            if let (Some(w), Some(l), Some(h)) = (w, l, h) {
-                ctx.renderer.live.write().room_ratio = [w, l, h];
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-                effects.log_message = Some(format!("OSC: room_ratio → [{}, {}, {}]", w, l, h));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_ROOM_RATIO_REAR {
-        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
-            ctx.renderer.live.write().room_ratio_rear = v;
-            effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
-            effects.log_message = Some(format!("OSC: room_ratio_rear → {}", v));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_ROOM_RATIO_LOWER {
-        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
-            ctx.renderer.live.write().room_ratio_lower = v;
-            effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
-            effects.log_message = Some(format!("OSC: room_ratio_lower → {}", v));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_ROOM_RATIO_CENTER_BLEND {
-        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.clamp(0.0, 1.0)) {
-            ctx.renderer.live.write().room_ratio_center_blend = v;
-            effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
-            effects.log_message = Some(format!("OSC: room_ratio_center_blend → {}", v));
-        }
-        return Some(effects);
-    }
-
-    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX) {
-        match rest {
-            "enabled" => {
-                if let Some(v) = parse_bool_arg(msg.args.first()) {
-                    ctx.renderer.live.write().use_distance_diffuse = v;
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                }
-                return Some(effects);
-            }
-            "metric" => {
-                if let Some(OscType::String(metric)) = msg.args.first() {
-                    if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {
-                        ctx.renderer.live.write().distance_diffuse_metric = metric;
-                        effects.mark_dirty = true;
-                        effects.trigger_layout_recompute = true;
-                    }
-                }
-                return Some(effects);
-            }
-            "mirror_axes" => {
-                if let Some(OscType::String(axes)) = msg.args.first() {
-                    if let Ok(axes) = axes.parse::<renderer::spatial_vbap::MirrorAxes>() {
-                        ctx.renderer.live.write().distance_diffuse_mirror_axes = axes;
-                        effects.mark_dirty = true;
-                        effects.trigger_layout_recompute = true;
-                    }
-                }
-                return Some(effects);
-            }
-            "threshold" => {
-                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(1e-6)) {
-                    ctx.renderer.live.write().distance_diffuse_threshold = v;
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                }
-                return Some(effects);
-            }
-            "curve" => {
-                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.0)) {
-                    ctx.renderer.live.write().distance_diffuse_curve = v;
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                }
-                return Some(effects);
-            }
-            _ => {}
-        }
-    }
-
     if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_OBJECT_PREFIX) {
         if let Some(idx_str) = rest.strip_suffix("/mute") {
             if let Ok(idx) = idx_str.parse::<usize>() {
@@ -2160,7 +1514,8 @@ pub fn apply_simple_osc_control(
                         .or_default()
                         .muted = muted;
                     ctx.renderer.mark_object_params_dirty();
-                    effects.mark_dirty = true;
+                    // Transient, like a speaker mute: its own state address
+                    // publishes it, and no Save is for it.
                     effects.broadcasts.push(BroadcastUpdate {
                         addr: format!("/omniphony/state/object/{}/mute", idx),
                         value: BroadcastValue::Int(if muted { 1 } else { 0 }),
@@ -2328,5 +1683,87 @@ mod freq_cutoff_clear_tests {
         }
         assert_eq!(parse_f32_arg(None), None);
         assert_eq!(parse_bool_arg(None), None);
+    }
+}
+
+/// What a write does to the Save button (docs/persistence-policy.md).
+#[cfg(test)]
+mod persistence_class_tests {
+    use super::*;
+
+    fn apply(addr: &str, args: Vec<OscType>) -> (ControlEffects, RuntimeControlContext) {
+        let ctx = RuntimeControlContext::new(crate::test_support::fixture_control());
+        let msg = OscMessage {
+            addr: addr.to_string(),
+            args,
+        };
+        let effects = apply_simple_osc_control(&msg, &ctx).expect("handled");
+        (effects, ctx)
+    }
+
+    /// Mutes and a manual head pose are listening gestures: published to
+    /// every client, never saved, so they must not light the Save button.
+    #[test]
+    fn transient_writes_leave_the_config_clean() {
+        let (effects, ctx) = apply(
+            osc_contract::CONTROL_CONFIG_SPEAKERS,
+            vec![OscType::String(
+                r#"{"speakerEdits":[{"id":0,"muted":true}]}"#.into(),
+            )],
+        );
+        assert!(!effects.mark_dirty, "speaker mute");
+        assert!(effects.publish_only, "speaker mute is still published");
+        assert!(ctx.renderer.live.read().speakers[&0].muted);
+
+        let (effects, _) = apply(
+            osc_contract::CONTROL_HEAD_ORIENTATION,
+            vec![
+                OscType::Float(30.0),
+                OscType::Float(0.0),
+                OscType::Float(0.0),
+            ],
+        );
+        assert!(!effects.mark_dirty, "head orientation");
+        assert!(effects.publish_only);
+
+        let (effects, ctx) = apply(
+            &format!("{}3/mute", osc_contract::CONTROL_OBJECT_PREFIX),
+            vec![OscType::Int(1)],
+        );
+        assert!(!effects.mark_dirty, "object mute");
+        assert_eq!(
+            effects.broadcasts.len(),
+            1,
+            "object mute is still published"
+        );
+        assert!(ctx.renderer.live.read().objects[&3].muted);
+    }
+
+    /// A delay in the same patch as a mute is a setting: the patch dirties.
+    #[test]
+    fn a_delay_next_to_a_mute_still_waits_for_save() {
+        let (effects, _) = apply(
+            osc_contract::CONTROL_CONFIG_SPEAKERS,
+            vec![OscType::String(
+                r#"{"speakerEdits":[{"id":0,"muted":true,"delayMs":2.5}]}"#.into(),
+            )],
+        );
+        assert!(effects.mark_dirty);
+    }
+
+    /// A replaced layout seeds the live output gains from the speakers it
+    /// carries, as a boot does.
+    #[test]
+    fn a_replaced_layout_seeds_its_speaker_gains() {
+        let (_, ctx) = apply(
+            osc_contract::CONTROL_CONFIG_LAYOUT,
+            vec![OscType::String(
+                r#"{"replaceLayout":{"speakers":[{"name":"L","azimuth":30,"gainDb":-6},{"name":"R","azimuth":-30}]}}"#
+                    .into(),
+            )],
+        );
+        let live = ctx.renderer.live.read();
+        assert!((live.speakers[&0].gain - 0.501).abs() < 1e-3);
+        assert!(!live.speakers.contains_key(&1), "unity needs no entry");
     }
 }

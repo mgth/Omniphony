@@ -1,9 +1,9 @@
+use diag::DiagRegistry;
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
 };
-use sys::diag::DiagRegistry;
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum InputMode {
@@ -20,8 +20,10 @@ pub enum InputMode {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InputBackend {
+    /// The only live-input backend. An `asio` variant was reserved here for a
+    /// Windows capture path that was never implemented; it was removed, and
+    /// hosts reject the value (see `host_audio` and `renderer::config`).
     Pipewire,
-    Asio,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

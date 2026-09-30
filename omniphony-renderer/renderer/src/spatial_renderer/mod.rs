@@ -69,6 +69,8 @@ use crate::ramp_strategy::{
     PositionRampStrategy, RampContext, RampProgress, RampRenderParams, RampStrategy, RampTarget,
 };
 
+use crate::dsp::db::{db_to_linear, linear_to_db};
+use crate::dsp::ensure_denormals_flushed;
 use crate::spatial_vbap::DistanceModel;
 use anyhow::Result;
 use std::sync::Arc;
@@ -110,52 +112,18 @@ struct LiveSnapshot<'a> {
     diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes,
 }
 
-/// Put the calling thread's FPU in flush-to-zero / denormals-are-zero mode,
-/// once per thread (issue #154).
-///
-/// Every recursive DSP path in the renderer (FDN delay lines and damping,
-/// reflection-tap smoothing, air-absorption one-poles, biquad states) decays
-/// exponentially toward zero after input stops; without FTZ those tails enter
-/// denormal range, where each multiply can cost 10–100× on x86 — a CPU spike
-/// exactly when the stream goes silent. Flushing to zero is the standard
-/// audio-DSP trade: values below ~1e-38 are ~−760 dBFS, far beyond audibility.
-///
-/// This claims the FP environment of the host's thread (mpv's decode thread,
-/// the CLI engine), which is deliberate: that thread runs our DSP, and FTZ is
-/// the conventional processing mode for realtime audio. On unknown
-/// architectures this is a no-op (correct, just without the protection).
-#[inline]
-fn ensure_denormals_flushed() {
-    use std::cell::Cell;
-    thread_local! {
-        static CLAIMED: Cell<bool> = const { Cell::new(false) };
+/// A speaker for a log line: its layout name, or `#index` when the index is
+/// outside the layout. Formats in place, so naming a speaker allocates
+/// nothing.
+struct SpeakerName<'a>(Option<&'a str>, usize);
+
+impl std::fmt::Display for SpeakerName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(name) => f.write_str(name),
+            None => write!(f, "#{}", self.1),
+        }
     }
-    CLAIMED.with(|claimed| {
-        if claimed.get() {
-            return;
-        }
-        claimed.set(true);
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            // MXCSR bits: FTZ = 15, DAZ = 6 (DAZ exists on every x86-64 CPU
-            // this crate targets). Inline asm instead of the deprecated
-            // `_mm_setcsr` intrinsics: the write is opaque to LLVM, which is
-            // the point — the changed FP mode must not be reasoned away.
-            let mut mxcsr: u32 = 0;
-            std::arch::asm!("stmxcsr [{}]", in(reg) &mut mxcsr, options(nostack));
-            mxcsr |= (1 << 15) | (1 << 6);
-            std::arch::asm!("ldmxcsr [{}]", in(reg) &mxcsr, options(nostack));
-        }
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            // FPCR.FZ (bit 24): flush-to-zero for f32/f64 (Apple Silicon
-            // builds). Read-modify-write keeps the rounding mode intact.
-            let mut fpcr: u64;
-            std::arch::asm!("mrs {}, fpcr", out(reg) fpcr);
-            fpcr |= 1 << 24;
-            std::arch::asm!("msr fpcr, {}", in(reg) fpcr);
-        }
-    });
 }
 
 /// Spatial audio renderer using VBAP
@@ -286,6 +254,10 @@ pub struct SpatialRenderer {
     /// The BRIR stage of the cascaded path, used while the HRIR source is a
     /// room response ([`crate::binaural::HrirSource::Brir`]).
     brir: crate::binaural::BrirStage,
+    /// Whether the two stages above build on the render thread — see
+    /// [`Self::set_synchronous_stage_builds`]. Kept here so a sample-rate
+    /// change, which rebuilds them, carries it over.
+    synchronous_stage_builds: bool,
 
     /// Cascaded binaural geometry (`binaural.mode == Cascaded`): binaural
     /// input positions/flags derived from the app layout + the virtual bus
@@ -374,7 +346,7 @@ impl SpatialRenderer {
     pub fn set_loudness(&self, dialogue_level: i8) {
         const REFERENCE_LEVEL: i32 = -31;
         let gain_db = REFERENCE_LEVEL - (dialogue_level as i32);
-        let gain_linear = 10.0_f32.powf(gain_db as f32 / 20.0);
+        let gain_linear = db_to_linear(gain_db as f32);
         self.loudness_gain
             .store(gain_linear.to_bits(), std::sync::atomic::Ordering::Relaxed);
         self.control.live.write().dialogue_level = Some(dialogue_level);
@@ -412,6 +384,21 @@ impl SpatialRenderer {
     /// frames until this returns `false`.
     pub fn binaural_rebuild_pending(&self) -> bool {
         self.binaural.rebuild_pending()
+    }
+
+    /// Build the binaural stages' data (the HRIR grid, the BRIR set and its
+    /// orientation banks) on the render thread, so a change takes effect on
+    /// the frame that asks for it rather than whenever a worker finishes.
+    ///
+    /// Offline renders turn this on: with the asynchronous swap the grid
+    /// lands at a timing-dependent block, and two renders of the same file
+    /// differ. Live hosts leave it off (the default) — the builds allocate
+    /// and read files, which the audio thread must never wait for. It costs
+    /// nothing per frame either way. Set it before the first frame.
+    pub fn set_synchronous_stage_builds(&mut self, on: bool) {
+        self.synchronous_stage_builds = on;
+        self.binaural.set_synchronous_builds(on);
+        self.brir.set_synchronous_builds(on);
     }
 
     pub fn set_ramp_strategy(&mut self, strategy: Arc<dyn RampStrategy>) {
@@ -1063,25 +1050,14 @@ impl SpatialRenderer {
             if peak_sample > 1.0 {
                 self.control.note_clip(peak_ear);
                 if live.auto_gain {
-                    let ceiling = 10.0_f32.powf(live.auto_gain_ceiling_db / 20.0);
-                    let required_gain = ceiling / peak_sample;
-                    // Re-reading under the write lock preserves any
-                    // concurrent OSC master change.
-                    let new_master_gain = {
-                        let mut params = self.control.live.write();
-                        params.master_gain *= required_gain;
-                        params.master_gain
-                    };
-                    self.control.mark_dirty();
-                    self.control.bump_live_state();
-                    self.auto_gain_triggered
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    let new_master_gain =
+                        self.fold_clip_into_master_gain(peak_sample, live.auto_gain_ceiling_db);
                     log::warn!(
                         "Clipping detected on headphone {} (peak={:.3})! Master gain reduced to {:.4} ({:.1} dB), ceiling {:.1} dBFS",
                         if peak_ear == 0 { "L" } else { "R" },
                         peak_sample,
                         new_master_gain,
-                        20.0 * new_master_gain.log10(),
+                        linear_to_db(new_master_gain),
                         live.auto_gain_ceiling_db
                     );
                 }
@@ -1254,35 +1230,22 @@ impl SpatialRenderer {
             // the UI indicators — it does not spam the log or load the topology each
             // frame. With auto-gain on, the correction makes clips transient anyway.
             if live.auto_gain {
-                let speaker_name = self
-                    .control
-                    .active_topology()
+                let new_master_gain =
+                    self.fold_clip_into_master_gain(peak_sample, live.auto_gain_ceiling_db);
+                // The speaker is named straight from the topology, without
+                // building a `String` on the audio thread.
+                let topology = self.control.active_topology();
+                let name = topology
                     .speaker_layout
                     .speakers
                     .get(peak_speaker_idx)
-                    .map(|s| s.name.clone())
-                    .unwrap_or_else(|| format!("#{peak_speaker_idx}"));
-                let ceiling = 10.0_f32.powf(live.auto_gain_ceiling_db / 20.0);
-                // Bring this peak down to the ceiling rather than exactly 0 dBFS.
-                let required_gain = ceiling / peak_sample;
-                // Apply it to the shared master gain. Re-reading under the write
-                // lock preserves any concurrent OSC master change.
-                let new_master_gain = {
-                    let mut params = self.control.live.write();
-                    params.master_gain *= required_gain;
-                    params.master_gain
-                };
-                self.control.mark_dirty();
-                self.control.bump_live_state();
-                self.auto_gain_triggered
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-
+                    .map(|s| s.name.as_str());
                 log::warn!(
                     "Clipping detected on speaker '{}' (peak={:.3})! Master gain reduced to {:.4} ({:.1} dB), ceiling {:.1} dBFS",
-                    speaker_name,
+                    SpeakerName(name, peak_speaker_idx),
                     peak_sample,
                     new_master_gain,
-                    20.0 * new_master_gain.log10(),
+                    linear_to_db(new_master_gain),
                     live.auto_gain_ceiling_db
                 );
             }
@@ -1362,6 +1325,30 @@ impl SpatialRenderer {
             .map(|c| (c.bus.as_slice(), c.num_buses()))
     }
 
+    /// Auto-gain: fold the attenuation that brings `peak` down to
+    /// `ceiling_db` into the shared live master gain (peak-hold, no recovery),
+    /// so the reduction is visible on the master control and persisted with
+    /// it, and return the new master gain. Shared by the speaker and the
+    /// headphone paths.
+    ///
+    /// Takes the live write lock, so it runs only on clipping frames (which
+    /// the correction makes transient), never in steady state. Re-reading
+    /// under the lock preserves any concurrent OSC master change.
+    fn fold_clip_into_master_gain(&self, peak: f32, ceiling_db: f32) -> f32 {
+        // Bring the peak down to the ceiling rather than exactly 0 dBFS.
+        let required_gain = db_to_linear(ceiling_db) / peak;
+        let new_master_gain = {
+            let mut params = self.control.live.write();
+            params.master_gain *= required_gain;
+            params.master_gain
+        };
+        self.control.mark_dirty();
+        self.control.bump_live_state();
+        self.auto_gain_triggered
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        new_master_gain
+    }
+
     /// Apply the in-flight output-mode cross-fade to an interleaved block, and
     /// adopt the requested mode when the outgoing ramp bottoms out.
     ///
@@ -1410,6 +1397,12 @@ impl SpatialRenderer {
         self.num_speakers
     }
 
+    /// The sample rate the renderer's DSP is built for (see
+    /// [`set_sample_rate`](Self::set_sample_rate)).
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
     /// Number of channels the renderer actually emits this frame: 2 in binaural
     /// (headphone) mode, otherwise the speaker count. Hosts must size their sink
     /// and `RenderedAudio` from this, not from [`num_speakers`](Self::num_speakers).
@@ -1421,6 +1414,31 @@ impl SpatialRenderer {
         match self.active_output_mode {
             crate::live_params::OutputMode::Binaural => 2,
             crate::live_params::OutputMode::SpeakerArray => self.num_speakers,
+        }
+    }
+
+    /// Whether the renderer emits one channel per layout speaker this frame
+    /// (the speaker array, not the binaural stereo pair). Same active mode as
+    /// [`output_channel_count`](Self::output_channel_count).
+    pub fn output_is_speaker_array(&self) -> bool {
+        matches!(
+            self.active_output_mode,
+            crate::live_params::OutputMode::SpeakerArray
+        )
+    }
+
+    /// Names of the channels the renderer emits, in output order, one per
+    /// [`output_channel_count`](Self::output_channel_count): the layout's
+    /// speaker names, or `FL`/`FR` for the binaural pair (a 2.0 speaker layout
+    /// keeps its own names). Every host labels its sink from this, so a
+    /// headphone switch cannot leave a speaker-named, speaker-wide channel map
+    /// behind a stereo stream. Allocates: call it when (re)building a sink,
+    /// not per frame.
+    pub fn output_channel_names(&self) -> Vec<String> {
+        if self.output_is_speaker_array() {
+            self.speaker_names()
+        } else {
+            vec!["FL".to_string(), "FR".to_string()]
         }
     }
 

@@ -38,6 +38,7 @@ use std::sync::mpsc;
 
 use arc_swap::ArcSwapOption;
 
+use super::DIRECT_EAR_GAIN;
 use super::brir::{BrirLoadOptions, BrirSet};
 use super::head_pose::HeadPose;
 use crate::partitioned_conv::{ConvolutionPlan, InputHistory, OutputScratch, PartitionedKernel};
@@ -47,10 +48,6 @@ use crate::partitioned_conv::{ConvolutionPlan, InputHistory, OutputScratch, Part
 /// block boundary; the work per output sample is set by the kernel length,
 /// not by this.
 pub const BRIR_BLOCK: usize = 128;
-
-/// Gain of a direct (non-spatialized) bus into each ear: constant power,
-/// the binaural stage's standing policy for the LFE (issue #156).
-const DIRECT_EAR_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
 /// Angle between a virtual speaker and the emitter it is rendered from
 /// above which the mapping is logged as a mismatch, degrees.
@@ -183,6 +180,11 @@ pub struct BrirStage {
     read_pos: usize,
     /// Bumped on every set swap.
     set_generation: u64,
+    /// Where load statuses go; the synchronous path reports through it too.
+    sink: BrirStatusSink,
+    /// Load sets and build banks on the calling thread instead of the
+    /// worker — see [`BrirStage::set_synchronous_builds`].
+    synchronous_builds: bool,
 }
 
 impl BrirStage {
@@ -201,6 +203,7 @@ impl BrirStage {
             let plan = plan.clone();
             let set_slot = Arc::clone(&incoming_set);
             let bank_slot = Arc::clone(&incoming_bank);
+            let sink = Arc::clone(&sink);
             std::thread::Builder::new()
                 .name("binaural-brir-worker".into())
                 .spawn(move || {
@@ -228,7 +231,24 @@ impl BrirStage {
             fifo: vec![0.0; 2 * BRIR_BLOCK],
             read_pos: 0,
             set_generation: 0,
+            sink,
+            synchronous_builds: false,
         }
+    }
+
+    /// Load sets and build orientation banks on the calling thread, inside
+    /// [`Self::ensure_loaded`] and the block that asks for a new
+    /// orientation, so each lands on the very frame that requests it.
+    ///
+    /// For offline renders: the asynchronous swap lands at whichever block
+    /// the worker happens to finish by, so two renders of the same input
+    /// would differ. A live host must leave this off — a load reads a SOFA
+    /// file and partitions every kernel, which the audio thread must never
+    /// wait for. The steady-state per-frame cost is the same either way. Set
+    /// it before the first frame: a load already handed to the worker still
+    /// lands late.
+    pub fn set_synchronous_builds(&mut self, on: bool) {
+        self.synchronous_builds = on;
     }
 
     /// The worker: loads sets, partitions banks, frees what the audio
@@ -258,40 +278,56 @@ impl BrirStage {
                 handle(next);
             }
             if let Some((key, buses)) = load {
-                match Self::load(&key, sample_rate) {
-                    Ok(set) => {
-                        let set = Arc::new(set);
-                        let (yaw, pitch) = (0.0, 0.0);
-                        let front = set.nearest_orientation(yaw, pitch);
-                        let bank = Arc::new(build_bank(&plan, &set, front));
-                        let capacity = plan.partitions_for(set.max_taps());
-                        let inputs = (0..buses).map(|_| plan.make_input(capacity)).collect();
-                        sink(BrirStatus {
-                            path: key.path.clone(),
-                            loaded: Some(BrirSummary::of(&set)),
-                            error: None,
-                        });
-                        set_slot.store(Some(Arc::new(Loaded {
-                            key,
-                            set,
-                            bank,
-                            inputs,
-                        })));
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "binaural: BRIR '{}' unavailable ({e}); the cascade runs on the HRTF stage",
-                            key.path
-                        );
-                        sink(BrirStatus {
-                            path: key.path.clone(),
-                            loaded: None,
-                            error: Some(e),
-                        });
-                    }
+                if let Some(loaded) = Self::load_ready(&plan, key, buses, sample_rate, &sink) {
+                    set_slot.store(Some(Arc::new(loaded)));
                 }
             } else if let Some((set, orientation)) = bank {
                 bank_slot.store(Some(Arc::new(build_bank(&plan, &set, orientation))));
+            }
+        }
+    }
+
+    /// Load `key` with everything the audio thread needs to start on it (the
+    /// front bank, `buses` histories), reporting the outcome to `sink`.
+    /// `None` when the file cannot be used.
+    fn load_ready(
+        plan: &ConvolutionPlan,
+        key: LoadKey,
+        buses: usize,
+        sample_rate: u32,
+        sink: &BrirStatusSink,
+    ) -> Option<Loaded> {
+        match Self::load(&key, sample_rate) {
+            Ok(set) => {
+                let set = Arc::new(set);
+                let (yaw, pitch) = (0.0, 0.0);
+                let front = set.nearest_orientation(yaw, pitch);
+                let bank = Arc::new(build_bank(plan, &set, front));
+                let capacity = plan.partitions_for(set.max_taps());
+                let inputs = (0..buses).map(|_| plan.make_input(capacity)).collect();
+                sink(BrirStatus {
+                    path: key.path.clone(),
+                    loaded: Some(BrirSummary::of(&set)),
+                    error: None,
+                });
+                Some(Loaded {
+                    key,
+                    set,
+                    bank,
+                    inputs,
+                })
+            }
+            Err(e) => {
+                log::warn!(
+                    "binaural: BRIR '{}' unavailable ({e}); the cascade runs on the HRTF stage",
+                    key.path
+                );
+                sink(BrirStatus {
+                    path: key.path.clone(),
+                    loaded: None,
+                    error: Some(e),
+                });
+                None
             }
         }
     }
@@ -356,6 +392,8 @@ impl BrirStage {
     /// audio thread. Steady state is one compare. A change sends a load
     /// request to the worker; the stage keeps its current set until the new
     /// one lands, then swaps (and `buses` histories come pre-built with it).
+    /// With [`Self::set_synchronous_builds`] on, the load runs here instead
+    /// and the new set is live on this frame.
     pub fn ensure_loaded(&mut self, path: &str, opts: &BrirLoadOptions, buses: usize) {
         let changed = match &self.key {
             Some(k) => k.path != path || k.opts != *opts,
@@ -366,11 +404,18 @@ impl BrirStage {
                 path: path.to_string(),
                 opts: *opts,
             };
-            let _ = self.request_tx.send(Request::Load {
-                key: key.clone(),
-                buses,
-            });
-            self.key = Some(key);
+            self.key = Some(key.clone());
+            if self.synchronous_builds {
+                // Published through the slot the worker uses, so the swap
+                // below takes it exactly as it takes the worker's.
+                if let Some(loaded) =
+                    Self::load_ready(&self.plan, key, buses, self.sample_rate, &self.sink)
+                {
+                    self.incoming_set.store(Some(Arc::new(loaded)));
+                }
+            } else {
+                let _ = self.request_tx.send(Request::Load { key, buses });
+            }
         }
         if let Some(loaded) = self.incoming_set.swap(None) {
             let stale = self.key.as_ref() != Some(&loaded.key);
@@ -563,10 +608,17 @@ impl BrirStage {
             let wanted = set.nearest_orientation(yaw, pitch);
             let current = self.bank.as_ref().map(|b| b.orientation);
             if current != Some(wanted) && self.pending_orientation != Some(wanted) {
-                let _ = self.request_tx.send(Request::Bank {
-                    set: Arc::clone(set),
-                    orientation: wanted,
-                });
+                if self.synchronous_builds {
+                    // Through the worker's slot: the swap below blends it in
+                    // on this very block.
+                    self.incoming_bank
+                        .store(Some(Arc::new(build_bank(&self.plan, set, wanted))));
+                } else {
+                    let _ = self.request_tx.send(Request::Bank {
+                        set: Arc::clone(set),
+                        orientation: wanted,
+                    });
+                }
                 self.pending_orientation = Some(wanted);
             }
         }
@@ -861,6 +913,42 @@ mod tests {
             assert!((l[k + lat] - pair.left[k]).abs() < 1e-4, "tap {k}");
         }
         assert!(l.iter().all(|v| v.is_finite()));
+    }
+
+    /// With synchronous builds (offline renders) the bank for a new head
+    /// orientation is built in the block that asks for it and starts
+    /// blending in there, instead of whenever the worker delivers it.
+    #[test]
+    fn synchronous_builds_turn_the_head_on_the_requesting_block() {
+        let set = synth_set(&[30.0, -30.0], &[-20.0, 0.0, 20.0], 400);
+        let mut stage = ready_stage(&set);
+        stage.set_synchronous_builds(true);
+        assert_eq!(stage.bank_orientation(), Some(1));
+        let head = HeadPose::from_euler_deg(18.0, 0.0, 0.0);
+        let silence = vec![0.0f32; 3 * BRIR_BLOCK];
+        let _ = run(&mut stage, &silence, BRIR_BLOCK, head);
+        assert_eq!(stage.bank_orientation(), Some(2));
+    }
+
+    /// A synchronous load has reported its outcome by the time
+    /// `ensure_loaded` returns; a failed one leaves the stage unready (the
+    /// cascade then runs on the HRTF stage, as it does live).
+    #[test]
+    fn a_synchronous_load_reports_before_returning() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<BrirStatus>::new()));
+        let sink_seen = Arc::clone(&seen);
+        let mut stage = BrirStage::with_status_sink(
+            48000,
+            Arc::new(move |s| sink_seen.lock().unwrap().push(s)),
+        );
+        stage.set_synchronous_builds(true);
+        stage.ensure_loaded("/nonexistent.sofa", &BrirLoadOptions::default(), 3);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].path, "/nonexistent.sofa");
+        assert!(seen[0].loaded.is_none());
+        assert!(seen[0].error.is_some());
+        assert!(!stage.is_ready());
     }
 
     #[test]

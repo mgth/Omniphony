@@ -26,12 +26,16 @@ impl LoadedBridge {
     pub fn load_with_params(path: &Path) -> Result<Self> {
         let lib = BridgeLibRef::load_from_file(path)
             .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
-        install_bridge_host_log_sink(&lib);
-        let new_bridge = lib.new_bridge();
-        // strict mode removed from the host; bridges ignore the flag. The ABI
-        // parameter is kept for compatibility and always passed as `false`.
-        let bridge = new_bridge(false);
+        let bridge = open_bridge(&lib);
         Ok(Self { lib, bridge })
+    }
+
+    /// [`load_with_params`](Self::load_with_params), then ask the bridge for
+    /// `presentation`: an error when it refuses (see [`configure_presentation`]).
+    pub fn load_for_presentation(path: &Path, presentation: &str) -> Result<Self> {
+        let mut loaded = Self::load_with_params(path)?;
+        configure_presentation(&mut loaded.bridge, presentation)?;
+        Ok(loaded)
     }
 
     /// Set a bridge configuration option. Must be called before the first packet.
@@ -50,6 +54,27 @@ impl LoadedBridge {
     }
 }
 
+/// One more bridge instance from an already-loaded plugin, its logs routed to
+/// the host's: how every host opens one, from a path ([`LoadedBridge`]) or
+/// from the plugin a session already holds (the PipeWire sink's own bridge).
+pub fn open_bridge(lib: &BridgeLibRef) -> FormatBridgeBox {
+    install_bridge_host_log_sink(lib);
+    let new_bridge = lib.new_bridge();
+    // strict mode removed from the host; bridges ignore the flag. The ABI
+    // parameter is kept for compatibility and always passed as `false`.
+    new_bridge(false)
+}
+
+/// Ask `bridge` for `presentation` (before its first packet); an error naming
+/// the value when the bridge refuses it. Whether that is fatal is the host's
+/// call: the CLI stops, a player keeps the bridge's default.
+pub fn configure_presentation(bridge: &mut FormatBridgeBox, presentation: &str) -> Result<()> {
+    if !bridge.configure("presentation".into(), presentation.into()) {
+        bail!("Bridge rejected presentation value '{presentation}'");
+    }
+    Ok(())
+}
+
 pub fn install_bridge_host_log_sink(lib: &BridgeLibRef) {
     let Some(set_host_log_sink) = lib.set_host_log_sink() else {
         return;
@@ -65,7 +90,7 @@ extern "C" fn forward_bridge_log_to_host(level: RLogLevel, target: RStr<'_>, mes
         RLogLevel::Debug => log::Level::Debug,
         RLogLevel::Trace => log::Level::Trace,
     };
-    sys::live_log::emit_external_record(level, target.as_str(), message.as_str());
+    live_log::emit_external_record(level, target.as_str(), message.as_str());
 }
 
 /// Resolve the path to the bridge plugin.
@@ -234,9 +259,10 @@ fn auto_discovery_dirs() -> Vec<PathBuf> {
 }
 
 /// Look for a `*_bridge.{so,dll,dylib}` in the auto-discovery directories.
-/// Used as a fallback both by [`resolve_bridge`] and by
-/// [`crate::engine::Engine::from_paths`] when no explicit / config-provided
-/// path exists or the one provided no longer points at a real file.
+/// [`resolve_bridge`] (the CLI's and [`crate::engine::Engine::from_paths`]'s
+/// resolution) falls back to it only when no path was requested at all: a
+/// requested path that does not resolve to a file is an error, never a cue
+/// to load some other bridge.
 pub fn find_bridge_next_to_exe() -> Result<PathBuf> {
     find_bridge_in_dirs(&auto_discovery_dirs())
 }

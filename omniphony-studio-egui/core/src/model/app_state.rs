@@ -458,13 +458,17 @@ pub struct LiveInputState {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveOptionsState {
-    pub object_generator_params: Option<serde_json::Value>,
+    /// Stored param values of every object generator (`{ id: { key:
+    /// value } }`), as `renderBackendState.backendParamValuesById` holds the
+    /// backends'.
+    pub object_generator_param_values_by_id: Option<serde_json::Value>,
     pub object_generator_layout_has_height: Option<bool>,
     /// Facts about the crossover bank the renderer actually built (engine,
     /// bands, cutoffs, FIR taps, latency). Passthrough JSON; annotates the
     /// crossover control.
     pub crossover: Option<serde_json::Value>,
-    pub phantom_params: Option<serde_json::Value>,
+    /// Stored param values of the phantom stage (`{ key: value }`).
+    pub phantom_param_values: Option<serde_json::Value>,
     pub fixed_channel_catalog: Option<serde_json::Value>,
     pub fixed_channel_processing: Option<serde_json::Value>,
     pub output_channel_mapping_unroutable: Option<Vec<String>>,

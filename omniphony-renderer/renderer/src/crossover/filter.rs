@@ -27,63 +27,8 @@
 //!   by the compensation allpass states: splitter k owns k entries (one per
 //!   earlier band). Total = 4·(N−1) + (N−1)(N−2)/2.
 
-/// State for a single Direct-Form-II Transposed biquad section.
-#[derive(Clone, Default)]
-pub struct BiquadState {
-    z1: f32,
-    z2: f32,
-}
-
-/// Biquad coefficients: `[b0, b1, b2, a1, a2]` in Direct-Form-II Transposed.
-#[derive(Clone, Copy)]
-pub(crate) struct BiquadCoeffs(pub(crate) [f32; 5]);
-
-/// Process one sample through a biquad (Direct Form II Transposed).
-#[inline(always)]
-pub(crate) fn biquad(input: f32, c: BiquadCoeffs, s: &mut BiquadState) -> f32 {
-    let [b0, b1, b2, a1, a2] = c.0;
-    let out = b0 * input + s.z1;
-    s.z1 = b1 * input - a1 * out + s.z2;
-    s.z2 = b2 * input - a2 * out;
-    out
-}
-
-/// Shared bilinear-transform pieces of a 2nd-order Butterworth section at
-/// `fc` Hz: `(k², norm, a1, a2)`. LP, HP and the compensation allpass all use
-/// the same denominator.
-fn butterworth2_parts(fc: f32, sample_rate: u32) -> (f32, f32, f32, f32) {
-    let k = (std::f32::consts::PI * fc / sample_rate as f32).tan();
-    // Butterworth damping: Q = 1/√2. Two cascaded sections then form a true
-    // Linkwitz-Riley 4th-order filter (flat passband, −6 dB at fc). A Q of
-    // √2 here would instead peak +3 dB per section (+6 dB at fc combined).
-    let q = std::f32::consts::FRAC_1_SQRT_2;
-    let norm = 1.0 + k / q + k * k;
-    let a1 = 2.0 * (k * k - 1.0) / norm;
-    let a2 = (1.0 - k / q + k * k) / norm;
-    (k * k, norm, a1, a2)
-}
-
-/// 2nd-order Butterworth low-pass biquad at `fc` Hz.
-pub(crate) fn butterworth2_lp(fc: f32, sample_rate: u32) -> BiquadCoeffs {
-    let (k2, norm, a1, a2) = butterworth2_parts(fc, sample_rate);
-    let b0 = k2 / norm;
-    BiquadCoeffs([b0, 2.0 * b0, b0, a1, a2])
-}
-
-/// 2nd-order Butterworth high-pass biquad at `fc` Hz.
-pub(crate) fn butterworth2_hp(fc: f32, sample_rate: u32) -> BiquadCoeffs {
-    let (_, norm, a1, a2) = butterworth2_parts(fc, sample_rate);
-    let b0 = 1.0 / norm;
-    BiquadCoeffs([b0, -2.0 * b0, b0, a1, a2])
-}
-
-/// 2nd-order allpass at `fc` Hz with the same poles as the Butterworth
-/// sections — exactly LR4_LP(fc) + LR4_HP(fc). Used to phase-align earlier
-/// bands when a later splitter runs.
-fn allpass2(fc: f32, sample_rate: u32) -> BiquadCoeffs {
-    let (_, _, a1, a2) = butterworth2_parts(fc, sample_rate);
-    BiquadCoeffs([a2, a1, 1.0, a1, a2])
-}
+pub use crate::dsp::iir::BiquadState;
+use crate::dsp::iir::{BiquadCoeffs, biquad};
 
 /// Pre-computed coefficients for one LR4 splitter at a given cutoff.
 struct Splitter {
@@ -117,11 +62,11 @@ impl LR4CrossoverBank {
             .map(|&fc| {
                 let fc = fc.clamp(1.0, nyquist - 1.0);
                 Splitter {
-                    lp1: butterworth2_lp(fc, sample_rate),
-                    lp2: butterworth2_lp(fc, sample_rate),
-                    hp1: butterworth2_hp(fc, sample_rate),
-                    hp2: butterworth2_hp(fc, sample_rate),
-                    ap: allpass2(fc, sample_rate),
+                    lp1: BiquadCoeffs::butterworth2_lp(fc, sample_rate),
+                    lp2: BiquadCoeffs::butterworth2_lp(fc, sample_rate),
+                    hp1: BiquadCoeffs::butterworth2_hp(fc, sample_rate),
+                    hp2: BiquadCoeffs::butterworth2_hp(fc, sample_rate),
+                    ap: BiquadCoeffs::butterworth2_allpass(fc, sample_rate),
                 }
             })
             .collect::<Vec<_>>();

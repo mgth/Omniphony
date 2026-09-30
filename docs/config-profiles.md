@@ -93,15 +93,12 @@ layout is preflighted first: a profile whose `speaker_layout` file no longer
 loads refuses the switch outright instead of half-applying its parameters on
 the previous layout.
 
-1. **Commit** the current live state into `render:`
-   (`options::store_live_to_config` + the same core field set as
-   `persist::save_live_config`), then mirror it into `profiles[old_name]`.
-   Pending unsaved tweaks are thus captured by the outgoing profile rather
-   than lost — same spirit as the live-handoff sidecar. Host-owned fields
-   (output device, live input, resampling, latency) are deliberately NOT
-   amended here: they only take effect at engine start, so after a switch the
-   running host state describes the previous profile; the on-disk values stay
-   as persisted.
+1. **Unsaved edits** of the outgoing profile are discarded: a profile
+   operation never saves behind the user's back
+   (`docs/persistence-policy.md`). A client that wants them kept sends
+   `[new_name, "save"]`: the engine runs the full Save (host fields included,
+   into the outgoing profile) first and refuses the switch if it fails.
+   Studio asks which the user wants before switching with unsaved edits.
 2. **Swap**: `render = profiles[new_name]` (with the input-plumbing carve-over),
    `active_profile = new_name`, `Config::save()`, delete the sidecar and clear
    the overlay cache (a deliberate state change supersedes any pending
@@ -141,15 +138,16 @@ Primitive operations, composed by Studio:
 
 | Address                              | Args           | Effect |
 |--------------------------------------|----------------|--------|
-| `/omniphony/control/profile/switch`  | `s name`       | switch as above |
-| `/omniphony/control/profile/create`  | `s name`       | commit live → clone into `profiles[name]` (no switch) |
+| `/omniphony/control/profile/switch`  | `s name`, `s "save"`? | switch as above |
+| `/omniphony/control/profile/create`  | `s name`       | live state → `profiles[name]` (no switch; the active profile's file untouched) |
 | `/omniphony/control/profile/delete`  | `s name`       | remove; refused for the active profile |
 | `/omniphony/control/profile/rename`  | `s old, s new` | rename key; follows `active_profile` if it was active |
 | `/omniphony/state/profiles`          | `s json`       | broadcast `{"active": …, "names": […]}` |
 
 Names are trimmed, non-empty, unique; create refuses an existing name,
-rename refuses a colliding target. Every mutation saves the config and
-re-broadcasts the profiles state; the state also rides the periodic snapshot.
+rename refuses a colliding target. Every mutation writes the profile list and
+re-broadcasts the profiles state (unsaved edits stay pending, except across a
+switch); the state also rides the periodic snapshot.
 
 **Why not a registry `OptionSpec` row?** The registry models scalar fields of
 `LiveParams` with pure `set`/`config_store` functions; a profile switch is a

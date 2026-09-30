@@ -155,6 +155,20 @@ impl Gains {
         self.data[i] = v;
     }
 
+    /// Scale to unit energy given `energy`, the set's `Σ g²` (callers usually
+    /// accumulate it while filling the gains): every gain is divided by
+    /// `√energy`. A set whose energy is at most `1e-12` is left untouched, so
+    /// silence stays silence instead of blowing up.
+    #[inline]
+    pub fn normalize_to_unit_energy(&mut self, energy: f32) {
+        if energy > 1e-12 {
+            let norm = energy.sqrt();
+            for gain in self.iter_mut() {
+                *gain /= norm;
+            }
+        }
+    }
+
     /// Create Gains by copying from a slice.
     #[inline]
     fn from_slice(src: &[f32]) -> Self {
@@ -207,6 +221,17 @@ pub struct VbapPanner {
     source: native_backend::NativeVbapLayout,
     #[cfg(feature = "saf_vbap")]
     speaker_dirs_deg: Vec<[f32; 2]>,
+}
+
+/// Maximum spread in degrees the VBAP spreading accepts (SAF's `vbap3D` and
+/// its native port alike). The public API is normalised to `[0, 1]`; this
+/// maps 1.0 → 180°.
+const NORMALIZED_SPREAD_MAX_DEG: f32 = 180.0;
+
+/// Normalised spread `[0, 1]` → the degrees `vbap3D` takes.
+#[inline]
+fn normalized_spread_to_degrees(spread: f32) -> f32 {
+    spread.clamp(0.0, 1.0) * NORMALIZED_SPREAD_MAX_DEG
 }
 
 #[cfg(not(feature = "saf_vbap"))]
