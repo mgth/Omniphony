@@ -313,7 +313,11 @@ fn init_osc_runtime(
         // as the engine publishes them. Without them this host sent Studio
         // empty lists: no height generator to pick, no phantom-extraction
         // parameters and no channel catalogue for the bed editor.
-        handler.spatial.channel_objects.publish_static_state(&ctrl);
+        handler
+            .spatial
+            .stream
+            .channel_objects
+            .publish_static_state(&ctrl);
         // Bridge path, config path/status/profiles, a restored handoff's
         // unsaved mark, monitoring cadences and the runtime seed (ramp mode,
         // declared live options + their param bags and the virtual bed, DRC
@@ -536,7 +540,8 @@ pub fn init_no_bridge_handler(
     let (renderer, osc_sender) = runtime.into_parts();
     handler.spatial_renderer = Some(renderer);
     handler.telemetry.osc_sender = osc_sender;
-    handler.spatial.coordinate_format = orender_engine::degraded::NO_BRIDGE_COORDINATE_FORMAT;
+    handler.spatial.stream.coordinate_format =
+        orender_engine::degraded::NO_BRIDGE_COORDINATE_FORMAT;
     init_telemetry(handler);
 
     // The input panel says what to do about it.

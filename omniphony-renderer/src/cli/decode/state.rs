@@ -5,8 +5,8 @@ use audio_input::InputControl;
 use audio_output::AdaptiveResamplingConfig;
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::PipewireBufferConfig;
-use bridge_api::{RChannelPose, RCoordinateFormat};
 use orender_engine::osc::OscSender;
+use orender_engine::stream_state::{StreamDeclaration, StreamState};
 use renderer::metering::AudioMeter;
 use renderer::placement::SourceFamily;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// What the handler calls the PipeWire sink's plain PCM, which has no bridge
-/// to name it (`SpatialState::source_label`).
+/// to name it (`StreamDeclaration::label`).
 const LIVE_PCM_LABEL: &str = "PCM";
 
 /// Tracks the diag-publication cadence. The rate is read from a shared
@@ -115,76 +115,32 @@ impl Default for TelemetryState {
     }
 }
 
+/// The CLI's per-stream state: the state both hosts keep
+/// ([`StreamState`], with the rules that update it), plus what only this host
+/// needs — the bed-conformed export's bed ids, and which of the PipeWire
+/// sink's two producers the declaration is for.
 pub struct SpatialState {
-    pub has_objects: bool,
+    pub stream: StreamState,
     /// Fixed-channel bed ids in the legacy 0-9 EXPORT order (file-output
-    /// conformance only — rendering goes through `fixed_planner`).
+    /// conformance only — rendering goes through the stream's planners).
     pub bed_indices: Option<Vec<usize>>,
-    /// Shared fixed-channel planner (routing + plan cache), mirroring the
-    /// embedded engine.
-    pub fixed_planner: orender_engine::virtual_bed::FixedChannelPlanner,
-    /// Bed-only planner: caches the channel mapping so a steady stream replans
-    /// only when the labels or the placement params actually change.
-    pub bed_planner: orender_engine::virtual_bed::BedChannelPlanner,
-    /// Reusable event buffer for the bed-only path: the planner's events plus
-    /// the synthesized objects'. Separate from `frame_events`, which the object
-    /// path extends without clearing — sharing one buffer would leak a bed
-    /// frame's events into the next object frame.
-    pub bed_events: Vec<renderer::spatial_renderer::SpatialChannelEvent>,
-    /// Phantom extraction + bed→height lift, the same stages the embedded
-    /// engine drives. Channel content reaches this host too — everything played
-    /// through the PipeWire sink does — so it needs them just as much.
-    pub channel_objects: orender_engine::channel_objects::ChannelObjectStages,
-    /// Cached object↔channel declaration from the bridge (sparse emission),
-    /// sorted by channel.
-    pub object_channels: Vec<(u32, usize)>,
-    /// The bridge's declaration for the current labels, as last sent with a
-    /// decoded frame (`DecodedAudioData::declaration`, from the pipe decoder
-    /// thread or the PipeWire sink's bridge decoder), or the sink's plain PCM
-    /// while that plays: the family whose placement policy applies, and the
-    /// poses the format states. Kept across segment resets: a segment start or
-    /// a label change comes with a new one.
-    pub source_family: SourceFamily,
-    pub declared_poses: Vec<RChannelPose>,
-    /// The bridge's name for the format, from the same declaration.
-    pub source_label: String,
-    /// The input the declaration above is for (see
+    /// The input the stream's declaration is for (see
     /// [`SpatialState::take_declaration`]); `None` before the first frame.
     declared_for: Option<DecodedSource>,
-    /// The bridge's declaration (family, poses, label), set aside while the
-    /// PipeWire sink plays plain PCM.
-    bridge_declaration_aside: Option<(SourceFamily, Vec<RChannelPose>, String)>,
-    /// The fixed-channel processing diagnostic Studio shows, as the embedded
-    /// engine publishes it.
-    pub fixed_processing: orender_engine::channel_objects::FixedProcessingState,
-    pub object_names: std::collections::HashMap<u32, String>,
+    /// The bridge's declaration, set aside while the PipeWire sink plays
+    /// plain PCM.
+    bridge_declaration_aside: Option<StreamDeclaration>,
     pub au_index: u64,
-    pub frame_events: Vec<renderer::spatial_renderer::SpatialChannelEvent>,
-    pub loudness_applied: bool,
-    pub coordinate_format: RCoordinateFormat,
 }
 
 impl Default for SpatialState {
     fn default() -> Self {
         Self {
-            has_objects: false,
+            stream: StreamState::default(),
             bed_indices: None,
-            fixed_planner: orender_engine::virtual_bed::FixedChannelPlanner::new(),
-            bed_planner: orender_engine::virtual_bed::BedChannelPlanner::new(),
-            bed_events: Vec::new(),
-            channel_objects: orender_engine::channel_objects::ChannelObjectStages::new(),
-            object_channels: Vec::new(),
-            source_family: SourceFamily::Generic,
-            declared_poses: Vec::new(),
-            source_label: String::new(),
             declared_for: None,
             bridge_declaration_aside: None,
-            fixed_processing: Default::default(),
-            object_names: std::collections::HashMap::new(),
             au_index: 0,
-            frame_events: Vec::new(),
-            loudness_applied: false,
-            coordinate_format: RCoordinateFormat::Cartesian,
         }
     }
 }
@@ -200,7 +156,7 @@ impl SpatialState {
     /// session. A live PCM frame is channel content by construction — fixed
     /// labels, no metadata — whatever played before it.
     pub fn frame_has_objects(&self, source: DecodedSource) -> bool {
-        self.has_objects && !matches!(source, DecodedSource::Live)
+        self.stream.has_objects && !matches!(source, DecodedSource::Live)
     }
 
     /// Take on the declaration a frame from `source` came with.
@@ -218,9 +174,7 @@ impl SpatialState {
         let previous = self.declared_for.replace(source);
         if let Some(declaration) = declaration {
             self.bridge_declaration_aside = None;
-            self.source_family = SourceFamily::from_declared(&declaration.family);
-            self.declared_poses = declaration.poses;
-            self.source_label = declaration.label;
+            self.stream.apply_declaration(declaration);
             return;
         }
         if previous == Some(source) {
@@ -230,25 +184,18 @@ impl SpatialState {
             DecodedSource::Live => {
                 // Moved, not cloned: the bridge's declaration waits here
                 // until its input comes back.
-                self.bridge_declaration_aside = Some((
-                    self.source_family,
-                    std::mem::take(&mut self.declared_poses),
-                    std::mem::take(&mut self.source_label),
-                ));
-                self.source_family = SourceFamily::Pcm;
-                self.source_label.push_str(LIVE_PCM_LABEL);
+                let pcm = StreamDeclaration {
+                    family: SourceFamily::Pcm,
+                    poses: Vec::new(),
+                    label: LIVE_PCM_LABEL.to_owned(),
+                };
+                self.bridge_declaration_aside =
+                    Some(std::mem::replace(&mut self.stream.declaration, pcm));
             }
             DecodedSource::Bridge => {
                 // Nothing set aside: the bridge never declared, as for a
                 // fresh stream.
-                let (family, poses, label) = self.bridge_declaration_aside.take().unwrap_or((
-                    SourceFamily::Generic,
-                    Vec::new(),
-                    String::new(),
-                ));
-                self.source_family = family;
-                self.declared_poses = poses;
-                self.source_label = label;
+                self.stream.declaration = self.bridge_declaration_aside.take().unwrap_or_default();
             }
         }
     }
@@ -284,9 +231,6 @@ pub struct OutputState {
     pub last_audio_sample_rate_hz: Option<u32>,
     pub last_audio_sample_format: Option<String>,
     pub last_audio_output_device: Option<String>,
-    pub drc_gain: f32,
-    pub drc_ramp_samples_remaining: u32,
-    pub drc_target_gain: f32,
     /// Duty-cycle EMA of the render cost for the meter bundle, as in the
     /// embedded engine: raw per-frame timings alias with 40-sample access
     /// units, so the published figure is a smoothed per-frame equivalent.
@@ -310,9 +254,6 @@ impl Default for OutputState {
             last_audio_sample_rate_hz: None,
             last_audio_sample_format: None,
             last_audio_output_device: None,
-            drc_gain: 1.0,
-            drc_ramp_samples_remaining: 0,
-            drc_target_gain: 1.0,
             render_duty: Default::default(),
         }
     }
@@ -399,7 +340,7 @@ pub struct FrameHandlerContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bridge_api::RChannelLabel;
+    use bridge_api::{RChannelLabel, RChannelPose};
 
     fn declared(family: &str, poses: usize, label: &str) -> Option<Declaration> {
         Some(Declaration {
@@ -416,7 +357,8 @@ mod tests {
     }
 
     fn state(s: &SpatialState) -> (SourceFamily, usize, &str) {
-        (s.source_family, s.declared_poses.len(), &s.source_label)
+        let d = &s.stream.declaration;
+        (d.family, d.poses.len(), &d.label)
     }
 
     /// The input switching between the sink's bridge and its plain PCM is a
@@ -431,10 +373,10 @@ mod tests {
         s.take_declaration(Live, None);
         assert_eq!(state(&s), pcm);
         // Declared once: a later PCM frame leaves the state alone.
-        s.source_label.push('!');
+        s.stream.declaration.label.push('!');
         s.take_declaration(Live, None);
-        assert_eq!(s.source_label, "PCM!");
-        s.source_label.pop();
+        assert_eq!(s.stream.declaration.label, "PCM!");
+        s.stream.declaration.label.pop();
 
         // A bitstream declares for itself.
         s.take_declaration(Bridge, declared("dts", 2, "DTS"));

@@ -449,8 +449,12 @@ fn handle_stream_end(handler: &mut DecodeHandler) -> Result<()> {
     let osc_sender = handler.telemetry.osc_sender.take();
     let audio_meter = handler.telemetry.audio_meter.take();
     let runtime = handler.runtime.clone();
+    // A property of the bridge, which outlives the stream too.
+    let coordinate_format = handler.spatial.stream.coordinate_format;
 
     *handler = DecodeHandler::default();
+
+    handler.spatial.stream.coordinate_format = coordinate_format;
 
     handler.spatial_renderer = spatial_renderer;
     handler.audio_control = audio_control;
@@ -888,7 +892,7 @@ fn run_prepared_render(
         prepared.vbap_cartesian_defaults,
         prepared.preferred_evaluation_mode,
     )?;
-    handler.spatial.coordinate_format = prepared.coordinate_format;
+    handler.spatial.stream.coordinate_format = prepared.coordinate_format;
     // Live DRC changes reach both decoders through this value; the one the
     // live params were seeded with is already in it.
     handler.drc.shared = Some(Arc::clone(&prepared.drc_mode));
