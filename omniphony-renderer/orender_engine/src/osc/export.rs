@@ -108,8 +108,12 @@ pub(crate) fn build_live_state(
 ) -> LiveStateDatagrams {
     let has_audio = host.is_some();
     let has_input = host.is_some();
-    let mut messages =
-        runtime_control::snapshot::build_live_state_bundle(control, has_audio, has_input);
+    let mut messages = runtime_control::snapshot::build_live_state_bundle_with_host(
+        control,
+        has_audio,
+        has_input,
+        host.map(|h| h.as_ref()),
+    );
     if let Some(h) = host {
         messages.extend(h.extend_snapshot());
     }

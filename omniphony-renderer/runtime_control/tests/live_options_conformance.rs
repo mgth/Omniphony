@@ -237,6 +237,8 @@ fn env(control: &Arc<RendererControl>) -> renderer::options::OptionEnv<'_> {
 fn legacy_addr_is_catalogued(addr: renderer::options::LegacyAddr) -> bool {
     use renderer::options::LegacyAddr;
     match addr {
+        // Nothing to catalogue: the generic setters only.
+        LegacyAddr::None => true,
         LegacyAddr::Exact(addr) => osc_contract::ALL_CONTROL.contains(&addr),
         LegacyAddr::Prefixed { prefix, .. } => [
             osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
@@ -248,12 +250,13 @@ fn legacy_addr_is_catalogued(addr: renderer::options::LegacyAddr) -> bool {
     }
 }
 
-/// The address a client sends for a legacy alias.
-fn legacy_addr_example(addr: renderer::options::LegacyAddr) -> String {
+/// The address a client sends for a legacy alias, if the option has one.
+fn legacy_addr_example(addr: renderer::options::LegacyAddr) -> Option<String> {
     use renderer::options::LegacyAddr;
     match addr {
-        LegacyAddr::Exact(addr) => addr.to_string(),
-        LegacyAddr::Prefixed { prefix, tail } => format!("{prefix}{tail}"),
+        LegacyAddr::None => None,
+        LegacyAddr::Exact(addr) => Some(addr.to_string()),
+        LegacyAddr::Prefixed { prefix, tail } => Some(format!("{prefix}{tail}")),
     }
 }
 
@@ -408,6 +411,44 @@ mod registry {
             ("hybrid_internal_backend", RawOptionValue::Str("vbap")),
             ("hybrid_curve_smoothing", RawOptionValue::Number(0.5)),
             ("hybrid_metric", RawOptionValue::Str("spherical")),
+            ("output_mode", RawOptionValue::Str("binaural")),
+            ("binaural_mode", RawOptionValue::Str("cascaded")),
+            // A SOFA file: its path rides its own config key.
+            (
+                "hrir_source",
+                RawOptionValue::Str("sofa:/data/hrtf/test.sofa"),
+            ),
+            ("brir_head_tracking", RawOptionValue::Str("on")),
+            ("brir_max_length_s", RawOptionValue::Number(1.5)),
+            ("brir_tail_floor_db", RawOptionValue::Number(70.0)),
+            ("binaural_unit_scale_m", RawOptionValue::Number(2.0)),
+            ("binaural_head_radius_m", RawOptionValue::Number(0.09)),
+            ("binaural_air_absorption", RawOptionValue::Bool(false)),
+            ("binaural_diffuse_field_eq", RawOptionValue::Bool(true)),
+            ("reflections_enabled", RawOptionValue::Bool(true)),
+            ("reflections_level", RawOptionValue::Number(0.7)),
+            ("reflections_wall_cutoff_hz", RawOptionValue::Number(8000.0)),
+            ("reflections_room_width_m", RawOptionValue::Number(5.0)),
+            ("reflections_room_depth_m", RawOptionValue::Number(6.0)),
+            ("reflections_room_height_m", RawOptionValue::Number(3.0)),
+            ("reverb_enabled", RawOptionValue::Bool(true)),
+            ("reverb_level", RawOptionValue::Number(0.4)),
+            ("reverb_rt60_s", RawOptionValue::Number(0.8)),
+            ("reverb_predelay_ms", RawOptionValue::Number(10.0)),
+            ("reverb_size", RawOptionValue::Number(1.5)),
+            ("reverb_rt60_low_ratio", RawOptionValue::Number(1.5)),
+            ("reverb_rt60_high_ratio", RawOptionValue::Number(0.5)),
+            (
+                "head_tracking_osc_address",
+                RawOptionValue::Str("/rotation"),
+            ),
+            ("head_tracking_format", RawOptionValue::Str("quat")),
+            ("head_tracking_smoothing", RawOptionValue::Number(0.5)),
+            ("head_tracking_invert", RawOptionValue::Bool(true)),
+            ("binaural_ear_gains", RawOptionValue::Numbers(&[0.8, 1.2])),
+            // +20 dB: the file stores decibels, and 10 survives the trip
+            // exactly.
+            ("master_gain", RawOptionValue::Number(10.0)),
         ]
     }
 
@@ -428,12 +469,13 @@ mod registry {
                 spec.key
             );
             assert!(options::find(spec.key).is_some(), "{}", spec.key);
-            assert!(
-                options::find_by_legacy_addr(&legacy_addr_example(spec.legacy_control_addr))
-                    .is_some(),
-                "{}",
-                spec.key
-            );
+            if let Some(addr) = legacy_addr_example(spec.legacy_control_addr) {
+                assert!(
+                    options::find_by_legacy_addr(&addr).is_some_and(|found| found.key == spec.key),
+                    "{}: its legacy address resolves to another option",
+                    spec.key
+                );
+            }
         }
         assert!(
             osc_contract::ALL_CONTROL.contains(&osc_contract::CONTROL_OPTION),
@@ -879,4 +921,125 @@ fn snapshot_spread_block_follows_the_vbap_param_bag() {
         spread["max"],
         serde_json::json!(control.live.read().spread_max)
     );
+}
+
+/// Hosts scope the options: a host with audio I/O leaves the embedded
+/// engine's out of what it publishes and saves, and publishes its own.
+mod host_scope {
+    use super::*;
+    use rosc::{OscMessage, OscPacket, OscType};
+    use runtime_control::HostControlHandler;
+    use runtime_control::osc::ControlEffects;
+
+    /// A host declaring one option, `stub_rate`.
+    struct StubHost;
+
+    impl HostControlHandler for StubHost {
+        fn handle(&self, _addr: &str, _msg: &OscMessage) -> Option<ControlEffects> {
+            None
+        }
+        fn extend_snapshot(&self) -> Vec<OscPacket> {
+            Vec::new()
+        }
+        fn amend_saved_config(&self, _render: &mut RenderConfig) {}
+        fn options_schema(&self) -> Vec<serde_json::Value> {
+            vec![serde_json::json!({"key": "stub_rate", "kind": "optional_int"})]
+        }
+        fn options_json(&self) -> serde_json::Map<String, serde_json::Value> {
+            [("stub_rate".to_string(), serde_json::json!(48_000))]
+                .into_iter()
+                .collect()
+        }
+        fn options_applied_json(&self) -> serde_json::Map<String, serde_json::Value> {
+            [("stub_rate".to_string(), serde_json::Value::Null)]
+                .into_iter()
+                .collect()
+        }
+        fn option_groups_pending(&self) -> Vec<(&'static str, bool)> {
+            vec![("stub", true)]
+        }
+    }
+
+    fn published(
+        control: &Arc<RendererControl>,
+        host: Option<&dyn HostControlHandler>,
+    ) -> std::collections::HashMap<String, serde_json::Value> {
+        runtime_control::snapshot::build_live_state_bundle_with_host(
+            control,
+            host.is_some(),
+            host.is_some(),
+            host,
+        )
+        .into_iter()
+        .filter_map(|packet| match packet {
+            OscPacket::Message(OscMessage { addr, args }) => match args.first() {
+                Some(OscType::String(json)) => {
+                    serde_json::from_str(json).ok().map(|value| (addr, value))
+                }
+                _ => None,
+            },
+            OscPacket::Bundle(_) => None,
+        })
+        .collect()
+    }
+
+    fn schema_keys(state: &std::collections::HashMap<String, serde_json::Value>) -> Vec<String> {
+        state[osc_contract::STATE_OPTIONS_SCHEMA]
+            .as_array()
+            .expect("schema array")
+            .iter()
+            .map(|entry| entry["key"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn each_host_publishes_what_it_offers() {
+        let control = fixture_control();
+        let embedded = published(&control, None);
+        let keys = schema_keys(&embedded);
+        assert!(keys.iter().any(|k| k == "decode_thread"));
+        assert!(!keys.iter().any(|k| k == "stub_rate"));
+        assert!(!embedded.contains_key(osc_contract::STATE_HOST_OPTIONS));
+
+        let standalone = published(&control, Some(&StubHost));
+        let keys = schema_keys(&standalone);
+        assert!(!keys.iter().any(|k| k == "decode_thread"));
+        assert_eq!(keys.last().map(String::as_str), Some("stub_rate"));
+        let host_options = &standalone[osc_contract::STATE_HOST_OPTIONS];
+        assert_eq!(host_options["options"]["stub_rate"], 48_000);
+        assert!(host_options["applied"]["stub_rate"].is_null());
+        assert_eq!(host_options["pending"]["stub"], true);
+    }
+
+    /// A save by the standalone renderer keeps the embedded engine's
+    /// `decode_thread` as the file has it (the two share the config); the
+    /// embedded engine writes its own.
+    #[test]
+    fn a_host_save_keeps_the_options_it_does_not_offer() {
+        let control = fixture_control();
+        let base = temp_path("scope-base");
+        let out = temp_path("scope-out");
+        let mut config = Config::default();
+        config.render = Some(RenderConfig {
+            decode_thread: Some(true),
+            ..Default::default()
+        });
+        config.save(&base).expect("base written");
+        assert!(!control.live.read().decode_thread);
+
+        save_live_config_to_path(&control, Some(&StubHost), &base, &out).expect("save");
+        let saved = Config::load_or_default(&out).render.expect("render");
+        assert_eq!(saved.decode_thread, Some(true), "the file's value survives");
+
+        save_live_config_to_path(&control, None, &base, &out).expect("save");
+        let saved = Config::load_or_default(&out).render.expect("render");
+        assert_ne!(
+            saved.decode_thread,
+            Some(true),
+            "the embedded engine writes its own"
+        );
+
+        let _ = std::fs::remove_file(&base);
+        let _ = std::fs::remove_file(&out);
+    }
 }

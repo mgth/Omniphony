@@ -262,6 +262,13 @@ pub const CONTROL_OPTION: &str = "/omniphony/control/option";
 /// many keys it carries. An unknown key or a truncated value drops the whole
 /// message; an invalid value drops only its pair.
 pub const CONTROL_OPTIONS: &str = "/omniphony/control/options";
+/// Apply a group of declared options: args `[group (string)]`. A `Staged`
+/// group (the standalone renderer's live input) applies every value staged
+/// since its last apply; a `Live` group has nothing waiting and is only
+/// acknowledged. The per-domain apply addresses (`/control/input/apply`,
+/// `/control/config/input/apply`, `/control/config/audio/apply`) are
+/// aliases of this for their group.
+pub const CONTROL_OPTIONS_APPLY: &str = "/omniphony/control/options/apply";
 /// Named config profiles (docs/config-profiles.md). `switch`/`create`/`delete`
 /// take `[name (string)]`; `rename` takes `[old (string), new (string)]`.
 /// Every mutation saves the config and re-broadcasts [`STATE_PROFILES`].
@@ -481,6 +488,12 @@ pub const STATE_OBJECT_TEST_POSITION: &str = "/omniphony/state/object_test/posit
 /// Schema of the declared live options (`renderer::options` registry rows),
 /// as a JSON string. Same pattern as `/state/object_generators` / `/state/phantom`.
 pub const STATE_OPTIONS_SCHEMA: &str = "/omniphony/state/options_schema";
+/// The options a host declares (the standalone renderer's audio output and
+/// live input), as JSON: `{"options": {key: requested value}, "applied":
+/// {key: value in force}, "pending": {group: bool}}`. Sent with every
+/// live-state bundle by a host that declares any; the core options stay in
+/// the `/state/renderer` `options` block.
+pub const STATE_HOST_OPTIONS: &str = "/omniphony/state/host_options";
 pub const STATE_PHANTOM: &str = "/omniphony/state/phantom";
 /// Named config profiles view as JSON: `{"active": "...", "names": ["..."]}`.
 /// Broadcast in the state snapshot and after every profile mutation.
@@ -591,6 +604,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_OBJECT_GENERATOR_PARAM,
     CONTROL_OPTION,
     CONTROL_OPTIONS,
+    CONTROL_OPTIONS_APPLY,
     CONTROL_PROFILE_SWITCH,
     CONTROL_PROFILE_CREATE,
     CONTROL_PROFILE_DELETE,
@@ -759,6 +773,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_LOUDNESS,
     STATE_MONITORING,
     STATE_OPTIONS_SCHEMA,
+    STATE_HOST_OPTIONS,
     STATE_PROFILES,
     STATE_OSC_DIAG,
     STATE_OSC_METERING,

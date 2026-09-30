@@ -128,7 +128,7 @@ payload shape.
 |---|---|---|
 | `/control/realtime/master_gain` | f `≥0` (linear), seq int | Master gain; echoed on `/state/realtime/master_gain`. Studio sends `[0,2]`. |
 | `/control/realtime/speaker_gain` | id int, f `≥0` (linear), seq int | Per-speaker output gain; echoed on `/state/realtime/speaker_gain`. Saved as the layout speaker's `gain_db` (0.1 dB), which seeds it at the next start. |
-| `/control/gain` | f `≥0` (linear) | Master gain without a sequence number (scripts). Same field as the realtime address. |
+| `/control/gain` | f `≥0` (linear) | Master gain without a sequence number (scripts). Same field as the realtime address. Registry option `master_gain` (the file stores dB). |
 | `/control/object/{id}/mute` | int bool | Per-object mute. Transient: never saved. |
 | `/control/config/speakers` | json | Speaker edits: delay (saved) and mute (transient, never saved). |
 | `/control/loudness` | int bool | Dialogue-norm / loudness correction. Registry option alias (`use_loudness`). |
@@ -145,25 +145,41 @@ All under `/control/adaptive_resampling/…`. Master toggle: bare
 and the far-mode group `enable_far_mode`, `force_silence_in_far_mode`,
 `hard_recover_high_in_far_mode`, `hard_recover_low_in_far_mode`,
 `far_mode_return_fade_in_ms`. `/control/latency_target` sets the target buffer
-latency. See `PI_TUNING_PROCEDURE.md` and `docs/latency-regulation.md`.
+latency. All but `reset_ratio` and `pause` are host options of the
+`adaptive_resampling` group (`latency_target` of `audio_output`), keyed by
+their config key (`enable_adaptive_resampling`, `adaptive_resampling_kp_near`,
+…); the low-recover and smoothing tunables, which have no address of their
+own, are reached through `/control/config/audio` or `/control/option(s)`. See
+`PI_TUNING_PROCEDURE.md` and `docs/latency-regulation.md`.
 
 ### Audio output & live input
 
+Declared by the standalone renderer's host (`host_audio`), as host options
+of three groups — `audio_output` (live, restarts the output), 
+`adaptive_resampling` (live) and `live_input` (**staged**, restarts the input
+when applied) — so every one is also reachable through `/control/option(s)`
+under its `render.*` config key (`output_device`, `output_sample_rate`,
+`adaptive_resampling_kp_near`, `live_input_channels`, …), with its schema in
+`/state/options_schema` and its values in `/state/host_options` (see [Live
+options](#live-options)). The embedded engine declares none of them. The
+JSON patches below are aliases of a batch of these options: same fields,
+same wire format; `null` unsets a nullable field.
+
 | Address | Args | Meaning |
 |---|---|---|
-| `/control/config/audio`, `/control/config/audio/apply` | json | Audio output config (stage / apply). |
-| `/control/audio/output_device` | s | Select output device. |
-| `/control/audio/output_backend` | s | Requested output backend (`pipewire`, `asio`, `file`, …; `""` = platform default). Takes effect on the next output (re)start. |
-| `/control/audio/output_file` | s | Destination for the `file` backend (`-`, a path or a FIFO; `""` = unset). |
-| `/control/audio/output_file_format` | s | Container/format for the `file` backend (`""` = unset). |
+| `/control/config/audio`, `/control/config/audio/apply` | json | Audio output and adaptive-resampling config as one batch. The apply is an alias of `/control/options/apply audio_output`: the output applies its values as they arrive, so it only acknowledges. |
+| `/control/audio/output_device` | s | Select output device. Host option `output_device`. |
+| `/control/audio/output_backend` | s | Requested output backend (`pipewire`, `asio`, `file`, …; `""` = platform default). Takes effect on the next output (re)start. Host option `output_backend`. |
+| `/control/audio/output_file` | s | Destination for the `file` backend (`-`, a path or a FIFO; `""` = unset). Host option `output_file`. |
+| `/control/audio/output_file_format` | s | Container/format for the `file` backend (`""` = unset). Host option `output_file_format`. |
 | `/control/audio/output_devices/refresh` | — | Re-enumerate output devices. |
-| `/control/audio/sample_rate` | int | Output sample rate. |
-| `/control/config/input`, `/control/config/input/apply`, `/control/input/apply` | json | Input config (stage / apply). |
-| `/control/input/mode` | s | Input source mode. |
+| `/control/audio/sample_rate` | int | Output sample rate (≤ 0 = the device's). Host option `output_sample_rate`. |
+| `/control/config/input`, `/control/config/input/apply`, `/control/input/apply` | json | Live-input config as one batch of staged values; the two applies are aliases of `/control/options/apply live_input`. An apply is an action: it publishes the new state and lights no Save (the staged writes already did). |
+| `/control/input/mode` | s | Input source mode. Host option `input_mode` (staged). |
 | `/control/input/refresh` | — | Re-enumerate input sources. |
 | `/control/input/drc_mode` | s | Dynamic-range-control mode (one of the bridge's `supportedDrcModes`). Registry option alias. |
 | `/control/input/drc_weight` | f `[0,1]` | DRC weight. Registry option alias. |
-| `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,clock_mode,map,lfe_mode}` | varies | Live-capture parameters. `backend` accepts only `pipewire`; the retired `asio` value (never implemented) and any other value are rejected with a warning, leaving the staged backend unchanged. |
+| `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,clock_mode,map,lfe_mode}` | varies | Live-capture parameters, staged. `backend` accepts only `pipewire`; the retired `asio` value (never implemented) and any other value are rejected with a warning, leaving the staged backend unchanged. All but `layout_import` (an imported layout, structured) are host options `live_input_*`; a non-positive `channels` / `sample_rate` sent here is ignored, as before (through `/control/option(s)` it unsets the value, as the JSON patch does). |
 | `/control/render/bridge_path` | s | Path to the format bridge library. |
 | `/control/render/input_pipe` | s | Named-pipe input path. |
 
@@ -181,10 +197,10 @@ contract address. See `omniphony-renderer/BINAURAL.md`.
 | `/control/head/quat` | f×4 | Set head pose directly (quaternion). Transient. |
 | `/control/head/recenter` | — | Capture the current orientation as "front" (persisted to `config.yaml` right away). |
 | `/control/head/calibrate` | s | Three-pose sensor-axis calibration, one step per message: `front` (also recenters), `left`, `up`, or `reset`. The result is persisted right away. |
-| `/control/head/tracking/address` | s | Feed address the engine listens on (`""` disables tracking). |
-| `/control/head/tracking/format` | s | `auto` \| `quat` \| `rotvec` \| `euler`. |
-| `/control/head/tracking/smoothing` | f `[0,0.999]` | Pose smoothing (higher = smoother/laggier). |
-| `/control/head/tracking/invert` | int bool | Mirror the applied rotation. |
+| `/control/head/tracking/address` | s | Feed address the engine listens on (`""` disables tracking). Registry option `head_tracking_osc_address` (group `head_tracking`). |
+| `/control/head/tracking/format` | s | `auto` \| `quat` \| `rotvec` \| `euler`. Registry option `head_tracking_format` (group `head_tracking`). |
+| `/control/head/tracking/smoothing` | f `[0,0.999]` | Pose smoothing (higher = smoother/laggier). Registry option `head_tracking_smoothing` (group `head_tracking`). |
+| `/control/head/tracking/invert` | int bool | Mirror the applied rotation. Registry option `head_tracking_invert` (group `head_tracking`). |
 
 ### Binaural (headphone) stage
 
@@ -194,31 +210,31 @@ values are dropped.
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/control/output_mode` | s | `speaker` (render to the layout) \| `binaural` (stereo for headphones). |
-| `/control/binaural_mode` | s | `direct` (one HRIR pair per object) \| `cascaded` (pan onto a virtual layout, binauralise its speakers). |
-| `/control/binaural/hrir_source` | s | `synthetic` \| `saf_kemar` \| `sofa[:<path>]` \| `brir[:<path>]` \| `pinna[:<preset>:<d_scale %>:<depth %>]` \| `prtf[:<freq_scale %>:<depth %>]`. |
+| `/control/output_mode` | s | `speaker` (render to the layout) \| `binaural` (stereo for headphones). Registry option `output_mode`. |
+| `/control/binaural_mode` | s | `direct` (one HRIR pair per object) \| `cascaded` (pan onto a virtual layout, binauralise its speakers). Registry option `binaural_mode`. |
+| `/control/binaural/hrir_source` | s | `synthetic` \| `saf_kemar` \| `sofa[:<path>]` \| `brir[:<path>]` \| `pinna[:<preset>:<d_scale %>:<depth %>]` \| `prtf[:<freq_scale %>:<depth %>]`. Registry option `hrir_source` (group `hrir_source`). |
 | `/control/binaural/hrtf_upload/begin` | name s, total_bytes int | Start uploading a SOFA file (≤ 1 GiB; one upload at a time). |
 | `/control/binaural/hrtf_upload/chunk` | index int, blob | One chunk, in order. |
 | `/control/binaural/hrtf_upload/end` | chunk_count int | Finish: the file is written to `hrtf/` next to the default config file and selected as the `sofa` source. |
-| `/control/binaural/unit_scale` | f `[0.01,100]` m | Metres per ADM unit. |
-| `/control/binaural/head_radius` | f `[0.05,0.15]` m | Head radius for the ITD model. |
-| `/control/binaural/ear_gain` | ear int (`0` L, `1` R), f `[0,4]` | Headphone output gain per ear. |
+| `/control/binaural/unit_scale` | f `[0.01,100]` m | Metres per ADM unit. Registry option `binaural_unit_scale_m`. |
+| `/control/binaural/head_radius` | f `[0.05,0.15]` m | Head radius for the ITD model. Registry option `binaural_head_radius_m`. |
+| `/control/binaural/ear_gain` | ear int (`0` L, `1` R), f `[0,4]` | Headphone output gain per ear. Hand-wired (one ear by index); both ears at once is the registry option `binaural_ear_gains`. |
 | `/control/binaural/ear_mute` | ear int, int bool | Headphone mute per ear. |
-| `/control/binaural/reflections/enabled` | int bool | Early reflections of the virtual room. |
-| `/control/binaural/reflections/level` | f `[0,1]` | Reflection level relative to the direct sound. |
-| `/control/binaural/reflections/wall_cutoff` | f `[1000,20000]` Hz | Wall absorption low-pass. |
-| `/control/binaural/reflections/{room_width,room_depth,room_height}` | f `[1,20]` m | Virtual room size. |
-| `/control/binaural/reverb/enabled` | int bool | Late reverb. |
-| `/control/binaural/reverb/level` | f `[0,1]` | Reverb level. |
-| `/control/binaural/reverb/rt60` | f `[0.1,3]` s | Decay time. |
-| `/control/binaural/reverb/predelay` | f `[0,100]` ms | Pre-delay. |
-| `/control/binaural/reverb/size` | f `[0.5,2]` | Room-size factor. |
-| `/control/binaural/reverb/{rt60_low_ratio,rt60_high_ratio}` | f `[0.25,4]` | Low / high band decay relative to `rt60`. |
-| `/control/binaural/diffuse_field_eq` | int bool | Diffuse-field equalisation of the HRIR set. |
-| `/control/binaural/air_absorption` | int bool | Distance-dependent air absorption. |
-| `/control/binaural/brir/head_tracking` | int bool, or `auto` | Which measured head orientations of a room response stay resident: all (`1`), front only (`0`), or `auto` (all when a head-tracking address is set). |
-| `/control/binaural/brir/max_length` | f `[0,10]` s | Truncate the room response (`0` = whole). |
-| `/control/binaural/brir/tail_floor` | f `[20,120]` dB | Cut the tail this far below the response's energy. |
+| `/control/binaural/reflections/enabled` | int bool | Early reflections of the virtual room. Registry option `reflections_enabled`. |
+| `/control/binaural/reflections/level` | f `[0,1]` | Reflection level relative to the direct sound. Registry option `reflections_level`. |
+| `/control/binaural/reflections/wall_cutoff` | f `[1000,20000]` Hz | Wall absorption low-pass. Registry option `reflections_wall_cutoff_hz`. |
+| `/control/binaural/reflections/{room_width,room_depth,room_height}` | f `[1,20]` m | Virtual room size. Registry options `reflections_room_{width,depth,height}_m`. |
+| `/control/binaural/reverb/enabled` | int bool | Late reverb. Registry option `reverb_enabled`. |
+| `/control/binaural/reverb/level` | f `[0,1]` | Reverb level. Registry option `reverb_level`. |
+| `/control/binaural/reverb/rt60` | f `[0.1,3]` s | Decay time. Registry option `reverb_rt60_s`. |
+| `/control/binaural/reverb/predelay` | f `[0,100]` ms | Pre-delay. Registry option `reverb_predelay_ms`. |
+| `/control/binaural/reverb/size` | f `[0.5,2]` | Room-size factor. Registry option `reverb_size`. |
+| `/control/binaural/reverb/{rt60_low_ratio,rt60_high_ratio}` | f `[0.25,4]` | Low / high band decay relative to `rt60`. Registry options `reverb_rt60_{low,high}_ratio`. |
+| `/control/binaural/diffuse_field_eq` | int bool | Diffuse-field equalisation of the HRIR set. Registry option `binaural_diffuse_field_eq`. |
+| `/control/binaural/air_absorption` | int bool | Distance-dependent air absorption. Registry option `binaural_air_absorption`. |
+| `/control/binaural/brir/head_tracking` | int bool, or `auto` | Which measured head orientations of a room response stay resident: all (`1`), front only (`0`), or `auto` (all when a head-tracking address is set). Registry option `brir_head_tracking` (`auto` \| `on` \| `off`; group `brir`). |
+| `/control/binaural/brir/max_length` | f `[0,10]` s | Truncate the room response (`0` = whole). Registry option `brir_max_length_s` (group `brir`). |
+| `/control/binaural/brir/tail_floor` | f `[20,120]` dB | Cut the tail this far below the response's energy. Registry option `brir_tail_floor_db` (group `brir`). |
 | `/control/binaural/hrir_update_lattice` | s | `exact` \| `fine` \| `balanced` \| `coarse` — how far an object must turn before its HRIR is rebuilt. Registry option alias (see [Live options](#live-options)). |
 
 ### Fixed-channel sources
@@ -264,11 +280,29 @@ nearest integer; a `dynamic_enum` takes one of the ids of the set its
 `source` names (`backends`: `renderBackendState.available_backends` in
 `/state/renderer`). See `docs/live-options-registry.md`.
 
+The standalone renderer's host declares its own options (audio output,
+adaptive resampling, live input — see [Audio output & live
+input](#audio-output--live-input)): the same setters take their keys, their
+schema entries follow the core's in `/state/options_schema`, and their values
+go out in `/state/host_options` (`{"options": {key: requested}, "applied":
+{key: in force}, "pending": {group: bool}}`) — the `/state/renderer`
+`options` block keeps the core's. A host with audio I/O leaves out the
+options only the embedded engine offers (`decode_thread`, flagged
+`embedded_only`): not in its schema, a write refused, a save keeps the
+file's value.
+
+`/control/options/apply [group]` applies a group: a `staged` group
+(`live_input`) hands over every value staged since its last apply; a `live`
+group has nothing waiting and is only acknowledged.
+
 `/control/options [key, value, key, value, …]` sets several at once. Every
 valid pair is applied before anything is rebuilt, and the whole message costs
 at most one rebuild (the widest its options' groups ask for: an `evaluation`
 change re-samples the tables and keeps the gain models, a `room`, distance or
-`backend` change rebuilds the topology) and one live-state bundle. An unknown key or a
+`backend` change rebuilds the topology; the binaural groups — `hrir_source`,
+`brir`, `crossover` — reload in their own stage and `head_tracking` needs
+nothing) and one live-state bundle. `binaural_ear_gains` (both ears) has no
+dedicated address and is set through these two setters only. An unknown key or a
 truncated value drops the whole message — past it, where the next key starts
 is unknowable; an invalid value drops only its own pair. A change of an
 option whose group asks for no rebuild is read where it is used, as with
@@ -420,6 +454,7 @@ and heatmap configuration.
 | `/control/ramp_mode` | s | Object-transition ramp: `off` \| `frame` \| `interp` \| `sample`. Registry option alias. |
 | `/control/option` | s key, value | Generic setter for any declared live option — see [Live options](#live-options). |
 | `/control/options` | (s key, value)… | Grouped setter: several declared live options applied at once, one rebuild and one notification — see [Live options](#live-options). |
+| `/control/options/apply` | s group | Apply a group of declared options (a `staged` group's staged values; a `live` group is acknowledged) — see [Live options](#live-options). |
 | `/control/save_config` | — | Persist the current config. |
 | `/control/reload_config` | — | Discard the live state (including a handoff sidecar) and reload config from disk. The CLI renderer restarts its pipeline; an embedded (mpv) renderer re-applies the config in place — layout, live params, active profile — while host-owned fields (output device, live input, bridge path) wait for the next engine start. |
 | `/control/restart` | — | Restart the render pipeline keeping the unsaved live state, which comes back unsaved (it rides the live-handoff sidecar). For a change only a restart applies, such as a new bridge. CLI renderer only; an embedded renderer ignores it. |
@@ -437,6 +472,13 @@ and heatmap configuration.
 `[{key, kind, values?, default, flags, i18nKey, helpI18nKey?}]`), mirroring the
 generator/phantom param-schema pattern; option values ride in the `options`
 block of the renderer snapshot.
+
+`/state/host_options` carries the options the standalone renderer's host
+declares (JSON: `options` — the requested values —, `applied` — the values in
+force, for a `staged` group's options that report one —, `pending` — per
+`staged` group, whether it holds values not applied yet). Sent with every
+live-state bundle by a host that declares options; the embedded engine sends
+none.
 
 The full state snapshot is published as `/omniphony/state/renderer` (JSON);
 individual deltas use the addresses below. `osc_contract::ALL_STATE` is the
@@ -623,6 +665,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/control/object_test/rotation`
 - `/omniphony/control/option`
 - `/omniphony/control/options`
+- `/omniphony/control/options/apply`
 - `/omniphony/control/output_channel_mapping`
 - `/omniphony/control/output_mode`
 - `/omniphony/control/overlay/enabled`
@@ -719,6 +762,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/object_test/clip`
 - `/omniphony/state/object_test/position`
 - `/omniphony/state/options_schema`
+- `/omniphony/state/host_options`
 - `/omniphony/state/osc/diag`
 - `/omniphony/state/osc/metering`
 - `/omniphony/state/overlay`
