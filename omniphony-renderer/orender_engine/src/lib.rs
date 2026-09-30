@@ -28,6 +28,7 @@ pub mod render_metering;
 pub mod renderer_build;
 pub mod spatial;
 mod stft;
+pub mod stream_state;
 pub mod virtual_bed;
 
 pub use channel_layout::label_for_speaker_name;

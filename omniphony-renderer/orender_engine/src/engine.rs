@@ -13,15 +13,14 @@ use crate::events::Configuration;
 use crate::osc::{ObjectMeta, OscSender};
 use crate::overlay;
 use crate::renderer_build::{SpatialRendererParams, build_spatial_renderer};
-use crate::{channel_objects, object_gen, render, spatial, virtual_bed};
+use crate::stream_state::StreamState;
+use crate::{channel_objects, object_gen, render, virtual_bed};
 use anyhow::{Result, anyhow, bail};
-use bridge_api::{RChannelLabel, RChannelPose, RCoordinateFormat, RDecodedFrame, RInputTransport};
+use bridge_api::{RChannelLabel, RDecodedFrame, RInputTransport};
 use renderer::config::Config;
 use renderer::metering::AudioMeter;
-use renderer::placement::SourceFamily;
-use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
+use renderer::spatial_renderer::SpatialRenderer;
 use renderer::speaker_layout::SpeakerLayout;
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
@@ -114,58 +113,30 @@ pub struct Engine {
     carried_declaration: Option<Declaration>,
     renderer: SpatialRenderer,
     sample_rate: u32,
-    coordinate_format: RCoordinateFormat,
 
-    // ── per-stream spatial state ──
-    /// Shared fixed-channel planner (routing + plan cache, both stream kinds).
-    fixed_planner: virtual_bed::FixedChannelPlanner,
-    /// Bed-only planner: caches the channel mapping so a steady stream replans
-    /// only when the labels or the placement params actually change.
-    bed_planner: virtual_bed::BedChannelPlanner,
-    /// Cached object↔channel declaration from the bridge (sparse emission),
-    /// sorted by channel. See `docs/channel-object-contract.md`.
-    object_channels: Vec<(u32, usize)>,
-    /// The poses the bridge declares for the current labels
-    /// (`FormatBridge::fixed_channel_poses`), from the last [`Declaration`] a
-    /// decoded packet carried: applied from the frame it belongs to, kept
-    /// until the next one (segment starts included, since the tracker has one
-    /// read for them), and dropped by a [`reset`](Engine::reset).
-    declared_poses: Vec<RChannelPose>,
-    /// The family the bridge declares for the current presentation
-    /// (`FormatBridge::source_family`), read with the poses: it selects the
-    /// placement policy the fixed channels are planned with.
-    source_family: SourceFamily,
-    /// The name the bridge gives the current presentation's format
-    /// (`FormatBridge::source_label`), read with the family; empty when it
-    /// states none. For the host's track info display.
-    source_label: String,
-    has_objects: bool,
-    loudness_applied: bool,
+    /// The per-stream state and its rules, shared with the CLI host (see
+    /// [`crate::stream_state`]). Its declaration comes from the last
+    /// [`Declaration`] a decoded packet carried: applied from the frame it
+    /// belongs to, kept until the next one (segment starts included, since the
+    /// tracker has one read for them), and dropped by a
+    /// [`reset`](Engine::reset).
+    stream: StreamState,
     decoded_samples: u64,
     /// Dynamic object count of the last rendered frame (`channel_count − beds`),
     /// `0` for plain multichannel content. Surfaced over FFI for the host's track
     /// info display. Reset per segment.
     last_object_count: u32,
-    /// Dialogue normalisation level (dBFS, ≤ 0) once a major-sync frame has
-    /// declared it. Surfaced over FFI for the host's track info display. Reset
-    /// per segment.
-    last_dialnorm: Option<i8>,
     /// Channel labels of the bed of the last object-based frame (empty for plain
     /// multichannel / no bed). Surfaced over FFI so the host can show the bed
     /// composition (e.g. "LFE+11 objects"). Reused buffer; reset per segment.
     last_bed_labels: Vec<RChannelLabel>,
 
-    // ── DRC gain ramp state (continues across frames) ──
-    drc_gain: f32,
-    drc_target_gain: f32,
-    drc_ramp_samples_remaining: u32,
     /// DRC mode last pushed to the bridge (selects which DRC words the decoder
     /// extracts → drives `frame.drc_gain`). Synced from the live param each
     /// `process` so config + OSC changes reach the decoder, as in the CLI.
     drc_mode: DrcModeSync,
 
     // ── reusable scratch ──
-    frame_events: Vec<SpatialChannelEvent>,
     pcm_f32_buf: Vec<f32>,
     /// Spare sample buffers for [`RenderedAudio`], returned by
     /// [`Engine::recycle`] once the host has copied them out.
@@ -202,21 +173,9 @@ pub struct Engine {
     osc: Option<OscSender>,
     /// VU meter, created with the OSC server; feeds outgoing meter bundles.
     audio_meter: Option<AudioMeter>,
-    /// Accumulated object names (id → name) for OSC object broadcast.
-    object_names: HashMap<u32, String>,
     /// Opt-in per-frame perf accumulator (env `ORENDER_PERF_LOG`). `None` = off
     /// (zero overhead). Diagnostic only; safe to remove once perf work lands.
     perf: Option<PerfLog>,
-
-    /// The two stages that synthesize objects from channel content: phantom
-    /// extraction, then the bed→height lift. Both off by default and driven by
-    /// the live params `phantom_extract_mode` / `object_generator_id`. Shared
-    /// with the CLI host — see [`crate::channel_objects`].
-    stages: channel_objects::ChannelObjectStages,
-
-    /// The fixed-channel processing diagnostic, shared with the CLI host. The
-    /// JSON snapshot is rebuilt only when what it reports changes.
-    fixed_processing: channel_objects::FixedProcessingState,
 }
 
 /// Throttled (~1 Hz) aggregate of per-frame render/decode cost, correlated with
@@ -343,24 +302,11 @@ impl Engine {
             carried_declaration: None,
             renderer,
             sample_rate,
-            coordinate_format,
-            fixed_planner: virtual_bed::FixedChannelPlanner::new(),
-            bed_planner: virtual_bed::BedChannelPlanner::new(),
-            object_channels: Vec::new(),
-            declared_poses: Vec::new(),
-            source_family: SourceFamily::Generic,
-            source_label: String::new(),
-            has_objects: false,
-            loudness_applied: false,
+            stream: StreamState::new(coordinate_format),
             decoded_samples: 0,
             last_object_count: 0,
-            last_dialnorm: None,
             last_bed_labels: Vec::new(),
-            drc_gain: 1.0,
-            drc_target_gain: 1.0,
-            drc_ramp_samples_remaining: 0,
             drc_mode: DrcModeSync::new(),
-            frame_events: Vec::new(),
             pcm_f32_buf: Vec::new(),
             output_pool: Vec::new(),
             held: None,
@@ -371,15 +317,13 @@ impl Engine {
             render_duty: Default::default(),
             osc: None,
             audio_meter: None,
-            object_names: HashMap::new(),
             perf: std::env::var_os("ORENDER_PERF_LOG")
                 .is_some()
                 .then(PerfLog::new),
-            stages: channel_objects::ChannelObjectStages::new(),
-            fixed_processing: Default::default(),
         };
         engine
-            .stages
+            .stream
+            .channel_objects
             .publish_static_state(&engine.renderer.renderer_control());
         engine
     }
@@ -391,8 +335,9 @@ impl Engine {
         &mut self,
         factory: Box<dyn object_gen::ObjectGeneratorFactory>,
     ) {
-        self.stages.register_generator(factory);
-        self.stages
+        self.stream.channel_objects.register_generator(factory);
+        self.stream
+            .channel_objects
             .publish_static_state(&self.renderer.renderer_control());
     }
 
@@ -419,7 +364,8 @@ impl Engine {
         // The generator catalogue (built-ins + any host-registered out-of-tree
         // generators), the phantom-extraction schema and the fixed-channel
         // catalogue, so the live-state bundle carries them to Studio.
-        self.stages
+        self.stream
+            .channel_objects
             .publish_static_state(&self.renderer.renderer_control());
 
         let target = SocketAddrV4::from_str(&format!("{}:{}", opts.host, opts.port_out))
@@ -657,7 +603,7 @@ impl Engine {
     /// Dialogue normalisation level in dBFS (≤ 0) once the stream has declared
     /// it, else `None`. For the host's track info display.
     pub fn dialnorm_db(&self) -> Option<i8> {
-        self.last_dialnorm
+        self.stream.dialnorm
     }
 
     /// Channel labels of the bed of the last object-based frame (empty for plain
@@ -671,7 +617,7 @@ impl Engine {
     /// when it states none. Declaration-level: refreshed with the channel
     /// labels, never per frame. For the host's track info display.
     pub fn source_label(&self) -> &str {
-        &self.source_label
+        &self.stream.declaration.label
     }
 
     /// Constant DSP latency of the rendered output, in samples at the engine
@@ -779,9 +725,7 @@ impl Engine {
             worker.fresh = true;
         }
         self.carried_declaration = None;
-        self.declared_poses.clear();
-        self.source_family = SourceFamily::Generic;
-        self.source_label.clear();
+        self.stream.declaration = Default::default();
         self.renderer.reset_runtime_state();
         self.reset_segment_state();
         // Object frames are delta-encoded; after a seek the (static) virtual-bed
@@ -791,9 +735,7 @@ impl Engine {
             osc.request_full_object_resend();
         }
         self.decoded_samples = 0;
-        self.drc_gain = 1.0;
-        self.drc_target_gain = 1.0;
-        self.drc_ramp_samples_remaining = 0;
+        self.stream.drc = Default::default();
         // Drop overlay scene + motion trails so they don't bridge the seek.
         overlay::clear();
     }
@@ -802,51 +744,24 @@ impl Engine {
     /// a segment start or a bridge reset comes with a fresh one (see
     /// [`DeclarationTracker`]), applied to the frame right after this.
     fn reset_segment_state(&mut self) {
-        self.has_objects = false;
-        self.fixed_planner.reset();
-        self.bed_planner.reset();
-        self.object_channels.clear();
-        self.frame_events.clear();
-        self.loudness_applied = false;
-        self.object_names.clear();
-        // A new segment may re-declare a different object count / dialnorm / bed.
+        self.stream
+            .reset_segment(Some(&self.renderer.renderer_control()));
+        self.reset_track_info();
+    }
+
+    /// A segment starts (`is_new_segment`, or the bridge reset itself): the
+    /// shared segment start, this host's track info, and the overlay, so the
+    /// previous layout's objects do not linger in it.
+    fn begin_segment(&mut self) {
+        self.stream.begin_segment(&self.renderer, self.osc.as_mut());
+        self.reset_track_info();
+        overlay::clear();
+    }
+
+    /// A new segment may declare a different object count or bed.
+    fn reset_track_info(&mut self) {
         self.last_object_count = 0;
-        self.last_dialnorm = None;
         self.last_bed_labels.clear();
-        self.fixed_processing
-            .reset(&self.renderer.renderer_control());
-    }
-
-    /// Publish the fixed-channel processing diagnostic for this frame's fixed
-    /// channels ([`channel_objects::FixedProcessingState`]).
-    fn publish_fixed_processing_state(
-        &mut self,
-        stream_has_objects: bool,
-        labels: &[RChannelLabel],
-        output_has_height: bool,
-        stages: channel_objects::StageSync,
-    ) {
-        self.fixed_processing.publish(
-            &self.renderer.renderer_control(),
-            &channel_objects::FixedProcessingReport {
-                stream_has_objects,
-                family: self.source_family,
-                source_label: &self.source_label,
-                labels,
-                output_has_height,
-                stages,
-            },
-        );
-    }
-
-    /// Take on the bridge's declaration — its source family, the poses it
-    /// states for its channels and its name for the format — for this frame
-    /// and the ones after it, as the CLI's handler does with the one a frame
-    /// carries.
-    fn apply_declaration(&mut self, declaration: Declaration) {
-        self.declared_poses = declaration.poses;
-        self.source_family = SourceFamily::from_declared(&declaration.family);
-        self.source_label = declaration.label;
     }
 
     /// Bring the decoder in line with the live options it follows, before the
@@ -953,9 +868,7 @@ impl Engine {
             // the content generation, force a full object re-emit and clear the
             // overlay so OSC clients and the overlay purge the pre-seek objects
             // instead of leaving them behind as stale duplicates.
-            spatial::begin_segment(&self.renderer, self.osc.as_mut());
-            self.reset_segment_state();
-            overlay::clear();
+            self.begin_segment();
         }
 
         let mut out = Vec::with_capacity(result.frames.len());
@@ -1300,94 +1213,35 @@ impl Engine {
         // layout's objects (otherwise a smaller new layout leaves stale,
         // inactive objects behind after the boundary).
         if frame.is_new_segment {
-            spatial::begin_segment(&self.renderer, self.osc.as_mut());
-            self.reset_segment_state();
-            overlay::clear();
+            self.begin_segment();
         }
         if let Some(declaration) = declaration {
-            self.apply_declaration(declaration);
+            self.stream.apply_declaration(declaration);
         }
 
         // Dialogue normalisation (from major-sync frames), applied once.
-        if !self.loudness_applied {
-            if let Some(dialogue_level) = frame.dialogue_level.into_option() {
-                self.renderer.set_loudness(dialogue_level);
-                self.last_dialnorm = Some(dialogue_level);
-                self.loudness_applied = true;
-                if want_osc {
-                    if let Some(osc) = self.osc.as_ref() {
-                        osc.send_loudness_state();
-                    }
-                }
+        if self.stream.latch_dialnorm(frame, &self.renderer) && want_osc {
+            if let Some(osc) = self.osc.as_ref() {
+                osc.send_loudness_state();
             }
         }
 
         // Spatial metadata → bed config + per-channel events (+ OSC objects).
         for meta in frame.metadata.iter() {
-            self.has_objects = true;
-            // Cache the sparse object↔channel declaration.
-            if !meta.object_channels.is_empty() {
-                let mut decl: Vec<(u32, usize)> = meta
-                    .object_channels
-                    .iter()
-                    .map(|oc| (oc.id, oc.channel as usize))
-                    .collect();
-                decl.sort_unstable_by_key(|&(_, channel)| channel);
-                if self.object_channels != decl {
-                    self.object_channels = decl;
-                }
-            }
-            // Plan the fixed prefix through the shared channel planner:
-            // virtualized by default, per-entry direct opt-in via the
-            // placement layout — identically to fixed-only streams. Mode is
-            // always Spatial here (an object stream cannot pass through the
-            // host), and the plan is cached until one of its inputs changes.
-            self.fixed_planner.plan_object_stream_fixed(
-                &frame.channel_labels,
-                self.source_family,
-                &self.declared_poses,
-                &self.renderer,
-                &mut self.frame_events,
-            );
+            // The object↔channel declaration and the names are cached even
+            // before an OSC/overlay consumer connects, so a later Studio
+            // attachment sees stable names.
+            self.stream.note_object_metadata(meta);
             let conf = Configuration::from(meta);
-            spatial::build_spatial_channel_events(
-                &conf,
-                self.coordinate_format,
-                &self.object_channels,
-                &meta.channel_gains,
-                self.fixed_planner.fixed_trims(),
-                meta.sample_pos,
-                meta.ramp_duration,
-                &mut self.frame_events,
-            );
+            self.stream
+                .plan_object_frame(&frame.channel_labels, meta, &conf, &self.renderer);
 
             // Outgoing: broadcast object positions/names to OSC clients and/or
             // feed the in-process mpv overlay.
-            // Declarations are cached even before an OSC/overlay consumer
-            // connects, so a later Studio attachment sees stable names.
-            for upd in meta.name_updates.iter() {
-                if self.object_names.get(&upd.id).map(String::as_str) != Some(upd.name.as_str()) {
-                    self.object_names.insert(upd.id, upd.name.to_string());
-                }
-            }
             if want_objects {
-                let mut objects = virtual_bed::build_fixed_channel_objects(
-                    &self.renderer,
-                    self.fixed_planner.fixed_labels(),
-                    self.source_family,
-                    &self.declared_poses,
-                )
-                .unwrap_or_default();
-                objects.extend(spatial::build_object_metas(
-                    &conf,
-                    self.coordinate_format,
-                    &self.object_names,
-                ));
+                let objects = self.stream.object_frame_metas(Some(&self.renderer), &conf);
                 if want_osc {
-                    let coord_fmt = match self.coordinate_format {
-                        RCoordinateFormat::Cartesian => 0,
-                        RCoordinateFormat::Polar => 1,
-                    };
+                    let coord_fmt = self.stream.osc_coordinate_format();
                     if let Some(osc) = self.osc.as_mut() {
                         let _ = osc.send_object_frame(
                             meta.sample_pos,
@@ -1405,21 +1259,10 @@ impl Engine {
             }
         }
 
-        if self.has_objects {
-            let control = self.renderer.renderer_control();
-            let stages = channel_objects::ChannelObjectStages::selection_from_control(&control);
-            let output_has_height =
-                object_gen::layout_has_height(&control.active_topology().speaker_layout);
-            let fixed_end = frame
-                .channel_labels
-                .iter()
-                .position(|label| *label == RChannelLabel::Object)
-                .unwrap_or(frame.channel_labels.len());
-            self.publish_fixed_processing_state(
-                true,
-                &frame.channel_labels[..fixed_end],
-                output_has_height,
-                stages,
+        if self.stream.has_objects {
+            self.stream.publish_object_stream_processing(
+                &self.renderer.renderer_control(),
+                &frame.channel_labels,
             );
         }
 
@@ -1428,43 +1271,28 @@ impl Engine {
         // Number of synthesized height objects planned this frame by the
         // object-generator stage (stays 0 unless activated in the bed-only
         // branch below).
-        let mut synth_count = 0usize;
         // Phantom-extraction pre-stage object count (planar primaries pulled out of
-        // the bed). Stays 0 unless enabled in the bed-only branch below.
-        let mut phantom_count = 0usize;
+        // the bed). Both stay 0 unless enabled in the bed-only branch below.
+        let mut stage_counts = channel_objects::StageCounts::default();
 
         // Bed-only / pre-metadata frames carry no OAMD objects: render them
         // according to the configured channel mode (host / direct / virtual),
         // identically to the CLI's file-decode path. The embedded host has no
         // live input device, so there is no input layout to bias the virtual
         // poses (`None`), exactly as in the CLI's file-decode path.
-        if !self.has_objects {
+        if !self.stream.has_objects {
             let labels: &[RChannelLabel] = &frame.channel_labels;
 
             // The plan depends only on the labels and a few live params, so the
             // planner reuses it until one of them actually changes — a steady
             // stream plans once instead of ~1200 times a second.
-            match self.bed_planner.plan(
-                &self.renderer,
-                labels,
-                self.source_family,
-                &self.declared_poses,
-            ) {
-                virtual_bed::BedPlanKind::Events => {
-                    // Spatial mode mixes per channel: direct channels route
-                    // one-hot by label, virtual channels render as VBAP
-                    // objects. The routing is applied by the planner, on change
-                    // only, to avoid per-frame churn.
-                    self.frame_events.clear();
-                    self.frame_events
-                        .extend_from_slice(self.bed_planner.events());
-                }
+            match self.stream.plan_bed(&self.renderer, labels) {
+                virtual_bed::BedPlanKind::Events => {}
                 // Host: the mpv decoder declines at the spatial probe and falls
                 // back to ad_lavc, so this only runs for the discarded probe
                 // frame. Silence: no mapping for these labels. Either way emit
                 // silence so the host still advances by the frame's sample count.
                 virtual_bed::BedPlanKind::HostPassthrough | virtual_bed::BedPlanKind::Silence => {
-                    self.frame_events.clear();
                     let n_channels = self.renderer.output_channel_count() as u32;
                     let mut samples = self.output_pool.pop().unwrap_or_default();
                     samples.clear();
@@ -1486,54 +1314,22 @@ impl Engine {
             let output_layout = &topology.speaker_layout;
 
             // Synthesize objects from the bed (phantom extraction, then the
-            // bed→height lift), placed from the poses the bed plan resolved.
-            // Planned here, before the OSC object emit; the audio for the new
-            // object channels is filled after the bed PCM is built, below —
-            // phantom objects in the slots right after the bed, the height
-            // objects past them — and rides the existing object/VBAP path.
-            let ctx = object_gen::PrepareCtx {
-                input_labels: labels,
+            // bed→height lift). Planned here, before the OSC object emit; the
+            // audio for the new object channels is filled after the bed PCM is
+            // built, below, and rides the existing object/VBAP path.
+            stage_counts = self.stream.sync_channel_objects(
+                &control,
+                labels,
+                channel_count,
                 output_layout,
                 sample_rate,
-                bed_poses: self.bed_planner.poses(),
-            };
-            let sync = self.stages.sync_from_control(&control, &ctx);
-            phantom_count = sync.counts.phantom;
-            synth_count = sync.counts.synth;
-            self.publish_fixed_processing_state(
-                false,
-                labels,
-                object_gen::layout_has_height(output_layout),
-                sync,
             );
-            // Phantom objects first (channels [channel_count ..]), then the height
-            // objects offset past them.
-            self.frame_events.extend(self.stages.events(channel_count));
 
             // Outgoing: broadcast the virtual-bed channel poses + any synthesized
             // height objects as OSC objects and/or feed the in-process mpv
             // overlay, so they appear in Studio's 3D view and object list.
             if want_objects {
-                // Only the display path needs the bed layout and the room
-                // ratios, so they are read (and the layout copied) here rather
-                // than on every frame — with no client attached, never.
-                let (placement, room, surround_placement) = {
-                    let live = control.live.read();
-                    (
-                        virtual_bed::OwnedPlacement::from_live(&live, self.source_family),
-                        virtual_bed::RoomRatios::from_live(&live),
-                        live.surround_placement,
-                    )
-                };
-                let mut objects = virtual_bed::build_virtual_bed_objects(
-                    labels,
-                    &placement.policy(&self.declared_poses),
-                    Some(output_layout),
-                    room,
-                    surround_placement,
-                )
-                .unwrap_or_default();
-                objects.extend(self.stages.object_metas());
+                let objects = self.stream.bed_frame_metas(&control, labels, output_layout);
                 if !objects.is_empty() {
                     if want_osc {
                         if let Some(osc) = self.osc.as_mut() {
@@ -1547,48 +1343,25 @@ impl Engine {
             }
         }
 
-        // DRC target from the stream gain, weighted by the live DRC weight.
-        let drc_weight = self
-            .renderer
-            .renderer_control()
-            .live
-            .read()
-            .drc_weight
-            .clamp(0.0, 1.0);
-        self.drc_target_gain = if drc_weight >= 1.0 {
-            frame.drc_gain
-        } else if drc_weight <= 0.0 {
-            1.0
-        } else {
-            frame.drc_gain.powf(drc_weight)
-        };
-        self.drc_ramp_samples_remaining = frame.drc_ramp_duration;
-
+        // The decoded PCM as f32, with the DRC gain ramp applied.
         let mut pcm_f32 = std::mem::take(&mut self.pcm_f32_buf);
-        render::fill_pcm_f32_drc(
-            &mut pcm_f32,
-            &frame.pcm,
-            channel_count,
-            &mut self.drc_gain,
-            self.drc_target_gain,
-            &mut self.drc_ramp_samples_remaining,
-        );
+        self.stream
+            .drc
+            .fill_pcm_f32(&mut pcm_f32, frame, &self.renderer.renderer_control());
 
         // Two upmix stages now that the bed PCM exists. First the phantom pre-stage
         // subtracts correlated content from the bed *in place* and appends its
         // planar objects; then the height lift runs on the reduced bed and appends
         // its objects. The renderer sees one extended interleaved buffer
         // (bed | phantom objects | height objects). Both zero-cost when inactive.
-        let (render_pcm, render_channels): (&[f32], usize) = self.stages.process_and_extend(
-            &mut pcm_f32,
-            channel_count,
-            sample_count,
-            sample_rate,
-            channel_objects::StageCounts {
-                phantom: phantom_count,
-                synth: synth_count,
-            },
-        );
+        let (render_pcm, render_channels): (&[f32], usize) =
+            self.stream.channel_objects.process_and_extend(
+                &mut pcm_f32,
+                channel_count,
+                sample_count,
+                sample_rate,
+                stage_counts,
+            );
 
         // VU metering (outgoing): feed object PCM pre-render; speakers post-render.
         // Needed for OSC metering clients and/or the in-process overlay (object
@@ -1611,10 +1384,17 @@ impl Engine {
 
         let render_started = std::time::Instant::now();
         let donated = self.output_pool.pop().unwrap_or_default();
+        // An object frame's events, or a channel frame's (the bed plan's and
+        // the synthesized objects').
+        let events = if self.stream.has_objects {
+            &self.stream.frame_events
+        } else {
+            &self.stream.bed_events
+        };
         let rendered = self.renderer.render_frame(
             render_pcm,
             render_channels,
-            &self.frame_events,
+            events,
             donated,
             want_metering,
         )?;
@@ -1629,9 +1409,13 @@ impl Engine {
         // Dynamic object count = decoded channels minus the fixed channels.
         // Only meaningful for object-based content; plain multichannel
         // reports 0.
-        let num_beds = self.fixed_planner.fixed_labels().len();
+        let num_beds = self.stream.fixed_planner.fixed_labels().len();
         let n_objects = (channel_count as u32).saturating_sub(num_beds as u32);
-        self.last_object_count = if self.has_objects { n_objects } else { 0 };
+        self.last_object_count = if self.stream.has_objects {
+            n_objects
+        } else {
+            0
+        };
 
         // Bed composition for the host's track-info display, e.g. "LFE+11
         // objects". The renderer lays bed channels out first in PCM order (see
@@ -1640,7 +1424,7 @@ impl Engine {
         // NOT `channel_labels[bed_id]` (`bed_indices` are OAMD bed ids, a
         // different space). Reuse the buffer.
         self.last_bed_labels.clear();
-        if self.has_objects {
+        if self.stream.has_objects {
             for ch in 0..num_beds {
                 if let Some(&lbl) = frame.channel_labels.get(ch) {
                     self.last_bed_labels.push(lbl);
@@ -1660,7 +1444,7 @@ impl Engine {
 
         // Return scratch buffers for reuse next frame.
         self.pcm_f32_buf = pcm_f32;
-        self.frame_events.clear();
+        self.stream.frame_events.clear();
 
         // Take the geometry from the render that produced `rendered.samples`,
         // never from a fresh output_channel_count(): that re-reads the live
@@ -1677,7 +1461,7 @@ impl Engine {
 
         if want_metering {
             let frame_duration_ms = sample_count as f32 / sample_rate as f32 * 1000.0;
-            let drc_gain = self.drc_gain;
+            let drc_gain = self.stream.drc.gain;
             if let Some(meter) = self.audio_meter.as_mut() {
                 if let Some(snapshot) =
                     crate::render_metering::meter_render_output(meter, &self.renderer, &rendered)

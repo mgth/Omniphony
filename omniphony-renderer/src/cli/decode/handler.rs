@@ -351,24 +351,15 @@ impl DecodeHandler {
         // Apply dialogue normalisation from bridge (updated on major sync frames).
         // The level is always stored so OSC clients receive loudness/source
         // and loudness/gain regardless of whether --use-loudness is set.
-        if !self.spatial.loudness_applied {
-            if let Some(dialogue_level) = frame.dialogue_level.into_option() {
-                if let Some(ref renderer) = self.spatial_renderer {
-                    renderer.set_loudness(dialogue_level);
-                    self.spatial.loudness_applied = true;
-                    if self
-                        .telemetry
-                        .osc_sender
-                        .as_ref()
-                        .is_some_and(|sender| sender.has_osc_clients())
-                    {
-                        let osc_sender = self
-                            .telemetry
-                            .osc_sender
-                            .as_ref()
-                            .expect("osc_sender present");
-                        osc_sender.send_loudness_state();
-                    }
+        if let Some(renderer) = self.spatial_renderer.as_ref() {
+            if self.spatial.stream.latch_dialnorm(&frame, renderer) {
+                if let Some(osc_sender) = self
+                    .telemetry
+                    .osc_sender
+                    .as_ref()
+                    .filter(|sender| sender.has_osc_clients())
+                {
+                    osc_sender.send_loudness_state();
                 }
             }
         }
@@ -774,7 +765,7 @@ mod tests {
             (6, OutputSource::Decoded)
         );
         // An object stream is always rendered, whatever the channel mode.
-        handler.spatial.has_objects = true;
+        handler.spatial.stream.has_objects = true;
         assert_eq!(
             handler.output_shape(&bed_frame(), DecodedSource::Bridge, false),
             (speakers, OutputSource::Rendered)
@@ -795,9 +786,13 @@ mod tests {
             ..DecodeHandler::default()
         };
         handler.telemetry.osc_sender = Some(osc);
-        handler.spatial.loudness_applied = true;
-        handler.spatial.has_objects = true;
-        handler.spatial.object_names.insert(3, "Dialog".to_string());
+        handler.spatial.stream.dialnorm = Some(-27);
+        handler.spatial.stream.has_objects = true;
+        handler
+            .spatial
+            .stream
+            .object_names
+            .insert(3, "Dialog".to_string());
 
         handler
             .handle_stream_restart(OutputBackend::Unsupported)
@@ -805,9 +800,9 @@ mod tests {
 
         let osc = handler.telemetry.osc_sender.as_ref().unwrap();
         assert_eq!(osc.content_generation(), generation + 1);
-        assert!(!handler.spatial.loudness_applied);
-        assert!(!handler.spatial.has_objects);
-        assert!(handler.spatial.object_names.is_empty());
+        assert_eq!(handler.spatial.stream.dialnorm, None);
+        assert!(!handler.spatial.stream.has_objects);
+        assert!(handler.spatial.stream.object_names.is_empty());
     }
 
     /// A file sink survives a segment start: rebuilding it reopens — and

@@ -7,13 +7,8 @@ use anyhow::Result;
 use audio_input::InputControl;
 use bridge_api::RChannelLabel;
 use bridge_api::RDecodedFrame;
-use orender_engine::channel_objects::{ChannelObjectStages, FixedProcessingReport};
-use orender_engine::object_gen::layout_has_height;
-use orender_engine::render::fill_pcm_f32_drc;
 use orender_engine::render_metering::{meter_render_input, meter_render_output};
-use orender_engine::virtual_bed::{
-    BedPlanKind, OwnedPlacement, RoomRatios, build_virtual_bed_objects,
-};
+use orender_engine::virtual_bed::BedPlanKind;
 use std::time::Instant;
 
 pub struct SampleWriteCoordinator<'a> {
@@ -220,7 +215,7 @@ impl<'a> SampleWriteCoordinator<'a> {
             if let Some(ref mut renderer) = self.spatial_renderer {
                 log::trace!(
                     "VBAP check: has_objects={}, metadata.len()={}, channel_count={}",
-                    self.spatial.has_objects,
+                    self.spatial.stream.has_objects,
                     frame.metadata.len(),
                     channel_count
                 );
@@ -232,21 +227,6 @@ impl<'a> SampleWriteCoordinator<'a> {
                     );
                 }
 
-                let drc_weight = renderer
-                    .renderer_control()
-                    .live
-                    .read()
-                    .drc_weight
-                    .clamp(0.0, 1.0);
-                self.output.drc_target_gain = if drc_weight >= 1.0 {
-                    frame.drc_gain
-                } else if drc_weight <= 0.0 {
-                    1.0
-                } else {
-                    frame.drc_gain.powf(drc_weight)
-                };
-                self.output.drc_ramp_samples_remaining = frame.drc_ramp_duration;
-
                 if frame_has_objects {
                     log::trace!(
                         "Using VBAP spatial rendering (metadata source: {})",
@@ -256,34 +236,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                             "current frame"
                         }
                     );
-                    {
-                        let control = renderer.renderer_control();
-                        let fixed_end = frame
-                            .channel_labels
-                            .iter()
-                            .position(|label| *label == RChannelLabel::Object)
-                            .unwrap_or(frame.channel_labels.len());
-                        let report = FixedProcessingReport {
-                            stream_has_objects: true,
-                            family: self.spatial.source_family,
-                            source_label: &self.spatial.source_label,
-                            labels: &frame.channel_labels[..fixed_end],
-                            output_has_height: layout_has_height(
-                                &control.active_topology().speaker_layout,
-                            ),
-                            stages: ChannelObjectStages::selection_from_control(&control),
-                        };
-                        self.spatial.fixed_processing.publish(&control, &report);
-                    }
-
-                    fill_pcm_f32_drc(
-                        &mut pcm_f32_scratch,
-                        &frame.pcm,
-                        channel_count,
-                        &mut self.output.drc_gain,
-                        self.output.drc_target_gain,
-                        &mut self.output.drc_ramp_samples_remaining,
-                    );
+                    let control = renderer.renderer_control();
+                    let stream = &mut self.spatial.stream;
+                    stream.publish_object_stream_processing(&control, &frame.channel_labels);
+                    stream
+                        .drc
+                        .fill_pcm_f32(&mut pcm_f32_scratch, frame, &control);
                     let pcm_data_f32 = &pcm_f32_scratch;
 
                     let has_metering_clients = self
@@ -297,21 +255,20 @@ impl<'a> SampleWriteCoordinator<'a> {
                         }
                     }
 
-                    let pending_events = std::mem::take(&mut self.spatial.frame_events);
                     let donated_buf = std::mem::take(&mut self.output.render_buf);
                     let render_started_at = Instant::now();
                     let rendered = renderer.render_frame(
                         pcm_data_f32,
                         channel_count,
-                        &pending_events,
+                        &stream.frame_events,
                         donated_buf,
                         has_metering_clients,
                     )?;
                     let render_time_ms = render_started_at.elapsed().as_secs_f32() * 1000.0;
-                    // Hand the event buffer back, emptied, so the next frame's
-                    // events land in the same allocation.
-                    self.spatial.frame_events = pending_events;
-                    self.spatial.frame_events.clear();
+                    // Emptied, so the next frame's events land in the same
+                    // allocation.
+                    stream.frame_events.clear();
+                    let drc_gain = stream.drc.gain;
 
                     emit_rendered(
                         self.output,
@@ -324,6 +281,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             render_ms: render_time_ms,
                             frame_ms: frame_duration_ms,
                             sample_rate: frame.sampling_frequency,
+                            drc_gain,
                         },
                         has_metering_clients,
                         &output_figures,
@@ -336,22 +294,8 @@ impl<'a> SampleWriteCoordinator<'a> {
                     // params, so the planner reuses it until one of them
                     // actually changes, instead of rebuilding a label→speaker
                     // map and re-solving the depth warp on every frame.
-                    match self.spatial.bed_planner.plan(
-                        renderer,
-                        labels,
-                        self.spatial.source_family,
-                        &self.spatial.declared_poses,
-                    ) {
-                        BedPlanKind::Events => {
-                            // Spatial mode mixes per channel: direct channels
-                            // route one-hot by label, virtual channels render
-                            // as VBAP objects. The routing is applied by the
-                            // planner, on change only.
-                            self.spatial.bed_events.clear();
-                            self.spatial
-                                .bed_events
-                                .extend_from_slice(self.spatial.bed_planner.events());
-                        }
+                    match self.spatial.stream.plan_bed(renderer, labels) {
+                        BedPlanKind::Events => {}
                         BedPlanKind::HostPassthrough => {
                             // No spatialization: write the decoded channels
                             // straight to the sink (let the host/sink handle
@@ -396,42 +340,20 @@ impl<'a> SampleWriteCoordinator<'a> {
                     let control = renderer.renderer_control();
                     let topology = control.active_topology();
                     let output_layout = &topology.speaker_layout;
-                    let stage_sync = {
-                        let ctx = orender_engine::object_gen::PrepareCtx {
-                            input_labels: labels,
-                            output_layout,
-                            sample_rate: frame.sampling_frequency,
-                            bed_poses: self.spatial.bed_planner.poses(),
-                        };
-                        self.spatial
-                            .channel_objects
-                            .sync_from_control(&control, &ctx)
-                    };
-                    let stage_counts = stage_sync.counts;
-                    self.spatial.fixed_processing.publish(
+                    let stream = &mut self.spatial.stream;
+                    let stage_counts = stream.sync_channel_objects(
                         &control,
-                        &FixedProcessingReport {
-                            stream_has_objects: false,
-                            family: self.spatial.source_family,
-                            source_label: &self.spatial.source_label,
-                            labels,
-                            output_has_height: layout_has_height(output_layout),
-                            stages: stage_sync,
-                        },
-                    );
-                    let events = self.spatial.channel_objects.events(channel_count);
-                    self.spatial.bed_events.extend(events);
-
-                    fill_pcm_f32_drc(
-                        &mut pcm_f32_scratch,
-                        &frame.pcm,
+                        labels,
                         channel_count,
-                        &mut self.output.drc_gain,
-                        self.output.drc_target_gain,
-                        &mut self.output.drc_ramp_samples_remaining,
+                        output_layout,
+                        frame.sampling_frequency,
                     );
+
+                    stream
+                        .drc
+                        .fill_pcm_f32(&mut pcm_f32_scratch, frame, &control);
                     let (pcm_data_f32, render_channel_count) =
-                        self.spatial.channel_objects.process_and_extend(
+                        stream.channel_objects.process_and_extend(
                             &mut pcm_f32_scratch,
                             channel_count,
                             sample_count,
@@ -458,11 +380,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                     let rendered = renderer.render_frame(
                         pcm_data_f32,
                         render_channel_count,
-                        &self.spatial.bed_events,
+                        &stream.bed_events,
                         donated_buf,
                         has_metering_clients,
                     )?;
                     let render_time_ms = render_started_at.elapsed().as_secs_f32() * 1000.0;
+                    let drc_gain = stream.drc.gain;
 
                     emit_rendered(
                         self.output,
@@ -475,46 +398,27 @@ impl<'a> SampleWriteCoordinator<'a> {
                             render_ms: render_time_ms,
                             frame_ms: frame_duration_ms,
                             sample_rate: frame.sampling_frequency,
+                            drc_gain,
                         },
                         has_metering_clients,
                         &output_figures,
                     )?;
                     self.output.pcm_f32_buf = pcm_f32_scratch;
 
-                    if self
+                    // The virtual bed and the synthesized objects: emitted
+                    // here they appear in Studio's 3D view, omitted they are
+                    // rendered but never shown.
+                    if let Some(osc_sender) = self
                         .telemetry
                         .osc_sender
-                        .as_ref()
-                        .is_some_and(|sender| sender.has_osc_clients())
+                        .as_mut()
+                        .filter(|sender| sender.has_osc_clients())
                     {
-                        // The synthesized objects ride the same frame as the
-                        // virtual bed: emitted here they appear in Studio's 3D
-                        // view, omitted they are rendered but never shown.
-                        let synthesized: Vec<_> =
-                            self.spatial.channel_objects.object_metas().collect();
-                        // Only the display path needs the bed layout and the
-                        // room ratios, so they are read (and the layout copied)
-                        // here rather than on every frame — with no client
-                        // attached, never.
-                        let (placement, room, surround_placement) = {
-                            let live = control.live.read();
-                            (
-                                OwnedPlacement::from_live(&live, self.spatial.source_family),
-                                RoomRatios::from_live(&live),
-                                live.surround_placement,
-                            )
-                        };
-                        if let (Some(ref mut osc_sender), Some(mut objects)) = (
-                            self.telemetry.osc_sender.as_mut(),
-                            build_virtual_bed_objects(
-                                labels,
-                                &placement.policy(&self.spatial.declared_poses),
-                                Some(output_layout),
-                                room,
-                                surround_placement,
-                            ),
-                        ) {
-                            objects.extend(synthesized);
+                        let objects =
+                            self.spatial
+                                .stream
+                                .bed_frame_metas(&control, labels, output_layout);
+                        if !objects.is_empty() {
                             let sample_pos = self
                                 .session
                                 .decoded_samples
@@ -589,6 +493,8 @@ struct FrameTimings {
     render_ms: f32,
     frame_ms: f32,
     sample_rate: u32,
+    /// The DRC gain the frame ended on.
+    drc_gain: f32,
 }
 
 /// Everything after a render, for both render paths (objects, channel
@@ -658,7 +564,7 @@ fn emit_rendered(
                 figures.resample_ratio,
                 figures.adaptive_band,
                 figures.adaptive_state,
-                Some(output.drc_gain),
+                Some(timings.drc_gain),
             ) {
                 log::warn!("Failed to send meter OSC bundle: {}", e);
                 false

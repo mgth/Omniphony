@@ -443,10 +443,11 @@ mod tests {
             bitstream.next().unwrap(),
         ] {
             spatial.take_declaration(data.source, data.declaration);
+            let declared = &spatial.stream.declaration;
             seen.push((
-                spatial.source_family,
-                spatial.declared_poses.len(),
-                spatial.source_label.clone(),
+                declared.family,
+                declared.poses.len(),
+                declared.label.clone(),
             ));
         }
         let dts = (SourceFamily::Dts, 6, "6 channels".to_owned());
