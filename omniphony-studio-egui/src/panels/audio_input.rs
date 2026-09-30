@@ -234,6 +234,9 @@ impl StudioSpike {
                         input::apply_input(&self.host, &mode, active.as_deref());
                     }
                 });
+                // Values staged some other way (another client, a script)
+                // and still waiting: the schema-driven Apply of the group.
+                self.staged_apply_row(ui, "live_input");
             });
     }
 }

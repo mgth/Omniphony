@@ -250,6 +250,8 @@
   "input.lfeInfoBody": "LFE controla o que acontece com o canal de efeitos de baixa frequência do fluxo de entrada.<br><br><strong>Objeto</strong> o transforma em um objeto espacial. <strong>Direto</strong> o mantém como um caminho LFE dedicado e direto. <strong>Descartar</strong> o ignora por completo.<br><br>Escolha conforme o material de origem foi criado e como seu layout de saída espera rotear o conteúdo grave.",
   "input.refresh": "Atualizar",
   "input.apply": "Aplicar",
+  "options.stagedPending": "{group}: há alterações preparadas aguardando aplicação.",
+  "options.applyStaged": "Aplicar alterações pendentes",
   "input.applyPending": "Aplicação pendente...",
   "input.sync.pending": "aplicação pendente",
   "input.sync.synced": "sincronizado",
