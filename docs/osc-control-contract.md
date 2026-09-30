@@ -246,9 +246,9 @@ objects stages (height generator, phantom extraction).
 |---|---|---|
 | `/control/synthetic_objects` | int bool | Master switch of every synthesized-object stage (keeps the child selections). Registry option alias. |
 | `/control/object_generator` | s | Bed→height generator id (`""`/`none` = off). Schema on `/state/object_generators`. Registry option alias. |
-| `/control/object_generator/param` | key s, f | One generator parameter (keys from the schema). Not persisted until Save. |
+| `/control/object_generator/param` | [generator s,] key s, value (f/i/T-F/s) | One generator parameter (keys from the listing), for the selected generator or the one named. Read in the declared type (a number for a switch: on at `>= 0.5`). Not persisted until Save. See `docs/plugin-contract.md`. |
 | `/control/phantom_extract` | s | `off` \| `broadband` \| `spectral` (legacy int `0`/`1` = off/broadband). Registry option alias. |
-| `/control/phantom_extract/param` | key s, f | One phantom-extraction parameter (schema on `/state/phantom`). Not persisted until Save. |
+| `/control/phantom_extract/param` | key s, value (f/i/T-F/s) | One phantom-extraction parameter (listing on `/state/phantom`), read in the declared type. Not persisted until Save. |
 | `/control/surround_placement` | s | `side` \| `back`: where a 4.x/5.x surround pair goes when there are no back channels. Registry option alias. |
 | `/control/output_channel_mapping` | s | `by_index` \| `by_name`: how output channels map to device ports. Registry option alias. |
 | `/control/placement/mode` | family s, mode s | Placement mode of one source family (`generic`, `dolby`, `dts`, `auro`, `pcm`): `sphere` \| `room` \| `manual`, or `inherit`. Re-plans the stream. |
@@ -500,9 +500,10 @@ exhaustive machine-readable list.
   stays in the renderer log), `vbap/allow_negative_z`,
   `render_evaluation/*` (mirrors of the control resolutions), `speakers`,
   `speakers/recomputing`, `speakers/recompute_error`, `layout`.
-- **Schemas & profiles** — `options_schema`, `object_generators` (height
-  generator ids, labels and param specs), `phantom` (phantom-extraction param
-  specs), `profiles` (`{"active", "names"}`).
+- **Schemas & profiles** — `options_schema`, `object_generators` (the height
+  generators' plugin listings: id, label, `ParamSpec` params — the format of
+  `availableBackends`), `phantom` (the phantom-extraction stage's listing),
+  `profiles` (`{"active", "names"}`). See `docs/plugin-contract.md`.
 - **Overlay** — `overlay` (display preferences as JSON, republished whenever
   they change, including from mpv keybinds).
 - **Object test** — `object_test/position` (`x, y, z, peak dB, rms dB` of the

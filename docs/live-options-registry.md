@@ -360,6 +360,10 @@ with **zero** plumbing churn.
 
 This RFC generalizes that pattern to all live options.
 
+> Since then the generator and phantom parameters have joined the backends'
+> contract instead (`ParamSpec`, one value store, one published format):
+> see [the plugin contract](plugin-contract.md). `ObjectGenParamSpec` is gone.
+
 ## Proposal: `LIVE_OPTIONS` registry
 
 > Historical: this is the design as proposed. Where the implementation

@@ -70,9 +70,11 @@ only the renderer's public API:
 
 - **`GainModel`** — maps an object position (+ live render params) to a
   per-speaker gain vector. This is the realtime hot path.
-- **`BackendFactory`** — declares the backend's id, label, and a data-driven
-  parameter schema (Studio renders the controls automatically), and builds a
-  `GainModel` from a speaker layout.
+- **`PluginFactory` + `BackendFactory`** — declares the backend's id, label,
+  and a data-driven parameter schema (Studio renders the controls
+  automatically), and builds a `GainModel` from a speaker layout. The first
+  half is the contract every plugin shares, object generators included: see
+  [`docs/plugin-contract.md`](docs/plugin-contract.md).
 
 ### Steps
 
@@ -83,7 +85,8 @@ only the renderer's public API:
    [`docs/custom-render-backend-integration.md`](docs/custom-render-backend-integration.md),
    the full walk-through.
 
-2. **Implement `GainModel` + `BackendFactory`** for your panner.
+2. **Implement `GainModel`, `PluginFactory` and `BackendFactory`** for your
+   panner.
 
 3. **Register it** — one line where the engine wires up its backends
    (`orender_engine/src/renderer_build.rs`):

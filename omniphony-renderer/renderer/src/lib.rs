@@ -15,6 +15,7 @@ pub mod object_test;
 pub mod options;
 pub mod partitioned_conv;
 pub mod placement;
+pub mod plugin;
 pub mod ramp_strategy;
 pub mod render_backend;
 pub mod runtime_env;

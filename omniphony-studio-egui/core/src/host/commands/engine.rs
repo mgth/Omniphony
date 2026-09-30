@@ -128,20 +128,9 @@ pub fn control_ramp_mode(state: &SharedState, value: String) {
 /// a bool for toggles (forwarded as int 0/1), a number for future scalar
 /// kinds. Validation lives renderer-side against the registry spec — an
 /// unknown key or a bad value is dropped there, per the OSC contract.
-/// Pick the object generator, or `""` for none.
-///
-/// Its own command because changing it drops state: the renderer forgets the
-/// previous generator's parameter overrides, so the local copy has to go with
-/// it or the form would show the old generator's values under the new one's
-/// name until the next snapshot.
+/// Pick the object generator, or `""` for none. Each generator keeps its
+/// own parameter values, so nothing is dropped with the previous choice.
 pub fn set_object_generator(state: &SharedState, id: &str) {
-    state
-        .inner
-        .lock()
-        .unwrap()
-        .app
-        .live_options
-        .object_generator_params = None;
     control_option(
         state,
         "object_generator_id".to_owned(),
@@ -194,19 +183,72 @@ pub fn apply_option_group(state: &SharedState, group: &str) {
     );
 }
 
-/// Set a live object-generator parameter (PAD: `strength` / `hpf_hz` /
-/// `gain_db`). Sent as `[key, value]`; the renderer clamps and applies it live.
-/// Remember a live parameter in the model, so the slider that set it reads
-/// its own value back instead of snapping until the renderer's echo arrives.
-fn remember_param(params: &mut Option<serde_json::Value>, key: &str, value: f64) {
+/// Remember a plugin parameter in the model, so the control that set it
+/// reads its own value back instead of snapping until the renderer's echo
+/// arrives.
+fn remember_param(params: &mut Option<serde_json::Value>, key: &str, value: &serde_json::Value) {
     let params = params.get_or_insert_with(|| serde_json::Value::Object(Default::default()));
     if let Some(map) = params.as_object_mut() {
-        map.insert(key.to_owned(), serde_json::json!(value));
+        map.insert(key.to_owned(), value.clone());
     }
 }
 
-/// A generator parameter, remembered and sent.
-pub fn set_object_generator_param(state: &SharedState, key: &str, value: f64) {
+/// A parameter of the object generator `generator`, remembered and sent as
+/// `[generator, key, value]` — addressed by id, so it reaches the generator
+/// the form shows whatever is selected. The value keeps its JSON type (a
+/// switch sends a bool); the renderer reads it in the type the generator's
+/// schema declares and clamps it.
+pub fn set_object_generator_param(
+    state: &SharedState,
+    generator: &str,
+    key: &str,
+    value: serde_json::Value,
+) {
+    let (generator, key) = (generator.trim(), key.trim().to_ascii_lowercase());
+    let Some(arg) = super::render::param_value_arg(&value) else {
+        return;
+    };
+    if generator.is_empty() || key.is_empty() {
+        return;
+    }
+    {
+        let mut live = state.inner.lock().unwrap();
+        let by_id = live
+            .app
+            .live_options
+            .object_generator_param_values_by_id
+            .get_or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if let Some(map) = by_id.as_object_mut() {
+            let mut values = map.remove(generator);
+            remember_param(&mut values, &key, &value);
+            if let Some(values) = values {
+                map.insert(generator.to_owned(), values);
+            }
+        }
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: osc_contract::CONTROL_OBJECT_GENERATOR_PARAM.to_string(),
+            args: vec![
+                rosc::OscType::String(generator.to_owned()),
+                rosc::OscType::String(key),
+                arg,
+            ],
+        },
+    );
+}
+
+/// A phantom-extraction parameter, remembered and sent as `[key, value]`,
+/// the value in its JSON type.
+pub fn set_phantom_extract_param(state: &SharedState, key: &str, value: serde_json::Value) {
+    let key = key.trim().to_ascii_lowercase();
+    let Some(arg) = super::render::param_value_arg(&value) else {
+        return;
+    };
+    if key.is_empty() {
+        return;
+    }
     remember_param(
         &mut state
             .inner
@@ -214,51 +256,15 @@ pub fn set_object_generator_param(state: &SharedState, key: &str, value: f64) {
             .unwrap()
             .app
             .live_options
-            .object_generator_params,
-        key,
-        value,
+            .phantom_param_values,
+        &key,
+        &value,
     );
-    control_object_generator_param(state, key.to_owned(), value as f32);
-}
-
-/// A phantom-extraction parameter, remembered and sent.
-pub fn set_phantom_extract_param(state: &SharedState, key: &str, value: f64) {
-    remember_param(
-        &mut state.inner.lock().unwrap().app.live_options.phantom_params,
-        key,
-        value,
-    );
-    control_phantom_extract_param(state, key.to_owned(), value as f32);
-}
-
-pub fn control_object_generator_param(state: &SharedState, key: String, value: f32) {
-    let k = key.trim().to_ascii_lowercase();
-    // Any non-empty key is accepted; the renderer validates it against the active
-    // generator's declared schema and clamps the value.
-    if k.is_empty() || !value.is_finite() {
-        return;
-    }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendArgs {
-            address: osc_contract::CONTROL_OBJECT_GENERATOR_PARAM.to_string(),
-            args: vec![rosc::OscType::String(k), rosc::OscType::Float(value)],
-        },
-    );
-}
-
-/// Set a live phantom-extraction parameter (`strength` / `passes` / `lift`). Sent
-/// as `[key, value]`; the renderer clamps and applies it live.
-pub fn control_phantom_extract_param(state: &SharedState, key: String, value: f32) {
-    let k = key.trim().to_ascii_lowercase();
-    if k.is_empty() || !value.is_finite() {
-        return;
-    }
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
             address: osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM.to_string(),
-            args: vec![rosc::OscType::String(k), rosc::OscType::Float(value)],
+            args: vec![rosc::OscType::String(key), arg],
         },
     );
 }

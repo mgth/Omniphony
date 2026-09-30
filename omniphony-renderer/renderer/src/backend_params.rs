@@ -1,21 +1,33 @@
-//! Declarative backend parameter schema.
+//! Declarative parameter schema, shared by every plugin.
 //!
-//! A render backend describes its tunable parameters as data
-//! ([`BackendFactory::param_schema`](crate::backend_registry::BackendFactory::param_schema)),
+//! A plugin — a render backend, an object generator, the phantom-extraction
+//! stage — describes its tunable parameters as data
+//! ([`PluginFactory::param_schema`](crate::plugin::PluginFactory::param_schema)),
 //! so the UI can render controls and the host can store/transport values
-//! generically — no per-backend typed field in the renderer core, and no
-//! hand-written serde bridge. Values live in a generic `key -> ParamValue` map
-//! (see `RendererControl::backend_params`) and are read at **build time** via
-//! [`BackendBuildCtx::param`](crate::backend_registry::BackendBuildCtx::param),
-//! never on the audio hot path.
+//! generically — no per-plugin typed field in the renderer core, and no
+//! hand-written serde bridge. Values live in one generic
+//! `plugin id -> key -> ParamValue` store per plugin kind
+//! ([`crate::plugin::PluginParams`], held by `RendererControl`); a backend reads
+//! them at **build time** via
+//! [`BackendBuildCtx::backend_param`](crate::backend_registry::BackendBuildCtx::backend_param),
+//! a synthesizing stage when they change — never on the audio hot path.
 
-/// A single tunable parameter exposed by a backend.
+/// A single tunable parameter exposed by a plugin.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ParamSpec {
     /// Stable key used to store/transport the value (e.g. `"sharpness"`).
     pub key: &'static str,
-    /// Human-facing label for the UI.
+    /// Human-facing label for the UI: the English fallback when `i18n_key`
+    /// has no translation.
     pub label: &'static str,
+    /// Key of a localized label in Studio's catalogues (built-in plugins);
+    /// `None` for an out-of-tree plugin, whose `label` is shown as is.
+    #[serde(rename = "i18nKey", skip_serializing_if = "Option::is_none")]
+    pub i18n_key: Option<&'static str>,
+    /// Display unit suffix of a numeric value (e.g. `"Hz"`, `"dB"`). `None`
+    /// for a bare number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<&'static str>,
     /// Control type and its bounds.
     pub kind: ParamKind,
     /// Value used when the host has not set one. The backend applies the same
@@ -44,6 +56,8 @@ impl ParamSpec {
         Self {
             key,
             label,
+            i18n_key: None,
+            unit: None,
             kind: ParamKind::Float { min, max, step },
             default: ParamValue::Float(default),
             requires: None,
@@ -56,6 +70,8 @@ impl ParamSpec {
         Self {
             key,
             label,
+            i18n_key: None,
+            unit: None,
             kind: ParamKind::Int { min, max },
             default: ParamValue::Int(default),
             requires: None,
@@ -68,6 +84,8 @@ impl ParamSpec {
         Self {
             key,
             label,
+            i18n_key: None,
+            unit: None,
             kind: ParamKind::Bool,
             default: ParamValue::Bool(default),
             requires: None,
@@ -82,6 +100,8 @@ impl ParamSpec {
         Self {
             key,
             label,
+            i18n_key: None,
+            unit: None,
             kind: ParamKind::Path,
             default: ParamValue::Text(default.to_string()),
             requires: None,
@@ -105,6 +125,8 @@ impl ParamSpec {
         Self {
             key,
             label,
+            i18n_key: None,
+            unit: None,
             kind: ParamKind::File {
                 editable,
                 language,
@@ -116,7 +138,8 @@ impl ParamSpec {
         }
     }
 
-    /// Gate this control behind a backend capability flag.
+    /// Gate this control behind a capability flag of its plugin (a backend
+    /// capability, or the phantom extractor's active method).
     pub fn requires(mut self, capability: &'static str) -> Self {
         self.requires = Some(capability);
         self
@@ -126,6 +149,45 @@ impl ParamSpec {
     pub fn help(mut self, help: &'static str) -> Self {
         self.help = Some(help);
         self
+    }
+
+    /// Attach the key of a localized label in Studio's catalogues.
+    pub fn i18n(mut self, key: &'static str) -> Self {
+        self.i18n_key = Some(key);
+        self
+    }
+
+    /// Attach a display unit suffix (e.g. `"Hz"`).
+    pub fn unit(mut self, unit: &'static str) -> Self {
+        self.unit = Some(unit);
+        self
+    }
+
+    /// `value` in the type this parameter declares, or `None` when it cannot
+    /// be read as one: a number for a bool is on at `>= 0.5` (how the float-only
+    /// parameters of older clients and configs spelled a switch), a float for an
+    /// int is rounded, an enum value must be one of the options. Types only —
+    /// bounds are the plugin's to clamp, as it always did.
+    pub fn coerce(&self, value: &ParamValue) -> Option<ParamValue> {
+        match &self.kind {
+            ParamKind::Float { .. } => value
+                .as_f32()
+                .filter(|v| v.is_finite())
+                .map(ParamValue::Float),
+            ParamKind::Int { .. } => match value {
+                ParamValue::Int(v) => Some(ParamValue::Int(*v)),
+                ParamValue::Float(v) if v.is_finite() => Some(ParamValue::Int(v.round() as i64)),
+                _ => None,
+            },
+            ParamKind::Bool => value.as_switch().map(ParamValue::Bool),
+            ParamKind::Enum { options } => value
+                .as_str()
+                .filter(|v| options.iter().any(|o| o.value == *v))
+                .map(|v| ParamValue::Text(v.to_string())),
+            ParamKind::Path | ParamKind::File { .. } => {
+                value.as_str().map(|v| ParamValue::Text(v.to_string()))
+            }
+        }
     }
 }
 
@@ -209,6 +271,18 @@ impl ParamValue {
         }
     }
 
+    /// A switch read from a bool or from a number (on at `>= 0.5`): how the
+    /// parameters that were float-only spelled one, so a value an older
+    /// client or config wrote still reads.
+    pub fn as_switch(&self) -> Option<bool> {
+        match self {
+            ParamValue::Bool(v) => Some(*v),
+            ParamValue::Float(v) if v.is_finite() => Some(*v >= 0.5),
+            ParamValue::Int(v) => Some(*v as f32 >= 0.5),
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> Option<&str> {
         match self {
             ParamValue::Text(v) => Some(v),
@@ -253,6 +327,63 @@ mod tests {
         );
         // Default value is a bare text handle.
         assert_eq!(spec.default.as_str(), Some(""));
+    }
+
+    #[test]
+    fn coerce_reads_a_value_in_the_declared_type() {
+        let float = ParamSpec::float("f", "F", 0.0, 1.0, 0.01, 0.5);
+        assert_eq!(
+            float.coerce(&ParamValue::Int(1)),
+            Some(ParamValue::Float(1.0))
+        );
+        assert_eq!(float.coerce(&ParamValue::Float(f32::NAN)), None);
+        assert_eq!(float.coerce(&ParamValue::Bool(true)), None);
+        let int = ParamSpec::int("i", "I", 1, 3, 1);
+        assert_eq!(
+            int.coerce(&ParamValue::Float(2.6)),
+            Some(ParamValue::Int(3))
+        );
+        // A switch spelled as a number by a float-only client or config.
+        let switch = ParamSpec::bool("b", "B", false);
+        assert_eq!(
+            switch.coerce(&ParamValue::Float(1.0)),
+            Some(ParamValue::Bool(true))
+        );
+        assert_eq!(
+            switch.coerce(&ParamValue::Float(0.0)),
+            Some(ParamValue::Bool(false))
+        );
+        assert_eq!(
+            switch.coerce(&ParamValue::Int(1)),
+            Some(ParamValue::Bool(true))
+        );
+        assert_eq!(switch.coerce(&ParamValue::Text("x".into())), None);
+        let choice = ParamSpec {
+            kind: ParamKind::Enum {
+                options: vec![ParamOption {
+                    value: "a".into(),
+                    label: "A".into(),
+                }],
+            },
+            ..ParamSpec::path("e", "E", "a")
+        };
+        assert_eq!(
+            choice.coerce(&ParamValue::Text("a".into())),
+            Some(ParamValue::Text("a".into()))
+        );
+        assert_eq!(choice.coerce(&ParamValue::Text("b".into())), None);
+    }
+
+    #[test]
+    fn i18n_key_and_unit_serialise_only_when_set() {
+        let bare = serde_json::to_value(ParamSpec::float("f", "F", 0.0, 1.0, 0.1, 0.5)).unwrap();
+        assert!(bare.get("i18nKey").is_none() && bare.get("unit").is_none());
+        let spec = ParamSpec::float("hpf_hz", "Cutoff", 20.0, 2000.0, 10.0, 300.0)
+            .i18n("twoDSources.padHpf")
+            .unit("Hz");
+        let json = serde_json::to_value(spec).unwrap();
+        assert_eq!(json["i18nKey"], "twoDSources.padHpf");
+        assert_eq!(json["unit"], "Hz");
     }
 
     #[test]

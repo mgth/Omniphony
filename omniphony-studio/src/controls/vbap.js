@@ -12,8 +12,8 @@ import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inRendererPanel } from '../ui/panel-roots.js';
 import { renderHybridCurve } from './hybrid-curve.js';
-import { makeHelpPanel, attachInlineHelp, closeInlineHelp } from './inline-help.js';
-import { openBackendFileEditor } from './script-editor.js';
+import { closeInlineHelp } from './inline-help.js';
+import { renderParamForm } from './plugin-params.js';
 
 // Whether the renderer shares this machine's filesystem (its OSC host is
 // loopback). The native Browse dialog returns a path in *this* machine's
@@ -413,157 +413,6 @@ function sendBackendParam(key, value, backend) {
   invoke('control_backend_param', backend ? { key, value, backend } : { key, value });
 }
 
-// The renderer publishes its param schema (labels, help, enum option labels) in
-// English over OSC. Localize it client-side by stable key, falling back to the
-// renderer-provided string so contributor backends and unknown params still
-// render. These re-resolve on locale change because app.js re-runs
-// renderRenderBackend() from its onLocaleChange handler.
-function trFallback(key, fallback) {
-  const v = t(key);
-  return (!v || v === key) ? fallback : v;
-}
-function localizeParamLabel(spec) {
-  return trFallback(`backendParam.${spec.key}`, spec.label || spec.key);
-}
-function localizeParamHelp(spec) {
-  return spec.help ? trFallback(`backendParamHelp.${spec.key}`, spec.help) : spec.help;
-}
-function localizeParamOption(paramKey, value, fallback) {
-  return trFallback(`backendParamOption.${paramKey}.${value}`, fallback);
-}
-
-// Build one control field for a param spec, seeded with `current`. Returns a
-// wrapper holding the control row (with a `_setValue` hook used to refresh it
-// without a rebuild) and, when the spec has help, a collapsible help panel below
-// it. Edits are sent to `backend`.
-function buildParamControl(spec, current, backend) {
-  const field = document.createElement('div');
-  field.className = 'generated-param-field';
-  const row = document.createElement('div');
-  row.className = 'control-row generated-param-row';
-  const label = document.createElement('label');
-  label.textContent = localizeParamLabel(spec);
-  let help = null;
-  if (spec.help) {
-    // The param name itself is the toggle for a help panel shown below the row.
-    help = makeHelpPanel(localizeParamHelp(spec));
-    attachInlineHelp(label, help);
-  }
-  row.appendChild(label);
-  const kind = spec.kind || {};
-  if (kind.type === 'bool') {
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.checked = current === true;
-    input.addEventListener('change', () => sendBackendParam(spec.key, input.checked, backend));
-    row.appendChild(input);
-    row._setValue = (v) => { input.checked = v === true; };
-  } else if (kind.type === 'enum') {
-    const select = document.createElement('select');
-    for (const opt of (kind.options || [])) {
-      const o = document.createElement('option');
-      o.value = String(opt.value);
-      o.textContent = localizeParamOption(spec.key, opt.value, String(opt.label || opt.value));
-      select.appendChild(o);
-    }
-    select.value = String(current);
-    select.addEventListener('change', () => sendBackendParam(spec.key, select.value, backend));
-    row.appendChild(select);
-    row._setValue = (v) => { select.value = String(v); };
-  } else if (kind.type === 'path') {
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'delay-input';
-    input.style.minWidth = '12rem';
-    input.placeholder = '/path/to/backend.lua';
-    input.value = current == null ? '' : String(current);
-    input.addEventListener('change', () => sendBackendParam(spec.key, input.value.trim(), backend));
-    row.appendChild(input);
-    // Don't clobber the field while the user is typing in it.
-    row._setValue = (v) => {
-      if (document.activeElement !== input) input.value = v == null ? '' : String(v);
-    };
-  } else if (kind.type === 'file') {
-    // A renderer-owned file handle: a text field for the handle, a Browse button
-    // (native dialog, shown only when the renderer is local) and, when editable,
-    // an Edit button opening the local editor that loads/saves over the renderer.
-    const exts = Array.isArray(kind.extensions) ? kind.extensions.map(String) : [];
-    const wrap = document.createElement('div');
-    wrap.style.display = 'flex';
-    wrap.style.gap = '0.3rem';
-    wrap.style.alignItems = 'center';
-    wrap.style.flexWrap = 'wrap';
-
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'delay-input';
-    input.style.minWidth = '10rem';
-    input.placeholder = exts.length ? `name.${exts[0]}` : '/path/to/file';
-    input.value = current == null ? '' : String(current);
-    input.addEventListener('change', () => sendBackendParam(spec.key, input.value.trim(), backend));
-    wrap.appendChild(input);
-
-    const browse = document.createElement('button');
-    browse.type = 'button';
-    browse.className = 'mini-btn';
-    browse.textContent = t('backend.file.browse');
-    browse.style.display = rendererIsLocal ? '' : 'none';
-    browse.addEventListener('click', async () => {
-      const picked = await invoke('pick_backend_file_path', { extensions: exts }).catch(() => null);
-      if (picked) {
-        input.value = picked;
-        sendBackendParam(spec.key, picked, backend);
-      }
-    });
-    wrap.appendChild(browse);
-
-    if (kind.editable) {
-      const edit = document.createElement('button');
-      edit.type = 'button';
-      edit.className = 'mini-btn';
-      edit.textContent = t('backend.file.edit');
-      edit.addEventListener('click', () => openBackendFileEditor({
-        backend,
-        key: spec.key,
-        language: kind.language || null,
-        extensions: exts,
-        rendererIsLocal,
-      }));
-      wrap.appendChild(edit);
-    }
-
-    row.appendChild(wrap);
-    row._setValue = (v) => {
-      if (document.activeElement !== input) input.value = v == null ? '' : String(v);
-    };
-  } else {
-    const isInt = kind.type === 'int';
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = String(kind.min ?? 0);
-    input.max = String(kind.max ?? 1);
-    input.step = String(isInt ? 1 : (kind.step ?? 0.01));
-    input.value = String(current);
-    const valEl = document.createElement('span');
-    valEl.className = 'val';
-    valEl.textContent = String(current);
-    // Fixed-width, right-aligned readout so the value's changing digit count
-    // does not resize its grid column and shift the slider as you drag.
-    valEl.style.display = 'inline-block';
-    valEl.style.minWidth = '3.5em';
-    valEl.style.textAlign = 'right';
-    const parse = (v) => (isInt ? Math.round(Number(v)) : Number(v));
-    input.addEventListener('input', () => { valEl.textContent = input.value; });
-    input.addEventListener('change', () => sendBackendParam(spec.key, parse(input.value), backend));
-    row.appendChild(input);
-    row.appendChild(valEl);
-    row._setValue = (v) => { input.value = String(v); valEl.textContent = String(v); };
-  }
-  field.appendChild(row);
-  if (help) field.appendChild(help);
-  return field;
-}
-
 // Generate controls for `targetBackend` from its published param schema. Used
 // for every backend without a hand-written section — the built-in barycenter and
 // distance backends as well as contributor backends — both when selected on their
@@ -601,38 +450,25 @@ function renderGenericBackendParams(targetBackend) {
   if (schema.length === 0) {
     closeInlineHelp();
     container.style.display = 'none';
-    container.dataset.backend = '';
+    container.dataset.buildKey = '';
     return;
   }
   container.style.display = 'grid';
 
   const byId = (app.renderBackendState && app.renderBackendState.backendParamValuesById) || {};
-  const values = byId[targetBackend] || {};
-  const valueFor = (spec) => (spec.key in values ? values[spec.key] : spec.default);
-
-  // Rebuild controls only when the target backend changed; otherwise refresh
-  // values so an external change (OSC) is reflected without dropping focus.
   // Rebuild on a backend change or a locale change (param labels/help are
   // localized at build time); otherwise just refresh values so an external
   // change (OSC) is reflected without dropping focus.
-  if (container.dataset.backend !== String(targetBackend) || container.dataset.locale !== i18nState.locale) {
-    // Rebuilding detaches any open help panel; drop the stale reference.
-    closeInlineHelp();
-    container.replaceChildren();
-    container.dataset.backend = String(targetBackend);
-    container.dataset.locale = i18nState.locale;
-    for (const spec of schema) {
-      container.appendChild(buildParamControl(spec, valueFor(spec), targetBackend));
-    }
-  } else {
-    const rows = container.querySelectorAll('.generated-param-row');
-    schema.forEach((spec, i) => {
-      const row = rows[i];
-      if (row && typeof row._setValue === 'function' && document.activeElement !== row.querySelector('input, select')) {
-        row._setValue(valueFor(spec));
-      }
-    });
-  }
+  const buildKey = `${targetBackend}|${i18nState.locale}`;
+  // Rebuilding detaches any open help panel; drop the stale reference.
+  if (container.dataset.buildKey !== buildKey) closeInlineHelp();
+  renderParamForm(
+    container,
+    schema,
+    byId[targetBackend] || {},
+    (key, value) => sendBackendParam(key, value, targetBackend),
+    { buildKey, backend: targetBackend, rendererIsLocal },
+  );
 }
 
 export function renderRenderBackend() {

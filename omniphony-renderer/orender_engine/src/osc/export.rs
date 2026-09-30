@@ -117,20 +117,19 @@ pub(crate) fn build_live_state(
     if let Some(h) = host {
         messages.extend(h.extend_snapshot());
     }
-    // Declared bed→height object-generator schema (id / label / param specs), so
-    // Studio builds the fixed-bed height-generator selector + parameter sliders
-    // dynamically. The
-    // engine publishes the JSON into `RendererControl` from its registry (which
-    // lives in this crate), so any host-registered out-of-tree generators are
-    // included.
+    // The bed→height object-generator listings (id / label / param specs, the
+    // format of `available_backends`), so Studio builds the fixed-bed
+    // height-generator selector + parameter controls dynamically. The engine
+    // publishes them into `RendererControl` from its registry (which lives in
+    // this crate), so any host-registered out-of-tree generators are included.
     messages.push(OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_OBJECT_GENERATORS.to_string(),
-        args: vec![OscType::String(control.object_generators_schema())],
+        args: vec![OscType::String(control.object_generators_json())],
     }));
-    // Declared phantom-extraction param schema, so Studio builds its sliders.
+    // The phantom-extraction stage's listing, so Studio builds its controls.
     messages.push(OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_PHANTOM.to_string(),
-        args: vec![OscType::String(control.phantom_schema())],
+        args: vec![OscType::String(control.phantom_json())],
     }));
     messages.push(OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_SNAPSHOT_COMPLETE.to_string(),

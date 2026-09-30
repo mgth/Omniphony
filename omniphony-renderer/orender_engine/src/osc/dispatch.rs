@@ -708,9 +708,11 @@ fn handle_backend_file_get(
     let handle = match str_arg(msg, 2) {
         Some(name) if !name.trim().is_empty() => name,
         _ => control
-            .backend_params_for(&backend_id)
-            .get(&key)
-            .and_then(|value| value.as_str().map(str::to_string))
+            .with_plugin_params(|params| {
+                params
+                    .get(renderer::plugin::PluginKind::Backend, &backend_id, &key)
+                    .and_then(|value| value.as_str().map(str::to_string))
+            })
             .unwrap_or_default(),
     };
     let config_dir = backend_file_config_dir(control);
@@ -1148,6 +1150,7 @@ mod notify_tests {
     #[test]
     fn a_generator_param_write_reaches_the_other_clients() {
         let control = fixture_control();
+        control.live.write().object_generator_id = "pad".to_string();
         let wire = wire();
         let generation = control.live_state_generation();
         send(
@@ -1164,7 +1167,10 @@ mod notify_tests {
         build_live_state(&control, None).broadcast(&wire.engine, &wire.clients);
         let renderer = state_json(&received(&wire.bystander), osc_contract::STATE_RENDERER)
             .expect("bundle carries /state/renderer");
-        assert_eq!(renderer["objectGeneratorParams"]["strength"], 0.25);
+        assert_eq!(
+            renderer["objectGeneratorParamValuesById"]["pad"]["strength"],
+            0.25
+        );
     }
 
     #[test]

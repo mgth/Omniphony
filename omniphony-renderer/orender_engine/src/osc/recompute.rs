@@ -119,7 +119,7 @@ pub(crate) fn trigger_layout_recompute(
                             &topology,
                             scale_m,
                             control_clone.available_backends(),
-                            control_clone.all_backend_params(),
+                            control_clone.plugin_params(),
                             &unroutable,
                             &control_clone.fixed_channel_catalog(),
                             &control_clone.fixed_channel_processing(),

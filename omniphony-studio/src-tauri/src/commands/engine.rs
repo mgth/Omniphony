@@ -90,38 +90,63 @@ pub fn control_option(state: State<SharedState>, key: String, value: serde_json:
     );
 }
 
-/// Set a live object-generator parameter (PAD: `strength` / `hpf_hz` /
-/// `gain_db`). Sent as `[key, value]`; the renderer clamps and applies it live.
+/// Set a parameter of an object generator. With `generator` it is sent as
+/// `[generator, key, value]` and reaches that generator whatever is selected;
+/// without, as `[key, value]` for the selected one. The value keeps its JSON
+/// type (a switch sends a bool); the renderer reads it in the type the
+/// generator's schema declares and clamps it.
 #[tauri::command]
-pub fn control_object_generator_param(state: State<SharedState>, key: String, value: f32) {
+pub fn control_object_generator_param(
+    state: State<SharedState>,
+    key: String,
+    value: serde_json::Value,
+    generator: Option<String>,
+) {
     let k = key.trim().to_ascii_lowercase();
-    // Any non-empty key is accepted; the renderer validates it against the active
-    // generator's declared schema and clamps the value.
-    if k.is_empty() || !value.is_finite() {
+    let Some(arg) = super::render::param_value_arg(&value) else {
+        return;
+    };
+    if k.is_empty() {
         return;
     }
+    let mut args = Vec::with_capacity(3);
+    if let Some(generator) = generator
+        .map(|g| g.trim().to_owned())
+        .filter(|g| !g.is_empty())
+    {
+        args.push(rosc::OscType::String(generator));
+    }
+    args.push(rosc::OscType::String(k));
+    args.push(arg);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
             address: "/omniphony/control/object_generator/param".to_string(),
-            args: vec![rosc::OscType::String(k), rosc::OscType::Float(value)],
+            args,
         },
     );
 }
 
-/// Set a live phantom-extraction parameter (`strength` / `passes` / `lift`). Sent
-/// as `[key, value]`; the renderer clamps and applies it live.
+/// Set a phantom-extraction parameter. Sent as `[key, value]`, the value in
+/// its JSON type; the renderer reads it in its declared type and clamps it.
 #[tauri::command]
-pub fn control_phantom_extract_param(state: State<SharedState>, key: String, value: f32) {
+pub fn control_phantom_extract_param(
+    state: State<SharedState>,
+    key: String,
+    value: serde_json::Value,
+) {
     let k = key.trim().to_ascii_lowercase();
-    if k.is_empty() || !value.is_finite() {
+    let Some(arg) = super::render::param_value_arg(&value) else {
+        return;
+    };
+    if k.is_empty() {
         return;
     }
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
             address: "/omniphony/control/phantom_extract/param".to_string(),
-            args: vec![rosc::OscType::String(k), rosc::OscType::Float(value)],
+            args: vec![rosc::OscType::String(k), arg],
         },
     );
 }

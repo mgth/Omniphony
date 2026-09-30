@@ -93,10 +93,7 @@ pub struct RenderConfig {
     /// keyed by backend id then param key. Lets a contributor backend's params
     /// round-trip through config without a typed field here.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub backend_params: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, crate::backend_params::ParamValue>,
-    >,
+    pub backend_params: crate::plugin::ParamBag,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_evaluation_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,11 +199,16 @@ pub struct RenderConfig {
     /// (`none` / `copy_up` / `pad` / …). Absent / empty = off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_generator_id: Option<String>,
-    /// Live parameter overrides for the active object generator (param key →
-    /// value), as declared by the generator's schema. Absent = each generator
-    /// uses its declared defaults.
+    /// Legacy flat parameter map of "the active object generator", read for
+    /// migration into `generator_params[object_generator_id]` and dropped on
+    /// save (see [`crate::plugin::PluginParams::from_config`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_generator_params: Option<std::collections::HashMap<String, f32>>,
+    /// Per-generator parameter values (see [`crate::plugin`]), keyed by
+    /// generator id then param key, as each generator's schema declares
+    /// them. Absent = every generator at its declared defaults.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub generator_params: crate::plugin::ParamBag,
     /// Global renderer-synthesized-object master. Kept explicit once migrated so
     /// an off master can retain non-off child selections.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -221,10 +223,14 @@ pub struct RenderConfig {
     /// Legacy phantom enable flag, read for migration and dropped on save.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phantom_enabled: Option<bool>,
-    /// Live parameter overrides for the phantom-extraction stage (`strength` /
-    /// `passes` / `lift`). Absent = the stage's declared defaults.
+    /// Legacy float-only parameter map of the phantom-extraction stage, read
+    /// for migration into `phantom_extract_params` and dropped on save.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phantom_params: Option<std::collections::HashMap<String, f32>>,
+    /// Parameter values of the phantom-extraction stage (param key → value),
+    /// as its schema declares them. Absent = the stage's declared defaults.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub phantom_extract_params: crate::plugin::ParamMap,
     /// Legacy single virtual bed for channel-based content, read for
     /// migration only: it becomes `placement.generic` in manual mode with
     /// these entries, and is dropped on the next save. See `placement`.
