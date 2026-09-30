@@ -250,6 +250,8 @@
   "input.lfeInfoBody": "LFE 控制如何处理输入流的低频效果声道。<br><br><strong>对象</strong> 将其转换为空间对象。<strong>直接</strong> 将其保留为专用的直接馈送 LFE 路径。<strong>丢弃</strong> 完全忽略它。<br><br>请根据源素材的制作方式以及输出布局对低音内容路由的预期来进行选择。",
   "input.refresh": "刷新",
   "input.apply": "应用",
+  "options.stagedPending": "{group}：有待应用的暂存更改。",
+  "options.applyStaged": "应用暂存的更改",
   "input.applyPending": "应用待处理...",
   "input.sync.pending": "等待应用",
   "input.sync.synced": "已同步",

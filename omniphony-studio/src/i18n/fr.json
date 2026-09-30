@@ -269,6 +269,8 @@
   "input.lfeInfoBody": "LFE contrôle ce qu'il advient du canal d'effets basse fréquence du flux d'entrée.<br><br><strong>Objet</strong> le transforme en objet spatial. <strong>Direct</strong> le conserve comme chemin LFE direct dédié. <strong>Ignorer</strong> l'écarte complètement.<br><br>Choisis ce mode selon la façon dont le contenu source a été authoré et la manière dont ton layout de sortie attend d'acheminer le grave.",
   "input.refresh": "Rafraîchir",
   "input.apply": "Appliquer",
+  "options.stagedPending": "{group} : des changements en attente doivent être appliqués.",
+  "options.applyStaged": "Appliquer les changements en attente",
   "input.applyPending": "Application en attente...",
   "input.sync.pending": "application en attente",
   "input.sync.synced": "synchronisé",

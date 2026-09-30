@@ -250,6 +250,8 @@
   "input.lfeInfoBody": "LFE steuert, was mit dem Tieffrequenz-Effektkanal des Eingangsstroms geschieht.<br><br><strong>Objekt</strong> wandelt ihn in ein räumliches Objekt um. <strong>Direkt</strong> behält ihn als eigenen, direkt gespeisten LFE-Pfad. <strong>Verwerfen</strong> ignoriert ihn vollständig.<br><br>Wähle dies danach, wie das Quellmaterial erstellt wurde und wie dein Ausgabelayout den Bassanteil geroutet erwartet.",
   "input.refresh": "Aktualisieren",
   "input.apply": "Anwenden",
+  "options.stagedPending": "{group}: vorgemerkte Änderungen warten auf das Anwenden.",
+  "options.applyStaged": "Vorgemerkte Änderungen anwenden",
   "input.applyPending": "Anwenden ausstehend...",
   "input.sync.pending": "Anwenden ausstehend",
   "input.sync.synced": "synchronisiert",

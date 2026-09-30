@@ -250,6 +250,8 @@
   "input.lfeInfoBody": "LFE は、入力ストリームの低周波効果チャンネルをどう扱うかを制御します。<br><br><strong>オブジェクト</strong> はそれを空間オブジェクトに変換します。<strong>ダイレクト</strong> は専用の直接供給 LFE 経路として保持します。<strong>ドロップ</strong> は完全に無視します。<br><br>ソース素材がどのように制作されたか、また出力レイアウトが低音コンテンツをどのように振り分けることを想定しているかに応じて選択してください。",
   "input.refresh": "更新",
   "input.apply": "適用",
+  "options.stagedPending": "{group}: 適用待ちの変更があります。",
+  "options.applyStaged": "保留中の変更を適用",
   "input.applyPending": "適用を保留中...",
   "input.sync.pending": "適用保留中",
   "input.sync.synced": "同期済み",

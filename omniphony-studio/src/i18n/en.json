@@ -269,6 +269,8 @@
   "input.lfeInfoBody": "LFE controls what happens to the input stream's low-frequency effects channel.<br><br><strong>Object</strong> turns it into a spatial object. <strong>Direct</strong> keeps it as a dedicated direct-fed LFE path. <strong>Drop</strong> ignores it entirely.<br><br>Choose this according to how the source material was authored and how your output layout expects bass content to be routed.",
   "input.refresh": "Refresh",
   "input.apply": "Apply",
+  "options.stagedPending": "{group}: staged changes are waiting to be applied.",
+  "options.applyStaged": "Apply staged changes",
   "input.applyPending": "Apply pending...",
   "input.sync.pending": "pending apply",
   "input.sync.synced": "synced",

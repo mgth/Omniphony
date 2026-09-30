@@ -2890,6 +2890,12 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateHostOptions { .. } => {
+                // The standalone host's declared options (requested, applied,
+                // pending per staged group). The web Studio has no staged-group
+                // Apply yet (the native Studio does), so nothing reads them here.
+                (None, removed_ids)
+            }
             OscEvent::StateDecodeTimeMs { value } => {
                 s.decode_time_ms = Some(value);
                 record_timing(TimingSeries::Decode, value);

@@ -250,6 +250,8 @@
   "input.lfeInfoBody": "LFE controla qué ocurre con el canal de efectos de baja frecuencia del flujo de entrada.<br><br><strong>Objeto</strong> lo convierte en un objeto espacial. <strong>Directo</strong> lo mantiene como una ruta LFE directa dedicada. <strong>Descartar</strong> lo ignora por completo.<br><br>Elige esto según cómo se haya creado el material fuente y cómo tu layout de salida espere enrutar el contenido grave.",
   "input.refresh": "Actualizar",
   "input.apply": "Aplicar",
+  "options.stagedPending": "{group}: hay cambios preparados pendientes de aplicar.",
+  "options.applyStaged": "Aplicar los cambios pendientes",
   "input.applyPending": "Aplicación pendiente...",
   "input.sync.pending": "aplicación pendiente",
   "input.sync.synced": "sincronizado",
