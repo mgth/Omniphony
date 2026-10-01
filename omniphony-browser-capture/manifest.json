@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Omniphony IAMF capture (prototype)",
+  "version": "0.2.0",
+  "description": "Captures the IAMF audio track YouTube's TV client plays, saves it for orender or streams it to orender live through a native messaging host.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5bvK8KT43H/qAygEbL5Ffg/ORcFHZvGainEpx0IlYv8LLjyz67jN9q6/YuWIapUKxhgyiW1DUFSrMFjhIti2PVcpksjrB3nkjIV1bNhDvtdY4ppDELN45ch4z3uqfHOOr4VTbwL/oRx9ETtem0oY/zCRli8vwDHGkJ/WgU6erOkWl0vxj3Df7o5yTgIE3adxJ6nFMt1xhOXkr9KuWc/mbVTkRzZDaBUFlIKp8Edhkh326lnWR1/3LBCERw1ZvmbWKA/BbJOI+KY+Xa0liNJpZPtYJlKlFX8Zhk/sTJwB9aWRa+zYjmpCHcrrbpzoiYeJJShG9Ocrf0T+YCLxmD4WJQIDAQAB",
+  "minimum_chrome_version": "153",
+  "permissions": [
+    "declarativeNetRequest",
+    "scripting",
+    "nativeMessaging",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "tv_page",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "iamf-mp4.js",
+        "page-hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "relay.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Omniphony IAMF capture"
+  }
+}
