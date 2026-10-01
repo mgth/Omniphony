@@ -105,6 +105,10 @@ clap = { workspace = true, features = ["derive"] }
 log.workspace = true
 libc.workspace = true
 
+# The sync host's own-clock sink talks to PipeWire directly.
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire.workspace = true
+
 [dev-dependencies]
 # Not linked by the tests: depending on it makes `cargo test` build its cdylib,
 # the bridge the CLI tests under tests/ load into the `orender` binary.

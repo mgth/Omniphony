@@ -1613,6 +1613,7 @@ dependencies = [
  "live_log",
  "log",
  "orender_engine",
+ "pipewire",
  "reference_bridge",
  "renderer",
  "rosc",

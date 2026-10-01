@@ -1,4 +1,5 @@
-//! Single-producer single-consumer ring of interleaved `f32` frames.
+//! Single-producer single-consumer ring of interleaved frames: `f32` audio by
+//! default, or any plain `Copy` element (`u8` for captured transport bytes).
 //!
 //! The renderer thread pushes, the output callback reads. Each side owns one
 //! monotonic counter of frames moved (`written`, `read`); the slot of frame
@@ -17,8 +18,8 @@ use std::cell::UnsafeCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-struct Shared {
-    buf: Box<[UnsafeCell<f32>]>,
+struct Shared<T> {
+    buf: Box<[UnsafeCell<T>]>,
     channels: usize,
     capacity: usize,
     written: AtomicU64,
@@ -28,13 +29,13 @@ struct Shared {
 // SAFETY: the producer only writes slots outside `[read, written)` and the
 // consumer only reads slots inside it; the counters, published with
 // Release/Acquire, are what keeps the two regions apart.
-unsafe impl Sync for Shared {}
-unsafe impl Send for Shared {}
+unsafe impl<T: Send> Sync for Shared<T> {}
+unsafe impl<T: Send> Send for Shared<T> {}
 
-impl Shared {
-    fn base(&self) -> *mut f32 {
-        // `UnsafeCell<f32>` has the layout of `f32`.
-        self.buf.as_ptr() as *mut f32
+impl<T: Copy> Shared<T> {
+    fn base(&self) -> *mut T {
+        // `UnsafeCell<T>` has the layout of `T`.
+        self.buf.as_ptr() as *mut T
     }
 
     /// Copy `frames` frames between the ring starting at absolute frame `at`
@@ -42,7 +43,7 @@ impl Shared {
     ///
     /// # Safety
     /// The caller owns `[at, at + frames)` for this direction (see `Sync`).
-    unsafe fn copy(&self, at: u64, ext: *mut f32, frames: usize, into_ring: bool) {
+    unsafe fn copy(&self, at: u64, ext: *mut T, frames: usize, into_ring: bool) {
         let c = self.channels;
         let start = (at % self.capacity as u64) as usize;
         let first = frames.min(self.capacity - start);
@@ -65,11 +66,14 @@ impl Shared {
 
 /// Create a ring of `capacity_frames` frames of `channels` samples, and its
 /// two ends.
-pub fn frame_ring(channels: usize, capacity_frames: usize) -> (Producer, Consumer) {
+pub fn frame_ring<T: Copy + Default + Send>(
+    channels: usize,
+    capacity_frames: usize,
+) -> (Producer<T>, Consumer<T>) {
     let channels = channels.max(1);
     let capacity = capacity_frames.max(1);
     let buf = (0..channels * capacity)
-        .map(|_| UnsafeCell::new(0.0))
+        .map(|_| UnsafeCell::new(T::default()))
         .collect::<Vec<_>>()
         .into_boxed_slice();
     let shared = Arc::new(Shared {
@@ -88,11 +92,11 @@ pub fn frame_ring(channels: usize, capacity_frames: usize) -> (Producer, Consume
 }
 
 /// The writing end. Not `Clone`: there is exactly one producer.
-pub struct Producer {
-    shared: Arc<Shared>,
+pub struct Producer<T = f32> {
+    shared: Arc<Shared<T>>,
 }
 
-impl Producer {
+impl<T: Copy> Producer<T> {
     pub fn channels(&self) -> usize {
         self.shared.channels
     }
@@ -114,7 +118,7 @@ impl Producer {
 
     /// Push the whole frames of `samples` (a trailing partial frame is
     /// ignored) that fit, and return how many frames went in. Never blocks.
-    pub fn push(&mut self, samples: &[f32]) -> usize {
+    pub fn push(&mut self, samples: &[T]) -> usize {
         let frames = (samples.len() / self.shared.channels).min(self.free());
         if frames == 0 {
             return 0;
@@ -124,7 +128,7 @@ impl Producer {
         // `samples` holds at least `frames * channels` samples.
         unsafe {
             self.shared
-                .copy(at, samples.as_ptr() as *mut f32, frames, true);
+                .copy(at, samples.as_ptr() as *mut T, frames, true);
         }
         self.shared
             .written
@@ -134,11 +138,11 @@ impl Producer {
 }
 
 /// The reading end. Not `Clone`: there is exactly one consumer.
-pub struct Consumer {
-    shared: Arc<Shared>,
+pub struct Consumer<T = f32> {
+    shared: Arc<Shared<T>>,
 }
 
-impl Consumer {
+impl<T: Copy> Consumer<T> {
     pub fn channels(&self) -> usize {
         self.shared.channels
     }
@@ -164,7 +168,7 @@ impl Consumer {
 
     /// Fill `dst` with exactly `dst.len() / channels` frames, or read nothing
     /// and return `false` if fewer are available.
-    pub fn read_exact(&mut self, dst: &mut [f32]) -> bool {
+    pub fn read_exact(&mut self, dst: &mut [T]) -> bool {
         let frames = dst.len() / self.shared.channels;
         if frames > self.available() {
             return false;
@@ -182,6 +186,24 @@ impl Consumer {
             .read
             .store(at + frames as u64, Ordering::Release);
         true
+    }
+
+    /// Read as many whole frames as are available and fit in `dst`; returns
+    /// the frames read.
+    pub fn read_up_to(&mut self, dst: &mut [T]) -> usize {
+        let frames = (dst.len() / self.shared.channels).min(self.available());
+        if frames == 0 {
+            return 0;
+        }
+        let at = self.read();
+        // SAFETY: as in `read_exact`, for `frames <= available()`.
+        unsafe {
+            self.shared.copy(at, dst.as_mut_ptr(), frames, false);
+        }
+        self.shared
+            .read
+            .store(at + frames as u64, Ordering::Release);
+        frames
     }
 
     /// Drop up to `frames` frames unread; returns how many were dropped.

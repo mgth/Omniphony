@@ -29,10 +29,27 @@ use audio_output::sync_output::reference_now_s;
 pub enum ReaderMsg {
     /// Bytes arrived after silence: a new epoch starts.
     Start,
-    /// Bytes read at `t` (reference clock, s).
-    Chunk { t: f64, bytes: Vec<u8> },
+    /// Bytes read at `t` (reference clock, s). `transport` is set when the
+    /// capture knows the bytes' exact place on the carrier's timeline (the
+    /// `own` sink); a pipe does not.
+    Chunk {
+        t: f64,
+        bytes: Vec<u8>,
+        transport: Option<Transport>,
+    },
     /// The pipe went silent.
     End,
+}
+
+/// Where a chunk ends on an IEC 958 carrier's timeline.
+#[derive(Debug, Clone, Copy)]
+pub struct Transport {
+    /// Carrier frames per second and channels (2-byte samples).
+    pub rate: u32,
+    pub channels: u32,
+    /// Bytes captured in this epoch up to the end of the chunk, which ends
+    /// at the chunk's `t`.
+    pub bytes_end: u64,
 }
 
 /// Chunks the hand-off queue holds: at 64 KiB each, well over a second of
@@ -150,6 +167,7 @@ fn read_loop(fd: i32, tx: SyncSender<ReaderMsg>, stats: &ReaderStats) {
         match tx.try_send(ReaderMsg::Chunk {
             t,
             bytes: buf[..n].to_vec(),
+            transport: None,
         }) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {

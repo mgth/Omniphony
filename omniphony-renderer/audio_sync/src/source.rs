@@ -17,7 +17,10 @@ use crate::envelope::ArrivalEnvelope;
 pub(crate) enum SourceEstimator {
     Dll(Dll),
     /// Boxed: the hull's fixed buffers are ~5 KiB; allocated once, here.
-    Envelope { fit: Box<ArrivalEnvelope>, dll: Dll },
+    Envelope {
+        fit: Box<ArrivalEnvelope>,
+        dll: Dll,
+    },
 }
 
 impl SourceEstimator {

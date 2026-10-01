@@ -748,3 +748,64 @@ optional, and two tracks follow from it.
 Order: 4c (PipeWire `own`) now, then Track 1, which is needed on every
 platform. Track 2 is worth doing as soon as mpv-omniphony is touched for
 Windows.
+
+## 13. Phase 4c status (2026-10-01) — `own` sink on PipeWire
+
+`orender sync-play --source own [--sink-name N]` publishes orender's own sink,
+clocked by orender's own timer driver (S1 option c).
+
+### What is built
+
+- **Driver.** A `support.node.driver` node on `CLOCK_MONOTONIC` in a private
+  `node.group`.
+- **Sink.** The IEC 958 sink stream follows it: `RT_PROCESS` and
+  `node.always-process`, no `DRIVER` flag.
+  - It advertises `SPA_PARAM_Latency = L` once.
+  - It sets `node.force-rate` to the carrier rate, written only when the value
+    changes: writing it renegotiates, and rewriting it on every
+    `param_changed` looped 400 times.
+- **Realtime callback.** It drains **every** queued buffer of the cycle and
+  only copies:
+  - the bytes into an SPSC byte ring (`audio_rt` ring, now generic);
+  - one stamp per cycle (`clock.nsec`, bytes so far, format, epoch);
+  - DISCONT/XRUN_RECOVER and real format changes start a new epoch.
+- **Pump thread.** It turns stamps and bytes into the same messages the pipe
+  reader produces, with the exact transport position attached.
+- **Engine thread.** In `own` mode, `N_in` is **transport time**: bytes on
+  the carrier converted to PCM frames, counted from the first burst's
+  preamble. The parser now reports each burst's absolute `start_byte`. The
+  decoder's hold and batching are inside the measurement, as they are inside
+  the latency.
+
+### Two traps found on the way
+
+1. **One Buffers param with ranges, not one per format.** S1 recipe:
+   buffers 2–16, size up to 8192×16 B, stride 1–16. With one fixed-stride
+   param per format, PipeWire paired a format with another one's stride: mpv
+   was asked for 2048 frames of a 4096-frame cycle and delivered half real
+   time (`src = −500 000 ppm`, realigns every 70 ms).
+2. **A player may queue several buffers per cycle.** The callback drains them
+   all.
+
+### Live, real mpv
+
+`--ao=pipewire --audio-device=pipewire/<sink> --audio-spdif=eac3`, E-AC-3 5.1
+on a 192 kHz carrier, into a private null sink:
+
+| Duration | Latency | Source | Correction | Realigns / underruns / drops | Frames | Floor |
+|---|---|---|---|---|---|---|
+| 180 s | **150.000 ms, max \|error\| 0.001 ms** | 0.00 ppm | 0.00 ppm | 0 / 0 / 0 | 8 640 000 (= 180.0 s exactly) | 65 ms |
+
+- The source's clock is orender's own, so there is nothing to estimate and
+  the loop does nothing.
+- The latency floor is 65 ms: `own` can run far lower than the pipe.
+
+### Not yet
+
+- **PCM** (desktop audio): the raw format is not offered by the `own` sink
+  yet.
+- **AC-3/DTS at 48 kHz, TrueHD/DTS-HD at 192 kHz × 8**: offered, not exercised
+  live yet.
+- **mpv's own view of the latency** (`audio-pts` over IPC, as in S1): not
+  re-measured with the full host.
+- **The real DAC** as output (only the null sink so far).

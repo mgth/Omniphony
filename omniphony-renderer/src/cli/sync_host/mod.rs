@@ -21,6 +21,7 @@
 //!
 //! Hidden while experimental. Linux only for now (PipeWire output).
 
+mod own_sink;
 mod reader;
 
 use std::path::PathBuf;
@@ -38,14 +39,28 @@ use clap::Args;
 use orender_engine::engine::{Engine, RenderedAudio};
 use spdif::SpdifParser;
 
-use reader::{ReaderMsg, spawn_reader};
+use reader::{ReaderMsg, Transport, spawn_reader};
 
 /// `orender sync-play` arguments.
 #[derive(Debug, Clone, Args)]
 pub struct SyncPlayArgs {
-    /// Input pipe or file (IEC 61937 or raw bitstream).
+    /// Input pipe (IEC 61937 or raw bitstream), for `--source pipe`.
     #[arg(value_name = "INPUT")]
-    pub input: PathBuf,
+    pub input: Option<PathBuf>,
+
+    /// Where the stream comes from: `pipe` (a writer on its own clock,
+    /// `follow`) or `own` (orender's PipeWire sink on orender's clock).
+    #[arg(long, value_enum, default_value_t = SourceKind::Pipe)]
+    pub source: SourceKind,
+
+    /// Node name of the `own` sink.
+    #[arg(long = "sink-name", default_value = "omniphony-sync")]
+    pub sink_name: String,
+
+    /// `priority.session` of the `own` sink (0 keeps it from ever being
+    /// picked as the default sink, e.g. for tests).
+    #[arg(long = "sink-session-priority")]
+    pub sink_session_priority: Option<u32>,
 
     /// End-to-end latency to hold (ms).
     #[arg(long = "target-latency-ms", default_value_t = 150.0)]
@@ -77,6 +92,13 @@ pub struct SyncPlayArgs {
     pub no_drain_pipe: bool,
 }
 
+/// Where the stream comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SourceKind {
+    Pipe,
+    Own,
+}
+
 /// Rate the engine renders at. Slice 4a assumes a 48 kHz family source.
 const RENDER_RATE: u32 = 48_000;
 /// Ring capacity: comfortably above any latency target.
@@ -104,6 +126,10 @@ struct Epoch {
     is_spdif: Option<bool>,
     pushed_frames: u64,
     dropped_frames: u64,
+    /// `own` source: the transport position (PCM frames) of the first burst
+    /// the parser found, which is source frame 0 of this epoch.
+    first_burst_frames: Option<f64>,
+    last_transport: Option<Transport>,
     started: Instant,
     /// Set at end of stream: the epoch is dropped once what it queued has
     /// played. The engine thread never waits for it.
@@ -148,7 +174,22 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
         target.as_deref().unwrap_or("<session default>")
     );
 
-    let (rx, stats) = spawn_reader(args.input.clone(), !args.no_drain_pipe)?;
+    let (rx, stats) = match args.source {
+        SourceKind::Pipe => {
+            let input = args
+                .input
+                .clone()
+                .context("--source pipe needs an INPUT pipe")?;
+            spawn_reader(input, !args.no_drain_pipe)?
+        }
+        SourceKind::Own => own_sink::spawn_own_sink(own_sink::OwnSinkConfig {
+            node_name: args.sink_name.clone(),
+            description: "Omniphony (sync)".into(),
+            latency_ns: (args.target_latency_ms * 1e6) as i64,
+            quantum: args.quantum,
+            session_priority: args.sink_session_priority,
+        })?,
+    };
     let started = Instant::now();
     let mut epoch: Option<Epoch> = None;
     let mut next_report = args.report_every;
@@ -184,8 +225,13 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
                 epoch = Some(start_epoch(args, channels, &positions, target.clone())?);
                 log::info!("sync host: stream opened, new epoch");
             }
-            Some(ReaderMsg::Chunk { t, bytes }) => {
+            Some(ReaderMsg::Chunk {
+                t,
+                bytes,
+                transport,
+            }) => {
                 if let Some(ep) = epoch.as_mut() {
+                    ep.last_transport = transport;
                     feed_chunk(&mut engine, ep, t, &bytes);
                 }
             }
@@ -229,8 +275,18 @@ fn start_epoch(
     let tap = Arc::new(SourceTap::new());
     let telemetry = Arc::new(SyncTelemetry::new());
     let mut config = OutputCoreConfig::new(channels, RENDER_RATE, RENDER_RATE, 8192);
-    let follow = audio_sync::ServoConfig::follow();
-    config.servo.loop_bandwidth_hz = args.loop_bandwidth_hz.unwrap_or(follow.loop_bandwidth_hz);
+    if args.source == SourceKind::Pipe {
+        let follow = audio_sync::ServoConfig::follow();
+        config.servo = audio_sync::ServoConfig {
+            source_rate_hz: config.servo.source_rate_hz,
+            output_rate_hz: config.servo.output_rate_hz,
+            resampler_lookahead_frames: config.servo.resampler_lookahead_frames,
+            ..follow
+        };
+    }
+    if let Some(hz) = args.loop_bandwidth_hz {
+        config.servo.loop_bandwidth_hz = hz;
+    }
     config.servo.target_latency_s = args.target_latency_ms / 1e3;
     let core = OutputCore::new(config, consumer, Arc::clone(&tap), Arc::clone(&telemetry));
     let output = PipewireSyncOutput::start(
@@ -254,6 +310,8 @@ fn start_epoch(
         is_spdif: None,
         pushed_frames: 0,
         dropped_frames: 0,
+        first_burst_frames: None,
+        last_transport: None,
         started: Instant::now(),
         ending_at: None,
         channel_mismatch_logged: false,
@@ -275,6 +333,11 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
         ep.parser.push_bytes(bytes);
         while let Some(packet) = ep.parser.get_next_packet() {
             ep.hold = decoder_hold_frames(packet.data_type);
+            if ep.first_burst_frames.is_none()
+                && let Some(tr) = ep.last_transport
+            {
+                ep.first_burst_frames = Some(transport_frames(packet.start_byte, tr));
+            }
             match engine.process(&packet.payload, RInputTransport::Iec61937, packet.data_type) {
                 Ok(blocks) => push_blocks(engine, ep, blocks),
                 Err(e) => log::debug!("sync host: decode error: {e:#}"),
@@ -286,13 +349,36 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
             Err(e) => log::debug!("sync host: decode error: {e:#}"),
         }
     }
-    if ep.pushed_frames > 0 {
-        ep.tap.publish(t, ep.pushed_frames + ep.hold);
+    match (ep.last_transport, ep.first_burst_frames) {
+        // `own`: the exact transport position, counted from the first burst.
+        // The decoder's hold and batching are inside the measurement, as
+        // they are inside the latency.
+        (Some(tr), Some(first)) => {
+            let received = transport_frames(tr.bytes_end, tr) - first;
+            if received > 0.0 {
+                ep.tap.publish(t, received.round() as u64);
+            }
+        }
+        (Some(_), None) => {}
+        // `follow`: what was decoded, plus the codec's hold.
+        (None, _) => {
+            if ep.pushed_frames > 0 {
+                ep.tap.publish(t, ep.pushed_frames + ep.hold);
+            }
+        }
     }
     ep.bytes_in += bytes.len() as u64;
     if ep.trace {
         eprintln!("SYNC_TRACE {t:.6} {} {}", ep.bytes_in, ep.pushed_frames);
     }
+}
+
+/// Source PCM frames (at the render rate) a byte offset on an IEC 958
+/// carrier stands for: carriers run at the content rate times a fixed factor
+/// (1 for AC-3/DTS at 48 kHz, 4 for E-AC-3/TrueHD/DTS-HD at 192 kHz).
+fn transport_frames(bytes: u64, tr: Transport) -> f64 {
+    let carrier_frames = bytes as f64 / (2.0 * tr.channels.max(1) as f64);
+    carrier_frames * RENDER_RATE as f64 / tr.rate.max(1) as f64
 }
 
 fn push_blocks(engine: &mut Engine, ep: &mut Epoch, blocks: Vec<RenderedAudio>) {
