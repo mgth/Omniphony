@@ -284,9 +284,12 @@ These are not part of the mapping. In the Omniphony stack:
   then Temporal Units; a reset (seek) keeps the configuration.
 * **Writing:** neither mkvmerge nor FFmpeg can produce such a track today
   (FFmpeg exposes IAMF as one stream per substream plus a stream group, not
-  as one track). A converter from fragmented or plain ISO-BMFF is a copy of
-  `iacb` and samples (see the table above); the incremental fMP4 demuxer in
-  `omniphony-browser-capture/iamf-mp4.js` already extracts both.
+  as one track). `scripts/iamf2mka.py` writes it from IAMF in ISO-BMFF
+  (fragmented or not) or from a standalone `.iamf`, and `--extract` reads it
+  back to a standalone stream. Checked on the libiamf vectors and a YouTube
+  capture: `mkvinfo` reports no error; from ISO-BMFF and from standalone
+  streams without Temporal Delimiters the round trip is byte-identical; with
+  delimiters only those are dropped, and the decoded PCM is identical.
 * **Test material:** the libiamf conformance vectors (AOMediaCodec/libiamf
   `tests/`, standalone `.iamf` and ISO-BMFF forms with reference renders)
   convert directly.
