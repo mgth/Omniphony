@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Omniphony IAMF capture (prototype)",
+  "version": "0.1.0",
+  "description": "Captures the IAMF audio track YouTube's TV client plays, as .mp4 and as a raw .iamf stream for orender.",
+  "minimum_chrome_version": "153",
+  "permissions": ["declarativeNetRequest", "scripting"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "background": { "service_worker": "background.js" },
+  "declarative_net_request": {
+    "rule_resources": [{ "id": "tv_page", "enabled": true, "path": "rules.json" }]
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["iamf-mp4.js", "page-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "action": { "default_popup": "popup.html", "default_title": "Omniphony IAMF capture" }
+}

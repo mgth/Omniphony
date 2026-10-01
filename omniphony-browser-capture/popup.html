@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Omniphony IAMF capture</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1d1d1f; --muted: #6e6e73; --bg: #fff; --line: #d2d2d7; --ok: #1a7f37; --bad: #b42318; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #f5f5f7; --muted: #a1a1a6; --bg: #1c1c1e; --line: #3a3a3c; --ok: #4ac26b; --bad: #ff6b5e; }
+  }
+  body { margin: 0; padding: 12px 14px; width: 380px; font: 13px/1.4 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0 0 10px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  ul { margin: 4px 0 10px; padding-left: 16px; }
+  li { overflow-wrap: anywhere; }
+  .muted { color: var(--muted); }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  button { flex: 1; padding: 6px 8px; font: inherit; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; user-select: none; }
+  button:disabled { opacity: .45; cursor: default; }
+  #message { margin-top: 8px; min-height: 1.4em; }
+</style>
+</head>
+<body>
+  <h1>Omniphony IAMF capture</h1>
+  <div id="content" class="muted">Reading the page…</div>
+  <div class="row">
+    <button id="tv" hidden>Open in YouTube TV</button>
+    <button id="save" disabled>Save capture</button>
+    <button id="clear" disabled>Clear</button>
+  </div>
+  <div id="message" class="muted"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
