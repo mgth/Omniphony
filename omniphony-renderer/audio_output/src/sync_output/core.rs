@@ -140,6 +140,7 @@ impl OutputCore {
             available: self.ring.written() as f64,
             source: self.tap.latest(),
             source_offset: self.tap.offset(),
+            source_breaks: self.tap.breaks(),
         };
         let plan = self.servo.plan(&input);
         let silence = plan.silence_frames.min(frames);

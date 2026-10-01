@@ -184,6 +184,10 @@ pub struct CallbackInput {
     pub source: Option<SourceObservation>,
     /// `inserted − dropped` from the [`Accounting`](crate::Accounting).
     pub source_offset: f64,
+    /// Discontinuities the capture side has seen in the source (another
+    /// stream started: a track change), counted. A change means the source
+    /// broke its phase: the servo restarts it and realigns.
+    pub source_breaks: u64,
 }
 
 /// What the output stage must do this callback.
@@ -274,6 +278,13 @@ pub struct Servo {
     device_dll: Dll,
     last_source_t: Option<f64>,
     source_stalled: bool,
+    /// [`CallbackInput::source_breaks`] as last seen.
+    source_breaks: u64,
+    /// The next fresh reading starts a new source phase (after a break the
+    /// capture side reported, or a `follow` underrun).
+    restart_next: bool,
+    /// Source phase restarts the servo made.
+    restarts: u64,
     phase: Phase,
     /// The integral term itself (`∫Ki·e dt`), so a gain that narrows does not
     /// rescale what has been integrated.
@@ -296,6 +307,9 @@ impl Servo {
             device_dll: Dll::new(config.device_dll, config.output_rate_hz),
             last_source_t: None,
             source_stalled: true,
+            source_breaks: 0,
+            restart_next: false,
+            restarts: 0,
             phase: Phase::Starting,
             integral: 0.0,
             running_since: None,
@@ -327,6 +341,7 @@ impl Servo {
         self.device_dll.reset();
         self.last_source_t = None;
         self.source_stalled = true;
+        self.restart_next = false;
         self.phase = Phase::Starting;
         self.integral = 0.0;
         self.running_since = None;
@@ -341,6 +356,13 @@ impl Servo {
             .unwrap_or(0.0);
         self.last_t = Some(input.t);
         self.device_dll.observe(input.t, input.device_position);
+        // A break the capture side saw: the reading that carries the new
+        // stream starts a new phase, and the latency is set again on it.
+        let source_broke = input.source_breaks != self.source_breaks;
+        if source_broke {
+            self.source_breaks = input.source_breaks;
+            self.restart_next = true;
+        }
         self.observe_source(input);
 
         let ratio_ff = self.feedforward_ratio();
@@ -349,7 +371,7 @@ impl Servo {
         self.telemetry.source_ppm = ppm(rate_s / self.config.source_rate_hz);
         self.telemetry.device_ppm = ppm(rate_d / self.config.output_rate_hz);
         self.telemetry.feedforward_ppm = ppm(ratio_ff / self.nominal_ratio);
-        self.telemetry.source_rephases = self.source.rephases();
+        self.telemetry.source_rephases = self.restarts + self.source.detected_breaks();
 
         // Silent until the source has delivered something, or while it is
         // stalled: there is nothing to measure the latency against.
@@ -376,13 +398,19 @@ impl Servo {
         let error = latency - self.config.target_latency_s;
 
         match self.phase {
+            // The source is between phases: the latency is set once the
+            // reading that starts the new one has come.
+            Phase::Starting | Phase::Realigning if self.restart_next => {
+                self.silent(input.frames, ratio_ff)
+            }
             Phase::Starting | Phase::Realigning => {
                 self.establish(input, error, rate_s, rate_d, ratio_ff)
             }
             Phase::Running => {
-                if error.abs() > self.config.realign_threshold_s {
-                    // Steering cannot recover this without an audible pitch
-                    // excursion: fade out now, set the latency next callback.
+                if source_broke || error.abs() > self.config.realign_threshold_s {
+                    // A new stream, or an error steering cannot recover
+                    // without an audible pitch excursion: fade out now, set
+                    // the latency next callback.
                     self.phase = Phase::Realigning;
                     let mut plan = self.steer(input.t, error, ratio_ff, 0.0);
                     plan.fade_out = true;
@@ -403,9 +431,11 @@ impl Servo {
             let resumed = self
                 .last_source_t
                 .is_some_and(|last| obs.t - last > self.config.source_gap_s);
-            if resumed && self.source.is_tracking() {
-                // The source stopped and came back: same clock, new phase.
+            if std::mem::take(&mut self.restart_next) || (resumed && self.source.is_tracking()) {
+                // The source stopped and came back, or started another
+                // stream: same clock, new phase.
                 self.source.restart_phase(obs.t, obs.received);
+                self.restarts += 1;
             } else {
                 self.source.observe(obs.t, obs.received);
             }
@@ -541,7 +571,12 @@ impl Servo {
             return plan;
         }
         self.telemetry.underruns += 1;
-        self.source.rephase_on_next_reading();
+        if self.config.source_late_arrivals {
+            // The estimated line is ahead of what has arrived: a `follow`
+            // source lost time (a pause, a stall shorter than the gap that
+            // marks one). An `own` source's readings are exact.
+            self.restart_next = true;
+        }
         self.phase = Phase::Realigning;
         self.silent(input.frames, plan.ratio)
     }
@@ -565,6 +600,7 @@ mod tests {
             available: received,
             source: Some(SourceObservation { t, received }),
             source_offset: 0.0,
+            source_breaks: 0,
         }
     }
 
@@ -763,5 +799,37 @@ mod tests {
         }
         assert_eq!(servo.telemetry().realigns, 1);
         assert_eq!(servo.telemetry().source_rephases, 1);
+    }
+
+    /// A track change: the capture side reports a break, and the new stream's
+    /// readings sit 7 ms off the old line, under any jitter threshold. The
+    /// servo restarts the phase on the new stream's first reading and sets
+    /// the latency on it, instead of steering the 7 ms out over tens of
+    /// seconds with a fit that spans the step.
+    #[test]
+    fn a_reported_break_restarts_the_phase_and_realigns() {
+        let mut servo = Servo::new(ServoConfig::follow());
+        let frames = 1024usize;
+        let dt = frames as f64 / 48_000.0;
+        let (break_at, step) = (30.0, 0.007 * 48_000.0);
+        let mut play = 0.0;
+        for k in 0..(40.0 / dt) as usize {
+            let t = k as f64 * dt;
+            let after = t >= break_at;
+            let received = t * 48_000.0 + if after { step } else { 0.0 };
+            let mut inp = input(t, play, received);
+            inp.source_breaks = after as u64;
+            let plan = servo.plan(&inp);
+            let played = frames - plan.silence_frames.min(frames);
+            play += plan.skip_source_frames + plan.ratio * played as f64;
+            if t > break_at + 0.5 {
+                assert_eq!(servo.phase(), Phase::Running, "at t = {t:.2}");
+                let error = servo.telemetry().error_s;
+                assert!(error.abs() < 1e-4, "error {error} at t = {t:.2}");
+            }
+        }
+        assert_eq!(servo.telemetry().realigns, 1);
+        assert_eq!(servo.telemetry().source_rephases, 1);
+        assert!(servo.telemetry().source_ppm.abs() < 1.0);
     }
 }

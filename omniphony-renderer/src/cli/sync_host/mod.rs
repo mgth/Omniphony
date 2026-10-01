@@ -141,13 +141,18 @@ struct Epoch {
     is_spdif: Option<bool>,
     pushed_frames: u64,
     dropped_frames: u64,
-    /// `own` source: the transport position (PCM frames) of the first burst
-    /// the parser found, which is source frame 0 of this epoch.
-    first_burst_frames: Option<f64>,
+    /// Where the transport count starts: a byte offset and the source frames
+    /// counted up to it. The first burst the parser found is frame 0 of the
+    /// epoch; a pipe's carrier change rebases it.
+    transport_base: Option<(u64, f64)>,
     last_transport: Option<Transport>,
     /// `follow` source on a pipe: its carrier, once the first burst named
     /// the data type, and the bytes pushed into the parser since its reset.
     pipe_carrier: Option<(u32, u32)>,
+    /// Whether a burst has named the pipe's carrier (or said it is unknown).
+    pipe_carrier_known: bool,
+    /// IEC 61937 data type of the last burst: a change is a new stream.
+    data_type: Option<u8>,
     parser_bytes: u64,
     started: Instant,
     /// Set at end of stream: the epoch is dropped once what it queued has
@@ -329,9 +334,11 @@ fn start_epoch(
         is_spdif: None,
         pushed_frames: 0,
         dropped_frames: 0,
-        first_burst_frames: None,
+        transport_base: None,
         last_transport: None,
         pipe_carrier: None,
+        pipe_carrier_known: false,
+        data_type: None,
         parser_bytes: 0,
         started: Instant::now(),
         ending_at: None,
@@ -350,26 +357,32 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
         ep.is_spdif = Some(true);
         ep.parser.reset();
         ep.parser_bytes = 0;
+        ep.transport_base = None;
     }
     if ep.is_spdif == Some(true) {
         ep.parser.push_bytes(bytes);
         ep.parser_bytes += bytes.len() as u64;
         while let Some(packet) = ep.parser.get_next_packet() {
             ep.hold = decoder_hold_frames(packet.data_type);
-            if ep.last_transport.is_none() && ep.pipe_carrier.is_none() {
-                ep.pipe_carrier = pipe_carrier(packet.data_type);
-                if ep.pipe_carrier.is_none() {
-                    log::info!(
-                        "sync host: carrier of IEC 61937 data type {} unknown, \
-                         counting decoded frames",
-                        packet.data_type
-                    );
-                }
+            if ep.data_type.is_some_and(|d| d != packet.data_type) {
+                // A track change: the content and its timing start over. The
+                // count restarts from where the ring is, as at the start of an
+                // epoch: what the old stream's decoder never delivered must
+                // not stay counted (it would raise the floor at every change).
+                log::info!(
+                    "sync host: IEC 61937 data type {} -> {}, new phase",
+                    ep.data_type.unwrap_or_default(),
+                    packet.data_type
+                );
+                ep.transport_base = None;
+                ep.tap.mark_break();
             }
-            if ep.first_burst_frames.is_none()
-                && let Some(tr) = transport(ep)
-            {
-                ep.first_burst_frames = Some(transport_frames(packet.start_byte, tr));
+            ep.data_type = Some(packet.data_type);
+            if ep.last_transport.is_none() {
+                follow_pipe_carrier(ep, packet.data_type);
+            }
+            if ep.transport_base.is_none() && transport(ep).is_some() {
+                ep.transport_base = Some((packet.start_byte, ep.pushed_frames as f64));
             }
             match engine.process(&packet.payload, RInputTransport::Iec61937, packet.data_type) {
                 Ok(blocks) => push_blocks(engine, ep, blocks),
@@ -382,15 +395,17 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
             Err(e) => log::debug!("sync host: decode error: {e:#}"),
         }
     }
-    match (transport(ep), ep.first_burst_frames) {
+    match (transport(ep), ep.transport_base) {
         // The exact transport position, counted from the first burst: from
-        // the `own` sink, or from the bytes of a pipe whose carrier is known.
+        // the `own` sink, or from the bytes of a pipe whose carrier is known
+        // (rebased where a track change moved it to another carrier).
         // The decoder's hold and batching are inside the measurement, as
         // they are inside the latency. On a pipe this keeps the readings
         // free of the decoder's burst granularity, which would otherwise
         // show as up to a chunk of arrival lateness.
-        (Some(tr), Some(first)) => {
-            let received = transport_frames(tr.bytes_end, tr) - first;
+        (Some(tr), Some((base_bytes, base_frames))) => {
+            let received =
+                base_frames + transport_frames(tr.bytes_end.saturating_sub(base_bytes), tr);
             if received > 0.0 {
                 ep.tap.publish(t, received.round() as u64);
             }
@@ -407,6 +422,26 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
     if ep.trace {
         eprintln!("SYNC_TRACE {t:.6} {} {}", ep.bytes_in, ep.pushed_frames);
     }
+}
+
+/// Keep a pipe's carrier in step with the data type of its bursts: a track
+/// change can move the player to another carrier (E-AC-3 on 192 kHz to AC-3
+/// on 48 kHz). The count restarts with it (a data type change is a break).
+fn follow_pipe_carrier(ep: &mut Epoch, data_type: u8) {
+    let carrier = pipe_carrier(data_type);
+    if carrier == ep.pipe_carrier && (carrier.is_some() || ep.pipe_carrier_known) {
+        return;
+    }
+    if ep.pipe_carrier_known {
+        log::info!("sync host: IEC 61937 data type {data_type}, carrier now {carrier:?}");
+    } else if carrier.is_none() {
+        log::info!(
+            "sync host: carrier of IEC 61937 data type {data_type} unknown, \
+             counting decoded frames"
+        );
+    }
+    ep.pipe_carrier = carrier;
+    ep.pipe_carrier_known = true;
 }
 
 /// Where the bytes fed so far end on the carrier's timeline, if known.

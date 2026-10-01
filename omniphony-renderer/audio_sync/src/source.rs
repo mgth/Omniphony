@@ -58,21 +58,11 @@ impl SourceEstimator {
         }
     }
 
-    /// The playback ran dry: the estimated line is ahead of what has
-    /// arrived. A `follow` source has lost time (a pause, a seek, a stall
-    /// shorter than the gap that marks one), so its next reading starts a
-    /// new phase. An `own` source's readings are exact: nothing to do.
-    pub(crate) fn rephase_on_next_reading(&mut self) {
-        if let Self::Follow(f) = self {
-            f.rephase_next = true;
-        }
-    }
-
-    /// Times the `follow` estimator started a new phase.
-    pub(crate) fn rephases(&self) -> u64 {
+    /// Phase breaks the `follow` estimator detected in its readings.
+    pub(crate) fn detected_breaks(&self) -> u64 {
         match self {
             Self::Dll(_) => 0,
-            Self::Follow(f) => f.rephases,
+            Self::Follow(f) => f.detected_breaks,
         }
     }
 
@@ -144,7 +134,9 @@ const OFFSET_READINGS: usize = 2048;
 /// and restarts the slope fit, whose hull would otherwise span the step.
 /// Readings that stay that far behind for [`PHASE_BREAK_HOLD_S`] start a new
 /// phase from the first of them: the older readings and the slope fit are
-/// dropped, the rate is kept. So does the next reading after an underrun.
+/// dropped, the rate is kept. (The servo also restarts the phase itself when
+/// it knows better: after an underrun, or when the capture side reports a
+/// new stream.)
 ///
 /// Open-loop study on the measured mpv model (±20 ms one-sided, 23.976 fps
 /// bursts), after 100 s: position p99 within 0.33–0.47 ms and rate within
@@ -165,8 +157,7 @@ pub(crate) struct FollowEstimator {
     /// Arrival time of the first of the readings that have stayed behind the
     /// line by more than [`PHASE_BREAK_S`].
     behind_since: Option<f64>,
-    rephase_next: bool,
-    rephases: u64,
+    detected_breaks: u64,
 }
 
 impl FollowEstimator {
@@ -182,8 +173,7 @@ impl FollowEstimator {
             rate: nominal_rate,
             offset: None,
             behind_since: None,
-            rephase_next: false,
-            rephases: 0,
+            detected_breaks: 0,
         }
     }
 
@@ -196,7 +186,6 @@ impl FollowEstimator {
         self.rate = self.nominal_rate;
         self.offset = None;
         self.behind_since = None;
-        self.rephase_next = false;
     }
 
     /// Start a new phase from the readings that arrived at or after `t`
@@ -216,17 +205,11 @@ impl FollowEstimator {
         }
         self.offset = None;
         self.behind_since = None;
-        self.rephase_next = false;
-        self.rephases += 1;
     }
 
     /// Detect a phase break against the current line before taking the
     /// reading `(t, received)`.
     fn check_phase(&mut self, t: f64, received: f64) {
-        if std::mem::take(&mut self.rephase_next) {
-            self.rephase_before(f64::INFINITY);
-            return;
-        }
         let Some(line) = self.position_at(t) else {
             return;
         };
@@ -238,6 +221,7 @@ impl FollowEstimator {
             let since = *self.behind_since.get_or_insert(t);
             if t - since >= PHASE_BREAK_HOLD_S {
                 self.rephase_before(since);
+                self.detected_breaks += 1;
             }
         } else {
             self.behind_since = None;
@@ -352,7 +336,7 @@ mod tests {
         feed(&mut est, 80.0, 0.0, 60.0, 0.0);
         let lost = -0.2 * 48_000.0;
         feed(&mut est, 80.0, 60.2, 60.2 + PHASE_BREAK_HOLD_S + 0.1, lost);
-        assert_eq!(est.rephases, 1);
+        assert_eq!(est.detected_breaks, 1);
         let t = 60.2 + PHASE_BREAK_HOLD_S + 0.1;
         assert!(line_error(&est, 80.0, t, lost).abs() < 1.0);
         assert!(((est.rate / 48_000.0 - 1.0) * 1e6 - 80.0).abs() < 2.0);
@@ -368,7 +352,7 @@ mod tests {
         feed(&mut est, -300.0, 60.0, 90.0, jump);
         assert!(line_error(&est, -300.0, 90.0, jump).abs() < 1.0);
         assert!(((est.rate / 48_000.0 - 1.0) * 1e6 + 300.0).abs() < 2.0);
-        assert_eq!(est.rephases, 0);
+        assert_eq!(est.detected_breaks, 0);
     }
 
     /// Jitter-sized steps are not breaks.
@@ -380,21 +364,20 @@ mod tests {
             let x = (j.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 11) as f64 / (1u64 << 53) as f64;
             est.observe(t_true + 0.040 * x, t_true * 48_000.0);
         }
-        assert_eq!(est.rephases, 0);
+        assert_eq!(est.detected_breaks, 0);
     }
 
-    /// After an underrun the next reading starts the new phase on its own.
+    /// A restart takes its reading as the new phase at once, rate kept.
     #[test]
-    fn the_reading_after_an_underrun_starts_a_new_phase() {
+    fn a_restart_starts_the_new_phase_on_its_reading() {
         let mut source = SourceEstimator::new(DllConfig::default(), true, 48_000.0);
         for k in 0..3000 {
             let t = k as f64 * 0.010;
             source.observe(t, t * 48_000.0);
         }
-        source.rephase_on_next_reading();
         // Behind the line by 0.1 s, well inside the hold.
-        source.observe(30.1, 30.0 * 48_000.0);
-        assert_eq!(source.rephases(), 1);
+        source.restart_phase(30.1, 30.0 * 48_000.0);
         assert_eq!(source.position_at(30.1), Some(30.0 * 48_000.0));
+        assert_eq!(source.rate(), Some(48_000.0));
     }
 }

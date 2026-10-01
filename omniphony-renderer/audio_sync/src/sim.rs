@@ -404,6 +404,7 @@ pub fn run_with(
             available,
             source: delivered.map(|(at, r)| SourceObservation { t: at, received: r }),
             source_offset: -reported_lost,
+            source_breaks: 0,
         };
         let plan = servo.plan(&input);
         let played = plan.played_frames(quantum);

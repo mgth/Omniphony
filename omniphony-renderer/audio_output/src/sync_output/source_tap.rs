@@ -25,6 +25,7 @@ pub struct SourceTap {
     t_bits: AtomicU64,
     received: AtomicU64,
     offset: AtomicI64,
+    breaks: AtomicU64,
 }
 
 const READ_ATTEMPTS: usize = 8;
@@ -49,6 +50,18 @@ impl SourceTap {
     /// (negative) between the capture point and the ring.
     pub fn account(&self, delta: i64) {
         self.offset.fetch_add(delta, Ordering::Relaxed);
+    }
+
+    /// Writer side: the source broke its phase (another stream started on
+    /// the same capture, such as a track change), before the reading that
+    /// carries the new stream is published.
+    pub fn mark_break(&self) {
+        self.breaks.fetch_add(1, Ordering::Release);
+    }
+
+    /// Reader side: breaks marked so far.
+    pub fn breaks(&self) -> u64 {
+        self.breaks.load(Ordering::Acquire)
     }
 
     /// Reader side: the latest pair, if one has been published and could be

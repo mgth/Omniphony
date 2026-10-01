@@ -955,7 +955,6 @@ the follow offset sat up to a chunk below the true line. It then rose
 
 ### Open items
 
-- Track switch (`aid`) not tested yet.
 - **Release.** The mpv change has to land in mpv-omniphony's patch set before
   any release. The launchers (`mpvo`) and the Studio's mpv arguments would
   then pass `--ao-pcm-timed=yes --ao-pcm-latency=<target>`.
@@ -1028,4 +1027,65 @@ Tests:
   `a_step_ahead_moves_the_offset_and_spares_the_rate`,
   `jitter_is_not_a_phase_break`,
   `the_reading_after_an_underrun_starts_a_new_phase` (estimator).
+
+### Audio track switch (2026-10-01)
+
+Test file: three audio tracks: E-AC-3 "A", AC-3 (re-encoded from it), and
+E-AC-3 "B" (a copy of A). Played with `--audio-spdif=ac3,eac3`, switching
+A → B → AC-3 → A → AC-3 → B every 15 s over IPC.
+
+**Same codec (A → B): seamless.** mpv keeps its AO, so the reader sees the
+same as a seek: no realign, no error.
+
+**Codec change: three defects, fixed one after the other.**
+
+1. **The pipe's carrier was learned once.** AC-3 rides a 48 kHz carrier,
+   E-AC-3 a 192 kHz one, and AC-3 bytes were counted as E-AC-3, at a quarter
+   of their rate. The latency slid away, the estimator rephased every 0.5 s,
+   and 900 k frames were dropped. **Fix:** the carrier follows each burst's
+   data type.
+2. **A sub-threshold step corrupted the rate.** For a codec change mpv
+   rebuilds its AO: a new `ao_pcm` with an empty virtual buffer, so the
+   arrivals step by a few ms (+7 ms here). That is under the 20 ms
+   threshold, so the slope fit spanned it and the source rate went to
+   +230 ppm. **Fix:** orender knows a new stream started (the IEC 61937 data
+   type changed).
+   - The sync host marks a **source break** on the `SourceTap`.
+   - The servo fades out and restarts the phase on the next fresh reading
+     (the `follow` fit or the `own` DLL alike).
+   - It stays silent until that reading has come, then sets the latency
+     exactly.
+
+   The content is discontinuous there anyway, so a realign costs nothing
+   audible that the track change did not already cost.
+3. **The floor crept up at each change** (+40 to 80 ms), until a 200 ms
+   target underran in a loop. The old stream's last frames were counted on
+   the transport but never came out of the decoder. **Fix:** at a break the
+   transport count restarts from the frames actually pushed into the ring,
+   as at the start of an epoch.
+
+The servo now owns "restart the phase on the next reading" for every cause:
+- a gap (the stall gap, as before);
+- a `follow` underrun;
+- a reported break.
+
+The estimator counts only the breaks it detects itself. `rephases` reports
+the sum.
+
+**After (live, 4 codec changes + 1 same-codec switch):**
+- each codec change costs 1 realign and 1 rephase, with the error at most
+  0.02 ms throughout;
+- the source rate stays at −8.5 ppm;
+- the floor holds per codec (~80 ms E-AC-3, ~54 ms AC-3);
+- no mid-stream underrun, no drops.
+
+mpv's own `avsync` reads −9 to −41 ms right after a switch and settles under
+1 ms in ~1.5 s. With mpv's ideal `ao_null` the same switches read −19 to
+−27 ms with the same decay, so this is mpv's track-switch resync, not the
+pipe.
+
+The pause/seek script gives the same results after this change.
+
+Test: `a_reported_break_restarts_the_phase_and_realigns` (servo). Without the
+break handling, a 7.2 ms error persists.
 
