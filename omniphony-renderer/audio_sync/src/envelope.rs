@@ -15,21 +15,27 @@
 //! `1/N` rather than `1/√N`, needs no rate prior, and involves no feedback.
 //!
 //! Here the readings are first reduced to the earliest one per
-//! [`BUCKET_S`] (which keeps the hull small), over a sliding window of
-//! [`WINDOW_S`] so a changing rate (display-resample) is followed. The hull is
-//! rebuilt when a bucket closes, in `O(n)` (monotone chain, the buckets being
-//! in time order). Fixed capacity, no allocation after construction.
+//! [`BUCKET_S`] (which keeps the hull small), over a sliding window (up to
+//! [`MAX_WINDOW_S`]) so a changing rate (display-resample) is followed. The
+//! hull is rebuilt when a bucket closes, in `O(n)` (monotone chain, the
+//! buckets being in time order). Fixed capacity, no allocation after
+//! construction.
+//!
+//! Its **slope** is what the `follow` estimator uses (see `source.rs`): a
+//! position extrapolated from the hull edge at the window's mean time to the
+//! present carries that edge's slope error over half the window.
 
 /// One reduced reading per this long (s).
 pub const BUCKET_S: f64 = 0.25;
-/// Span of buckets the fit uses (s).
-pub const WINDOW_S: f64 = 30.0;
-const BUCKETS: usize = 128; // > WINDOW_S / BUCKET_S
+/// Longest window of buckets the fit can use (s).
+pub const MAX_WINDOW_S: f64 = 128.0;
+const BUCKETS: usize = 512; // MAX_WINDOW_S / BUCKET_S
 
 /// See the [module docs](self).
 #[derive(Debug, Clone)]
 pub struct ArrivalEnvelope {
     nominal_rate: f64,
+    window_s: f64,
     origin: Option<f64>,
     /// Closed buckets `(x, y)` in time order, `x = t − origin`,
     /// `y = received − nominal·x` (residual to the nominal line).
@@ -46,10 +52,12 @@ pub struct ArrivalEnvelope {
 }
 
 impl ArrivalEnvelope {
-    /// A fit for a source nominally at `nominal_rate` frames per second.
-    pub fn new(nominal_rate: f64) -> Self {
+    /// A fit over `window_s` (at most [`MAX_WINDOW_S`]) for a source
+    /// nominally at `nominal_rate` frames per second.
+    pub fn new(nominal_rate: f64, window_s: f64) -> Self {
         Self {
             nominal_rate,
+            window_s: window_s.min(MAX_WINDOW_S),
             origin: None,
             buckets: [(0.0, 0.0); BUCKETS],
             head: 0,
@@ -104,7 +112,7 @@ impl ArrivalEnvelope {
         }
         self.buckets[(self.head + self.len) % BUCKETS] = point;
         self.len += 1;
-        while self.len > 1 && point.0 - self.buckets[self.head].0 > WINDOW_S {
+        while self.len > 1 && point.0 - self.buckets[self.head].0 > self.window_s {
             self.head = (self.head + 1) % BUCKETS;
             self.len -= 1;
         }
@@ -163,6 +171,16 @@ impl ArrivalEnvelope {
         self.fit = Some((slope, a.0, a.1));
     }
 
+    /// Time spanned by the closed buckets (s): how much evidence the slope
+    /// rests on.
+    pub fn span_s(&self) -> f64 {
+        if self.len < 2 {
+            return 0.0;
+        }
+        let last = self.buckets[(self.head + self.len - 1) % BUCKETS].0;
+        last - self.buckets[self.head].0
+    }
+
     /// Whether a line has been fitted.
     pub fn is_tracking(&self) -> bool {
         self.fit.is_some()
@@ -203,7 +221,7 @@ mod tests {
         for ppm in [0.0, 80.0, 1000.0, -1000.0] {
             let nominal = 48_000.0;
             let rate = nominal * (1.0 + ppm * 1e-6);
-            let mut fit = ArrivalEnvelope::new(nominal);
+            let mut fit = ArrivalEnvelope::new(nominal, 30.0);
             let mut worst = 0.0f64;
             let mut worst_ppm = 0.0f64;
             for k in 0..(24 * 300u64) {
@@ -228,7 +246,7 @@ mod tests {
 
     #[test]
     fn reset_forgets_everything() {
-        let mut fit = ArrivalEnvelope::new(48_000.0);
+        let mut fit = ArrivalEnvelope::new(48_000.0, 30.0);
         fit.observe(0.0, 10_000.0);
         assert!(fit.is_tracking());
         fit.reset();

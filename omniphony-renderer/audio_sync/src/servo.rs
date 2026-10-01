@@ -52,6 +52,13 @@ pub struct ServoConfig {
     pub target_latency_s: f64,
     /// Phase-loop bandwidth (Hz).
     pub loop_bandwidth_hz: f64,
+    /// Phase-loop bandwidth when playback starts (Hz). Above
+    /// `loop_bandwidth_hz`, the loop narrows from it to `loop_bandwidth_hz`,
+    /// halving every `loop_narrowing_half_life_s` of running time: fast enough
+    /// to absorb the start-up errors, quiet once the estimates have settled.
+    /// At or below it, the loop runs at `loop_bandwidth_hz` from the start.
+    pub loop_start_bandwidth_hz: f64,
+    pub loop_narrowing_half_life_s: f64,
     /// Latency error beyond which the servo realigns instead of steering (s).
     pub realign_threshold_s: f64,
     /// Phase-loop damping ratio.
@@ -84,8 +91,11 @@ pub struct ServoConfig {
     pub device_dll: DllConfig,
 }
 
-/// Phase-loop bandwidth for a `follow` source (Hz).
-pub const FOLLOW_LOOP_HZ: f64 = 0.01;
+/// Phase-loop bandwidth for a `follow` source, once settled (Hz).
+pub const FOLLOW_LOOP_HZ: f64 = 0.005;
+/// ... and when playback starts (Hz), and how fast it narrows (s).
+pub const FOLLOW_LOOP_START_HZ: f64 = 0.02;
+pub const FOLLOW_LOOP_HALF_LIFE_S: f64 = 15.0;
 /// Source-DLL bandwidth for a `follow` source (Hz).
 pub const FOLLOW_SOURCE_DLL_HZ: f64 = 0.01;
 
@@ -109,6 +119,8 @@ impl ServoConfig {
     pub fn follow() -> Self {
         Self {
             loop_bandwidth_hz: FOLLOW_LOOP_HZ,
+            loop_start_bandwidth_hz: FOLLOW_LOOP_START_HZ,
+            loop_narrowing_half_life_s: FOLLOW_LOOP_HALF_LIFE_S,
             source_late_arrivals: true,
             // mpv's display-resample moves the source by up to ~1000 ppm
             // (23.976 fps content on a 24 Hz display).
@@ -127,6 +139,8 @@ impl Default for ServoConfig {
         Self {
             target_latency_s: 0.100,
             loop_bandwidth_hz: 0.02,
+            loop_start_bandwidth_hz: 0.0,
+            loop_narrowing_half_life_s: 15.0,
             realign_threshold_s: 0.020,
             damping: 1.0,
             max_correction: 500e-6,
@@ -252,25 +266,24 @@ pub const FLOOR_HOLD_S: f64 = 5.0;
 #[derive(Debug, Clone)]
 pub struct Servo {
     config: ServoConfig,
-    kp: f64,
-    ki: f64,
     nominal_ratio: f64,
     source: crate::source::SourceEstimator,
     device_dll: Dll,
     last_source_t: Option<f64>,
     source_stalled: bool,
     phase: Phase,
+    /// The integral term itself (`∫Ki·e dt`), so a gain that narrows does not
+    /// rescale what has been integrated.
     integral: f64,
+    /// When playback first started in this epoch, for the loop's narrowing.
+    running_since: Option<f64>,
     last_t: Option<f64>,
     telemetry: Telemetry,
 }
 
 impl Servo {
     pub fn new(config: ServoConfig) -> Self {
-        let omega = TAU * config.loop_bandwidth_hz;
         Self {
-            kp: 2.0 * config.damping * omega,
-            ki: omega * omega,
             nominal_ratio: config.source_rate_hz / config.output_rate_hz,
             source: crate::source::SourceEstimator::new(
                 config.source_dll,
@@ -282,6 +295,7 @@ impl Servo {
             source_stalled: true,
             phase: Phase::Starting,
             integral: 0.0,
+            running_since: None,
             last_t: None,
             telemetry: Telemetry {
                 ratio: config.source_rate_hz / config.output_rate_hz,
@@ -312,6 +326,7 @@ impl Servo {
         self.source_stalled = true;
         self.phase = Phase::Starting;
         self.integral = 0.0;
+        self.running_since = None;
         self.last_t = None;
     }
 
@@ -365,11 +380,11 @@ impl Servo {
                     // Steering cannot recover this without an audible pitch
                     // excursion: fade out now, set the latency next callback.
                     self.phase = Phase::Realigning;
-                    let mut plan = self.steer(error, ratio_ff, 0.0);
+                    let mut plan = self.steer(input.t, error, ratio_ff, 0.0);
                     plan.fade_out = true;
                     return self.guard_underrun(input, plan);
                 }
-                let plan = self.steer(error, ratio_ff, dt);
+                let plan = self.steer(input.t, error, ratio_ff, dt);
                 self.guard_underrun(input, plan)
             }
         }
@@ -433,7 +448,7 @@ impl Servo {
         rate_d: f64,
         ratio_ff: f64,
     ) -> CallbackPlan {
-        let ratio = ratio_ff * (1.0 + self.clamped_correction(0.0));
+        let ratio = ratio_ff * (1.0 + self.clamped_correction(0.0, 0.0));
         let (silence, skip) = if error >= 0.0 {
             (0usize, error * rate_s)
         } else {
@@ -467,17 +482,34 @@ impl Servo {
         }
     }
 
-    fn steer(&mut self, error: f64, ratio_ff: f64, dt: f64) -> CallbackPlan {
+    /// `(Kp, Ki)` at `age` seconds of running: `Kp = 2ζω`, `Ki = ω²`, with
+    /// the bandwidth narrowing as configured.
+    fn gains(&self, age: f64) -> (f64, f64) {
+        let c = &self.config;
+        let bandwidth = if c.loop_start_bandwidth_hz > c.loop_bandwidth_hz {
+            let halvings =
+                (age.max(0.0) / c.loop_narrowing_half_life_s.max(f64::EPSILON)).min(1000.0);
+            (c.loop_start_bandwidth_hz * 0.5f64.powf(halvings)).max(c.loop_bandwidth_hz)
+        } else {
+            c.loop_bandwidth_hz
+        };
+        let omega = TAU * bandwidth;
+        (2.0 * c.damping * omega, omega * omega)
+    }
+
+    fn steer(&mut self, t: f64, error: f64, ratio_ff: f64, dt: f64) -> CallbackPlan {
         self.telemetry.error_s = error;
+        let age = t - *self.running_since.get_or_insert(t);
+        let (kp, ki) = self.gains(age);
         // Conditional integration: stop integrating while the correction is
         // saturated in the direction the error pushes.
-        let unclamped = self.kp * error + self.ki * self.integral;
+        let unclamped = kp * error + self.integral;
         let saturated =
             unclamped.abs() >= self.config.max_correction && unclamped.signum() == error.signum();
         if !saturated {
-            self.integral += error * dt;
+            self.integral += ki * error * dt;
         }
-        let u = self.clamped_correction(error);
+        let u = self.clamped_correction(kp, error);
         let ratio = ratio_ff * (1.0 + u);
         self.telemetry.correction_ppm = u * 1e6;
         self.telemetry.ratio = ratio;
@@ -490,9 +522,9 @@ impl Servo {
         }
     }
 
-    fn clamped_correction(&self, error: f64) -> f64 {
+    fn clamped_correction(&self, kp: f64, error: f64) -> f64 {
         let max = self.config.max_correction;
-        (self.kp * error + self.ki * self.integral).clamp(-max, max)
+        (kp * error + self.integral).clamp(-max, max)
     }
 
     /// Turn a plan the ring cannot feed into a silent callback and a realign.
@@ -535,8 +567,18 @@ mod tests {
     fn gains_follow_the_bandwidth() {
         let servo = Servo::new(ServoConfig::default());
         let omega = TAU * 0.02;
-        assert!((servo.kp - 2.0 * omega).abs() < 1e-12);
-        assert!((servo.ki - omega * omega).abs() < 1e-12);
+        let (kp, ki) = servo.gains(100.0);
+        assert!((kp - 2.0 * omega).abs() < 1e-12);
+        assert!((ki - omega * omega).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_follow_loop_starts_wide_and_narrows() {
+        let servo = Servo::new(ServoConfig::follow());
+        let kp_at = |age| servo.gains(age).0 / (2.0 * TAU);
+        assert!((kp_at(0.0) - FOLLOW_LOOP_START_HZ).abs() < 1e-12);
+        assert!((kp_at(FOLLOW_LOOP_HALF_LIFE_S) - FOLLOW_LOOP_START_HZ / 2.0).abs() < 1e-12);
+        assert!((kp_at(600.0) - FOLLOW_LOOP_HZ).abs() < 1e-12);
     }
 
     #[test]

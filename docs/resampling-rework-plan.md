@@ -809,3 +809,84 @@ on a 192 kHz carrier, into a private null sink:
 - **mpv's own view of the latency** (`audio-pts` over IPC, as in S1): not
   re-measured with the full host.
 - **The real DAC** as output (only the null sink so far).
+
+## 14. Track 1 — the `follow` estimator (2026-10-01)
+
+### Method
+
+The estimator was redesigned **open-loop first**, then validated in closed
+loop. A Python harness reproduces the measured mpv arrival model:
+- 23.976 fps bursts, 50 ms ahead, 0–40 ms one-sided lateness;
+- drift at 0, ±80, +300 and ±1000 ppm, and a 0→500 ppm ramp.
+
+It scores each candidate's position error and rate noise against the truth.
+
+### Why the hull edge was wrong
+
+The previous estimator fitted the upper convex hull and extrapolated its
+mean-time edge to the present. Two flaws:
+- the edge's slope rests on two points;
+- the extrapolation spans half the window, so the slope error is amplified.
+
+Open-loop it gave 0.5–1.9 ms p99 and 27–86 ppm.
+
+### What replaced it (`audio_sync::source::FollowEstimator`)
+
+Each quantity is estimated over the span suited to it:
+
+- **Rate**: the hull's slope over **120 s**, low-passed (τ grows with the
+  fit's span, up to 10 s).
+- **Offset**: the earliest arrival of the **last 30 s** against a line at that
+  rate. No extrapolation. Its error is the window's smallest lateness, whose
+  p99 is ≈ jitter·ln(100)/N. It rises at once and relaxes down over 15 s: a
+  1 s relax let an expiring earliest reading step the phase.
+
+Open-loop, after 100 s: position p99 0.33–0.47 ms, rate within 7 ppm p-p, at
+every drift tested.
+
+### Servo changes
+
+- **The phase loop narrows** for `follow`: 0.02 Hz at start, halving every
+  15 s, down to 0.005 Hz.
+- **The integral now accumulates `∫Ki·e dt`**, so narrowing gains do not
+  rescale what was integrated.
+- **The example's `mpv` scenario now takes the full `follow` config.** Before,
+  it silently missed the new fields.
+
+### Closed loop (steady state from 60 s, 900 s runs, measured jitter, 200 ms target)
+
+| Source drift | Latency p99 / max | Ratio p-p (10 s) | Realigns |
+|---|---|---|---|
+| 0 ppm | 0.84 / 0.98 ms | 19.7 ppm | 0 |
+| +80 ppm | 1.01 / 1.16 ms | 19.8 ppm | 0 |
+| +1000 ppm | 0.82 / 0.98 ms | 19.9 ppm | 0 |
+| −1000 ppm | 1.11 / 1.15 ms | 19.6 ppm | 0 |
+
+Before: 0.75 ms p99 and 85 ppm, at 80 ppm only.
+
+- **The ratio criterion (30 ppm) is met at every drift.**
+- **The latency deviation is ~1 ms.** It comes from the minimum-lateness
+  statistics: the earliest reading of a 30 s window entering and leaving, and
+  the slope settling over the first minutes. A longer offset window did not
+  help (0.83–0.95 ms at 45–60 s).
+- **The first minute is convergence:** up to ~1.5 ms and a few hundred ppm in
+  the first 30 s at ±1000 ppm.
+
+### Live (real mpv `--ao=pcm` → pipe, E-AC-3, 200 ms target, 180 s)
+
+- The source rate estimate is steady at **−6.2 to −6.6 ppm**. Before it
+  wandered between −11 and −30 ppm.
+- The latency error converges from −0.9 ms to −0.1 ms over the run.
+- No drops.
+- Start-up: 2 realigns and 1 underrun in the first 15 s.
+
+### Decision pending
+
+The `follow` p99 criterion. 0.5 ms (the original, arbitrary) is not reachable
+with ±20 ms of one-sided jitter by this approach. The tests use **1.5 ms**:
+- the measured worst is 1.16 ms;
+- lip-sync detectability is about ±15 ms;
+- ITU-R BT.1359 tolerates +45/−125 ms.
+
+Tightening further needs a better signal (Track 2: a timed pipe AO) rather
+than a better estimator. The `own` mode stays at microseconds.

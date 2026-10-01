@@ -57,9 +57,7 @@ fn main() {
                 } else {
                     audio_sync::ServoConfig::follow().loop_bandwidth_hz
                 },
-                source_dll: audio_sync::ServoConfig::follow().source_dll,
-                source_late_arrivals: true,
-                ..base.servo
+                ..audio_sync::ServoConfig::follow()
             },
             source_ppm: 0.0,
             delivery: Delivery::Follow {
