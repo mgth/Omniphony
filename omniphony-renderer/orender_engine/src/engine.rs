@@ -698,6 +698,23 @@ impl Engine {
         self.sample_rate
     }
 
+    /// Where the listener is: `us` microseconds into the stream, counted as
+    /// the timestamps this engine hands back are (`*out_pts_us`), so from 0
+    /// after [`reset`](Self::reset). A host that buffers the rendered audio
+    /// plays it later than it renders it, and only the host knows by how much;
+    /// this passes it on to OSC clients ([`OscSender::send_heard`]), which can
+    /// then show each block when it is heard. The engine itself holds nothing
+    /// back.
+    pub fn set_heard_us(&mut self, us: i64) {
+        let rate = self.sample_rate.max(1);
+        // Rounded up: the timestamps are rounded down, so a block's own start
+        // comes back to exactly its position rather than a sample short of it.
+        let pos = (i128::from(us.max(0)) * i128::from(rate) + 999_999) / 1_000_000;
+        if let Some(osc) = self.osc.as_ref() {
+            osc.send_heard(u64::try_from(pos).unwrap_or(u64::MAX), rate);
+        }
+    }
+
     /// Reset the session after a seek or stream discontinuity. Flushes the
     /// bridge pipeline and the renderer's per-object/ramp state, and clears the
     /// per-stream spatial state. Live parameters (gains, layout, OSC-applied
@@ -734,8 +751,10 @@ impl Engine {
         // Object frames are delta-encoded; after a seek the (static) virtual-bed
         // poses would never be re-sent, so force a full re-emit of object
         // positions + names on the next frame.
+        // The positions start again from 0, and the next block is marked anew.
         if let Some(osc) = self.osc.as_mut() {
             osc.request_full_object_resend();
+            osc.rewind_playout();
         }
         self.decoded_samples = 0;
         self.stream.drc = Default::default();
@@ -1195,6 +1214,10 @@ impl Engine {
         let sample_count = frame.sample_count as usize;
         let sample_rate = frame.sampling_frequency.max(1);
         let sample_pos_at_start = self.decoded_samples;
+        // Everything sent while rendering this frame describes it.
+        if let Some(osc) = self.osc.as_ref() {
+            osc.render_at(sample_pos_at_start);
+        }
         render::follow_stream_rate(&mut self.renderer, frame.sampling_frequency)?;
 
         let want_osc = self.osc.as_ref().is_some_and(|o| o.has_osc_clients());

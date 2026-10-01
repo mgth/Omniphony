@@ -24,7 +24,7 @@
 // C-ABI minor version: backwards-compatible additions only. Consumers should
 // gate optional features on symbol presence (dlsym), not on this value; it
 // exists for logging and diagnostics.
-#define ORENDER_ABI_MINOR 11
+#define ORENDER_ABI_MINOR 12
 
 // Speaker-position labels written by `orender_channel_layout` and
 // `orender_bed_layout` (one byte per channel). Mirrors the engine's
@@ -440,6 +440,13 @@ const char *orender_build_id(void);
 //   `render.decode_thread` option (config.yaml, Studio, OSC), which the
 //   engine then follows at packet boundaries, winding the thread down a
 //   packet per call when it is turned off mid-stream.
+// - `heard_us` = a decimal integer (ABI 0.12): where the listener is, in the
+//   microseconds `*out_pts_us` counts — so from 0 after `orender_reset`. A
+//   host that buffers the rendered audio plays it later than it renders it;
+//   reported as the audio plays, it reaches OSC clients as
+//   `/omniphony/playout/heard`, so a client such as Studio can show each block
+//   when it is heard rather than when it was rendered. The engine holds
+//   nothing back. A host that never sets it changes nothing.
 int orender_set_option(struct OrenderRenderer *r, const char *key, const char *value);
 
 #ifdef __cplusplus
