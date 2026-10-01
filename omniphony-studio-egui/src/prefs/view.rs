@@ -30,6 +30,8 @@ pub struct ViewPrefs {
     pub display_panel_open: Option<bool>,
     pub log_expanded: Option<bool>,
     pub resample_plot_open: Option<bool>,
+    /// The Display panel's "Follow the sound" switch.
+    pub follow_sound: Option<bool>,
     pub speaker_test: SpeakerTestPrefs,
 }
 
@@ -140,6 +142,11 @@ impl StudioSpike {
         if let Some(open) = view.resample_plot_open {
             self.resample_plot_open = open;
         }
+        if let Some(on) = view.follow_sound {
+            self.follow_sound = on;
+        }
+        // The listener started following the sound; tell it what was chosen.
+        crate::host::commands::app::set_playout_sync(&self.host, self.follow_sound);
         if let Some(mode) = view.speaker_test.mode {
             self.speaker_test_mode = mode;
         }
@@ -212,6 +219,7 @@ impl StudioSpike {
         keep!(view.display_panel_open, self.display_panel_open);
         keep!(view.log_expanded, self.log_expanded);
         keep!(view.resample_plot_open, self.resample_plot_open);
+        keep!(view.follow_sound, self.follow_sound);
         let test = &mut view.speaker_test;
         if test.mode.as_deref() != Some(self.speaker_test_mode.as_str()) {
             test.mode = Some(self.speaker_test_mode.clone());

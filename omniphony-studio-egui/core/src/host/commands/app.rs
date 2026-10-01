@@ -35,6 +35,13 @@ pub fn set_metering_enabled(state: &SharedState, enabled: bool) {
     }
 }
 
+/// "Follow the sound": show what describes a block of audio when it is heard
+/// rather than when it was rendered (`osc::playout`). View state: the caller
+/// keeps it in the Studio's prefs; nothing here is written.
+pub fn set_playout_sync(state: &SharedState, enabled: bool) {
+    send_control(&state.osc_tx, OscControlMsg::SetPlayoutSync { enabled });
+}
+
 /// The meter publish rate, applied and sent.
 pub fn set_meter_rate_hz(state: &SharedState, hz: f32) {
     state.inner.lock().unwrap().app.meter_rate_hz = Some(hz);

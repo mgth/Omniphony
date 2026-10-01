@@ -66,6 +66,9 @@ pub struct StudioSpike {
     pub(crate) prefs_writer: crate::host::json_store::Writer<Prefs>,
     /// Log overlay: expanded state and the filter box's text.
     pub(crate) log_expanded: bool,
+    /// "Follow the sound": the scene shows each block when it is heard. View
+    /// state, kept in the prefs; the core holds the stream (`osc::playout`).
+    pub(crate) follow_sound: bool,
     pub(crate) log_filter: String,
     /// OSC form fields (`osc_config.json`, shared with the Tauri Studio).
     pub(crate) osc_host: String,
@@ -332,6 +335,9 @@ impl StudioSpike {
                 listen_port: startup.listen_port,
                 register: None,
                 metering: osc_config.osc_metering_enabled,
+                // The prefs' choice follows in `restore_view`, before the
+                // first frame.
+                playout_sync: true,
             },
         )?;
         log::info!("[osc] listening on udp/{port}");
@@ -436,6 +442,7 @@ impl StudioSpike {
             prefs_dirty: false,
             prefs_writer,
             log_expanded: false,
+            follow_sound: true,
             log_filter: String::new(),
             osc_host,
             osc_port,
