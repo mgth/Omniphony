@@ -1,0 +1,19 @@
+[package]
+name = "audio_sync"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Clock synchronisation core for the realtime output: rate DLLs, end-to-end latency servo, realign rule, frame accounting"
+
+[lib]
+name = "audio_sync"
+
+[features]
+# The closed-loop plant simulator, for the example and for tools outside this
+# crate's own tests (which always get it).
+sim = []
+
+[[example]]
+name = "sim"
+required-features = ["sim"]

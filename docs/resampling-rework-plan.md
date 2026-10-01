@@ -390,3 +390,71 @@ channels, pacer zero-fills.
   turns every IEC 61937 span into exact duration. Introduce per-source
   pipelines first.
 
+
+## 7. Phase 1 outcome (2026-10-01)
+
+The crate `omniphony-renderer/audio_sync` is pure, with no I/O and no
+dependencies:
+
+- `dll`: 2nd-order DLL with a narrowing bandwidth;
+- `servo`: feed-forward + phase PI + the single start/realign rule;
+- `accounting`: per-epoch counters and discontinuity events;
+- `sim`: the closed-loop plant. It runs under `cfg(test)` or the `sim`
+  feature. It records the **true** source-to-ear latency, which the servo
+  never sees.
+
+A trace tool:
+`cargo run -p audio_sync --release --features sim --example sim -- <scenario> <seconds> <every> [target_ms] [bandwidth_hz]`.
+
+Acceptance runs (all in `cargo test -p audio_sync`; 0.15 s in release, 1.4 s
+in debug):
+
+| Scenario | Median true latency | \|dev\| p99 / max | Ratio p-p (10 s) | Realigns | Floor |
+|---|---|---|---|---|---|
+| `own`, TrueHD, +100 ppm, **10 h** | 102.000 ms (target + 2 ms unreported device delay) | 0.1 / 1.7 µs | 0.54 ppm | 0 | 94.0 ms |
+| `own`, TrueHD, −100 ppm, 1 h | 102.000 ms | 0.1 / 1.6 µs | 0.54 ppm | 0 | 94.0 ms |
+| `own`, E-AC-3, target 150 ms | 152.000 ms | 0.1 / 0.3 µs | 0.53 ppm | 0 | 128.7 ms |
+| `own`, −66 ppm graph excursion (S2) | 102.000 ms | 117 / 127 µs | 12.5 ppm (tracking lag) | 0 | 94.0 ms |
+| `own`, 2 s source pause | 102.000 ms after | 0.2 µs | 0.52 ppm | 1 | — |
+| `own`, reported 1-frame loss | 102.000 ms | 0.9 µs | 0.54 ppm | 0 | — |
+| `own`, reported 107 ms resync loss | 102.000 ms after | 0.1 µs | 0.53 ppm | 1 | — |
+| `follow` (mpv pipe, 23.976 fps bursts, 50 ms ahead, 5 ms jitter, +80 ppm), target 150 ms | 104.55 ms vs mpv's clock (constant) | 224 / 443 µs | 26 ppm | 0 | 117.5 ms |
+
+### What the simulation settled
+
+- **Phase-loop bandwidth depends on the mode.**
+  - `own` (exact source): 0.02 Hz.
+  - `follow`: 0.005 Hz (`ServoConfig::follow()`). Bursty arrivals leave the
+    source DLL with about 70 µs of phase noise; a faster loop turns that into
+    ratio wander. Sweep: 0.02 Hz → 64 ppm p-p, 0.01 → 37, 0.005 → 25 (p99
+    0.25 ms), 0.003 → 19 (p99 0.38 ms).
+  - 25 ppm is 0.04 cent; the `follow` criterion is set at 30 ppm.
+- **Ratio criterion.** The 5 ppm p-p criterion holds on steady clocks. During
+  a clock *change* (the −66 ppm excursion) the ratio lags by up to ~12 ppm
+  while the latency stays within 0.13 ms. That is tracking, not modulation.
+- **Minimum latency.**
+  - `own` TrueHD at a 1024 quantum: about 94 ms (heard delay 32 + one
+    callback 21 + capture quantum 21 + 20 ms batch). **The 100 ms used here is
+    tight; default to ≥ 120 ms.**
+  - E-AC-3: about 129 ms.
+  - `follow`: about 118 ms (one video frame of audio arrives at once).
+  - The servo publishes this as `Telemetry::latency_floor_s`, so a target
+    below it can be reported instead of underrunning.
+
+### Open decisions (before Phase 4)
+
+1. **Starvation when the target is unreachable.** Today the servo keeps
+   underrunning and realigning; `an_infeasible_target_shows_in_the_floor`
+   documents it. Options:
+   - (a) raise the effective target to the floor and report it;
+   - (b) stay silent and report;
+   - (c) refuse the target at configuration time from per-codec floors.
+
+   Recommended: (c), with (a) as the runtime fallback.
+2. **Unreported losses.** A loss nobody reports leaves the servo blind. At a
+   300 ms target the latency is off by the loss for good
+   (`an_unreported_loss_shifts_the_latency_unseen`). At 100 ms, playback
+   starves, because the ring no longer holds what the servo expects. The S4
+   per-burst decoder audit must make this impossible. A runtime guard is
+   also possible: adopt a persistent ring deficit as an unaccounted loss
+   after ~0.5 s of a flowing source, and flag it.
