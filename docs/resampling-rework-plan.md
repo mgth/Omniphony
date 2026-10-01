@@ -96,9 +96,10 @@ u           = Kp·e + Ki·∫e dt            e = L_e2e − L, in seconds
 ```
 
 - **Feed-forward `r_ff`.**
-  - Rate of D against M: PipeWire's driver `rate_diff` / `pw_time` ticks
-    against `now`; the ASIO/CoreAudio sample position against host time, via a
-    DLL.
+  - Rate of D against M: our own 2nd-order DLL on the device position
+    against M. On PipeWire that is `(pw_time.now, pw_time.ticks)`, never raw
+    `rate_diff` (S2). On ASIO and CoreAudio it is the sample position against
+    host time.
   - Rate of S against M: 1 in `own`, the arrival DLL in `follow`.
   - This carries the actual drift (tens of ppm) with almost no noise.
 - **PI on phase.** The plant is `de/dt = −u + (residual rate error)`. The
@@ -141,7 +142,7 @@ predictive refill, trim plans or mute-on-far.
 | Component | Content | Notes |
 |---|---|---|
 | `sync` core (pure, no I/O) | DLL, `LatencyServo` (feed-forward + PI), `Realigner`, discontinuity accounting | Deterministic, unit- and simulation-tested |
-| Plant simulator (tests) | Configurable S/D ppm, D quantum and jitter, decoder bursts (TrueHD ~320 ms, E-AC-3), mpv video-frame throttle, pipe buffering, drops, pauses | Gates every PR |
+| Plant simulator (tests) | Configurable S/D ppm, D quantum and jitter, decoder bursts (TrueHD 20 ms MAT batches ±1 AU, E-AC-3/AC-3 32 ms AUs, DTS-HD MA start-up backlog), PipeWire graph-clock excursions (−66 ppm for ~100 s, S2), mpv video-frame throttle, pipe buffering, drops, pauses | Gates every PR |
 | Frame ring | SPSC, interleaved `f32`, bulk `memcpy`, fixed capacity from max `L` | Replaces per-sample `ArrayQueue` |
 | Resampler | Variable ratio, produces exactly N output frames per callback, exposes its fractional input position | Choice made in spike S3 |
 | Output core | One callback body for every backend: pull N frames, feed the servo `(t_M, device position, D_dev)`, apply fades | `pipewire.rs` / `cpal_output.rs` become thin adapters |
@@ -153,7 +154,7 @@ Work happens in workflow `resampling-rework` on `feat/resampling-rework`. The
 new engine is built alongside the old one and switched over in one cutover PR
 that deletes the old code. `main` stays buildable throughout.
 
-### Phase 0 — Spikes (decisions before code)
+### Phase 0 — Spikes (decisions before code) — DONE 2026-10-01, see §6
 
 - **S1 — `own` mode mechanics.** Can a PipeWire DRIVER stream triggered from
   a `timerfd` (`CLOCK_MONOTONIC`, `TFD_TIMER_ABSTIME`) present mpv with a clean
@@ -245,8 +246,147 @@ that deletes the old code. `main` stays buildable throughout.
   pacing of a clocked source and needs PipeWire driver-group membership (the
   `node.group` attempt ran at 25 % speed). Deferred.
 - **Default `L` per codec.** It must exceed the decoder's maximum burst plus a
-  quantum plus margin; TrueHD pushes ~320 ms. Validate at configuration time
+  quantum plus margin. The worst steady-state hold is E-AC-3/AC-3 (one 32 ms
+  AU plus one transport burst); TrueHD batches 20 ms (S4). Validate at configuration time
   and surface the minimum.
 - **`follow` jitter.** mpv's throttle plus the pipe buffer may give tens of ms
   of arrival jitter. The DLL bandwidth (≈0.01 Hz) must keep the phase error
   well under 1 ms; the simulator decides.
+
+## 6. Phase 0 outcome (2026-10-01)
+
+Reports are in [`docs/resampling-rework/`](resampling-rework/). Throwaway code
+is in `spikes/`, standalone and outside the cargo workspace.
+
+### 6.1 S1 — `own` clock: PipeWire timer driver + follower sink ([report](resampling-rework/spike-s1-own-clock.md))
+
+**Decision.** orender creates its own timer driver: `spa-node-factory` →
+`support.node.driver`, `clock.id = monotonic`, `priority.driver = 0`, and a
+unique `node.group`. The IEC958 `pw_stream` sink joins that group as a plain
+follower: `RT_PROCESS`, `node.always-process = true`, no `DRIVER` flag.
+
+- **Latency:** advertised once as `SPA_PARAM_Latency` (INPUT, `min = max = L`).
+  `ProcessLatency` on a `pw_stream` is never propagated.
+- **Clock the player sees:** exact, `nsec = position·10⁹/rate` with residual
+  ≤ 1 ns and `rate_diff = 1`. mpv's `audio-pts` drift was −0.008 ppm.
+- **Jitter:** driver p99 17 µs; when orender stalls, the player is still woken
+  on time.
+- **IEC958:** passthrough works. It needs `node.force-rate` set to the
+  negotiated carrier rate in `param_changed` (otherwise 192 kHz runs at ¼
+  speed), and Buffers sized for a full quantum.
+- **Source time** of a frame `p` is `clock.nsec + (p − clock.position)/rate`,
+  not orender's wall time. A Format change, `DISCONT` or `XRUN_RECOVER` is a
+  realign event.
+- **Driver merge:** detect it every cycle (`clock.id`, `clock.name`,
+  `rate_diff`). If the group gets merged onto a hardware driver, fall back to
+  `follow`-style estimation and surface a warning.
+- **Rejected options:** null-audio-sink (cannot carry IEC958). The app-filled
+  driver (option a) works but is fragile; it is kept as a fallback.
+
+### 6.2 S2 — output timestamps and D-rate estimation ([report](resampling-rework/spike-s2-output-timestamps.md))
+
+**PipeWire.**
+- `pw_stream_get_time_n` per callback gives `now`, `ticks`, `delay`,
+  `queued` and `buffered`.
+- The frame queued now is heard at `now + (buffered + N + delay)/fs`. The
+  USB/DAC-internal 1–3 ms is not reported anywhere.
+
+**Estimator: our own 2nd-order DLL.**
+- Fast start from 1 Hz, narrowing to **B = 0.01 Hz**. It locks within 2 ppm
+  in 12–16 s, with 0.2–0.8 ppm rms steady noise.
+- Reset on a clock-id change or a discontinuity.
+- Raw `rate_diff` is far too noisy to use (7–39 ppm rms per cycle, thousands
+  of ppm at start).
+
+**Measured on this machine.**
+- DAC −17 ppm vs `CLOCK_MONOTONIC` (−6 ppm vs RAW; NTP slews MONOTONIC by
+  ~+11 ppm). Using MONOTONIC on both sides cancels the slew.
+- The graph clock made a −66 ppm excursion for ~100 s (PipeWire's ALSA DLL
+  re-centring). The simulator must include it.
+
+**cpal (ASIO / CoreAudio).** cpal discards the sample position and the
+latencies, and ASIO timestamps are 1 ms coarse. Phase 3 needs a small
+cpal/asio-sys patch or thin native adapters. Hardware verification on
+Windows and macOS is still to do.
+
+### 6.3 S3 — in-house polyphase resampler ([report](resampling-rework/spike-s3-resampler.md))
+
+**Decision.** Replace rubato.
+
+**Design (drift-only, ≤ 48 kHz).**
+- 64-tap windowed sinc, Kaiser β 14, cutoff at the input Nyquist.
+- 32-segment Hermite-interpolated phase table (32 KiB, built once).
+- Q32.32 position. `position()` is `N_play` directly; the look-ahead into the
+  ring is 32 frames.
+- 44.1 ↔ 48 kHz folds into the same engine with 96 taps.
+
+**Measured, and re-run during this review.**
+
+| | Polyphase (64 taps) | rubato 5 `Async` | rubato 0.14 (today) |
+|---|---|---|---|
+| THD+N at 1 kHz | −139 dB | — | — |
+| THD+N at 20 kHz | −134.7 dB | −108 dB | — |
+| Passband to 20 kHz | ±0.00001 dB | — | — |
+| CPU at 24 ch / 48 kHz | 0.29 % of a core | 1.25 % | 2.61 % |
+| Fractional position | exact (2.6·10⁻⁵ frame) | not exposed | not exposed |
+| Steady-state allocations | none | — | — |
+
+- Results do not change at ±2000 ppm.
+- In the 20–24 kHz transition band a 22 kHz tone loses 0.085 dB and shows
+  −40 dB THD+N. This is inaudible, and the alias lands within a few Hz of the
+  tone.
+- The aarch64 build was checked in the asm but never run.
+
+### 6.4 S4 — sample accounting ([report](resampling-rework/spike-s4-sample-accounting.md))
+
+**No path conserves the frame count today**: silent `try_send` drops, the
+bootstrap gate, stream-not-ready, partial-frame pushes that rotate the
+channels, pacer zero-fills.
+
+**Decision.**
+- Count `N_in` in transport time at the capture point.
+- Make ingest time-conserving: pause bursts, stuffing and sync loss become
+  silence of the same duration.
+- Audit decoder output per burst against its nominal length; this catches
+  silent bridge drops (TrueHD resync up to ~107 ms, DTS error frames).
+- Per-epoch `inserted`/`dropped` counters per stage, so
+  `N_in_eff = N_in + Σinserted − Σdropped`, plus a non-RT
+  `DiscontinuityEvent` queue.
+- Format, rate, source or writer changes start a new epoch.
+- Replace the drop points with SPSC rings sized from `L_max`, and push only
+  whole frames.
+
+**Codec constants.**
+- Transport↔PCM ratio is fixed for every codec.
+- Constant hold: AC-3 and plain E-AC-3 1536 samples, DTS core 512, Auro 1000.
+  TrueHD, JOC and HRA/DTS:X hold 0.
+- DTS-HD MA holds up to 16384 samples at start.
+
+**Prerequisites found.**
+- Per-source pipelines: live and pipe frames share a tag today.
+- Expose the generators' 1024-sample latency (phantom extraction, DirAC).
+- The pipe carrier's bytes-per-frame must be learned from burst spacing.
+- mpv `--ao-pcm-waveheader` must be skipped at epoch start.
+
+### 6.5 Defects in today's code found by the spikes
+
+- **S1:** today's DRIVER sink never fills `spa_io_position.clock`. Players
+  see a frozen clock, mpv treats the sink's delay as zero, and mpv's
+  `audio-pts` shows a 21 ms sawtooth. This is independent of the rewrite and
+  is a quick-fix candidate for `main`.
+- **S4:** partial-frame back-pressure pushes can rotate the channel order for
+  the rest of a stream (`ring_buffer_io.rs`). The decoder tail is lost at EOF
+  (no bridge flush).
+
+### 6.6 Plan adjustments
+
+- **Phase 1 simulator:** model 20 ms TrueHD batches, 32 ms E-AC-3 AUs, the
+  DTS-HD MA start backlog, graph-clock excursions, mpv untimed throttling plus
+  pipe buffering, and pause semantics (silence vs no data).
+- **Phase 2:** adopt the S3 design and API sketch.
+- **Phase 3:** add the cpal timestamp/position/latency patch as a sub-task,
+  with Windows/macOS hardware verification.
+- **Phase 4:** implement S1 option (c) for `own`. Add an ingest deframer that
+  turns every IEC 61937 span into exact duration. Introduce per-source
+  pipelines first.
+

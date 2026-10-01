@@ -25,7 +25,7 @@ clock by resampling.
 
 ```
 source ─► capture (PwStream DRIVER sink | pipe | file)
-       ─► decoder bridge (bursty: TrueHD emits ~24 frames ≈ 320 ms at a time)
+       ─► decoder bridge (bursty: TrueHD emits ~24 access units = 960 frames ≈ 20 ms at a time)
        ─► renderer ─► write_samples ─► [optional pacer FIFO, 64 ms]
        ─► ring  (crossbeam ArrayQueue<f32>, per-sample push/pop)
        ─► output callback ─► rubato SincFixedIn (256 taps, 1024-frame chunks)
@@ -155,8 +155,10 @@ So the discharge is a nonlinear damper on an undamped loop. Other consequences:
 
 ### 3.4 The wrong quantity is regulated
 
-Ring fill includes the decoder's burst pattern (0…~320 ms at ~3 Hz for
-TrueHD). Every layer in §2.6 and the IIR exists to hide that. The quantity to
+Ring fill includes the decoder's burst pattern. For TrueHD that is 20 ms
+bursts, which beat against the 1024-frame resampler chunk into the
+~3.1 Hz / ~320 ms sawtooth seen in the plots (spike S4 corrected the earlier
+reading of it as 320 ms bursts). Every layer in §2.6 and the IIR exists to hide that. The quantity to
 regulate is the **end-to-end latency**: source frames received minus frames
 played, taken at the same timestamped instant, plus the graph/device delay. It
 is constant while the decoder bursts, because the samples only move between
