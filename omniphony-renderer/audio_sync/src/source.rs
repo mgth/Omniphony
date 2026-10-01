@@ -16,14 +16,15 @@ use crate::envelope::ArrivalEnvelope;
 #[derive(Debug, Clone)]
 pub(crate) enum SourceEstimator {
     Dll(Dll),
-    Envelope { fit: ArrivalEnvelope, dll: Dll },
+    /// Boxed: the hull's fixed buffers are ~5 KiB; allocated once, here.
+    Envelope { fit: Box<ArrivalEnvelope>, dll: Dll },
 }
 
 impl SourceEstimator {
     pub(crate) fn new(dll: DllConfig, follow: bool, nominal_rate: f64) -> Self {
         if follow {
             Self::Envelope {
-                fit: ArrivalEnvelope::new(nominal_rate),
+                fit: Box::new(ArrivalEnvelope::new(nominal_rate)),
                 dll: Dll::new(dll, nominal_rate),
             }
         } else {
