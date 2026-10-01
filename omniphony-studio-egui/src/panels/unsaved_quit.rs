@@ -39,9 +39,11 @@ enum AfterSave {
     Ask(Option<String>),
 }
 
-fn after_save(outcome: SaveOutcome, connected_and_unsaved: bool) -> AfterSave {
+fn after_save(outcome: SaveOutcome, connected: bool) -> AfterSave {
     match outcome {
-        SaveOutcome::Pending if connected_and_unsaved => AfterSave::Wait,
+        // Waiting on the connection, not on "unsaved": a save asked again
+        // over a file an earlier attempt already wrote is just as pending.
+        SaveOutcome::Pending if connected => AfterSave::Wait,
         SaveOutcome::Saved => AfterSave::Close,
         SaveOutcome::Failed(error) => AfterSave::Ask(Some(error)),
         // Another write landed after the save, or the renderer went away
@@ -61,7 +63,7 @@ impl StudioSpike {
         }
         match after_save(
             engine::save_outcome(&self.host),
-            engine::has_unsaved_edits(&self.host),
+            engine::renderer_connected(&self.host),
         ) {
             AfterSave::Wait => {}
             AfterSave::Close => {
