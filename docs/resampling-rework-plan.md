@@ -720,3 +720,31 @@ Two leads:
 - (b) for video playback, steer users to the `own` mode (4c). Through the
   PipeWire sink, mpv's AO is timed by orender's own clock: no lateness, an
   exact clock (S1).
+
+## 12. Windows constraint (2026-10-01)
+
+On Windows there is no PipeWire: a standalone orender fed by mpv can only
+take its input from a **pipe**. So the `follow` open item of §11 is not
+optional, and two tracks follow from it.
+
+- **Track 1 — a `follow` estimator that meets the criteria** under one-sided
+  jitter: a joint position/rate estimator for censored noise (Kalman or LP
+  with rate continuity). It serves any untimed writer (mpv `--ao=pcm`, VLC,
+  ffmpeg).
+- **Track 2 — "own over a pipe".** The ±20 ms comes from `ao_pcm` being
+  untimed: mpv throttles audio per video frame. A **timed** pipe AO in
+  mpv-omniphony (patch-based, see the release model) would write on the
+  system clock in small periods and report a fixed delay `L`. mpv's audio
+  clock would then be the system clock, display-resample would work against
+  it, and orender would receive near-jitter-free arrivals on a known clock:
+  the S1 result, through a pipe.
+- **Windows specifics, not yet done:**
+  - the reference clock (QPC) for the sync host;
+  - the named-pipe reader (`sys::input` has an overlapped server);
+  - the cpal/ASIO adapter with the timestamp patch (§9);
+  - measuring the Windows pipe's own arrival pattern. The legacy decoder
+    thread already logs "below real-time delivery (mpv ao=pcm on Windows)".
+
+Order: 4c (PipeWire `own`) now, then Track 1, which is needed on every
+platform. Track 2 is worth doing as soon as mpv-omniphony is touched for
+Windows.
