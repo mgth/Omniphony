@@ -277,11 +277,13 @@ configuration) and then the `Blocks` from the pre-roll point.
 These are not part of the mapping. In the Omniphony stack:
 
 * **Reading:** mpv demuxes Matroska itself (`demux_mkv`), not through
-  FFmpeg, so mpv-omniphony needs only a `A_IAMF` → `iamf` codec entry: the
-  `Blocks` then reach `ad_orender` unchanged, with the `CodecPrivate`'s
-  `configOBUs` passed first. harletty-bridge's IAMF pipeline
-  (harletty/harletty-bridge#79) already accepts exactly that: Descriptors,
-  then Temporal Units; a reset (seek) keeps the configuration.
+  FFmpeg. mpv-omniphony (branch `feat/iamf-matroska`) maps `A_IAMF` to the
+  codec `iamf`, uses `SeekPreRoll` as the seek pre-roll, and has
+  `ad_orender` feed the `CodecPrivate`'s `configOBUs` to the engine before
+  the first `Block` and after every reset; harletty-bridge's IAMF pipeline
+  (harletty/harletty-bridge#79) then decodes the `Blocks` as they are.
+  Played to a file, a libiamf vector and a YouTube capture come out
+  bit-identical to orender's offline render of the same streams.
 * **Writing:** neither mkvmerge nor FFmpeg can produce such a track today
   (FFmpeg exposes IAMF as one stream per substream plus a stream group, not
   as one track). `scripts/iamf2mka.py` writes it from IAMF in ISO-BMFF
