@@ -1,14 +1,16 @@
 # Omniphony IAMF capture (prototype)
 
-A Chrome extension that records the IAMF audio track (AOMedia Immersive
-Audio Model and Formats, YouTube's itag 773) the browser plays, and saves it
-both as the bytes the player appended (`.mp4`, fragmented) and as the raw OBU
-stream orender's bridge reads (`.iamf`). It only captures: playback in the
-browser is unchanged, nothing is sent anywhere, and the files are saved only
-when you press **Save capture**.
+A Chrome extension for the IAMF audio track (AOMedia Immersive Audio Model
+and Formats, YouTube's itag 773) the browser plays. It can
 
-It is the first step towards rendering YouTube's IAMF through orender; the
-next is streaming the same bytes to orender live instead of saving them.
+- **capture** it: save the bytes the player appended (`.mp4`, fragmented)
+  and the raw OBU stream orender's bridge reads (`.iamf`), when you press
+  **Save capture**;
+- **stream it live to orender**: the browser is muted and a local orender,
+  started by a native messaging host, plays the IAMF track in time with the
+  picture.
+
+Nothing leaves the machine.
 
 ## Why the TV client
 
@@ -48,6 +50,43 @@ tabs are left alone.
    orender render --config <isolated config> --no-osc --no-continuous --enable-vbap iamf-capture-<video>-0.iamf
    ```
 
+## Live to orender
+
+### Install the host (once)
+
+```
+host/install-host.sh --orender <path to orender> --config <isolated config.yaml>
+```
+
+The orender must load a harletty-bridge built with its `iamf` feature
+(`render.bridge_path` in that config). Use an isolated copy of your config:
+the host's orender runs alongside the live one (it already passes
+`--no-osc`), so the config must not point it at the live input pipe. The
+installer writes a launcher under `~/.local/share/omniphony/` and the host
+manifest for Chrome and Chromium, allowing only this extension
+(`jkoonfghgdmdknbimiahfjfpclfmaflj`, fixed by the manifest's `key`). Logs:
+`~/.local/state/omniphony/iamf-host.log` and `iamf-orender.log`.
+
+### Use
+
+Play an IAMF video in YouTube TV, then **Start live** in the popup.
+
+How it keeps time: the page demuxes every appended segment into temporal
+units with their presentation times, and sends each one when the video's
+`currentTime` plus a lead reaches it. orender plays what it receives as it
+receives it, so the lead is orender's latency: 0.2 s for a (re)started
+orender to produce its first sample, plus **Latency comp.**, your
+calibration of the output latency (default 150 ms; `+` makes the sound come
+earlier, `−` later; it restarts orender to apply). Pause and seek stop
+orender; play restarts it at the playhead (a ~0.35 s gap). An ad playing in
+the same video element stops it too.
+
+Checked in headless Chrome 154 with the extension, the host and orender
+(file output) on a YouTube capture streamed through MSE: 50 units/s sent
+while playing; seek, pause, resume and live-off restart or stop orender as
+described; the rendered audio equals an offline render of the same capture
+bit for bit, starting at the unit the playhead had reached plus the lead.
+
 ## Limits
 
 - Captures what is appended, in append order: seeking backwards or the
@@ -56,14 +95,20 @@ tabs are left alone.
 - One capture holds at most 512 MiB (about an hour of 7.1.4 Opus); past that
   it is marked truncated.
 - Ads use their own source buffers and are not IAMF, so they are not captured.
+- Live: the browser's clock and the audio device's drift apart slowly
+  (parts per million); nothing corrects it yet, so a long video may need a
+  pause/play to realign. The lead is a manual calibration, not measured.
+- Live: the host and its installer are Linux-only for now.
 
 ## Tests
 
-The MP4 → raw IAMF conversion (`iamf-mp4.js`) is checked against the libiamf
-conformance vectors:
+The MP4 → raw IAMF conversion and the incremental demuxer (`iamf-mp4.js`)
+are checked against the libiamf conformance vectors, and the demuxer against
+a YouTube capture when one is given:
 
 ```
-HARLETTY_IAMF_VECTORS=<libiamf tests dir> node --test omniphony-browser-capture/test/convert.test.mjs
+HARLETTY_IAMF_VECTORS=<libiamf tests dir> OMNIPHONY_IAMF_CAPTURES=<dir of captures> \
+  node --test omniphony-browser-capture/test/convert.test.mjs
 ```
 
 The page script was checked in headless Chrome 154 playing the vector

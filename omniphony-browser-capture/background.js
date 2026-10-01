@@ -41,3 +41,33 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   setTvMode(tabId, false).catch(console.error);
 });
+
+// Live streaming: each tab's relay (relay.js) gets its own native host, and
+// so its own orender. Closing the tab disconnects the port, which closes the
+// host's stdin, which stops orender.
+const HOST = 'fr.mgth.omniphony.iamf';
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'iamf-live') return;
+  let native = null;
+  try {
+    native = chrome.runtime.connectNative(HOST);
+  } catch (err) {
+    port.postMessage({ type: 'host', state: 'error', error: String(err) });
+    port.disconnect();
+    return;
+  }
+  native.onMessage.addListener((msg) => port.postMessage(msg));
+  native.onDisconnect.addListener(() => {
+    const error = chrome.runtime.lastError?.message;
+    port.postMessage({
+      type: 'host',
+      state: 'error',
+      error: error || 'the native host exited',
+      hint: error && /not found/i.test(error) ? 'run host/install-host.sh' : undefined,
+    });
+    port.disconnect();
+  });
+  port.onMessage.addListener((msg) => native.postMessage(msg));
+  port.onDisconnect.addListener(() => native.disconnect());
+});

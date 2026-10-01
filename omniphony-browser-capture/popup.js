@@ -8,14 +8,21 @@ async function activeTab() {
   return tab;
 }
 
-async function inPage(tab, method) {
+async function inPage(tab, method, ...args) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: 'MAIN',
-    func: (name) => window.__omniphonyIamfCapture?.[name]() ?? null,
-    args: [method],
+    func: (name, rest) => window.__omniphonyIamfCapture?.[name](...rest) ?? null,
+    args: [method, args],
   });
   return result?.result ?? null;
+}
+
+// The audio offset is the user's calibration of orender's output latency:
+// kept across pages and sessions.
+async function storedOffset() {
+  const { offsetMs } = await chrome.storage.local.get({ offsetMs: 150 });
+  return offsetMs;
 }
 
 const kib = (n) => (n < 1 << 20 ? `${(n / 1024).toFixed(0)} KiB` : `${(n / (1 << 20)).toFixed(1)} MiB`);
@@ -60,6 +67,25 @@ function render(status) {
     }</ul>`;
   $('save').disabled = !captures.some((c) => c.bytes > 0);
   $('clear').disabled = !captures.length;
+  renderLive(status.live);
+}
+
+function renderLive(live) {
+  const host = live.host || {};
+  const hostText =
+    host.state === 'running'
+      ? `<span class="ok">orender running</span> (pid ${host.pid}, ${kib(host.bytes || 0)} written)`
+      : host.state === 'error'
+        ? `<span class="bad">${escape(host.error || 'error')}</span>${host.hint ? ` — ${escape(host.hint)}` : ''}`
+        : `<span class="muted">orender ${escape(host.state || 'not started')}</span>`;
+  $('live').innerHTML = live.enabled
+    ? `${hostText}<br>sent ${live.sentUnits} units (${kib(live.sentBytes)}), ` +
+      `${live.aheadS.toFixed(1)} s appended ahead`
+    : 'Off: the browser plays the audio.';
+  $('liveToggle').disabled = false;
+  $('liveToggle').textContent = live.enabled ? 'Stop live' : 'Start live';
+  $('liveToggle').dataset.on = live.enabled ? '1' : '';
+  $('offset').textContent = `${live.offsetMs} ms`;
 }
 
 async function refresh() {
@@ -95,6 +121,24 @@ $('save').onclick = async () => {
         .join(' · ')
     : 'Nothing to save.';
 };
+
+$('liveToggle').onclick = async () => {
+  const on = !$('liveToggle').dataset.on;
+  const status = await inPage(await activeTab(), 'setLive', on, await storedOffset());
+  if (status) render(status);
+  $('message').textContent = on
+    ? 'Live: the browser is muted and orender plays the IAMF track.'
+    : 'Live stopped.';
+};
+
+async function nudgeOffset(deltaMs) {
+  const offsetMs = (await storedOffset()) + deltaMs;
+  await chrome.storage.local.set({ offsetMs });
+  const status = await inPage(await activeTab(), 'setOffset', offsetMs);
+  if (status) render(status);
+}
+$('offsetDown').onclick = () => nudgeOffset(-25);
+$('offsetUp').onclick = () => nudgeOffset(25);
 
 $('clear').onclick = async () => {
   const status = await inPage(await activeTab(), 'clear');

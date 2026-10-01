@@ -121,5 +121,146 @@
     return { iamf, sequences, samplesBytes };
   }
 
-  globalThis.OmniphonyIamfMp4 = { boxes, configObus, toIamf };
+  // ── Incremental demux: what live streaming needs ──────────────────────
+  //
+  // The capture above is converted once, at the end. Streaming live needs
+  // each temporal unit as soon as it is appended, with its presentation time,
+  // so that it can be sent just before the video reaches it.
+
+  // The first box of `type` under bytes[start, end), searched through the
+  // container boxes.
+  function findBox(bytes, start, end, type) {
+    for (const box of boxes(bytes, start, end)) {
+      if (box.type === type) return box;
+      if (CONTAINERS.has(box.type)) {
+        const found = findBox(bytes, box.payload, box.end, type);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  // The init segment's timescale (mdhd) and fragment defaults (trex).
+  function trackInfo(bytes, moov) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const mdhd = findBox(bytes, moov.payload, moov.end, 'mdhd');
+    const trex = findBox(bytes, moov.payload, moov.end, 'trex');
+    if (!mdhd) return null;
+    const version = bytes[mdhd.payload];
+    const timescale = view.getUint32(mdhd.payload + (version === 1 ? 20 : 12));
+    return {
+      timescale,
+      // trex: version/flags, track_ID, sample_description_index, duration, size.
+      defaultDuration: trex ? view.getUint32(trex.payload + 12) : 0,
+      defaultSize: trex ? view.getUint32(trex.payload + 16) : 0,
+    };
+  }
+
+  // A moof's first track fragment: decode time of its first sample, the
+  // offset of the sample data from the moof's start, and each sample's
+  // duration and size. Null when the data offset is absolute
+  // (base_data_offset), which streaming segments never use.
+  function parseMoof(bytes, moof, track) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const traf = findBox(bytes, moof.payload, moof.end, 'traf');
+    if (!traf) return null;
+    let defaultDuration = track.defaultDuration;
+    let defaultSize = track.defaultSize;
+    let baseTime = 0;
+    let trun = null;
+    for (const box of boxes(bytes, traf.payload, traf.end)) {
+      const flags = view.getUint32(box.payload) & 0xffffff;
+      if (box.type === 'tfhd') {
+        if (flags & 0x1) return null;
+        let at = box.payload + 8;
+        if (flags & 0x2) at += 4;
+        if (flags & 0x8) defaultDuration = view.getUint32((at += 4) - 4);
+        if (flags & 0x10) defaultSize = view.getUint32((at += 4) - 4);
+      } else if (box.type === 'tfdt') {
+        baseTime =
+          bytes[box.payload] === 1
+            ? Number(view.getBigUint64(box.payload + 4))
+            : view.getUint32(box.payload + 4);
+      } else if (box.type === 'trun' && !trun) {
+        trun = { box, flags };
+      }
+    }
+    if (!trun) return null;
+    const { box, flags } = trun;
+    const count = view.getUint32(box.payload + 4);
+    let at = box.payload + 8;
+    let dataOffset = 0;
+    if (flags & 0x1) dataOffset = view.getInt32((at += 4) - 4);
+    if (flags & 0x4) at += 4;
+    const samples = [];
+    for (let i = 0; i < count; i++) {
+      let duration = defaultDuration;
+      let size = defaultSize;
+      if (flags & 0x100) duration = view.getUint32((at += 4) - 4);
+      if (flags & 0x200) size = view.getUint32((at += 4) - 4);
+      if (flags & 0x400) at += 4;
+      if (flags & 0x800) at += 4;
+      samples.push({ duration, size });
+    }
+    return { baseTime, dataOffset, samples };
+  }
+
+  // Feed appended bytes in order; get back
+  //   { type: 'config', obus }                 when the descriptors change,
+  //   { type: 'unit', pts, duration, bytes }   per temporal unit (seconds).
+  // `timestampOffset` is the SourceBuffer's at the time of the append, which
+  // MSE adds to every presentation time.
+  function createDemuxer() {
+    let pending = new Uint8Array(0);
+    let track = null;
+    let config = null;
+    return {
+      push(bytes, timestampOffset = 0) {
+        const all = new Uint8Array(pending.length + bytes.length);
+        all.set(pending, 0);
+        all.set(bytes, pending.length);
+        const events = [];
+        let consumed = 0;
+        let moof = null;
+        for (const box of boxes(all)) {
+          if (box.type === 'moov') {
+            track = trackInfo(all, box);
+            const obus = configObus(all, box);
+            if (obus && !sameBytes(obus, config)) {
+              config = obus.slice();
+              events.push({ type: 'config', obus: config });
+            }
+          } else if (box.type === 'moof') {
+            moof = box;
+            continue; // consumed with its mdat
+          } else if (box.type === 'mdat' && moof && track) {
+            const frag = parseMoof(all, moof, track);
+            if (frag) {
+              let at = moof.start + frag.dataOffset;
+              let time = frag.baseTime;
+              for (const s of frag.samples) {
+                if (at + s.size > box.end) break;
+                events.push({
+                  type: 'unit',
+                  pts: time / track.timescale + timestampOffset,
+                  duration: s.duration / track.timescale,
+                  bytes: all.slice(at, at + s.size),
+                });
+                at += s.size;
+                time += s.duration;
+              }
+            }
+          }
+          moof = null;
+          consumed = box.end;
+        }
+        // Keep an unpaired moof (its mdat not appended yet) and any
+        // incomplete box for the next append.
+        pending = all.slice(moof ? moof.start : consumed);
+        return events;
+      },
+    };
+  }
+
+  globalThis.OmniphonyIamfMp4 = { boxes, configObus, toIamf, createDemuxer };
 })();

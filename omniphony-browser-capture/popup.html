@@ -21,6 +21,10 @@
   button { flex: 1; padding: 6px 8px; font: inherit; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; user-select: none; }
   button:disabled { opacity: .45; cursor: default; }
   #message { margin-top: 8px; min-height: 1.4em; }
+  .live-title { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .offset { align-items: center; }
+  .offset span { flex: 1; text-align: center; }
+  .offset #offset { font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -30,6 +34,17 @@
     <button id="tv" hidden>Open in YouTube TV</button>
     <button id="save" disabled>Save capture</button>
     <button id="clear" disabled>Clear</button>
+  </div>
+  <h1 class="live-title">Live to orender</h1>
+  <div id="live" class="muted">—</div>
+  <div class="row">
+    <button id="liveToggle" disabled>Start live</button>
+  </div>
+  <div class="row offset">
+    <span class="muted" title="How far ahead of the picture units are sent: orender's output latency">Latency comp.</span>
+    <button id="offsetDown" title="Sound comes later">−25 ms</button>
+    <span id="offset">150 ms</span>
+    <button id="offsetUp" title="Sound comes earlier">+25 ms</button>
   </div>
   <div id="message" class="muted"></div>
   <script src="popup.js"></script>
