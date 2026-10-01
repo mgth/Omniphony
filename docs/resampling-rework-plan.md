@@ -601,3 +601,43 @@ beside the legacy regulation until the cutover.
 - **Hardware runs.** None of the following has run yet: ASIO, CoreAudio,
   PipeWire on a real DAC with real input. Real DAC and real input belong to
   Phase 4, with the source modes.
+
+## 10. Phase 4 — host decision and slices (2026-10-01)
+
+**Decision: the new sync host is built on `orender_engine::Engine`**, the
+decode-and-render pipeline that liborender/mpv already use. It will replace
+`src/cli/decode/*` at the cutover, so mpv and the CLI end up with **one**
+render host. The two-host divergence (e.g. #250) disappears with it, and the
+legacy handler's drop points E1–E9 (S4) are not ported at all.
+
+What the Engine gives:
+- bytes in;
+- rendered blocks out, carrying their absolute `sample_pos`;
+- OSC/Studio already wired.
+
+What the host adds:
+- the capture side (reader, deframer, clock tap);
+- the ring and the sync output;
+- the CLI-only features: device choice, latency target, test idle feed, file
+  output.
+
+Slices, each testable end to end:
+
+- **4a — `follow` for the mpv pipe.**
+  - A reader thread that never blocks on downstream, timestamps every arrival
+    on the reference clock, and hands chunks to an engine thread.
+  - The engine thread parses IEC 61937, decodes and renders through the
+    Engine, pushes blocks into the ring, and publishes
+    `(arrival time, frames available)` to the `SourceTap`.
+  - `N_in` at this slice is the decoded position at the arrival of the bytes
+    that completed it, plus the codec's constant hold (S4 table). It is exact
+    in rate; in absolute latency it is exact up to that table. 4d replaces it
+    with transport-time counting.
+  - An epoch per stream (pipe open → EOF).
+- **4b — `none` for files and faster-than-real-time writers.** Back-pressure
+  at `L`, the ratio stays nominal.
+- **4c — `own` for the PipeWire sink.** S1 recipe: a timer driver plus a
+  follower sink, Latency param, `node.force-rate`, full-quantum Buffers.
+- **4d — accounting.** A time-conserving IEC 61937 deframer (pause and
+  stuffing become silence), a per-burst decoder audit, and
+  `DiscontinuityEvent`s.
