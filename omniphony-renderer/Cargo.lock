@@ -1602,6 +1602,8 @@ dependencies = [
  "anyhow",
  "audio_input",
  "audio_output",
+ "audio_rt",
+ "audio_sync",
  "bridge_api",
  "chrono",
  "clap",

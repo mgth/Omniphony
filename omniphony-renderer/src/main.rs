@@ -26,6 +26,8 @@ where
         OsString::from("render"),
         OsString::from("input-live"),
         OsString::from("generate-vbap"),
+        #[cfg(target_os = "linux")]
+        OsString::from("sync-play"),
         #[cfg(target_os = "windows")]
         OsString::from("list-asio-devices"),
         #[cfg(target_os = "macos")]
@@ -170,6 +172,8 @@ fn main() -> Result<()> {
             anyhow::bail!("The 'input-live' command is defined but not implemented yet.")
         }
         Commands::GenerateVbap(ref args) => cmd_generate_vbap(args),
+        #[cfg(target_os = "linux")]
+        Commands::SyncPlay(ref args) => cli::sync_host::cmd_sync_play(args, cli.config.clone()),
         #[cfg(target_os = "windows")]
         Commands::ListAsioDevices => cmd_list_asio_devices(),
         #[cfg(target_os = "macos")]

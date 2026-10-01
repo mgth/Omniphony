@@ -87,6 +87,8 @@ path = "src/main.rs"
 [dependencies]
 renderer.workspace = true
 audio_output.workspace = true
+audio_rt.workspace = true
+audio_sync.workspace = true
 audio_input.workspace = true
 sys.workspace = true
 diag.workspace = true

@@ -24,6 +24,14 @@ pub struct DllConfig {
     pub start_bandwidth_hz: f64,
     /// Time for the bandwidth to halve while narrowing (s).
     pub narrowing_half_life_s: f64,
+    /// Whether the *rate* gain follows the wide start bandwidth too. With
+    /// `false` only the phase locks fast; the rate keeps the steady bandwidth
+    /// from the first observation, i.e. trusts the nominal rate until enough
+    /// observations have accumulated. Right for a jittery source, where a
+    /// rate fitted over the first seconds is mostly noise (a pipe from mpv
+    /// arrives with ±20 ms of jitter: its rate is only knowable to ~±40 ppm
+    /// after 30 s).
+    pub rate_fast_start: bool,
 }
 
 impl Default for DllConfig {
@@ -32,6 +40,7 @@ impl Default for DllConfig {
             bandwidth_hz: 0.01,
             start_bandwidth_hz: 1.0,
             narrowing_half_life_s: 1.5,
+            rate_fast_start: true,
         }
     }
 }
@@ -111,10 +120,15 @@ impl Dll {
         }
         let bandwidth = scheduled_bandwidth(&self.config, t - state.started_at);
         let omega_dt = (TAU * bandwidth * dt).min(MAX_OMEGA_DT);
+        let rate_omega_dt = if self.config.rate_fast_start {
+            omega_dt
+        } else {
+            (TAU * self.config.bandwidth_hz * dt).min(MAX_OMEGA_DT)
+        };
         let predicted = state.position + state.rate * dt;
         let error = position - predicted;
         state.position = predicted + SQRT_2 * omega_dt * error;
-        state.rate += omega_dt * omega_dt * error / dt;
+        state.rate += rate_omega_dt * rate_omega_dt * error / dt;
         state.t = t;
     }
 

@@ -75,21 +75,48 @@ pub struct ServoConfig {
     /// A source silent for longer than this is treated as stopped: playback
     /// waits, and the source DLL restarts its phase when frames come back (s).
     pub source_gap_s: f64,
+    /// The source's readings arrive late by a one-sided jitter (a `follow`
+    /// source): fit its line to the earliest arrivals
+    /// ([`ArrivalEnvelope`](crate::ArrivalEnvelope)) before the source DLL.
+    pub source_late_arrivals: bool,
     /// DLL schedules for the source and the device clocks.
     pub source_dll: DllConfig,
     pub device_dll: DllConfig,
 }
 
+/// Phase-loop bandwidth for a `follow` source (Hz).
+pub const FOLLOW_LOOP_HZ: f64 = 0.01;
+/// Source-DLL bandwidth for a `follow` source (Hz).
+pub const FOLLOW_SOURCE_DLL_HZ: f64 = 0.01;
+
 impl ServoConfig {
-    /// Defaults for a `follow` source, whose arrivals come in bursts (a video
-    /// frame of audio at a time, plus pipe jitter). Its DLL keeps tens of µs
-    /// of phase noise however it is filtered; a phase loop faster than the
-    /// DLL would turn that into ratio wander. At 0.005 Hz the closed-loop
-    /// simulation keeps it near 25 ppm peak-to-peak (0.04 cent) for a
-    /// 0.25 ms latency p99, against 64 ppm at the `own` default of 0.02 Hz.
+    /// Defaults for a `follow` source: bytes that arrive late by a one-sided
+    /// jitter (±20 ms measured from mpv into a pipe), a video frame of audio
+    /// at a time, possibly far off nominal (mpv's display-resample: up to
+    /// ~1000 ppm).
+    ///
+    /// - The readings are fitted to their earliest-arrival line first (upper
+    ///   convex hull over 30 s), which removes the jitter without biasing the
+    ///   phase or the rate.
+    /// - The source DLL then tracks that line at 0.01 Hz.
+    /// - The phase loop runs at 0.01 Hz.
+    ///
+    /// Closed-loop simulation at the measured jitter, source at 0, 80 and
+    /// 1000 ppm, after 60 s: true latency within ±0.5 ms and ratio error
+    /// within ~45 ppm (a slow wander, 0.08 cent at most). The first 30 s carry
+    /// a transient of up to ~1.5 ms and ~200 ppm. A DLL fed the raw arrivals
+    /// gave ±5 ms and 545 ppm.
     pub fn follow() -> Self {
         Self {
-            loop_bandwidth_hz: 0.005,
+            loop_bandwidth_hz: FOLLOW_LOOP_HZ,
+            source_late_arrivals: true,
+            // mpv's display-resample moves the source by up to ~1000 ppm
+            // (23.976 fps content on a 24 Hz display).
+            max_feedforward_deviation: 2000e-6,
+            source_dll: DllConfig {
+                bandwidth_hz: FOLLOW_SOURCE_DLL_HZ,
+                ..DllConfig::default()
+            },
             ..Self::default()
         }
     }
@@ -110,6 +137,7 @@ impl Default for ServoConfig {
             output_rate_hz: 48_000.0,
             resampler_lookahead_frames: 32.0,
             source_gap_s: 0.25,
+            source_late_arrivals: false,
             source_dll: DllConfig::default(),
             device_dll: DllConfig::default(),
         }
@@ -210,14 +238,15 @@ pub struct Telemetry {
     pub clock_mismatch: bool,
     /// Lowest latency the pipeline can currently sustain (s): what the ring
     /// lags the capture point by, plus one callback's consumption and the
-    /// resampler look-ahead, plus the device delay. Peak-held, decaying by
-    /// [`FLOOR_DECAY_S_PER_S`]. A target below it underruns: the decoder
-    /// holds or batches more than the target leaves room for.
+    /// resampler look-ahead, plus the device delay. Peak-held, relaxing
+    /// toward the current value with time constant [`FLOOR_HOLD_S`]. A target
+    /// below it underruns: the decoder holds or batches more than the target
+    /// leaves room for.
     pub latency_floor_s: f64,
 }
 
-/// How fast [`Telemetry::latency_floor_s`] forgets a peak (s per s).
-pub const FLOOR_DECAY_S_PER_S: f64 = 0.001;
+/// Time constant with which [`Telemetry::latency_floor_s`] forgets a peak (s).
+pub const FLOOR_HOLD_S: f64 = 5.0;
 
 /// See the [module docs](self).
 #[derive(Debug, Clone)]
@@ -226,7 +255,7 @@ pub struct Servo {
     kp: f64,
     ki: f64,
     nominal_ratio: f64,
-    source_dll: Dll,
+    source: crate::source::SourceEstimator,
     device_dll: Dll,
     last_source_t: Option<f64>,
     source_stalled: bool,
@@ -243,7 +272,11 @@ impl Servo {
             kp: 2.0 * config.damping * omega,
             ki: omega * omega,
             nominal_ratio: config.source_rate_hz / config.output_rate_hz,
-            source_dll: Dll::new(config.source_dll, config.source_rate_hz),
+            source: crate::source::SourceEstimator::new(
+                config.source_dll,
+                config.source_late_arrivals,
+                config.source_rate_hz,
+            ),
             device_dll: Dll::new(config.device_dll, config.output_rate_hz),
             last_source_t: None,
             source_stalled: true,
@@ -273,7 +306,7 @@ impl Servo {
     /// Start a new epoch: forget both clocks and the integrator, and set the
     /// latency again from scratch on the next callback.
     pub fn reset(&mut self) {
-        self.source_dll.reset();
+        self.source.reset();
         self.device_dll.reset();
         self.last_source_t = None;
         self.source_stalled = true;
@@ -293,7 +326,7 @@ impl Servo {
         self.observe_source(input);
 
         let ratio_ff = self.feedforward_ratio();
-        let rate_s = self.source_dll.rate().unwrap_or(self.config.source_rate_hz);
+        let rate_s = self.source.rate().unwrap_or(self.config.source_rate_hz);
         let rate_d = self.device_dll.rate().unwrap_or(self.config.output_rate_hz);
         self.telemetry.source_ppm = ppm(rate_s / self.config.source_rate_hz);
         self.telemetry.device_ppm = ppm(rate_d / self.config.output_rate_hz);
@@ -301,7 +334,7 @@ impl Servo {
 
         // Silent until the source has delivered something, or while it is
         // stalled: there is nothing to measure the latency against.
-        let n_in = match self.source_dll.position_at(input.t) {
+        let n_in = match self.source.position_at(input.t) {
             Some(p) if !self.source_stalled => p + input.source_offset,
             _ => {
                 self.telemetry.latency_s = None;
@@ -318,8 +351,9 @@ impl Servo {
                 + ratio_ff * input.frames as f64
                 + self.config.resampler_lookahead_frames)
                 / rate_s;
-        self.telemetry.latency_floor_s =
-            floor.max(self.telemetry.latency_floor_s - FLOOR_DECAY_S_PER_S * dt);
+        let held = self.telemetry.latency_floor_s;
+        let relaxed = held - (held - floor) * (dt / FLOOR_HOLD_S).min(1.0);
+        self.telemetry.latency_floor_s = floor.max(relaxed);
         let error = latency - self.config.target_latency_s;
 
         match self.phase {
@@ -350,11 +384,11 @@ impl Servo {
             let resumed = self
                 .last_source_t
                 .is_some_and(|last| obs.t - last > self.config.source_gap_s);
-            if resumed && self.source_dll.is_tracking() {
+            if resumed && self.source.is_tracking() {
                 // The source stopped and came back: same clock, new phase.
-                self.source_dll.restart_phase(obs.t, obs.received);
+                self.source.restart_phase(obs.t, obs.received);
             } else {
-                self.source_dll.observe(obs.t, obs.received);
+                self.source.observe(obs.t, obs.received);
             }
             self.last_source_t = Some(obs.t);
             self.source_stalled = false;
@@ -372,7 +406,7 @@ impl Servo {
             self.telemetry.clock_mismatch = false;
             return nominal;
         }
-        let (Some(rate_s), Some(rate_d)) = (self.source_dll.rate(), self.device_dll.rate()) else {
+        let (Some(rate_s), Some(rate_d)) = (self.source.rate(), self.device_dll.rate()) else {
             return nominal;
         };
         let measured = rate_s / rate_d;

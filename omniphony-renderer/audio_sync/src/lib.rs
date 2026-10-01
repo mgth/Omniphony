@@ -23,12 +23,15 @@
 
 pub mod accounting;
 pub mod dll;
+pub mod envelope;
 pub mod servo;
 #[cfg(any(test, feature = "sim"))]
 pub mod sim;
+mod source;
 
 pub use accounting::{Accounting, DiscontinuityEvent, DiscontinuityReason, Stage};
 pub use dll::{Dll, DllConfig};
+pub use envelope::ArrivalEnvelope;
 pub use servo::{
     CallbackInput, CallbackPlan, Phase, Servo, ServoConfig, SourceObservation, Telemetry,
 };

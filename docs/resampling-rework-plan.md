@@ -641,3 +641,82 @@ Slices, each testable end to end:
 - **4d — accounting.** A time-conserving IEC 61937 deframer (pause and
   stuffing become silence), a per-burst decoder audit, and
   `DiscontinuityEvent`s.
+
+## 11. Phase 4a status (2026-10-01) — pipe `follow` slice, end to end
+
+`orender sync-play <fifo>` is a hidden command, Linux only.
+
+### What is built
+
+```
+reader thread ─► engine thread: IEC 61937 deframe ─► Engine ─► ring ─► OutputCore ─► PipeWire
+```
+
+- **Reader thread.** It opens the FIFO read-write, so the pipe always has a
+  writer: reads never return end-of-file between streams, and mpv never gets
+  `SIGPIPE`. It polls, stamps every chunk on the reference clock, and never
+  waits on downstream: a full queue counts a dropped chunk. A stream starts
+  with its first byte and ends after 0.5 s of silence.
+- **Engine thread.** It deframes IEC 61937 (`SpdifParser`), then decodes and
+  renders through `orender_engine::Engine`.
+- **Ring.** Blocks are pushed into the SPSC ring.
+- **Clock tap.** `(arrival time, frames pushed + codec hold)` goes to the
+  `SourceTap`.
+- **Epochs.** One epoch per stream: its own ring, servo and PipeWire stream.
+  An end of stream is a deadline, never a wait.
+- **Diagnostics.** `ORENDER_SYNC_TRACE=1` prints one line per chunk.
+
+### Live, real mpv
+
+`mpv --no-config --vo=null --audio-spdif=eac3 --ao=pcm` → FIFO, E-AC-3 5.1 at
+23.976 fps, into a private null sink (nothing audible):
+
+| Duration | Result |
+|---|---|
+| 180 s | 8 552 448 frames pushed (= 178.2 s), no chunk or ring drop |
+| After 30 s | latency 200 ± 0.4 ms; correction within ±30 ppm |
+| Start-up | 1 realign; correction saturated at +500 ppm around 15 s |
+
+### Finding: the follow source's jitter is one-sided
+
+Measured arrival pattern from mpv: no start-up burst (mpv stays 50–90 ms
+ahead), but **±20 ms of arrival jitter**, always late. The consequences, in
+the closed-loop simulation reproducing it:
+
+1. **A DLL on raw arrivals is the wrong estimator.** It gave ±5 ms and
+   545 ppm, and a true latency that drifted by 6 ms as the mean-lateness bias
+   settled.
+2. **The fit that works.** The source's line is fitted to the **earliest
+   arrivals**: the upper convex hull over 30 s, picking the edge at the mean
+   time (Moon/Skelly/Towsley LP). A DLL at 0.01 Hz tracks that line. This
+   removes the bias at any drift, including 1000 ppm (display-resample).
+3. **Latency is now measured against the source's true clock.** The buffer
+   must therefore also cover the lateness: the latency floor for mpv E-AC-3
+   through the pipe rises from ~123 ms to ~155 ms. Default the `follow`
+   target to 200 ms.
+4. **Tried and rejected,** each measured:
+   - a nominal-rate min-filter fed to a slow DLL (fine at 0 ppm, minutes to
+     learn 80–1000 ppm);
+   - an envelope drawn at the DLL's own rate (runs away: it hands the DLL its
+     own slope);
+   - rate reseeding (steps);
+   - a low-passed hull rate without the DLL (rate and phase disagree).
+
+### Open item (blocks the 4a acceptance)
+
+At the measured jitter, the simulation gives a p99 latency deviation of
+0.75 ms and ~85 ppm peak-to-peak ratio wander. The criteria are 0.5 ms and
+30 ppm. The test `follow_mpv_pipe_with_measured_jitter` is `#[ignore]`d with
+these numbers.
+
+The wander is slow (0.08 cent at most, far below audibility), but the
+criteria were set on purpose and are not relaxed here. The start-up transient
+(first ~30 s) is part of the same item.
+
+Two leads:
+- (a) a joint position/rate estimator built for one-sided noise (a Kalman
+  filter with a censored-noise update, or an LP fit with explicit rate
+  continuity);
+- (b) for video playback, steer users to the `own` mode (4c). Through the
+  PipeWire sink, mpv's AO is timed by orender's own clock: no lateness, an
+  exact clock (S1).

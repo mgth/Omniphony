@@ -4,7 +4,7 @@
 //! cargo run -p audio_sync --release --features sim --example sim -- follow 600 > trace.csv
 //! ```
 //!
-//! Scenarios: `own`, `follow`, `eac3`, `excursion`, `pause`, `resync`.
+//! Scenarios: `own`, `follow`, `mpv`, `eac3`, `excursion`, `pause`, `resync`.
 //! The trace keeps one row in `every` callbacks (third argument, default 10);
 //! a fourth argument sets the target latency in ms (default 100), a fifth the
 //! phase-loop bandwidth in Hz.
@@ -47,6 +47,28 @@ fn main() {
             },
             ..base
         },
+        // As measured from real mpv into the pipe (2026-10-01): ±20 ms of
+        // arrival jitter and no source drift against the reference clock.
+        "mpv" => Scenario {
+            servo: audio_sync::ServoConfig {
+                target_latency_s: base.servo.target_latency_s,
+                loop_bandwidth_hz: if args.get(5).is_some() {
+                    base.servo.loop_bandwidth_hz
+                } else {
+                    audio_sync::ServoConfig::follow().loop_bandwidth_hz
+                },
+                source_dll: audio_sync::ServoConfig::follow().source_dll,
+                source_late_arrivals: true,
+                ..base.servo
+            },
+            source_ppm: 0.0,
+            delivery: Delivery::Follow {
+                video_fps: 24_000.0 / 1001.0,
+                ahead_s: 0.050,
+                arrival_jitter_s: 0.040,
+            },
+            ..base
+        },
         "eac3" => Scenario {
             decoder: Decoder::EAC3,
             ..base
@@ -84,6 +106,31 @@ fn main() {
     println!(
         "t_s,phase,true_latency_ms,measured_latency_ms,ratio_error_ppm,correction_ppm,feedforward_ppm"
     );
+    // Tuning overrides for parameter sweeps.
+    let mut scenario = scenario;
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
+    if let Some(v) = env("SIM_SRC_DLL_HZ") {
+        scenario.servo.source_dll.bandwidth_hz = v;
+    }
+    if let Some(v) = env("SIM_RATE_FAST") {
+        scenario.servo.source_dll.rate_fast_start = v != 0.0;
+    }
+    if let Some(v) = env("SIM_SRC_PPM") {
+        scenario.source_ppm = v;
+    }
+    if let Some(v) = env("SIM_MAX_FF_PPM") {
+        scenario.servo.max_feedforward_deviation = v * 1e-6;
+    }
+    if let Some(v) = env("SIM_LOOP_HZ") {
+        scenario.servo.loop_bandwidth_hz = v;
+    }
+    if let Some(v) = env("SIM_JITTER_S")
+        && let Delivery::Follow {
+            arrival_jitter_s, ..
+        } = &mut scenario.delivery
+    {
+        *arrival_jitter_s = v;
+    }
     let mut n = 0u64;
     let report = run_with(&scenario, |s, _plan, _servo| {
         if n.is_multiple_of(every) {

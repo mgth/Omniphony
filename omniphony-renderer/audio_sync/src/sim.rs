@@ -644,6 +644,40 @@ mod tests {
 
     /// E-AC-3 holds one 32 ms access unit and releases another 32 ms at a
     /// time: 150 ms is comfortable, 100 ms is not (see the next test).
+    /// The same pipe with the arrival jitter measured from real mpv
+    /// (±20 ms, one-sided) and the player 80 ppm off the reference clock.
+    /// Latency is measured against the source's true clock (its earliest
+    /// arrivals), so the buffer must also cover the lateness: the floor rises
+    /// by the jitter, hence 200 ms here.
+    ///
+    /// Open item of phase 4a (see the plan, §11): the latency holds within
+    /// ±0.75 ms p99 and the ratio wanders by ~85 ppm peak-to-peak, short of
+    /// the 0.5 ms / 30 ppm criteria. Run with `--ignored`.
+    #[test]
+    #[ignore = "phase 4a open item: follow estimator under ±20 ms one-sided jitter"]
+    fn follow_mpv_pipe_with_measured_jitter() {
+        let r = check_with(
+            "follow_mpv_measured_jitter",
+            &Scenario {
+                duration_s: 1_800.0,
+                servo: ServoConfig {
+                    target_latency_s: 0.200,
+                    ..ServoConfig::follow()
+                },
+                source_ppm: 80.0,
+                delivery: Delivery::Follow {
+                    video_fps: 24_000.0 / 1001.0,
+                    ahead_s: 0.050,
+                    arrival_jitter_s: 0.040,
+                },
+                ..Scenario::default()
+            },
+            0,
+            FOLLOW_RATIO_PP_PPM,
+        );
+        assert!(r.ratio_error_max_ppm < 30.0, "{r:?}");
+    }
+
     #[test]
     fn own_eac3_holds_an_access_unit() {
         check(
