@@ -963,8 +963,11 @@ the follow offset sat up to a chunk below the true line. It then rose
   - **mpv-omniphony:** both patch sets are regenerated in
     mgth/mpv-omniphony#79. This also repairs the live-master build: the
     manual `9001-f_swresample` was obsolete upstream.
-  - **FEL track (`feat/dv-fel`):** not updated. It is pinned to the June mpv
-    base of its vendored FEL patch, and upstream has merged FEL since.
+  - **FEL beta:** covered by the same `patches-master/`. FEL has been native
+    in mpv master since mpv-omniphony #53, so the beta is "mpv master +
+    `patches-master/`". A local FEL build against libplacebo and ffmpeg
+    master builds and plays timed. (`feat/dv-fel` is a stale branch,
+    already contained in `main`.)
   - **Dev launchers:** `mpvo` and `mpvo-fel` take
     `--orender-pipe[=PATH] [--orender-latency=MS]`. This swaps in-process
     decoding for passthrough to a FIFO, through the timed `ao_pcm`.
