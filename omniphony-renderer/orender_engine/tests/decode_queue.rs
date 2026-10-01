@@ -509,3 +509,116 @@ fn a_host_that_forces_the_thread_ignores_the_option() {
         "live mode picks the option up at once"
     );
 }
+
+/// Every OSC message that reached `socket` within `wait`, bundles flattened,
+/// in arrival order.
+fn osc_messages(socket: &std::net::UdpSocket, wait: Duration) -> Vec<rosc::OscMessage> {
+    fn flatten(packet: rosc::OscPacket, out: &mut Vec<rosc::OscMessage>) {
+        match packet {
+            rosc::OscPacket::Message(m) => out.push(m),
+            rosc::OscPacket::Bundle(b) => b.content.into_iter().for_each(|p| flatten(p, out)),
+        }
+    }
+    let deadline = std::time::Instant::now() + wait;
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; 65_536];
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        socket
+            .set_read_timeout(Some(left.max(Duration::from_millis(1))))
+            .unwrap();
+        let Ok(n) = socket.recv(&mut buf) else { break };
+        if let Ok((_, packet)) = rosc::decoder::decode_udp(&buf[..n]) {
+            flatten(packet, &mut out);
+        }
+    }
+    out
+}
+
+/// Feed `count` 1536-sample packets slowly enough for the meter cadence to
+/// publish, and collect what the OSC target received meanwhile.
+fn feed_and_listen(
+    engine: &mut Engine,
+    socket: &std::net::UdpSocket,
+    count: usize,
+) -> Vec<rosc::OscMessage> {
+    let mut messages = Vec::new();
+    for _ in 0..count {
+        feed(engine, [packet(1536, 0)]);
+        messages.extend(osc_messages(socket, Duration::from_millis(60)));
+    }
+    messages
+}
+
+fn long_arg(m: &rosc::OscMessage, i: usize) -> Option<i64> {
+    match m.args.get(i) {
+        Some(rosc::OscType::Long(v)) => Some(*v),
+        _ => None,
+    }
+}
+
+/// The engine says where each block starts and where the listener is, once a
+/// host has said the latter, and never holds anything back: a client of a host
+/// that does not report sees the stream exactly as before.
+#[test]
+fn heard_us_publishes_the_listener_and_marks_each_block() {
+    use runtime_control::osc_contract::{METER_MASTER, PLAYOUT_BLOCK, PLAYOUT_HEARD};
+
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let (mut engine, _, _) = engine_with_control();
+    engine
+        .enable_osc(orender_engine::OscOptions {
+            host: "127.0.0.1".into(),
+            port_out: socket.local_addr().unwrap().port(),
+            port_in: 0,
+            metering: true,
+        })
+        .unwrap();
+
+    let before = feed_and_listen(&mut engine, &socket, 8);
+    assert!(
+        before.iter().any(|m| m.addr == METER_MASTER),
+        "the meters must flow for this test to mean anything"
+    );
+    assert!(
+        !before
+            .iter()
+            .any(|m| m.addr == PLAYOUT_BLOCK || m.addr == PLAYOUT_HEARD),
+        "nothing about playout before a host reports"
+    );
+
+    // Half a second in: 24 000 samples at 48 kHz.
+    engine.set_heard_us(500_000);
+    let after = feed_and_listen(&mut engine, &socket, 8);
+    let heard: Vec<_> = after.iter().filter(|m| m.addr == PLAYOUT_HEARD).collect();
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    assert_eq!(long_arg(heard[0], 0), Some(24_000));
+    assert_eq!(heard[0].args.get(1), Some(&rosc::OscType::Int(48_000)));
+
+    // Every meter bundle is preceded by the marker of its block, and the
+    // markers name 1536-sample blocks, in order, each once.
+    let mut last_block = None;
+    let mut blocks = Vec::new();
+    for m in &after {
+        if m.addr == PLAYOUT_BLOCK {
+            let pos = long_arg(m, 0).unwrap();
+            assert_eq!(pos % 1536, 0, "{pos}");
+            last_block = Some(pos);
+            blocks.push(pos);
+        } else if m.addr == METER_MASTER {
+            assert!(last_block.is_some(), "a meter bundle before any marker");
+        }
+    }
+    assert!(!blocks.is_empty());
+    assert!(blocks.windows(2).all(|w| w[0] < w[1]), "{blocks:?}");
+    assert!(blocks[0] >= 8 * 1536, "the timeline runs on: {blocks:?}");
+
+    // A reset starts the timeline again, and its first block is marked even
+    // though it starts where an earlier one did.
+    engine.reset();
+    let again = feed_and_listen(&mut engine, &socket, 4);
+    let first = again
+        .iter()
+        .find(|m| m.addr == PLAYOUT_BLOCK)
+        .and_then(|m| long_arg(m, 0));
+    assert!(first.is_some_and(|pos| pos < 4 * 1536), "{first:?}");
+}

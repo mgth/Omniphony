@@ -801,7 +801,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 
 </details>
 
-<details><summary>Session and streams (11)</summary>
+<details><summary>Session and streams (13)</summary>
 
 - `/omniphony/bed/config`
 - `/omniphony/heartbeat`
@@ -810,6 +810,8 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/log`
 - `/omniphony/meter/drc_gain`
 - `/omniphony/meter/master`
+- `/omniphony/playout/block`
+- `/omniphony/playout/heard`
 - `/omniphony/register`
 - `/omniphony/spatial/frame`
 - `/omniphony/timestamp`

@@ -15,6 +15,7 @@ pub mod apply;
 pub mod dispatch;
 #[allow(dead_code)]
 pub mod parser;
+mod playout;
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,6 +28,7 @@ use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, decoder, encoder}
 use crate::host::runtime::{StopToken, Worker};
 use dispatch::{Change, Live, apply_event};
 use parser::{CoordinateFormat, HeartbeatResponse, is_heartbeat_address, parse_osc_message};
+use playout::{Offer, Playout};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// Re-register when no heartbeat ack came back for this long. The host's
@@ -36,6 +38,11 @@ const REPAINT_COALESCE: Duration = Duration::from_micros(2500);
 /// How long a receive waits when no change is waiting to be shown, so the
 /// heartbeat, the snapshot requests and the control channel keep running.
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
+/// How often the receive wakes while messages are held, to release the ones
+/// the listener has reached. Fixed rather than the exact time to the next one,
+/// which would change the socket's timeout (a syscall) on every pass; a
+/// quarter of a 60 Hz frame is as late as a release can be.
+const PLAYOUT_TICK: Duration = Duration::from_millis(4);
 /// While `osc_snapshot_ready` is false, re-register this often (host value).
 const SNAPSHOT_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_BUF: usize = 65_536;
@@ -115,6 +122,9 @@ pub struct ListenerConfig {
     /// Ask the renderer for meter streams right after registering
     /// (`/omniphony/control/metering`, the host's `osc_metering_enabled`).
     pub metering: bool,
+    /// Hold what describes a block of audio until it is heard (`playout`),
+    /// the user's "follow the sound" switch.
+    pub playout_sync: bool,
 }
 
 /// Messages the UI sends to the renderer through the listener's socket: the
@@ -136,6 +146,10 @@ pub enum Control {
     },
     /// Toggle the meter streams (sent now and again after every register).
     SetMetering {
+        enabled: bool,
+    },
+    /// Follow the sound: show each block when it is heard (see `playout`).
+    SetPlayoutSync {
         enabled: bool,
     },
     SubscribeGainTable {
@@ -187,6 +201,7 @@ pub fn spawn_listener(
             stats,
             cfg.register,
             cfg.metering,
+            cfg.playout_sync,
             rx,
             stop,
         )
@@ -203,10 +218,12 @@ fn listener_loop(
     stats: Arc<OscStats>,
     register: Option<SocketAddr>,
     metering: bool,
+    playout_sync: bool,
     control: Receiver<Control>,
     stop: StopToken,
 ) {
     let mut buf = vec![0u8; RECV_BUF];
+    let mut playout = Playout::new(playout_sync);
     let mut last_heartbeat = Instant::now();
     let mut last_ack = Instant::now();
     let mut last_repaint = Instant::now() - REPAINT_COALESCE;
@@ -239,7 +256,18 @@ fn listener_loop(
                         let mut outcome = PacketOutcome::default();
                         {
                             let mut model = live.lock().unwrap();
-                            handle_packet(&packet, &mut model, &stats, &mut outcome);
+                            handle_packet(
+                                &packet,
+                                &mut model,
+                                &stats,
+                                &mut outcome,
+                                &mut playout,
+                                Instant::now(),
+                            );
+                            if outcome.producer_changed {
+                                playout.reset();
+                            }
+                            model.playout_delay = playout.delay(Instant::now());
                         }
                         if outcome.reregister
                             && let Some(addr) = register
@@ -282,16 +310,37 @@ fn listener_loop(
             }
         }
 
+        // What the listener has now reached, out of the queue and into the
+        // model.
+        let now = Instant::now();
+        if playout.next_due_in(now) == Some(Duration::ZERO) {
+            let mut outcome = PacketOutcome::default();
+            {
+                let mut model = live.lock().unwrap();
+                playout.release_due(now, |m| {
+                    handle_message(&m, &mut model, &stats, &mut outcome);
+                });
+                model.playout_delay = playout.delay(now);
+            }
+            if outcome.change != Change::None {
+                repaint_pending = true;
+            }
+        }
+
         if repaint_pending && last_repaint.elapsed() >= REPAINT_COALESCE {
             repaint_pending = false;
             last_repaint = Instant::now();
             waker();
         }
-        let wanted = if repaint_pending {
+        let mut wanted = if repaint_pending {
             REPAINT_COALESCE
         } else {
             READ_TIMEOUT
         };
+        // Wake for the held messages, not only for the next packet.
+        if playout.next_due_in(Instant::now()).is_some() {
+            wanted = wanted.min(PLAYOUT_TICK);
+        }
         if wanted != read_timeout {
             match socket.set_read_timeout(Some(wanted)) {
                 Ok(()) => read_timeout = wanted,
@@ -310,6 +359,7 @@ fn listener_loop(
                     stats.registered.store(false, Ordering::Relaxed);
                     last_ack = Instant::now();
                     last_snapshot_request = Instant::now();
+                    playout.reset();
                     {
                         let mut model = live.lock().unwrap();
                         apply_connection_reset(&mut model, request);
@@ -328,6 +378,7 @@ fn listener_loop(
                         );
                     }
                 }
+                Control::SetPlayoutSync { enabled } => playout.set_enabled(enabled),
                 Control::Send { address, args } => {
                     if let Some(addr) = register {
                         send_args(&socket, addr, &address, args);
@@ -464,6 +515,8 @@ struct PacketOutcome {
     /// The unknown-client reply that set `reregister` ended a registered
     /// episode (as opposed to repeating while one is already lost).
     lost_registration: bool,
+    /// Another renderer answers now: nothing held is about its stream.
+    producer_changed: bool,
 }
 
 impl Default for Change {
@@ -472,14 +525,25 @@ impl Default for Change {
     }
 }
 
-fn handle_packet(packet: &OscPacket, live: &mut Live, stats: &OscStats, out: &mut PacketOutcome) {
+fn handle_packet(
+    packet: &OscPacket,
+    live: &mut Live,
+    stats: &OscStats,
+    out: &mut PacketOutcome,
+    playout: &mut Playout,
+    now: Instant,
+) {
     match packet {
         OscPacket::Bundle(OscBundle { content, .. }) => {
             for p in content {
-                handle_packet(p, live, stats, out);
+                handle_packet(p, live, stats, out, playout, now);
             }
         }
-        OscPacket::Message(m) => handle_message(m, live, stats, out),
+        OscPacket::Message(m) => match playout.offer(m, now) {
+            Offer::Apply => handle_message(m, live, stats, out),
+            // Counted when released, if it is held.
+            Offer::Taken => {}
+        },
     }
 }
 
@@ -503,6 +567,7 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
                     .is_some_and(|previous| previous != epoch);
                 if changed {
                     reset_connection_model(live);
+                    out.producer_changed = true;
                     stats.registered.store(false, Ordering::Relaxed);
                     out.reregister = true;
                     out.change = out.change.max(Change::Snapshot);
@@ -738,6 +803,7 @@ mod connection_tests {
                     listen_port: 0,
                     register: Some(renderer.local_addr().unwrap()),
                     metering: false,
+                    playout_sync: true,
                 },
             )
             .unwrap();
