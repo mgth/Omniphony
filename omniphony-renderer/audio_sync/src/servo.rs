@@ -247,6 +247,9 @@ pub struct Telemetry {
     pub ratio: f64,
     pub realigns: u64,
     pub underruns: u64,
+    /// Times a `follow` source was taken to have lost or gained time (a
+    /// pause, a seek) and its estimate started a new phase.
+    pub source_rephases: u64,
     /// The feed-forward hit `max_feedforward_deviation`: the nominal rates are
     /// wrong or a clock is broken.
     pub clock_mismatch: bool,
@@ -346,6 +349,7 @@ impl Servo {
         self.telemetry.source_ppm = ppm(rate_s / self.config.source_rate_hz);
         self.telemetry.device_ppm = ppm(rate_d / self.config.output_rate_hz);
         self.telemetry.feedforward_ppm = ppm(ratio_ff / self.nominal_ratio);
+        self.telemetry.source_rephases = self.source.rephases();
 
         // Silent until the source has delivered something, or while it is
         // stalled: there is nothing to measure the latency against.
@@ -537,6 +541,7 @@ impl Servo {
             return plan;
         }
         self.telemetry.underruns += 1;
+        self.source.rephase_on_next_reading();
         self.phase = Phase::Realigning;
         self.silent(input.frames, plan.ratio)
     }
@@ -697,5 +702,66 @@ mod tests {
         let plan = servo.plan(&input(2.0, 2_560.0, 4_800.0 + 4_800.0));
         assert_eq!(servo.phase(), Phase::Running);
         assert!(plan.silence_frames < 1024 || plan.skip_source_frames > 0.0);
+    }
+
+    /// A `follow` source pauses for 0.2 s, under the gap that marks a stall,
+    /// and resumes where it was. The playback runs dry, and the estimate,
+    /// still on the old line, would point the realign at frames that never
+    /// come: the next reading must start a new phase instead, so playback
+    /// resumes at the target.
+    #[test]
+    fn a_short_pause_of_a_follow_source_realigns_and_resumes() {
+        let mut servo = Servo::new(ServoConfig::follow());
+        let frames = 1024usize;
+        let dt = frames as f64 / 48_000.0;
+        let (pause_at, pause_s) = (30.0, 0.2);
+        let mut play = 0.0;
+        let mut last_source_t = 0.0;
+        let mut last_obs = SourceObservation {
+            t: 0.0,
+            received: 0.0,
+        };
+        for k in 0..(40.0 / dt) as usize {
+            let t = k as f64 * dt;
+            let source_t = if t < pause_at {
+                t
+            } else if t < pause_at + pause_s {
+                last_obs.t
+            } else {
+                t - pause_s
+            };
+            if source_t > last_source_t || k == 0 {
+                last_source_t = source_t;
+                last_obs = SourceObservation {
+                    t,
+                    received: source_t * 48_000.0,
+                };
+            }
+            let mut inp = input(t, play, last_obs.received);
+            inp.source = Some(last_obs);
+            let plan = servo.plan(&inp);
+            let played = frames - plan.silence_frames.min(frames);
+            play += plan.skip_source_frames + plan.ratio * played as f64;
+
+            {
+                eprintln!(
+                    "t={t:.3} ph={:?} lat={:?} err={:.4} play={play:.0} avail={:.0} sil={} skip={:.0} reph={}",
+                    servo.phase(),
+                    servo.telemetry().latency_s,
+                    servo.telemetry().error_s,
+                    last_obs.received,
+                    plan.silence_frames,
+                    plan.skip_source_frames,
+                    servo.telemetry().source_rephases
+                );
+            }
+            if t > pause_at + pause_s + 1.0 {
+                assert_eq!(servo.phase(), Phase::Running, "stuck at t = {t:.2}");
+                let error = servo.telemetry().error_s;
+                assert!(error.abs() < 1e-3, "error {error} at t = {t:.2}");
+            }
+        }
+        assert_eq!(servo.telemetry().realigns, 1);
+        assert_eq!(servo.telemetry().source_rephases, 1);
     }
 }

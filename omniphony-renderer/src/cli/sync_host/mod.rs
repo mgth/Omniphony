@@ -457,7 +457,7 @@ fn describe(ep: &Epoch, stats: &reader::ReaderStats) -> String {
     use std::sync::atomic::Ordering;
     let s = ep.telemetry.snapshot();
     format!(
-        "streaming={} phase={} latency={} err={:+.3}ms floor={:.1}ms src={:+.2}ppm dev={:+.2}ppm corr={:+.2}ppm realigns={} underruns={} short={} pushed={} ring_drops={} chunk_drops={} bytes={}",
+        "streaming={} phase={} latency={} err={:+.3}ms floor={:.1}ms src={:+.2}ppm dev={:+.2}ppm corr={:+.2}ppm realigns={} underruns={} rephases={} short={} pushed={} ring_drops={} chunk_drops={} bytes={}",
         ep.output.is_streaming(),
         s.phase,
         s.latency_ms
@@ -470,6 +470,7 @@ fn describe(ep: &Epoch, stats: &reader::ReaderStats) -> String {
         s.correction_ppm,
         s.realigns,
         s.underruns,
+        s.source_rephases,
         s.short_reads,
         ep.pushed_frames,
         ep.dropped_frames,

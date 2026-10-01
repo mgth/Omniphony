@@ -20,6 +20,7 @@ pub struct SyncTelemetry {
     correction_ppm: AtomicU64,
     realigns: AtomicU64,
     underruns: AtomicU64,
+    source_rephases: AtomicU64,
     clock_mismatch: AtomicU8,
     /// Ring reads that came up short after the servo had planned them: a
     /// planning bug or a ring the producer rewound; zero in normal running.
@@ -39,6 +40,7 @@ pub struct SyncSnapshot {
     pub correction_ppm: f64,
     pub realigns: u64,
     pub underruns: u64,
+    pub source_rephases: u64,
     pub clock_mismatch: bool,
     pub short_reads: u64,
 }
@@ -79,6 +81,8 @@ impl SyncTelemetry {
         put(&self.correction_ppm, t.correction_ppm);
         self.realigns.store(t.realigns, Ordering::Relaxed);
         self.underruns.store(t.underruns, Ordering::Relaxed);
+        self.source_rephases
+            .store(t.source_rephases, Ordering::Relaxed);
         self.clock_mismatch
             .store(t.clock_mismatch as u8, Ordering::Relaxed);
     }
@@ -100,6 +104,7 @@ impl SyncTelemetry {
             correction_ppm: get(&self.correction_ppm),
             realigns: self.realigns.load(Ordering::Relaxed),
             underruns: self.underruns.load(Ordering::Relaxed),
+            source_rephases: self.source_rephases.load(Ordering::Relaxed),
             clock_mismatch: self.clock_mismatch.load(Ordering::Relaxed) != 0,
             short_reads: self.short_reads.load(Ordering::Relaxed),
         }

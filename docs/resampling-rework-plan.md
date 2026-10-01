@@ -955,9 +955,7 @@ the follow offset sat up to a chunk below the true line. It then rose
 
 ### Open items
 
-- **Pause.** A paused timed writer stops writing. After 0.5 s the sync host
-  ends the epoch, and resume starts a new one (with a realign). Not yet
-  tested live: pause, seek and track switch.
+- Track switch (`aid`) not tested yet.
 - **Release.** The mpv change has to land in mpv-omniphony's patch set before
   any release. The launchers (`mpvo`) and the Studio's mpv arguments would
   then pass `--ao-pcm-timed=yes --ao-pcm-latency=<target>`.
@@ -968,3 +966,66 @@ the follow offset sat up to a chunk below the true line. It then rose
   from MA (8 ch) needs the burst's repetition period read against the core
   frame size, or a WAV header from the writer (`--ao-pcm-waveheader=yes`
   carries the carrier format exactly, raw PCM included).
+
+### Pause and seek (2026-10-01)
+
+Scripted over mpv's IPC: pauses of 0.2, 0.4 and 3 s, then seeks of +60, −30
+and +2 s, with timed mpv against `sync-play` at 200 ms.
+
+**Before the fixes, both broke `follow`.**
+- **A 0.2 s pause deadlocked the servo.** That gap is under the 0.25 s stall
+  threshold, so it was taken for jitter, and the line kept extrapolating
+  past data that had stopped. The ring ran dry. The realign then had to skip
+  to frames that would never come, and stayed silent for 18 s: latency grew
+  1 s per second and the ring overflowed. It only ended with the next epoch.
+- **Seeks drove the source rate to +1350 ppm.** Each seek was a clean
+  +19.5 ms step ahead, because `ao_pcm`'s `reset()` emptied the virtual
+  buffer. The step sat just under any jitter threshold, so the young slope
+  fit (14 s of span) spanned it.
+
+**Fixes.**
+- **`FollowEstimator` detects phase breaks** and keeps the rate through them:
+  - a reading more than **20 ms ahead** of the line restarts the slope fit
+    (the offset already rises at once);
+  - readings more than 20 ms behind for **0.5 s** start a new phase from the
+    first of them;
+  - **the reading after an underrun** starts a new phase at once.
+
+  Untimed mpv never stays more than 20 ms late for longer than 84 ms in
+  steady state, so neither condition fires on it (checked live: no spurious
+  rephase, same start-up as before). The count is reported as `rephases`.
+
+  The ahead threshold is deliberately not lower. While the slope fit is
+  young, a 1000 ppm source drifts several ms off the line within seconds, so
+  a few-ms threshold would keep restarting the fit.
+- **mpv: `reset()` keeps the virtual buffer**, and its clock runs whether or
+  not the player counts the AO as playing. What was written cannot be taken
+  back: the reader plays it out. A seek is then continuous for the reader,
+  and mpv's delay accounts for the old audio still ahead of the new.
+
+**After (live, same script):**
+
+| Event | orender | mpv `avsync` |
+|---|---|---|
+| Pause 0.2 s / 0.4 s | 1 underrun, 1 rephase, 1 realign each; then 200.005–200.010 ms | 0 |
+| Pause 3 s | epoch ends; resume opens a new one at 200.007 ms | 0 |
+| Seek +60 / −30 / +2 s | **seamless**: 0 realigns, 0 rephases, error < 0.015 ms throughout | −8 / +3 / −8 ms, settled in ~2 s |
+
+**What a pipe cannot avoid.** orender cannot see the player's pause or
+seek, only the bytes. So:
+- the last `L` of audio already sent still plays after the user pauses or
+  seeks (200 ms at a 200 ms target);
+- after a short pause the realign leads with silence.
+
+A/V stays right, because mpv's delay is defined from the write. Removing the
+tail needs a side channel (a flush command), which is out of scope for a
+plain pipe.
+
+Tests:
+- `a_short_pause_of_a_follow_source_realigns_and_resumes` (servo): fails
+  without the phase-break handling, stuck at 31.2 s as live;
+- `a_source_that_loses_time_starts_a_new_phase`,
+  `a_step_ahead_moves_the_offset_and_spares_the_rate`,
+  `jitter_is_not_a_phase_break`,
+  `the_reading_after_an_underrun_starts_a_new_phase` (estimator).
+

@@ -52,11 +52,27 @@ impl SourceEstimator {
         match self {
             Self::Dll(d) => d.restart_phase(t, received),
             Self::Follow(f) => {
-                let rate = f.rate;
-                f.reset();
-                f.rate = rate;
+                f.rephase_before(f64::INFINITY);
                 f.observe(t, received);
             }
+        }
+    }
+
+    /// The playback ran dry: the estimated line is ahead of what has
+    /// arrived. A `follow` source has lost time (a pause, a seek, a stall
+    /// shorter than the gap that marks one), so its next reading starts a
+    /// new phase. An `own` source's readings are exact: nothing to do.
+    pub(crate) fn rephase_on_next_reading(&mut self) {
+        if let Self::Follow(f) = self {
+            f.rephase_next = true;
+        }
+    }
+
+    /// Times the `follow` estimator started a new phase.
+    pub(crate) fn rephases(&self) -> u64 {
+        match self {
+            Self::Dll(_) => 0,
+            Self::Follow(f) => f.rephases,
         }
     }
 
@@ -92,6 +108,14 @@ const MIN_SLOPE_SPAN_S: f64 = 5.0;
 /// next earliest can sit a few tenths of a ms lower, and following that at
 /// once is a phase step the loop would turn into ratio wander.
 pub const FOLLOW_OFFSET_TAU_S: f64 = 15.0;
+/// A reading this far off the line (s) is not jitter: ahead of it, the
+/// source jumped forward; behind it for [`PHASE_BREAK_HOLD_S`], it lost time.
+/// Above the untimed mpv writer's steady lateness runs (≤ 84 ms beyond
+/// 20 ms, measured) and far above a timed writer's (0.03 ms p99).
+pub const PHASE_BREAK_S: f64 = 0.020;
+/// How long readings must stay [`PHASE_BREAK_S`] behind the line before the
+/// source is taken to have lost time (s).
+pub const PHASE_BREAK_HOLD_S: f64 = 0.5;
 /// Readings kept for the offset: one per output callback (~47/s at a 1024
 /// quantum) over the offset window, with margin.
 const OFFSET_READINGS: usize = 2048;
@@ -114,6 +138,14 @@ const OFFSET_READINGS: usize = 2048;
 ///   frames). It rises at once and relaxes down over [`FOLLOW_OFFSET_TAU_S`],
 ///   so an earliest reading leaving the window is not a step.
 ///
+/// **Phase breaks.** A player that pauses or seeks keeps its clock but not
+/// its phase: its readings step off the line. A step ahead (more than
+/// [`PHASE_BREAK_S`]) moves the offset at once, as any earlier arrival does,
+/// and restarts the slope fit, whose hull would otherwise span the step.
+/// Readings that stay that far behind for [`PHASE_BREAK_HOLD_S`] start a new
+/// phase from the first of them: the older readings and the slope fit are
+/// dropped, the rate is kept. So does the next reading after an underrun.
+///
 /// Open-loop study on the measured mpv model (±20 ms one-sided, 23.976 fps
 /// bursts), after 100 s: position p99 within 0.33–0.47 ms and rate within
 /// 7 ppm peak-to-peak, at 0, ±80, +300 and ±1000 ppm. The previous estimator
@@ -130,6 +162,11 @@ pub(crate) struct FollowEstimator {
     t_last: Option<f64>,
     rate: f64,
     offset: Option<f64>,
+    /// Arrival time of the first of the readings that have stayed behind the
+    /// line by more than [`PHASE_BREAK_S`].
+    behind_since: Option<f64>,
+    rephase_next: bool,
+    rephases: u64,
 }
 
 impl FollowEstimator {
@@ -144,6 +181,9 @@ impl FollowEstimator {
             t_last: None,
             rate: nominal_rate,
             offset: None,
+            behind_since: None,
+            rephase_next: false,
+            rephases: 0,
         }
     }
 
@@ -155,14 +195,61 @@ impl FollowEstimator {
         self.t_last = None;
         self.rate = self.nominal_rate;
         self.offset = None;
+        self.behind_since = None;
+        self.rephase_next = false;
+    }
+
+    /// Start a new phase from the readings that arrived at or after `t`
+    /// (none for infinity): drop the older ones and the slope fit, keep the
+    /// rate.
+    fn rephase_before(&mut self, t: f64) {
+        self.slope.reset();
+        if let Some(t_ref) = self.t_ref {
+            while self.len > 0 && self.readings[self.head].0 + t_ref < t {
+                self.head = (self.head + 1) % OFFSET_READINGS;
+                self.len -= 1;
+            }
+        }
+        if self.len == 0 {
+            self.t_ref = None;
+            self.t_last = None;
+        }
+        self.offset = None;
+        self.behind_since = None;
+        self.rephase_next = false;
+        self.rephases += 1;
+    }
+
+    /// Detect a phase break against the current line before taking the
+    /// reading `(t, received)`.
+    fn check_phase(&mut self, t: f64, received: f64) {
+        if std::mem::take(&mut self.rephase_next) {
+            self.rephase_before(f64::INFINITY);
+            return;
+        }
+        let Some(line) = self.position_at(t) else {
+            return;
+        };
+        let late_s = (line - received) / self.rate;
+        if late_s < -PHASE_BREAK_S {
+            self.slope.reset();
+            self.behind_since = None;
+        } else if late_s > PHASE_BREAK_S {
+            let since = *self.behind_since.get_or_insert(t);
+            if t - since >= PHASE_BREAK_HOLD_S {
+                self.rephase_before(since);
+            }
+        } else {
+            self.behind_since = None;
+        }
     }
 
     fn observe(&mut self, t: f64, received: f64) {
-        let dt = match self.t_last {
-            Some(last) if t <= last => return,
-            Some(last) => t - last,
-            None => 0.0,
-        };
+        if self.t_last.is_some_and(|last| t <= last) {
+            return;
+        }
+        self.check_phase(t, received);
+        let dt = self.t_last.map_or(0.0, |last| t - last);
         self.slope.observe(t, received);
         let t_ref = *self.t_ref.get_or_insert(t);
         let x = t - t_ref;
@@ -239,5 +326,75 @@ mod tests {
             );
             assert!(worst_ppm < 10.0, "{ppm} ppm: rate off by {worst_ppm} ppm");
         }
+    }
+
+    /// A source read every 10 ms without jitter, at `ppm` off nominal, from
+    /// `t0` to `t1`, its count offset by `shift` frames.
+    fn feed(est: &mut FollowEstimator, ppm: f64, t0: f64, t1: f64, shift: f64) {
+        let rate = 48_000.0 * (1.0 + ppm * 1e-6);
+        let mut t = t0;
+        while t < t1 {
+            est.observe(t, t * rate + shift);
+            t += 0.010;
+        }
+    }
+
+    fn line_error(est: &FollowEstimator, ppm: f64, t: f64, shift: f64) -> f64 {
+        est.position_at(t).unwrap() - (t * 48_000.0 * (1.0 + ppm * 1e-6) + shift)
+    }
+
+    /// A pause: the source stops for 0.2 s and goes on from where it was.
+    /// Its readings stay behind the old line, so after the hold the estimate
+    /// starts a new phase on them, with the rate it had.
+    #[test]
+    fn a_source_that_loses_time_starts_a_new_phase() {
+        let mut est = FollowEstimator::new(48_000.0);
+        feed(&mut est, 80.0, 0.0, 60.0, 0.0);
+        let lost = -0.2 * 48_000.0;
+        feed(&mut est, 80.0, 60.2, 60.2 + PHASE_BREAK_HOLD_S + 0.1, lost);
+        assert_eq!(est.rephases, 1);
+        let t = 60.2 + PHASE_BREAK_HOLD_S + 0.1;
+        assert!(line_error(&est, 80.0, t, lost).abs() < 1.0);
+        assert!(((est.rate / 48_000.0 - 1.0) * 1e6 - 80.0).abs() < 2.0);
+    }
+
+    /// A jump forward: the offset follows at once, and the slope fit, which
+    /// would otherwise span the step, starts over without the rate moving.
+    #[test]
+    fn a_step_ahead_moves_the_offset_and_spares_the_rate() {
+        let mut est = FollowEstimator::new(48_000.0);
+        feed(&mut est, -300.0, 0.0, 60.0, 0.0);
+        let jump = 0.030 * 48_000.0;
+        feed(&mut est, -300.0, 60.0, 90.0, jump);
+        assert!(line_error(&est, -300.0, 90.0, jump).abs() < 1.0);
+        assert!(((est.rate / 48_000.0 - 1.0) * 1e6 + 300.0).abs() < 2.0);
+        assert_eq!(est.rephases, 0);
+    }
+
+    /// Jitter-sized steps are not breaks.
+    #[test]
+    fn jitter_is_not_a_phase_break() {
+        let mut est = FollowEstimator::new(48_000.0);
+        for j in 0..(24 * 120u64) {
+            let t_true = j as f64 / 24.0;
+            let x = (j.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 11) as f64 / (1u64 << 53) as f64;
+            est.observe(t_true + 0.040 * x, t_true * 48_000.0);
+        }
+        assert_eq!(est.rephases, 0);
+    }
+
+    /// After an underrun the next reading starts the new phase on its own.
+    #[test]
+    fn the_reading_after_an_underrun_starts_a_new_phase() {
+        let mut source = SourceEstimator::new(DllConfig::default(), true, 48_000.0);
+        for k in 0..3000 {
+            let t = k as f64 * 0.010;
+            source.observe(t, t * 48_000.0);
+        }
+        source.rephase_on_next_reading();
+        // Behind the line by 0.1 s, well inside the hold.
+        source.observe(30.1, 30.0 * 48_000.0);
+        assert_eq!(source.rephases(), 1);
+        assert_eq!(source.position_at(30.1), Some(30.0 * 48_000.0));
     }
 }
