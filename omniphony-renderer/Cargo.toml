@@ -1,5 +1,5 @@
 [workspace]
-members = ["renderer", "audio_input", "audio_output", "audio_sync", "sys", "diag", "live_log", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony_geometry"]
+members = ["renderer", "audio_input", "audio_output", "audio_rt", "audio_sync", "sys", "diag", "live_log", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony_geometry"]
 resolver = "2"
 
 # Metadata shared by the members. A member opts in field by field
@@ -21,6 +21,7 @@ rust-version = "1.88"
 # Workspace crates.
 audio_input = { version = "0.2.4", path = "audio_input" }
 audio_output = { version = "0.2.4", path = "audio_output" }
+audio_rt = { version = "0.1.0", path = "audio_rt" }
 audio_sync = { version = "0.1.0", path = "audio_sync" }
 bridge_api = { version = "0.4.0", path = "bridge_api" }
 diag = { version = "0.1.0", path = "diag" }

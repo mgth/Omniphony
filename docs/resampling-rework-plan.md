@@ -464,3 +464,66 @@ persistent ring deficit as an unaccounted loss and flags it.
    per-burst decoder audit must make this impossible. A runtime guard is
    also possible: adopt a persistent ring deficit as an unaccounted loss
    after ~0.5 s of a flowing source, and flag it.
+
+## 8. Phase 2 outcome (2026-10-01)
+
+The crate `omniphony-renderer/audio_rt` holds the two realtime primitives.
+
+### `ring`: SPSC ring of interleaved `f32` frames
+
+- Bulk two-segment copies, whole frames only. A push that does not fit is cut
+  at a frame boundary and reports what went in, so the channel interleaving
+  cannot rotate.
+- Absolute `written`/`read` frame counters, published Release/Acquire. The
+  servo reads `written()` as `available` and the resampler's read front as
+  its consumption.
+- Replaces the per-sample `ArrayQueue<f32>`, which cost one atomic CAS per
+  sample.
+
+### `resampler`: `DriftResampler`
+
+The S3 design, hardened for production:
+
+- `Design::for_rates`: 64 taps / β 14 for drift at ≤ 48 kHz; 32 taps at
+  ≥ 88.2 kHz; 96 taps for conversions.
+- Exact Q32.32 position (`position()` is `N_play`); `reset(at)` at an
+  absolute ring frame.
+- `skip(frames)` for the servo's start/realign. Fractional skips are
+  allowed, and the frames passed over go straight to `Consumer::discard`
+  without entering the history.
+- No panics on the realtime path: `n_out`, ratio and destination size are
+  clamped, not asserted.
+
+### Measured (tests and `examples/bench.rs`)
+
+**THD+N.** Every output sample is compared with the sine at the exact
+reported position, so this bounds the filter error and the position error
+together:
+
+| Ratio | 1 kHz | 10 kHz | 20 kHz |
+|---|---|---|---|
+| 1.0 | −153.8 dB | −157.2 dB | −157.9 dB |
+| 1 ± 100 / 500 / 2000 ppm | −139.4 dB | −139.4 dB | −133.9 dB |
+
+**Other results:**
+- Passband 100 Hz–20 kHz: within ±0.000001 dB.
+- Ratio 1 at phase 0 is bit-exact.
+- The position matches the Q32.32 closed form over mixed N and ratios.
+- No allocation in a 24-channel steady-state loop with pushes, mixed N,
+  ratio ramps and skips (counting allocator).
+- The ring is lossless and ordered under a two-thread stress with odd chunk
+  sizes.
+
+**CPU** (x86-64 baseline build, one core):
+
+| Channels | % of a core at 48 kHz |
+|---|---|
+| 2 | 0.14 % |
+| 8 | 0.13 % |
+| 16 | 0.19 % |
+| 24 | 0.28 % |
+
+Today's rubato path costs 2.6 % at 24 channels.
+
+**Not done here:** the aarch64 codegen check from S3 §3.3. It moves to
+Phase 7 hardware validation. The quality tests take 12 s in debug builds (CI).
