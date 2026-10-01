@@ -564,6 +564,23 @@ pub const SPATIAL_FRAME: &str = "/omniphony/spatial/frame";
 ///
 /// The zeroed triple is still sent for clients that predate this.
 pub const OBJECT_REMOVE_SUFFIX: &str = "remove";
+/// The per-object stream family, `/omniphony/object/{id}/…`. A prefix, matched
+/// with `starts_with`, so not catalogued.
+pub const OBJECT_STREAM_PREFIX: &str = "/omniphony/object/";
+/// The meter family, `/omniphony/meter/…` (objects, speakers, ears, master,
+/// DRC gain). A prefix, like [`OBJECT_STREAM_PREFIX`].
+pub const METER_PREFIX: &str = "/omniphony/meter/";
+/// `h pos`: the stream messages that follow — object frames, timestamps, meter
+/// bundles — describe the block of audio starting at sample `pos`. Sent only
+/// while the engine also publishes [`PLAYOUT_HEARD`], and only ahead of the
+/// first such message of a new block, so it costs nothing when nobody waits.
+pub const PLAYOUT_BLOCK: &str = "/omniphony/playout/block";
+/// `h pos i rate`: the listener is hearing sample `pos` of the same timeline as
+/// [`PLAYOUT_BLOCK`], which advances by `rate` per second while it plays. With
+/// both, a client can show each block when it is heard instead of when it was
+/// rendered, which is up to the whole output buffer (seconds, behind a host
+/// such as Kodi) earlier.
+pub const PLAYOUT_HEARD: &str = "/omniphony/playout/heard";
 pub const TIMESTAMP: &str = "/omniphony/timestamp";
 pub const YIELD_RESUME_PORT: &str = "/omniphony/yield/resume_port";
 
@@ -827,6 +844,8 @@ pub const ALL_SESSION: &[&str] = &[
     LOG,
     METER_DRC_GAIN,
     METER_MASTER,
+    PLAYOUT_BLOCK,
+    PLAYOUT_HEARD,
     REGISTER,
     SPATIAL_FRAME,
     TIMESTAMP,

@@ -14,6 +14,7 @@ mod dispatch;
 mod export;
 mod gaintable;
 mod metadata_emit;
+mod playout;
 mod profiles;
 mod recompute;
 mod state_emit;
@@ -374,6 +375,9 @@ pub struct OscSender {
     /// another instance; the first `start_listener` of a process follows the
     /// engine's own startup load, which already consumed any sidecar.
     adopt_live_on_listen: bool,
+    /// Block markers and the heard position, for clients that show what is
+    /// heard rather than what was just rendered (see [`playout`]).
+    playout: playout::PlayoutMarks,
 }
 
 impl OscSender {
@@ -408,6 +412,7 @@ impl OscSender {
             standby_thread: Mutex::new(None),
             listener_bound: false,
             adopt_live_on_listen: false,
+            playout: playout::PlayoutMarks::new(),
         })
     }
 
@@ -806,11 +811,24 @@ impl OscSender {
     ///
     /// Clients with a timed entry (`Some(t)`) are dropped if `t.elapsed() >= CLIENT_TIMEOUT`.
     /// Permanent clients (`None`) are never dropped.
+    ///
+    /// Only the stream comes through here (object frames, timestamps, bed
+    /// config), so each message is preceded by its block's marker the first
+    /// time — see [`playout`].
     fn send_to_all(&self, bytes: &[u8]) {
+        self.mark_block();
+        self.send_raw_to_all(bytes);
+    }
+
+    fn send_raw_to_all(&self, bytes: &[u8]) {
         send_raw_filtered(&self.socket, &self.clients, bytes, |_| true);
     }
 
+    /// The meter bundles: stream too, marked like [`send_to_all`].
+    ///
+    /// [`send_to_all`]: Self::send_to_all
     fn send_to_metering_clients(&self, bytes: &[u8]) {
+        self.mark_block();
         send_raw_filtered(&self.socket, &self.clients, bytes, |client| {
             client.metering_enabled
         });

@@ -364,6 +364,12 @@ impl DecodeHandler {
             }
         }
 
+        // Everything sent about this frame describes the block starting here.
+        let block_start = self.session.decoded_samples;
+        if let Some(osc_sender) = self.telemetry.osc_sender.as_ref() {
+            osc_sender.render_at(block_start);
+        }
+
         SpatialMetadataCoordinator::new(
             &mut self.spatial,
             self.spatial_renderer.as_ref(),
@@ -378,6 +384,22 @@ impl DecodeHandler {
             .audio_writer
             .as_ref()
             .and_then(|w| w.latency_snapshot());
+        // Where the listener is: everything written before this frame, less
+        // what is still in flight behind the render — the output chain the
+        // writer measures, and the render's own delay (a linear-phase
+        // crossover). Lets a client show each block when it is heard.
+        if let (Some(latency), Some(osc_sender)) =
+            (latency_snapshot, self.telemetry.osc_sender.as_ref())
+        {
+            let rate = sample_rate.max(1);
+            let in_flight = (f64::from(latency.final_latency_ms.max(0.0)) * f64::from(rate)
+                / 1000.0) as u64
+                + self
+                    .spatial_renderer
+                    .as_ref()
+                    .map_or(0, |r| r.output_latency_samples() as u64);
+            osc_sender.send_heard(block_start.saturating_sub(in_flight), rate);
+        }
         let current_latency_instant_ms = latency_snapshot.map(|snapshot| snapshot.final_latency_ms);
         let current_latency_control_ms =
             latency_snapshot.and_then(|snapshot| snapshot.control_latency_ms);

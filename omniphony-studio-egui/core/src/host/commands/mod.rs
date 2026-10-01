@@ -67,6 +67,9 @@ pub enum OscControlMsg {
     SetMeteringEnabled {
         enabled: bool,
     },
+    SetPlayoutSync {
+        enabled: bool,
+    },
 }
 
 /// Paths the Tauri host resolved through `AppHandle::path()`.
@@ -252,6 +255,7 @@ pub fn send_control(tx: &ControlTx, msg: OscControlMsg) {
             }
         }
         OscControlMsg::SetMeteringEnabled { enabled } => Control::SetMetering { enabled },
+        OscControlMsg::SetPlayoutSync { enabled } => Control::SetPlayoutSync { enabled },
     };
     let _ = tx.send(control);
 }

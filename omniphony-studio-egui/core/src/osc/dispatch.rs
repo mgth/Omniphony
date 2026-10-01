@@ -132,6 +132,10 @@ pub struct Live {
     /// When the last spatial frame arrived. The channel editor's at-rest
     /// markers stand down while a stream owns the scene.
     pub last_spatial_frame_at: Option<Instant>,
+    /// How far the scene runs behind the render while it follows the sound
+    /// (`osc::playout`): `None` when it does not — switched off, or no heard
+    /// position from the renderer.
+    pub playout_delay: Option<std::time::Duration>,
     /// The family the channel editor and the at-rest markers show. Follows
     /// the family of a stream when one starts (`followed_family` remembers
     /// which, so a tab picked while it plays is not overridden on the next
@@ -505,6 +509,7 @@ impl Live {
             overlay: None,
             object_test_position: None,
             last_spatial_frame_at: None,
+            playout_delay: None,
             editing_family: Default::default(),
             followed_family: None,
             stage_windows: std::array::from_fn(|_| TimeWindow::new(RENDER_TIME_WINDOW_MS)),
