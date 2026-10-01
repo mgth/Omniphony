@@ -69,6 +69,8 @@ impl StudioSpike {
         {
             let s = &mut self.settings;
             let host = &self.host;
+            let follow_sound = &mut self.follow_sound;
+            let playout_delay = host.read().playout_delay;
             // The overlay's state is the engine's (an mpv keybind can flip
             // it), so the row shows what the engine last published, as the
             // scene-effects button does.
@@ -101,6 +103,33 @@ impl StudioSpike {
                         "help.display.grid",
                         &mut s.vbap_grid,
                     );
+                    let toggled = widgets::label_row_help(
+                        ui,
+                        t("display.followSound"),
+                        "help.display.followSound",
+                        |ui| {
+                            let toggled =
+                                widgets::switch(ui, follow_sound, t("display.followSound"))
+                                    .changed();
+                            // Right of the label, left of the switch: a delay
+                            // that comes and goes moves nothing else.
+                            if let Some(delay) = playout_delay.filter(|_| *follow_sound) {
+                                let delay = format!("{:.1} s", delay.as_secs_f32());
+                                ui.label(
+                                    egui::RichText::new(crate::i18n::tf(
+                                        "display.followSoundDelay",
+                                        &[("delay", &delay)],
+                                    ))
+                                    .size(crate::ui::theme::FONT_SIZE_SMALL)
+                                    .color(crate::ui::theme::TEXT_MUTED),
+                                );
+                            }
+                            toggled
+                        },
+                    );
+                    if toggled {
+                        crate::host::commands::app::set_playout_sync(host, *follow_sound);
+                    }
                     Group::new(t("display.objectAppearance"))
                         .help("help.display.showObjects")
                         .actions(|ui| {

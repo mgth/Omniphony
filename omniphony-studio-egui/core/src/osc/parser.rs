@@ -1436,6 +1436,28 @@ mod tests {
         ));
     }
 
+    /// The playout markers are the native Studio's queue's business
+    /// (`osc::playout` takes them before the parser). The Tauri Studio parses
+    /// every message it gets with this same function and must see nothing.
+    #[test]
+    fn playout_markers_are_not_events() {
+        for (addr, args) in [
+            (
+                crate::osc_contract::PLAYOUT_BLOCK,
+                vec![OscType::Long(48_000)],
+            ),
+            (
+                crate::osc_contract::PLAYOUT_HEARD,
+                vec![OscType::Long(0), OscType::Int(48_000)],
+            ),
+        ] {
+            assert!(
+                parse_osc_message(addr, &args, CoordinateFormat::Cartesian).is_none(),
+                "{addr} must be ignored by a client that does not follow the sound"
+            );
+        }
+    }
+
     #[test]
     fn object_meter_extra_args_are_per_band_rms() {
         let parsed = parse_osc_message(
