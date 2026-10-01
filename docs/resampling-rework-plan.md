@@ -441,7 +441,13 @@ in debug):
   - The servo publishes this as `Telemetry::latency_floor_s`, so a target
     below it can be reported instead of underrunning.
 
-### Open decisions (before Phase 4)
+### Decisions (before Phase 4) — settled 2026-10-01
+
+Both recommendations below were accepted: (1) refuse an unreachable target at
+configuration time from per-codec floors, and fall back to playing at the
+measured floor (reported) at runtime; (2) make unreported losses impossible
+with the S4 per-burst decoder audit, plus the runtime guard that adopts a
+persistent ring deficit as an unaccounted loss and flags it.
 
 1. **Starvation when the target is unreachable.** Today the servo keeps
    underrunning and realigning; `an_infeasible_target_shows_in_the_floor`
