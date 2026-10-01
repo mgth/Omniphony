@@ -8,16 +8,19 @@
 //! ```
 //!
 //! Slice 4a: the `follow` source clock for a pipe written in real time (mpv
-//! `--ao=pcm`, which paces audio on its video clock). The source clock is the
-//! arrival of the bytes; the output resamples to hold a fixed end-to-end
-//! latency against it. Each stream (pipe open → EOF) is an epoch with its own
-//! ring and output, so nothing carries over between files.
+//! `--ao=pcm`; with `--ao-pcm-timed` it writes at the pace of its own clock,
+//! in small regular periods, plan §15). The source clock is the arrival of
+//! the bytes; the output resamples to hold a fixed end-to-end latency against
+//! it. Each stream (pipe open → EOF) is an epoch with its own ring and
+//! output, so nothing carries over between files.
 //!
-//! The frames counted in (`N_in`) are the frames pushed into the ring, plus
-//! the codec's constant decoder hold, at the arrival time of the bytes that
-//! completed them. That is exact in rate; in absolute latency it is exact up
-//! to the hold table (spike S4), which slice 4d replaces with transport-time
-//! counting.
+//! The frames counted in (`N_in`) are counted in transport time: the carrier
+//! bytes that have arrived, from the first burst, at the carrier's rate (the
+//! `own` sink knows it from its format, a pipe from the IEC 61937 data type).
+//! A pipe whose carrier is unknown (DTS-HD, raw PCM) counts the frames pushed
+//! into the ring plus the codec's constant decoder hold instead, at the
+//! arrival of the bytes that completed them: exact in rate, but the decoder's
+//! burst granularity shows as up to a chunk of arrival lateness.
 //!
 //! Hidden while experimental. Linux only for now (PipeWire output).
 
@@ -115,6 +118,18 @@ fn decoder_hold_frames(data_type: u8) -> u64 {
     }
 }
 
+/// IEC 61937 carrier (frame rate, channels) a player writing a pipe uses for
+/// a data type, as mpv's spdif wrapper sets it up. DTS-HD (17) is left out:
+/// HRA rides 2 channels and MA 8, which the burst alone does not tell.
+fn pipe_carrier(data_type: u8) -> Option<(u32, u32)> {
+    match data_type {
+        1 | 11..=13 => Some((48_000, 2)), // AC-3, DTS core
+        21 => Some((192_000, 2)),         // E-AC-3
+        22 => Some((192_000, 8)),         // TrueHD/MAT
+        _ => None,
+    }
+}
+
 /// One stream's playback: ring, clock tap and output stream.
 struct Epoch {
     producer: Producer,
@@ -130,6 +145,10 @@ struct Epoch {
     /// the parser found, which is source frame 0 of this epoch.
     first_burst_frames: Option<f64>,
     last_transport: Option<Transport>,
+    /// `follow` source on a pipe: its carrier, once the first burst named
+    /// the data type, and the bytes pushed into the parser since its reset.
+    pipe_carrier: Option<(u32, u32)>,
+    parser_bytes: u64,
     started: Instant,
     /// Set at end of stream: the epoch is dropped once what it queued has
     /// played. The engine thread never waits for it.
@@ -312,6 +331,8 @@ fn start_epoch(
         dropped_frames: 0,
         first_burst_frames: None,
         last_transport: None,
+        pipe_carrier: None,
+        parser_bytes: 0,
         started: Instant::now(),
         ending_at: None,
         channel_mismatch_logged: false,
@@ -328,13 +349,25 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
     } else if ep.is_spdif == Some(false) && has_sync {
         ep.is_spdif = Some(true);
         ep.parser.reset();
+        ep.parser_bytes = 0;
     }
     if ep.is_spdif == Some(true) {
         ep.parser.push_bytes(bytes);
+        ep.parser_bytes += bytes.len() as u64;
         while let Some(packet) = ep.parser.get_next_packet() {
             ep.hold = decoder_hold_frames(packet.data_type);
+            if ep.last_transport.is_none() && ep.pipe_carrier.is_none() {
+                ep.pipe_carrier = pipe_carrier(packet.data_type);
+                if ep.pipe_carrier.is_none() {
+                    log::info!(
+                        "sync host: carrier of IEC 61937 data type {} unknown, \
+                         counting decoded frames",
+                        packet.data_type
+                    );
+                }
+            }
             if ep.first_burst_frames.is_none()
-                && let Some(tr) = ep.last_transport
+                && let Some(tr) = transport(ep)
             {
                 ep.first_burst_frames = Some(transport_frames(packet.start_byte, tr));
             }
@@ -349,10 +382,13 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
             Err(e) => log::debug!("sync host: decode error: {e:#}"),
         }
     }
-    match (ep.last_transport, ep.first_burst_frames) {
-        // `own`: the exact transport position, counted from the first burst.
+    match (transport(ep), ep.first_burst_frames) {
+        // The exact transport position, counted from the first burst: from
+        // the `own` sink, or from the bytes of a pipe whose carrier is known.
         // The decoder's hold and batching are inside the measurement, as
-        // they are inside the latency.
+        // they are inside the latency. On a pipe this keeps the readings
+        // free of the decoder's burst granularity, which would otherwise
+        // show as up to a chunk of arrival lateness.
         (Some(tr), Some(first)) => {
             let received = transport_frames(tr.bytes_end, tr) - first;
             if received > 0.0 {
@@ -360,7 +396,7 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
             }
         }
         (Some(_), None) => {}
-        // `follow`: what was decoded, plus the codec's hold.
+        // A pipe of unknown carrier: what was decoded, plus the codec's hold.
         (None, _) => {
             if ep.pushed_frames > 0 {
                 ep.tap.publish(t, ep.pushed_frames + ep.hold);
@@ -371,6 +407,17 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
     if ep.trace {
         eprintln!("SYNC_TRACE {t:.6} {} {}", ep.bytes_in, ep.pushed_frames);
     }
+}
+
+/// Where the bytes fed so far end on the carrier's timeline, if known.
+fn transport(ep: &Epoch) -> Option<Transport> {
+    ep.last_transport.or_else(|| {
+        ep.pipe_carrier.map(|(rate, channels)| Transport {
+            rate,
+            channels,
+            bytes_end: ep.parser_bytes,
+        })
+    })
 }
 
 /// Source PCM frames (at the render rate) a byte offset on an IEC 958
@@ -429,4 +476,31 @@ fn describe(ep: &Epoch, stats: &reader::ReaderStats) -> String {
         stats.chunks_dropped.load(Ordering::Relaxed),
         stats.bytes_read.load(Ordering::Relaxed),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A second of each known pipe carrier is a second of source frames at
+    /// the render rate.
+    #[test]
+    fn pipe_carriers_count_one_second_per_second() {
+        for data_type in [1u8, 11, 12, 13, 21, 22] {
+            let (rate, channels) = pipe_carrier(data_type).unwrap();
+            let tr = Transport {
+                rate,
+                channels,
+                bytes_end: 0,
+            };
+            let second = rate as u64 * channels as u64 * 2;
+            assert_eq!(
+                transport_frames(second, tr),
+                RENDER_RATE as f64,
+                "data type {data_type}"
+            );
+        }
+        // DTS-HD rides 2 or 8 channels: not guessed.
+        assert_eq!(pipe_carrier(17), None);
+    }
 }

@@ -893,3 +893,78 @@ quoted above was the 60–120 s convergence. The first minute is convergence:
 
 Track 2 (a timed pipe AO) is meant to shorten that convergence and remove
 the start-up realigns.
+
+## 15. Track 2 — a timed pipe writer (2026-10-01)
+
+### What is built
+
+- **mpv: `--ao-pcm-timed=yes`** (mgth/mpv, branch `feat/timed-pcm-ao` off
+  `orender`). `ao_pcm` behaves as an audio device playing at the nominal rate
+  on mpv's clock:
+  - a virtual buffer of `--ao-pcm-buffer` (default 40 ms) drains on `mp_time`;
+  - mpv's AO thread refills it every quarter of it (10 ms), and each write is
+    flushed to the pipe at once;
+  - the reported delay is `--ao-pcm-latency` (the sink's target latency),
+    counting down between writes. mpv's A/V sync therefore matches what is
+    heard.
+
+  Audio is paced like a sound card output and video syncs to it. The
+  untimed writer, by contrast, runs as fast as the player's throttle lets it.
+- **orender: a pipe counts in transport time.** The sync host now counts a
+  pipe's `N_in` in carrier bytes from the first burst, as the `own` sink
+  does. The carrier comes from the IEC 61937 data type, as mpv's spdif
+  wrapper sets it:
+  - AC-3 and DTS core: 48 kHz × 2;
+  - E-AC-3: 192 kHz × 2;
+  - TrueHD/MAT: 192 kHz × 8.
+
+  DTS-HD (2 or 8 channels) and raw PCM keep the decoded-frame count.
+
+### Why the transport count was needed
+
+With timed arrivals the remaining start-up error was the decoder's burst
+granularity. Decoded frames grow in 32 ms E-AC-3 steps, but chunks arrive
+every 10 ms. Until a chunk boundary happened to fall on a burst boundary,
+the follow offset sat up to a chunk below the true line. It then rose
+(+8 to +12 ms) just after `establish`, and the loop took ~40 s at its
+500 ppm clamp to remove it. Counting bytes makes every reading exact.
+
+### Live (real mpv → FIFO, E-AC-3, private null sink, 180 s)
+
+| | untimed `ao_pcm` | timed `ao_pcm` |
+|---|---|---|
+| Writes | 32 ms, every 42 ms | 10 ms, every 10.06 ms (p99 10.09) |
+| Arrival lateness p99 (after 5 s) | 66.8 ms | **0.03 ms** |
+| Arrival lateness p99 (first 5 s) | 329 ms | **0.03 ms** |
+| Latency error, 5 s → 180 s | +5.7 → −0.9 → −0.1 ms | **within ±0.03 ms** |
+| Phase correction | +500 ppm (clamped) for 10 s | ≤ 6 ppm |
+| Realigns | 1 | **0** |
+| Latency floor | ~140 ms | **~86 ms** |
+
+- **At a 100 ms target** (60 s, timed), the error stays within ±0.03 ms,
+  with 0 realigns and an 80 ms floor. Untimed cannot run there: its floor
+  is above 100 ms during start-up.
+- **Start-up convergence is gone.** The latency is exact from the first
+  callback; only the source rate estimate settles, over ~15 s, and it does
+  not move the latency.
+- **The source reads −8.7 ppm, not 0.** mpv's timer is `CLOCK_MONOTONIC_RAW`
+  (`osdep/timer-linux.c`), while orender's reference is `CLOCK_MONOTONIC`,
+  which NTP slews. That is a genuine foreign clock, and `follow` tracks it.
+  The same holds for untimed mpv (−6 to −9 ppm).
+- The single underrun in each run is the end of the stream.
+
+### Open items
+
+- **Pause.** A paused timed writer stops writing. After 0.5 s the sync host
+  ends the epoch, and resume starts a new one (with a realign). Not yet
+  tested live: pause, seek and track switch.
+- **Release.** The mpv change has to land in mpv-omniphony's patch set before
+  any release. The launchers (`mpvo`) and the Studio's mpv arguments would
+  then pass `--ao-pcm-timed=yes --ao-pcm-latency=<target>`.
+- **Windows.** The writer side carries over unchanged (mpv's timer is QPC).
+  The orender side still needs the QPC reference clock and the named-pipe
+  reader (§12).
+- **DTS-HD over a pipe** keeps the decoded-frame count. Telling HRA (2 ch)
+  from MA (8 ch) needs the burst's repetition period read against the core
+  frame size, or a WAV header from the writer (`--ao-pcm-waveheader=yes`
+  carries the carrier format exactly, raw PCM included).
