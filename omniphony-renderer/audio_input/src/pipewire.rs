@@ -113,6 +113,105 @@ struct BridgeCaptureUserData {
     diag_input_clock_us: Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// The clock this sink publishes to its followers while it drives the graph.
+///
+/// A `pw_stream` with the DRIVER flag does not maintain the graph clock
+/// itself: whoever calls `trigger_process` has to write `spa_io_position.clock`
+/// first, as `module-pipe-tunnel` and `pipewiresink` do. Left untouched, every
+/// follower — the player writing into this sink — reads a clock that never
+/// moves: `pw_time.now` and `ticks` stay frozen at their setup values and
+/// `rate_diff` is 0. mpv then places its end time seconds in the past, clamps
+/// the sink's delay to zero, and its audio clock follows its own write bursts
+/// (a 21 ms sawtooth at a 1024 quantum).
+struct DriverClock {
+    /// The position area PipeWire hands the stream in `io_changed`; null until
+    /// then and after it is withdrawn.
+    io_position: std::cell::Cell<*mut spa::sys::spa_io_position>,
+    /// Graph position of the next cycle, in frames.
+    next_position: std::cell::Cell<u64>,
+}
+
+impl DriverClock {
+    fn new() -> Self {
+        Self {
+            io_position: std::cell::Cell::new(std::ptr::null_mut()),
+            next_position: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Record (or withdraw, on a null area) the stream's position area.
+    fn io_changed(&self, id: u32, area: *mut std::os::raw::c_void, size: u32) {
+        if id != spa::sys::SPA_IO_Position {
+            return;
+        }
+        let usable =
+            !area.is_null() && size as usize >= std::mem::size_of::<spa::sys::spa_io_position>();
+        self.io_position.set(if usable {
+            area.cast()
+        } else {
+            std::ptr::null_mut()
+        });
+    }
+
+    /// Write the cycle about to be triggered into the graph clock. Called
+    /// immediately before `trigger_process`, on the thread that calls it.
+    fn publish_cycle(&self, stream: &pw::stream::Stream) {
+        let io = self.io_position.get();
+        if io.is_null() {
+            return;
+        }
+        // SAFETY: PipeWire keeps the area alive until it calls `io_changed`
+        // again (which nulls it above), and that callback runs on this same
+        // loop thread, so it cannot be withdrawn under this write.
+        let clock = unsafe { &mut (*io).clock };
+        let (rate, duration) = if clock.target_rate.denom > 0 && clock.target_duration > 0 {
+            (clock.target_rate.denom, clock.target_duration)
+        } else if clock.rate.denom > 0 && clock.duration > 0 {
+            (clock.rate.denom, clock.duration)
+        } else {
+            return;
+        };
+        let now_ns = unsafe { pw::sys::pw_stream_get_nsec(stream.as_raw_ptr()) };
+        let cycle = next_driver_cycle(now_ns, self.next_position.get(), duration, rate);
+        clock.nsec = cycle.nsec;
+        clock.rate = spa::sys::spa_fraction {
+            num: 1,
+            denom: rate,
+        };
+        clock.position = cycle.position;
+        clock.duration = cycle.duration;
+        clock.delay = 0;
+        clock.rate_diff = 1.0;
+        clock.next_nsec = cycle.next_nsec;
+        self.next_position
+            .set(cycle.position.wrapping_add(duration));
+    }
+}
+
+/// One graph cycle as the driver announces it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DriverCycle {
+    nsec: u64,
+    position: u64,
+    duration: u64,
+    next_nsec: u64,
+}
+
+/// The cycle starting now at `position`, lasting `duration` frames at `rate`.
+///
+/// `nsec` is the time the cycle is actually triggered rather than an ideal
+/// deadline: the triggers on this path are not on a deadline grid (they follow
+/// the DAC in `dac` clock mode), so the trigger time is the honest timestamp.
+fn next_driver_cycle(now_ns: u64, position: u64, duration: u64, rate: u32) -> DriverCycle {
+    let period_ns = (duration as u128 * 1_000_000_000u128 / rate.max(1) as u128) as u64;
+    DriverCycle {
+        nsec: now_ns,
+        position,
+        duration,
+        next_nsec: now_ns.saturating_add(period_ns),
+    }
+}
+
 #[derive(Default)]
 struct PwDriverTriggerSchedule {
     next_trigger_at: Option<Instant>,
@@ -180,6 +279,7 @@ fn next_direct_pw_stream_driver_timeout(
 
 fn drain_direct_pw_stream_driver_trigger(
     stream: &pw::stream::Stream,
+    driver_clock: &DriverClock,
     pending: Option<&Arc<AtomicI64>>,
     next_trigger_at: &mut Option<Instant>,
     trigger_interval: Duration,
@@ -215,6 +315,7 @@ fn drain_direct_pw_stream_driver_trigger(
     }
 
     pending.fetch_sub(1, Ordering::AcqRel);
+    driver_clock.publish_cycle(stream);
     match stream.trigger_process() {
         Ok(()) => {
             log::trace!(
@@ -244,6 +345,7 @@ fn drain_direct_pw_stream_driver_trigger(
 
 fn drain_scheduled_pw_stream_trigger(
     stream: &pw::stream::Stream,
+    driver_clock: &DriverClock,
     schedule: &Rc<RefCell<PwDriverTriggerSchedule>>,
     log_prefix: &'static str,
 ) {
@@ -268,6 +370,7 @@ fn drain_scheduled_pw_stream_trigger(
 
     let mut schedule = schedule.borrow_mut();
     schedule.trigger_calls_since_log += 1;
+    driver_clock.publish_cycle(stream);
     match stream.trigger_process() {
         Ok(()) => {
             if schedule.trigger_calls_since_log <= 8 {
@@ -444,6 +547,8 @@ where
     let trigger_schedule = Rc::new(RefCell::new(PwDriverTriggerSchedule::default()));
     let trigger_schedule_for_state = Rc::clone(&trigger_schedule);
     let trigger_schedule_for_process = Rc::clone(&trigger_schedule);
+    let driver_clock = Rc::new(DriverClock::new());
+    let driver_clock_for_io = Rc::clone(&driver_clock);
     let process_chunk = RefCell::new(process_chunk);
     let process_pcm = RefCell::new(process_pcm);
 
@@ -620,6 +725,7 @@ where
             }
         })
         .io_changed(move |_, user_data, id, area, size| {
+            driver_clock_for_io.io_changed(id, area, size);
             user_data.io_changed_calls_since_log += 1;
             log::debug!(
                 "{} io_changed: id={} area={:p} size={} io_changed_calls={} add_calls={} process_calls={}",
@@ -1220,6 +1326,7 @@ where
                 ));
             drain_direct_pw_stream_driver_trigger(
                 &stream,
+                &driver_clock,
                 pending.as_ref(),
                 &mut next_direct_trigger_at,
                 trigger_interval,
@@ -1229,7 +1336,12 @@ where
             let _ = mainloop
                 .loop_()
                 .iterate(next_pw_stream_driver_timeout(&trigger_schedule));
-            drain_scheduled_pw_stream_trigger(&stream, &trigger_schedule, log_prefix);
+            drain_scheduled_pw_stream_trigger(
+                &stream,
+                &driver_clock,
+                &trigger_schedule,
+                log_prefix,
+            );
         } else {
             let _ = mainloop.loop_().iterate(Duration::from_millis(50));
         }
@@ -1308,6 +1420,45 @@ impl AdvertisedLatency {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each cycle starts where the previous one ended and announces when the
+    /// next one is due, so a follower can extrapolate the clock.
+    #[test]
+    fn driver_cycle_announces_the_next_deadline() {
+        let cycle = next_driver_cycle(5_000_000_000, 4096, 1024, 48_000);
+        assert_eq!(cycle.nsec, 5_000_000_000);
+        assert_eq!(cycle.position, 4096);
+        assert_eq!(cycle.duration, 1024);
+        // 1024 frames at 48 kHz = 21 333 333 ns.
+        assert_eq!(cycle.next_nsec, 5_021_333_333);
+        // A rate of 0 must not divide by zero.
+        assert!(next_driver_cycle(1, 0, 1024, 0).next_nsec > 1);
+    }
+
+    /// The clock only binds to the position area, and drops it when PipeWire
+    /// withdraws it.
+    #[test]
+    fn driver_clock_tracks_only_the_position_area() {
+        let clock = DriverClock::new();
+        let mut area = MaybeUninit::<spa::sys::spa_io_position>::zeroed();
+        let size = std::mem::size_of::<spa::sys::spa_io_position>() as u32;
+        clock.io_changed(
+            spa::sys::SPA_IO_Position + 1,
+            area.as_mut_ptr().cast(),
+            size,
+        );
+        assert!(clock.io_position.get().is_null());
+        clock.io_changed(spa::sys::SPA_IO_Position, area.as_mut_ptr().cast(), size);
+        assert!(!clock.io_position.get().is_null());
+        clock.io_changed(
+            spa::sys::SPA_IO_Position,
+            area.as_mut_ptr().cast(),
+            size - 1,
+        );
+        assert!(clock.io_position.get().is_null(), "a short area is refused");
+        clock.io_changed(spa::sys::SPA_IO_Position, std::ptr::null_mut(), 0);
+        assert!(clock.io_position.get().is_null());
+    }
 
     /// A failed publication leaves the update pending; a successful one moves
     /// the reference the hysteresis is measured from.
