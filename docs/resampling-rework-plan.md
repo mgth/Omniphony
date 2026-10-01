@@ -880,13 +880,16 @@ Before: 0.75 ms p99 and 85 ppm, at 80 ppm only.
 - No drops.
 - Start-up: 2 realigns and 1 underrun in the first 15 s.
 
-### Decision pending
+### Decision (2026-10-01): `follow` p99 criterion = 1 ms
 
-The `follow` p99 criterion. 0.5 ms (the original, arbitrary) is not reachable
-with ±20 ms of one-sided jitter by this approach. The tests use **1.5 ms**:
-- the measured worst is 1.16 ms;
-- lip-sync detectability is about ±15 ms;
-- ITU-R BT.1359 tolerates +45/−125 ms.
+For reference, lip-sync detectability is about ±15 ms, and ITU-R BT.1359
+tolerates +45/−125 ms.
 
-Tightening further needs a better signal (Track 2: a timed pipe AO) rather
-than a better estimator. The `own` mode stays at microseconds.
+Measured over a steady state starting at **2 min** (where the test now
+starts), the p99 is **0.45–0.47 ms** at every drift (max 0.48 ms). The ~1 ms
+quoted above was the 60–120 s convergence. The first minute is convergence:
+- up to ~1.2 ms from 60 s;
+- ~1.5 ms and a few hundred ppm in the first 30 s at ±1000 ppm.
+
+Track 2 (a timed pipe AO) is meant to shorten that convergence and remove
+the start-up realigns.

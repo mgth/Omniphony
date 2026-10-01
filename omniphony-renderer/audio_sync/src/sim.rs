@@ -534,9 +534,9 @@ mod tests {
     /// DLL with phase noise (see `ServoConfig::follow`). 30 ppm is 0.05 cent,
     /// over ten times below the 0.05 % wow of a good turntable.
     const FOLLOW_RATIO_PP_PPM: f64 = 30.0;
-    /// p99 latency deviation for a `follow` source with one-sided jitter. Set
-    /// by measurement (see the plan, §14), pending a decision.
-    const FOLLOW_P99_S: f64 = 1.5e-3;
+    /// p99 latency deviation for a `follow` source with one-sided jitter:
+    /// 1 ms, as decided (plan §14). Measured from 2 min: 0.45–0.47 ms.
+    const FOLLOW_P99_S: f64 = 1.0e-3;
 
     fn check(name: &str, sc: &Scenario, expect_realigns: u64) -> Report {
         check_with(name, sc, expect_realigns, RATIO_PP_PPM)
@@ -668,10 +668,11 @@ mod tests {
     /// (its earliest arrivals), so the buffer must also cover the lateness:
     /// the floor rises by the jitter, hence 200 ms here.
     ///
-    /// The steady state starts at 60 s: the first minute is the estimator's
-    /// convergence (its rate rests on the arrivals' slope, which takes tens of
-    /// seconds of ±20 ms readings to pin down), with up to ~1.5 ms and a few
-    /// hundred ppm in the first 30 s at ±1000 ppm.
+    /// The steady state starts at 2 min: until then the estimator converges
+    /// (its rate rests on the arrivals' slope, which takes tens of seconds of
+    /// ±20 ms readings to pin down). From 60 s the deviation stays within
+    /// ~1.2 ms; in the first 30 s at ±1000 ppm it reaches ~1.5 ms and a few
+    /// hundred ppm.
     #[test]
     fn follow_mpv_pipe_with_measured_jitter() {
         for ppm in [0.0, 80.0, 1000.0, -1000.0] {
@@ -689,7 +690,7 @@ mod tests {
                         ahead_s: 0.050,
                         arrival_jitter_s: 0.040,
                     },
-                    warmup_s: 60.0,
+                    warmup_s: 120.0,
                     ..Scenario::default()
                 },
                 0,
