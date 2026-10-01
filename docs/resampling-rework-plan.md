@@ -527,3 +527,77 @@ Today's rubato path costs 2.6 % at 24 channels.
 
 **Not done here:** the aarch64 codegen check from S3 §3.3. It moves to
 Phase 7 hardware validation. The quality tests take 12 s in debug builds (CI).
+
+## 9. Phase 3 outcome (2026-10-01)
+
+The new output stage is the module `audio_output::sync_output`. It lives
+beside the legacy regulation until the cutover.
+
+### What was built
+
+- **`core::OutputCore`**: the callback body shared by every backend.
+  - It asks the `Servo`, then executes the plan: leading silence, a skip whose
+    passed-over frames are `Consumer::discard`ed, then exactly the planned
+    frames through the `DriftResampler`.
+  - It applies the fade-in and fade-out and maps ring channels onto device
+    channels.
+  - A short ring read (a producer bug) restarts the resampler at the read
+    front, which the servo sees as a latency jump and realigns.
+  - It neither allocates nor blocks.
+- **`source_tap::SourceTap`**: the capture side's `(t, received)` as a
+  seqlock with a bounded read (the reader never waits), plus the accounting
+  offset.
+- **`telemetry::SyncTelemetry`**: relaxed atomics carrying phase, latency,
+  error, floor, source/device/feed-forward/correction ppm, realigns,
+  underruns and short reads.
+- **`clock::reference_now_s`**: `CLOCK_MONOTONIC` on Unix, the same axis as
+  `pw_time.now`.
+- **`pipewire::PipewireSyncOutput`**: a playback stream with `RT_PROCESS`.
+  Timing comes from one `pw_stream_get_time_n` per cycle: `now`, `ticks`, and
+  heard delay `(buffered + N)/fs + delay·rate`.
+- **`cpal_adapter::CpalSyncOutput`** (ASIO/CoreAudio): the time is the
+  reference clock at callback entry, the position is the frames delivered,
+  and the delay is cpal's `playback − callback`. Native sample formats are
+  converted from a scratch buffer sized once. It is type-checked on Linux
+  through the `cpal-check` feature (ALSA host); a Windows cross-check is
+  impossible here because `asio-sys` bindgen fails for `x86_64-pc-windows-gnu`.
+
+### Verified
+
+1. **The real core in closed loop** (`tests/sync_output_closed_loop.rs`). The
+   source pushes a ramp whose value is its own frame index, so the audio the
+   device plays gives the true latency through the real resampler:
+
+   | Device | Decoder bursts | Target | Worst \|latency − target\| over 90 s | Realigns / underruns / short reads |
+   |---|---|---|---|---|
+   | +100 ppm | TrueHD | 120 ms | 51 µs | 0 / 0 / 0 |
+   | −100 ppm | E-AC-3 | 150 ms | 40 µs | 0 / 0 / 0 |
+
+   About 10 µs of that is the f32 ramp's resolution.
+
+2. **Live on PipeWire** (`examples/sync_pw_live.rs`). The stream played into
+   a private `support.null-audio-sink` linked to no hardware, with the
+   session-default sink unchanged and no node left behind. The source was
+   synthetic, +100 ppm, in 960-frame bursts; target 150 ms; 120 s:
+
+   | Measure | Result |
+   |---|---|
+   | Source rate measured | +100.00 ppm |
+   | Device rate measured | +0.02 ppm |
+   | Latency held | 150.000 ms (worst \|error\| 0.001 ms after 40 s) |
+   | Correction | settled to 0.00 ppm |
+   | Realigns / underruns / short reads | 0 / 0 / 0 |
+
+   The published latency floor is a peak-hold: it rose with the synthetic
+   producer's scheduling stalls (it is not an RT thread). Received-minus-pushed
+   stayed bounded below one batch.
+
+### Still open in Phase 3
+
+- **The cpal patch.** cpal drops ASIO's `samplePosition`/`systemTime`,
+  CoreAudio's `mSampleTime`/`mHostTime`/`mRateScalar`, and both hosts'
+  latencies. With the patch, the adapter can use device positions instead of
+  callback-entry time.
+- **Hardware runs.** None of the following has run yet: ASIO, CoreAudio,
+  PipeWire on a real DAC with real input. Real DAC and real input belong to
+  Phase 4, with the source modes.

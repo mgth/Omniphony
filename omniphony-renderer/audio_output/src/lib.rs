@@ -7,6 +7,7 @@ pub mod output_telemetry;
 pub mod pacer;
 pub mod resampler_fifo;
 pub mod ring_buffer_io;
+pub mod sync_output;
 
 pub use control::{
     AppliedAudioOutputState, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig,

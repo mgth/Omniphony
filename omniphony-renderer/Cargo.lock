@@ -236,9 +236,12 @@ name = "audio_output"
 version = "0.2.4"
 dependencies = [
  "anyhow",
+ "audio_rt",
+ "audio_sync",
  "cpal",
  "crossbeam",
  "diag",
+ "libc",
  "log",
  "parking_lot",
  "pipewire",
