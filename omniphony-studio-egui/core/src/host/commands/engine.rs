@@ -51,8 +51,12 @@ pub fn request_save_config(state: &SharedState) {
 /// snapshot yet, a renderer gone) says no, so nothing ever asks about edits
 /// in a renderer that is not there.
 pub fn has_unsaved_edits(state: &SharedState) -> bool {
+    renderer_connected(state) && state.inner.lock().unwrap().app.config_saved == Some(0)
+}
+
+/// Whether a renderer is registered to answer what Studio asks.
+pub fn renderer_connected(state: &SharedState) -> bool {
     state.stats.connection_state() == crate::osc::ConnectionState::Connected
-        && state.inner.lock().unwrap().app.config_saved == Some(0)
 }
 
 /// Where the last Save stands, for a flow that waits on it (save and quit).
@@ -590,6 +594,24 @@ mod unsaved_tests {
             save_outcome(&state),
             SaveOutcome::Failed("read-only".into())
         );
+    }
+
+    /// What the renderer sends for a save, in order: the old error cleared,
+    /// the file written, then `saved = 1`. Only that last one answers it.
+    #[test]
+    fn a_save_is_answered_by_saved_not_by_the_error_it_clears_first() {
+        use crate::osc::{dispatch::apply_event, parser::OscEvent};
+        let state = crate::host::commands::tests::state();
+        state.stats.registered.store(true, Ordering::Relaxed);
+        state.inner.lock().unwrap().app.config_saved = Some(0);
+        request_save_config(&state);
+        let event = |ev| apply_event(&mut state.inner.lock().unwrap(), ev);
+        event(OscEvent::StateConfigSaveError {
+            message: String::new(),
+        });
+        assert_eq!(save_outcome(&state), SaveOutcome::Pending);
+        event(OscEvent::StateConfigSaved { saved: true });
+        assert_eq!(save_outcome(&state), SaveOutcome::Saved);
     }
 }
 

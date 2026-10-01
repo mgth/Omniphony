@@ -1187,11 +1187,14 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateConfigSaveError { message } => {
             let message = non_empty(message);
+            // An empty error is the renderer clearing the last one as a save
+            // *starts*: the answer is the `saved` that follows, so the save
+            // stays pending until then.
             if let Some(text) = &message {
                 live.push_log("error", "config", text.clone());
+                live.save_requested = false;
             }
             live.app.save_error = message;
-            live.save_requested = false;
             Change::Snapshot
         }
 
@@ -1401,6 +1404,25 @@ mod panel_event_tests {
         assert_eq!(l.app.save_error.as_deref(), Some("read-only"));
         assert_eq!(l.log.len(), 1);
         assert_eq!(l.log[0].level, LogLevel::Error);
+    }
+
+    /// The renderer clears the last error as a save starts, before it writes
+    /// the file: that is not the answer, and taking it for one sent "save and
+    /// quit" back to its prompt.
+    #[test]
+    fn the_error_cleared_as_a_save_starts_keeps_it_pending() {
+        let mut l = live();
+        l.save_requested = true;
+        l.app.save_error = Some("read-only".to_owned());
+        apply_event(
+            &mut l,
+            OscEvent::StateConfigSaveError {
+                message: String::new(),
+            },
+        );
+        assert!(l.save_requested);
+        assert_eq!(l.app.save_error, None);
+        assert!(l.log.is_empty());
     }
 
     #[test]
