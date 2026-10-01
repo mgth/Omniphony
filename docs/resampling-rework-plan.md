@@ -955,9 +955,29 @@ the follow offset sat up to a chunk below the true line. It then rose
 
 ### Open items
 
-- **Release.** The mpv change has to land in mpv-omniphony's patch set before
-  any release. The launchers (`mpvo`) and the Studio's mpv arguments would
-  then pass `--ao-pcm-timed=yes --ao-pcm-latency=<target>`.
+- **Release (2026-10-01).** The timed `ao_pcm` is in place everywhere except
+  FEL:
+  - **mpv fork:** merged into `orender` (mgth/mpv#20) and ported to
+    `orender-master` (mgth/mpv#21), with the other pending integration
+    commits.
+  - **mpv-omniphony:** both patch sets are regenerated in
+    mgth/mpv-omniphony#79. This also repairs the live-master build: the
+    manual `9001-f_swresample` was obsolete upstream.
+  - **FEL track (`feat/dv-fel`):** not updated. It is pinned to the June mpv
+    base of its vendored FEL patch, and upstream has merged FEL since.
+  - **Dev launchers:** `mpvo` and `mpvo-fel` take
+    `--orender-pipe[=PATH] [--orender-latency=MS]`. This swaps in-process
+    decoding for passthrough to a FIFO, through the timed `ao_pcm`.
+    - PATH defaults to `$XDG_RUNTIME_DIR/orender-sync.pipe` (never the
+      production `/tmp/orender.pipe`), and MS to 150.
+    - A missing FIFO is created; a path that exists and is not a FIFO is
+      refused.
+    - A build without the timed mode is refused.
+    - Checked live through `mpvo`, with the user's `mpv.conf` (`ad=orender`)
+      in force: passthrough is still chosen, and the latency holds at
+      200 ms ±0.02 ms with 0 realigns.
+  - No product launcher uses the pipe path yet. The Studio launches mpv with
+    the in-process engine, and `sync-play` is still hidden.
 - **Windows.** The writer side carries over unchanged (mpv's timer is QPC).
   The orender side still needs the QPC reference clock and the named-pipe
   reader (§12).
