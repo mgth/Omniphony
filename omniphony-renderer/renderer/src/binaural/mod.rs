@@ -238,6 +238,10 @@ fn air_cutoff_hz(dist_m: f32) -> Option<f32> {
 const PREALLOC_CHANNELS: usize = 64;
 /// Reverb send bus capacity reserved at construction (samples per block).
 const REVERB_BUS_CAPACITY: usize = 8192;
+/// Samples a channel hands its ear convolvers at a time. Sizes the stack
+/// scratch of the sample loop (three runs of this length); a block longer
+/// than this goes through in several runs, with the same result.
+const EAR_RUN: usize = 128;
 
 /// Per-input-channel binaural DSP state, lazily created on first use.
 struct ChannelDsp {
@@ -882,6 +886,13 @@ impl BinauralRenderer {
             self.fdn_live = false;
         }
 
+        // One run of a channel on its way through the sample loop below: the
+        // un-absorbed signal the reflections read, and each ear's ITD-delayed
+        // signal, which its convolver then filters in place.
+        let mut dry = [0.0f32; EAR_RUN];
+        let mut ear_l = [0.0f32; EAR_RUN];
+        let mut ear_r = [0.0f32; EAR_RUN];
+
         for c in 0..source_count {
             // Past the input channels sits the extra source (the object test).
             // Its PCM is mono, hence the stride of 1 — that triple is the only
@@ -1153,47 +1164,62 @@ impl BinauralRenderer {
             let reflections_on = reflections.enabled;
 
             let air = dsp.air_coeff;
-            for s in 0..span {
-                // `raw` carries the object/metadata gain only; the direct path
-                // adds its distance gain, the reflection taps theirs. The air
-                // low-pass applies to the propagated wave, so it feeds the
-                // direct and the reverb send; the reflections filter their
-                // own paths (see below).
-                // A silent block reads no input at all — the draining extra
-                // slot has none to read.
-                let mut raw = if silent {
-                    0.0
-                } else {
-                    src_pcm[s * src_stride + src_offset] * (gain.start + gain.step * s as f32)
-                };
-                // The reflections take the un-absorbed signal: each tap
-                // carries its own low-pass for its own path (wall + air over
-                // the image distance), so the direct path's air filter must
-                // not be applied to them a second time.
-                let raw_dry = raw;
-                if air > 0.0 {
-                    dsp.air_state += (raw - dsp.air_state) * (1.0 - air);
-                    raw = dsp.air_state;
+            // The block goes through in runs of at most `EAR_RUN` samples: the
+            // ITD lines fill a run per ear, each convolver filters its run in
+            // one call (the tap loop wants a block, see `convolver`), then the
+            // reflections and the mix take the result. Every stage keeps its
+            // own state, so the sample order within each is all that matters.
+            for run_start in (0..span).step_by(EAR_RUN) {
+                let n = EAR_RUN.min(span - run_start);
+                for i in 0..n {
+                    let s = run_start + i;
+                    // `raw` carries the object/metadata gain only; the direct
+                    // path adds its distance gain, the reflection taps theirs.
+                    // The air low-pass applies to the propagated wave, so it
+                    // feeds the direct and the reverb send; the reflections
+                    // filter their own paths (see below).
+                    // A silent block reads no input at all — the draining
+                    // extra slot has none to read.
+                    let mut raw = if silent {
+                        0.0
+                    } else {
+                        src_pcm[s * src_stride + src_offset] * (gain.start + gain.step * s as f32)
+                    };
+                    // The reflections take the un-absorbed signal: each tap
+                    // carries its own low-pass for its own path (wall + air
+                    // over the image distance), so the direct path's air
+                    // filter must not be applied to them a second time.
+                    dry[i] = raw;
+                    if air > 0.0 {
+                        dsp.air_state += (raw - dsp.air_state) * (1.0 - air);
+                        raw = dsp.air_state;
+                    }
+                    // Authored object/bed level is respected: no 1/d
+                    // attenuation.
+                    ear_l[i] = dsp.delay_l.process(raw);
+                    ear_r[i] = dsp.delay_r.process(raw);
+                    if reverb_active {
+                        self.reverb_bus_l[s] += raw * send_l;
+                        self.reverb_bus_r[s] += raw * send_r;
+                    }
                 }
-                // Authored object/bed level is respected: no 1/d attenuation.
-                let x = raw;
-                let mut yl = dsp.conv_l.process(dsp.delay_l.process(x));
-                let mut yr = dsp.conv_r.process(dsp.delay_r.process(x));
-                if reflections_on {
-                    let (rl, rr) = dsp.refl.process(raw_dry);
-                    yl += rl;
-                    yr += rr;
-                } else {
-                    // Keep the ring current for the moment they come back.
-                    dsp.refl.push(raw_dry);
+                dsp.conv_l.process_block(&mut ear_l[..n]);
+                dsp.conv_r.process_block(&mut ear_r[..n]);
+                for i in 0..n {
+                    let mut yl = ear_l[i];
+                    let mut yr = ear_r[i];
+                    if reflections_on {
+                        let (rl, rr) = dsp.refl.process(dry[i]);
+                        yl += rl;
+                        yr += rr;
+                    } else {
+                        // Keep the ring current for the moment they come back.
+                        dsp.refl.push(dry[i]);
+                    }
+                    let o = (run_start + i) * 2;
+                    out[o] += yl;
+                    out[o + 1] += yr;
                 }
-                if reverb_active {
-                    self.reverb_bus_l[s] += raw * send_l;
-                    self.reverb_bus_r[s] += raw * send_r;
-                }
-                let o = s * 2;
-                out[o] += yl;
-                out[o + 1] += yr;
             }
         }
 
@@ -2478,5 +2504,76 @@ mod tests {
             "the same scene in another slot order and other block cuts \
              rendered {db:.1} dB apart (re peak); rounding alone is ~−112 dB"
         );
+    }
+
+    /// A block goes through the sample loop in runs of `EAR_RUN`; where a run
+    /// ends is not allowed to show. For a source that stays put (a moving one
+    /// fades its kernel over the block, so its cut is audible by design), a
+    /// block of several runs and a ragged tail renders, bit for bit, what the
+    /// same samples render one at a time — reflections and air filter
+    /// included, which the runs carry around the convolvers.
+    #[test]
+    fn where_a_run_ends_does_not_show_in_the_output() {
+        let params = BinauralFrameParams {
+            unit_scale_m: 5.0,
+            reflections: BinauralReflections {
+                enabled: true,
+                level: 0.4,
+                ..Default::default()
+            },
+            air_absorption: true,
+            ..dry_params()
+        };
+        let pos = [[0.6, 0.7, 0.3]];
+        let gains = [ChannelGain::flat(0.8)];
+        let warm = 2 * HRIR_LEN;
+        let len = 3 * EAR_RUN + 41;
+        let mut state = 0x1357_9bdfu32;
+        let pcm: Vec<f32> = (0..warm + len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state as f32 / u32::MAX as f32 - 0.5) * 0.5
+            })
+            .collect();
+        let render = |block: usize| -> Vec<u32> {
+            let mut r = BinauralRenderer::new(48_000);
+            // The same first block either way: it carries the kernel fade-in.
+            let mut head = vec![0.0f32; warm * 2];
+            r.render_frame(
+                &pcm[..warm],
+                1,
+                warm,
+                &params,
+                &pos,
+                &gains,
+                &[],
+                None,
+                &mut head,
+            );
+            let mut out = vec![0.0f32; len * 2];
+            for at in (0..len).step_by(block) {
+                let n = block.min(len - at);
+                r.render_frame(
+                    &pcm[warm + at..warm + at + n],
+                    1,
+                    n,
+                    &params,
+                    &pos,
+                    &gains,
+                    &[],
+                    None,
+                    &mut out[at * 2..(at + n) * 2],
+                );
+            }
+            assert!(out.iter().any(|v| *v != 0.0));
+            out.iter().map(|v| v.to_bits()).collect()
+        };
+        let one_at_a_time = render(1);
+        assert_eq!(render(len), one_at_a_time, "one block of several runs");
+        assert_eq!(render(EAR_RUN), one_at_a_time, "blocks of exactly one run");
+        assert_eq!(render(EAR_RUN + 1), one_at_a_time, "a run and one sample");
+        assert_eq!(render(40), one_at_a_time, "live-sized blocks");
     }
 }
