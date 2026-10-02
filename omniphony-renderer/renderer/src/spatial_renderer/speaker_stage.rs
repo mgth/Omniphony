@@ -539,7 +539,10 @@ impl SpeakerRenderStage {
                             self.crossover_filter_states
                                 .resize_with(input_channel_idx + 1, || None);
                         }
-                        Some(fb.ensure_states(&mut self.crossover_filter_states[input_channel_idx]))
+                        Some(fb.ensure_channel_states(
+                            &mut self.crossover_filter_states[input_channel_idx],
+                            input_channel_idx,
+                        ))
                     } else {
                         None
                     };
