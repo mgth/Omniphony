@@ -26,6 +26,8 @@ use std::collections::HashMap;
 
 const D: usize = 3; // Dimensions
 const NOISE_VAL: f64 = 1e-7; // Small noise to avoid degenerate configurations
+/// End of a conflict list, and an unset adjacency or horizon link.
+const NONE: usize = usize::MAX;
 
 // ── Deterministic pseudo-random noise (XorShift32) ──────────────────────────
 
@@ -75,8 +77,10 @@ struct Face {
     adj: [usize; 3],
     /// Still part of the hull (faces seen by a new point are retired).
     alive: bool,
-    /// The points above this face not yet added: its conflict list.
-    outside: Vec<usize>,
+    /// The points above this face not yet added: its conflict list, as the
+    /// head of a chain through `next` (one link per point, shared by every
+    /// face, rather than a vector per face), or `NONE`.
+    outside: usize,
 }
 
 impl Face {
@@ -90,9 +94,9 @@ impl Face {
             v,
             n,
             d: dot(n, p[v[0]]),
-            adj: [usize::MAX; 3],
+            adj: [NONE; 3],
             alive: true,
-            outside: Vec::new(),
+            outside: NONE,
         }
     }
 
@@ -202,44 +206,52 @@ pub fn quickhull_3d(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
 
     // Every other point goes on the conflict list of one face it is above;
     // a point above none is inside the tetrahedron and never on the hull.
+    // `next[q]` is the point after `q` on the list it is on.
+    let mut next: Vec<usize> = vec![NONE; n_vert];
     for (q, &pq) in p.iter().enumerate() {
         if tet.contains(&q) {
             continue;
         }
         if let Some(f) = faces.iter_mut().find(|f| f.height(pq) > eps) {
-            f.outside.push(q);
+            next[q] = f.outside;
+            f.outside = q;
         }
     }
 
     // ── Main loop ────────────────────────────────────────────────────────────
     let mut pending: Vec<usize> = (0..faces.len())
-        .filter(|&f| !faces[f].outside.is_empty())
+        .filter(|&f| faces[f].outside != NONE)
         .collect();
     // Per-face scratch for the visibility search, reset by bumping `epoch`.
     let mut seen_in: Vec<u32> = vec![0; faces.capacity()];
     let mut seen_visible: Vec<bool> = vec![false; faces.capacity()];
     let mut epoch = 0u32;
     // Per-vertex scratch for linking the new faces around the horizon.
-    let mut new_from: Vec<usize> = vec![usize::MAX; n_vert];
-    let mut new_to: Vec<usize> = vec![usize::MAX; n_vert];
+    let mut new_from: Vec<usize> = vec![NONE; n_vert];
+    let mut new_to: Vec<usize> = vec![NONE; n_vert];
     let mut visible: Vec<usize> = Vec::new();
     let mut horizon: Vec<(usize, usize, usize)> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
     let mut orphans: Vec<usize> = Vec::new();
 
     while let Some(f0) = pending.pop() {
-        if !faces[f0].alive || faces[f0].outside.is_empty() {
+        if !faces[f0].alive || faces[f0].outside == NONE {
             continue;
         }
 
-        // The farthest point above this face goes on the hull next.
-        let (k, _) = faces[f0]
-            .outside
-            .iter()
-            .enumerate()
-            .map(|(k, &q)| (k, faces[f0].height(p[q])))
-            .max_by(|a, b| a.1.total_cmp(&b.1))?;
-        let apex = faces[f0].outside.swap_remove(k);
+        // The farthest point above this face goes on the hull next. It is
+        // not unlinked: the face is retired below and its whole list with
+        // it, the apex skipped when the others are handed on.
+        let mut apex = faces[f0].outside;
+        let mut best = faces[f0].height(p[apex]);
+        let mut q = next[apex];
+        while q != NONE {
+            let h = faces[f0].height(p[q]);
+            if h >= best {
+                (apex, best) = (q, h);
+            }
+            q = next[q];
+        }
         let pa = p[apex];
 
         // Every face the apex sees forms one connected region; walk it from
@@ -273,6 +285,12 @@ pub fn quickhull_3d(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
             }
         }
 
+        // A point outside a closed convex hull never sees all of it, so the
+        // horizon has at least three edges.
+        if horizon.len() < 3 {
+            return None;
+        }
+
         // Cone the horizon to the apex: one new face per horizon edge, wound
         // like the face it replaces, so it faces outward too.
         let first = faces.len();
@@ -285,7 +303,7 @@ pub fn quickhull_3d(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
             faces[beyond].adj[j] = nf;
             // A horizon is one simple loop; anything else is a numerical
             // failure, and an honest None beats a broken mesh.
-            if new_from[a] != usize::MAX || new_to[b] != usize::MAX {
+            if new_from[a] != NONE || new_to[b] != NONE {
                 return None;
             }
             new_from[a] = nf;
@@ -298,13 +316,26 @@ pub fn quickhull_3d(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
             // (apex, a), the one ending at a.
             faces[nf].adj[1] = new_from[b];
             faces[nf].adj[2] = new_to[a];
-            if faces[nf].adj[1] == usize::MAX || faces[nf].adj[2] == usize::MAX {
+            if faces[nf].adj[1] == NONE || faces[nf].adj[2] == NONE {
                 return None;
             }
         }
         for &(a, b, _) in &horizon {
-            new_from[a] = usize::MAX;
-            new_to[b] = usize::MAX;
+            new_from[a] = NONE;
+            new_to[b] = NONE;
+        }
+        // Each vertex starting one horizon edge and ending one is not enough:
+        // two disjoint loops pass that too, and coning both would leave a
+        // band of the old hull pinched at the apex. Following the new faces
+        // around must come back to the first after every one of them.
+        let mut around = 1;
+        let mut nf = faces[first].adj[1];
+        while nf != first && around <= horizon.len() {
+            nf = faces[nf].adj[1];
+            around += 1;
+        }
+        if around != horizon.len() {
+            return None;
         }
 
         // The retired faces' points move to the new faces they are above;
@@ -312,14 +343,21 @@ pub fn quickhull_3d(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
         orphans.clear();
         for &g in &visible {
             faces[g].alive = false;
-            orphans.append(&mut faces[g].outside);
+            let mut q = std::mem::replace(&mut faces[g].outside, NONE);
+            while q != NONE {
+                if q != apex {
+                    orphans.push(q);
+                }
+                q = next[q];
+            }
         }
         for &q in &orphans {
             if let Some(nf) = (first..faces.len()).find(|&nf| faces[nf].height(p[q]) > eps) {
-                faces[nf].outside.push(q);
+                next[q] = faces[nf].outside;
+                faces[nf].outside = q;
             }
         }
-        pending.extend((first..faces.len()).filter(|&nf| !faces[nf].outside.is_empty()));
+        pending.extend((first..faces.len()).filter(|&nf| faces[nf].outside != NONE));
     }
 
     Some(faces.iter().filter(|f| f.alive).map(|f| f.v).collect())

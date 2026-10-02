@@ -150,12 +150,14 @@ impl MeasuredHrirData {
         // response of a set has the same length, and planning for each again
         // was about 40 % of the step. `collect` on an indexed parallel
         // iterator keeps the input order, which `dirs` and `vecs` share.
+        // Consuming the input frees each raw pair once it is converted, so
+        // the set is never held twice.
         let len = irs.first().map_or(0, |(l, _)| l.len());
         let irs = irs
-            .par_iter()
+            .into_par_iter()
             .map_init(
                 || MinPhase::new(len),
-                |min_phase, (l, r)| (min_phase.run(l), min_phase.run(r)),
+                |min_phase, (l, r)| (min_phase.run(&l), min_phase.run(&r)),
             )
             .collect();
         let (tri, tri_inv, vert_tris) = triangulate(&vecs);
