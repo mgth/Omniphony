@@ -9,6 +9,7 @@ pub(crate) mod convhull;
 mod coords;
 mod distance;
 mod panner;
+pub(crate) mod quickhull;
 pub(crate) mod vbap_native;
 
 pub use coords::{adm_to_spherical, spherical_to_adm};
