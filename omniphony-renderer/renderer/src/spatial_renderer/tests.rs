@@ -2802,3 +2802,177 @@ fn synchronous_stage_builds_land_on_the_requesting_frame() {
         "the live path hands the build to the worker"
     );
 }
+
+/// A 7.1.4 renderer whose first three speakers are band-limited, so objects
+/// render through three crossover bands and the unified multi-band table —
+/// cartesian or polar. Coarse grids: the tests that use it compare renders
+/// with each other, not with a geometry.
+fn build_unified_table_renderer(cartesian: bool) -> SpatialRenderer {
+    let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
+    for (sp, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
+        sp.freq_low = Some(cutoff);
+    }
+    let (table_mode, preferred, live) = if cartesian {
+        (
+            VbapTableMode::Cartesian {
+                x_size: 15,
+                y_size: 15,
+                z_size: 7,
+                z_neg_size: 7,
+            },
+            PreferredEvaluationMode::PrecomputedCartesian,
+            LiveEvaluationMode::PrecomputedCartesian,
+        )
+    } else {
+        (
+            VbapTableMode::Polar,
+            PreferredEvaluationMode::PrecomputedPolar,
+            LiveEvaluationMode::PrecomputedPolar,
+        )
+    };
+    let r = SpatialRenderer::new(
+        layout,
+        48_000,
+        6,
+        6,
+        0.0,
+        2.0,
+        table_mode,
+        false,
+        true,
+        DistanceModel::Linear,
+        false,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        false,
+        [1.0, 2.0, 0.5],
+        2.0,
+        0.5,
+        0.0,
+        0.0,
+        false,
+        false,
+        false,
+        1.0,
+        1.0,
+        preferred,
+        live,
+        15,
+        15,
+        7,
+        7,
+    )
+    .unwrap();
+    assert!(
+        r.speaker_stage.unified_table.is_some(),
+        "the band-limited layout must render through the unified table"
+    );
+    r
+}
+
+/// Deterministic noise in `[-0.25, 0.25]`, a different block each time.
+fn noise_block(n_channels: usize, sample_length: usize, block: usize) -> Vec<f32> {
+    let base = (block * sample_length * n_channels) as u32;
+    (0..(sample_length * n_channels) as u32)
+        .map(|i| {
+            let x = (base + i).wrapping_mul(2_654_435_761) ^ 0x9E37_79B9;
+            ((x >> 8) & 0xffff) as f32 / 65535.0 * 0.5 - 0.25
+        })
+        .collect()
+}
+
+/// One event per object on a slow circle round the listener, each object at
+/// its own rate and height: successive `step`s start a new ramp of
+/// `ramp_length` samples towards a nearby position.
+fn circling_events(n_objects: usize, step: usize, ramp_length: u32) -> Vec<SpatialChannelEvent> {
+    (0..n_objects)
+        .map(|ch| {
+            let degrees = ch as f64 * 37.0 + step as f64 * (0.4 + ch as f64 * 0.3);
+            let az = degrees.to_radians();
+            SpatialChannelEvent {
+                channel_idx: ch,
+                is_bed: false,
+                gain_db: Some(0.0),
+                ramp_length: Some(ramp_length),
+                size: Some([0.0, 0.0, 0.0]),
+                position: Some([0.9 * az.sin(), 0.9 * az.cos(), (ch % 4) as f64 * 0.3]),
+                sample_pos: Some(0),
+            }
+        })
+        .collect()
+}
+
+/// The per-channel cell caches must never change what is rendered: a renderer
+/// whose caches are emptied before every block, so that every block refills
+/// them from the table, renders the same bits as one that keeps them — in
+/// every ramp mode, on both table geometries, and across a live switch to
+/// nearest-cell lookups (which bypass the caches) and back.
+#[test]
+fn cell_caches_do_not_change_the_render() {
+    const N_OBJECTS: usize = 6;
+    const BLOCK: usize = 40;
+    const BLOCKS_PER_MODE: usize = 15;
+    const MODES: [RampMode; 4] = [
+        RampMode::Sample,
+        RampMode::Frame,
+        RampMode::Interp,
+        RampMode::Off,
+    ];
+
+    let render = |cartesian: bool, keep_caches: bool| -> Vec<u32> {
+        let mut r = build_unified_table_renderer(cartesian);
+        let mut out = Vec::new();
+        let mut buf = Vec::new();
+        for block in 0..MODES.len() * BLOCKS_PER_MODE {
+            {
+                let mut live = r.control.live.write();
+                live.ramp_mode = MODES[block / BLOCKS_PER_MODE];
+                // Within each mode: trilinear, then nearest, then trilinear.
+                live.evaluation.position_interpolation =
+                    !(5..10).contains(&(block % BLOCKS_PER_MODE));
+            }
+            if !keep_caches {
+                for cache in &mut r.speaker_stage.table_caches {
+                    cache.invalidate();
+                }
+            }
+            // Objects move on most blocks and hold still on some, so both the
+            // ramping and the settled lookups are covered.
+            let events = if block % 4 == 3 {
+                Vec::new()
+            } else {
+                circling_events(N_OBJECTS, block, BLOCK as u32)
+            };
+            let pcm = noise_block(N_OBJECTS, BLOCK, block);
+            let frame = r
+                .render_frame(&pcm, N_OBJECTS, &events, buf, false)
+                .expect("render_frame");
+            out.extend(frame.samples.iter().map(|v| v.to_bits()));
+            buf = frame.samples;
+        }
+        assert!(
+            r.speaker_stage.table_caches.len() >= N_OBJECTS,
+            "every object channel must own a cell cache"
+        );
+        out
+    };
+
+    for cartesian in [true, false] {
+        let kept = render(cartesian, true);
+        let refilled = render(cartesian, false);
+        let per_mode = kept.len() / MODES.len();
+        for (m, mode) in MODES.iter().enumerate() {
+            let span = m * per_mode..(m + 1) * per_mode;
+            assert!(
+                kept[span.clone()] == refilled[span.clone()],
+                "{mode:?} (cartesian={cartesian}): cached cells changed the render"
+            );
+            assert!(
+                kept[span].iter().any(|&bits| f32::from_bits(bits) != 0.0),
+                "{mode:?} (cartesian={cartesian}): the scene rendered silence"
+            );
+        }
+    }
+}
