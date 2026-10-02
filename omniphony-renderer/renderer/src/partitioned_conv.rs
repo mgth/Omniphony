@@ -44,24 +44,50 @@ pub struct ConvolutionPlan {
 }
 
 /// Which build of [`multiply_accumulate`] a plan runs. Every build gives the
-/// same bits; they differ in vector width only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// same bits; they differ in vector width only. Ordered narrowest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum MacPath {
     /// The build target's baseline instruction set.
     Portable,
     /// The same loop compiled for AVX2, on x86-64 CPUs that report it.
     #[cfg(target_arch = "x86_64")]
     Avx2,
+    /// The same loop compiled for AVX-512 (sixteen lanes), on x86-64 CPUs
+    /// that report the foundation set with its byte/word, double/quadword and
+    /// vector-length extensions — every AVX-512 CPU since Skylake-SP.
+    #[cfg(target_arch = "x86_64")]
+    Avx512,
 }
 
 impl MacPath {
     /// The widest build the running CPU supports.
     fn detect() -> Self {
         #[cfg(target_arch = "x86_64")]
-        if std::arch::is_x86_feature_detected!("avx2") {
-            return Self::Avx2;
+        {
+            if std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+                && std::arch::is_x86_feature_detected!("avx512dq")
+                && std::arch::is_x86_feature_detected!("avx512vl")
+            {
+                return Self::Avx512;
+            }
+            if std::arch::is_x86_feature_detected!("avx2") {
+                return Self::Avx2;
+            }
         }
         Self::Portable
+    }
+
+    /// The next narrower build, `None` below the portable one.
+    #[cfg(test)]
+    fn narrower(self) -> Option<Self> {
+        match self {
+            Self::Portable => None,
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2 => Some(Self::Portable),
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx512 => Some(Self::Avx2),
+        }
     }
 }
 
@@ -93,6 +119,24 @@ fn multiply_accumulate(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 fn multiply_accumulate_avx2(
+    acc: &mut [Complex<f32>],
+    fdl: &[Complex<f32>],
+    capacity: usize,
+    newest: usize,
+    spectra: &[Complex<f32>],
+    bins: usize,
+) {
+    multiply_accumulate(acc, fdl, capacity, newest, spectra, bins);
+}
+
+/// [`multiply_accumulate`] compiled for AVX-512: sixteen lanes to a vector
+/// where the AVX2 build has eight, again without FMA, so still the same
+/// bits. The MAC is the convolver's hot loop (a third of a FIR-crossover
+/// block, two thirds of a BRIR one): the wider vectors are worth a third
+/// build.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,avx512f,avx512bw,avx512dq,avx512vl")]
+fn multiply_accumulate_avx512(
     acc: &mut [Complex<f32>],
     fdl: &[Complex<f32>],
     capacity: usize,
@@ -152,11 +196,11 @@ impl ConvolutionPlan {
         }
     }
 
-    /// This plan with the portable multiply-accumulate forced, to compare the
-    /// CPU-specific build against.
+    /// This plan with the given multiply-accumulate build forced, to compare
+    /// the builds against each other.
     #[cfg(test)]
-    fn with_portable_mac(mut self) -> Self {
-        self.mac = MacPath::Portable;
+    fn with_mac(mut self, mac: MacPath) -> Self {
+        self.mac = mac;
         self
     }
 
@@ -291,6 +335,12 @@ impl ConvolutionPlan {
                 // SAFETY: `MacPath::detect` only yields `Avx2` after the
                 // running CPU reported the feature.
                 unsafe { multiply_accumulate_avx2(acc, fdl, cap, newest, spectra, self.bins) }
+            }
+            #[cfg(target_arch = "x86_64")]
+            MacPath::Avx512 => {
+                // SAFETY: `MacPath::detect` only yields `Avx512` after the
+                // running CPU reported every feature the build enables.
+                unsafe { multiply_accumulate_avx512(acc, fdl, cap, newest, spectra, self.bins) }
             }
         }
     }
@@ -635,11 +685,11 @@ mod tests {
         assert!(y.iter().all(|&v| v == 0.0), "tail survived reset: {y:?}");
     }
 
-    /// The CPU-specific multiply-accumulate must give the portable build's
-    /// bits, not merely close values: random spectra over the FIR crossover's
-    /// and the BRIR stage's shapes plus a bin count that leaves a remainder
-    /// at every vector width, read from every ring position, accumulated on
-    /// top of a non-zero spectrum.
+    /// Every CPU-specific multiply-accumulate must give the next narrower
+    /// build's bits, down to the portable one, not merely close values:
+    /// random spectra over the FIR crossover's and the BRIR stage's shapes
+    /// plus a bin count that leaves a remainder at every vector width, read
+    /// from every ring position, accumulated on top of a non-zero spectrum.
     #[test]
     fn cpu_specific_mac_matches_portable_bit_for_bit() {
         let bits = |v: &[Complex<f32>]| -> Vec<(u32, u32)> {
@@ -653,13 +703,12 @@ mod tests {
                 .map(|(&re, &im)| Complex::new(re * 37.0, im * 0.013))
                 .collect()
         };
+        let widest = MacPath::detect();
+        if widest == MacPath::Portable {
+            eprintln!("no CPU-specific multiply-accumulate here: nothing to compare");
+            return;
+        }
         for (block, partitions) in [(1024, 16), (128, 190), (6, 5)] {
-            let detected = ConvolutionPlan::new(block);
-            if detected.mac == MacPath::Portable {
-                eprintln!("no CPU-specific multiply-accumulate here: nothing to compare");
-                return;
-            }
-            let portable = detected.clone().with_portable_mac();
             let bins = block + 1;
             let kernel = PartitionedKernel {
                 taps: partitions * block,
@@ -667,24 +716,30 @@ mod tests {
                 bins,
                 spectra: spectrum(partitions * bins, 101),
             };
+            let plan = ConvolutionPlan::new(block);
             // One slot more than the kernel reads, so the ring wraps unevenly.
-            let mut input = detected.make_input(partitions + 1);
+            let mut input = plan.make_input(partitions + 1);
             input.fdl = spectrum((partitions + 1) * bins, 103);
             let start = spectrum(bins, 107);
-            let mut fast = detected.make_scratch();
-            let mut reference = portable.make_scratch();
-            for pos in 0..=partitions {
-                input.fdl_pos = pos;
-                fast.spec_acc.copy_from_slice(&start);
-                reference.spec_acc.copy_from_slice(&start);
-                detected.accumulate(&input, &kernel, &mut fast);
-                portable.accumulate(&input, &kernel, &mut reference);
-                assert_eq!(
-                    bits(&fast.spec_acc),
-                    bits(&reference.spec_acc),
-                    "{:?} differs from the portable build: block {block}, ring position {pos}",
-                    detected.mac
-                );
+            let mut wide = plan.make_scratch();
+            let mut reference = plan.make_scratch();
+            let mut fast = widest;
+            while let Some(narrower) = fast.narrower() {
+                let wider = plan.clone().with_mac(fast);
+                let narrow = plan.clone().with_mac(narrower);
+                for pos in 0..=partitions {
+                    input.fdl_pos = pos;
+                    wide.spec_acc.copy_from_slice(&start);
+                    reference.spec_acc.copy_from_slice(&start);
+                    wider.accumulate(&input, &kernel, &mut wide);
+                    narrow.accumulate(&input, &kernel, &mut reference);
+                    assert_eq!(
+                        bits(&wide.spec_acc),
+                        bits(&reference.spec_acc),
+                        "{fast:?} differs from {narrower:?}: block {block}, ring position {pos}",
+                    );
+                }
+                fast = narrower;
             }
         }
     }

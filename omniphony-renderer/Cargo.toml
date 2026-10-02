@@ -13,7 +13,7 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/mgth/Omniphony"
 # 1.88: let-chains (edition 2024) are used in the engine, and `time`/`vergen`
 # (build-time version stamp) require it too.
-rust-version = "1.88"
+rust-version = "1.89"
 
 # One version requirement per dependency for the whole workspace. Members
 # inherit with `<dep>.workspace = true` and may add features locally.
