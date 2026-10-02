@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering, fence};
 use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
-use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
+use super::{
+    BackendCapabilities, GainModel, HintSlot, NeighbourHint, RenderRequest, RenderResponse,
+};
 use crate::spatial_vbap::{Gains, MAX_SPEAKERS};
 use crate::speaker_layout::SpeakerLayout;
 use omniphony_geometry::f32::vec3::distance_sq;
@@ -75,6 +77,14 @@ impl BarycenterBackend {
     }
 
     pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        self.solve(req, None)
+    }
+
+    /// Solve for `req`. With a `neighbour` slot, the solve starts from the
+    /// weights the previous cell of a table row left there, and leaves its own
+    /// for the next cell. The gains are the same either way; a start next to
+    /// the answer only saves pivots.
+    fn solve(&self, req: &RenderRequest, mut neighbour: Option<&mut HintSlot>) -> RenderResponse {
         debug_assert!(
             self.speaker_positions.len() <= MAX_SPEAKERS,
             "barycenter backend speaker count {} exceeds MAX_SPEAKERS {}",
@@ -109,16 +119,29 @@ impl BarycenterBackend {
         // A source on a speaker belongs to that speaker alone.
         for index in 0..speaker_count {
             if distance_sq(room.speakers[index], target) <= f32::EPSILON {
+                // Nothing was solved here: the next cell starts from scratch.
+                if let Some(slot) = neighbour.as_deref_mut() {
+                    slot.clear();
+                }
                 gains.set(index, 1.0);
                 return RenderResponse { gains };
             }
         }
 
         let problem = Problem::new(&room.speakers[..speaker_count], target, self.localize);
-        let start = problem.cold_start();
+        let start = neighbour
+            .as_deref()
+            .and_then(|slot| slot.values(speaker_count))
+            .and_then(|weights| problem.start_from(weights))
+            .unwrap_or_else(|| problem.cold_start());
         let solution = minimise(&problem, &start);
+        let mut weights = [0.0f32; MAX_SPEAKERS];
         for index in 0..speaker_count {
+            weights[index] = solution.weights[index].max(0.0) as f32;
             gains.set(index, solution.weights[index].max(0.0).sqrt() as f32);
+        }
+        if let Some(slot) = neighbour {
+            slot.store(&weights[..speaker_count]);
         }
 
         RenderResponse { gains }
@@ -165,6 +188,14 @@ impl GainModel for BarycenterBackend {
 
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
         BarycenterBackend::compute_gains(self, req)
+    }
+
+    fn compute_gains_with_hint(
+        &self,
+        req: &RenderRequest,
+        hint: &mut NeighbourHint,
+    ) -> RenderResponse {
+        self.solve(req, hint.slot())
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -376,6 +407,18 @@ impl Problem {
             weights[..self.speaker_count].fill(1.0 / self.speaker_count as f64);
         }
         weights
+    }
+
+    /// A start on the weights of a neighbouring solve, or `None` if they carry
+    /// no weight at all.
+    fn start_from(&self, neighbour: &[f32]) -> Option<[f64; MAX_SPEAKERS]> {
+        let mut weights = [0.0; MAX_SPEAKERS];
+        let mut sum = 0.0;
+        for (weight, neighbour) in weights[..self.speaker_count].iter_mut().zip(neighbour) {
+            *weight = f64::from(neighbour.max(0.0));
+            sum += *weight;
+        }
+        (sum > 0.0 && sum.is_finite()).then(|| weights.map(|weight| weight / sum))
     }
 
     /// The pivot budget of [`minimise`]: several times what any layout needs,
@@ -1074,6 +1117,31 @@ mod tests {
                     ..ConformanceOptions::default()
                 };
                 check(&backend, &options).assert_passed();
+            }
+        }
+    }
+
+    #[test]
+    fn a_solve_started_from_its_neighbour_returns_the_same_gains() {
+        for positions in [layout_714(), layouts().swap_remove(0)] {
+            for localize in [0.0, 0.5] {
+                let backend = BarycenterBackend::new(positions.clone(), localize);
+                let mut hint = NeighbourHint::new();
+                // Neighbouring targets, as along a table row, then unrelated ones.
+                let row = (0..40).map(|step| [-1.0 + 0.05 * step as f64, 0.3, 0.2]);
+                for target in row.chain(targets(3, 3, 3, 40)) {
+                    let req = request_in(ROOMS[1], target);
+                    hint.begin_cell();
+                    let warm = GainModel::compute_gains_with_hint(&backend, &req, &mut hint).gains;
+                    let cold = backend.compute_gains(&req).gains;
+                    assert!(
+                        warm.iter()
+                            .zip(cold.iter())
+                            .all(|(a, b)| a.to_bits() == b.to_bits()),
+                        "{} speakers, localize {localize}, target {target:?}",
+                        positions.len()
+                    );
+                }
             }
         }
     }
