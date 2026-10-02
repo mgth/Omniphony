@@ -294,6 +294,23 @@ fn drain_scheduled_pw_stream_trigger(
     }
 }
 
+/// Factor applied to the driver trigger interval from the output's
+/// `consume_adjust`.
+///
+/// `consume_adjust > 1` means the output ring sits above its target: the
+/// output is draining faster than nominal because this source delivers too
+/// much. The source must slow down, so the interval between triggers grows by
+/// the same factor. Dividing by it instead, as this used to, sped the source up
+/// whenever it was already ahead — positive feedback that latched the loop on
+/// the ±5 % clamp (measured as a steady ~−55 000 ppm output ratio).
+fn trigger_interval_correction(consume_adjust: f32) -> f64 {
+    if consume_adjust > 0.0 {
+        (consume_adjust as f64).clamp(0.95, 1.05)
+    } else {
+        1.0
+    }
+}
+
 fn refresh_pw_stream_driver_timing(
     stream: &pw::stream::Stream,
     input_control: &InputControl,
@@ -342,11 +359,7 @@ fn refresh_pw_stream_driver_timing(
     }
 
     let rate_adjust = f32::from_bits(user_data.output_rate_adjust.load(Ordering::Relaxed));
-    let correction = if rate_adjust > 0.0 {
-        (1.0f64 / rate_adjust as f64).clamp(0.95, 1.05)
-    } else {
-        1.0
-    };
+    let correction = trigger_interval_correction(rate_adjust);
     let scheduled_ns = (quantum_ns as f64 * correction) as u64;
     let scheduled_ns = scheduled_ns.max(500_000);
     let scheduled_ns = scheduled_ns.min(20_000_000);
@@ -1308,6 +1321,20 @@ impl AdvertisedLatency {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An output that drains faster than nominal (ring above target) must
+    /// lengthen the trigger interval, so the source slows down; one that drains
+    /// slower must shorten it. Inverting this is positive feedback.
+    #[test]
+    fn trigger_interval_correction_slows_a_source_that_is_ahead() {
+        assert!(trigger_interval_correction(1.01) > 1.0);
+        assert!(trigger_interval_correction(0.99) < 1.0);
+        assert_eq!(trigger_interval_correction(1.0), 1.0);
+        // Bounded on both sides, and a missing value is neutral.
+        assert_eq!(trigger_interval_correction(2.0), 1.05);
+        assert_eq!(trigger_interval_correction(0.5), 0.95);
+        assert_eq!(trigger_interval_correction(0.0), 1.0);
+    }
 
     /// A failed publication leaves the update pending; a successful one moves
     /// the reference the hysteresis is measured from.
