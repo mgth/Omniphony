@@ -71,10 +71,15 @@ pub struct MeasuredHrirData {
     vert_tris: Vec<Vec<u32>>,
 }
 
+/// Determinant of a row-major 3×3 matrix.
+fn det3x3(m: &[f32; 9]) -> f32 {
+    m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
+        + m[2] * (m[3] * m[7] - m[4] * m[6])
+}
+
 /// Inverse of a row-major 3×3 matrix, or `None` when singular.
 fn inv3x3(m: &[f32; 9]) -> Option<[f32; 9]> {
-    let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
-        + m[2] * (m[3] * m[7] - m[4] * m[6]);
+    let det = det3x3(m);
     if det.abs() < 1e-9 {
         return None;
     }
@@ -99,7 +104,7 @@ fn triangulate(vecs: &[[f32; 3]]) -> (Vec<[usize; 3]>, Vec<[f32; 9]>, Vec<Vec<u3
         .iter()
         .map(|v| [v[0] as f64, v[1] as f64, v[2] as f64])
         .collect();
-    let Some(faces) = crate::spatial_vbap::convhull::convhull_3d_build(&pts) else {
+    let Some(faces) = crate::spatial_vbap::quickhull::quickhull_3d(&pts) else {
         return (Vec::new(), Vec::new(), Vec::new());
     };
     let mut tri = Vec::with_capacity(faces.len());
@@ -109,6 +114,16 @@ fn triangulate(vecs: &[[f32; 3]]) -> (Vec<[usize; 3]>, Vec<[f32; 9]>, Vec<Vec<u3
         let (a, b, c) = (vecs[f[0]], vecs[f[1]], vecs[f[2]]);
         // Columns are the vertex directions: V·w = q.
         let m = [a[0], b[0], c[0], a[1], b[1], c[1], a[2], b[2], c[2]];
+        // det(V) = ((b - a) × (c - a)) · a, and the hull's faces are wound
+        // outward, so it is positive exactly when a face turns away from the
+        // listener. A set that does not surround the listener - every
+        // direction above the horizon, say - has an underside that faces
+        // them, and seen from the origin it covers the same directions as
+        // the faces above it: a query would be blended from whichever came
+        // first, measurements from behind included. Those faces go.
+        if det3x3(&m) <= 0.0 {
+            continue;
+        }
         let Some(inv) = inv3x3(&m) else { continue };
         let t = tri.len() as u32;
         tri.push(f);
@@ -126,10 +141,22 @@ impl MeasuredHrirData {
     /// doc); the measurement's own bulk delay, and any pre-alignment it was
     /// given, are discarded.
     pub fn new(sample_rate: u32, dirs: Vec<(f32, f32)>, irs: Vec<(Vec<f32>, Vec<f32>)>) -> Self {
+        use rayon::prelude::*;
+
         let vecs: Vec<[f32; 3]> = dirs.iter().map(|&(az, el)| dir_vec(az, el)).collect();
+        // Spread over the cores as `resampled_to` does: the reconstructions
+        // are independent, and on a dense SOFA set they are most of the load.
+        // One set of plans per worker rather than per response - every
+        // response of a set has the same length, and planning for each again
+        // was about 40 % of the step. `collect` on an indexed parallel
+        // iterator keeps the input order, which `dirs` and `vecs` share.
+        let len = irs.first().map_or(0, |(l, _)| l.len());
         let irs = irs
-            .into_iter()
-            .map(|(l, r)| (minimum_phase(&l), minimum_phase(&r)))
+            .par_iter()
+            .map_init(
+                || MinPhase::new(len),
+                |min_phase, (l, r)| (min_phase.run(l), min_phase.run(r)),
+            )
             .collect();
         let (tri, tri_inv, vert_tris) = triangulate(&vecs);
         Self {
@@ -1268,6 +1295,47 @@ mod tests {
             .map(|(_, x)| *x)
             .unwrap_or(0.0);
         assert!(front > 0.8, "front vertex should dominate: {w:?}");
+    }
+
+    /// A set that does not surround the listener - every direction above the
+    /// horizon here - has a hull whose underside faces the origin. Seen from
+    /// the origin those faces cover the same directions as the top ones, so a
+    /// query must never be blended from them: they would mix measurements
+    /// from behind into a frontal response.
+    #[test]
+    fn a_partial_sphere_blends_only_the_faces_toward_the_listener() {
+        let dirs = vec![
+            (60.0f32, 10.0f32),
+            (240.0, 10.0),
+            (0.0, 10.0),
+            (60.0, 70.0),
+            (180.0, 10.0),
+            (120.0, 70.0),
+        ];
+        let irs = (0..dirs.len())
+            .map(|k| {
+                let mut v = vec![0.0f32; 16];
+                v[0] = 1.0 + k as f32;
+                (v.clone(), v)
+            })
+            .collect();
+        let d = MeasuredHrirData::new(48_000, dirs, irs);
+        assert!(d.is_triangulated());
+        for f in &d.tri {
+            let (a, b, c) = (d.vecs[f[0]], d.vecs[f[1]], d.vecs[f[2]]);
+            let m = [a[0], b[0], c[0], a[1], b[1], c[1], a[2], b[2], c[2]];
+            assert!(det3x3(&m) > 0.0, "face {f:?} faces the origin");
+        }
+        let q = dir_vec(5.0, 20.0);
+        for (i, w) in d.support(5.0, 20.0) {
+            let v = d.vecs[i];
+            let facing = q[0] * v[0] + q[1] * v[1] + q[2] * v[2];
+            assert!(
+                w < 1e-6 || facing > 0.0,
+                "{:?} is behind the query and still weighs {w}",
+                d.dirs[i]
+            );
+        }
     }
 
     /// A set too small to triangulate keeps the nearest-three fallback.
