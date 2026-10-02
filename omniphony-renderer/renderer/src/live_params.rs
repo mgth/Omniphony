@@ -74,6 +74,10 @@ impl PreferredEvaluationMode {
 pub enum RampMode {
     Off,
     Frame,
+    /// The object's position advances every sample. While it moves, its gains
+    /// are evaluated every few samples (the speaker stage's
+    /// `SAMPLE_RAMP_STRIDE`) and interpolated linearly in between; while it
+    /// holds, they are evaluated once per block.
     Sample,
     /// One VBAP evaluation per object per frame (the destination gains), then a
     /// per-sample linear interpolation of the gains from the previous block's

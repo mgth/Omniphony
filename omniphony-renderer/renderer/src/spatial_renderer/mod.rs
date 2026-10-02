@@ -618,6 +618,7 @@ impl SpatialRenderer {
             .swap(false, std::sync::atomic::Ordering::Acquire)
         {
             self.channel_states.clear();
+            self.speaker_stage.drop_gain_carries();
         }
 
         // ── 0. Independent binaural (headphone) path ─────────────────────────
@@ -939,6 +940,8 @@ impl SpatialRenderer {
                 cascade_diag = Some(diag);
                 self.cascade = Some(geometry);
             } else {
+                // The ramps advance below, without the speaker stage.
+                self.speaker_stage.drop_gain_carries();
                 self.binaural_pos_buf.clear();
                 self.binaural_pos_buf
                     .resize(input_channel_count, [0.0, 1.0, 0.0]);
