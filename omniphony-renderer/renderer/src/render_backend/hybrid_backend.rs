@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
+use super::{BackendCapabilities, GainModel, NeighbourHint, RenderRequest, RenderResponse};
 use crate::spatial_vbap::{DistanceMetric, Gains};
 use crate::speaker_layout::SpeakerLayout;
 
@@ -58,7 +58,10 @@ impl HybridBackend {
     pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
         let external = self.external.compute_gains(req).gains;
         let internal = self.internal.compute_gains(req).gains;
+        self.blend(req, &external, &internal)
+    }
 
+    fn blend(&self, req: &RenderRequest, external: &Gains, internal: &Gains) -> RenderResponse {
         // Distance on the raw ADM position, normalised by the metric's maximum
         // (Chebyshev: 1 on the cube surface; spherical: √3 at a corner), so the
         // blend curve's X axis stays in [0, 1] regardless of metric.
@@ -131,6 +134,16 @@ impl GainModel for HybridBackend {
 
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
         HybridBackend::compute_gains(self, req)
+    }
+
+    fn compute_gains_with_hint(
+        &self,
+        req: &RenderRequest,
+        hint: &mut NeighbourHint,
+    ) -> RenderResponse {
+        let external = self.external.compute_gains_with_hint(req, hint).gains;
+        let internal = self.internal.compute_gains_with_hint(req, hint).gains;
+        self.blend(req, &external, &internal)
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -313,6 +326,43 @@ mod tests {
         .gains;
         for (a, b) in blended.iter().zip(external.iter()) {
             assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn hint_reaches_each_inner_model_separately() {
+        let inner = |localize| Box::new(BarycenterBackend::new(speakers(), localize));
+        let hybrid = HybridBackend::new(
+            inner(0.5),
+            inner(0.0),
+            BlendCurve::new(vec![[0.0, 0.5], [1.0, 0.5]], 0.0),
+            crate::spatial_vbap::DistanceMetric::Chebyshev,
+        );
+        let (external, internal) = (inner(0.5), inner(0.0));
+
+        let mut hint = NeighbourHint::new();
+        let mut external_hint = NeighbourHint::new();
+        let mut internal_hint = NeighbourHint::new();
+        for step in 0..10 {
+            let req = request([-0.6 + 0.13 * step as f64, 0.2, 0.0]);
+            for hint in [&mut hint, &mut external_hint, &mut internal_hint] {
+                hint.begin_cell();
+            }
+            let blended = GainModel::compute_gains_with_hint(&hybrid, &req, &mut hint).gains;
+            let expected = hybrid
+                .blend(
+                    &req,
+                    &external
+                        .compute_gains_with_hint(&req, &mut external_hint)
+                        .gains,
+                    &internal
+                        .compute_gains_with_hint(&req, &mut internal_hint)
+                        .gains,
+                )
+                .gains;
+            for (a, b) in blended.iter().zip(expected.iter()) {
+                assert!(a.to_bits() == b.to_bits(), "step {step}: {a} vs {b}");
+            }
         }
     }
 
