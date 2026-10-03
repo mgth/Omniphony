@@ -168,6 +168,28 @@ jobs:
         working-directory: omniphony-renderer
         run: cargo check --release -p renderer --features perf-gate --tests --locked
 
+      # The bit-identity tests, optimised. The renderer's hot loops have
+      # CPU-specific builds picked at run time (AVX2 today, wider where a CPU
+      # has it), each pinned to return the portable build's bits; the
+      # speaker-major mix and the cached table reads are pinned the same way
+      # against their reference. The test run above is a debug build, where
+      # none of this is vectorised, so the comparison that matters — the code
+      # the release ships — would otherwise only ever be run by hand.
+      # Filtered to those tests (`bit_for_bit` / `bit_identical` in their
+      # names; they run in well under a second) and to the library, so the
+      # cost is one optimised build of the renderer and its dependencies.
+      #
+      # What the comparison exercises depends on the runner's CPU: a test whose
+      # wider build this CPU lacks prints that it skipped the comparison and
+      # passes. `--nocapture` keeps that line in the log, and the CPU's vector
+      # extensions are listed first, so the log says what was compared.
+      - name: Test SIMD builds against the portable ones (release)
+        working-directory: omniphony-renderer
+        run: |
+          echo "Runner CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
+          echo "Vector extensions: $(grep -m1 '^flags' /proc/cpuinfo | grep -o 'avx[^ ]*' | sort -u | tr '\n' ' ')"
+          cargo test --release -p renderer --lib --locked -- bit_for_bit bit_identical --nocapture
+
       # The OSC contract is a crate of its own, shared by the engine and the
       # Studio and a member of neither workspace, so `--workspace` above does
       # not reach it. Its tests are the guard that both ends name addresses
