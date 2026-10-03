@@ -27,6 +27,8 @@ use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 
+pub mod nonuniform;
+
 /// FFT plans and geometry for one partition size. Build once per partition
 /// size and share it between every input and kernel of that size (cloning
 /// shares the plans).
