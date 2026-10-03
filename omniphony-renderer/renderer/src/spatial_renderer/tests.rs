@@ -393,6 +393,227 @@ fn eval_mode_change_reuses_geometry() {
     );
 }
 
+/// A gain model that counts its `compute_gains` calls (equal gains over its
+/// speakers), so a test can tell a table build (one call per grid cell) from
+/// the build's smoke test (one call per reference position).
+struct CountingModel {
+    speakers: usize,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::render_backend::GainModel for CountingModel {
+    fn backend_id(&self) -> &'static str {
+        "counting"
+    }
+    fn backend_label(&self) -> &'static str {
+        "counting"
+    }
+    fn capabilities(&self) -> crate::render_backend::BackendCapabilities {
+        crate::render_backend::BackendCapabilities {
+            supports_realtime: true,
+            supports_precomputed_polar: true,
+            supports_precomputed_cartesian: true,
+            ..Default::default()
+        }
+    }
+    fn speaker_count(&self) -> usize {
+        self.speakers
+    }
+    fn compute_gains(
+        &self,
+        _req: &crate::render_backend::RenderRequest,
+    ) -> crate::render_backend::RenderResponse {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut gains = crate::spatial_vbap::Gains::zeroed(self.speakers);
+        let g = 1.0 / (self.speakers as f32).sqrt();
+        for index in 0..self.speakers {
+            gains.set(index, g);
+        }
+        crate::render_backend::RenderResponse { gains }
+    }
+    fn save_to_file(&self, _path: &std::path::Path, _layout: &SpeakerLayout) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct CountingFactory(Arc<std::sync::atomic::AtomicUsize>);
+
+impl crate::plugin::PluginFactory for CountingFactory {
+    fn id(&self) -> &'static str {
+        "counting"
+    }
+}
+
+impl crate::backend_registry::BackendFactory for CountingFactory {
+    fn build_plan(
+        &self,
+        ctx: &crate::backend_registry::BackendBuildCtx<'_>,
+    ) -> Option<crate::backend_registry::BackendBuildPlan> {
+        let speakers = ctx.layout.spatializable_positions().1.len();
+        let calls = Arc::clone(&self.0);
+        Some(crate::backend_registry::BackendBuildPlan::Dynamic(
+            crate::backend_registry::DynamicBackendPlan::new("counting", move || {
+                Ok(Box::new(CountingModel {
+                    speakers,
+                    calls: Arc::clone(&calls),
+                }))
+            }),
+        ))
+    }
+}
+
+/// The topology published on the control samples no gain table, at
+/// construction, at the host's boot rebuild or at a live recompute: nothing
+/// renders through it, every crossover band (here the single band of a layout
+/// without crossover) samples its own. Its engine still names the backend and
+/// the effective (precomputed) mode, smoke-tests the model, and hands its
+/// model to a geometry-unchanged recompute; the band engines, the audio and
+/// the Studio band gain table keep working from their own tables.
+#[test]
+fn the_published_topology_samples_no_gain_table() {
+    use std::sync::atomic::Ordering;
+    let smoke = crate::backend_registry::SMOKE_TEST_POSITIONS.len();
+    let layout = SpeakerLayout::preset("7.1.4").unwrap();
+    let mut r = SpatialRenderer::new(
+        layout,
+        48_000,
+        1,
+        1,
+        0.0,
+        2.0,
+        VbapTableMode::Cartesian {
+            x_size: 21,
+            y_size: 21,
+            z_size: 9,
+            z_neg_size: 9,
+        },
+        false,
+        true,
+        DistanceModel::Linear,
+        false,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        false,
+        [1.0, 2.0, 0.5],
+        2.0,
+        0.5,
+        0.0,
+        0.0,
+        false,
+        false,
+        false,
+        1.0,
+        1.0,
+        PreferredEvaluationMode::PrecomputedCartesian,
+        LiveEvaluationMode::PrecomputedCartesian,
+        21,
+        21,
+        9,
+        9,
+    )
+    .unwrap();
+    let control = r.renderer_control();
+
+    // Construction: the default VBAP topology reports its mode, samples nothing.
+    let constructed = control.active_topology();
+    assert_eq!(
+        constructed.backend.evaluation_mode(),
+        EffectiveEvaluationMode::PrecomputedCartesian
+    );
+    assert!(!constructed.backend.has_sampled_table());
+    assert!(constructed.backend.cartesian_parts().is_none());
+
+    // The host's boot rebuild, onto a backend that counts its calls.
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    control.register_backend(Box::new(CountingFactory(Arc::clone(&calls))));
+    control.live.write().backend_id = "counting".to_string();
+    let plan = control.prepare_topology_rebuild().expect("plan");
+    let booted = plan
+        .build_topology_reusing(Some(&control.active_topology()))
+        .expect("boot topology");
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        smoke,
+        "the boot topology only smoke-tests the model"
+    );
+    assert!(!booted.backend.has_sampled_table());
+    assert_eq!(booted.backend.backend_id(), "counting");
+    assert_eq!(
+        booted.backend.evaluation_mode(),
+        EffectiveEvaluationMode::PrecomputedCartesian
+    );
+    control.publish_topology(booted);
+
+    // The single band samples its own table, on the first frame.
+    let pcm = vec![0.5f32; 40];
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(0),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([0.3, -0.2, 0.4]),
+        sample_pos: Some(0),
+    }];
+    let frame = r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
+    assert_eq!(r.speaker_stage_builds(), 1);
+    assert_eq!(r.speaker_stage.render_bands.len(), 1);
+    let band = r.speaker_stage.render_bands[0]
+        .engine()
+        .expect("band engine");
+    assert!(band.has_sampled_table());
+    let band_calls = calls.load(Ordering::Relaxed) - smoke;
+    assert!(
+        band_calls > 1000,
+        "the band samples its grid ({band_calls} calls)"
+    );
+    assert!(
+        frame.samples.iter().any(|s| *s != 0.0),
+        "the object renders through the band table"
+    );
+
+    // A live recompute after a speaker edit: the model is rebuilt and
+    // smoke-tested, nothing sampled; the next frame re-samples the band.
+    let before = calls.load(Ordering::Relaxed);
+    control.bump_geometry_generation();
+    let plan = control.prepare_topology_rebuild().expect("plan");
+    let recomputed = plan
+        .build_topology_reusing(Some(&control.active_topology()))
+        .expect("recompute");
+    assert_eq!(calls.load(Ordering::Relaxed) - before, smoke);
+    assert!(!recomputed.backend.has_sampled_table());
+    control.publish_topology(recomputed);
+    r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
+    assert_eq!(r.speaker_stage_builds(), 2);
+    assert_eq!(calls.load(Ordering::Relaxed) - before, smoke + band_calls);
+
+    // An evaluation-only recompute (grid size) reuses the published model.
+    let current = control.active_topology();
+    control.live.write().evaluation.cartesian.x_size = 11;
+    let plan = control.prepare_topology_rebuild().expect("plan");
+    let before = calls.load(Ordering::Relaxed);
+    let resized = plan
+        .build_topology_reusing(Some(&current))
+        .expect("evaluation-only recompute");
+    assert_eq!(calls.load(Ordering::Relaxed) - before, smoke);
+    assert!(Arc::ptr_eq(
+        &current.backend.decorated_model().unwrap(),
+        &resized.backend.decorated_model().unwrap()
+    ));
+
+    // The Studio band gain table samples its own band topologies.
+    let before = calls.load(Ordering::Relaxed);
+    let table = control
+        .build_band_gaintable_full()
+        .expect("band gain table");
+    assert_eq!(table.bands.len(), 1);
+    assert!(table.bands[0].gains.iter().any(|g| *g > 0.0));
+    assert!(calls.load(Ordering::Relaxed) - before > smoke);
+}
+
 #[test]
 fn test_renderer_creation() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();

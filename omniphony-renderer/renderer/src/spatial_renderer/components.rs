@@ -332,7 +332,7 @@ impl BandRenderer {
             let prev_topology = prev
                 .filter(|p| p.speaker_indices == speaker_indices)
                 .and_then(|p| p.topology.as_deref());
-            Some(Arc::new(plan.build_topology_reusing(prev_topology)?))
+            Some(Arc::new(plan.build_band_topology_reusing(prev_topology)?))
         } else {
             None
         };

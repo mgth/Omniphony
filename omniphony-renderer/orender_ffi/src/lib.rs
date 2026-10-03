@@ -387,7 +387,7 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
 }
 
 /// Initialise the `log` backend once, so the engine's `log::*` diagnostics
-/// (bridge-load time, "VBAP table generated in Xs", clip warnings, engine-ready
+/// (bridge-load time, "Spatial renderer built in Xs", clip warnings, engine-ready
 /// time) surface BOTH on stderr and over OSC to connected clients (Studio's log
 /// panel).
 ///
