@@ -16,8 +16,6 @@
 //! falls naturally with source distance, which is exactly the distance cue
 //! we are after.
 
-use crate::delay_line::read_linear;
-
 /// Ring capacity in seconds. Bounds the relative reflection delay; with room
 /// dimensions clamped to [`MAX_ROOM_M`] the longest first-order detour stays
 /// well below this.
@@ -145,7 +143,7 @@ pub fn first_order_images(src_m: [f32; 3], room_m: [f32; 3]) -> [[f32; 3]; NUM_R
 }
 
 /// One smoothed fractional read tap (delay in samples + linear gain).
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct Tap {
     delay: f32,
     delay_target: f32,
@@ -154,20 +152,84 @@ struct Tap {
     /// One-pole low-pass state: the wall's absorption plus the air along
     /// the image path, both of which take the treble out of a reflection.
     lp: f32,
-    /// Its coefficient (`exp(−2π·fc/fs)`, 0 = bypass), set per block.
-    lp_a: f32,
+    /// Share of its input the low-pass takes in per sample: `1 − a` with
+    /// `a = exp(−2π·fc/fs)` (1 = bypass), set per block.
+    lp_in: f32,
+    /// Where `delay` reads the ring: whole samples behind the write position,
+    /// then the weights of that sample and of the one before it. A function
+    /// of `delay` alone, kept with it rather than derived on every read: a
+    /// delay sits on its target for all but the first samples of a block
+    /// whose geometry moved, and splitting it into integer and fraction is
+    /// half of what a tap costs.
+    read_lo: usize,
+    read_w0: f32,
+    read_w1: f32,
+}
+
+impl Default for Tap {
+    /// A silent tap at delay 0, with the read position that goes with it.
+    fn default() -> Self {
+        Self {
+            delay: 0.0,
+            delay_target: 0.0,
+            gain: 0.0,
+            gain_target: 0.0,
+            lp: 0.0,
+            lp_in: 1.0,
+            read_lo: 0,
+            read_w0: 1.0,
+            read_w1: 0.0,
+        }
+    }
 }
 
 impl Tap {
     #[inline]
     fn step(&mut self, gain_smooth: f32) {
-        let d = self.delay_target - self.delay;
-        if d.abs() <= DELAY_RAMP_RATE {
-            self.delay = self.delay_target;
-        } else {
-            self.delay += DELAY_RAMP_RATE * d.signum();
+        // A delay on its target stays there: the ramp below would compute a
+        // zero difference and assign the target again. Compared as bits, so
+        // that a step it skips is one that changes nothing, signed zero
+        // included.
+        if self.delay.to_bits() != self.delay_target.to_bits() {
+            let d = self.delay_target - self.delay;
+            if d.abs() <= DELAY_RAMP_RATE {
+                self.delay = self.delay_target;
+            } else {
+                self.delay += DELAY_RAMP_RATE * d.signum();
+            }
+            self.place_read();
         }
         self.gain += (self.gain_target - self.gain) * gain_smooth;
+    }
+
+    /// Derive the read position from `delay`; to be called whenever `delay`
+    /// changes. The same split as [`crate::delay_line::read_linear`].
+    #[inline]
+    fn place_read(&mut self) {
+        debug_assert!(self.delay >= 0.0, "negative delay {}", self.delay);
+        // Truncation is the floor here: `delay` is non-negative.
+        let lo = self.delay as usize;
+        let frac = self.delay - lo as f32;
+        self.read_lo = lo;
+        self.read_w0 = 1.0 - frac;
+        self.read_w1 = frac;
+    }
+
+    /// Linear-interpolated read `delay` samples behind `write_pos`, which
+    /// still points at the sample just written: what
+    /// [`crate::delay_line::read_linear`] returns for `delay`, bit for bit.
+    #[inline]
+    fn read(&self, ring: &[f32], write_pos: usize) -> f32 {
+        let cap = ring.len();
+        let lo = self.read_lo;
+        debug_assert!(lo < cap);
+        let idx0 = if write_pos >= lo {
+            write_pos - lo
+        } else {
+            write_pos + cap - lo
+        };
+        let idx1 = if idx0 == 0 { cap - 1 } else { idx0 - 1 };
+        ring[idx0] * self.read_w0 + ring[idx1] * self.read_w1
     }
 }
 
@@ -221,12 +283,13 @@ impl ReflectionBank {
             let d = (delay_s * self.sample_rate as f32).clamp(0.0, max);
             tap.delay_target = d;
             tap.gain_target = gain;
-            tap.lp_a = lp_a;
+            tap.lp_in = 1.0 - lp_a;
             // While the tap is (near) silent a delay jump is inaudible — snap
             // instead of sweeping, so a fresh tap doesn't chirp its way from
             // delay 0 to the target while tracking the live signal.
             if tap.gain.abs() < 1e-4 {
                 tap.delay = d;
+                tap.place_read();
             }
         }
     }
@@ -259,13 +322,13 @@ impl ReflectionBank {
         for i in 0..NUM_REFLECTIONS {
             let tl = &mut self.taps_l[i];
             tl.step(gain_smooth);
-            let xl = read_linear(&self.ring, self.write_pos, tl.delay);
-            tl.lp += (xl - tl.lp) * (1.0 - tl.lp_a);
+            let xl = tl.read(&self.ring, self.write_pos);
+            tl.lp += (xl - tl.lp) * tl.lp_in;
             l += tl.gain * tl.lp;
             let tr = &mut self.taps_r[i];
             tr.step(gain_smooth);
-            let xr = read_linear(&self.ring, self.write_pos, tr.delay);
-            tr.lp += (xr - tr.lp) * (1.0 - tr.lp_a);
+            let xr = tr.read(&self.ring, self.write_pos);
+            tr.lp += (xr - tr.lp) * tr.lp_in;
             r += tr.gain * tr.lp;
         }
 
@@ -515,5 +578,170 @@ mod tests {
         bank.set_targets(0, 0.0, 0.0, 0.0, 0.0, MAX_WALL_CUTOFF_HZ);
         let (next, _) = bank.process(1.0);
         assert!(next > 0.9, "gain jumped instead of smoothing: {next}");
+    }
+
+    /// A tap as the bank defines it, with nothing kept between samples but
+    /// its state: the delay ramp runs on every sample and the read goes
+    /// through [`read_linear`](crate::delay_line::read_linear), which splits
+    /// the delay each time. The reference [`ReflectionBank::process`] has to
+    /// match bit for bit.
+    #[derive(Clone, Copy, Default)]
+    struct ReferenceTap {
+        delay: f32,
+        delay_target: f32,
+        gain: f32,
+        gain_target: f32,
+        lp: f32,
+        lp_a: f32,
+    }
+
+    struct ReferenceBank {
+        ring: Vec<f32>,
+        write_pos: usize,
+        taps_l: [ReferenceTap; NUM_REFLECTIONS],
+        taps_r: [ReferenceTap; NUM_REFLECTIONS],
+        sample_rate: u32,
+    }
+
+    impl ReferenceBank {
+        fn new(sample_rate: u32) -> Self {
+            Self {
+                ring: vec![0.0; ReflectionBank::new(sample_rate).ring.len()],
+                write_pos: 0,
+                taps_l: Default::default(),
+                taps_r: Default::default(),
+                sample_rate,
+            }
+        }
+
+        fn set_targets(&mut self, idx: usize, delays_s: [f32; 2], gains: [f32; 2], cutoff_hz: f32) {
+            let max = (self.ring.len() - 2) as f32;
+            let lp_a = lowpass_coeff(cutoff_hz, self.sample_rate);
+            for (tap, delay_s, gain) in [
+                (&mut self.taps_l[idx], delays_s[0], gains[0]),
+                (&mut self.taps_r[idx], delays_s[1], gains[1]),
+            ] {
+                let d = (delay_s * self.sample_rate as f32).clamp(0.0, max);
+                tap.delay_target = d;
+                tap.gain_target = gain;
+                tap.lp_a = lp_a;
+                if tap.gain.abs() < 1e-4 {
+                    tap.delay = d;
+                }
+            }
+        }
+
+        fn process(&mut self, input: f32) -> (f32, f32) {
+            use crate::delay_line::read_linear;
+            let gain_smooth = gain_smooth_for(self.sample_rate);
+            self.ring[self.write_pos] = input;
+            let mut out = [0.0f32; 2];
+            for i in 0..NUM_REFLECTIONS {
+                for (tap, acc) in [&mut self.taps_l[i], &mut self.taps_r[i]]
+                    .into_iter()
+                    .zip(&mut out)
+                {
+                    let d = tap.delay_target - tap.delay;
+                    if d.abs() <= DELAY_RAMP_RATE {
+                        tap.delay = tap.delay_target;
+                    } else {
+                        tap.delay += DELAY_RAMP_RATE * d.signum();
+                    }
+                    tap.gain += (tap.gain_target - tap.gain) * gain_smooth;
+                    let x = read_linear(&self.ring, self.write_pos, tap.delay);
+                    tap.lp += (x - tap.lp) * (1.0 - tap.lp_a);
+                    *acc += tap.gain * tap.lp;
+                }
+            }
+            self.write_pos += 1;
+            if self.write_pos >= self.ring.len() {
+                self.write_pos = 0;
+            }
+            (out[0], out[1])
+        }
+    }
+
+    /// The read position kept with each tap gives the bits of a tap that
+    /// splits its delay on every read, through everything a delay does:
+    /// standing still, snapping to a target less than a sample away (a slowly
+    /// moving source, every block), ramping up and down over many samples (a
+    /// jump), snapping while the tap is silent, sitting at zero and at the
+    /// end of the ring — over several laps of the ring, so every read wraps.
+    #[test]
+    fn kept_read_position_matches_a_tap_that_splits_its_delay_every_sample() {
+        for sample_rate in [8_000u32, 48_000, 96_000] {
+            let mut bank = ReflectionBank::new(sample_rate);
+            let mut reference = ReferenceBank::new(sample_rate);
+            let ring_s = (bank.ring.len() - 2) as f32 / sample_rate as f32;
+            let mut state = 0x0bad_5eedu32;
+            let mut noise = move || {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as f32 / u32::MAX as f32 - 0.5
+            };
+            const BLOCK: usize = 40;
+            let blocks = 3 * bank.ring.len() / BLOCK + 50;
+            let mut ramping = 0usize;
+            for b in 0..blocks {
+                for i in 0..NUM_REFLECTIONS {
+                    let t = b as f32 * 0.01 + i as f32;
+                    // Seconds: a slow drift around a few milliseconds…
+                    let mut delay = 0.004 + 0.003 * i as f32 + 0.0002 * t.sin();
+                    let mut gains = [0.3 + 0.1 * t.cos(), 0.3 - 0.1 * t.cos()];
+                    let mut cutoff = MAX_WALL_CUTOFF_HZ;
+                    match (i, (b / 60) % 4) {
+                        // …a tap that jumps far and back, ramping both ways…
+                        (1, 1) => delay += 0.02,
+                        (1, 3) => delay += 0.001,
+                        // …one that goes silent, moves and comes back…
+                        (2, 1) => gains = [0.0, 0.0],
+                        (2, 2) => delay += 0.03,
+                        // …one at delay zero, one pinned to the end of the
+                        // ring (the clamp), one with its low-pass engaged.
+                        (3, _) => delay = 0.0,
+                        (4, 2) => delay = ring_s + 1.0,
+                        (5, _) => cutoff = 2_000.0 + 500.0 * i as f32,
+                        _ => {}
+                    }
+                    let itd = 0.0003 * (t * 0.7).sin();
+                    let delays = [delay + itd.max(0.0), delay + (-itd).max(0.0)];
+                    bank.set_targets(i, delays[0], delays[1], gains[0], gains[1], cutoff);
+                    reference.set_targets(i, delays, gains, cutoff);
+                }
+                for s in 0..BLOCK {
+                    let x = noise();
+                    let got = bank.process(x);
+                    let want = reference.process(x);
+                    assert_eq!(
+                        (got.0.to_bits(), got.1.to_bits()),
+                        (want.0.to_bits(), want.1.to_bits()),
+                        "{sample_rate} Hz, block {b}, sample {s}: {got:?} against {want:?}"
+                    );
+                    ramping += usize::from(
+                        bank.taps_l
+                            .iter()
+                            .any(|t| t.delay.to_bits() != t.delay_target.to_bits()),
+                    );
+                }
+            }
+            // The run has to spend time both ramping and settled.
+            let total = blocks * BLOCK;
+            assert!(
+                ramping > total / 20 && total - ramping > total / 20,
+                "{sample_rate} Hz: {ramping} ramping samples out of {total}"
+            );
+            for (tap, want) in bank
+                .taps_l
+                .iter()
+                .chain(&bank.taps_r)
+                .zip(reference.taps_l.iter().chain(&reference.taps_r))
+            {
+                assert_eq!(
+                    [tap.delay.to_bits(), tap.gain.to_bits(), tap.lp.to_bits()],
+                    [want.delay.to_bits(), want.gain.to_bits(), want.lp.to_bits()]
+                );
+            }
+        }
     }
 }
