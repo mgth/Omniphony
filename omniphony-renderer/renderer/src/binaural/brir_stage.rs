@@ -1,14 +1,14 @@
 //! The BRIR render stage of the cascaded binaural path.
 //!
-//! The cascade ([`crate::spatial_renderer::cascade`]) mixes the programme
-//! onto the app's speaker layout as a virtual room; with a room impulse
-//! response set selected ([`super::HrirSource::Brir`]) this stage takes over
-//! from the HRTF binaural stage and convolves each virtual speaker bus with
-//! the pair measured from the nearest emitter of the set, at the head
-//! orientation nearest the tracked one. Nothing else is applied: the
-//! propagation delay, the interaural delay, the reflections and the tail are
-//! the measurement. A non-spatialized bus (the LFE) is fed to both ears at
-//! constant power, as on the HRTF path.
+//! The cascade (the `cascade` module of [`crate::spatial_renderer`]) mixes
+//! the programme onto the app's speaker layout as a virtual room; with a
+//! room impulse response set selected ([`super::HrirSource::Brir`]) this
+//! stage takes over from the HRTF binaural stage and convolves each virtual
+//! speaker bus with the pair measured from the nearest emitter of the set,
+//! at the head orientation nearest the tracked one. Nothing else is
+//! applied: the propagation delay, the interaural delay, the reflections
+//! and the tail are the measurement. A non-spatialized bus (the LFE) is fed
+//! to both ears at constant power, as on the HRTF path.
 //!
 //! # Streaming
 //!
@@ -30,7 +30,7 @@
 //! # Kernels and the worker
 //!
 //! The set stays in the time domain; only the *active orientation* is
-//! partitioned, as a [`KernelBank`] (one pair per emitter). Banks and sets
+//! partitioned, as a `KernelBank` (one pair per emitter). Banks and sets
 //! are built on a worker thread and handed over through `ArcSwapOption`
 //! slots: the audio thread compares, sends a request, and keeps convolving
 //! the current bank until the new one lands. A bank swap is blended over
@@ -561,7 +561,7 @@ impl BrirStage {
     /// streams. `geometry_id` identifies the bus geometry (the cascade's
     /// topology identity); steady state is two compares. A bus is rendered
     /// from the emitter nearest to it in direction; mismatches beyond
-    /// [`MISMATCH_WARN_DEG`] and emitters shared by several buses are
+    /// `MISMATCH_WARN_DEG` (10°) and emitters shared by several buses are
     /// logged once per mapping.
     pub fn configure_buses(&mut self, positions: &[[f64; 3]], direct: &[bool], geometry_id: usize) {
         let Some(set) = self.set.as_ref() else {

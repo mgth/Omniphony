@@ -1812,7 +1812,7 @@ fn interp_survives_speaker_cascade_width_switch() {
         sample_pos: Some(0),
     }];
 
-    let mut set_mode = |r: &mut SpatialRenderer, mode: crate::live_params::OutputMode| {
+    let set_mode = |r: &mut SpatialRenderer, mode: crate::live_params::OutputMode| {
         r.control.live.write().binaural.output_mode = mode;
     };
     // Seed interp state on the 12-wide speaker path.
@@ -2193,7 +2193,7 @@ fn speaker_test_is_limited_to_the_speakers_bands() {
     let frames = 4096;
     let pcm = vec![0.0f32; frames];
 
-    let mut slew_ratio_for = |idx: usize| -> f32 {
+    let slew_ratio_for = |idx: usize| -> f32 {
         let mut r = crossover_renderer();
         r.control.live.write().speaker_test = Some(crate::live_params::SpeakerTest {
             speaker_idx: idx,
@@ -2238,7 +2238,7 @@ fn speaker_test_reaches_a_direct_speaker_despite_the_crossover() {
     // non-spatialized speaker.
     assert!(!SpeakerLayout::preset("7.1.4").unwrap().speakers[3].spatialize);
 
-    let mut channel_for = |idx: usize| -> Vec<f32> {
+    let channel_for = |idx: usize| -> Vec<f32> {
         let mut r = crossover_renderer();
         r.control.live.write().speaker_test = Some(crate::live_params::SpeakerTest {
             speaker_idx: idx,
@@ -2289,7 +2289,7 @@ fn a_direct_speakers_test_honours_its_declared_frequency_range() {
     let frames = 4096;
     let pcm = vec![0.0f32; frames];
 
-    let mut channel_for = |idx: usize, freq_high: Option<f32>| -> Vec<f32> {
+    let channel_for = |idx: usize, freq_high: Option<f32>| -> Vec<f32> {
         let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
         layout.speakers[0].freq_low = None;
         layout.speakers[0].freq_high = Some(80.0);
