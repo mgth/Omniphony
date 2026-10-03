@@ -3,7 +3,7 @@
 //! `pub(super)` (or `pub` for the renderer's public API types) so the
 //! `SpatialRenderer` impl in the parent module can use them.
 
-use crate::crossover::{CrossoverBank, CrossoverStates, FreqBand};
+use crate::crossover::FreqBand;
 use crate::live_params::{RenderTopology, RendererControl};
 use crate::ramp_strategy::ChannelRampState;
 use crate::render_backend::{
@@ -377,22 +377,5 @@ impl BandRenderer {
             full.set(self.speaker_indices[gi], g);
         }
         full
-    }
-}
-
-/// Split one sample into frequency bands.
-///
-/// When a crossover filter bank is active, runs the sample through the active
-/// engine (LR4 or linear-phase FIR).
-/// Otherwise returns a 1-band passthrough so the caller's band loop is identical.
-#[inline]
-pub(super) fn split_bands(
-    raw: f32,
-    filter_bank: &Option<CrossoverBank>,
-    states: Option<&mut CrossoverStates>,
-) -> crate::crossover::SmallBands {
-    match (filter_bank.as_ref(), states) {
-        (Some(fb), Some(s)) => fb.process_sample(raw, s),
-        _ => crate::crossover::SmallBands::single(raw),
     }
 }
