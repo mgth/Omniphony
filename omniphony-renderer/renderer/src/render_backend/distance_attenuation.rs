@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
-use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
+use super::{BackendCapabilities, GainModel, NeighbourHint, RenderRequest, RenderResponse};
 use crate::spatial_vbap::{DistanceMetric, calculate_distance_attenuation};
 use crate::speaker_layout::SpeakerLayout;
 
@@ -22,6 +22,25 @@ pub struct DistanceAttenuatedModel {
 impl DistanceAttenuatedModel {
     pub fn new(inner: Box<dyn GainModel>, metric: DistanceMetric) -> Self {
         Self { inner, metric }
+    }
+
+    fn attenuate(&self, req: &RenderRequest, mut response: RenderResponse) -> RenderResponse {
+        if req.distance_model == crate::spatial_vbap::DistanceModel::None {
+            return response;
+        }
+        let scaled = room_scaled_position(
+            req.adm_position.map(|value| value as f32),
+            req.room_ratio,
+            req.room_ratio_rear,
+            req.room_ratio_lower,
+            req.room_ratio_center_blend,
+        );
+        let distance = self.metric.measure(scaled);
+        let attenuation = calculate_distance_attenuation(distance, req.distance_model);
+        for gain in response.gains.iter_mut() {
+            *gain *= attenuation;
+        }
+        response
     }
 }
 
@@ -48,23 +67,15 @@ impl GainModel for DistanceAttenuatedModel {
     }
 
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let mut response = self.inner.compute_gains(req);
-        if req.distance_model == crate::spatial_vbap::DistanceModel::None {
-            return response;
-        }
-        let scaled = room_scaled_position(
-            req.adm_position.map(|value| value as f32),
-            req.room_ratio,
-            req.room_ratio_rear,
-            req.room_ratio_lower,
-            req.room_ratio_center_blend,
-        );
-        let distance = self.metric.measure(scaled);
-        let attenuation = calculate_distance_attenuation(distance, req.distance_model);
-        for gain in response.gains.iter_mut() {
-            *gain *= attenuation;
-        }
-        response
+        self.attenuate(req, self.inner.compute_gains(req))
+    }
+
+    fn compute_gains_with_hint(
+        &self,
+        req: &RenderRequest,
+        hint: &mut NeighbourHint,
+    ) -> RenderResponse {
+        self.attenuate(req, self.inner.compute_gains_with_hint(req, hint))
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
