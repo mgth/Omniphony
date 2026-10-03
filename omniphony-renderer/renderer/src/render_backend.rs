@@ -5,6 +5,7 @@ mod distance_diffuse;
 mod evaluation_artifact;
 mod experimental_distance_backend;
 mod hybrid_backend;
+mod neighbour_hint;
 mod room_transform;
 pub mod size_to_spread;
 mod vbap_backend;
@@ -26,6 +27,7 @@ pub use evaluation_artifact::{
 };
 pub use experimental_distance_backend::ExperimentalDistanceBackend;
 pub use hybrid_backend::{BlendCurve, HybridBackend};
+pub use neighbour_hint::{HintSlot, NeighbourHint};
 pub use room_transform::room_scaled_position;
 pub use size_to_spread::{SizeToSpreadMode, reduce_size_to_spread};
 pub use vbap_backend::{VbapBackend, VbapSpreadParams};
@@ -175,7 +177,70 @@ pub trait GainModel: Send + Sync + 'static {
     fn capabilities(&self) -> BackendCapabilities;
     fn speaker_count(&self) -> usize;
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
+    /// [`compute_gains`](GainModel::compute_gains) for a precomputed table
+    /// build, which evaluates the cells of a row one after the other and hands
+    /// in what the previous cell left in `hint` (see [`NeighbourHint`]).
+    ///
+    /// Optional: the default ignores the hint. A model that uses it must stay a
+    /// pure function of the request and of the hint, so that a table is the
+    /// same on every build. A model that wraps other models forwards the hint to
+    /// them. Never called from the realtime path.
+    fn compute_gains_with_hint(
+        &self,
+        req: &RenderRequest,
+        hint: &mut NeighbourHint,
+    ) -> RenderResponse {
+        let _ = hint;
+        self.compute_gains(req)
+    }
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()>;
+}
+
+/// Sample `model` over `rows × cells_per_row` positions into a flat
+/// `[row][cell][speaker]` gain table.
+///
+/// Sampling the gain model over the whole grid dominates engine startup, and it
+/// runs once per render backend. Rows are independent and `GainModel` is `Sync`,
+/// so they are evaluated in parallel. Inside a row the cells are evaluated in
+/// order, each handing a [`NeighbourHint`] to the next and the first starting
+/// from an empty one: the table is the same for any number of threads.
+///
+/// Fails when the model answers a cell with a gain count other than its
+/// `speaker_count` (see [`check_sampled_gain_count`]).
+fn sample_rows(
+    model: &dyn GainModel,
+    template: RenderRequest,
+    rows: usize,
+    cells_per_row: usize,
+    position: impl Fn(usize, usize) -> [f64; 3] + Sync,
+) -> Result<Vec<f32>> {
+    let speaker_count = model.speaker_count();
+    let row_len = cells_per_row * speaker_count;
+    let mut gains = vec![0.0f32; rows * row_len];
+    if row_len == 0 {
+        return Ok(gains);
+    }
+    gains
+        .par_chunks_mut(row_len)
+        .enumerate()
+        .try_for_each(|(row, row_gains)| {
+            let mut hint = NeighbourHint::new();
+            let mut request = template;
+            for (cell, cell_gains) in row_gains.chunks_mut(speaker_count).enumerate() {
+                request.adm_position = position(row, cell);
+                hint.begin_cell();
+                let response = model.compute_gains_with_hint(&request, &mut hint);
+                check_sampled_gain_count(
+                    model,
+                    speaker_count,
+                    response.gains.len(),
+                    request.adm_position,
+                )?;
+                cell_gains.copy_from_slice(&response.gains[..]);
+            }
+            Ok::<(), anyhow::Error>(())
+        })?;
+    Ok(gains)
 }
 
 pub trait EvaluationStrategy {
@@ -338,38 +403,15 @@ impl SampledCartesianEvaluator {
         let speaker_count = model.speaker_count();
         let (nx, ny, nz) = (x_positions.len(), y_positions.len(), z_positions.len());
         let template = config.request_template;
-        // Sampling the gain model over the full x×y×z volume dominates engine
-        // startup, and it runs once per render backend. Each cell is independent
-        // and GainModel is Sync, so evaluate them in parallel. The flat index
-        // decodes to the SAME z→y→x order the sequential build produced, which
+        // Rows run along x, so the flat table keeps its z→y→x cell order, which
         // the runtime table lookup relies on.
-        let per_cell: Vec<Gains> = (0..nx * ny * nz)
-            .into_par_iter()
-            .map(|idx| {
-                let xi = idx % nx;
-                let yi = (idx / nx) % ny;
-                let zi = idx / (nx * ny);
-                let mut request = template;
-                request.adm_position = [
-                    x_positions[xi] as f64,
-                    y_positions[yi] as f64,
-                    z_positions[zi] as f64,
-                ];
-                model.compute_gains(&request).gains
-            })
-            .collect();
-        let mut gains = Vec::with_capacity(nx * ny * nz * speaker_count);
-        for (idx, cell) in per_cell.iter().enumerate() {
-            check_sampled_gain_count(model.as_ref(), speaker_count, cell.len(), {
-                let (xi, yi, zi) = (idx % nx, (idx / nx) % ny, idx / (nx * ny));
-                [
-                    x_positions[xi] as f64,
-                    y_positions[yi] as f64,
-                    z_positions[zi] as f64,
-                ]
-            })?;
-            gains.extend_from_slice(&cell[..]);
-        }
+        let gains = sample_rows(model.as_ref(), template, ny * nz, nx, |row, xi| {
+            [
+                x_positions[xi] as f64,
+                y_positions[row % ny] as f64,
+                z_positions[row / ny] as f64,
+            ]
+        })?;
         let backend_restore_snapshot = build_backend_restore_snapshot(
             model.backend_id(),
             model.backend_label(),
@@ -494,29 +536,23 @@ impl SampledPolarEvaluator {
             config.polar.distance_max.max(0.01),
         );
         let speaker_count = model.speaker_count();
-        let mut gains = Vec::with_capacity(
-            azimuth_positions.len()
-                * elevation_positions.len()
-                * distance_positions.len()
-                * speaker_count,
-        );
-        let mut request = config.request_template;
-        for &distance in &distance_positions {
-            for &elevation in &elevation_positions {
-                for &azimuth in &azimuth_positions {
-                    let (x, y, z) = spherical_to_adm(azimuth, elevation, distance);
-                    request.adm_position = [x as f64, y as f64, z as f64];
-                    let cell = model.compute_gains(&request).gains;
-                    check_sampled_gain_count(
-                        model.as_ref(),
-                        speaker_count,
-                        cell.len(),
-                        request.adm_position,
-                    )?;
-                    gains.extend_from_slice(&cell);
-                }
-            }
-        }
+        // Rows run along the azimuth: the flat table keeps its
+        // distance→elevation→azimuth cell order.
+        let elevation_count = elevation_positions.len();
+        let gains = sample_rows(
+            model.as_ref(),
+            config.request_template,
+            distance_positions.len() * elevation_count,
+            azimuth_positions.len(),
+            |row, azimuth_index| {
+                let (x, y, z) = spherical_to_adm(
+                    azimuth_positions[azimuth_index],
+                    elevation_positions[row % elevation_count],
+                    distance_positions[row / elevation_count],
+                );
+                [x as f64, y as f64, z as f64]
+            },
+        )?;
         let backend_restore_snapshot = build_backend_restore_snapshot(
             model.backend_id(),
             model.backend_label(),
