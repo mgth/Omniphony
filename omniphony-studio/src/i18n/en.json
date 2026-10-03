@@ -302,9 +302,10 @@
   "audio.rampModeFrame": "Per frame",
   "audio.rampModeInterp": "Per sample (interpolated)",
   "audio.rampModeSample": "Per sample",
+  "audio.sampleRampStride": "Lookup stride",
   "rampMode.infoButton": "Ramp mode info",
   "rampMode.infoTitle": "Ramp mode",
-  "rampMode.infoBody": "Ramping smooths abrupt position or gain changes so object motion and level updates stay more natural and produce fewer clicks or spatial jumps.<br /><br /><strong>Off</strong>: disable interpolation and jump immediately to the new target.<br /><br /><strong>Per frame</strong>: apply one interpolation step per decoded audio frame. This is lighter and more stepped.<br /><br /><strong>Per sample (interpolated)</strong>: evaluate the spatial gains once per frame and linearly interpolate them across each sample. Nearly as smooth as Per sample at roughly the cost of Per frame — the recommended smooth mode.<br /><br /><strong>Per sample</strong>: re-evaluate the full spatial panning for every rendered sample. The most accurate but the most expensive.",
+  "rampMode.infoBody": "Ramping smooths abrupt position or gain changes so object motion and level updates stay more natural and produce fewer clicks or spatial jumps.<br /><br /><strong>Off</strong>: disable interpolation and jump immediately to the new target.<br /><br /><strong>Per frame</strong>: apply one interpolation step per decoded audio frame. This is lighter and more stepped.<br /><br /><strong>Per sample (interpolated)</strong>: evaluate the spatial gains once per frame and linearly interpolate them across each sample. Nearly as smooth as Per sample at roughly the cost of Per frame — the recommended smooth mode.<br /><br /><strong>Per sample</strong>: advance the position every sample; while an object moves, re-evaluate its spatial gains every few samples (the lookup stride, 8 by default) and interpolate them in between. The most accurate, and the most expensive.",
   "section.twoDSources": "Fixed-channel sources",
   "twoDSources.surroundLabel": "Rear channels (4.x/5.x)",
   "twoDSources.surroundSide": "Side",
@@ -1052,5 +1053,6 @@
   "placement.editManually": "Edit positions",
   "confirm.resetPlacement": "Clear the {family} entries?\n\nRouting, trims and manual positions of every channel of this family go back to their defaults.",
   "help.placement": "Where the fixed channels of a stream go, chosen per source family — Dolby, DTS, Auro-3D, PCM, or Generic for anything else. Sphere places every channel as a direction around you, independent of the room: the angle the format states (Auro-3D's setup table, DTS's ITU layout) or a nominal one. Room places it at the corner of the room model its label names, stretched with your room ratio like an object — the Dolby model, and the historical behaviour. Manual uses the positions you set for this family; a channel without one falls back to Room. Routing (Virtual/Direct) and trims apply in every mode. A family inherits the Generic mode and entries unless it sets its own.",
-  "help.placement.mode": "Sphere: directions around you, room-independent. Room: the corners of the room model, stretched with your room ratio. Manual: the positions you set for this family."
+  "help.placement.mode": "Sphere: directions around you, room-independent. Room: the corners of the room model, stretched with your room ratio. Manual: the positions you set for this family.",
+  "help.audio.sampleRampStride": "Per sample mode only. While an object moves, its position still advances every sample, but its spatial gains are looked up every N samples and interpolated linearly in between. 1 looks them up every sample: the most exact and the most expensive. 8 (the default) is 0.17 ms at 48 kHz, far below audibility, for an eighth of the lookups. Larger values save little more."
 }

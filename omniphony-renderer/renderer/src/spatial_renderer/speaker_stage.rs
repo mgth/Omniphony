@@ -20,7 +20,9 @@ use crate::crossover::{
     CrossoverBank, CrossoverStates, FirCrossoverBank, FreqBand, LR4CrossoverBank, compute_bands,
 };
 use crate::delay_line::IntegerDelay;
-use crate::live_params::{CrossoverType, ObjectLiveParams, RampMode, RendererControl};
+use crate::live_params::{
+    CrossoverType, MAX_SAMPLE_RAMP_STRIDE, ObjectLiveParams, RampMode, RendererControl,
+};
 use crate::ramp_strategy::{RampContext, RampStrategy};
 use crate::render_backend::{CornerCache, MultiBandTable};
 use crate::spatial_vbap::Gains;
@@ -124,11 +126,6 @@ pub(super) struct SpeakerRenderStage {
     /// Interpolation fractions of a block, `(i + 1) / len`: shared by every
     /// source whose gains are interpolated across the block.
     pub(super) block_fractions: Vec<f32>,
-    /// `RampMode::Sample`: samples between two gain lookups of a moving
-    /// object. [`SAMPLE_RAMP_STRIDE`] in every build; a field only so that a
-    /// test can render with a stride of one, a lookup per sample, to compare
-    /// against.
-    pub(super) sample_ramp_stride: usize,
     /// `RampMode::Sample`: per-channel gains a block that ended mid-movement
     /// hands to the next one, keyed by channel index.
     pub(super) gain_carries: Vec<GainCarry>,
@@ -161,6 +158,9 @@ pub(super) struct SpeakerStageFrame<'a> {
     pub(super) layout: &'a SpeakerLayout,
     pub(super) object_params: &'a [ObjectLiveParams],
     pub(super) ramp_mode: RampMode,
+    /// `RampMode::Sample`: samples between two gain lookups of a moving
+    /// object (`LiveParams::sample_ramp_stride`).
+    pub(super) sample_ramp_stride: usize,
     pub(super) ramp_strategy: &'a dyn RampStrategy,
     pub(super) ramp_context: &'a RampContext,
     pub(super) log_object_positions: bool,
@@ -352,16 +352,6 @@ fn block_fractions(fractions: &mut Vec<f32>, len: usize) {
     fractions.extend((0..len).map(|i| (i as f32 + 1.0) * inv_len));
 }
 
-/// `RampMode::Sample`: how many samples apart a moving object's gains are
-/// looked up. The position ramp still advances every sample; between two
-/// lookups the gains are interpolated linearly.
-///
-/// At 48 kHz eight samples are 0.17 ms, a span over which a ramping object
-/// moves by a small fraction of a table cell: the gains along it are close to
-/// linear, and a lookup per sample was eight times the work for a difference
-/// far below audibility.
-pub(super) const SAMPLE_RAMP_STRIDE: usize = 8;
-
 /// A channel's gains at the last sample of a block that ended mid-movement:
 /// where the next block's first interpolation segment starts from, so the
 /// gains do not step at the block boundary.
@@ -390,6 +380,13 @@ pub(super) struct GainCarry {
 /// block boundary the starting gains come from `carry`; a movement that starts
 /// in this block starts from the gains of the run it interrupts.
 ///
+/// `stride` is the live `sample_ramp_stride`, clamped to
+/// `[1, MAX_SAMPLE_RAMP_STRIDE]`; 1 is a lookup per sample. Its default, 8, is
+/// 0.17 ms at 48 kHz, a span over which a ramping object moves by a small
+/// fraction of a table cell: the gains along it are close to linear, and a
+/// lookup per sample was eight times the work for a difference far below
+/// audibility.
+///
 /// `band_gains` is left holding the gains of the block's last sample, which
 /// are those of its position; `segment_end` is scratch.
 #[inline(always)]
@@ -408,7 +405,7 @@ fn mix_sample_ramp(
     segment_end: &mut Vec<Gains>,
     mut lookup: impl FnMut([f64; 3], [f32; 3], &mut Vec<Gains>),
 ) {
-    let stride = stride.clamp(1, SAMPLE_RAMP_STRIDE);
+    let stride = stride.clamp(1, MAX_SAMPLE_RAMP_STRIDE);
 
     // `band_gains` holds the gains of the sample before `run_start` once
     // `have_gains` is set: the previous block's last sample to begin with, if
@@ -445,7 +442,7 @@ fn mix_sample_ramp(
                 bus.add_constant(bands, end, range);
                 return;
             }
-            let mut fractions = [0.0f32; SAMPLE_RAMP_STRIDE];
+            let mut fractions = [0.0f32; MAX_SAMPLE_RAMP_STRIDE];
             for (i, f) in fractions.iter_mut().enumerate().take(len) {
                 *f = (i + 1) as f32 / len as f32;
             }
@@ -567,6 +564,7 @@ impl SpeakerRenderStage {
             layout: active_layout,
             object_params,
             ramp_mode,
+            sample_ramp_stride,
             ramp_strategy,
             ramp_context,
             log_object_positions,
@@ -857,7 +855,7 @@ impl SpeakerRenderStage {
                             &mut state.ramp,
                             ramp_strategy,
                             ramp_context,
-                            self.sample_ramp_stride,
+                            sample_ramp_stride,
                             &mut self.gain_carries[input_channel_idx],
                             self.mix_pass,
                             &mut band_gains,
@@ -1025,7 +1023,6 @@ impl SpeakerRenderStage {
             crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
             mix_bus: Vec::new(),
             block_fractions: Vec::new(),
-            sample_ramp_stride: SAMPLE_RAMP_STRIDE,
             gain_carries: Vec::new(),
             mix_pass: 0,
             segment_end_scratch: Vec::new(),

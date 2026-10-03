@@ -274,13 +274,11 @@ fn scene_events(block: usize, block_len: usize) -> Vec<SpatialChannelEvent> {
 /// Mix the scene block by block through `mix_channels` and through the
 /// reference, on the same stage, and require the same output bits, the same
 /// ramp state and the same metered gains — in every ramp mode, with beds and
-/// objects, a muted object, and trilinear and nearest-cell lookups. The stage
-/// is set to a gain lookup per sample for moving objects, as the reference
+/// objects, a muted object, and trilinear and nearest-cell lookups. The frames
+/// ask for a gain lookup per sample for moving objects, as the reference
 /// does.
 fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: usize) {
     const BLOCKS_PER_MODE: usize = 9;
-    // The reference looks a moving object's gains up every sample.
-    r.speaker_stage.sample_ramp_stride = 1;
     let topology = r.control.active_topology();
     let num_speakers = r.speaker_stage.num_speakers;
 
@@ -344,6 +342,8 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
             layout: &topology.speaker_layout,
             object_params: &object_params,
             ramp_mode,
+            // The reference looks a moving object's gains up every sample.
+            sample_ramp_stride: 1,
             ramp_strategy: &strategy,
             ramp_context: &ramp_context,
             log_object_positions: false,
@@ -775,7 +775,7 @@ impl RampProbe {
 #[test]
 fn stride_interpolation_is_exact_for_a_linear_gain_law_across_blocks() {
     const BLOCK: usize = 37;
-    let mut probe = RampProbe::new(SAMPLE_RAMP_STRIDE);
+    let mut probe = RampProbe::new(crate::config_fields::sample_ramp_stride::DEFAULT);
     probe.move_to(0.2, 0);
     let (_, _, lookups) = probe.block(BLOCK);
     assert_eq!(lookups, 1, "a settled block is one lookup");
@@ -857,7 +857,7 @@ fn stride_keeps_segment_ends_and_settled_samples_exact() {
         out
     };
     let exact = run(1);
-    let strided = run(SAMPLE_RAMP_STRIDE);
+    let strided = run(crate::config_fields::sample_ramp_stride::DEFAULT);
     // Block 0 is settled. The ramp starts on sample 40, still at the settled
     // position, moves over samples 41..=92 and lands on its target on sample
     // 93, where the object stays.
@@ -892,7 +892,7 @@ fn stride_keeps_segment_ends_and_settled_samples_exact() {
 #[test]
 fn a_skipped_pass_drops_the_carried_gains() {
     const BLOCK: usize = 40;
-    let mut probe = RampProbe::new(SAMPLE_RAMP_STRIDE);
+    let mut probe = RampProbe::new(crate::config_fields::sample_ramp_stride::DEFAULT);
     probe.move_to(0.9, 10 * BLOCK as u64);
     assert_eq!(probe.block(BLOCK).2, 6, "first moving block: no carry");
     assert_eq!(probe.block(BLOCK).2, 5, "second: starts from the carry");
@@ -909,7 +909,7 @@ fn stride_deviation(cartesian: bool, band_limited: bool, moving: bool) -> (f32, 
     let render = |stride: usize| -> Vec<f32> {
         let mut r = build_table_renderer(cartesian, band_limited);
         r.control.live.write().ramp_mode = RampMode::Sample;
-        r.speaker_stage.sample_ramp_stride = stride;
+        r.control.live.write().sample_ramp_stride = stride;
         let mut out = Vec::new();
         let mut buf = Vec::new();
         for block in 0..BLOCKS {
@@ -955,7 +955,7 @@ fn stride_deviation(cartesian: bool, band_limited: bool, moving: bool) -> (f32, 
         out
     };
     let exact = render(1);
-    let strided = render(SAMPLE_RAMP_STRIDE);
+    let strided = render(crate::config_fields::sample_ramp_stride::DEFAULT);
     let mut peak = 0.0f32;
     let mut sum_sq = 0.0f64;
     let mut level = 0.0f32;
