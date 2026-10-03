@@ -523,7 +523,7 @@ pub fn render_single_object_binaural_at(
 
     let mut buf = Vec::new();
 
-    let mut render_one = |r: &mut SpatialRenderer, buf: Vec<f32>, seed: usize| {
+    let render_one = |r: &mut SpatialRenderer, buf: Vec<f32>, seed: usize| {
         let f = r
             .render_frame(&make_pcm_block(1, seed), 1, &event, buf, false)
             .expect("binaural ITD render");
