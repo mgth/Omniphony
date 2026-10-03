@@ -380,6 +380,33 @@ impl SpatialRenderer {
         Arc::clone(&self.control)
     }
 
+    /// Hand a consumed [`RenderedFrame`] back: its metering lists
+    /// (`object_gains`, `object_band_gains`, `object_band_sq`) return to the
+    /// renderer, which refills them in place on the next metered frame, and
+    /// its sample buffer is returned for the caller to donate to the next
+    /// [`Self::render_frame`].
+    ///
+    /// Optional: a frame that is simply dropped costs the next metered frame
+    /// fresh allocations, nothing else. A host that meters every frame
+    /// (Studio connected) recycles them to keep the render allocation-free.
+    pub fn recycle_frame(&mut self, frame: RenderedFrame) -> Vec<f32> {
+        let RenderedFrame {
+            samples,
+            object_gains,
+            object_band_gains,
+            object_band_sq,
+            ..
+        } = frame;
+        self.speaker_stage
+            .meter_buffers
+            .reclaim(speaker_stage::MeterBuffers {
+                object_gains,
+                object_band_gains,
+                object_band_sq,
+            });
+        samples
+    }
+
     /// Build the speaker stage's band engines (per-band gain tables, crossover
     /// bank, unified table) for the active topology and the live options now,
     /// instead of on the first [`Self::render_frame`]. A no-op when they are
@@ -1113,9 +1140,9 @@ impl SpatialRenderer {
             // the app layout, so the object meters stay valid on headphones.
             return Ok(match cascade_diag {
                 Some(mut diag) => {
-                    diag.object_gains.sort_by_key(|(idx, _)| *idx);
-                    diag.object_band_gains.sort_by_key(|(idx, _)| *idx);
-                    diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
+                    diag.object_gains.sort_unstable_by_key(|(idx, _)| *idx);
+                    diag.object_band_gains.sort_unstable_by_key(|(idx, _)| *idx);
+                    diag.object_band_sq.sort_unstable_by_key(|(idx, _)| *idx);
                     RenderedFrame {
                         samples: output,
                         // Matches the `sample_length * 2` resize above: this
@@ -1300,9 +1327,12 @@ impl SpatialRenderer {
 
         let speaker_channels = self.num_speakers;
         self.apply_output_mode_fade(&mut output, speaker_channels);
-        diag.object_gains.sort_by_key(|(idx, _)| *idx);
-        diag.object_band_gains.sort_by_key(|(idx, _)| *idx);
-        diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
+        // One entry per channel, so the keys are unique and an unstable sort
+        // gives the stable order — without the scratch buffer a stable sort
+        // allocates past a few dozen entries.
+        diag.object_gains.sort_unstable_by_key(|(idx, _)| *idx);
+        diag.object_band_gains.sort_unstable_by_key(|(idx, _)| *idx);
+        diag.object_band_sq.sort_unstable_by_key(|(idx, _)| *idx);
         Ok(RenderedFrame {
             samples: output,
             // Matches the `sample_length * self.num_speakers` resize above.

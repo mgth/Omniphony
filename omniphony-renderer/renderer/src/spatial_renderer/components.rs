@@ -29,9 +29,15 @@ pub struct RenderedFrame {
     /// `n_frames * 12` floats out of a buffer holding a sixth of that — heap
     /// read past the end, played as PCM.
     pub n_channels: usize,
-    /// VBAP gains at the final sample for each rendered object channel.
-    /// `(channel_idx, gains)` — `gains[speaker_idx]` is the gain applied to that speaker.
-    /// Ordered by `channel_idx`. Empty if no objects were spatialized this frame.
+    /// VBAP gains at the final sample for each rendered channel: summed over
+    /// the bands for an object, one-hot on its speaker for a direct (bed)
+    /// channel. `(channel_idx, gains)` — `gains[speaker_idx]` is the gain
+    /// applied to that speaker. Ordered by `channel_idx`. Only filled on a
+    /// metered frame (`measure_breakdown`), empty otherwise.
+    ///
+    /// This list and the two below are lent by the renderer: hand the frame
+    /// back with [`SpatialRenderer::recycle_frame`](super::SpatialRenderer::recycle_frame)
+    /// and the next metered frame refills them instead of allocating.
     pub object_gains: Vec<(usize, Gains)>,
     /// Per-band VBAP gains for crossover objects.
     /// `(channel_idx, [band0_gains, band1_gains, ...])` — each `Gains` is full-size

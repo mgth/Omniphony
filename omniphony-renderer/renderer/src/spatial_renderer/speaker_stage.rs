@@ -143,6 +143,57 @@ pub(super) struct SpeakerRenderStage {
     pub(super) speaker_gains_buf: Vec<f32>,
     /// Per-speaker delay lines — fixed 100 ms capacity, render-thread owned.
     pub(super) delay_lines: Vec<crate::delay_line::DelayLine>,
+    /// The metering lists a metered frame fills: lent to its
+    /// [`SpeakerStageDiagnostics`] (then its `RenderedFrame`) and handed back
+    /// by [`SpatialRenderer::recycle_frame`], so a metered frame refills the
+    /// previous one's allocations instead of making its own. Untouched by an
+    /// unmetered frame.
+    pub(super) meter_buffers: MeterBuffers,
+}
+
+/// The per-channel metering lists of one mix pass (see
+/// [`SpeakerStageDiagnostics`] for what each holds).
+#[derive(Default)]
+pub(super) struct MeterBuffers {
+    pub(super) object_gains: Vec<(usize, Gains)>,
+    pub(super) object_band_gains: Vec<(usize, Vec<Gains>)>,
+    pub(super) object_band_sq: Vec<(usize, Vec<f64>)>,
+}
+
+impl MeterBuffers {
+    /// Take back the lists a frame was lent, keeping for each the one with
+    /// the larger allocation: an unmetered frame carries empty, unallocated
+    /// lists, and must not displace the pooled ones.
+    pub(super) fn reclaim(&mut self, returned: MeterBuffers) {
+        fn keep_larger<T>(pooled: &mut Vec<T>, returned: Vec<T>) {
+            if returned.capacity() > pooled.capacity() {
+                *pooled = returned;
+            }
+        }
+        keep_larger(&mut self.object_gains, returned.object_gains);
+        keep_larger(&mut self.object_band_gains, returned.object_band_gains);
+        keep_larger(&mut self.object_band_sq, returned.object_band_sq);
+    }
+}
+
+/// The next entry of a pooled per-channel metering list, keyed to `channel`
+/// and emptied: the inner buffer an earlier frame left in that slot is reused,
+/// so a list refilled with as many channels as before allocates nothing.
+/// `filled` counts the entries written this frame; the caller truncates the
+/// list to it once the frame is mixed.
+fn pooled_entry<'a, T>(
+    list: &'a mut Vec<(usize, Vec<T>)>,
+    filled: &mut usize,
+    channel: usize,
+) -> &'a mut Vec<T> {
+    if *filled == list.len() {
+        list.push((channel, Vec::new()));
+    }
+    let entry = &mut list[*filled];
+    *filled += 1;
+    entry.0 = channel;
+    entry.1.clear();
+    &mut entry.1
 }
 
 /// Frame-scoped inputs for [`SpeakerRenderStage::mix_channels`], all borrowed
@@ -571,16 +622,19 @@ impl SpeakerRenderStage {
             is_first,
             measure_breakdown,
         } = frame;
-        // Per-object VBAP gains at the final sample — monitoring only (OSC meter
-        // bundle). Only collected when `measure_breakdown` is set; left empty (no
-        // allocation) on the plain render path (e.g. mpv without Studio open).
-        let mut object_gains_out: Vec<(usize, Gains)> = if measure_breakdown {
-            Vec::with_capacity(input_channel_count)
+        // Per-channel gains at the final sample and per-band energies —
+        // monitoring only (OSC meter bundle). Only collected when
+        // `measure_breakdown` is set, into the pooled lists (refilled in place,
+        // see `MeterBuffers`); the plain render path (e.g. mpv without Studio
+        // open) hands out empty, unallocated lists and leaves the pool alone.
+        let mut meters = if measure_breakdown {
+            std::mem::take(&mut self.meter_buffers)
         } else {
-            Vec::new()
+            MeterBuffers::default()
         };
-        let mut object_band_gains_out: Vec<(usize, Vec<Gains>)> = Vec::new();
-        let mut object_band_sq_out: Vec<(usize, Vec<f64>)> = Vec::new();
+        meters.object_gains.clear();
+        let mut band_gains_filled = 0;
+        let mut band_sq_filled = 0;
         let mut crossover_elapsed = std::time::Duration::ZERO;
         let profile_crossover = measure_breakdown && self.crossover_filter_bank.is_some();
 
@@ -686,9 +740,11 @@ impl SpeakerRenderStage {
                     }
                 }
 
-                let mut gains = Gains::zeroed(self.num_speakers);
-                gains.set(speaker_idx, 1.0);
-                object_gains_out.push((input_channel_idx, gains));
+                if measure_breakdown {
+                    let mut gains = Gains::zeroed(self.num_speakers);
+                    gains.set(speaker_idx, 1.0);
+                    meters.object_gains.push((input_channel_idx, gains));
+                }
 
                 if is_first {
                     let speaker_name = active_layout.speakers[speaker_idx].name.as_str();
@@ -942,7 +998,7 @@ impl SpeakerRenderStage {
 
                 // Monitoring outputs (OSC meter bundle): only built when requested.
                 // `band_gains` is already full-size — sum across bands for the
-                // per-object gains, and hand a copy of the band gains out.
+                // per-object gains, and copy the band gains out.
                 if measure_breakdown {
                     let mut summed = Gains::zeroed(self.num_speakers);
                     for gains in &band_gains {
@@ -950,23 +1006,31 @@ impl SpeakerRenderStage {
                             summed[i] += g;
                         }
                     }
-                    object_band_gains_out.push((input_channel_idx, band_gains.clone()));
-                    object_gains_out.push((input_channel_idx, summed));
+                    pooled_entry(
+                        &mut meters.object_band_gains,
+                        &mut band_gains_filled,
+                        input_channel_idx,
+                    )
+                    .extend_from_slice(&band_gains);
+                    meters.object_gains.push((input_channel_idx, summed));
                     // Per-band energy for the meters, from this object's block
                     // of band samples.
                     if profile_crossover {
-                        let sums: Vec<f64> = (0..band_gains.len())
-                            .map(|b| {
-                                self.crossover_band_scratch
-                                    .get(b)
-                                    .and_then(|band| band.get(..sample_length))
-                                    .unwrap_or(&[])
-                                    .iter()
-                                    .map(|&s| (s as f64) * (s as f64))
-                                    .sum()
-                            })
-                            .collect();
-                        object_band_sq_out.push((input_channel_idx, sums));
+                        let crossover_band_scratch = &self.crossover_band_scratch;
+                        pooled_entry(
+                            &mut meters.object_band_sq,
+                            &mut band_sq_filled,
+                            input_channel_idx,
+                        )
+                        .extend((0..band_gains.len()).map(|b| {
+                            crossover_band_scratch
+                                .get(b)
+                                .and_then(|band| band.get(..sample_length))
+                                .unwrap_or(&[])
+                                .iter()
+                                .map(|&s| (s as f64) * (s as f64))
+                                .sum::<f64>()
+                        }));
                     }
                 }
 
@@ -977,10 +1041,12 @@ impl SpeakerRenderStage {
 
         bus.finish();
 
+        meters.object_band_gains.truncate(band_gains_filled);
+        meters.object_band_sq.truncate(band_sq_filled);
         SpeakerStageDiagnostics {
-            object_gains: object_gains_out,
-            object_band_gains: object_band_gains_out,
-            object_band_sq: object_band_sq_out,
+            object_gains: meters.object_gains,
+            object_band_gains: meters.object_band_gains,
+            object_band_sq: meters.object_band_sq,
             crossover_elapsed,
         }
     }
@@ -1029,6 +1095,7 @@ impl SpeakerRenderStage {
             band_gains_scratch: Vec::new(),
             interp_end_scratch: Vec::new(),
             speaker_gains_buf: vec![0.0f32; num_speakers],
+            meter_buffers: MeterBuffers::default(),
             delay_lines: {
                 let max_delay = (0.1 * sample_rate as f32) as usize; // 100 ms
                 (0..num_speakers)

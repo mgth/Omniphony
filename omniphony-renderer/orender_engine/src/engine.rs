@@ -1541,8 +1541,12 @@ impl Engine {
             sample_count * n_channels as usize,
             "RenderedAudio contract: samples.len() must equal n_frames * n_channels"
         );
+        // The metering lists go back to the renderer, which refills them on
+        // the next metered frame (an overlay or Studio meters every frame): no
+        // per-frame allocation on the render path.
+        let samples = self.renderer.recycle_frame(rendered);
         Ok(Some(RenderedAudio {
-            samples: rendered.samples,
+            samples,
             n_channels,
             n_frames: sample_count,
             sample_pos: sample_pos_at_start,

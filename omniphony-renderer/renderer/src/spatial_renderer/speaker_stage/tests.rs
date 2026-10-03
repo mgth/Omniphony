@@ -29,14 +29,18 @@ fn reference_accumulate_band(out_frame: &mut [f32], gains: &[f32], sample: f32) 
     }
 }
 
+/// What the meters are handed for one channel: the band gains of the block's
+/// last sample, and each band's Σs² over the block (objects only).
+type ReferenceMeters = (usize, Vec<Gains>, Vec<f64>);
+
 /// The sample-major mix. `output` must come in zeroed. Returns, per channel,
-/// the band gains of the block's last sample — what the meters are handed.
+/// what the meters are handed.
 fn reference_mix_channels(
     stage: &SpeakerRenderStage,
     state: &mut ReferenceState,
     frame: &SpeakerStageFrame<'_>,
     output: &mut [f32],
-) -> Vec<(usize, Vec<Gains>)> {
+) -> Vec<ReferenceMeters> {
     let num_speakers = stage.num_speakers;
     let sample_length = frame.sample_length;
     let input_channel_count = frame.input_channel_count;
@@ -92,7 +96,7 @@ fn reference_mix_channels(
             }
             let mut gains = Gains::zeroed(num_speakers);
             gains[..num_speakers].copy_from_slice(&routing);
-            last_gains.push((ch, vec![gains]));
+            last_gains.push((ch, vec![gains], Vec::new()));
             continue;
         }
 
@@ -107,12 +111,18 @@ fn reference_mix_channels(
             (Some(fb), Some(states)) => fb.process_sample(input_at(sample_idx), states),
             _ => SmallBands::single(input_at(sample_idx)),
         };
+        // Per-band Σs² of the band samples, in sample order.
+        let mut band_sq = vec![0.0f64; bank.map_or(1, |fb| fb.num_bands())];
         let mut mix_sample = |output: &mut [f32], sample_idx: usize, band_gains: &[Gains]| {
             let split = split_at(sample_idx);
             let out_base = sample_idx * num_speakers;
             let out_frame = &mut output[out_base..out_base + num_speakers];
             for (b, gains) in band_gains.iter().enumerate() {
                 reference_accumulate_band(out_frame, gains, split.get(b));
+            }
+            for (b, sq) in band_sq.iter_mut().enumerate() {
+                let s = split.get(b) as f64;
+                *sq += s * s;
             }
         };
 
@@ -215,7 +225,7 @@ fn reference_mix_channels(
                     .extend_from_slice(&state.interp_end);
             }
         }
-        last_gains.push((ch, band_gains));
+        last_gains.push((ch, band_gains, band_sq));
     }
     last_gains
 }
@@ -390,7 +400,7 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
             );
         }
         if measure_breakdown {
-            for (ch, band_gains) in &want_gains {
+            for (ch, band_gains, band_sq) in &want_gains {
                 let mut summed = Gains::zeroed(num_speakers);
                 for gains in band_gains {
                     for (sum, &g) in summed.iter_mut().zip(gains.iter()) {
@@ -418,11 +428,38 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
                         Some(band_gains.iter().map(|g| bits(g)).collect()),
                         "{label}, {ramp_mode:?}, block {block}, channel {ch}: metered band gains differ"
                     );
+                    // The band energies ride only with a crossover bank.
+                    let metered_sq = diag
+                        .object_band_sq
+                        .iter()
+                        .find(|(idx, _)| idx == ch)
+                        .map(|(_, sq)| sq.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+                    let want_sq = r
+                        .speaker_stage
+                        .crossover_filter_bank
+                        .is_some()
+                        .then(|| band_sq.iter().map(|v| v.to_bits()).collect());
+                    assert_eq!(
+                        metered_sq, want_sq,
+                        "{label}, {ramp_mode:?}, block {block}, channel {ch}: metered band energies differ"
+                    );
                 }
             }
         } else {
+            assert!(
+                diag.object_gains.is_empty(),
+                "unmetered: no gains handed out"
+            );
             assert!(diag.object_band_gains.is_empty());
+            assert!(diag.object_band_sq.is_empty());
         }
+        // Hand the lists back, as a host does: the next metered block refills
+        // them in place, and the checks above hold on reused slots too.
+        r.speaker_stage.meter_buffers.reclaim(MeterBuffers {
+            object_gains: diag.object_gains,
+            object_band_gains: diag.object_band_gains,
+            object_band_sq: diag.object_band_sq,
+        });
     }
     assert!(!silent, "{label}: the scene mixed silence");
 }
