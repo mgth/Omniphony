@@ -204,37 +204,43 @@ pub trait GainModel: Send + Sync + 'static {
 /// so they are evaluated in parallel. Inside a row the cells are evaluated in
 /// order, each handing a [`NeighbourHint`] to the next and the first starting
 /// from an empty one: the table is the same for any number of threads.
+///
+/// Fails when the model answers a cell with a gain count other than its
+/// `speaker_count` (see [`check_sampled_gain_count`]).
 fn sample_rows(
     model: &dyn GainModel,
     template: RenderRequest,
     rows: usize,
     cells_per_row: usize,
     position: impl Fn(usize, usize) -> [f64; 3] + Sync,
-) -> Vec<f32> {
+) -> Result<Vec<f32>> {
     let speaker_count = model.speaker_count();
     let row_len = cells_per_row * speaker_count;
     let mut gains = vec![0.0f32; rows * row_len];
     if row_len == 0 {
-        return gains;
+        return Ok(gains);
     }
     gains
         .par_chunks_mut(row_len)
         .enumerate()
-        .for_each(|(row, row_gains)| {
+        .try_for_each(|(row, row_gains)| {
             let mut hint = NeighbourHint::new();
             let mut request = template;
             for (cell, cell_gains) in row_gains.chunks_mut(speaker_count).enumerate() {
                 request.adm_position = position(row, cell);
                 hint.begin_cell();
                 let response = model.compute_gains_with_hint(&request, &mut hint);
-                // The contract is `speaker_count` gains. A shorter answer leaves
-                // the rest of the cell silent instead of shifting every cell after it.
-                for (out, gain) in cell_gains.iter_mut().zip(response.gains.iter()) {
-                    *out = *gain;
-                }
+                check_sampled_gain_count(
+                    model,
+                    speaker_count,
+                    response.gains.len(),
+                    request.adm_position,
+                )?;
+                cell_gains.copy_from_slice(&response.gains[..]);
             }
-        });
-    gains
+            Ok::<(), anyhow::Error>(())
+        })?;
+    Ok(gains)
 }
 
 pub trait EvaluationStrategy {
@@ -361,8 +367,31 @@ pub struct SampledCartesianEvaluator {
     backend_restore_snapshot: Option<BackendRestoreSnapshot>,
 }
 
+/// A sampled table stores `speaker_count` gains per cell back to back, so a
+/// model answering one cell with another count would not fail there: it would
+/// shift every later cell onto the wrong speakers, and the build's smoke test,
+/// which reads the table back at the declared count, would not see it. Every
+/// cell is checked as it is sampled instead.
+fn check_sampled_gain_count(
+    model: &dyn GainModel,
+    expected: usize,
+    got: usize,
+    position: [f64; 3],
+) -> Result<()> {
+    if got != expected {
+        anyhow::bail!(
+            "backend '{}' returned {got} gains at position {position:?} while its precomputed \
+             table was built, expected {expected} (one per speaker)",
+            model.backend_id()
+        );
+    }
+    Ok(())
+}
+
 impl SampledCartesianEvaluator {
-    pub fn new(model: Arc<dyn GainModel>, config: &EvaluationBuildConfig) -> Self {
+    /// Sample `model` over the cartesian grid. Fails when the model answers a
+    /// cell with a gain count other than its `speaker_count`.
+    pub fn new(model: Arc<dyn GainModel>, config: &EvaluationBuildConfig) -> Result<Self> {
         // Intentionally sample and query the precomputed cartesian evaluator in native
         // ADM coordinates. The backend remains responsible for any room/depth transforms,
         // so the runtime can read gains directly from object positions without converting
@@ -382,7 +411,7 @@ impl SampledCartesianEvaluator {
                 y_positions[row % ny] as f64,
                 z_positions[row / ny] as f64,
             ]
-        });
+        })?;
         let backend_restore_snapshot = build_backend_restore_snapshot(
             model.backend_id(),
             model.backend_label(),
@@ -392,7 +421,7 @@ impl SampledCartesianEvaluator {
         let x_lut = AxisLut::from_values(&x_positions);
         let y_lut = AxisLut::from_values(&y_positions);
         let z_lut = AxisLut::from_values(&z_positions);
-        Self {
+        Ok(Self {
             model,
             x_positions,
             y_positions,
@@ -405,7 +434,7 @@ impl SampledCartesianEvaluator {
             position_interpolation: AtomicBool::new(config.position_interpolation),
             frozen_request: config.request_template,
             backend_restore_snapshot,
-        }
+        })
     }
 }
 
@@ -493,7 +522,9 @@ pub struct SampledPolarEvaluator {
 }
 
 impl SampledPolarEvaluator {
-    pub fn new(model: Arc<dyn GainModel>, config: &EvaluationBuildConfig) -> Self {
+    /// Sample `model` over the polar grid. Fails when the model answers a
+    /// cell with a gain count other than its `speaker_count`.
+    pub fn new(model: Arc<dyn GainModel>, config: &EvaluationBuildConfig) -> Result<Self> {
         let azimuth_positions = polar_azimuth_axis(config.polar.azimuth_values.max(2));
         let elevation_positions = polar_elevation_axis(
             config.polar.elevation_values.max(2),
@@ -521,7 +552,7 @@ impl SampledPolarEvaluator {
                 );
                 [x as f64, y as f64, z as f64]
             },
-        );
+        )?;
         let backend_restore_snapshot = build_backend_restore_snapshot(
             model.backend_id(),
             model.backend_label(),
@@ -531,7 +562,7 @@ impl SampledPolarEvaluator {
         let azimuth_lut = AzimuthLut::from_values(&azimuth_positions);
         let elevation_lut = AxisLut::from_values(&elevation_positions);
         let distance_lut = AxisLut::from_values(&distance_positions);
-        Self {
+        Ok(Self {
             model,
             azimuth_positions,
             elevation_positions,
@@ -544,7 +575,7 @@ impl SampledPolarEvaluator {
             position_interpolation: AtomicBool::new(config.position_interpolation),
             frozen_request: config.request_template,
             backend_restore_snapshot,
-        }
+        })
     }
 }
 
@@ -645,8 +676,11 @@ impl SizeInterpolatingEvaluator {
         model: Arc<dyn GainModel>,
         config: &EvaluationBuildConfig,
         intervals: usize,
-        build_inner: impl Fn(Arc<dyn GainModel>, &EvaluationBuildConfig) -> Box<dyn PreparedEvaluator>,
-    ) -> Self {
+        build_inner: impl Fn(
+            Arc<dyn GainModel>,
+            &EvaluationBuildConfig,
+        ) -> Result<Box<dyn PreparedEvaluator>>,
+    ) -> Result<Self> {
         let n = intervals.max(1);
         let speaker_count = model.speaker_count();
         let mut sizes = Vec::with_capacity(n + 1);
@@ -657,15 +691,15 @@ impl SizeInterpolatingEvaluator {
             inner_config.object_size_intervals = 0;
             inner_config.request_template.event_size = [s, s, s];
             sizes.push(s);
-            inners.push(build_inner(Arc::clone(&model), &inner_config));
+            inners.push(build_inner(Arc::clone(&model), &inner_config)?);
         }
-        Self {
+        Ok(Self {
             model,
             sizes,
             inners,
             mode: config.object_size_mode,
             speaker_count,
-        }
+        })
     }
 }
 
@@ -752,11 +786,14 @@ impl EvaluationStrategy for PrecomputedCartesianStrategy {
                 config,
                 config.object_size_intervals,
                 |inner_model, inner_config| {
-                    Box::new(SampledCartesianEvaluator::new(inner_model, inner_config))
+                    Ok(Box::new(SampledCartesianEvaluator::new(
+                        inner_model,
+                        inner_config,
+                    )?))
                 },
-            )))
+            )?))
         } else {
-            Ok(Box::new(SampledCartesianEvaluator::new(model, config)))
+            Ok(Box::new(SampledCartesianEvaluator::new(model, config)?))
         }
     }
 }
@@ -779,11 +816,14 @@ impl EvaluationStrategy for PrecomputedPolarStrategy {
                 config,
                 config.object_size_intervals,
                 |inner_model, inner_config| {
-                    Box::new(SampledPolarEvaluator::new(inner_model, inner_config))
+                    Ok(Box::new(SampledPolarEvaluator::new(
+                        inner_model,
+                        inner_config,
+                    )?))
                 },
-            )))
+            )?))
         } else {
-            Ok(Box::new(SampledPolarEvaluator::new(model, config)))
+            Ok(Box::new(SampledPolarEvaluator::new(model, config)?))
         }
     }
 }

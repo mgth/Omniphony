@@ -208,7 +208,7 @@ mod tests {
 
         let cartesian = |threads| {
             in_pool(threads, || {
-                let table = SampledCartesianEvaluator::new(model(), &config);
+                let table = SampledCartesianEvaluator::new(model(), &config).expect("table");
                 bits(table.cartesian_parts().expect("cartesian table").gains)
             })
         };
@@ -220,7 +220,7 @@ mod tests {
 
         let polar = |threads| {
             in_pool(threads, || {
-                let table = SampledPolarEvaluator::new(model(), &config);
+                let table = SampledPolarEvaluator::new(model(), &config).expect("table");
                 bits(table.polar_parts().expect("polar table").gains)
             })
         };
@@ -238,7 +238,7 @@ mod tests {
             ..neutral_request()
         });
         let backend = Arc::new(BarycenterBackend::new(speakers(), 0.5));
-        let table = SampledCartesianEvaluator::new(backend.clone(), &config);
+        let table = SampledCartesianEvaluator::new(backend.clone(), &config).expect("table");
         let parts = table.cartesian_parts().expect("cartesian table");
         let (nx, ny) = (parts.x.len(), parts.y.len());
         for (cell, gains) in parts.gains.chunks(parts.speaker_count).enumerate() {
@@ -260,7 +260,7 @@ mod tests {
             speakers(),
             crate::live_params::ExperimentalDistanceLiveParams::default(),
         ));
-        let table = SampledCartesianEvaluator::new(backend.clone(), &config);
+        let table = SampledCartesianEvaluator::new(backend.clone(), &config).expect("table");
         let parts = table.cartesian_parts().expect("cartesian table");
         let (nx, ny) = (parts.x.len(), parts.y.len());
         for (cell, gains) in parts.gains.chunks(parts.speaker_count).enumerate() {

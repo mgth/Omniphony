@@ -309,11 +309,13 @@ impl ExperimentalDistanceBuildPlan {
 }
 
 impl BarycenterBuildPlan {
+    /// Fails, rather than build a model that would panic per request, when
+    /// the layout spatializes more speakers than the solver holds.
     pub fn build_gain_model(&self) -> Result<Box<dyn GainModel>> {
-        Ok(Box::new(crate::render_backend::BarycenterBackend::new(
+        Ok(Box::new(crate::render_backend::BarycenterBackend::try_new(
             self.speaker_positions.clone(),
             self.localize,
-        )))
+        )?))
     }
 }
 
@@ -1374,6 +1376,155 @@ mod tests {
         let engine = realtime_engine(Box::new(WrongCountBackend));
         let err = smoke_test_engine(&engine, &build_config(), "wrong_count_backend").unwrap_err();
         assert!(err.to_string().contains("expected"), "got: {err}");
+    }
+
+    /// A model answering with another gain count than its `speaker_count`
+    /// fails the precomputed table build. The smoke test cannot see it there:
+    /// it reads the sampled table back, at the declared count.
+    #[test]
+    fn a_wrong_gain_count_fails_the_precomputed_table_build() {
+        for mode in [
+            EffectiveEvaluationMode::PrecomputedCartesian,
+            EffectiveEvaluationMode::PrecomputedPolar,
+        ] {
+            let err =
+                build_prepared_render_engine(Box::new(WrongCountBackend), mode, &build_config())
+                    .err()
+                    .unwrap_or_else(|| panic!("{mode:?}: a table of shifted cells was built"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("wrong_count_backend")
+                    && msg.contains(&format!("returned {} gains", TEST_SPEAKERS + 1))
+                    && msg.contains(&format!("expected {TEST_SPEAKERS}")),
+                "{mode:?}: got: {msg}"
+            );
+        }
+    }
+
+    /// The count is checked on every cell, not only on the first: a model
+    /// that comes up short at a single position would otherwise shift every
+    /// later cell of the table onto the wrong speakers.
+    #[test]
+    fn a_gain_count_off_at_one_cell_fails_the_table_build() {
+        struct ShortInOneColumn;
+        impl GainModel for ShortInOneColumn {
+            fn backend_id(&self) -> &'static str {
+                "short_in_one_column"
+            }
+            fn backend_label(&self) -> &'static str {
+                "short_in_one_column"
+            }
+            fn capabilities(&self) -> BackendCapabilities {
+                realtime_caps()
+            }
+            fn speaker_count(&self) -> usize {
+                TEST_SPEAKERS
+            }
+            fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+                // One column of the 5×5 grid, off every smoke position.
+                let short = (req.adm_position[0] + 0.5).abs() < 1e-6
+                    && (req.adm_position[1] - 0.5).abs() < 1e-6;
+                let mut gains = Gains::zeroed(TEST_SPEAKERS - usize::from(short));
+                gains.set(0, 1.0);
+                RenderResponse { gains }
+            }
+            fn save_to_file(&self, _path: &std::path::Path, _layout: &SpeakerLayout) -> Result<()> {
+                Ok(())
+            }
+        }
+        // The smoke positions miss that column: realtime builds and passes.
+        let engine = realtime_engine(Box::new(ShortInOneColumn));
+        smoke_test_engine(&engine, &build_config(), "short_in_one_column")
+            .expect("the smoke positions do not reach the short column");
+        let err = build_prepared_render_engine(
+            Box::new(ShortInOneColumn),
+            EffectiveEvaluationMode::PrecomputedCartesian,
+            &build_config(),
+        )
+        .err()
+        .expect("the short cell fails the build");
+        assert!(
+            err.to_string()
+                .contains(&format!("returned {} gains", TEST_SPEAKERS - 1)),
+            "got: {err}"
+        );
+    }
+
+    /// A ring of `n` spatialized speakers, alternating ear level and 40° up.
+    fn ring_layout(n: usize) -> SpeakerLayout {
+        let ring = n.div_ceil(2) as f32;
+        SpeakerLayout::from_speakers(
+            (0..n)
+                .map(|i| {
+                    crate::speaker_layout::Speaker::new(
+                        format!("S{i}"),
+                        -180.0 + 360.0 * (i / 2) as f32 / ring,
+                        if i % 2 == 0 { 0.0 } else { 40.0 },
+                    )
+                })
+                .collect(),
+        )
+        .expect("ring layout")
+    }
+
+    /// The barycenter solver holds `MAX_SPEAKERS` speakers in fixed arrays: a
+    /// larger layout is refused when the model is built — an error the
+    /// recompute reports to Studio — instead of the model panicking out of
+    /// bounds per request (on the render thread for a band rebuild).
+    #[test]
+    fn barycenter_refuses_a_layout_larger_than_its_solver() {
+        use crate::spatial_vbap::MAX_SPEAKERS;
+        let positions = |n: usize| collect_spatializable_positions(&ring_layout(n));
+        let plan = |n: usize| BarycenterBuildPlan {
+            speaker_positions: positions(n),
+            localize: 0.0,
+        };
+        assert!(plan(MAX_SPEAKERS).build_gain_model().is_ok());
+        let err = plan(MAX_SPEAKERS + 2)
+            .build_gain_model()
+            .err()
+            .expect("more speakers than the solver holds");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("at most {MAX_SPEAKERS}"))
+                && msg.contains(&(MAX_SPEAKERS + 2).to_string()),
+            "got: {msg}"
+        );
+
+        // The whole topology build — precomputed, so the table would have
+        // sampled the model — and a hybrid with a barycenter leg fail the same
+        // way, without a panic.
+        let topology = |backend_build: BackendBuildPlan, backend_id: &str| TopologyBuildPlan {
+            layout: ring_layout(MAX_SPEAKERS + 2),
+            backend_id: backend_id.to_string(),
+            backend_build,
+            evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            evaluation_build_config: build_config(),
+            geometry_generation: 0,
+        };
+        let built = std::panic::catch_unwind(|| {
+            topology(
+                BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2)),
+                "barycenter",
+            )
+            .build_topology()
+            .map(|_| ())
+        });
+        let err = built.expect("no panic").expect_err("refused");
+        assert!(err.to_string().contains("barycenter backend"), "got: {err}");
+
+        let hybrid = BackendBuildPlan::Hybrid(HybridBuildPlan {
+            external: Box::new(BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2))),
+            internal: Box::new(BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2))),
+            curve: vec![[0.0, 0.0], [1.0, 1.0]],
+            curve_smoothing: 0.0,
+            metric: DistanceMetric::default(),
+        });
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            topology(hybrid, "hybrid").build_topology().map(|_| ())
+        }));
+        let err = built.expect("no panic").expect_err("refused");
+        assert!(err.to_string().contains("barycenter backend"), "got: {err}");
     }
 
     #[test]
