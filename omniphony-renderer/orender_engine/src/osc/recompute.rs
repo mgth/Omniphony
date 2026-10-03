@@ -314,12 +314,11 @@ mod tests {
             let Ok((_, OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len]) else {
                 continue;
             };
-            if msg.addr == addr {
-                if let Some(OscType::String(s)) = msg.args.first() {
-                    if !s.is_empty() {
-                        return Some(s.clone());
-                    }
-                }
+            if msg.addr == addr
+                && let Some(OscType::String(s)) = msg.args.first()
+                && !s.is_empty()
+            {
+                return Some(s.clone());
             }
         }
         None
