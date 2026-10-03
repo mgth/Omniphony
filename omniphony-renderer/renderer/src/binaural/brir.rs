@@ -540,6 +540,28 @@ impl BrirSet {
         Ok(set)
     }
 
+    /// A set holding `pairs` exactly as given
+    /// (`pairs[emitter * orientations.len() + orientation]`, orientations
+    /// sorted): no lead removal, tail cut or normalisation. For tests that
+    /// need kernels of exact lengths.
+    #[cfg(test)]
+    pub(crate) fn from_pairs(
+        emitters: Vec<[f32; 3]>,
+        orientations: Vec<(f32, f32)>,
+        pairs: Vec<BrirPair>,
+    ) -> Self {
+        assert_eq!(pairs.len(), emitters.len() * orientations.len());
+        let max_taps = pairs.iter().map(BrirPair::taps).max().unwrap_or(0);
+        Self {
+            sample_rate: 48_000,
+            emitters,
+            orientations,
+            pairs,
+            max_taps,
+            conventions: "test".to_string(),
+        }
+    }
+
     /// Engine rate the pairs are at.
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate

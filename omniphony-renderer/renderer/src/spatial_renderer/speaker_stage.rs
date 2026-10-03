@@ -22,7 +22,7 @@ use crate::crossover::{
 use crate::delay_line::IntegerDelay;
 use crate::live_params::{CrossoverType, ObjectLiveParams, RampMode, RendererControl};
 use crate::ramp_strategy::{RampContext, RampStrategy};
-use crate::render_backend::MultiBandTable;
+use crate::render_backend::{CornerCache, MultiBandTable};
 use crate::spatial_vbap::Gains;
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
@@ -48,6 +48,11 @@ pub(super) struct SpeakerRenderStage {
     /// evaluators (`None` → per-band path). `pub(super)`: tests force the
     /// per-band path by clearing it.
     pub(super) unified_table: Option<MultiBandTable>,
+    /// Per-channel copy of the unified-table cell each object sits in, keyed
+    /// by channel index like `crossover_filter_states`. A cache names the table
+    /// it was filled from, so one filled before a rebuild can never be read
+    /// against the table that replaced it.
+    pub(super) table_caches: Vec<CornerCache>,
     /// `None` when `render_bands` has exactly 1 entry (no crossover active).
     /// The engine inside (LR4 IIR vs linear-phase FIR) follows the
     /// `crossover_type` live option.
@@ -210,6 +215,7 @@ struct RampedGains<'a> {
     ramp_strategy: &'a dyn RampStrategy,
     ramp_context: &'a RampContext,
     unified_table: &'a Option<MultiBandTable>,
+    table_cache: &'a mut CornerCache,
     render_bands: &'a [BandRenderer],
     render_params: crate::ramp_strategy::RampRenderParams,
     last_pos: [f64; 3],
@@ -230,6 +236,7 @@ impl GainSource for RampedGains<'_> {
         if position != self.last_pos || size != self.last_size {
             SpeakerRenderStage::fill_band_gains(
                 self.unified_table,
+                Some(&mut *self.table_cache),
                 self.render_bands,
                 self.render_params,
                 position,
@@ -322,20 +329,29 @@ impl SpeakerRenderStage {
     /// Fill `out` with one full-size `Gains` per render band at `position`. Uses
     /// the unified multi-band table (one cell localisation for all bands) when
     /// available, else falls back to a per-band lookup. Free-standing (borrows
-    /// only the two fields it needs) so it composes with the other per-channel
+    /// only the fields it needs) so it composes with the other per-channel
     /// mutable borrows held across the render arms.
+    ///
+    /// `cache` is the calling channel's cell cache for the unified table; a
+    /// source with no channel of its own passes `None` and reads the table
+    /// directly. The gains are the same either way.
     fn fill_band_gains(
         unified: &Option<MultiBandTable>,
+        cache: Option<&mut CornerCache>,
         render_bands: &[BandRenderer],
         render_params: crate::ramp_strategy::RampRenderParams,
         position: [f64; 3],
         size: [f32; 3],
         out: &mut Vec<Gains>,
     ) {
-        out.clear();
         if let Some(table) = unified {
-            table.sample_into(position.map(|v| v as f32), out);
+            let position = position.map(|v| v as f32);
+            match cache {
+                Some(cache) => table.sample_cached(cache, position, out),
+                None => table.sample_into(position, out),
+            }
         } else {
+            out.clear();
             out.extend(
                 render_bands
                     .iter()
@@ -539,12 +555,21 @@ impl SpeakerRenderStage {
                             self.crossover_filter_states
                                 .resize_with(input_channel_idx + 1, || None);
                         }
-                        Some(fb.ensure_states(&mut self.crossover_filter_states[input_channel_idx]))
+                        Some(fb.ensure_channel_states(
+                            &mut self.crossover_filter_states[input_channel_idx],
+                            input_channel_idx,
+                        ))
                     } else {
                         None
                     };
 
                 let render_params = ramp_context.render_params();
+
+                // Grown when the channel count rises, never per block.
+                if self.table_caches.len() <= input_channel_idx {
+                    self.table_caches
+                        .resize_with(input_channel_idx + 1, CornerCache::default);
+                }
 
                 // This object's gain-slewed input sample at `sample_idx`.
                 let input_at = |sample_idx: usize| {
@@ -597,6 +622,7 @@ impl SpeakerRenderStage {
                         let size = state.ramp.current_size;
                         Self::fill_band_gains(
                             &self.unified_table,
+                            Some(&mut self.table_caches[input_channel_idx]),
                             &self.render_bands,
                             render_params,
                             position,
@@ -615,6 +641,7 @@ impl SpeakerRenderStage {
                         let size = state.ramp.current_size;
                         Self::fill_band_gains(
                             &self.unified_table,
+                            Some(&mut self.table_caches[input_channel_idx]),
                             &self.render_bands,
                             render_params,
                             position,
@@ -635,6 +662,7 @@ impl SpeakerRenderStage {
                             ramp_strategy,
                             ramp_context,
                             unified_table: &self.unified_table,
+                            table_cache: &mut self.table_caches[input_channel_idx],
                             render_bands: &self.render_bands,
                             render_params,
                             last_pos: [f64::NAN; 3],
@@ -656,6 +684,7 @@ impl SpeakerRenderStage {
 
                         Self::fill_band_gains(
                             &self.unified_table,
+                            Some(&mut self.table_caches[input_channel_idx]),
                             &self.render_bands,
                             render_params,
                             position,
@@ -752,6 +781,7 @@ impl SpeakerRenderStage {
             render_bands,
             render_bands_topology_identity: topology_identity,
             unified_table,
+            table_caches: Vec::new(),
             crossover_filter_bank,
             crossover_built_type,
             crossover_built_fir_ratio,
@@ -824,6 +854,11 @@ impl SpeakerRenderStage {
                 &self.render_bands,
             )?;
         self.unified_table = Self::build_unified_table(&render_bands, self.num_speakers);
+        // The table identity already rules a stale cell out; emptying the
+        // caches here keeps that from being the only thing that does.
+        self.table_caches
+            .iter_mut()
+            .for_each(CornerCache::invalidate);
         self.render_bands = render_bands;
         self.crossover_filter_bank = crossover_filter_bank;
         self.crossover_built_type = crossover_built_type;
@@ -1108,6 +1143,9 @@ impl SpeakerRenderStage {
         let mut end = std::mem::take(&mut self.object_test_end_gains);
         Self::fill_band_gains(
             &self.unified_table,
+            // The test has no input channel, hence no cell cache: one lookup
+            // per block reads the table directly.
+            None,
             &self.render_bands,
             render_params,
             // The orbit position, not the placed one: the source is wherever

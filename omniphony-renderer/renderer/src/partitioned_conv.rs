@@ -27,6 +27,8 @@ use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 
+pub mod nonuniform;
+
 /// FFT plans and geometry for one partition size. Build once per partition
 /// size and share it between every input and kernel of that size (cloning
 /// shares the plans).
@@ -38,6 +40,69 @@ pub struct ConvolutionPlan {
     bins: usize,
     fft: Arc<dyn RealToComplex<f32>>,
     ifft: Arc<dyn ComplexToReal<f32>>,
+    /// Build of the spectrum multiply-accumulate this CPU runs, resolved once
+    /// here so [`Self::accumulate`] never queries the CPU.
+    mac: MacPath,
+}
+
+/// Which build of [`multiply_accumulate`] a plan runs. Every build gives the
+/// same bits; they differ in vector width only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacPath {
+    /// The build target's baseline instruction set.
+    Portable,
+    /// The same loop compiled for AVX2, on x86-64 CPUs that report it.
+    #[cfg(target_arch = "x86_64")]
+    Avx2,
+}
+
+impl MacPath {
+    /// The widest build the running CPU supports.
+    fn detect() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return Self::Avx2;
+        }
+        Self::Portable
+    }
+}
+
+/// `acc[bin] += Σₚ fdl[newest − p][bin] · spectra[p][bin]` over the kernel's
+/// partitions — the hot loop of the convolver. The complex product is spelled
+/// as separate multiplies and adds (never fused), so the loop rounds the same
+/// whatever instruction set it is compiled for.
+#[inline(always)]
+fn multiply_accumulate(
+    acc: &mut [Complex<f32>],
+    fdl: &[Complex<f32>],
+    capacity: usize,
+    newest: usize,
+    spectra: &[Complex<f32>],
+    bins: usize,
+) {
+    for (p, ker) in spectra.chunks_exact(bins).enumerate() {
+        let idx = (newest + capacity - p) % capacity;
+        let src = &fdl[idx * bins..(idx + 1) * bins];
+        for ((acc, &s), &k) in acc.iter_mut().zip(src).zip(ker) {
+            *acc += s * k;
+        }
+    }
+}
+
+/// [`multiply_accumulate`] compiled for AVX2: the baseline x86-64 build only
+/// reaches SSE2, half the vector width. FMA is deliberately left out — a
+/// fused multiply-add rounds once where the portable loop rounds twice.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn multiply_accumulate_avx2(
+    acc: &mut [Complex<f32>],
+    fdl: &[Complex<f32>],
+    capacity: usize,
+    newest: usize,
+    spectra: &[Complex<f32>],
+    bins: usize,
+) {
+    multiply_accumulate(acc, fdl, capacity, newest, spectra, bins);
 }
 
 /// A kernel split into `block`-sized partitions, each stored as its
@@ -85,7 +150,16 @@ impl ConvolutionPlan {
             bins: block + 1,
             fft,
             ifft,
+            mac: MacPath::detect(),
         }
+    }
+
+    /// This plan with the portable multiply-accumulate forced, to compare the
+    /// CPU-specific build against.
+    #[cfg(test)]
+    fn with_portable_mac(mut self) -> Self {
+        self.mac = MacPath::Portable;
+        self
     }
 
     /// Partition size in samples.
@@ -209,14 +283,16 @@ impl ConvolutionPlan {
             "kernel has {partitions} partitions but the input history holds {}",
             input.capacity
         );
-        let bins = self.bins;
-        let cap = input.capacity;
-        for p in 0..partitions {
-            let idx = (input.fdl_pos + cap - p) % cap;
-            let src = &input.fdl[idx * bins..(idx + 1) * bins];
-            let ker = &kernel.spectra[p * bins..(p + 1) * bins];
-            for ((acc, &s), &k) in scratch.spec_acc.iter_mut().zip(src).zip(ker) {
-                *acc += s * k;
+        let acc = scratch.spec_acc.as_mut_slice();
+        let (fdl, cap, newest) = (input.fdl.as_slice(), input.capacity, input.fdl_pos);
+        let spectra = kernel.spectra.as_slice();
+        match self.mac {
+            MacPath::Portable => multiply_accumulate(acc, fdl, cap, newest, spectra, self.bins),
+            #[cfg(target_arch = "x86_64")]
+            MacPath::Avx2 => {
+                // SAFETY: `MacPath::detect` only yields `Avx2` after the
+                // running CPU reported the feature.
+                unsafe { multiply_accumulate_avx2(acc, fdl, cap, newest, spectra, self.bins) }
             }
         }
     }
@@ -559,6 +635,60 @@ mod tests {
         input.reset();
         let y = stream(&plan, &mut input, &kernel, &vec![0.0f32; 80]);
         assert!(y.iter().all(|&v| v == 0.0), "tail survived reset: {y:?}");
+    }
+
+    /// The CPU-specific multiply-accumulate must give the portable build's
+    /// bits, not merely close values: random spectra over the FIR crossover's
+    /// and the BRIR stage's shapes plus a bin count that leaves a remainder
+    /// at every vector width, read from every ring position, accumulated on
+    /// top of a non-zero spectrum.
+    #[test]
+    fn cpu_specific_mac_matches_portable_bit_for_bit() {
+        let bits = |v: &[Complex<f32>]| -> Vec<(u32, u32)> {
+            v.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect()
+        };
+        let spectrum = |len: usize, seed: u32| -> Vec<Complex<f32>> {
+            let (re, im) = (noise(len, seed), noise(len, seed ^ 0x5bd1_e995));
+            re.iter()
+                .zip(&im)
+                // Spread the magnitudes so the products round at many exponents.
+                .map(|(&re, &im)| Complex::new(re * 37.0, im * 0.013))
+                .collect()
+        };
+        for (block, partitions) in [(1024, 16), (128, 190), (6, 5)] {
+            let detected = ConvolutionPlan::new(block);
+            if detected.mac == MacPath::Portable {
+                eprintln!("no CPU-specific multiply-accumulate here: nothing to compare");
+                return;
+            }
+            let portable = detected.clone().with_portable_mac();
+            let bins = block + 1;
+            let kernel = PartitionedKernel {
+                taps: partitions * block,
+                block,
+                bins,
+                spectra: spectrum(partitions * bins, 101),
+            };
+            // One slot more than the kernel reads, so the ring wraps unevenly.
+            let mut input = detected.make_input(partitions + 1);
+            input.fdl = spectrum((partitions + 1) * bins, 103);
+            let start = spectrum(bins, 107);
+            let mut fast = detected.make_scratch();
+            let mut reference = portable.make_scratch();
+            for pos in 0..=partitions {
+                input.fdl_pos = pos;
+                fast.spec_acc.copy_from_slice(&start);
+                reference.spec_acc.copy_from_slice(&start);
+                detected.accumulate(&input, &kernel, &mut fast);
+                portable.accumulate(&input, &kernel, &mut reference);
+                assert_eq!(
+                    bits(&fast.spec_acc),
+                    bits(&reference.spec_acc),
+                    "{:?} differs from the portable build: block {block}, ring position {pos}",
+                    detected.mac
+                );
+            }
+        }
     }
 
     /// Summing two sources in the frequency domain and inverse-transforming
