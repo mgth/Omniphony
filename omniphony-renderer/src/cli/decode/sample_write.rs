@@ -508,7 +508,7 @@ fn emit_rendered(
     output: &mut OutputState,
     telemetry: &mut TelemetryState,
     input_control: Option<&InputControl>,
-    renderer: &renderer::spatial_renderer::SpatialRenderer,
+    renderer: &mut renderer::spatial_renderer::SpatialRenderer,
     rendered: renderer::spatial_renderer::RenderedFrame,
     timings: FrameTimings,
     has_metering_clients: bool,
@@ -583,7 +583,10 @@ fn emit_rendered(
     // The width of what was rendered (the sink was sized from the same
     // `output_channel_count` before the render).
     let rendered_channels = rendered.n_channels;
-    let samples_audio = AudioSamples::F32(rendered.samples);
+    // The metering lists go back to the renderer, which refills them on the
+    // next metered frame (Studio connected meters every frame): no per-frame
+    // allocation on the render path.
+    let samples_audio = AudioSamples::F32(renderer.recycle_frame(rendered));
     let write_started_at = Instant::now();
     output
         .audio_writer
