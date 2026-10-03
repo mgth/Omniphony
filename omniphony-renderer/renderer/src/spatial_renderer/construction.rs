@@ -469,15 +469,14 @@ impl SpatialRenderer {
         log_object_positions: bool,
         control: Arc<RendererControl>,
     ) -> Result<Self> {
-        let active_topology = control.active_topology();
-        let topology_identity = std::sync::Arc::as_ptr(&active_topology) as usize;
-        let speaker_stage = super::SpeakerRenderStage::new(
-            &control,
-            &active_topology.speaker_layout,
-            topology_identity,
+        // Band engines are built by the first frame (or an explicit
+        // `prepare_speaker_stage`), after the host's config seed: see
+        // `SpeakerRenderStage::unbuilt`.
+        let speaker_stage = super::SpeakerRenderStage::unbuilt(
+            &control.active_topology().speaker_layout,
             num_speakers,
             sample_rate,
-        )?;
+        );
 
         // Read before the struct literal: the guard's temporary would otherwise
         // outlive the borrow and block moving `control` into the struct below.
@@ -514,6 +513,7 @@ impl SpatialRenderer {
             auto_gain_triggered: std::sync::atomic::AtomicBool::new(false),
             control,
             speaker_stage,
+            speaker_stage_builds: 0,
             object_params_buf: Vec::new(),
             speaker_params_buf: vec![
                 crate::live_params::SpeakerLiveParams::default();
@@ -582,15 +582,12 @@ impl SpatialRenderer {
         if sample_rate == 0 || sample_rate == self.sample_rate {
             return Ok(());
         }
-        let topology = self.control.active_topology();
-        let topology_identity = Arc::as_ptr(&topology) as usize;
-        self.speaker_stage = super::SpeakerRenderStage::new(
-            &self.control,
-            &topology.speaker_layout,
-            topology_identity,
+        // Rebuilt by the next frame, at the new rate.
+        self.speaker_stage = super::SpeakerRenderStage::unbuilt(
+            &self.control.active_topology().speaker_layout,
             self.num_speakers,
             sample_rate,
-        )?;
+        );
         self.binaural = Self::build_binaural_stage(&self.control, sample_rate);
         self.brir = Self::build_brir_stage(&self.control, sample_rate);
         self.set_synchronous_stage_builds(self.synchronous_stage_builds);
