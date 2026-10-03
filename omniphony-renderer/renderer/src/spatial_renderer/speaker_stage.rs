@@ -20,7 +20,9 @@ use crate::crossover::{
     CrossoverBank, CrossoverStates, FirCrossoverBank, FreqBand, LR4CrossoverBank, compute_bands,
 };
 use crate::delay_line::IntegerDelay;
-use crate::live_params::{CrossoverType, ObjectLiveParams, RampMode, RendererControl};
+use crate::live_params::{
+    CrossoverType, MAX_SAMPLE_RAMP_STRIDE, ObjectLiveParams, RampMode, RendererControl,
+};
 use crate::ramp_strategy::{RampContext, RampStrategy};
 use crate::render_backend::{CornerCache, MultiBandTable};
 use crate::spatial_vbap::Gains;
@@ -124,6 +126,14 @@ pub(super) struct SpeakerRenderStage {
     /// Interpolation fractions of a block, `(i + 1) / len`: shared by every
     /// source whose gains are interpolated across the block.
     pub(super) block_fractions: Vec<f32>,
+    /// `RampMode::Sample`: per-channel gains a block that ended mid-movement
+    /// hands to the next one, keyed by channel index.
+    pub(super) gain_carries: Vec<GainCarry>,
+    /// Count of mix passes, which is what dates a [`GainCarry`].
+    pub(super) mix_pass: u64,
+    /// `RampMode::Sample`: pooled gains at the end of the interpolation
+    /// segment being mixed.
+    pub(super) segment_end_scratch: Vec<Gains>,
     /// Reusable per-object band-gain buffer (taken via `mem::take` per object).
     pub(super) band_gains_scratch: Vec<Gains>,
     /// `RampMode::Interp` only: pooled destination band gains for the object
@@ -148,6 +158,9 @@ pub(super) struct SpeakerStageFrame<'a> {
     pub(super) layout: &'a SpeakerLayout,
     pub(super) object_params: &'a [ObjectLiveParams],
     pub(super) ramp_mode: RampMode,
+    /// `RampMode::Sample`: samples between two gain lookups of a moving
+    /// object (`LiveParams::sample_ramp_stride`).
+    pub(super) sample_ramp_stride: usize,
     pub(super) ramp_strategy: &'a dyn RampStrategy,
     pub(super) ramp_context: &'a RampContext,
     pub(super) log_object_positions: bool,
@@ -163,25 +176,19 @@ pub(super) struct SpeakerStageDiagnostics {
     pub(super) crossover_elapsed: std::time::Duration,
 }
 
-/// The bus a block is mixed on, kept in whichever of two layouts suits the
-/// source being added: speaker-major (`planar`: one block of `block` samples per
-/// speaker, back to back) or sample-major (`interleaved`: the stage's output
-/// buffer, one frame of `num_speakers` per sample).
+/// The bus a block is mixed on: speaker-major (`planar`: one block of `block`
+/// samples per speaker, back to back), over the stage's sample-major output
+/// buffer (`interleaved`: one frame of `num_speakers` per sample), which is
+/// where the sums start from when there is audio to add to, and where they are
+/// left.
 ///
-/// Speaker-major is the layout of choice: mixing a source whose gains hold is
-/// then, per band and per speaker it actually feeds, one pass over a
-/// contiguous block — the shape a compiler widens — instead of a walk over
-/// every speaker for every sample, most of it multiplying by zero. A source
-/// whose gains change every sample is the opposite case, a walk over the
-/// speakers per sample, and wants the frames contiguous. The sums move from one
-/// buffer to the other only when two consecutive sources disagree, and once at
-/// the end if they finish speaker-major.
-///
-/// For a given speaker and sample the additions come in source order, then
-/// band order, in either layout, so the sums are those of a sample-major mix.
-/// A speaker whose gain is zero is skipped in the speaker-major passes: `x · 0`
-/// added to a sum that started at `+0.0` leaves its bits alone for any finite
-/// `x`.
+/// Speaker-major so that mixing a source is, per band and per speaker it
+/// actually feeds, one pass over a contiguous run of samples — the shape a
+/// compiler widens — instead of a walk over every speaker for every sample,
+/// most of it multiplying by zero. For a given speaker and sample the additions
+/// come in source order, then band order, so the sums are those of a
+/// sample-major mix. A speaker whose gain is zero is skipped: `x · 0` added to
+/// a sum that started at `+0.0` leaves its bits alone for any finite `x`.
 ///
 /// Every method takes the source's band samples as one block per band
 /// (`bands[b][sample]`) and its gains as one `Gains` per band; a band present
@@ -269,13 +276,6 @@ impl<'a> MixBus<'a> {
         self.planar.chunks_exact_mut(self.block.max(1))
     }
 
-    /// The sums as one frame per sample.
-    #[inline(always)]
-    fn frames(&mut self) -> std::slice::ChunksExactMut<'_, f32> {
-        self.make_interleaved();
-        self.interleaved.chunks_exact_mut(self.num_speakers.max(1))
-    }
-
     /// Leave the sums in the output buffer.
     fn finish(mut self) {
         self.make_interleaved();
@@ -339,23 +339,6 @@ impl<'a> MixBus<'a> {
     }
 }
 
-/// Add one sample of a source to its output frame: every band's gains scaled
-/// by that band's sample, across the speakers.
-///
-/// Kept as a slice-to-slice loop rather than index arithmetic: it carries no
-/// bounds check and no reduction, so a compiler is free to widen it.
-#[inline(always)]
-fn add_frame(frame: &mut [f32], bands: &[Vec<f32>], gains: &[Gains], sample_idx: usize) {
-    for (band, gains) in bands.iter().zip(gains) {
-        let Some(&sample) = band.get(sample_idx) else {
-            continue;
-        };
-        for (sum, &gain) in frame.iter_mut().zip(gains.iter()) {
-            *sum += sample * gain;
-        }
-    }
-}
-
 /// The interpolation fractions of a block of `len` samples that reaches its
 /// destination gains on the last one: `(i + 1) / len`. They depend on the
 /// block length only, so the buffer is refilled when that changes and not
@@ -369,23 +352,45 @@ fn block_fractions(fractions: &mut Vec<f32>, len: usize) {
     fractions.extend((0..len).map(|i| (i as f32 + 1.0) * inv_len));
 }
 
+/// A channel's gains at the last sample of a block that ended mid-movement:
+/// where the next block's first interpolation segment starts from, so the
+/// gains do not step at the block boundary.
+#[derive(Default)]
+pub(super) struct GainCarry {
+    gains: Vec<Gains>,
+    /// The mix pass that left the gains. They are good for the pass right
+    /// after it and for no other: a block mixed in between — settled, in
+    /// another ramp mode, or not through the stage at all — ends on other gains.
+    pass: u64,
+}
+
 /// `RampMode::Sample`: advance the position ramp sample by sample and mix the
-/// block with the gains of each sample's position.
+/// block with gains that follow the ramped position.
 ///
-/// `lookup` is called only when the ramped position or size changes, and
-/// `band_gains` is left holding the gains of the last sample. The block is
-/// mixed in one of two shapes, chosen on whether the object is ramping as the
-/// block starts:
+/// While the position holds, the samples share one set of gains: `lookup` is
+/// called once and the run is a pass over the block per band and per speaker.
+/// An object that is not ramping — the common case, metadata is sparse — is
+/// one such run: one lookup per block, at its first sample.
 ///
-/// - not ramping — the common case, metadata is sparse: one lookup, and the
-///   block is one run of samples sharing their gains, a pass over the block
-///   per band and per speaker;
-/// - ramping: a lookup per sample, each added to its own output frame.
+/// While the position moves, the gains are looked up at the last sample of
+/// every segment of `stride` samples and interpolated linearly inside it, from
+/// the gains of the sample before the segment. A segment also ends where the
+/// block ends and where the movement stops, so the last sample of a ramp, and
+/// every sample that follows it, has the gains of its own position. Across a
+/// block boundary the starting gains come from `carry`; a movement that starts
+/// in this block starts from the gains of the run it interrupts.
 ///
-/// The choice only decides which layout of the bus is used. Either shape
-/// leaves the same sums, so a ramp that ends mid-block, or a strategy that
-/// moves an object the flag does not announce, costs time and nothing else.
+/// `stride` is the live `sample_ramp_stride`, clamped to
+/// `[1, MAX_SAMPLE_RAMP_STRIDE]`; 1 is a lookup per sample. Its default, 8, is
+/// 0.17 ms at 48 kHz, a span over which a ramping object moves by a small
+/// fraction of a table cell: the gains along it are close to linear, and a
+/// lookup per sample was eight times the work for a difference far below
+/// audibility.
+///
+/// `band_gains` is left holding the gains of the block's last sample, which
+/// are those of its position; `segment_end` is scratch.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn mix_sample_ramp(
     bus: &mut MixBus<'_>,
     bands: &[Vec<f32>],
@@ -393,46 +398,112 @@ fn mix_sample_ramp(
     ramp: &mut crate::ramp_strategy::ChannelRampState,
     ramp_strategy: &dyn RampStrategy,
     ramp_context: &RampContext,
+    stride: usize,
+    carry: &mut GainCarry,
+    pass: u64,
     band_gains: &mut Vec<Gains>,
+    segment_end: &mut Vec<Gains>,
     mut lookup: impl FnMut([f64; 3], [f32; 3], &mut Vec<Gains>),
 ) {
+    let stride = stride.clamp(1, MAX_SAMPLE_RAMP_STRIDE);
+
+    // `band_gains` holds the gains of the sample before `run_start` once
+    // `have_gains` is set: the previous block's last sample to begin with, if
+    // that block left them.
+    let mut have_gains = carry.pass.wrapping_add(1) == pass
+        && carry.gains.len() == band_gains.len()
+        && carry
+            .gains
+            .iter()
+            .zip(band_gains.iter())
+            .all(|(kept, slot)| kept.len() == slot.len());
+    if have_gains {
+        band_gains.clone_from_slice(&carry.gains);
+    }
     let mut last_pos = [f64::NAN; 3];
     let mut last_size = [f32::NAN; 3];
-    // Evaluate the ramp for the next sample; true when its gains must be
-    // looked up.
-    let mut step = |ramp: &mut crate::ramp_strategy::ChannelRampState| {
+    // First sample not mixed yet, and whether the samples since then move.
+    let mut run_start = 0;
+    let mut moving = false;
+    // Last sample of the segment under way, while moving.
+    let mut segment_last = 0;
+    // Last sample on which a segment ran its full course while still moving.
+    let mut moving_until = usize::MAX;
+
+    // Mix the moving segment `range`, interpolating from the gains before it
+    // (`band_gains`) to those of its last sample's position (`end`): sample
+    // `i` of `len` gets the fraction `(i + 1) / len`, exactly one on the last.
+    // A segment of one sample is mixed with `end`, where the interpolation
+    // ends.
+    let mix_segment =
+        |bus: &mut MixBus<'_>, band_gains: &[Gains], end: &[Gains], range: Range<usize>| {
+            let len = range.len();
+            if len <= 1 {
+                bus.add_constant(bands, end, range);
+                return;
+            }
+            let mut fractions = [0.0f32; MAX_SAMPLE_RAMP_STRIDE];
+            for (i, f) in fractions.iter_mut().enumerate().take(len) {
+                *f = (i + 1) as f32 / len as f32;
+            }
+            bus.add_lerp(bands, band_gains, end, &fractions[..len], range);
+        };
+
+    for sample_idx in 0..sample_length {
         let progress = ramp.current_progress().unwrap_or(RampProgress {
             completed_units: 0,
             total_units: 0,
         });
         ramp_strategy.evaluate(ramp, progress, ramp_context);
-        let moved = ramp.output_position != last_pos || ramp.current_size != last_size;
-        last_pos = ramp.output_position;
-        last_size = ramp.current_size;
-        moved
-    };
+        let position = ramp.output_position;
+        let size = ramp.current_size;
 
-    if ramp.remaining_ramp_units.is_some() {
-        for (sample_idx, frame) in bus.frames().take(sample_length).enumerate() {
-            if step(ramp) {
-                lookup(ramp.output_position, ramp.current_size, band_gains);
+        if position != last_pos || size != last_size {
+            if !moving {
+                if have_gains {
+                    // The run so far keeps its gains; a segment starts here.
+                    bus.add_constant(bands, band_gains, run_start..sample_idx);
+                    moving = true;
+                    run_start = sample_idx;
+                    segment_last = (sample_idx + stride).min(sample_length) - 1;
+                } else {
+                    // Nothing to interpolate from: the block starts on the
+                    // gains of its first sample's position.
+                    lookup(position, size, band_gains);
+                    have_gains = true;
+                }
             }
-            add_frame(frame, bands, band_gains, sample_idx);
-            ramp.commit_output_position();
-            ramp.advance_ramp(1);
+            last_pos = position;
+            last_size = size;
+        } else if moving {
+            // The movement stopped on the previous sample: the segment ends
+            // there, and this sample starts a run on the gains it reached.
+            lookup(last_pos, last_size, segment_end);
+            mix_segment(bus, band_gains, segment_end, run_start..sample_idx);
+            std::mem::swap(band_gains, segment_end);
+            moving = false;
+            run_start = sample_idx;
         }
-    } else {
-        let mut run_start = 0;
-        for sample_idx in 0..sample_length {
-            if step(ramp) {
-                bus.add_constant(bands, band_gains, run_start..sample_idx);
-                lookup(ramp.output_position, ramp.current_size, band_gains);
-                run_start = sample_idx;
-            }
-            ramp.commit_output_position();
-            ramp.advance_ramp(1);
+        if moving && sample_idx == segment_last {
+            lookup(position, size, segment_end);
+            mix_segment(bus, band_gains, segment_end, run_start..sample_idx + 1);
+            std::mem::swap(band_gains, segment_end);
+            moving = false;
+            run_start = sample_idx + 1;
+            moving_until = sample_idx;
         }
-        bus.add_constant(bands, band_gains, run_start..sample_length);
+
+        ramp.commit_output_position();
+        ramp.advance_ramp(1);
+    }
+    bus.add_constant(bands, band_gains, run_start..sample_length);
+
+    // The block ended mid-movement: its last gains are where the next block's
+    // first segment starts from.
+    if moving_until.wrapping_add(1) == sample_length {
+        carry.gains.clear();
+        carry.gains.extend_from_slice(band_gains);
+        carry.pass = pass;
     }
 }
 
@@ -493,6 +564,7 @@ impl SpeakerRenderStage {
             layout: active_layout,
             object_params,
             ramp_mode,
+            sample_ramp_stride,
             ramp_strategy,
             ramp_context,
             log_object_positions,
@@ -524,6 +596,8 @@ impl SpeakerRenderStage {
             );
             log::info!("  Channel routing: {:?}", channel_routing);
         }
+
+        self.mix_pass = self.mix_pass.wrapping_add(1);
 
         // The bus every channel is summed on. Its speaker-major buffer is sized
         // on the first block of a length and zeroed for each.
@@ -767,6 +841,10 @@ impl SpeakerRenderStage {
                         // across objects/frames via the pooled buffer).
                         band_gains
                             .resize(self.render_bands.len(), Gains::zeroed(self.num_speakers));
+                        if self.gain_carries.len() <= input_channel_idx {
+                            self.gain_carries
+                                .resize_with(input_channel_idx + 1, GainCarry::default);
+                        }
                         let unified_table = &self.unified_table;
                         let table_cache = &mut self.table_caches[input_channel_idx];
                         let render_bands = &self.render_bands;
@@ -777,7 +855,11 @@ impl SpeakerRenderStage {
                             &mut state.ramp,
                             ramp_strategy,
                             ramp_context,
+                            sample_ramp_stride,
+                            &mut self.gain_carries[input_channel_idx],
+                            self.mix_pass,
                             &mut band_gains,
+                            &mut self.segment_end_scratch,
                             |position, size, out| {
                                 Self::fill_band_gains(
                                     unified_table,
@@ -941,6 +1023,9 @@ impl SpeakerRenderStage {
             crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
             mix_bus: Vec::new(),
             block_fractions: Vec::new(),
+            gain_carries: Vec::new(),
+            mix_pass: 0,
+            segment_end_scratch: Vec::new(),
             band_gains_scratch: Vec::new(),
             interp_end_scratch: Vec::new(),
             speaker_gains_buf: vec![0.0f32; num_speakers],
@@ -995,6 +1080,8 @@ impl SpeakerRenderStage {
                 &self.render_bands,
             )?;
         self.unified_table = Self::build_unified_table(&render_bands, self.num_speakers);
+        // Gains kept for the next block are those of the bands being replaced.
+        self.drop_gain_carries();
         // The table identity already rules a stale cell out; emptying the
         // caches here keeps that from being the only thing that does.
         self.table_caches
@@ -1351,6 +1438,13 @@ impl SpeakerRenderStage {
         self.object_test_prev_gains
             .extend_from_slice(&self.object_test_end_gains);
         true
+    }
+
+    /// Forget the gains the last mix pass left for the next one. For a frame
+    /// that does not continue it: the stream restarted, or the frame is
+    /// rendered without this stage.
+    pub(super) fn drop_gain_carries(&mut self) {
+        self.mix_pass = self.mix_pass.wrapping_add(1);
     }
 
     /// Output stage: per-speaker gains (live gain/mute × `total_gain`), delay

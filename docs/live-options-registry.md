@@ -82,6 +82,7 @@ Declared options (`renderer::options::LIVE_OPTIONS`):
 | `auto_gain_ceiling_db` | `Float` −12–0 dBFS, step 0.1 | `-1` | — | `/control/auto_gain_ceiling` |
 | `use_loudness` | `Bool` | `false` | — | `/control/loudness` |
 | `ramp_mode` | `Enum` off / frame / interp / sample | `frame` | — | `/control/ramp_mode` |
+| `sample_ramp_stride` | `Int` 1–32 | `8` | — | none (generic setters only) |
 | `drc_mode` | `Str` (the bridge's modes) | `Off` | — | `/control/input/drc_mode` |
 | `drc_weight` | `Float` 0–1, step 0.01 | `1` | — | `/control/input/drc_weight` |
 | `room_ratio` | `FloatArray` ×3, 0.01–100, step 0.01 | `[1, 2, 1]` | group `room` | `/control/room_ratio` |

@@ -283,9 +283,10 @@
   "audio.rampModeFrame": "Per frame",
   "audio.rampModeInterp": "Per campione (interpolato)",
   "audio.rampModeSample": "Per campione",
+  "audio.sampleRampStride": "Passo di calcolo",
   "rampMode.infoButton": "Info modalità rampa",
   "rampMode.infoTitle": "Modalità rampa",
-  "rampMode.infoBody": "La rampa ammorbidisce i cambi bruschi di posizione o guadagno, così i movimenti degli oggetti e le variazioni di livello risultano più naturali, con meno click o salti spaziali.<br /><br /><strong>Disattivata</strong>: disabilita l'interpolazione e passa subito al nuovo target.<br /><br /><strong>Per frame</strong>: applica un passo di interpolazione per ogni frame audio decodificato. È più leggero, ma più a gradini.<br /><br /><strong>Per campione</strong>: applica un passo di interpolazione per ogni campione renderizzato. È la modalità più fluida.",
+  "rampMode.infoBody": "La rampa ammorbidisce i cambi bruschi di posizione o guadagno, così i movimenti degli oggetti e le variazioni di livello risultano più naturali, con meno click o salti spaziali.<br /><br /><strong>Disattivata</strong>: disabilita l'interpolazione e passa subito al nuovo target.<br /><br /><strong>Per frame</strong>: applica un passo di interpolazione per ogni frame audio decodificato. È più leggero, ma più a gradini.<br /><br /><strong>Per campione</strong>: la posizione avanza a ogni campione; mentre un oggetto si muove, i suoi guadagni spaziali vengono ricalcolati ogni pochi campioni (il passo di calcolo, 8 per impostazione predefinita) e interpolati nel mezzo. Il più preciso e il più costoso.",
   "section.twoDSources": "Sorgenti a canali fissi",
   "twoDSources.surroundLabel": "Canali posteriori (4.x/5.x)",
   "twoDSources.surroundSide": "Laterale",
@@ -1002,5 +1003,6 @@
   "placement.editManually": "Modifica le posizioni",
   "confirm.resetPlacement": "Cancellare le voci di {family}?\n\nInstradamento, trim e posizioni manuali di ogni canale di questa famiglia tornano ai valori predefiniti.",
   "help.placement": "Dove vanno i canali fissi di un flusso, scelto per famiglia di sorgente: Dolby, DTS, Auro-3D, PCM o Generico per il resto. Sfera colloca ogni canale come una direzione intorno a te, indipendente dalla stanza: l'angolo dichiarato dal formato (tabella di installazione Auro-3D, disposizione ITU di DTS) o uno nominale. Stanza lo colloca nell'angolo del modello di stanza indicato dalla sua etichetta, allungato con il rapporto della tua stanza come un oggetto: il modello Dolby e il comportamento storico. Manuale usa le posizioni che hai impostato per questa famiglia; un canale senza posizione torna a Stanza. Instradamento (Virtuale/Diretto) e trim valgono in ogni modalità. Una famiglia eredita modalità e voci da Generico finché non ha le proprie.",
-  "help.placement.mode": "Sfera: direzioni intorno a te, indipendenti dalla stanza. Stanza: gli angoli del modello di stanza, allungati con il tuo rapporto. Manuale: le posizioni che hai impostato per questa famiglia."
+  "help.placement.mode": "Sfera: direzioni intorno a te, indipendenti dalla stanza. Stanza: gli angoli del modello di stanza, allungati con il tuo rapporto. Manuale: le posizioni che hai impostato per questa famiglia.",
+  "help.audio.sampleRampStride": "Solo in modalità Per campione. Mentre un oggetto si muove, la sua posizione avanza comunque a ogni campione, ma i suoi guadagni spaziali vengono calcolati ogni N campioni e interpolati linearmente nel mezzo. 1 li calcola a ogni campione: il più esatto e il più costoso. 8 (predefinito) corrisponde a 0,17 ms a 48 kHz, ben al di sotto della soglia di udibilità, con un ottavo dei calcoli. Valori più grandi fanno risparmiare poco altro."
 }
