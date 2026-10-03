@@ -51,11 +51,19 @@ impl CrossoverBank {
 
     /// Allocate fresh filter memory for one channel.
     pub fn make_states(&self) -> CrossoverStates {
+        self.make_channel_states(0)
+    }
+
+    /// Allocate fresh filter memory for input channel `channel`. The FIR
+    /// engine spreads its block boundaries by channel (see
+    /// [`FirCrossoverBank::make_state_for_channel`]); the index changes
+    /// nothing else.
+    pub fn make_channel_states(&self, channel: usize) -> CrossoverStates {
         match self {
             Self::Lr4(bank) => {
                 CrossoverStates::Lr4(vec![BiquadState::default(); bank.state_count()])
             }
-            Self::Fir(bank) => CrossoverStates::Fir(Box::new(bank.make_state())),
+            Self::Fir(bank) => CrossoverStates::Fir(Box::new(bank.make_state_for_channel(channel))),
         }
     }
 
@@ -74,9 +82,19 @@ impl CrossoverBank {
         &self,
         slot: &'a mut Option<CrossoverStates>,
     ) -> &'a mut CrossoverStates {
+        self.ensure_channel_states(slot, 0)
+    }
+
+    /// [`Self::ensure_states`] for the slot of input channel `channel`, so a
+    /// re-created state comes back as [`Self::make_channel_states`] built it.
+    pub fn ensure_channel_states<'a>(
+        &self,
+        slot: &'a mut Option<CrossoverStates>,
+        channel: usize,
+    ) -> &'a mut CrossoverStates {
         let compatible = slot.as_ref().is_some_and(|s| self.states_compatible(s));
         if !compatible {
-            *slot = Some(self.make_states());
+            *slot = Some(self.make_channel_states(channel));
         }
         slot.as_mut().expect("just ensured")
     }
@@ -156,6 +174,33 @@ mod tests {
         fir.ensure_states(&mut slot);
         assert!(matches!(slot, Some(CrossoverStates::Fir(_))));
         assert!(fir.states_compatible(slot.as_ref().unwrap()));
+    }
+
+    /// A channel's states come back at the same block phase whenever they are
+    /// re-created — after an engine switch here — so a channel renders the
+    /// same bits however often its slot was rebuilt.
+    #[test]
+    fn recreated_channel_states_keep_their_phase() {
+        let lr4 = CrossoverBank::Lr4(LR4CrossoverBank::new(&[120.0], 48000));
+        let fir = CrossoverBank::Fir(FirCrossoverBank::with_taps(&[120.0], 48000, 1023, 90.0));
+        let channel = 11;
+        let run = |states: &mut CrossoverStates| -> Vec<u32> {
+            (0..5000)
+                .flat_map(|i| {
+                    let x = ((i * 7919) % 1000) as f32 / 500.0 - 1.0;
+                    let bands = fir.process_sample(x, states);
+                    [bands.get(0).to_bits(), bands.get(1).to_bits()]
+                })
+                .collect()
+        };
+        let mut slot = None;
+        let first = run(fir.ensure_channel_states(&mut slot, channel));
+        lr4.ensure_channel_states(&mut slot, channel);
+        let again = run(fir.ensure_channel_states(&mut slot, channel));
+        assert_eq!(first, again);
+        // And the phase is the channel's own, not the default one.
+        let unstaggered = run(&mut fir.make_states());
+        assert_ne!(first, unstaggered);
     }
 
     /// Both engines agree on the dispatch surface: same band count for the
