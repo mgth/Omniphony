@@ -660,6 +660,11 @@ impl SpeakerLayout {
     /// corners of the default 1:2 room (fronts ±26.57°, wides ±63.4°, backs
     /// ±153.4°, heights on the ceiling corners) rather than at the
     /// recommendation's angles.
+    // The TSL/TSR distance `1.4142136` parses to the f32 one ULP above
+    // `std::f32::consts::SQRT_2` (0x3fb504f4 against 0x3fb504f3). Swapping in
+    // the constant would move those two speakers and so change this preset's
+    // render, so the literal stays and the lint is silenced here only.
+    #[allow(clippy::approx_constant)]
     pub fn preset_9_1_6() -> Result<Self> {
         Self::from_speakers(vec![
             // Bed layer (9.1)
