@@ -245,3 +245,140 @@ pub(crate) fn trigger_layout_recompute(
         })
         .expect("failed to spawn vbap-recompute thread");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
+    use renderer::spatial_renderer::SpatialRenderer;
+    use renderer::spatial_vbap::{DistanceModel, MAX_SPEAKERS, VbapTableMode};
+    use renderer::speaker_layout::{Speaker, SpeakerLayout};
+    use rosc::{OscPacket, OscType};
+    use std::net::UdpSocket;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    fn fixture_control() -> Arc<RendererControl> {
+        SpatialRenderer::new(
+            SpeakerLayout::preset("7.1.4").expect("7.1.4 preset"),
+            48_000,
+            1,
+            1,
+            0.0,
+            2.0,
+            VbapTableMode::Cartesian {
+                x_size: 5,
+                y_size: 5,
+                z_size: 3,
+                z_neg_size: 3,
+            },
+            false,
+            true,
+            DistanceModel::Linear,
+            false,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            false,
+            [1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            false,
+            false,
+            false,
+            1.0,
+            1.0,
+            PreferredEvaluationMode::PrecomputedCartesian,
+            LiveEvaluationMode::PrecomputedCartesian,
+            5,
+            5,
+            3,
+            3,
+        )
+        .expect("fixture renderer")
+        .renderer_control()
+    }
+
+    /// The string a client receives on `addr`, waiting for the first
+    /// non-empty one (a recompute first clears the previous error).
+    fn next_non_empty_string(client: &UdpSocket, addr: &str) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut buf = vec![0u8; 65536];
+        while Instant::now() < deadline {
+            let Ok(len) = client.recv(&mut buf) else {
+                continue;
+            };
+            let Ok((_, OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len]) else {
+                continue;
+            };
+            if msg.addr == addr {
+                if let Some(OscType::String(s)) = msg.args.first() {
+                    if !s.is_empty() {
+                        return Some(s.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Studio grows the layout past what the barycenter solver holds while
+    /// that backend is selected: the recompute fails with the backend's own
+    /// reason on the recompute-error broadcast — not a caught out-of-bounds
+    /// panic — and the engine keeps rendering the previous topology.
+    #[test]
+    fn an_oversized_barycenter_layout_reports_a_recompute_error() {
+        let control = fixture_control();
+        let before = control.active_topology();
+        control.live.write().backend_id = "barycenter".to_string();
+        let n = MAX_SPEAKERS + 2;
+        let layout = SpeakerLayout::from_speakers(
+            (0..n)
+                .map(|i| {
+                    Speaker::new(
+                        format!("S{i}"),
+                        -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
+                        if i % 2 == 0 { 0.0 } else { 40.0 },
+                    )
+                })
+                .collect(),
+        )
+        .expect("ring layout");
+        control.with_editable_layout(|l| *l = layout);
+        control.bump_geometry_generation();
+
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
+        clients.insert_permanent(client.local_addr().unwrap());
+
+        trigger_layout_recompute(
+            &control,
+            &socket,
+            &clients,
+            &Arc::new(GaintableCache::new()),
+        );
+
+        let error = next_non_empty_string(&client, osc_contract::STATE_SPEAKERS_RECOMPUTE_ERROR)
+            .expect("a recompute error is broadcast");
+        assert!(
+            error.contains(&format!("at most {MAX_SPEAKERS}")) && !error.contains("panicked"),
+            "got: {error}"
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while control.recomputing.load(Ordering::Relaxed) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!control.recomputing.load(Ordering::Relaxed));
+        assert!(
+            Arc::ptr_eq(&before, &control.active_topology()),
+            "the previous topology stays active"
+        );
+    }
+}
