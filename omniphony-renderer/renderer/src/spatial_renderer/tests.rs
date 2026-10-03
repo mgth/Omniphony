@@ -2803,14 +2803,17 @@ fn synchronous_stage_builds_land_on_the_requesting_frame() {
     );
 }
 
-/// A 7.1.4 renderer whose first three speakers are band-limited, so objects
-/// render through three crossover bands and the unified multi-band table —
-/// cartesian or polar. Coarse grids: the tests that use it compare renders
-/// with each other, not with a geometry.
-fn build_unified_table_renderer(cartesian: bool) -> SpatialRenderer {
+/// A 7.1.4 renderer on a precomputed table, cartesian or polar. With
+/// `band_limited` its first three speakers are band-limited, so objects render
+/// through several crossover bands and the unified multi-band table; without,
+/// through the single band's own evaluator. Coarse grids: the tests that use it
+/// compare renders with each other, not with a geometry.
+pub(super) fn build_table_renderer(cartesian: bool, band_limited: bool) -> SpatialRenderer {
     let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
-    for (sp, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
-        sp.freq_low = Some(cutoff);
+    if band_limited {
+        for (sp, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
+            sp.freq_low = Some(cutoff);
+        }
     }
     let (table_mode, preferred, live) = if cartesian {
         (
@@ -2865,15 +2868,16 @@ fn build_unified_table_renderer(cartesian: bool) -> SpatialRenderer {
         7,
     )
     .unwrap();
-    assert!(
+    assert_eq!(
         r.speaker_stage.unified_table.is_some(),
-        "the band-limited layout must render through the unified table"
+        band_limited,
+        "only the band-limited layout renders through the unified table"
     );
     r
 }
 
 /// Deterministic noise in `[-0.25, 0.25]`, a different block each time.
-fn noise_block(n_channels: usize, sample_length: usize, block: usize) -> Vec<f32> {
+pub(super) fn noise_block(n_channels: usize, sample_length: usize, block: usize) -> Vec<f32> {
     let base = (block * sample_length * n_channels) as u32;
     (0..(sample_length * n_channels) as u32)
         .map(|i| {
@@ -2922,7 +2926,7 @@ fn cell_caches_do_not_change_the_render() {
     ];
 
     let render = |cartesian: bool, keep_caches: bool| -> Vec<u32> {
-        let mut r = build_unified_table_renderer(cartesian);
+        let mut r = build_table_renderer(cartesian, true);
         let mut out = Vec::new();
         let mut buf = Vec::new();
         for block in 0..MODES.len() * BLOCKS_PER_MODE {

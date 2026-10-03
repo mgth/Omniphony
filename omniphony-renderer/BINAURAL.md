@@ -176,13 +176,23 @@ How it renders:
   both ears.
 - **Head tracking** selects, per loudspeaker, the response measured at the
   head orientation nearest to the tracked one (yaw and pitch; the sets
-  measure yaw), blended over a few milliseconds. Without a tracking address
-  only the orientation nearest straight ahead is loaded: the memory
-  difference is the whole set versus one orientation of it (a 12-loudspeaker
-  set at 2° steps over 360° and half a second of response is some 400 MB
-  resident with tracking, a few MB without).
+  measure yaw), blended over a few milliseconds. The first 19 ms of the
+  response — the direct sound and the earliest reflections — turn at once;
+  what lies further into the response is computed ahead on larger blocks
+  and follows later, never later than it lies into the response (within
+  19 ms for reflections up to 83 ms in, 83 ms up to 0.34 s, 0.34 s for the
+  tail beyond). Without a tracking address only the orientation nearest
+  straight ahead is loaded: the memory difference is the whole set versus
+  one orientation of it (a 12-loudspeaker set at 2° steps over 360° and
+  half a second of response is some 400 MB resident with tracking, a few MB
+  without).
 - **Latency**: the convolution adds 127 samples (2.6 ms at 48 kHz),
-  reported to the host with the crossover's for A/V sync.
+  reported to the host with the crossover's for A/V sync. Only the head of
+  a response is convolved on blocks that short; the tail runs on blocks of
+  512, 2048 and 8192 samples placed late enough in the response to cost no
+  latency, their work spread over the short blocks in between, so a long
+  room costs little more than a short one (a 2 s response about 1.7 times a
+  quarter-second one).
 - **Conventions**: `MultiSpeakerBRIR` (loudspeakers × head orientations, the
   BBC and Huddersfield databases), and the one-loudspeaker conventions
   (`SingleRoomSRIR`, `SingleRoomDRIR`, or a `SimpleFreeFieldHRIR` carrying
