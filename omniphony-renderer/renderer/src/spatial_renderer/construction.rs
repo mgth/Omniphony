@@ -14,7 +14,7 @@ use crate::live_params::{
 };
 use crate::render_backend::{
     DegenerateVbapBackend, EffectiveEvaluationMode, GainModel, RenderRequest, VbapBackend,
-    build_prepared_render_engine,
+    build_decorated_model, wrap_unsampled_engine,
 };
 use crate::spatial_vbap::{DistanceModel, VbapPanner, VbapTableMode};
 use crate::speaker_layout::SpeakerLayout;
@@ -154,38 +154,43 @@ impl SpatialRenderer {
                 )
             }
         };
+        // The published topology's engine samples no table: the speaker
+        // stage's band engines do, on the first frame (see
+        // `wrap_unsampled_engine`).
         let topology = RenderTopology::new(
-            Arc::new(build_prepared_render_engine(
-                model,
+            Arc::new(wrap_unsampled_engine(
+                build_decorated_model(
+                    model,
+                    &evaluation_build_config(
+                        RenderRequest {
+                            adm_position: [0.0, 0.0, 0.0],
+                            event_size: [0.0, 0.0, 0.0],
+                            room_ratio,
+                            room_ratio_rear,
+                            room_ratio_lower,
+                            room_ratio_center_blend,
+                            use_distance_diffuse: distance_diffuse,
+                            diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
+                            distance_diffuse_threshold,
+                            distance_diffuse_curve,
+                            distance_model,
+                        },
+                        vbap_position_interpolation,
+                        table_mode,
+                        az_res_deg,
+                        el_res_deg,
+                        distance_step,
+                        distance_max,
+                        allow_negative_z,
+                    ),
+                ),
                 match table_mode {
                     VbapTableMode::Polar => EffectiveEvaluationMode::PrecomputedPolar,
                     VbapTableMode::Cartesian { .. } => {
                         EffectiveEvaluationMode::PrecomputedCartesian
                     }
                 },
-                &evaluation_build_config(
-                    RenderRequest {
-                        adm_position: [0.0, 0.0, 0.0],
-                        event_size: [0.0, 0.0, 0.0],
-                        room_ratio,
-                        room_ratio_rear,
-                        room_ratio_lower,
-                        room_ratio_center_blend,
-                        use_distance_diffuse: distance_diffuse,
-                        diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
-                        distance_diffuse_threshold,
-                        distance_diffuse_curve,
-                        distance_model,
-                    },
-                    vbap_position_interpolation,
-                    table_mode,
-                    az_res_deg,
-                    el_res_deg,
-                    distance_step,
-                    distance_max,
-                    allow_negative_z,
-                ),
-            )?),
+            )),
             speaker_layout,
         )?
         // The initial live backend (`backend_id: "vbap"` below) at generation 0,

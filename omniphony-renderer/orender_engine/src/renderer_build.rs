@@ -283,7 +283,6 @@ pub fn build_spatial_renderer(
             layout.num_speakers(),
             layout.speaker_names().join(", ")
         );
-        log::info!("Generating VBAP table at runtime (this may take a few seconds)...");
         let start_time = std::time::Instant::now();
         let azimuth_cells = params.evaluation_polar_azimuth_resolution.max(1);
         let elevation_cells = params.evaluation_polar_elevation_resolution.max(1);
@@ -344,7 +343,9 @@ pub fn build_spatial_renderer(
             params.evaluation_cartesian_z_neg_size.unwrap_or(0),
         )?;
         let elapsed = start_time.elapsed();
-        log::info!("VBAP table generated in {:.2}s", elapsed.as_secs_f64());
+        // No gain table yet: the speaker stage samples one per crossover band
+        // on the first frame, once the config seed below has landed.
+        log::info!("Spatial renderer built in {:.2}s", elapsed.as_secs_f64());
         renderer
     };
 
@@ -1108,6 +1109,15 @@ mod tests {
         assert_eq!(info.engine, CrossoverType::Fir);
         assert!(info.bands > 1, "the layout has crossover bands");
         assert_eq!(control.active_topology().model_backend_id, "hybrid");
+        // The published topology names the backend and the mode; only the
+        // bands sampled tables.
+        let topology = control.active_topology();
+        assert_eq!(topology.backend.backend_id(), "hybrid");
+        assert_ne!(
+            topology.backend.evaluation_mode(),
+            renderer::render_backend::EffectiveEvaluationMode::Realtime
+        );
+        assert!(!topology.backend.has_sampled_table());
 
         // A live crossover flip (Studio) still rebuilds, on the next frame.
         control.live.write().crossover_type = CrossoverType::Lr4;

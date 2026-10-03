@@ -799,6 +799,10 @@ pub struct PreparedRenderEngine {
     evaluation_mode: EffectiveEvaluationMode,
     backend_restore_snapshot: Option<BackendRestoreSnapshot>,
     evaluator: Box<dyn PreparedEvaluator>,
+    /// Whether `evaluator` reads a sampled table. `false` for a realtime
+    /// engine, and for one built by [`wrap_unsampled_engine`], which reports a
+    /// precomputed `evaluation_mode` without sampling anything.
+    sampled: bool,
 }
 
 impl PreparedRenderEngine {
@@ -817,6 +821,7 @@ impl PreparedRenderEngine {
             evaluation_mode,
             backend_restore_snapshot,
             evaluator,
+            sampled: evaluation_mode != EffectiveEvaluationMode::Realtime,
         }
     }
 
@@ -834,6 +839,14 @@ impl PreparedRenderEngine {
 
     pub fn evaluation_mode(&self) -> EffectiveEvaluationMode {
         self.evaluation_mode
+    }
+
+    /// Whether this engine's gains are read from a table sampled when it was
+    /// built. `false` for a realtime engine and for a published topology's
+    /// engine ([`wrap_unsampled_engine`]), whose `evaluation_mode` is the one
+    /// the speaker stage's band engines sample in.
+    pub fn has_sampled_table(&self) -> bool {
+        self.sampled
     }
 
     pub fn has_backend_restore_snapshot(&self) -> bool {
@@ -940,6 +953,34 @@ pub fn wrap_prepared_engine(
         None,
         evaluator,
     ))
+}
+
+/// Wrap an already-decorated gain model for a published topology: the
+/// backend's identity, capabilities and decorated model, tagged with
+/// `evaluation_mode`, but no table sampled whatever that mode is.
+///
+/// Nothing renders audio through a published topology's engine: every
+/// crossover band of the speaker stage, including the single band of a layout
+/// without crossover, builds and samples its own engine from the topology's
+/// layout. The topology's engine only names the backend and the effective mode
+/// (the state snapshot), carries the model a geometry-unchanged recompute
+/// reuses, and runs the build's smoke test, which here queries the model
+/// directly. Sampling a table for it cost a whole extra table build (on a
+/// hybrid layout, as much as a band) at every start-up and recompute.
+pub fn wrap_unsampled_engine(
+    model: Arc<dyn GainModel>,
+    evaluation_mode: EffectiveEvaluationMode,
+) -> PreparedRenderEngine {
+    let mut engine = PreparedRenderEngine::new(
+        model.backend_id(),
+        model.backend_label(),
+        model.capabilities(),
+        evaluation_mode,
+        None,
+        Box::new(RealtimeEvaluator::new(model)),
+    );
+    engine.sampled = false;
+    engine
 }
 
 pub fn build_prepared_render_engine(

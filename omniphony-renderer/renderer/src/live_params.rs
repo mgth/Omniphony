@@ -1474,10 +1474,17 @@ fn evaluation_build_config_from_live(
 /// Immutable render-time snapshot published atomically to the audio thread.
 ///
 /// This is the only topology state the renderer should consume during a frame:
-/// the speaker layout, the VBAP panner built for that layout, and the derived
+/// the speaker layout, the backend built for that layout, and the derived
 /// mappings that tie both together.
 pub struct RenderTopology {
     pub speaker_layout: SpeakerLayout,
+    /// The backend built for `speaker_layout`. In a topology published on the
+    /// control it samples no gain table (see
+    /// [`crate::render_backend::wrap_unsampled_engine`]): it names the backend
+    /// and the effective evaluation mode, and carries the decorated model a
+    /// recompute reuses. Audio gains come from the speaker stage's band
+    /// engines, each a topology of its own built with
+    /// [`crate::backend_registry::TopologyBuildPlan::build_band_topology_reusing`].
     pub backend: Arc<PreparedRenderEngine>,
     pub backend_to_speaker_mapping: Option<Vec<usize>>,
     /// Per-label speaker lookup for the channel-routing table (re-resolved on
@@ -2407,7 +2414,7 @@ impl RendererControl {
                 let band_topology = self
                     .prepare_topology_rebuild_for_layout(band_layout)
                     .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology"))?
-                    .build_topology()?;
+                    .build_band_topology_reusing(None)?;
                 let per_cell: Vec<crate::spatial_vbap::Gains> = (0..cell_count)
                     .into_par_iter()
                     .map(|idx| {
