@@ -1060,6 +1060,70 @@ mod tests {
         assert_eq!(rebuilt.model_backend_id, "barycenter");
     }
 
+    /// A host boot builds the crossover band engines exactly once, with the
+    /// configured backend and crossover engine. They used to be built at
+    /// construction on the defaults (VBAP, LR4) and rebuilt by the first frame
+    /// once the config seed had landed: every band gain table sampled twice
+    /// per start-up. A later live change still rebuilds them.
+    #[test]
+    fn a_boot_builds_the_band_tables_once_with_the_configured_options() {
+        use renderer::live_params::CrossoverType;
+        let cfg = RenderConfig {
+            render_backend: Some("hybrid".to_string()),
+            crossover_type: Some(CrossoverType::Fir),
+            ..Default::default()
+        };
+        let mut layout = SpeakerLayout::preset("7.1.4").expect("preset layout");
+        for (speaker, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
+            speaker.freq_low = Some(cutoff);
+        }
+        let params = SpatialRendererParams::from_render_config(Some(&cfg));
+        let mut renderer = build_spatial_renderer(
+            &params,
+            layout,
+            48_000,
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 9,
+                y_size: 9,
+                z_size: 5,
+                allow_negative_z: true,
+            },
+            bridge_api::RVbapTableMode::Cartesian,
+            Some(&cfg),
+        )
+        .expect("renderer");
+        let control = renderer.renderer_control();
+        // The host's own seed (crossover engine among the declared options).
+        seed_runtime_state_from_render_config(&control, Some(&cfg));
+        assert_eq!(renderer.speaker_stage_builds(), 0, "nothing built yet");
+
+        let silence = vec![0.0f32; 40 * 2];
+        for _ in 0..3 {
+            renderer
+                .render_frame(&silence, 2, &[], Vec::new(), false)
+                .expect("render");
+        }
+        assert_eq!(renderer.speaker_stage_builds(), 1, "built once");
+        let info = control.crossover_info().expect("crossover info");
+        assert_eq!(info.engine, CrossoverType::Fir);
+        assert!(info.bands > 1, "the layout has crossover bands");
+        assert_eq!(control.active_topology().model_backend_id, "hybrid");
+
+        // A live crossover flip (Studio) still rebuilds, on the next frame.
+        control.live.write().crossover_type = CrossoverType::Lr4;
+        renderer
+            .render_frame(&silence, 2, &[], Vec::new(), false)
+            .expect("render");
+        assert_eq!(renderer.speaker_stage_builds(), 2);
+        assert_eq!(
+            control.crossover_info().expect("crossover info").engine,
+            CrossoverType::Lr4
+        );
+        // `prepare_speaker_stage` on an up-to-date stage is a no-op.
+        renderer.prepare_speaker_stage().expect("prepare");
+        assert_eq!(renderer.speaker_stage_builds(), 2);
+    }
+
     /// The recorded bridge path is the one asked for, and asking for another
     /// than the config's is unsaved state.
     #[test]

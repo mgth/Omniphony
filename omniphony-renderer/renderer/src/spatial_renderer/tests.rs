@@ -64,11 +64,13 @@ fn unified_crossover_matches_per_band() {
     }
 
     let mut unified = build();
+    unified.prepare_speaker_stage().unwrap();
     assert!(
         unified.speaker_stage.unified_table.is_some(),
         "crossover layout should build a unified table"
     );
     let mut per_band = build();
+    per_band.prepare_speaker_stage().unwrap();
     per_band.speaker_stage.unified_table = None;
 
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
@@ -149,11 +151,13 @@ fn unified_polar_matches_per_band() {
     }
 
     let mut unified = build();
+    unified.prepare_speaker_stage().unwrap();
     assert!(
         unified.speaker_stage.unified_table.is_some(),
         "polar crossover layout should build a unified table"
     );
     let mut per_band = build();
+    per_band.prepare_speaker_stage().unwrap();
     per_band.speaker_stage.unified_table = None;
 
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
@@ -252,11 +256,13 @@ fn unified_table_with_two_speaker_fallback_band() {
     }
 
     let mut unified = build();
+    unified.prepare_speaker_stage().unwrap();
     assert!(
         unified.speaker_stage.unified_table.is_some(),
         "a 2-speaker fallback band must not disable the unified table"
     );
     let mut per_band = build();
+    per_band.prepare_speaker_stage().unwrap();
     per_band.speaker_stage.unified_table = None;
 
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
@@ -2833,7 +2839,7 @@ pub(super) fn build_table_renderer(cartesian: bool, band_limited: bool) -> Spati
             LiveEvaluationMode::PrecomputedPolar,
         )
     };
-    let r = SpatialRenderer::new(
+    let mut r = SpatialRenderer::new(
         layout,
         48_000,
         6,
@@ -2868,6 +2874,7 @@ pub(super) fn build_table_renderer(cartesian: bool, band_limited: bool) -> Spati
         7,
     )
     .unwrap();
+    r.prepare_speaker_stage().unwrap();
     assert_eq!(
         r.speaker_stage.unified_table.is_some(),
         band_limited,
