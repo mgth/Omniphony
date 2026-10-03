@@ -1,7 +1,10 @@
-//! Bit-identity guards for the mix: `mix_channels` and the bus it mixes on,
-//! against the sample-major mix they replaced — every source added sample by
-//! sample, band by band, densely over all speakers, straight into the
-//! interleaved output — which is kept here as the reference.
+//! Guards for the mix. Bit identity first: `mix_channels` and the bus it mixes
+//! on, against the sample-major mix they replaced — every source added sample
+//! by sample, band by band, densely over all speakers, straight into the
+//! interleaved output, a gain lookup per sample for a moving object in
+//! `RampMode::Sample` — which is kept here as the reference. Then the one place
+//! the mix departs from it: the stride between the gain lookups of a moving
+//! object in `RampMode::Sample`, measured against that same reference.
 
 use super::*;
 use crate::crossover::SmallBands;
@@ -271,7 +274,9 @@ fn scene_events(block: usize, block_len: usize) -> Vec<SpatialChannelEvent> {
 /// Mix the scene block by block through `mix_channels` and through the
 /// reference, on the same stage, and require the same output bits, the same
 /// ramp state and the same metered gains — in every ramp mode, with beds and
-/// objects, a muted object, and trilinear and nearest-cell lookups.
+/// objects, a muted object, and trilinear and nearest-cell lookups. The frames
+/// ask for a gain lookup per sample for moving objects, as the reference
+/// does.
 fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: usize) {
     const BLOCKS_PER_MODE: usize = 9;
     let topology = r.control.active_topology();
@@ -337,6 +342,8 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
             layout: &topology.speaker_layout,
             object_params: &object_params,
             ramp_mode,
+            // The reference looks a moving object's gains up every sample.
+            sample_ramp_stride: 1,
             ramp_strategy: &strategy,
             ramp_context: &ramp_context,
             log_object_positions: false,
@@ -459,9 +466,9 @@ fn mix_is_bit_identical_to_the_sample_major_mix_with_the_fir_crossover() {
 }
 
 /// The bus on its own: sources of every shape — gains that hold, gains that
-/// ramp, a frame per sample — added in turn must leave the sums a sample-major
-/// accumulation of the same products leaves, whatever layout each source asked
-/// for and whatever the signs of the zeros involved.
+/// ramp across the block, gains that change every sample — added in turn must
+/// leave the sums a sample-major accumulation of the same products leaves,
+/// whatever the signs of the zeros involved.
 #[test]
 fn bus_sums_match_a_sample_major_accumulation() {
     const SPEAKERS: usize = 7;
@@ -501,7 +508,6 @@ fn bus_sums_match_a_sample_major_accumulation() {
     let mut got = vec![f32::NAN; SPEAKERS * BLOCK];
     let mut want = vec![0.0f32; SPEAKERS * BLOCK];
     let mut bus = MixBus::silent(&mut planar, &mut got, BLOCK, SPEAKERS);
-    // Shapes in an order that changes layout back and forth.
     for (source, shape) in [0, 1, 2, 2, 0, 1, 1, 2, 0].into_iter().enumerate() {
         let bands = bands_for(source);
         let start = gains_for(source as u32);
@@ -531,8 +537,8 @@ fn bus_sums_match_a_sample_major_accumulation() {
             }
             1 => bus.add_lerp(&bands, &start, &end, &fractions, 0..BLOCK),
             _ => {
-                for (sample_idx, frame) in bus.frames().enumerate() {
-                    add_frame(frame, &bands, &gains_at(sample_idx), sample_idx);
+                for sample_idx in 0..BLOCK {
+                    bus.add_constant(&bands, &gains_at(sample_idx), sample_idx..sample_idx + 1);
                 }
             }
         }
@@ -652,5 +658,353 @@ fn object_test_is_bit_identical_to_the_sample_major_mix() {
             );
             assert!(got != programme, "the test added nothing");
         }
+    }
+}
+
+/// `mix_sample_ramp` on its own, with a gain law that is linear in the
+/// position: one object on two speakers, gains `(x, 1 − x)`, mixed from a
+/// constant input of one so that the bus reads back the gains each sample was
+/// mixed with. Returns those gains for speaker 0 and the number of lookups.
+struct RampProbe {
+    ramp: crate::ramp_strategy::ChannelRampState,
+    carry: GainCarry,
+    pass: u64,
+    stride: usize,
+}
+
+impl RampProbe {
+    fn new(stride: usize) -> Self {
+        Self {
+            ramp: Default::default(),
+            carry: GainCarry::default(),
+            pass: 0,
+            stride,
+        }
+    }
+
+    fn context() -> RampContext {
+        RampContext::new(RampRenderParams {
+            room_ratio: [1.0; 3],
+            room_ratio_rear: 1.0,
+            room_ratio_lower: 1.0,
+            room_ratio_center_blend: 0.0,
+            use_distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
+            distance_model: crate::spatial_vbap::DistanceModel::None,
+        })
+    }
+
+    /// Start a ramp of `ramp_length` samples towards `x`.
+    fn move_to(&mut self, x: f64, ramp_length: u64) {
+        PositionRampStrategy.update_target(
+            &mut self.ramp,
+            crate::ramp_strategy::RampTarget {
+                position: [x, 0.0, 0.0],
+                size: [0.0; 3],
+                ramp_length,
+            },
+            None,
+            &Self::context(),
+        );
+    }
+
+    /// Mix one block; `(gains of speaker 0 per sample, positions per sample,
+    /// lookups)`.
+    fn block(&mut self, len: usize) -> (Vec<f32>, Vec<f64>, usize) {
+        const SPEAKERS: usize = 2;
+        self.pass += 1;
+        let bands = vec![vec![1.0f32; len]];
+        let mut planar = vec![0.0f32; SPEAKERS * len];
+        let mut output = vec![0.0f32; SPEAKERS * len];
+        let mut band_gains = vec![Gains::zeroed(SPEAKERS)];
+        let mut segment_end = Vec::new();
+        let mut lookups = 0;
+        let mut bus = MixBus::silent(&mut planar, &mut output, len, SPEAKERS);
+        // The positions the ramp goes through, read off a copy of it.
+        let mut positions = Vec::with_capacity(len);
+        let mut walk = self.ramp.clone();
+        for _ in 0..len {
+            let progress = walk.current_progress().unwrap_or(RampProgress {
+                completed_units: 0,
+                total_units: 0,
+            });
+            PositionRampStrategy.evaluate(&mut walk, progress, &Self::context());
+            positions.push(walk.output_position[0]);
+            walk.commit_output_position();
+            walk.advance_ramp(1);
+        }
+        mix_sample_ramp(
+            &mut bus,
+            &bands,
+            len,
+            &mut self.ramp,
+            &PositionRampStrategy,
+            &Self::context(),
+            self.stride,
+            &mut self.carry,
+            self.pass,
+            &mut band_gains,
+            &mut segment_end,
+            |position, _size, out| {
+                lookups += 1;
+                out.clear();
+                let mut gains = Gains::zeroed(SPEAKERS);
+                gains.set(0, position[0] as f32);
+                gains.set(1, 1.0 - position[0] as f32);
+                out.push(gains);
+            },
+        );
+        bus.finish();
+        assert_eq!(
+            self.ramp.output_position[0].to_bits(),
+            walk.output_position[0].to_bits(),
+            "the mix must leave the ramp where a per-sample walk leaves it"
+        );
+        let mixed = output.chunks_exact(SPEAKERS).map(|f| f[0]).collect();
+        (mixed, positions, lookups)
+    }
+}
+
+/// With a gain law linear in the position, interpolating between lookups
+/// loses nothing: every sample must come out with the gains of its own
+/// position, to rounding — through a ramp that spans blocks whose length is
+/// not a multiple of the stride, so the first segment of a block has to start
+/// from the gains the previous block ended on.
+#[test]
+fn stride_interpolation_is_exact_for_a_linear_gain_law_across_blocks() {
+    const BLOCK: usize = 37;
+    let mut probe = RampProbe::new(crate::config_fields::sample_ramp_stride::DEFAULT);
+    probe.move_to(0.2, 0);
+    let (_, _, lookups) = probe.block(BLOCK);
+    assert_eq!(lookups, 1, "a settled block is one lookup");
+
+    probe.move_to(0.9, 5 * BLOCK as u64 / 2);
+    let mut lookups_per_block = Vec::new();
+    for block in 0..4 {
+        let (mixed, positions, lookups) = probe.block(BLOCK);
+        lookups_per_block.push(lookups);
+        for (sample_idx, (&gain, &x)) in mixed.iter().zip(&positions).enumerate() {
+            assert!(
+                (gain - x as f32).abs() < 2e-6,
+                "block {block}, sample {sample_idx}: mixed with {gain}, position {x}"
+            );
+        }
+    }
+    // First block: the settled gains are looked up on the first sample, then
+    // 36 moving samples make five segments. Second block: 37 moving samples
+    // from the carried gains, five segments. Third: the ramp ends on its 19th
+    // sample — two full segments, one of three samples closed where the
+    // movement stops, and nothing more. Fourth: settled.
+    assert_eq!(lookups_per_block, [6, 5, 3, 1]);
+}
+
+/// The samples of a segment are interpolated, but its ends are not: the last
+/// sample of every segment, the last sample of a ramp and every sample after
+/// it are mixed with the gains of their own position, bit for bit. Checked
+/// with a gain law that is not linear, so an interpolated sample shows.
+#[test]
+fn stride_keeps_segment_ends_and_settled_samples_exact() {
+    const BLOCK: usize = 40;
+    let law = |x: f64| ((x * 7.0).sin() * 0.5 + 0.5) as f32;
+    let run = |stride: usize| -> Vec<f32> {
+        let mut ramp = crate::ramp_strategy::ChannelRampState::default();
+        let mut carry = GainCarry::default();
+        let mut out = Vec::new();
+        let context = RampProbe::context();
+        for block in 0..4u64 {
+            if block == 1 {
+                PositionRampStrategy.update_target(
+                    &mut ramp,
+                    crate::ramp_strategy::RampTarget {
+                        position: [0.8, 0.0, 0.0],
+                        size: [0.0; 3],
+                        ramp_length: 53,
+                    },
+                    None,
+                    &context,
+                );
+            }
+            let bands = vec![vec![1.0f32; BLOCK]];
+            let mut planar = vec![0.0f32; BLOCK];
+            let mut output = vec![0.0f32; BLOCK];
+            let mut band_gains = vec![Gains::zeroed(1)];
+            let mut segment_end = Vec::new();
+            let mut bus = MixBus::silent(&mut planar, &mut output, BLOCK, 1);
+            mix_sample_ramp(
+                &mut bus,
+                &bands,
+                BLOCK,
+                &mut ramp,
+                &PositionRampStrategy,
+                &context,
+                stride,
+                &mut carry,
+                block + 1,
+                &mut band_gains,
+                &mut segment_end,
+                |position, _size, out| {
+                    out.clear();
+                    let mut gains = Gains::zeroed(1);
+                    gains.set(0, law(position[0]));
+                    out.push(gains);
+                },
+            );
+            bus.finish();
+            out.extend_from_slice(&output);
+        }
+        out
+    };
+    let exact = run(1);
+    let strided = run(crate::config_fields::sample_ramp_stride::DEFAULT);
+    // Block 0 is settled. The ramp starts on sample 40, still at the settled
+    // position, moves over samples 41..=92 and lands on its target on sample
+    // 93, where the object stays.
+    let mut interpolated = 0;
+    for (sample_idx, (a, b)) in exact.iter().zip(&strided).enumerate() {
+        let moving = (41..94).contains(&sample_idx);
+        // Segments of the first moving block start on its second sample,
+        // those of the next block on its first; the last one ends where the
+        // movement does.
+        let segment_end = match sample_idx {
+            41..80 => (sample_idx - 41) % 8 == 7 || sample_idx == 79,
+            80..94 => (sample_idx - 80) % 8 == 7 || sample_idx == 93,
+            _ => true,
+        };
+        if !moving || segment_end {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "sample {sample_idx} must have the gains of its own position"
+            );
+        } else if a != b {
+            interpolated += 1;
+            assert!((a - b).abs() < 0.05, "sample {sample_idx}: {a} vs {b}");
+        }
+    }
+    assert!(interpolated > 20, "the stride interpolated nothing");
+}
+
+/// Gains kept for the next block are only good for the block right after:
+/// once a pass is skipped, a moving block starts from a lookup on its first
+/// sample instead.
+#[test]
+fn a_skipped_pass_drops_the_carried_gains() {
+    const BLOCK: usize = 40;
+    let mut probe = RampProbe::new(crate::config_fields::sample_ramp_stride::DEFAULT);
+    probe.move_to(0.9, 10 * BLOCK as u64);
+    assert_eq!(probe.block(BLOCK).2, 6, "first moving block: no carry");
+    assert_eq!(probe.block(BLOCK).2, 5, "second: starts from the carry");
+    probe.pass += 1;
+    assert_eq!(probe.block(BLOCK).2, 6, "after a skipped pass: no carry");
+}
+
+/// Renders of the moving scene through the whole renderer, stride against a
+/// lookup per sample: `(peak deviation, RMS deviation, peak level)`, linear.
+fn stride_deviation(cartesian: bool, band_limited: bool, moving: bool) -> (f32, f32, f32) {
+    const BLOCK: usize = 40;
+    const BLOCKS: usize = 60;
+    const N: usize = 8;
+    let render = |stride: usize| -> Vec<f32> {
+        let mut r = build_table_renderer(cartesian, band_limited);
+        r.control.live.write().ramp_mode = RampMode::Sample;
+        r.control.live.write().sample_ramp_stride = stride;
+        let mut out = Vec::new();
+        let mut buf = Vec::new();
+        for block in 0..BLOCKS {
+            let events: Vec<SpatialChannelEvent> = if block == 0 || (moving && block % 4 != 3) {
+                (0..N)
+                    .map(|obj| {
+                        // Up to a third of a turn per second, plus a slow rise.
+                        let degrees = obj as f64 * 37.0
+                            + block as f64
+                                * (0.02 + obj as f64 * 0.012)
+                                * if moving { 1.0 } else { 0.0 };
+                        let az = degrees.to_radians();
+                        SpatialChannelEvent {
+                            channel_idx: obj,
+                            is_bed: false,
+                            gain_db: Some(0.0),
+                            // Ramps as long as the block, shorter, and longer.
+                            // A jump onto the first position, and whenever
+                            // nothing is meant to move.
+                            ramp_length: Some(if moving && block > 0 {
+                                [BLOCK, BLOCK * 5 / 8, BLOCK * 5 / 2][obj % 3] as u32
+                            } else {
+                                0
+                            }),
+                            size: Some([0.0; 3]),
+                            position: Some([
+                                0.9 * az.sin(),
+                                0.9 * az.cos(),
+                                0.1 + 0.002 * block as f64 * (obj % 3) as f64,
+                            ]),
+                            sample_pos: Some(0),
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let pcm = noise_block(N, BLOCK, block);
+            let frame = r.render_frame(&pcm, N, &events, buf, false).unwrap();
+            out.extend_from_slice(&frame.samples);
+            buf = frame.samples;
+        }
+        out
+    };
+    let exact = render(1);
+    let strided = render(crate::config_fields::sample_ramp_stride::DEFAULT);
+    let mut peak = 0.0f32;
+    let mut sum_sq = 0.0f64;
+    let mut level = 0.0f32;
+    for (a, b) in exact.iter().zip(&strided) {
+        let d = (a - b).abs();
+        peak = peak.max(d);
+        sum_sq += (d as f64) * (d as f64);
+        level = level.max(a.abs());
+    }
+    (peak, (sum_sq / exact.len() as f64).sqrt() as f32, level)
+}
+
+/// An object that is not ramping must not notice the stride: scenes where
+/// objects only ever jump (zero-length ramps) or hold render the same bits as
+/// with a lookup per sample.
+#[test]
+fn stride_leaves_settled_objects_bit_identical() {
+    for (cartesian, band_limited) in [(true, true), (true, false)] {
+        let (peak, _, level) = stride_deviation(cartesian, band_limited, false);
+        assert!(level > 0.01, "the scene rendered silence");
+        assert_eq!(
+            peak, 0.0,
+            "cartesian={cartesian}, band_limited={band_limited}: settled objects changed"
+        );
+    }
+}
+
+/// On moving objects the stride departs from a lookup per sample by what the
+/// gains curve inside eight samples, which is little: the deviation stays
+/// more than 70 dB under the signal on every table geometry.
+#[test]
+fn stride_stays_close_to_a_lookup_per_sample_on_moving_objects() {
+    for (cartesian, band_limited) in [(true, true), (false, true), (true, false)] {
+        let (peak, rms, level) = stride_deviation(cartesian, band_limited, true);
+        let db = |v: f32| 20.0 * v.max(1e-12).log10();
+        eprintln!(
+            "stride deviation, cartesian={cartesian}, band_limited={band_limited}: \
+             peak {:.1} dBFS, rms {:.1} dBFS (signal peak {:.1} dBFS)",
+            db(peak),
+            db(rms),
+            db(level)
+        );
+        assert!(peak > 0.0, "the scene never interpolated");
+        assert!(
+            db(peak) < db(level) - 70.0,
+            "cartesian={cartesian}, band_limited={band_limited}: peak deviation {:.1} dBFS \
+             against a signal peak of {:.1} dBFS",
+            db(peak),
+            db(level)
+        );
     }
 }

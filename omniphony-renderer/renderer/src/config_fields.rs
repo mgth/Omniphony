@@ -394,6 +394,14 @@ render_field! {
     eq = bool::eq
 }
 
+render_field! {
+    /// `ramp_mode: sample`: samples between two gain lookups of a moving
+    /// object (`render.sample_ramp_stride`). Default 8.
+    pub sample_ramp_stride: usize = 8,
+    field = sample_ramp_stride,
+    eq = usize::eq
+}
+
 // ── Lot 5c: special-cased options (custom descriptors) ──
 
 render_field_str! {

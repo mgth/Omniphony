@@ -92,6 +92,7 @@ struct LiveSnapshot<'a> {
     master_gain: f32,
     object_params: &'a [crate::live_params::ObjectLiveParams],
     ramp_mode: RampMode,
+    sample_ramp_stride: usize,
     use_loudness: bool,
     auto_gain: bool,
     auto_gain_ceiling_db: f32,
@@ -618,6 +619,7 @@ impl SpatialRenderer {
             .swap(false, std::sync::atomic::Ordering::Acquire)
         {
             self.channel_states.clear();
+            self.speaker_stage.drop_gain_carries();
         }
 
         // ── 0. Independent binaural (headphone) path ─────────────────────────
@@ -778,6 +780,7 @@ impl SpatialRenderer {
                 master_gain: g.master_gain,
                 object_params: &self.object_params_buf[..input_channel_count],
                 ramp_mode: g.ramp_mode,
+                sample_ramp_stride: g.sample_ramp_stride,
                 use_loudness: g.use_loudness,
                 auto_gain: g.auto_gain,
                 auto_gain_ceiling_db: g.auto_gain_ceiling_db,
@@ -924,6 +927,7 @@ impl SpatialRenderer {
                         layout: active_layout,
                         object_params: live.object_params,
                         ramp_mode: live.ramp_mode,
+                        sample_ramp_stride: live.sample_ramp_stride,
                         ramp_strategy,
                         ramp_context: &ramp_context,
                         log_object_positions: self.log_object_positions,
@@ -939,6 +943,8 @@ impl SpatialRenderer {
                 cascade_diag = Some(diag);
                 self.cascade = Some(geometry);
             } else {
+                // The ramps advance below, without the speaker stage.
+                self.speaker_stage.drop_gain_carries();
                 self.binaural_pos_buf.clear();
                 self.binaural_pos_buf
                     .resize(input_channel_count, [0.0, 1.0, 0.0]);
@@ -1174,6 +1180,7 @@ impl SpatialRenderer {
             layout: active_layout,
             object_params: live.object_params,
             ramp_mode: live.ramp_mode,
+            sample_ramp_stride: live.sample_ramp_stride,
             ramp_strategy,
             ramp_context: &ramp_context,
             log_object_positions: self.log_object_positions,

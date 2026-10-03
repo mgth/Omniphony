@@ -283,9 +283,10 @@
   "audio.rampModeFrame": "Por frame",
   "audio.rampModeInterp": "Por amostra (interpolado)",
   "audio.rampModeSample": "Por amostra",
+  "audio.sampleRampStride": "Passo de cálculo",
   "rampMode.infoButton": "Informações do modo de rampa",
   "rampMode.infoTitle": "Modo de rampa",
-  "rampMode.infoBody": "A rampa suaviza mudanças bruscas de posição ou ganho, para que o movimento dos objetos e as variações de nível soem mais naturais, com menos cliques ou saltos espaciais.<br /><br /><strong>Desativado</strong>: desativa a interpolação e salta imediatamente para o novo alvo.<br /><br /><strong>Por frame</strong>: aplica um passo de interpolação por frame de áudio decodificado. É mais leve, mas mais escalonado.<br /><br /><strong>Por amostra</strong>: aplica um passo de interpolação para cada amostra renderizada. É o modo mais suave.",
+  "rampMode.infoBody": "A rampa suaviza mudanças bruscas de posição ou ganho, para que o movimento dos objetos e as variações de nível soem mais naturais, com menos cliques ou saltos espaciais.<br /><br /><strong>Desativado</strong>: desativa a interpolação e salta imediatamente para o novo alvo.<br /><br /><strong>Por frame</strong>: aplica um passo de interpolação por frame de áudio decodificado. É mais leve, mas mais escalonado.<br /><br /><strong>Por amostra</strong>: a posição avança a cada amostra; enquanto um objeto se move, seus ganhos espaciais são recalculados a cada poucas amostras (o passo de cálculo, 8 por padrão) e interpolados entre elas. O mais preciso e o mais caro.",
   "section.twoDSources": "Fontes de canais fixos",
   "twoDSources.surroundLabel": "Canais traseiros (4.x/5.x)",
   "twoDSources.surroundSide": "Lateral",
@@ -1002,5 +1003,6 @@
   "placement.editManually": "Editar posições",
   "confirm.resetPlacement": "Limpar as entradas de {family}?\n\nRoteamento, trims e posições manuais de cada canal desta família voltam aos padrões.",
   "help.placement": "Para onde vão os canais fixos de um fluxo, escolhido por família de fonte: Dolby, DTS, Auro-3D, PCM ou Genérico para o resto. Esfera posiciona cada canal como uma direção ao seu redor, independente da sala: o ângulo que o formato declara (tabela de instalação do Auro-3D, disposição ITU do DTS) ou um nominal. Sala o coloca no canto do modelo de sala que o rótulo nomeia, esticado com a proporção da sua sala como um objeto: o modelo Dolby e o comportamento histórico. Manual usa as posições que você definiu para esta família; um canal sem posição volta para Sala. Roteamento (Virtual/Direto) e trims valem em todos os modos. Uma família herda o modo e as entradas de Genérico enquanto não tiver os seus.",
-  "help.placement.mode": "Esfera: direções ao seu redor, independentes da sala. Sala: os cantos do modelo de sala, esticados com a sua proporção. Manual: as posições que você definiu para esta família."
+  "help.placement.mode": "Esfera: direções ao seu redor, independentes da sala. Sala: os cantos do modelo de sala, esticados com a sua proporção. Manual: as posições que você definiu para esta família.",
+  "help.audio.sampleRampStride": "Somente no modo Por amostra. Enquanto um objeto se move, sua posição continua avançando a cada amostra, mas seus ganhos espaciais são calculados a cada N amostras e interpolados linearmente entre eles. 1 calcula a cada amostra: o mais exato e o mais caro. 8 (padrão) equivale a 0,17 ms a 48 kHz, muito abaixo do audível, com um oitavo dos cálculos. Valores maiores economizam pouco mais."
 }

@@ -615,6 +615,11 @@ const GRID_CELLS_KIND: OptionKind = OptionKind::Int {
     min: 1,
     max: i32::MAX as i64,
 };
+/// `ramp_mode: sample`: from a lookup per sample to the stage's widest stride.
+const SAMPLE_RAMP_STRIDE_KIND: OptionKind = OptionKind::Int {
+    min: 1,
+    max: crate::live_params::MAX_SAMPLE_RAMP_STRIDE as i64,
+};
 const OBJECT_SIZE_INTERVALS_KIND: OptionKind = OptionKind::Int {
     min: 0,
     max: i32::MAX as i64,
@@ -1274,6 +1279,33 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
                 .and_then(RampMode::from_str)
             {
                 live.ramp_mode = mode;
+            }
+        },
+    },
+    // No REPLAN: the speaker stage reads the stride every block. A change
+    // mid-movement takes effect at the next segment.
+    OptionSpec {
+        key: "sample_ramp_stride",
+        kind: SAMPLE_RAMP_STRIDE_KIND,
+        default: OptionDefault::Int(crate::config_fields::sample_ramp_stride::DEFAULT as i64),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "audio.sampleRampStride",
+        help_i18n_key: Some("help.audio.sampleRampStride"),
+        legacy_control_addr: LegacyAddr::None,
+        set: |live, raw, _env| {
+            let stride = raw_int(raw, SAMPLE_RAMP_STRIDE_KIND)?;
+            live.sample_ramp_stride = stride as usize;
+            Some(stride.to_string())
+        },
+        get_json: |live| live.sample_ramp_stride.into(),
+        config_store: |render, live, _env| {
+            crate::config_fields::sample_ramp_stride::store(render, live.sample_ramp_stride)
+        },
+        config_seed: |live, render, _env| {
+            if let Some(stride) = crate::config_fields::sample_ramp_stride::get(render) {
+                live.sample_ramp_stride =
+                    stride.clamp(1, crate::live_params::MAX_SAMPLE_RAMP_STRIDE);
             }
         },
     },

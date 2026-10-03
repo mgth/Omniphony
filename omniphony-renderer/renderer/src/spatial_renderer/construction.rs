@@ -388,6 +388,7 @@ impl SpatialRenderer {
             spread_distance_curve,
             size_to_spread_mode: Default::default(),
             ramp_mode,
+            sample_ramp_stride: crate::config_fields::sample_ramp_stride::DEFAULT,
             backend_id: "vbap".to_string(),
             evaluation: EvaluationLiveParams {
                 mode: initial_evaluation_mode,
