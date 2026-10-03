@@ -333,6 +333,7 @@ mod registry {
             ("auto_gain_ceiling_db", RawOptionValue::Number(-3.0)),
             ("use_loudness", RawOptionValue::Bool(true)),
             ("ramp_mode", RawOptionValue::Str("interp")),
+            ("sample_ramp_stride", RawOptionValue::Number(4.0)),
             ("drc_mode", RawOptionValue::Str("Standard")),
             ("drc_weight", RawOptionValue::Number(0.5)),
             // Width stays the reference (1): the file stores metres against

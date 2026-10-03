@@ -283,9 +283,10 @@
   "audio.rampModeFrame": "Pro Frame",
   "audio.rampModeInterp": "Pro Sample (interpoliert)",
   "audio.rampModeSample": "Pro Sample",
+  "audio.sampleRampStride": "Berechnungsabstand",
   "rampMode.infoButton": "Info zum Rampenmodus",
   "rampMode.infoTitle": "Rampenmodus",
-  "rampMode.infoBody": "Die Rampe glättet abrupte Positions- oder Pegeländerungen, damit Objektbewegungen und Lautstärkeänderungen natürlicher wirken und weniger Klicks oder räumliche Sprünge erzeugen.<br /><br /><strong>Aus</strong>: deaktiviert die Interpolation und springt sofort zum neuen Ziel.<br /><br /><strong>Pro Frame</strong>: wendet pro dekodiertem Audio-Frame einen Interpolationsschritt an. Das ist leichter, aber stufiger.<br /><br /><strong>Pro Sample</strong>: wendet für jedes gerenderte Sample einen Interpolationsschritt an. Das ist am weichsten.",
+  "rampMode.infoBody": "Die Rampe glättet abrupte Positions- oder Pegeländerungen, damit Objektbewegungen und Lautstärkeänderungen natürlicher wirken und weniger Klicks oder räumliche Sprünge erzeugen.<br /><br /><strong>Aus</strong>: deaktiviert die Interpolation und springt sofort zum neuen Ziel.<br /><br /><strong>Pro Frame</strong>: wendet pro dekodiertem Audio-Frame einen Interpolationsschritt an. Das ist leichter, aber stufiger.<br /><br /><strong>Pro Sample</strong>: Die Position rückt bei jedem Sample vor; während sich ein Objekt bewegt, werden seine räumlichen Gains alle paar Samples neu berechnet (der Berechnungsabstand, standardmäßig 8) und dazwischen interpoliert. Am genauesten, aber am teuersten.",
   "section.twoDSources": "Quellen mit festen Kanälen",
   "twoDSources.surroundLabel": "Hintere Kanäle (4.x/5.x)",
   "twoDSources.surroundSide": "Seite",
@@ -1002,5 +1003,6 @@
   "placement.editManually": "Positionen bearbeiten",
   "confirm.resetPlacement": "Die Einträge für {family} löschen?\n\nRouting, Trims und manuelle Positionen jedes Kanals dieser Familie kehren zu ihren Standardwerten zurück.",
   "help.placement": "Wohin die festen Kanäle eines Streams gehen, je Quellfamilie gewählt — Dolby, DTS, Auro-3D, PCM oder Allgemein für alles andere. Sphäre platziert jeden Kanal als Richtung um dich herum, unabhängig vom Raum: der vom Format angegebene Winkel (Auro-3D-Aufstellungstabelle, ITU-Anordnung von DTS) oder ein Nennwinkel. Raum setzt ihn in die Ecke des Raummodells, die sein Label benennt, mit deinem Raumverhältnis gedehnt wie ein Objekt — das Dolby-Modell und das bisherige Verhalten. Manuell verwendet die Positionen, die du für diese Familie gesetzt hast; ein Kanal ohne eigene fällt auf Raum zurück. Routing (Virtuell/Direkt) und Trims gelten in jedem Modus. Eine Familie erbt Modus und Einträge von Allgemein, solange sie keine eigenen setzt.",
-  "help.placement.mode": "Sphäre: Richtungen um dich herum, unabhängig vom Raum. Raum: die Ecken des Raummodells, mit deinem Raumverhältnis gedehnt. Manuell: die Positionen, die du für diese Familie gesetzt hast."
+  "help.placement.mode": "Sphäre: Richtungen um dich herum, unabhängig vom Raum. Raum: die Ecken des Raummodells, mit deinem Raumverhältnis gedehnt. Manuell: die Positionen, die du für diese Familie gesetzt hast.",
+  "help.audio.sampleRampStride": "Nur im Modus Pro Sample. Während sich ein Objekt bewegt, rückt seine Position weiterhin bei jedem Sample vor, seine räumlichen Gains werden aber nur alle N Samples berechnet und dazwischen linear interpoliert. 1 berechnet sie bei jedem Sample: am genauesten und am teuersten. 8 (Standard) entspricht 0,17 ms bei 48 kHz, weit unter der Hörbarkeitsschwelle, bei einem Achtel der Berechnungen. Größere Werte sparen kaum noch etwas."
 }

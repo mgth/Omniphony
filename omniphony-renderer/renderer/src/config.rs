@@ -320,6 +320,8 @@ pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ramp_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_ramp_stride: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_diffuse: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_diffuse_threshold: Option<f32>,
