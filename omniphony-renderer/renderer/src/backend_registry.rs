@@ -8,7 +8,8 @@ use crate::live_params::{
 use crate::plugin::{PluginFactory, PluginListing, PluginRegistry};
 use crate::render_backend::{
     BlendCurve, DegenerateVbapBackend, EffectiveEvaluationMode, EvaluationBuildConfig, GainModel,
-    HybridBackend, PreparedRenderEngine, build_prepared_render_engine, wrap_prepared_engine,
+    HybridBackend, PreparedRenderEngine, build_decorated_model, wrap_prepared_engine,
+    wrap_unsampled_engine,
 };
 use crate::speaker_layout::SpeakerLayout;
 
@@ -16,7 +17,7 @@ use crate::speaker_layout::SpeakerLayout;
 /// cube corners, and a few off-axis points. They are intentionally cheap and
 /// fixed — the goal is to exercise a freshly built backend once, on the build
 /// thread, not to characterise it.
-const SMOKE_TEST_POSITIONS: [[f64; 3]; 11] = [
+pub(crate) const SMOKE_TEST_POSITIONS: [[f64; 3]; 11] = [
     [0.0, 0.0, 0.0],
     [1.0, 1.0, 1.0],
     [-1.0, -1.0, -1.0],
@@ -334,18 +335,48 @@ pub struct TopologyBuildPlan {
 }
 
 impl TopologyBuildPlan {
+    /// Build the topology to publish (see [`Self::build_topology_reusing`]).
     pub fn build_topology(&self) -> Result<RenderTopology> {
         self.build_topology_reusing(None)
     }
 
-    /// Build the topology, reusing `current`'s decorated gain model when it was
-    /// built by the same backend at the same geometry generation (only the
-    /// evaluation mode / grid changed). Reuse skips re-triangulation: realtime
-    /// just re-wraps the model, precomputed re-samples it. Anything else (another
-    /// generation, another backend, or no current model) is a full rebuild.
+    /// Build the topology to publish on the control: layout, mappings, backend
+    /// identity and the decorated gain model, but no gain table, whatever the
+    /// evaluation mode. Nothing renders through it: the speaker stage builds
+    /// and samples one engine per crossover band from its layout
+    /// ([`Self::build_band_topology_reusing`]), the single band of a layout
+    /// without crossover included. See
+    /// [`crate::render_backend::wrap_unsampled_engine`].
+    ///
+    /// Reuses `current`'s decorated gain model when it was built by the same
+    /// backend at the same geometry generation (only the evaluation mode /
+    /// grid changed), which skips re-triangulation. Anything else (another
+    /// generation, another backend, or no current model) builds the model, so
+    /// a backend that cannot be built for the layout fails here, with its own
+    /// reason, before anything is published.
     pub fn build_topology_reusing(
         &self,
         current: Option<&RenderTopology>,
+    ) -> Result<RenderTopology> {
+        self.build_reusing(current, false)
+    }
+
+    /// Build a topology whose engine renders: the gain model wrapped in the
+    /// evaluation strategy for the plan's mode, so a precomputed mode samples
+    /// its table here. For the speaker stage's band engines and the Studio
+    /// band gain table, which read gains from it. Reuses `prev`'s decorated
+    /// model like [`Self::build_topology_reusing`].
+    pub fn build_band_topology_reusing(
+        &self,
+        prev: Option<&RenderTopology>,
+    ) -> Result<RenderTopology> {
+        self.build_reusing(prev, true)
+    }
+
+    fn build_reusing(
+        &self,
+        current: Option<&RenderTopology>,
+        sample: bool,
     ) -> Result<RenderTopology> {
         let effective_mode = match self.evaluation_mode {
             LiveEvaluationMode::Realtime => EffectiveEvaluationMode::Realtime,
@@ -356,37 +387,29 @@ impl TopologyBuildPlan {
             LiveEvaluationMode::Auto => unreachable!("topology build plan must resolve auto mode"),
         };
 
-        if let Some(model) = current.and_then(|cur| {
+        let reused = current.and_then(|cur| {
             (cur.geometry_generation == self.geometry_generation
                 && cur.model_backend_id == self.backend_id)
                 .then(|| cur.backend.decorated_model())
                 .flatten()
-        }) {
-            let engine =
-                wrap_prepared_engine(model, effective_mode, &self.evaluation_build_config)?;
-            let topology = RenderTopology::new(Arc::new(engine), self.layout.clone())?
-                .with_model_origin(self.geometry_generation, &self.backend_id);
-            smoke_test_engine(
-                &topology.backend,
+        });
+        let model = match reused {
+            Some(model) => model,
+            // The panner is geometry-only and ignores the evaluation mode, so
+            // the shared realtime builder applies to every backend (the mode is
+            // resolved by the evaluation wrapper below).
+            None => build_decorated_model(
+                self.backend_build.build_gain_model()?,
                 &self.evaluation_build_config,
-                self.backend_id(),
-            )?;
-            return Ok(topology);
-        }
-
-        // The panner is geometry-only and ignores the evaluation mode, so the
-        // shared realtime builder applies to every backend (the mode is resolved
-        // later by `build_prepared_render_engine`'s evaluation wrapper).
-        let model = self.backend_build.build_gain_model()?;
-        let topology = RenderTopology::new(
-            Arc::new(build_prepared_render_engine(
-                model,
-                effective_mode,
-                &self.evaluation_build_config,
-            )?),
-            self.layout.clone(),
-        )?
-        .with_model_origin(self.geometry_generation, &self.backend_id);
+            ),
+        };
+        let engine = if sample {
+            wrap_prepared_engine(model, effective_mode, &self.evaluation_build_config)?
+        } else {
+            wrap_unsampled_engine(model, effective_mode)
+        };
+        let topology = RenderTopology::new(Arc::new(engine), self.layout.clone())?
+            .with_model_origin(self.geometry_generation, &self.backend_id);
         smoke_test_engine(
             &topology.backend,
             &self.evaluation_build_config,
@@ -1183,7 +1206,7 @@ mod tests {
     use super::*;
     use crate::render_backend::{
         BackendCapabilities, CartesianEvaluationConfig, PolarEvaluationConfig, RenderRequest,
-        RenderResponse,
+        RenderResponse, build_prepared_render_engine,
     };
     use crate::spatial_vbap::{DistanceMetric, DistanceModel, Gains, OutOfHullMode};
 
@@ -1491,9 +1514,9 @@ mod tests {
             "got: {msg}"
         );
 
-        // The whole topology build — precomputed, so the table would have
-        // sampled the model — and a hybrid with a barycenter leg fail the same
-        // way, without a panic.
+        // The whole topology build — the published one (model only) and a
+        // band's (precomputed, so its table would sample the model) — and a
+        // hybrid with a barycenter leg fail the same way, without a panic.
         let topology = |backend_build: BackendBuildPlan, backend_id: &str| TopologyBuildPlan {
             layout: ring_layout(MAX_SPEAKERS + 2),
             backend_id: backend_id.to_string(),
@@ -1508,6 +1531,16 @@ mod tests {
                 "barycenter",
             )
             .build_topology()
+            .map(|_| ())
+        });
+        let err = built.expect("no panic").expect_err("refused");
+        assert!(err.to_string().contains("barycenter backend"), "got: {err}");
+        let built = std::panic::catch_unwind(|| {
+            topology(
+                BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2)),
+                "barycenter",
+            )
+            .build_band_topology_reusing(None)
             .map(|_| ())
         });
         let err = built.expect("no panic").expect_err("refused");
