@@ -283,9 +283,10 @@
   "audio.rampModeFrame": "按帧",
   "audio.rampModeInterp": "按采样（插值）",
   "audio.rampModeSample": "按采样",
+  "audio.sampleRampStride": "计算间隔",
   "rampMode.infoButton": "渐变模式说明",
   "rampMode.infoTitle": "渐变模式",
-  "rampMode.infoBody": "渐变会平滑位置或增益的突变，让对象运动和电平变化更自然，并减少点击声或空间跳变。<br /><br /><strong>关闭</strong>：禁用插值，立即跳到新的目标值。<br /><br /><strong>按帧</strong>：每个解码后的音频帧执行一次插值。开销更低，但变化更阶梯化。<br /><br /><strong>按采样</strong>：每个渲染采样都执行一次插值。这是最平滑的模式。",
+  "rampMode.infoBody": "渐变会平滑位置或增益的突变，让对象运动和电平变化更自然，并减少点击声或空间跳变。<br /><br /><strong>关闭</strong>：禁用插值，立即跳到新的目标值。<br /><br /><strong>按帧</strong>：每个解码后的音频帧执行一次插值。开销更低，但变化更阶梯化。<br /><br /><strong>按采样</strong>：位置逐个采样推进；对象移动时，每隔几个采样（计算间隔，默认 8）重新计算一次空间增益，中间做插值。最精确，开销也最大。",
   "section.twoDSources": "固定声道源",
   "twoDSources.surroundLabel": "后置声道（4.x/5.x）",
   "twoDSources.surroundSide": "侧面",
@@ -1002,5 +1003,6 @@
   "placement.editManually": "编辑位置",
   "confirm.resetPlacement": "清除 {family} 的条目？\n\n该族每个声道的路由、微调和手动位置都将恢复为默认值。",
   "help.placement": "流的固定声道放在哪里，按源类型族选择：Dolby、DTS、Auro-3D、PCM，其余归为通用。球面把每个声道放在围绕你的一个方向上，与房间无关：格式声明的角度（Auro-3D 的安装表、DTS 的 ITU 布局）或标称角度。房间把它放在标签对应的房间模型角落，像对象一样随房间比例拉伸，这是 Dolby 的模型，也是以往的行为。手动使用你为该族设置的位置，没有位置的声道回退到房间。路由（虚拟/直接）和微调在所有模式下都生效。一个族在没有自己的设置时继承通用的模式和条目。",
-  "help.placement.mode": "球面：围绕你的方向，与房间无关。房间：房间模型的角落，随房间比例拉伸。手动：你为该族设置的位置。"
+  "help.placement.mode": "球面：围绕你的方向，与房间无关。房间：房间模型的角落，随房间比例拉伸。手动：你为该族设置的位置。",
+  "help.audio.sampleRampStride": "仅用于按采样模式。对象移动时，其位置仍逐个采样推进，但空间增益每 N 个采样计算一次，中间做线性插值。1 表示每个采样都计算：最精确，开销也最大。8（默认）在 48 kHz 下为 0.17 毫秒，远低于可闻阈值，计算量仅为八分之一。更大的值几乎不再节省。"
 }

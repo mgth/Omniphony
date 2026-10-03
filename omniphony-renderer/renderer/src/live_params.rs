@@ -74,6 +74,10 @@ impl PreferredEvaluationMode {
 pub enum RampMode {
     Off,
     Frame,
+    /// The object's position advances every sample. While it moves, its gains
+    /// are evaluated every few samples (`LiveParams::sample_ramp_stride`) and
+    /// interpolated linearly in between; while it holds, they are evaluated
+    /// once per block.
     Sample,
     /// One VBAP evaluation per object per frame (the destination gains), then a
     /// per-sample linear interpolation of the gains from the previous block's
@@ -81,6 +85,10 @@ pub enum RampMode {
     /// keeping per-sample smoothness.
     Interp,
 }
+
+/// The widest `LiveParams::sample_ramp_stride`: 0.67 ms at 48 kHz. Bounds the
+/// speaker stage's per-segment scratch, which lives on the stack.
+pub const MAX_SAMPLE_RAMP_STRIDE: usize = 32;
 
 impl RampMode {
     pub fn as_str(self) -> &'static str {
@@ -1181,6 +1189,11 @@ pub struct LiveParams {
 
     /// Ramp processing mode for object moves and gain transitions.
     pub ramp_mode: RampMode,
+
+    /// `RampMode::Sample`: samples between two gain lookups of a moving
+    /// object, interpolated linearly in between; 1 is a lookup per sample.
+    /// In `[1, MAX_SAMPLE_RAMP_STRIDE]`.
+    pub sample_ramp_stride: usize,
 
     /// Requested spatial render backend identifier.
     pub backend_id: String,
