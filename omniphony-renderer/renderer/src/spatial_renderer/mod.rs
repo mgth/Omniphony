@@ -229,8 +229,14 @@ pub struct SpatialRenderer {
 
     /// Per-layout speaker rendering state (band engines, crossover, delay
     /// lines, per-layout scratch). Extracted so the cascaded binaural mode can
-    /// later run a second stage against a virtual layout.
+    /// later run a second stage against a virtual layout. Its band engines are
+    /// built by the first frame (or [`Self::prepare_speaker_stage`]), once the
+    /// host has seeded the control from its config.
     speaker_stage: SpeakerRenderStage,
+
+    /// How many times the speaker stage built its band engines (gain tables,
+    /// crossover bank, unified table). Read by [`Self::speaker_stage_builds`].
+    speaker_stage_builds: u32,
 
     /// Scratch snapshot of live per-object params, indexed by input channel.
     object_params_buf: Vec<crate::live_params::ObjectLiveParams>,
@@ -371,6 +377,38 @@ impl SpatialRenderer {
     /// Return the shared `RendererControl` Arc so that `OscSender` can hold it.
     pub fn renderer_control(&self) -> Arc<RendererControl> {
         Arc::clone(&self.control)
+    }
+
+    /// Build the speaker stage's band engines (per-band gain tables, crossover
+    /// bank, unified table) for the active topology and the live options now,
+    /// instead of on the first [`Self::render_frame`]. A no-op when they are
+    /// already up to date.
+    ///
+    /// Construction does not build them: the hosts seed the backend, its
+    /// params and the crossover engine from their config only after the
+    /// renderer exists, so a build at construction would sample every band
+    /// table on the defaults and the first frame would sample them again. A
+    /// host that wants the cost off its first frame calls this once its seed
+    /// is done; tests call it to inspect the stage.
+    pub fn prepare_speaker_stage(&mut self) -> Result<()> {
+        let topology = self.control.active_topology();
+        let identity = Arc::as_ptr(&topology) as usize;
+        if self.speaker_stage.refresh_for_topology(
+            &self.control,
+            identity,
+            &topology.speaker_layout,
+        )? {
+            self.speaker_stage_builds += 1;
+        }
+        Ok(())
+    }
+
+    /// Number of times the speaker stage has built its band engines since the
+    /// renderer was constructed: one per start-up, one per topology or
+    /// crossover change after that. Diagnostics and tests (the start-up
+    /// regression this guards built them twice).
+    pub fn speaker_stage_builds(&self) -> u32 {
+        self.speaker_stage_builds
     }
 
     /// `true` while a requested binaural HRIR source change has been handed to
@@ -629,11 +667,13 @@ impl SpatialRenderer {
         let topology_guard = self.control.active_topology();
         let topology = &*topology_guard;
         let topology_identity = std::sync::Arc::as_ptr(&topology_guard) as usize;
-        self.speaker_stage.refresh_for_topology(
+        if self.speaker_stage.refresh_for_topology(
             &self.control,
             topology_identity,
             &topology.speaker_layout,
-        )?;
+        )? {
+            self.speaker_stage_builds += 1;
+        }
         // Cascaded binaural geometry: derived from the active topology, kept
         // in sync only while the mode is active. Must run before the live
         // snapshot below, which borrows `self` fields for the rest of the frame.

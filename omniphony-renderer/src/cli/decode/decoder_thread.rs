@@ -371,7 +371,11 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                             return Ok(false);
                         }
                         let send_block_ms = sent_at.elapsed().as_secs_f64() * 1000.0;
-                        if send_block_ms > 5.0 {
+                        // A stall on a pipe means the handler fell behind a
+                        // live source. A regular file is read as fast as the
+                        // handler takes frames, so blocking here is the
+                        // expected pacing, not a fault: keep it out of the log.
+                        if send_block_ms > 5.0 && is_pipe_input {
                             log::warn!(
                                 "Decoder channel backpressure: send_block_ms={:.3} frames_in_packet={} payload_bytes={} transport={:?}",
                                 send_block_ms,

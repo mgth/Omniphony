@@ -40,11 +40,13 @@ pub(super) struct SpeakerRenderStage {
     pub(super) num_speakers: usize,
     /// Sample rate for slew and delay-target conversion.
     pub(super) sample_rate: u32,
-    /// Per-band VBAP engines. Always ≥1 entry (the "all speakers" band when no
-    /// crossover is configured). Each returns full-size `Gains`.
+    /// Per-band VBAP engines. Once built, always ≥1 entry (the "all speakers"
+    /// band when no crossover is configured); empty only before the first
+    /// build (see [`Self::unbuilt`]). Each returns full-size `Gains`.
     pub(super) render_bands: Vec<BandRenderer>,
-    /// Topology identity used to build the current band engines.
-    pub(super) render_bands_topology_identity: usize,
+    /// Topology identity used to build the current band engines; `None` until
+    /// the first build, which [`Self::refresh_for_topology`] then always runs.
+    pub(super) render_bands_topology_identity: Option<usize>,
     /// Merged multi-band cartesian table when all bands use cartesian
     /// evaluators (`None` → per-band path). `pub(super)`: tests force the
     /// per-band path by clearing it.
@@ -901,29 +903,26 @@ impl SpeakerRenderStage {
         }
     }
 
-    /// Build a stage for `layout`: band engines (+ crossover bank when the
-    /// layout defines finite crossover edges), unified table, delay lines and
-    /// per-layout scratch.
-    pub(super) fn new(
-        control: &Arc<RendererControl>,
-        layout: &SpeakerLayout,
-        topology_identity: usize,
-        num_speakers: usize,
-        sample_rate: u32,
-    ) -> Result<Self> {
-        let (render_bands, crossover_filter_bank, crossover_built_type, crossover_built_fir_ratio) =
-            Self::build_crossover(control, layout, num_speakers, sample_rate, &[])?;
-        let unified_table = Self::build_unified_table(&render_bands, num_speakers);
-        Ok(Self {
+    /// A stage for `layout` whose band engines, crossover bank and unified
+    /// table are NOT built yet: only the delay lines and per-layout scratch
+    /// are. The first [`Self::refresh_for_topology`] builds the rest.
+    ///
+    /// Deferred on purpose. Every host seeds the control from its config
+    /// (backend, crossover engine, …) after the renderer is constructed, so
+    /// bands built here would be built from the defaults and thrown away by
+    /// the first frame — on a hybrid layout with crossover, the band gain
+    /// tables were sampled twice at every start-up.
+    pub(super) fn unbuilt(layout: &SpeakerLayout, num_speakers: usize, sample_rate: u32) -> Self {
+        Self {
             num_speakers,
             sample_rate,
-            render_bands,
-            render_bands_topology_identity: topology_identity,
-            unified_table,
+            render_bands: Vec::new(),
+            render_bands_topology_identity: None,
+            unified_table: None,
             table_caches: Vec::new(),
-            crossover_filter_bank,
-            crossover_built_type,
-            crossover_built_fir_ratio,
+            crossover_filter_bank: None,
+            crossover_built_type: CrossoverType::default(),
+            crossover_built_fir_ratio: 0.0,
             crossover_filter_states: Vec::new(),
             bed_delays: Vec::new(),
             test_noise: crate::speaker_test::PinkNoise::default(),
@@ -951,13 +950,16 @@ impl SpeakerRenderStage {
                     .map(|_| crate::delay_line::DelayLine::new(max_delay))
                     .collect()
             },
-        })
+        }
     }
 
-    /// Rebuild the band engines when the published topology changed. Passes the
-    /// current bands so an evaluation-only recompute (unchanged geometry
-    /// generation) reuses each band's triangulated gain model and rebuilds only
-    /// the evaluation wrapper, instead of re-triangulating every band.
+    /// Build the band engines on first use, and rebuild them when the
+    /// published topology changed. Passes the current bands so an
+    /// evaluation-only recompute (unchanged geometry generation) reuses each
+    /// band's triangulated gain model and rebuilds only the evaluation
+    /// wrapper, instead of re-triangulating every band.
+    ///
+    /// Returns whether it (re)built the bands.
     ///
     /// Deliberately does NOT clear the delay lines: those keep their memory
     /// across topology refreshes (only the crossover filter states reset, as
@@ -967,7 +969,7 @@ impl SpeakerRenderStage {
         control: &Arc<RendererControl>,
         topology_identity: usize,
         active_layout: &SpeakerLayout,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // A `crossover_type` flip — or a FIR transition-ratio change while
         // that engine is active — rebuilds the bank too, even with the
         // topology unchanged: those options are live, not part of the
@@ -976,12 +978,12 @@ impl SpeakerRenderStage {
             let live = control.live.read();
             (live.crossover_type, live.crossover_fir_transition_ratio)
         };
-        if self.render_bands_topology_identity == topology_identity
+        if self.render_bands_topology_identity == Some(topology_identity)
             && self.crossover_built_type == requested_type
             && (requested_type != CrossoverType::Fir
                 || self.crossover_built_fir_ratio == requested_ratio)
         {
-            return Ok(());
+            return Ok(false);
         }
 
         let (render_bands, crossover_filter_bank, crossover_built_type, crossover_built_fir_ratio) =
@@ -1013,8 +1015,8 @@ impl SpeakerRenderStage {
         self.test_direct_bank = None;
         self.object_test_filter_states = None;
         self.crossover_band_scratch.iter_mut().for_each(Vec::clear);
-        self.render_bands_topology_identity = topology_identity;
-        Ok(())
+        self.render_bands_topology_identity = Some(topology_identity);
+        Ok(true)
     }
 
     /// Longest a test may run without the client refreshing it. A client that
