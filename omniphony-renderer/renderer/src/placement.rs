@@ -22,11 +22,18 @@
 //! the family's entries still say whether a channel is virtualised or routed
 //! direct to its speaker (`spatialize`) and what trim it gets (`gain_db`).
 //!
-//! Families inherit from [`SourceFamily::Generic`]: a family without an
-//! explicit mode takes the generic mode when one is set, else its built-in
-//! default (Auro-3D: sphere; everything else: room); a family without a
-//! layout uses the generic layout. The generic family is also what a bridge
-//! that declares no family, or an unknown one, gets.
+//! The renderer knows no format by name. Its family table holds its own two
+//! families — `generic`, the base every other inherits from, and `pcm`, its
+//! own PCM input — and whatever the loaded bridge declares
+//! (`bridge_api::BridgeLib::source_families`): a name, what to call it and
+//! its default mode. A family the config names but no bridge declares stays
+//! in the table too, so its settings survive a save under another bridge.
+//!
+//! Families inherit from the generic one: a family without an explicit mode
+//! takes the generic mode when one is set, else its default (the bridge's;
+//! room for the renderer's own families); a family without a layout uses the
+//! generic layout. The generic family is also what a stream declaring no
+//! family, or one missing from the table, gets.
 
 use serde::{Deserialize, Serialize};
 
@@ -61,75 +68,37 @@ impl PlacementMode {
     }
 }
 
-/// The format a stream comes from, as far as placement is concerned.
-///
-/// Declared by the bridge as a string (`FormatBridge::source_family`), so a
-/// format the renderer does not know yet costs no ABI change: it lands on
-/// [`Self::Generic`], the base every other family inherits from.
+/// The format a stream comes from, as far as placement is concerned: an
+/// index into the [`PlacementState`] family table. Entries are only ever
+/// appended, so an index stays valid for the life of the renderer; the name
+/// a bridge declares is resolved to one once per declaration
+/// ([`PlacementState::resolve`]), never per frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SourceFamily {
-    /// The base family: what an unknown or undeclared format gets, and what
-    /// the others inherit from.
-    Generic,
-    /// AC-3, E-AC-3 and TrueHD, with or without objects: the bed is defined
-    /// in Dolby's room cube.
-    Dolby,
-    /// DTS, DTS-HD and DTS:X: ITU-based speaker angles.
-    Dts,
-    /// An unfolded Auro-3D carrier: its own setup table, a sphere.
-    Auro,
-    /// Plain multichannel PCM (the reference WAV bridge, host PCM).
-    Pcm,
-}
+pub struct SourceFamily(u16);
 
 impl SourceFamily {
-    pub const ALL: [SourceFamily; 5] =
-        [Self::Generic, Self::Dolby, Self::Dts, Self::Auro, Self::Pcm];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Generic => "generic",
-            Self::Dolby => "dolby",
-            Self::Dts => "dts",
-            Self::Auro => "auro",
-            Self::Pcm => "pcm",
-        }
-    }
-
-    /// The canonical spelling only, case-insensitive; `None` for anything
-    /// else (a control naming a family the renderer does not have).
-    pub fn parse(s: &str) -> Option<Self> {
-        let s = s.trim();
-        Self::ALL
-            .into_iter()
-            .find(|family| family.as_str().eq_ignore_ascii_case(s))
-    }
-
-    /// The family a bridge's declaration maps to: a known name, or
-    /// [`Self::Generic`] for an empty or unknown one.
-    pub fn from_declared(s: &str) -> Self {
-        Self::parse(s).unwrap_or(Self::Generic)
-    }
-
-    /// The mode a family runs in when neither it nor the generic family
-    /// sets one: Auro-3D is a sphere by definition, everything else keeps
-    /// the room model it always had.
-    pub fn builtin_mode(self) -> PlacementMode {
-        match self {
-            Self::Auro => PlacementMode::Sphere,
-            _ => PlacementMode::Room,
-        }
-    }
+    /// The base family: what an unknown or undeclared format gets, and what
+    /// the others inherit from.
+    pub const GENERIC: Self = Self(0);
+    /// Plain multichannel PCM: the renderer's own PCM input.
+    pub const PCM: Self = Self(1);
 
     fn index(self) -> usize {
-        match self {
-            Self::Generic => 0,
-            Self::Dolby => 1,
-            Self::Dts => 2,
-            Self::Auro => 3,
-            Self::Pcm => 4,
-        }
+        usize::from(self.0)
     }
+}
+
+/// A family as the table knows it: its name (the config key and what a
+/// bridge's stream declares), what to call it, and its default mode.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FamilyInfo {
+    pub name: String,
+    pub label: String,
+    /// The mode when neither the family nor the generic one sets one.
+    pub default_mode: PlacementMode,
+    /// Declared by the renderer itself or by the loaded bridge; `false` for
+    /// a family known only from the config, kept so its settings are saved.
+    pub declared: bool,
 }
 
 /// One family's own settings: both optional, each inherited from the generic
@@ -159,28 +128,111 @@ pub struct EffectivePlacement<'a> {
     pub layout: Option<&'a SpeakerLayout>,
 }
 
-/// The live placement state: every family's own settings.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
+struct FamilyEntry {
+    info: FamilyInfo,
+    own: FamilyPlacement,
+}
+
+/// The live placement state: the family table and every family's own
+/// settings.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlacementState {
-    families: [FamilyPlacement; 5],
+    families: Vec<FamilyEntry>,
+}
+
+impl Default for PlacementState {
+    /// The renderer's own families, at their defaults.
+    fn default() -> Self {
+        let own = |name: &str, label: &str| FamilyEntry {
+            info: FamilyInfo {
+                name: name.to_owned(),
+                label: label.to_owned(),
+                default_mode: PlacementMode::Room,
+                declared: true,
+            },
+            own: FamilyPlacement::default(),
+        };
+        Self {
+            families: vec![own("generic", "Generic"), own("pcm", "PCM")],
+        }
+    }
 }
 
 impl PlacementState {
+    /// The family named `name`, case-insensitive, declared or not.
+    pub fn find(&self, name: &str) -> Option<SourceFamily> {
+        let name = name.trim();
+        self.families
+            .iter()
+            .position(|entry| entry.info.name.eq_ignore_ascii_case(name))
+            .map(|index| SourceFamily(index as u16))
+    }
+
+    /// The family a stream's declaration maps to: the one of that name, or
+    /// the generic family for an empty or unknown name.
+    pub fn resolve(&self, name: &str) -> SourceFamily {
+        if name.trim().is_empty() {
+            return SourceFamily::GENERIC;
+        }
+        self.find(name).unwrap_or(SourceFamily::GENERIC)
+    }
+
+    /// Declare a family (the loaded bridge's catalogue): added to the table,
+    /// or, when the config already named it, given its label and default.
+    /// The renderer's own families keep theirs. An empty name is ignored.
+    pub fn declare(&mut self, name: &str, label: &str, default_mode: PlacementMode) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        match self.find(name) {
+            Some(family) if family.index() < 2 => {}
+            Some(family) => {
+                let info = &mut self.families[family.index()].info;
+                info.label = label.to_owned();
+                info.default_mode = default_mode;
+                info.declared = true;
+            }
+            None => self.families.push(FamilyEntry {
+                info: FamilyInfo {
+                    name: name.to_ascii_lowercase(),
+                    label: label.to_owned(),
+                    default_mode,
+                    declared: true,
+                },
+                own: FamilyPlacement::default(),
+            }),
+        }
+    }
+
+    /// Every family in table order: the generic one first.
+    pub fn families(&self) -> impl Iterator<Item = (SourceFamily, &FamilyInfo)> {
+        self.families
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (SourceFamily(index as u16), &entry.info))
+    }
+
+    pub fn info(&self, family: SourceFamily) -> &FamilyInfo {
+        &self.families[family.index()].info
+    }
+
     pub fn family(&self, family: SourceFamily) -> &FamilyPlacement {
-        &self.families[family.index()]
+        &self.families[family.index()].own
     }
 
     pub fn family_mut(&mut self, family: SourceFamily) -> &mut FamilyPlacement {
-        &mut self.families[family.index()]
+        &mut self.families[family.index()].own
     }
 
     /// The mode a family runs in: its own, else the generic one, else its
-    /// built-in default.
+    /// default.
     pub fn effective_mode(&self, family: SourceFamily) -> PlacementMode {
         self.family(family)
             .mode
-            .or(self.family(SourceFamily::Generic).mode)
-            .unwrap_or_else(|| family.builtin_mode())
+            .or(self.family(SourceFamily::GENERIC).mode)
+            .unwrap_or(self.info(family).default_mode)
     }
 
     /// The entries a family uses: its own layout, else the generic one.
@@ -188,7 +240,7 @@ impl PlacementState {
         self.family(family)
             .layout
             .as_ref()
-            .or(self.family(SourceFamily::Generic).layout.as_ref())
+            .or(self.family(SourceFamily::GENERIC).layout.as_ref())
     }
 
     pub fn effective(&self, family: SourceFamily) -> EffectivePlacement<'_> {
@@ -200,7 +252,14 @@ impl PlacementState {
 
     /// True when no family sets anything: the config key is then omitted.
     pub fn is_default(&self) -> bool {
-        self.families.iter().all(FamilyPlacement::is_default)
+        self.families.iter().all(|entry| entry.own.is_default())
+    }
+
+    /// Every family back to its defaults; the table itself is kept.
+    pub fn reset_settings(&mut self) {
+        for entry in &mut self.families {
+            entry.own = FamilyPlacement::default();
+        }
     }
 
     /// The config form, `None` when everything is at its default.
@@ -208,70 +267,117 @@ impl PlacementState {
         if self.is_default() {
             return None;
         }
-        let field = |family: SourceFamily| {
-            let own = self.family(family);
-            (!own.is_default()).then(|| FamilyPlacement {
-                mode: own.mode,
-                layout: own.layout.clone().map(|mut layout| {
-                    // Round the radius for stable diffs, as the legacy
-                    // `virtual_bed` key did.
-                    layout.radius_m = (layout.radius_m as f64 * 1e6).round() as f32 / 1e6;
-                    layout
-                }),
+        let families = self
+            .families
+            .iter()
+            .filter(|entry| !entry.own.is_default())
+            .map(|entry| {
+                let own = FamilyPlacement {
+                    mode: entry.own.mode,
+                    layout: entry.own.layout.clone().map(|mut layout| {
+                        // Round the radius for stable diffs, as the legacy
+                        // `virtual_bed` key did.
+                        layout.radius_m = (layout.radius_m as f64 * 1e6).round() as f32 / 1e6;
+                        layout
+                    }),
+                };
+                (entry.info.name.clone(), own)
             })
-        };
-        Some(PlacementConfig {
-            generic: field(SourceFamily::Generic),
-            dolby: field(SourceFamily::Dolby),
-            dts: field(SourceFamily::Dts),
-            auro: field(SourceFamily::Auro),
-            pcm: field(SourceFamily::Pcm),
-        })
+            .collect();
+        Some(PlacementConfig { families })
     }
 
-    pub fn from_config(config: &PlacementConfig) -> Self {
-        let mut state = Self::default();
-        let mut take = |family: SourceFamily, own: &Option<FamilyPlacement>| {
-            if let Some(own) = own {
-                *state.family_mut(family) = own.clone();
-            }
-        };
-        take(SourceFamily::Generic, &config.generic);
-        take(SourceFamily::Dolby, &config.dolby);
-        take(SourceFamily::Dts, &config.dts);
-        take(SourceFamily::Auro, &config.auro);
-        take(SourceFamily::Pcm, &config.pcm);
-        state
+    /// Take a config's settings: every family's are replaced, and a family
+    /// the table does not have yet is added, undeclared, so they are kept.
+    pub fn load_config(&mut self, config: &PlacementConfig) {
+        self.reset_settings();
+        for (name, own) in &config.families {
+            let family = match self.find(name) {
+                Some(family) => family,
+                None if name.trim().is_empty() => continue,
+                None => {
+                    self.families.push(FamilyEntry {
+                        info: FamilyInfo {
+                            name: name.trim().to_ascii_lowercase(),
+                            label: name.trim().to_owned(),
+                            default_mode: PlacementMode::Room,
+                            declared: false,
+                        },
+                        own: FamilyPlacement::default(),
+                    });
+                    SourceFamily((self.families.len() - 1) as u16)
+                }
+            };
+            *self.family_mut(family) = own.clone();
+        }
     }
 
-    /// The state a pre-placement config maps to: its single global bed was
-    /// applied to every stream, which is the generic family in manual mode
-    /// with those entries — the same sound after the upgrade as before it.
-    pub fn from_legacy_virtual_bed(layout: SpeakerLayout) -> Self {
-        let mut state = Self::default();
-        *state.family_mut(SourceFamily::Generic) = FamilyPlacement {
+    /// Take a pre-placement config: its single global bed was applied to
+    /// every stream, which is the generic family in manual mode with those
+    /// entries — the same sound after the upgrade as before it.
+    pub fn load_legacy_virtual_bed(&mut self, layout: SpeakerLayout) {
+        self.reset_settings();
+        *self.family_mut(SourceFamily::GENERIC) = FamilyPlacement {
             mode: Some(PlacementMode::Manual),
             layout: Some(layout),
         };
-        state
     }
 }
 
-/// `render.placement`: one optional block per family. Absent families are at
-/// their defaults (inheriting from `generic`, itself at the built-in
-/// defaults).
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+/// `render.placement`: one optional block per family, keyed by the family's
+/// name, in table order (the generic family first). Absent families are at
+/// their defaults (inheriting from `generic`, itself at the defaults). A
+/// family no loaded bridge declares is read and written back unchanged.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlacementConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generic: Option<FamilyPlacement>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dolby: Option<FamilyPlacement>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dts: Option<FamilyPlacement>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auro: Option<FamilyPlacement>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pcm: Option<FamilyPlacement>,
+    pub families: Vec<(String, FamilyPlacement)>,
+}
+
+impl PlacementConfig {
+    /// The block for `name`, if the config has one.
+    pub fn get(&self, name: &str) -> Option<&FamilyPlacement> {
+        self.families
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, own)| own)
+    }
+}
+
+impl Serialize for PlacementConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.families.len()))?;
+        for (name, own) in &self.families {
+            map.serialize_entry(name, own)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PlacementConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Families;
+        impl<'de> serde::de::Visitor<'de> for Families {
+            type Value = PlacementConfig;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map of source family names to placement settings")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut families = Vec::new();
+                while let Some((name, own)) =
+                    access.next_entry::<String, Option<FamilyPlacement>>()?
+                {
+                    // `dolby: ~` is a family at its defaults.
+                    families.push((name, own.unwrap_or_default()));
+                }
+                Ok(PlacementConfig { families })
+            }
+        }
+        deserializer.deserialize_map(Families)
+    }
 }
 
 #[cfg(test)]
@@ -282,20 +388,35 @@ mod tests {
         SpeakerLayout::preset("5.1").expect("5.1 preset")
     }
 
+    /// The table a bridge declaring two families leaves.
+    fn with_bridge() -> (PlacementState, SourceFamily, SourceFamily) {
+        let mut state = PlacementState::default();
+        state.declare("dts", "DTS", PlacementMode::Room);
+        state.declare("auro", "Auro-3D", PlacementMode::Sphere);
+        let dts = state.find("dts").expect("declared");
+        let auro = state.find("auro").expect("declared");
+        (state, dts, auro)
+    }
+
     #[test]
-    fn builtin_defaults_make_auro_a_sphere_and_the_rest_a_room() {
+    fn the_renderer_knows_only_its_own_families() {
         let state = PlacementState::default();
+        let names: Vec<&str> = state
+            .families()
+            .map(|(_, info)| info.name.as_str())
+            .collect();
+        assert_eq!(names, ["generic", "pcm"]);
+        assert_eq!(state.find("pcm"), Some(SourceFamily::PCM));
+        assert_eq!(state.resolve("dolby"), SourceFamily::GENERIC);
+        assert_eq!(state.resolve(""), SourceFamily::GENERIC);
+    }
+
+    #[test]
+    fn declared_defaults_apply_and_the_rest_is_a_room() {
+        let (state, dts, auro) = with_bridge();
         assert!(state.is_default());
-        assert_eq!(
-            state.effective_mode(SourceFamily::Auro),
-            PlacementMode::Sphere
-        );
-        for family in [
-            SourceFamily::Generic,
-            SourceFamily::Dolby,
-            SourceFamily::Dts,
-            SourceFamily::Pcm,
-        ] {
+        assert_eq!(state.effective_mode(auro), PlacementMode::Sphere);
+        for family in [SourceFamily::GENERIC, SourceFamily::PCM, dts] {
             assert_eq!(
                 state.effective_mode(family),
                 PlacementMode::Room,
@@ -303,65 +424,98 @@ mod tests {
             );
             assert!(state.effective_layout(family).is_none());
         }
+        assert_eq!(state.resolve("AURO"), auro);
+        assert_eq!(state.info(auro).label, "Auro-3D");
+    }
+
+    #[test]
+    fn a_bridge_cannot_redefine_the_renderer_families() {
+        let mut state = PlacementState::default();
+        state.declare("pcm", "Linear PCM", PlacementMode::Sphere);
+        state.declare("generic", "Other", PlacementMode::Sphere);
+        assert_eq!(state.families().count(), 2);
+        assert_eq!(state.info(SourceFamily::PCM).label, "PCM");
+        assert_eq!(state.effective_mode(SourceFamily::PCM), PlacementMode::Room);
     }
 
     #[test]
     fn a_family_inherits_from_generic_unless_it_says_otherwise() {
-        let mut state = PlacementState::default();
-        state.family_mut(SourceFamily::Generic).mode = Some(PlacementMode::Manual);
-        state.family_mut(SourceFamily::Generic).layout = Some(bed());
-        // An explicit generic mode beats the built-in default, Auro's too.
-        assert_eq!(
-            state.effective_mode(SourceFamily::Auro),
-            PlacementMode::Manual
-        );
-        assert_eq!(
-            state.effective_mode(SourceFamily::Dts),
-            PlacementMode::Manual
-        );
-        assert!(state.effective_layout(SourceFamily::Dts).is_some());
+        let (mut state, dts, auro) = with_bridge();
+        state.family_mut(SourceFamily::GENERIC).mode = Some(PlacementMode::Manual);
+        state.family_mut(SourceFamily::GENERIC).layout = Some(bed());
+        // An explicit generic mode beats a declared default, Auro's too.
+        assert_eq!(state.effective_mode(auro), PlacementMode::Manual);
+        assert_eq!(state.effective_mode(dts), PlacementMode::Manual);
+        assert!(state.effective_layout(dts).is_some());
         // The family's own setting wins over generic.
-        state.family_mut(SourceFamily::Auro).mode = Some(PlacementMode::Sphere);
-        assert_eq!(
-            state.effective_mode(SourceFamily::Auro),
-            PlacementMode::Sphere
-        );
+        state.family_mut(auro).mode = Some(PlacementMode::Sphere);
+        assert_eq!(state.effective_mode(auro), PlacementMode::Sphere);
         // …and its own layout too, while the mode keeps inheriting.
         let mut own = bed();
         own.radius_m = 2.0;
-        state.family_mut(SourceFamily::Dts).layout = Some(own);
+        state.family_mut(dts).layout = Some(own);
+        assert_eq!(state.effective_layout(dts).map(|l| l.radius_m), Some(2.0));
+        assert_eq!(state.effective_mode(dts), PlacementMode::Manual);
+    }
+
+    #[test]
+    fn config_round_trips_in_table_order_and_omits_defaults() {
+        let (mut state, _, auro) = with_bridge();
+        assert!(state.to_config().is_none());
+        state.family_mut(auro).mode = Some(PlacementMode::Room);
+        state.family_mut(SourceFamily::GENERIC).layout = Some(bed());
+        let config = state.to_config().expect("non-default");
+        assert!(config.get("dts").is_none() && config.get("pcm").is_none());
+        let yaml = serde_yaml_ng::to_string(&config).expect("serialises");
+        assert!(yaml.starts_with("generic:"), "{yaml}");
+        assert!(yaml.contains("auro:"), "{yaml}");
+        assert!(yaml.contains("mode: room"), "{yaml}");
+        assert!(!yaml.contains("dts"), "{yaml}");
+        let back: PlacementConfig = serde_yaml_ng::from_str(&yaml).expect("parses");
+        let mut reloaded = with_bridge().0;
+        reloaded.load_config(&back);
+        assert_eq!(reloaded, state);
+    }
+
+    #[test]
+    fn a_family_no_bridge_declares_is_kept_and_takes_its_declaration_later() {
+        let config: PlacementConfig =
+            serde_yaml_ng::from_str("iamf:\n  mode: room\ndolby: ~\n").expect("parses");
+        let mut state = PlacementState::default();
+        state.load_config(&config);
+        let iamf = state.find("iamf").expect("kept from the config");
+        assert!(!state.info(iamf).declared);
+        assert_eq!(state.family(iamf).mode, Some(PlacementMode::Room));
+        // Saved back although nothing declares it; the empty block is not.
+        let saved = serde_yaml_ng::to_string(&state.to_config().expect("set")).unwrap();
+        assert_eq!(saved, "iamf:\n  mode: room\n");
+        // The bridge loads afterwards: same entry, its label and default.
+        state.declare("iamf", "IAMF", PlacementMode::Sphere);
+        assert_eq!(state.find("iamf"), Some(iamf));
+        assert!(state.info(iamf).declared);
+        assert_eq!(state.info(iamf).label, "IAMF");
         assert_eq!(
-            state
-                .effective_layout(SourceFamily::Dts)
-                .map(|l| l.radius_m),
-            Some(2.0)
-        );
-        assert_eq!(
-            state.effective_mode(SourceFamily::Dts),
-            PlacementMode::Manual
+            state.effective_mode(iamf),
+            PlacementMode::Room,
+            "own mode kept"
         );
     }
 
     #[test]
-    fn config_round_trips_and_omits_defaults() {
-        let mut state = PlacementState::default();
-        assert!(state.to_config().is_none());
-        state.family_mut(SourceFamily::Auro).mode = Some(PlacementMode::Room);
-        state.family_mut(SourceFamily::Generic).layout = Some(bed());
-        let config = state.to_config().expect("non-default");
-        assert!(config.dolby.is_none() && config.dts.is_none() && config.pcm.is_none());
-        let yaml = serde_yaml_ng::to_string(&config).expect("serialises");
-        assert!(yaml.contains("auro:"), "{yaml}");
-        assert!(yaml.contains("mode: room"), "{yaml}");
-        assert!(!yaml.contains("dolby"), "{yaml}");
-        let back: PlacementConfig = serde_yaml_ng::from_str(&yaml).expect("parses");
-        assert_eq!(PlacementState::from_config(&back), state);
+    fn loading_a_config_keeps_the_table_and_its_indices() {
+        let (mut state, dts, _) = with_bridge();
+        state.family_mut(dts).mode = Some(PlacementMode::Sphere);
+        state.load_config(&PlacementConfig::default());
+        assert!(state.is_default());
+        assert_eq!(state.find("dts"), Some(dts));
     }
 
     #[test]
     fn a_legacy_bed_becomes_the_generic_family_in_manual_mode() {
-        let state = PlacementState::from_legacy_virtual_bed(bed());
-        for family in SourceFamily::ALL {
+        let (mut state, _, _) = with_bridge();
+        state.load_legacy_virtual_bed(bed());
+        let families: Vec<SourceFamily> = state.families().map(|(family, _)| family).collect();
+        for family in families {
             assert_eq!(
                 state.effective_mode(family),
                 PlacementMode::Manual,
@@ -372,17 +526,11 @@ mod tests {
     }
 
     #[test]
-    fn names_parse_canonically_and_unknown_families_are_generic() {
+    fn modes_parse_canonically() {
         assert_eq!(
             PlacementMode::parse(" Sphere "),
             Some(PlacementMode::Sphere)
         );
         assert_eq!(PlacementMode::parse("cube"), None);
-        assert_eq!(SourceFamily::parse("DTS"), Some(SourceFamily::Dts));
-        assert_eq!(SourceFamily::from_declared("mpeg-h"), SourceFamily::Generic);
-        assert_eq!(SourceFamily::from_declared(""), SourceFamily::Generic);
-        for family in SourceFamily::ALL {
-            assert_eq!(SourceFamily::parse(family.as_str()), Some(family));
-        }
     }
 }

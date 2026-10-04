@@ -8,7 +8,7 @@ use audio_output::pipewire::PipewireBufferConfig;
 use orender_engine::osc::OscSender;
 use orender_engine::stream_state::{StreamDeclaration, StreamState};
 use renderer::metering::AudioMeter;
-use renderer::placement::SourceFamily;
+use renderer::placement::{PlacementState, SourceFamily};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -170,11 +170,18 @@ impl SpatialState {
     /// its bridge made, which that bridge will not repeat, never having seen
     /// the PCM. Every frame of the pipe comes from the bridge, so there this
     /// only ever applies what the bridge declared.
-    pub fn take_declaration(&mut self, source: DecodedSource, declaration: Option<Declaration>) {
+    ///
+    /// The declaration comes resolved ([`resolve_declaration`]): the family
+    /// table is read when a bridge declares, not on every frame.
+    pub fn take_declaration(
+        &mut self,
+        source: DecodedSource,
+        declaration: Option<StreamDeclaration>,
+    ) {
         let previous = self.declared_for.replace(source);
         if let Some(declaration) = declaration {
             self.bridge_declaration_aside = None;
-            self.stream.apply_declaration(declaration);
+            self.stream.set_declaration(declaration);
             return;
         }
         if previous == Some(source) {
@@ -185,7 +192,7 @@ impl SpatialState {
                 // Moved, not cloned: the bridge's declaration waits here
                 // until its input comes back.
                 let pcm = StreamDeclaration {
-                    family: SourceFamily::Pcm,
+                    family: SourceFamily::PCM,
                     label: LIVE_PCM_LABEL.to_owned(),
                     ..StreamDeclaration::default()
                 };
@@ -331,6 +338,24 @@ impl Default for DecodeSessionState {
     }
 }
 
+/// A bridge's declaration as the stream applies it, its family resolved
+/// against the renderer's table; against the renderer's own families alone
+/// when nothing renders (the family then places nothing).
+pub fn resolve_declaration(
+    renderer: Option<&renderer::spatial_renderer::SpatialRenderer>,
+    declaration: Option<Declaration>,
+) -> Option<StreamDeclaration> {
+    let declaration = declaration?;
+    Some(match renderer {
+        Some(renderer) => {
+            let control = renderer.renderer_control();
+            let live = control.live.read();
+            StreamDeclaration::new(declaration, &live.placement)
+        }
+        None => StreamDeclaration::new(declaration, &PlacementState::default()),
+    })
+}
+
 pub struct FrameHandlerContext {
     pub bed_conform: bool,
     pub decode_time_ms: f32,
@@ -342,8 +367,21 @@ mod tests {
     use super::*;
     use bridge_api::{RChannelLabel, RChannelPose};
 
-    fn declared(family: &str, poses: usize, label: &str) -> Option<Declaration> {
-        Some(Declaration {
+    /// The table a bridge declaring three families leaves.
+    fn table() -> PlacementState {
+        let mut table = PlacementState::default();
+        for name in ["dolby", "dts", "auro"] {
+            table.declare(name, name, renderer::placement::PlacementMode::Room);
+        }
+        table
+    }
+
+    fn family(name: &str) -> SourceFamily {
+        table().find(name).expect("declared")
+    }
+
+    fn declared(family: &str, poses: usize, label: &str) -> Option<StreamDeclaration> {
+        let declaration = Declaration {
             poses: (0..poses)
                 .map(|_| RChannelPose {
                     label: RChannelLabel::Ls,
@@ -354,7 +392,8 @@ mod tests {
             family: family.to_owned(),
             label: label.to_owned(),
             tags: Vec::new(),
-        })
+        };
+        Some(StreamDeclaration::new(declaration, &table()))
     }
 
     fn state(s: &SpatialState) -> (SourceFamily, usize, &str) {
@@ -367,7 +406,7 @@ mod tests {
     #[test]
     fn the_declaration_follows_the_sinks_input() {
         use DecodedSource::{Bridge, Live};
-        let pcm = (SourceFamily::Pcm, 0, "PCM");
+        let pcm = (SourceFamily::PCM, 0, "PCM");
         let mut s = SpatialState::default();
 
         // The first frame of a session is PCM.
@@ -381,33 +420,33 @@ mod tests {
 
         // A bitstream declares for itself.
         s.take_declaration(Bridge, declared("dts", 2, "DTS"));
-        assert_eq!(state(&s), (SourceFamily::Dts, 2, "DTS"));
+        assert_eq!(state(&s), (family("dts"), 2, "DTS"));
         s.take_declaration(Bridge, None);
-        assert_eq!(state(&s), (SourceFamily::Dts, 2, "DTS"));
+        assert_eq!(state(&s), (family("dts"), 2, "DTS"));
         // PCM after it does not keep its layout.
         s.take_declaration(Live, None);
         assert_eq!(state(&s), pcm);
         // Back to the bitstream, which does not declare again: its own
         // declaration comes back.
         s.take_declaration(Bridge, None);
-        assert_eq!(state(&s), (SourceFamily::Dts, 2, "DTS"));
+        assert_eq!(state(&s), (family("dts"), 2, "DTS"));
         // A late bitstream frame between PCM ones: each input gets its own.
         s.take_declaration(Live, None);
         s.take_declaration(Bridge, None);
-        assert_eq!(state(&s), (SourceFamily::Dts, 2, "DTS"));
+        assert_eq!(state(&s), (family("dts"), 2, "DTS"));
         s.take_declaration(Live, None);
         assert_eq!(state(&s), pcm);
         // A new bitstream declaring: the one set aside is gone for good.
         s.take_declaration(Bridge, declared("dolby", 0, "TrueHD"));
         s.take_declaration(Live, None);
         s.take_declaration(Bridge, None);
-        assert_eq!(state(&s), (SourceFamily::Dolby, 0, "TrueHD"));
+        assert_eq!(state(&s), (family("dolby"), 0, "TrueHD"));
 
         // A bridge that never declared, after PCM: as a fresh stream.
         let mut s = SpatialState::default();
         s.take_declaration(Live, None);
         s.take_declaration(Bridge, None);
-        assert_eq!(state(&s), (SourceFamily::Generic, 0, ""));
+        assert_eq!(state(&s), (SourceFamily::GENERIC, 0, ""));
     }
 
     /// The pipe only ever has the bridge: its declarations apply as they come,
@@ -416,9 +455,9 @@ mod tests {
     fn a_bridge_only_input_applies_its_declarations_as_they_come() {
         let mut s = SpatialState::default();
         s.take_declaration(DecodedSource::Bridge, None);
-        assert_eq!(state(&s), (SourceFamily::Generic, 0, ""));
+        assert_eq!(state(&s), (SourceFamily::GENERIC, 0, ""));
         s.take_declaration(DecodedSource::Bridge, declared("auro", 3, "Auro-3D"));
         s.take_declaration(DecodedSource::Bridge, None);
-        assert_eq!(state(&s), (SourceFamily::Auro, 3, "Auro-3D"));
+        assert_eq!(state(&s), (family("auro"), 3, "Auro-3D"));
     }
 }

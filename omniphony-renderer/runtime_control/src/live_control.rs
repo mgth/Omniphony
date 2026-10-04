@@ -418,14 +418,10 @@ fn apply_option_group(msg: &OscMessage, host: Option<&dyn HostControlHandler>) -
 }
 
 fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> ControlEffects {
-    use renderer::placement::{PlacementMode, SourceFamily};
-    let (Some(OscType::String(family)), Some(OscType::String(mode))) =
+    use renderer::placement::PlacementMode;
+    let (Some(OscType::String(name)), Some(OscType::String(mode))) =
         (msg.args.first(), msg.args.get(1))
     else {
-        return ControlEffects::default();
-    };
-    let Some(family) = SourceFamily::parse(family) else {
-        log::warn!("OSC placement mode: unknown family '{}'", family);
         return ControlEffects::default();
     };
     let mode = if mode.trim().eq_ignore_ascii_case("inherit") {
@@ -441,6 +437,12 @@ fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> Contro
     };
     let changed = {
         let mut live = ctx.renderer.live.write();
+        // The family table is the loaded bridge's: a name it does not hold
+        // (a client built for another bridge) is refused, not added.
+        let Some(family) = live.placement.find(name) else {
+            log::warn!("OSC placement mode: unknown family '{}'", name);
+            return ControlEffects::default();
+        };
         let slot = &mut live.placement.family_mut(family).mode;
         std::mem::replace(slot, mode) != mode
     };
@@ -454,26 +456,19 @@ fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> Contro
     }
     placement_effects(format!(
         "OSC placement mode: {} → {}",
-        family.as_str(),
+        name.trim(),
         mode.map_or("inherit", |m| m.as_str())
     ))
 }
 
 fn apply_placement_layout(msg: &OscMessage, ctx: &RuntimeControlContext) -> ControlEffects {
-    use renderer::placement::SourceFamily;
-    let (family, arg) = if msg.addr == osc_contract::CONTROL_PLACEMENT_LAYOUT {
+    let (name, arg) = if msg.addr == osc_contract::CONTROL_PLACEMENT_LAYOUT {
         match msg.args.first() {
-            Some(OscType::String(family)) => match SourceFamily::parse(family) {
-                Some(family) => (family, msg.args.get(1)),
-                None => {
-                    log::warn!("OSC placement layout: unknown family '{}'", family);
-                    return ControlEffects::default();
-                }
-            },
+            Some(OscType::String(name)) => (name.trim(), msg.args.get(1)),
             _ => return ControlEffects::default(),
         }
     } else {
-        (SourceFamily::Generic, msg.args.first())
+        ("generic", msg.args.first())
     };
     let Some(OscType::String(s)) = arg else {
         return ControlEffects::default();
@@ -493,15 +488,17 @@ fn apply_placement_layout(msg: &OscMessage, ctx: &RuntimeControlContext) -> Cont
     let cleared = layout.is_none();
     // No epoch bump: both channel planners compare the family's placement by
     // value (`virtual_bed::ChannelPlanKey`).
-    ctx.renderer
-        .live
-        .write()
-        .placement
-        .family_mut(family)
-        .layout = layout;
+    {
+        let mut live = ctx.renderer.live.write();
+        let Some(family) = live.placement.find(name) else {
+            log::warn!("OSC placement layout: unknown family '{}'", name);
+            return ControlEffects::default();
+        };
+        live.placement.family_mut(family).layout = layout;
+    }
     placement_effects(format!(
         "OSC placement layout: {} {}",
-        family.as_str(),
+        name,
         if cleared { "cleared" } else { "updated" }
     ))
 }
@@ -518,7 +515,7 @@ fn placement_effects(log: String) -> ControlEffects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use renderer::placement::{PlacementMode, SourceFamily};
+    use renderer::placement::PlacementMode;
 
     fn ctx() -> RuntimeControlContext {
         RuntimeControlContext::new(crate::test_support::fixture_control())
@@ -1134,6 +1131,12 @@ mod tests {
     #[test]
     fn placement_mode_bumps_the_options_epoch_only_on_a_real_change() {
         let ctx = ctx();
+        let dolby = {
+            let mut live = ctx.renderer.live.write();
+            live.placement
+                .declare("dolby", "Dolby", PlacementMode::Room);
+            live.placement.find("dolby").expect("declared")
+        };
         let set_room = msg(
             osc_contract::CONTROL_PLACEMENT_MODE,
             vec![
@@ -1147,12 +1150,7 @@ mod tests {
         assert_eq!(effects.notify, Notify::CoalescedSnapshot);
         assert_eq!(ctx.renderer.options_epoch(), epoch + 1);
         assert_eq!(
-            ctx.renderer
-                .live
-                .read()
-                .placement
-                .family(SourceFamily::Dolby)
-                .mode,
+            ctx.renderer.live.read().placement.family(dolby).mode,
             Some(PlacementMode::Room)
         );
 

@@ -3240,7 +3240,9 @@ pub fn reset_live_to_defaults(live: &mut LiveParams, env: &OptionEnv) {
             log::warn!("live option '{}' rejected its declared default", spec.key);
         }
     }
-    live.placement = crate::placement::PlacementState::default();
+    // The family table is the loaded bridge's, not a setting: only the
+    // families' own settings go back to their defaults.
+    live.placement.reset_settings();
 }
 
 /// Seed every declared live option — plus the document-valued companion the
@@ -3281,13 +3283,14 @@ pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig, env: 
                 .phantom_extract_mode
                 .is_some_and(|m| m != PhantomExtractMode::Off);
     }
-    // Placement: absent = every family at its built-in defaults. A config
-    // from before placement existed carries the single `virtual_bed` that
-    // applied to every stream: that is the generic family in manual mode.
+    // Placement: absent = every family at its defaults. A config from before
+    // placement existed carries the single `virtual_bed` that applied to
+    // every stream: that is the generic family in manual mode. The family
+    // table (the bridge's catalogue) is kept either way.
     if let Some(placement) = render.placement.as_ref() {
-        live.placement = crate::placement::PlacementState::from_config(placement);
+        live.placement.load_config(placement);
     } else if let Some(bed) = render.virtual_bed.clone() {
-        live.placement = crate::placement::PlacementState::from_legacy_virtual_bed(bed);
+        live.placement.load_legacy_virtual_bed(bed);
     }
 }
 

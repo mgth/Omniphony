@@ -486,9 +486,11 @@ fn handle_audio_message(
         return handler.poll_runtime_state();
     }
     let frame = decoded.frame;
+    let declaration =
+        super::state::resolve_declaration(handler.spatial_renderer.as_ref(), decoded.declaration);
     handler
         .spatial
-        .take_declaration(decoded.source, decoded.declaration);
+        .take_declaration(decoded.source, declaration);
     if frame.is_new_segment {
         // Use the live-active backend (not the launch one) so a segment
         // restart preserves a Studio-requested switch (e.g. to `file`).
@@ -900,6 +902,7 @@ fn run_prepared_render(
     if let Some(renderer) = &handler.spatial_renderer {
         let ctrl = renderer.renderer_control();
         ctrl.set_bridge_supported_drc_modes(prepared.supported_drc_modes.clone());
+        orender_engine::bridge_loader::declare_source_families(&prepared.bridge_lib, &ctrl);
     }
 
     if let Some(input_control) = handler.input_control.as_ref() {

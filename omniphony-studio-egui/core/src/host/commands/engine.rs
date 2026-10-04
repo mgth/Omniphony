@@ -333,7 +333,7 @@ pub fn clear_placement_layout(state: &SharedState, family: Family) {
         let mut live = state.inner.lock().unwrap();
         placement_block_mut(&mut live.app, family)
             .insert("layout".to_owned(), serde_json::Value::Null);
-        if family == Family::Generic {
+        if family.is_generic() {
             live.app.live_options.virtual_bed = None;
         }
     }
@@ -385,7 +385,7 @@ pub fn switch_placement_to_manual(state: &SharedState, family: Family) {
 pub fn preview_placement_layout(state: &SharedState, family: Family, payload: serde_json::Value) {
     {
         let mut live = state.inner.lock().unwrap();
-        if family == Family::Generic {
+        if family.is_generic() {
             live.app.live_options.virtual_bed = Some(payload.clone());
         }
         placement_block_mut(&mut live.app, family).insert("layout".to_owned(), payload);
@@ -492,35 +492,35 @@ mod placement_tests {
     #[test]
     fn placement_commands_update_the_model_before_the_echo() {
         let state = crate::host::commands::tests::state();
-        set_placement_mode(&state, Family::Dts, Some(PlacementMode::Sphere));
+        set_placement_mode(&state, Family::named("dts"), Some(PlacementMode::Sphere));
         {
             let live = state.inner.lock().unwrap();
-            let dts = family_placement(&live.app, Family::Dts);
+            let dts = family_placement(&live.app, Family::named("dts"));
             assert_eq!(dts.own_mode, Some(PlacementMode::Sphere));
             assert_eq!(dts.effective_mode, PlacementMode::Sphere);
             assert_eq!(
-                family_placement(&live.app, Family::Dolby).effective_mode,
+                family_placement(&live.app, Family::named("dolby")).effective_mode,
                 PlacementMode::Room,
                 "another family is untouched"
             );
         }
-        set_placement_mode(&state, Family::Dts, None);
+        set_placement_mode(&state, Family::named("dts"), None);
         assert_eq!(
-            family_placement(&state.inner.lock().unwrap().app, Family::Dts).own_mode,
+            family_placement(&state.inner.lock().unwrap().app, Family::named("dts")).own_mode,
             None
         );
 
         let entries = serde_json::json!({ "radius_m": 1.0, "speakers": [
             { "name": "LFE", "coord_mode": "cartesian", "x": 0.0, "y": 1.0, "z": 0.0, "spatialize": false }
         ] });
-        set_placement_layout(&state, Family::Dts, entries);
+        set_placement_layout(&state, Family::named("dts"), entries);
         assert_eq!(
-            family_placement(&state.inner.lock().unwrap().app, Family::Dts).layout_source,
+            family_placement(&state.inner.lock().unwrap().app, Family::named("dts")).layout_source,
             LayoutSource::Own
         );
-        clear_placement_layout(&state, Family::Dts);
+        clear_placement_layout(&state, Family::named("dts"));
         assert_eq!(
-            family_placement(&state.inner.lock().unwrap().app, Family::Dts).layout_source,
+            family_placement(&state.inner.lock().unwrap().app, Family::named("dts")).layout_source,
             LayoutSource::None,
             "no generic entries either"
         );
@@ -533,27 +533,35 @@ mod placement_tests {
         let state = crate::host::commands::tests::state();
         {
             let mut live = state.inner.lock().unwrap();
+            // A bridge family that is a sphere by default, as the renderer
+            // reports it.
+            live.app.live_options.placement = Some(serde_json::json!({
+                "auro": { "label": "Auro-3D", "defaultMode": "sphere" }
+            }));
             let app = std::mem::take(&mut live.app);
             live.channels.refresh(&app);
             live.app = app;
         }
-        switch_placement_to_manual(&state, Family::Auro);
+        switch_placement_to_manual(&state, Family::named("auro"));
         let live = state.inner.lock().unwrap();
-        let auro = family_placement(&live.app, Family::Auro);
+        let auro = family_placement(&live.app, Family::named("auro"));
         assert_eq!(auro.own_mode, Some(PlacementMode::Manual));
         assert_eq!(auro.layout_source, LayoutSource::Own);
-        let ls =
-            crate::host::channels::effective_channels_for(&live.channels, &live.app, Family::Auro)
-                .into_iter()
-                .find(|c| c.name == "Ls")
-                .expect("Ls");
-        // Auro's built-in mode is sphere: the seed is its nominal direction,
+        let ls = crate::host::channels::effective_channels_for(
+            &live.channels,
+            &live.app,
+            Family::named("auro"),
+        )
+        .into_iter()
+        .find(|c| c.name == "Ls")
+        .expect("Ls");
+        // Auro's default mode is sphere: the seed is its nominal direction,
         // kept as a polar entry.
         assert_eq!(ls.coord_mode, CoordMode::Polar);
         assert_eq!((ls.azimuth, ls.elevation), (-110.0, 0.0));
         let family = live.editing_family;
         drop(live);
-        select_placement_family(&state, Family::Pcm);
+        select_placement_family(&state, Family::named("pcm"));
         assert_ne!(state.inner.lock().unwrap().editing_family, family);
     }
 }

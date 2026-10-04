@@ -192,6 +192,26 @@ pub struct RChannelTag {
     pub channels: RVec<u32>,
 }
 
+/// A source family a bridge declares (see [`BridgeLib::source_families`]):
+/// a format whose fixed channels share one placement policy in the
+/// renderer. The renderer knows no format by name; every family but its own
+/// (`generic`, the base the others inherit from, and `pcm`, its own PCM
+/// input) comes from a bridge's catalogue.
+#[repr(C)]
+#[derive(StableAbi, Clone, Debug, PartialEq, Eq)]
+pub struct RSourceFamily {
+    /// The name [`FormatBridge::source_family`] returns and the config key
+    /// (`render.placement.<name>`): lower case, stable across releases.
+    pub name: RString,
+    /// What a user interface calls the family (`Dolby`, `Auro-3D`).
+    pub label: RString,
+    /// The placement mode the family runs in when neither it nor the generic
+    /// family sets one: `room` (channels at the room model's corners) or
+    /// `sphere` (channels at the angles the format states). Anything else
+    /// reads as `room`.
+    pub default_mode: RString,
+}
+
 /// Spatial metadata for one payload within a decoded frame.
 ///
 /// Describes dynamic objects only; fixed channels are fully described by
@@ -471,6 +491,19 @@ pub struct BridgeLib {
     /// Older bridges may not expose it; in that case bridge diagnostics fall
     /// back to stderr.
     pub set_host_log_sink: extern "C" fn(usize),
+    /// The source families this plugin's bridges declare (see
+    /// [`RSourceFamily`]): every name [`FormatBridge::source_family`] can
+    /// return, with what to call it and its default placement. The host
+    /// reads it once, at load, so the families can be configured before any
+    /// stream of theirs plays.
+    ///
+    /// A root-module field rather than a trait method: it describes the
+    /// plugin, not a stream. Like a trait method added after the prefix, it
+    /// does not make an older bridge loadable: abi_stable refuses a root
+    /// module with fewer fields than the host's ("too many fields",
+    /// measured), so a host that has this field needs a bridge built against
+    /// it. A newer bridge in an older host loads and is simply not asked.
+    pub source_families: extern "C" fn() -> RVec<RSourceFamily>,
 }
 
 impl RootModule for BridgeLibRef {

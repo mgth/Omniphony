@@ -292,6 +292,7 @@ impl Engine {
     /// renderer. The bridge must already be configured (presentation, DRC mode)
     /// before the first [`process`](Self::process) call.
     pub fn new(bridge: LoadedBridge, renderer: SpatialRenderer, sample_rate: u32) -> Self {
+        crate::bridge_loader::declare_source_families(&bridge.lib, &renderer.renderer_control());
         let coordinate_format = bridge.bridge.coordinate_format();
         let bridge_has_objects = Arc::new(AtomicBool::new(bridge.bridge.has_objects()));
         let engine = Self {
@@ -1242,7 +1243,9 @@ impl Engine {
             self.begin_segment();
         }
         if let Some(declaration) = declaration {
-            self.stream.apply_declaration(declaration);
+            let control = self.renderer.renderer_control();
+            let live = control.live.read();
+            self.stream.apply_declaration(declaration, &live.placement);
         }
 
         // Dialogue normalisation (from major-sync frames), applied once.

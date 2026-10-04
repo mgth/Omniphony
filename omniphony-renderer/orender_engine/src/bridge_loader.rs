@@ -5,6 +5,8 @@ use bridge_api::{
     BridgeHostLogSink, BridgeLibRef, FormatBridgeBox, RLogLevel, RVbapCartesianDefaults,
     RVbapTableMode,
 };
+use renderer::live_params::RendererControl;
+use renderer::placement::PlacementMode;
 use std::path::{Path, PathBuf};
 
 /// Loaded bridge library + live bridge instance.
@@ -73,6 +75,33 @@ pub fn configure_presentation(bridge: &mut FormatBridgeBox, presentation: &str) 
         bail!("Bridge rejected presentation value '{presentation}'");
     }
     Ok(())
+}
+
+/// Put the plugin's source families (`BridgeLib::source_families`) in the
+/// renderer's family table, so they can be configured — and the config's
+/// settings for them apply — before a stream of theirs plays. Called once
+/// per loaded plugin, after the renderer is built (seeding the config keeps
+/// the table, so the order does not matter).
+pub fn declare_source_families(lib: &BridgeLibRef, control: &RendererControl) {
+    let Some(source_families) = lib.source_families() else {
+        return;
+    };
+    let families = source_families();
+    let mut live = control.live.write();
+    for family in families.iter() {
+        let mode =
+            PlacementMode::parse(family.default_mode.as_str()).unwrap_or(PlacementMode::Room);
+        live.placement
+            .declare(family.name.as_str(), family.label.as_str(), mode);
+    }
+    log::info!(
+        "Bridge source families: {}",
+        families
+            .iter()
+            .map(|family| family.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 }
 
 pub fn install_bridge_host_log_sink(lib: &BridgeLibRef) {

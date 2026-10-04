@@ -533,9 +533,10 @@ impl FixedProcessingState {
             .iter()
             .map(|&label| bridge_api::labels::canonical_name(label))
             .collect();
+        let family_name = control.live.read().placement.info(family).name.clone();
         let state = serde_json::json!({
             "stream": if stream_has_objects { "objects" } else { "fixed" },
-            "family": family.as_str(),
+            "family": family_name,
             "label": source_label,
             "labels": names,
             "inputHasHeight": input_has_height,
@@ -692,6 +693,7 @@ pub(crate) mod tests {
         use bridge_api::RChannelLabel::*;
         let renderer = renderer_7_1_4();
         let control = renderer.renderer_control();
+        let dts = crate::virtual_bed::tests::test_family(&control, "dts");
         let mut state = FixedProcessingState::default();
         let stages = StageSync {
             counts: StageCounts {
@@ -706,7 +708,7 @@ pub(crate) mod tests {
         let labels = [L, R, C, LFE, Ls, Rs];
         let report = FixedProcessingReport {
             stream_has_objects: false,
-            family: SourceFamily::Dts,
+            family: dts,
             source_label: "DTS-HD MA",
             labels: &labels,
             output_has_height: false,

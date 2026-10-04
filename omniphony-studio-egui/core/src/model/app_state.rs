@@ -478,11 +478,15 @@ pub struct LiveOptionsState {
     /// the generic family's entries; `placement` is the real thing.
     pub virtual_bed: Option<serde_json::Value>,
     /// Per-family placement of fixed channels (`renderer::placement`), the
-    /// renderer's `placement` block passed through: one object per family
-    /// (`generic`, `dolby`, `dts`, `auro`, `pcm`) with its own `mode` and
-    /// `layout` (null when inherited), `effectiveMode` and `layoutSource`.
-    /// Read through `host::channels::family_placement`.
+    /// renderer's `placement` block passed through: one object per family of
+    /// its table, keyed by name, with its `label`, `defaultMode`, own `mode`
+    /// and `layout` (null when inherited), `effectiveMode` and
+    /// `layoutSource`. Read through `host::channels::family_placement`.
     pub placement: Option<serde_json::Value>,
+    /// The families to offer, by name, in the renderer's order: the generic
+    /// family, the loaded bridge's, the renderer's PCM input. Studio knows
+    /// no family by name; these are what it shows (`host::channels::families`).
+    pub placement_families: Option<Vec<String>>,
 }
 
 /// A tag the stream's bridge puts on some of its channels (`channelTags` on

@@ -244,9 +244,15 @@ Rules:
   "too many fields") — each method added here means rebuilding the bridge
   against it, as for `source_family`, `source_label` and `channel_tags`.
 - `FormatBridge::source_family` (0.4.x, after the prefix, default body:
-  empty) names the family of the current presentation — `dolby`, `dts`,
-  `auro`, `pcm` — as a string, so a new format costs no ABI change. The
-  renderer chooses the placement policy per family: **Sphere** (the
+  empty) names the family of the current presentation as a string — one of
+  the names the plugin declares in `BridgeLib::source_families` (0.4.x, a
+  root-module field after the prefix: name, label, default mode, read once
+  at load), or `pcm`, the renderer's own. The renderer knows no format by
+  name: its family table is that catalogue plus `generic` and `pcm`, and a
+  name it lacks is `generic`. Like a trait method, the root-module field
+  makes an older bridge refused at load ("too many fields", measured), so
+  it too means rebuilding the bridges with the host. The renderer chooses
+  the placement policy per family: **Sphere** (the
   declared angles, else its nominal angle table), **Room** (its corner
   model, declared angles ignored) or **Manual** (the family's own entries),
   each family inheriting from `generic`. Declared poses are therefore read
