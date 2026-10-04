@@ -427,6 +427,7 @@ impl SpatialRenderer {
             distance_diffuse_curve,
             drc_mode: "Off".to_string(),
             drc_weight: 1.0,
+            dialogue_gain_db: 0.0,
             hybrid: crate::live_params::HybridLiveParams::default(),
             binaural: crate::live_params::BinauralLiveParams::default(),
             // Seeded to the default (Spatial); the CLI bootstrap and the

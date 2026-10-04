@@ -1321,6 +1321,10 @@ pub struct LiveParams {
     /// 0.0 bypasses it entirely. Intermediate values scale the dB reduction
     /// linearly (effective_gain = bridge_gain.powf(drc_weight)).
     pub drc_weight: f32,
+    /// Gain in dB on the channels the bridge tags as dialogue
+    /// (`FormatBridge::channel_tags`); 0 leaves them as the stream mixed
+    /// them. Applied with the PCM conversion, so before the upmix stages.
+    pub dialogue_gain_db: f32,
 
     /// Binaural (headphone) output stage parameters. When
     /// `binaural.output_mode == OutputMode::Binaural`, the renderer bypasses the
@@ -1753,6 +1757,11 @@ pub struct RendererControl {
     /// crate in the dependency graph.
     fixed_channel_catalog: RwLock<String>,
 
+    /// The current stream's channel tags (`FormatBridge::channel_tags`) as a
+    /// JSON array, supplied by the engine when they change: Studio shows the
+    /// dialogue level only while a stream tags dialogue.
+    channel_tags: RwLock<String>,
+
     /// Current fixed-channel/synthesized-object applicability state supplied by
     /// the engine on declaration/topology/option changes (never per sample).
     fixed_channel_processing: RwLock<String>,
@@ -1830,6 +1839,7 @@ impl RendererControl {
             object_generator_listings: RwLock::new(Vec::new()),
             phantom_listing: RwLock::new(None),
             fixed_channel_catalog: RwLock::new("[]".to_string()),
+            channel_tags: RwLock::new("[]".to_string()),
             fixed_channel_processing: RwLock::new(
                 r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
                     .to_string(),
@@ -1955,6 +1965,20 @@ impl RendererControl {
 
     pub fn fixed_channel_catalog(&self) -> String {
         self.fixed_channel_catalog.read().clone()
+    }
+
+    /// Publish the stream's channel tags only when they actually changed.
+    pub fn set_channel_tags(&self, json: String) {
+        let mut current = self.channel_tags.write();
+        if *current != json {
+            *current = json;
+            drop(current);
+            self.bump_live_state();
+        }
+    }
+
+    pub fn channel_tags(&self) -> String {
+        self.channel_tags.read().clone()
     }
 
     /// Publish a new applicability snapshot only when it actually changed.

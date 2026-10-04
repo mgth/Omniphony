@@ -822,6 +822,10 @@ pub fn build_live_state_bundle_with_host(
                 "drcMode": live.drc_mode,
                 "drcWeight": live.drc_weight,
                 "supportedDrcModes": control.bridge_supported_drc_modes(),
+                // What the stream tags among its channels (the dialogue a
+                // format codes apart): `[{kind, language, label, channels}]`.
+                "channelTags": serde_json::from_str::<serde_json::Value>(&control.channel_tags())
+                    .unwrap_or_else(|_| serde_json::Value::Array(Vec::new())),
             })
             .to_string(),
         )],

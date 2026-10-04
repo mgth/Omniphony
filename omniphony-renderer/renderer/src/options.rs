@@ -574,6 +574,13 @@ const DRC_WEIGHT_KIND: OptionKind = OptionKind::Float {
     max: 1.0,
     step: 0.01,
 };
+/// Dialogue level: the ±12 dB a stream's own dialogue control spans (IAMF's
+/// RANGE element gain offset as harlettizer writes it).
+const DIALOGUE_GAIN_DB_KIND: OptionKind = OptionKind::Float {
+    min: -12.0,
+    max: 12.0,
+    step: 0.5,
+};
 
 /// Room ratios: floored like the geometry floors them, bounded far above any
 /// real room so a typo cannot blow the scene up.
@@ -1359,6 +1366,31 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         config_seed: |live, render, _env| {
             if let Some(weight) = render.drc_weight {
                 live.drc_weight = clamp_to(DRC_WEIGHT_KIND, weight);
+            }
+        },
+    },
+    OptionSpec {
+        key: "dialogue_gain_db",
+        kind: DIALOGUE_GAIN_DB_KIND,
+        default: OptionDefault::Float(0.0),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "input.dialogue_gain",
+        help_i18n_key: Some("help.drc.dialogueGain"),
+        legacy_control_addr: LegacyAddr::None,
+        set: |live, raw, _env| {
+            let db = raw_float(raw, DIALOGUE_GAIN_DB_KIND)?;
+            live.dialogue_gain_db = db;
+            Some(format!("{db}"))
+        },
+        get_json: |live| live.dialogue_gain_db.into(),
+        config_store: |render, live, _env| {
+            render.dialogue_gain_db =
+                (live.dialogue_gain_db.abs() > 1e-4).then(|| round6(live.dialogue_gain_db));
+        },
+        config_seed: |live, render, _env| {
+            if let Some(db) = render.dialogue_gain_db {
+                live.dialogue_gain_db = clamp_to(DIALOGUE_GAIN_DB_KIND, db);
             }
         },
     },

@@ -16,8 +16,9 @@ use std::time::Instant;
 /// What a bridge declares about the current presentation beyond its labels:
 /// the poses it states for its channels (`FormatBridge::fixed_channel_poses`),
 /// its source family, which selects the placement policy
-/// (`FormatBridge::source_family`), and the name it gives the format
-/// (`FormatBridge::source_label`).
+/// (`FormatBridge::source_family`), the name it gives the format
+/// (`FormatBridge::source_label`) and the tags it puts on some of its
+/// channels (`FormatBridge::channel_tags`).
 ///
 /// Read right after the packet that may change it, and carried with that
 /// packet: a host that decodes on a thread of its own renders a frame while
@@ -28,6 +29,7 @@ pub struct Declaration {
     pub poses: Vec<RChannelPose>,
     pub family: String,
     pub label: String,
+    pub tags: Vec<ChannelTag>,
 }
 
 impl Declaration {
@@ -36,6 +38,41 @@ impl Declaration {
             poses: bridge.fixed_channel_poses().into_iter().collect(),
             family: bridge.source_family().as_str().to_owned(),
             label: bridge.source_label().as_str().to_owned(),
+            tags: bridge
+                .channel_tags()
+                .into_iter()
+                .map(ChannelTag::from)
+                .collect(),
+        }
+    }
+}
+
+/// A bridge's tag on some of its channels (`bridge_api::RChannelTag`), owned.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChannelTag {
+    /// What the channels carry: [`ChannelTag::DIALOGUE`], or a kind this
+    /// renderer does not know yet and ignores.
+    pub kind: String,
+    /// BCP 47, empty when the stream states none.
+    pub language: String,
+    /// The stream's name for them, empty when it states none.
+    pub label: String,
+    /// Indices into the frame's channels.
+    pub channels: Vec<usize>,
+}
+
+impl ChannelTag {
+    /// The dialogue a format codes apart from the rest of the programme.
+    pub const DIALOGUE: &'static str = "dialogue";
+}
+
+impl From<bridge_api::RChannelTag> for ChannelTag {
+    fn from(tag: bridge_api::RChannelTag) -> Self {
+        Self {
+            kind: tag.kind.into_string(),
+            language: tag.language.into_string(),
+            label: tag.label.into_string(),
+            channels: tag.channels.iter().map(|&c| c as usize).collect(),
         }
     }
 }

@@ -548,7 +548,7 @@ impl FixedProcessingState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn selection(master: bool, id: &str) -> StageSelection<'_> {
@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(counts.total(), 5);
     }
 
-    fn renderer_7_1_4() -> renderer::spatial_renderer::SpatialRenderer {
+    pub(crate) fn renderer_7_1_4() -> renderer::spatial_renderer::SpatialRenderer {
         crate::renderer_build::build_spatial_renderer(
             &crate::renderer_build::SpatialRendererParams::from_render_config(None),
             renderer::speaker_layout::SpeakerLayout::preset("7.1.4").expect("preset layout"),

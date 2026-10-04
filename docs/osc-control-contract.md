@@ -179,6 +179,7 @@ same wire format; `null` unsets a nullable field.
 | `/control/input/refresh` | — | Re-enumerate input sources. |
 | `/control/input/drc_mode` | s | Dynamic-range-control mode (one of the bridge's `supportedDrcModes`). Registry option alias. |
 | `/control/input/drc_weight` | f `[0,1]` | DRC weight. Registry option alias. |
+| `/control/option dialogue_gain_db <f>` | f `[-12,12]` | Level of the channels the bridge tags as dialogue (`channelTags` on `/state/input`: `[{kind, language, label, channels}]`, empty when the stream tags nothing). Registry option, no alias. |
 | `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,clock_mode,map,lfe_mode}` | varies | Live-capture parameters, staged. `backend` accepts only `pipewire`; the retired `asio` value (never implemented) and any other value are rejected with a warning, leaving the staged backend unchanged. All but `layout_import` (an imported layout, structured) are host options `live_input_*`; a non-positive `channels` / `sample_rate` sent here is ignored, as before (through `/control/option(s)` it unsets the value, as the JSON patch does). |
 | `/control/render/bridge_path` | s | Path to the format bridge library. |
 | `/control/render/input_pipe` | s | Named-pipe input path. |

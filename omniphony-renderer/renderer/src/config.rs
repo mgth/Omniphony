@@ -311,6 +311,9 @@ pub struct RenderConfig {
     pub drc_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drc_weight: Option<f32>,
+    /// Level of the channels a bridge tags as dialogue, in dB (absent = 0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialogue_gain_db: Option<f32>,
     /// OSC meter cadence (Hz). Persisted so the renderer is the source of truth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meter_rate: Option<f32>,
