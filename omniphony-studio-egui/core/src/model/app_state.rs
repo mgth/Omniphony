@@ -485,6 +485,27 @@ pub struct LiveOptionsState {
     pub placement: Option<serde_json::Value>,
 }
 
+/// A tag the stream's bridge puts on some of its channels (`channelTags` on
+/// `/state/input`): the dialogue a format codes apart from the rest.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChannelTag {
+    /// `dialogue`, or a kind this Studio does not know yet.
+    pub kind: String,
+    /// BCP 47, empty when the stream states none.
+    #[serde(default)]
+    pub language: String,
+    /// The stream's name for the channels, empty when it states none.
+    #[serde(default)]
+    pub label: String,
+    /// Indices into the stream's channels.
+    #[serde(default)]
+    pub channels: Vec<u32>,
+}
+
+impl ChannelTag {
+    pub const DIALOGUE: &'static str = "dialogue";
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AppState {
     pub sources: HashMap<String, SourcePosition>,
@@ -638,6 +659,9 @@ pub struct AppState {
     pub diag_rate_hz: Option<f32>,
     #[serde(rename = "supportedDrcModes")]
     pub supported_drc_modes: Vec<String>,
+    /// What the current stream tags among its channels.
+    #[serde(rename = "channelTags")]
+    pub channel_tags: Vec<ChannelTag>,
     #[serde(rename = "inputBackend")]
     pub input_backend: Option<String>,
     #[serde(rename = "inputChannels")]
@@ -724,6 +748,14 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The current stream's dialogue tag, when it codes its dialogue apart
+    /// (the dialogue level only means something then).
+    pub fn dialogue_tag(&self) -> Option<&ChannelTag> {
+        self.channel_tags
+            .iter()
+            .find(|tag| tag.kind == ChannelTag::DIALOGUE)
+    }
+
     pub fn new(layouts: Vec<Layout>) -> Self {
         Self {
             layouts,
@@ -940,6 +972,7 @@ impl Default for AppState {
             meter_rate_hz: None,
             diag_rate_hz: None,
             supported_drc_modes: Vec::new(),
+            channel_tags: Vec::new(),
             input_backend: None,
             input_channels: None,
             input_sample_rate: None,
