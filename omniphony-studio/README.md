@@ -1,5 +1,12 @@
 # Omniphony Studio
 
+> **Deprecated.** This Tauri/web Studio is superseded by the native Studio,
+> [`omniphony-studio-egui`](../omniphony-studio-egui/README.md), and receives
+> no new features: Studio work lands in the native one only. It still builds
+> and ships for now; anything it lacks (for instance the source families a
+> bridge declares, such as IAMF) is only in the native Studio. Its `src/i18n/`
+> catalogues stay maintained — the native Studio reads them.
+
 ![Omniphony Studio preview](omniphony-studio.png)
 
 Omniphony Studio est l’interface de supervision, de visualisation 3D et de contrôle live de la suite Omniphony.
