@@ -85,6 +85,7 @@ Declared options (`renderer::options::LIVE_OPTIONS`):
 | `sample_ramp_stride` | `Int` 1–32 | `8` | — | none (generic setters only) |
 | `drc_mode` | `Str` (the bridge's modes) | `Off` | — | `/control/input/drc_mode` |
 | `drc_weight` | `Float` 0–1, step 0.01 | `1` | — | `/control/input/drc_weight` |
+| `dialogue_gain_db` | `Float` −12–12 dB, step 0.5 | `0` | — | — |
 | `room_ratio` | `FloatArray` ×3, 0.01–100, step 0.01 | `[1, 2, 1]` | group `room` | `/control/room_ratio` |
 | `room_ratio_rear` | `Float` 0.01–100, step 0.01 | `2` | group `room` | `/control/room_ratio_rear` |
 | `room_ratio_lower` | `Float` 0.01–100, step 0.01 | `0.5` | group `room` | `/control/room_ratio_lower` |

@@ -239,9 +239,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                     let control = renderer.renderer_control();
                     let stream = &mut self.spatial.stream;
                     stream.publish_object_stream_processing(&control, &frame.channel_labels);
-                    stream
-                        .drc
-                        .fill_pcm_f32(&mut pcm_f32_scratch, frame, &control);
+                    stream.fill_pcm_f32(&mut pcm_f32_scratch, frame, &control);
                     let pcm_data_f32 = &pcm_f32_scratch;
 
                     let has_metering_clients = self
@@ -349,9 +347,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                         frame.sampling_frequency,
                     );
 
-                    stream
-                        .drc
-                        .fill_pcm_f32(&mut pcm_f32_scratch, frame, &control);
+                    stream.fill_pcm_f32(&mut pcm_f32_scratch, frame, &control);
                     let (pcm_data_f32, render_channel_count) =
                         stream.channel_objects.process_and_extend(
                             &mut pcm_f32_scratch,

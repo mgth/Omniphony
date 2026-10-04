@@ -67,6 +67,7 @@ struct InputDomainState {
     drc_mode: Option<String>,
     drc_weight: Option<f32>,
     supported_drc_modes: Option<Vec<String>>,
+    channel_tags: Option<Vec<crate::model::app_state::ChannelTag>>,
     requested: Option<RequestedInputDomainState>,
     applied: Option<AppliedInputDomainState>,
 }
@@ -536,6 +537,9 @@ pub fn apply_input_domain_state(s: &mut AppState, value: &str) -> bool {
     }
     if let Some(supported_drc_modes) = parsed.supported_drc_modes {
         s.supported_drc_modes = supported_drc_modes;
+    }
+    if let Some(channel_tags) = parsed.channel_tags {
+        s.channel_tags = channel_tags;
     }
     if let Some(requested) = parsed.requested {
         s.live_input.backend = requested.backend;

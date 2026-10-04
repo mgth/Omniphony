@@ -1369,10 +1369,10 @@ impl Engine {
             }
         }
 
-        // The decoded PCM as f32, with the DRC gain ramp applied.
+        // The decoded PCM as f32, with the DRC gain ramp and the dialogue
+        // level applied.
         let mut pcm_f32 = std::mem::take(&mut self.pcm_f32_buf);
         self.stream
-            .drc
             .fill_pcm_f32(&mut pcm_f32, frame, &self.renderer.renderer_control());
 
         // Two upmix stages now that the bed PCM exists. First the phantom pre-stage

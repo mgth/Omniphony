@@ -336,6 +336,7 @@ mod registry {
             ("sample_ramp_stride", RawOptionValue::Number(4.0)),
             ("drc_mode", RawOptionValue::Str("Standard")),
             ("drc_weight", RawOptionValue::Number(0.5)),
+            ("dialogue_gain_db", RawOptionValue::Number(-4.5)),
             // Width stays the reference (1): the file stores metres against
             // it, so a width ratio is folded into the layout radius on reload.
             ("room_ratio", RawOptionValue::Numbers(&[1.0, 3.0, 1.5])),

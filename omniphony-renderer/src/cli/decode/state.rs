@@ -186,8 +186,8 @@ impl SpatialState {
                 // until its input comes back.
                 let pcm = StreamDeclaration {
                     family: SourceFamily::Pcm,
-                    poses: Vec::new(),
                     label: LIVE_PCM_LABEL.to_owned(),
+                    ..StreamDeclaration::default()
                 };
                 self.bridge_declaration_aside =
                     Some(std::mem::replace(&mut self.stream.declaration, pcm));
@@ -353,6 +353,7 @@ mod tests {
                 .collect(),
             family: family.to_owned(),
             label: label.to_owned(),
+            tags: Vec::new(),
         })
     }
 

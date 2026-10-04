@@ -161,6 +161,37 @@ pub struct RChannelPose {
     pub elevation_deg: f32,
 }
 
+/// A tag a bridge puts on some of its frame's channels: what they carry,
+/// beside the rest of the programme — the dialogue of a stream that codes it
+/// apart from music and effects. A host may then treat them on their own (a
+/// dialogue level); one that ignores the tag renders them like any other
+/// channel, so a bridge splits out only what still sums back to the mix.
+///
+/// Declaration-level, like the labels: reported by
+/// [`FormatBridge::channel_tags`], read when the labels change, after a
+/// reset and at a segment start, never per frame.
+///
+/// Fields are strings so that a new kind, or a language, costs no ABI
+/// change; a host ignores a kind it does not know.
+#[repr(C)]
+#[derive(StableAbi, Clone, Debug, PartialEq, Eq)]
+pub struct RChannelTag {
+    /// What the channels carry, lower case: `dialogue` today. Kinds named
+    /// later (`music_effects`, a commentary…) leave older hosts unaffected.
+    pub kind: RString,
+    /// The content's language when the stream states it, as a BCP 47 tag
+    /// (`fr`, `en-US`); empty when unknown. Lets a host tell an original
+    /// version from a dub when a stream carries both.
+    pub language: RString,
+    /// What the stream calls these channels (`Dialogue`), for display;
+    /// empty when it names nothing.
+    pub label: RString,
+    /// The tagged channels, as indices into [`RDecodedFrame::channel_labels`]
+    /// — indices, not labels, since tagged channels usually repeat labels
+    /// of the bed beside them (a dialogue `L`/`R`/`C` next to the bed's).
+    pub channels: RVec<u32>,
+}
+
 /// Spatial metadata for one payload within a decoded frame.
 ///
 /// Describes dynamic objects only; fixed channels are fully described by
@@ -355,7 +386,11 @@ pub trait FormatBridge: Send + Sync + 'static {
     ///
     /// Marks the end of the `bridge_api` 0.4 method prefix: methods added
     /// after this one in later 0.4.x releases must carry a default body, so a
-    /// bridge built against 0.4.0 keeps loading.
+    /// bridge that does not implement them still builds. At load, abi_stable
+    /// accepts a bridge built against a *newer* 0.4.x than the host (the
+    /// host never calls what it does not know) but refuses an *older* one —
+    /// a vtable shorter than the host's is "too many fields" — so a host
+    /// that gains a method needs a bridge built against it.
     ///
     /// [`reset`]: FormatBridge::reset
     #[sabi(last_prefix_field)]
@@ -368,8 +403,8 @@ pub trait FormatBridge: Send + Sync + 'static {
     /// name the renderer does not know, means its generic family.
     ///
     /// Declaration-level like the labels: read when they change, never per
-    /// frame. Added after the 0.4 prefix with a default body, so a bridge
-    /// built before it keeps loading and reads as generic.
+    /// frame. Added after the 0.4 prefix with a default body: a bridge that
+    /// does not implement it reads as generic.
     fn source_family(&self) -> RString {
         RString::new()
     }
@@ -385,10 +420,28 @@ pub trait FormatBridge: Send + Sync + 'static {
     /// Declaration-level like the family: read when the labels change,
     /// never per frame, and naming what is actually decoded — a lossy
     /// carrier whose spatial layer the bridge cannot read is named as the
-    /// carrier alone. Added after the 0.4 prefix with a default body, so a
-    /// bridge built before it keeps loading and reads as stating none.
+    /// carrier alone. Added after the 0.4 prefix with a default body: a
+    /// bridge that does not implement it states none.
     fn source_label(&self) -> RString {
         RString::new()
+    }
+
+    /// Tags on some of the current presentation's channels (see
+    /// [`RChannelTag`]): the dialogue a format codes apart, so the host can
+    /// set its level. Empty, the default, means nothing is tagged.
+    ///
+    /// Declaration-level like the poses: read when the frame's labels
+    /// change, after [`reset`] and at a segment start, never per frame — so
+    /// a bridge changes its tags only along with one of those. Added after
+    /// the 0.4 prefix with a default body: a bridge that does not implement
+    /// it tags nothing (one built before it is refused at load, see the
+    /// prefix note on [`fixed_channel_poses`]).
+    ///
+    /// [`fixed_channel_poses`]: FormatBridge::fixed_channel_poses
+    ///
+    /// [`reset`]: FormatBridge::reset
+    fn channel_tags(&self) -> RVec<RChannelTag> {
+        RVec::new()
     }
 }
 
