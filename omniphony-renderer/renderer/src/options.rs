@@ -3321,18 +3321,54 @@ fn set_from_json(
     value: &serde_json::Value,
     env: &OptionEnv,
 ) -> Option<String> {
+    with_raw_of(value, |raw| (spec.set)(live, raw, env))
+}
+
+/// Run `f` on the raw form of a `get_json`-shaped value.
+fn with_raw_of<T>(
+    value: &serde_json::Value,
+    f: impl FnOnce(&RawOptionValue) -> Option<T>,
+) -> Option<T> {
     use serde_json::Value;
     match value {
-        Value::Null => (spec.set)(live, &RawOptionValue::Null, env),
-        Value::Bool(b) => (spec.set)(live, &RawOptionValue::Bool(*b), env),
-        Value::Number(n) => (spec.set)(live, &RawOptionValue::Number(n.as_f64()?), env),
-        Value::String(s) => (spec.set)(live, &RawOptionValue::Str(s), env),
+        Value::Null => f(&RawOptionValue::Null),
+        Value::Bool(b) => f(&RawOptionValue::Bool(*b)),
+        Value::Number(n) => f(&RawOptionValue::Number(n.as_f64()?)),
+        Value::String(s) => f(&RawOptionValue::Str(s)),
         Value::Array(items) => {
             let numbers: Option<Vec<f64>> = items.iter().map(Value::as_f64).collect();
-            (spec.set)(live, &RawOptionValue::Numbers(&numbers?), env)
+            f(&RawOptionValue::Numbers(&numbers?))
         }
         Value::Object(_) => None,
     }
+}
+
+/// Bring every host option back within its kind: [`seed_option`]'s guard,
+/// for a host whose state was built straight from the config (the standalone
+/// renderer's audio output and live input are) rather than seeded through
+/// the rows. A value its kind does not admit goes through the row's setter,
+/// which clamps a finite number; what the setter refuses gets the declared
+/// default. Returns the keys it changed, each also logged.
+pub fn bound_host_options<H>(host: &H, specs: &[HostOptionSpec<H>]) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    for spec in specs {
+        let value = (spec.get_json)(host);
+        if spec.kind.admits(&value) {
+            continue;
+        }
+        let clamped = with_raw_of(&value, |raw| (spec.set)(host, raw)).is_some()
+            && spec.kind.admits(&(spec.get_json)(host));
+        if !clamped {
+            let _ = with_raw_of(&spec.default.to_json(), |raw| (spec.set)(host, raw));
+        }
+        log::warn!(
+            "config: {} = {value} is outside what the option accepts; using {}",
+            spec.key,
+            (spec.get_json)(host)
+        );
+        changed.push(spec.key);
+    }
+    changed
 }
 
 /// Seed every declared live option — plus the document-valued companion the
