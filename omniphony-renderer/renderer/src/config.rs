@@ -1567,12 +1567,15 @@ pub fn live_load_status(config_path: &Path, loaded: &Config, restored: bool) -> 
     }
 }
 
-/// Forget any consumed sidecar. Called after writing a *new* sidecar (so a
-/// later boot-in-the-same-process re-reads it), after an explicit save (a
-/// deliberate save supersedes the overlay) and on reload_config (whose
-/// contract is "discard live state").
-pub fn clear_live_overlay_cache() {
-    LIVE_OVERLAY.lock().unwrap().clear();
+/// Forget the sidecar consumed for `config_path`. Called after writing a *new*
+/// sidecar (so a later boot-in-the-same-process re-reads it), after an
+/// explicit save (a deliberate save supersedes the overlay) and on
+/// reload_config (whose contract is "discard live state"). Overlays cached for
+/// other config paths are left alone: they are not superseded by a write to
+/// this one (and tests running in parallel on their own paths must not clobber
+/// each other's).
+pub fn clear_live_overlay_cache(config_path: &Path) {
+    LIVE_OVERLAY.lock().unwrap().remove(config_path);
 }
 
 /// Apply a targeted config write to the live overlay for `config_path` — the
@@ -1606,7 +1609,7 @@ pub fn amend_live_overlay(config_path: &Path, amend: impl Fn(&mut Config)) {
 /// option persist, profile operation).
 pub fn discard_live_sidecar(config_path: &Path) {
     let _ = std::fs::remove_file(live_sidecar_path(config_path));
-    clear_live_overlay_cache();
+    clear_live_overlay_cache(config_path);
 }
 
 /// Returns the platform default config path without external dependencies.
@@ -2290,6 +2293,28 @@ render:
         assert!(restored);
         assert_eq!(bridge_of(&cfg_b).as_deref(), Some("/tmp/live-b.so"));
         assert!(!sidecar.exists());
+    }
+
+    /// Discarding one config's live state leaves the overlay consumed for
+    /// another config path in place.
+    #[test]
+    fn discarding_one_overlay_keeps_the_others() {
+        let dir = sidecar_test_dir("discard-scope");
+        let kept = dir.join("kept.yaml");
+        let discarded = dir.join("discarded.yaml");
+        for path in [&kept, &discarded] {
+            write_config_with_bridge(path, "/tmp/base.so");
+            write_config_with_bridge(&live_sidecar_path(path), "/tmp/live.so");
+            assert!(Config::load_or_default_with_live(path).1);
+        }
+
+        discard_live_sidecar(&discarded);
+        assert!(!live_overlay_active(&discarded));
+        assert!(live_overlay_active(&kept));
+        let (cfg, restored) = Config::load_or_default_with_live(&kept);
+        assert!(restored);
+        assert_eq!(bridge_of(&cfg).as_deref(), Some("/tmp/live.so"));
+        discard_live_sidecar(&kept);
     }
 }
 
