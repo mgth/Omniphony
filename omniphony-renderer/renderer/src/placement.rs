@@ -113,7 +113,11 @@ pub struct FamilyInfo {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct FamilyPlacement {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub mode: Option<PlacementMode>,
     /// The family's entries: `spatialize` and `gain_db` in every mode, the
     /// pose in manual mode. The speaker-layout schema, so the Studio editor
@@ -130,14 +134,37 @@ impl FamilyPlacement {
     pub fn is_default(&self) -> bool {
         self.mode.is_none() && self.layout.is_none() && self.extra.is_empty()
     }
+
+    /// Set the family's own mode, as a client chose it; `true` when it
+    /// changed. A choice drops a mode a newer build wrote and this one kept,
+    /// or it would come back the next time the family is set to inherit.
+    /// Inherit while already inheriting is no choice (a client re-sending
+    /// its state): this build runs the kept mode as inherit anyway.
+    pub fn set_mode(&mut self, mode: Option<PlacementMode>) -> bool {
+        if mode.is_some() || self.mode.is_some() {
+            self.extra.shift_remove("mode");
+        }
+        std::mem::replace(&mut self.mode, mode) != mode
+    }
+}
+
+/// `mode`, keeping one this build does not know (see [`unknown_values`]).
+fn kept_mode<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<PlacementMode>, D::Error> {
+    unknown_values::keep_unknown(
+        deserializer,
+        None,
+        "mode",
+        "render.placement.<family>.",
+        |value| Option::<PlacementMode>::deserialize(value),
+    )
 }
 
 impl KeepsUnknownValues for FamilyPlacement {
-    const SECTION: &'static str = "render.placement.<family>";
     const ENUM_KEYS: &'static [EnumKey<Self>] = &[EnumKey {
         parent: None,
         key: "mode",
-        understood: unknown_values::understood::<PlacementMode>,
         // Absent inherits, which no mode spells.
         chosen: |own| own.mode.is_some(),
         clear: |own| own.mode = None,
@@ -154,7 +181,7 @@ impl KeepsUnknownValues for FamilyPlacement {
 
 impl<'de> Deserialize<'de> for FamilyPlacement {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        unknown_values::deserialize(deserializer, |value| FamilyPlacement::deserialize(value))
+        unknown_values::deserialize(deserializer, FamilyPlacement::deserialize)
     }
 }
 

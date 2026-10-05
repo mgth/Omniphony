@@ -77,7 +77,11 @@ pub struct GlobalConfig {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(remote = "Self")]
 pub struct RenderConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_enum::input_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub input_mode: Option<InputModeConfig>,
     /// Named pipe / file orender reads its bitstream from in continuous mode.
     /// Shared source of truth with the mpv lua routing script.
@@ -201,24 +205,40 @@ pub struct RenderConfig {
     /// sink handle it) or `spatial` (render through the parametrable virtual bed
     /// — the default). The legacy `direct`/`virtual` values load as `spatial`.
     /// Absent = `spatial`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_enum::channel_render_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub channel_render_mode: Option<crate::live_params::ChannelRenderMode>,
     /// Where the 4.x/5.x surround pair (`Ls`/`Rs`) is placed when rendered
     /// through the virtual bed: `side` (the default) or `back`. Only affects
     /// channel sources without dedicated back channels; 7.x ignores it.
     /// Absent = `side`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_enum::surround_placement",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub surround_placement: Option<crate::live_params::SurroundPlacement>,
     /// How output channels map to device ports: `by_index` (default — port N =
     /// layout speaker N, positionless) or `by_name` (positional: tag each channel
     /// with its speaker position so a position-aware host/sink routes by position).
     /// Absent = `by_index`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_enum::output_channel_mapping",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub output_channel_mapping: Option<crate::live_params::OutputChannelMapping>,
     /// Crossover filter implementation for band-limited layouts: `lr4` (IIR,
     /// zero latency, the default) or `fir` (linear-phase FIR — the band sum is
     /// a pure delay, at the price of ~0.1 s of latency). Absent = `lr4`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_enum::crossover_type",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub crossover_type: Option<crate::live_params::CrossoverType>,
     /// FIR crossover transition width as a fraction of the lowest cutoff:
     /// smaller = steeper bands but more taps/latency/ringing. Only consulted
@@ -248,7 +268,11 @@ pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decode_thread: Option<bool>,
     /// Phantom extraction algorithm. Absent = off.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_enum::phantom_extract_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub phantom_extract_mode: Option<crate::live_params::PhantomExtractMode>,
     /// Legacy phantom enable flag, read for migration and dropped on save.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,7 +307,11 @@ pub struct RenderConfig {
     pub vbap_spread_min: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vbap_spread_max: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_enum::size_to_spread_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub size_to_spread_mode: Option<crate::render_backend::SizeToSpreadMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_adaptive_resampling: Option<bool>,
@@ -657,7 +685,7 @@ pub enum InputClockModeConfig {
 pub struct LiveInputConfig {
     #[serde(
         default,
-        deserialize_with = "deserialize_live_input_backend",
+        deserialize_with = "kept_enum::backend",
         skip_serializing_if = "Option::is_none"
     )]
     pub backend: Option<InputBackendConfig>,
@@ -670,15 +698,27 @@ pub struct LiveInputConfig {
     /// Embedded input speaker layout (preferred over `layout` path).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_layout: Option<crate::speaker_layout::SpeakerLayout>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_enum::clock_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub clock_mode: Option<InputClockModeConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channels: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample_rate: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_enum::map",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub map: Option<InputMapModeConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_enum::lfe_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub lfe_mode: Option<InputLfeModeConfig>,
     /// See `Config::extra` — preserve unknown keys through round-trips, and
     /// the enum values this build does not know (see [`unknown_values`]).
@@ -723,13 +763,51 @@ impl LiveInputConfig {
     }
 }
 
+/// The `deserialize_with` readers of the enum-typed fields: a value this
+/// build does not know falls back to the default and is kept for the next
+/// save (see [`unknown_values`]).
+mod kept_enum {
+    use super::*;
+
+    macro_rules! reader {
+        ($section:literal, $parent:expr, $name:ident: $ty:ty) => {
+            reader!($section, $parent, $name: $ty, |value| Option::<$ty>::deserialize(value));
+        };
+        ($section:literal, $parent:expr, $name:ident: $ty:ty, $read:expr) => {
+            pub(super) fn $name<'de, D: serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> Result<Option<$ty>, D::Error> {
+                unknown_values::keep_unknown(deserializer, $parent, stringify!($name), $section, $read)
+            }
+        };
+    }
+
+    reader!("render.", None, input_mode: InputModeConfig);
+    reader!("render.", None, channel_render_mode: crate::live_params::ChannelRenderMode);
+    reader!("render.", None, surround_placement: crate::live_params::SurroundPlacement);
+    reader!("render.", None, output_channel_mapping: crate::live_params::OutputChannelMapping);
+    reader!("render.", None, crossover_type: crate::live_params::CrossoverType);
+    reader!("render.", None, phantom_extract_mode: crate::live_params::PhantomExtractMode);
+    reader!("render.", None, size_to_spread_mode: crate::render_backend::SizeToSpreadMode);
+    // The retired `asio` is read (and dropped) by the field's own reader, so
+    // it is not kept.
+    reader!(
+        "render.live_input.",
+        Some("live_input"),
+        backend: InputBackendConfig,
+        |value| deserialize_live_input_backend(value)
+    );
+    reader!("render.live_input.", Some("live_input"), clock_mode: InputClockModeConfig);
+    reader!("render.live_input.", Some("live_input"), map: InputMapModeConfig);
+    reader!("render.live_input.", Some("live_input"), lfe_mode: InputLfeModeConfig);
+}
+
 /// [`EnumKey`] for a field of `render` whose absent value is `default`.
 macro_rules! render_enum_key {
     ($field:ident : $ty:ty = $default:expr) => {
         EnumKey {
             parent: None,
             key: stringify!($field),
-            understood: unknown_values::understood::<$ty>,
             chosen: |render| render.$field.as_ref().is_some_and(|v| *v != $default),
             clear: |render| render.$field = None,
         }
@@ -739,11 +817,10 @@ macro_rules! render_enum_key {
 /// [`EnumKey`] for a field of `render.live_input`; `default` is what an
 /// absent value stands for, given the render section.
 macro_rules! live_input_enum_key {
-    ($field:ident : $ty:ty, understood = $understood:expr, default = $default:expr) => {
+    ($field:ident : $ty:ty, default = $default:expr) => {
         EnumKey {
             parent: Some("live_input"),
             key: stringify!($field),
-            understood: $understood,
             chosen: |render: &RenderConfig| {
                 let default: fn(&RenderConfig) -> Option<$ty> = $default;
                 render.live_input.as_ref().is_some_and(|live_input| {
@@ -760,7 +837,6 @@ macro_rules! live_input_enum_key {
 }
 
 impl KeepsUnknownValues for RenderConfig {
-    const SECTION: &'static str = "render";
     const ENUM_KEYS: &'static [EnumKey<Self>] = &[
         render_enum_key!(input_mode: InputModeConfig = InputModeConfig::Bridge),
         render_enum_key!(
@@ -789,25 +865,21 @@ impl KeepsUnknownValues for RenderConfig {
         ),
         live_input_enum_key!(
             backend: InputBackendConfig,
-            understood = |value| deserialize_live_input_backend(value.clone()).is_ok(),
             // Absent is the platform default, which no value spells.
             default = |_| None
         ),
         live_input_enum_key!(
             clock_mode: InputClockModeConfig,
-            understood = unknown_values::understood::<InputClockModeConfig>,
             default = |render| Some(LiveInputConfig::default_clock_mode(
                 &render.input_mode_or_default()
             ))
         ),
         live_input_enum_key!(
             map: InputMapModeConfig,
-            understood = unknown_values::understood::<InputMapModeConfig>,
             default = |_| Some(LiveInputConfig::DEFAULT_MAP)
         ),
         live_input_enum_key!(
             lfe_mode: InputLfeModeConfig,
-            understood = unknown_values::understood::<InputLfeModeConfig>,
             default = |_| Some(LiveInputConfig::DEFAULT_LFE_MODE)
         ),
     ];
@@ -832,7 +904,7 @@ impl KeepsUnknownValues for RenderConfig {
 
 impl<'de> Deserialize<'de> for RenderConfig {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        unknown_values::deserialize(deserializer, |value| RenderConfig::deserialize(value))
+        unknown_values::deserialize(deserializer, RenderConfig::deserialize)
     }
 }
 
@@ -1747,9 +1819,13 @@ render:
         let live_input = cfg.render.as_ref().unwrap().live_input.as_ref().unwrap();
         assert_eq!(live_input.backend, None, "an absent key stays absent");
 
-        let err = serde_yaml_ng::from_str::<LiveInputConfig>("backend: coreaudio\n")
-            .expect_err("an unknown backend is still an error");
-        assert!(err.to_string().contains("coreaudio"), "{err}");
+        // An unknown one is a value a newer build knows: kept, not an error.
+        let cfg: Config =
+            serde_yaml_ng::from_str("render:\n  live_input:\n    backend: coreaudio\n")
+                .expect("an unknown backend no longer fails the file");
+        let live_input = cfg.render.as_ref().unwrap().live_input.as_ref().unwrap();
+        assert_eq!(live_input.backend, None);
+        assert_eq!(live_input.extra.get("backend").unwrap(), "coreaudio");
     }
 
     /// A value in every enum-typed key that no build knows, between keys
@@ -1836,6 +1912,45 @@ render:
         assert_eq!(render.extra.get("crossover_type").unwrap(), "brickwall");
         assert_eq!(live_input.extra.get("clock_mode").unwrap(), "ptp");
         assert_eq!(generic.extra.get("mode").unwrap(), "hemisphere");
+    }
+
+    /// Only the enum fields read through a `Value`: the rest of the section
+    /// keeps the YAML deserializer's own conversions, such as a plain number
+    /// read into a string field.
+    #[test]
+    fn keeping_unknown_values_leaves_the_yaml_conversions_alone() {
+        let yaml = "\
+render:
+  output_device: 0
+  room_ratio: 1.50
+  crossover_type: brickwall
+  current_layout:
+    speakers:
+      - name: 1
+        azimuth: 30
+  live_input:
+    node: 42
+    clock_mode: ptp
+profiles:
+  other:
+    osc_host: 127
+";
+        let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse");
+        let render = cfg.render.as_ref().unwrap();
+        assert_eq!(render.output_device.as_deref(), Some("0"));
+        assert_eq!(
+            render.room_ratio.as_deref(),
+            Some("1.50"),
+            "the text as written"
+        );
+        let layout = render.current_layout.as_ref().unwrap();
+        assert_eq!(layout.speakers[0].name, "1");
+        let live_input = render.live_input.as_ref().unwrap();
+        assert_eq!(live_input.node.as_deref(), Some("42"));
+        assert_eq!(cfg.profiles["other"].osc_host.as_deref(), Some("127"));
+        // And the unknown values next to them are still kept.
+        assert_eq!(render.extra.get("crossover_type").unwrap(), "brickwall");
+        assert_eq!(live_input.extra.get("clock_mode").unwrap(), "ptp");
     }
 
     #[test]

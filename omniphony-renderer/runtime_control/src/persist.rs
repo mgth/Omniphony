@@ -465,6 +465,58 @@ mod tests {
         assert!(render.extra.contains_key("surround_placement"));
     }
 
+    /// A placement mode a newer build wrote is kept until the user chooses
+    /// one: replaced by `sphere`, it must not come back when the family is
+    /// then set to inherit.
+    #[test]
+    fn a_chosen_placement_mode_drops_the_kept_one_for_good() {
+        use renderer::placement::{PlacementMode, SourceFamily};
+        let path = temp_config_path("placement-kept-mode");
+        std::fs::write(
+            &path,
+            "render:\n  placement:\n    generic:\n      mode: hemisphere\n",
+        )
+        .unwrap();
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        let config = renderer::config::Config::load(&path).unwrap();
+        renderer::options::seed_live_from_config(
+            &mut control.live.write(),
+            config.render.as_ref().unwrap(),
+            &renderer::options::OptionEnv::of(&control),
+        );
+        let saved_mode = || {
+            let yaml = std::fs::read_to_string(&path).unwrap();
+            let saved: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+            saved["render"]["placement"]["generic"]["mode"].clone()
+        };
+        let set_mode = |mode| {
+            control
+                .live
+                .write()
+                .placement
+                .family_mut(SourceFamily::GENERIC)
+                .set_mode(mode)
+        };
+
+        // Inherit while inheriting: no choice, the kept mode stays.
+        assert!(!set_mode(None));
+        save_live_config(&control, None).expect("save");
+        assert_eq!(saved_mode(), "hemisphere");
+
+        assert!(set_mode(Some(PlacementMode::Sphere)));
+        save_live_config(&control, None).expect("save");
+        assert_eq!(saved_mode(), "sphere");
+
+        assert!(set_mode(None));
+        save_live_config(&control, None).expect("save");
+        assert_eq!(
+            saved_mode(),
+            serde_yaml_ng::Value::Null,
+            "inherit writes no mode"
+        );
+    }
+
     /// A file a newer build saved is read, but no Save, view write or
     /// handoff base write touches it.
     #[test]

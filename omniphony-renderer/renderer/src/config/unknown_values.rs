@@ -3,10 +3,15 @@
 //! A newer build may write a value into an enum-typed key that this one cannot
 //! read: a new crossover type, a new input clock. Read as is, that one value
 //! fails the whole file, which then runs on defaults and, since the parse
-//! guard, refuses every save. Instead the value is taken out before the
-//! section is read, so the field falls back to its default with a warning, and
-//! kept in the section's `extra` mapping under its own key, where unknown keys
-//! already live: a save writes it back unchanged.
+//! guard, refuses every save. Instead the field reads it leniently
+//! ([`keep_unknown`]): it falls back to its default with a warning, and the
+//! value is kept in the section's `extra` mapping under its own key, where
+//! unknown keys already live, so that a save writes it back unchanged.
+//!
+//! Only the enum field itself is read through a [`Value`]. The rest of the
+//! section goes through the format's own deserializer as before, with its
+//! conversions (YAML reads `output_device: 0` into a string; a `Value` would
+//! not).
 //!
 //! On save, a kept value yields to the field only when the field holds a
 //! choice of its own, a value other than the one an absent key stands for. A
@@ -15,19 +20,17 @@
 //! value this build reads back exactly as it reads the kept one is not a
 //! choice, so the kept value is written in its place.
 
-use serde::de::{DeserializeOwned, Error as _};
+use std::cell::RefCell;
+
 use serde::{Deserialize, Deserializer, Serializer};
 use serde_yaml_ng::{Mapping, Value};
 
-/// One enum-typed key of a config section.
+/// One enum-typed key of a config section, for the save side.
 pub(crate) struct EnumKey<S> {
     /// The mapping inside the section that holds the key (`live_input`), or
     /// `None` for a key of the section itself.
     pub parent: Option<&'static str>,
     pub key: &'static str,
-    /// Whether this build reads `value`: the field's own deserializer, with
-    /// its aliases and retired values.
-    pub understood: fn(&Value) -> bool,
     /// Whether the field holds a choice of its own: a value other than the
     /// one an absent key stands for.
     pub chosen: fn(&S) -> bool,
@@ -37,8 +40,6 @@ pub(crate) struct EnumKey<S> {
 
 /// A config section that keeps the enum values it does not know.
 pub(crate) trait KeepsUnknownValues: Clone + Sized + 'static {
-    /// The section's name, for the warning.
-    const SECTION: &'static str;
     const ENUM_KEYS: &'static [EnumKey<Self>];
     /// The `extra` mapping of the section (`parent: None`) or of the mapping
     /// `parent` inside it, when it is present.
@@ -46,51 +47,93 @@ pub(crate) trait KeepsUnknownValues: Clone + Sized + 'static {
     fn extra_mut(&mut self, parent: Option<&str>) -> Option<&mut Mapping>;
 }
 
-/// [`EnumKey::understood`] for a field read by `T`'s own `Deserialize`.
-pub(crate) fn understood<T: DeserializeOwned>(value: &Value) -> bool {
-    serde_yaml_ng::from_value::<Option<T>>(value.clone()).is_ok()
+/// A value [`keep_unknown`] took out, waiting for its section.
+struct Kept {
+    parent: Option<&'static str>,
+    key: &'static str,
+    value: Value,
 }
 
-/// Deserialize a section through `fields` (its derived deserializer), after
-/// taking out the enum values it does not know; they end up in the section's
-/// `extra` mappings.
+#[derive(Default)]
+struct Stash {
+    /// Sections being read on this thread; outside one, nothing is kept.
+    depth: usize,
+    kept: Vec<Kept>,
+}
+
+thread_local! {
+    // Deserialization is synchronous: a section's fields run on the thread
+    // that reads the section, between its `deserialize` entry and exit.
+    static STASH: RefCell<Stash> = RefCell::default();
+}
+
+/// `deserialize_with` body of an enum-typed field: `read` (the field's own
+/// reading, aliases and retired values included) or, for a value it refuses,
+/// `None` with the value kept for the enclosing section's `extra`.
+/// `section_path` names the key for the warning.
+pub(crate) fn keep_unknown<'de, D, T>(
+    deserializer: D,
+    parent: Option<&'static str>,
+    key: &'static str,
+    section_path: &str,
+    read: fn(Value) -> Result<Option<T>, serde_yaml_ng::Error>,
+) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    if let Ok(known) = read(value.clone()) {
+        return Ok(known);
+    }
+    log::warn!(
+        "config: {section_path}{key} '{}' is not a value this build knows (written by a newer \
+         one?); using the default and keeping the value for the next save",
+        serde_yaml_ng::to_string(&value)
+            .unwrap_or_default()
+            .trim_end()
+    );
+    STASH.with(|stash| {
+        let mut stash = stash.borrow_mut();
+        if stash.depth > 0 {
+            stash.kept.push(Kept { parent, key, value });
+        }
+    });
+    Ok(None)
+}
+
+/// Deserialize a section through `fields` (its derived deserializer),
+/// putting the values its enum fields kept into its `extra` mappings.
 pub(crate) fn deserialize<'de, S, D>(
     deserializer: D,
-    fields: fn(Value) -> Result<S, serde_yaml_ng::Error>,
+    fields: impl FnOnce(D) -> Result<S, D::Error>,
 ) -> Result<S, D::Error>
 where
     S: KeepsUnknownValues,
     D: Deserializer<'de>,
 {
-    let mut value = Value::deserialize(deserializer)?;
-    let mut kept = Vec::new();
-    for key in S::ENUM_KEYS {
-        let map = match key.parent {
-            None => value.as_mapping_mut(),
-            Some(parent) => value.get_mut(parent).and_then(Value::as_mapping_mut),
-        };
-        let Some(map) = map else { continue };
-        if map.get(key.key).is_none_or(key.understood) {
-            continue;
+    /// Closes the section on every exit, an error included.
+    struct Scope(usize);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            STASH.with(|stash| {
+                let mut stash = stash.borrow_mut();
+                stash.depth -= 1;
+                stash.kept.truncate(self.0);
+            });
         }
-        let Some(raw) = map.shift_remove(key.key) else {
-            continue;
-        };
-        log::warn!(
-            "config: {} '{}' is not a value this build knows (written by a newer one?); using \
-             the default and keeping the value for the next save",
-            key_path(S::SECTION, key),
-            serde_yaml_ng::to_string(&raw)
-                .unwrap_or_default()
-                .trim_end()
-        );
-        kept.push((key, raw));
     }
-    let mut section = fields(value).map_err(D::Error::custom)?;
-    for (key, raw) in kept {
-        // The parent mapping held the key, so the section read it.
-        if let Some(extra) = section.extra_mut(key.parent) {
-            extra.insert(Value::String(key.key.to_owned()), raw);
+    let scope = STASH.with(|stash| {
+        let mut stash = stash.borrow_mut();
+        stash.depth += 1;
+        Scope(stash.kept.len())
+    });
+    let mut section = fields(deserializer)?;
+    // A nested section took its own values out before returning: what is
+    // left past the mark is this section's.
+    let kept = STASH.with(|stash| stash.borrow_mut().kept.split_off(scope.0));
+    for Kept { parent, key, value } in kept {
+        if let Some(extra) = section.extra_mut(parent) {
+            extra.insert(Value::String(key.to_owned()), value);
         }
     }
     Ok(section)
@@ -128,11 +171,4 @@ where
         }
     }
     fields(&out, serializer)
-}
-
-fn key_path<S>(section: &str, key: &EnumKey<S>) -> String {
-    match key.parent {
-        Some(parent) => format!("{section}.{parent}.{}", key.key),
-        None => format!("{section}.{}", key.key),
-    }
 }
