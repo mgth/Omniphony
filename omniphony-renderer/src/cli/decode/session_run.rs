@@ -981,6 +981,11 @@ fn run_prepared_render(
     if offline && let Some(renderer) = handler.spatial_renderer.as_mut() {
         renderer.set_synchronous_stage_builds(true);
     }
+    // The band engines (a gain table per crossover band) are built here,
+    // before the first frame, rather than by it.
+    if let Some(renderer) = handler.spatial_renderer.as_mut() {
+        renderer.prepare_speaker_stage()?;
+    }
     // Taken whether the manager starts or not: when it does not, the decoder
     // thread is left the only producer, and the loop below ends once it has
     // delivered the last frame of the input.

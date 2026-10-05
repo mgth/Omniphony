@@ -9,6 +9,7 @@
 use super::*;
 use crate::crossover::SmallBands;
 use crate::ramp_strategy::{PositionRampStrategy, RampRenderParams};
+use crate::render_backend::PreparedRenderEngine;
 use crate::spatial_renderer::tests::{build_table_renderer, noise_block};
 use crate::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
 
@@ -489,9 +490,9 @@ fn mix_is_bit_identical_to_the_sample_major_mix_with_the_fir_crossover() {
     let mut r = build_table_renderer(true, true);
     r.control.live.write().crossover_type = CrossoverType::Fir;
     let topology = r.control.active_topology();
-    let identity = Arc::as_ptr(&topology) as usize;
+    r.speaker_stage.synchronous_builds = true;
     r.speaker_stage
-        .refresh_for_topology(&r.control, identity, &topology.speaker_layout)
+        .refresh_for_topology(&r.control, &topology)
         .unwrap();
     assert!(
         r.speaker_stage
@@ -1044,4 +1045,181 @@ fn stride_stays_close_to_a_lookup_per_sample_on_moving_objects() {
             db(level)
         );
     }
+}
+
+/// Wait until the band worker has answered `n` builds. The outcome is then in
+/// its slot, unless a refresh has taken it already: waiting on the slot itself
+/// would hang whenever the worker beat the test to it.
+fn wait_for_answer(stage: &SpeakerRenderStage, n: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while stage.worker.answered() < n {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never delivered"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// The engine of each band, to tell a band taken over from one built anew.
+fn band_engines(stage: &SpeakerRenderStage) -> Vec<Option<Arc<PreparedRenderEngine>>> {
+    stage
+        .render_bands
+        .iter()
+        .map(|band| band.engine().cloned())
+        .collect()
+}
+
+fn same_engines(
+    a: &[Option<Arc<PreparedRenderEngine>>],
+    b: &[Option<Arc<PreparedRenderEngine>>],
+) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|pair| match pair {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        })
+}
+
+/// A band set that lands after the stage moved back off its key is dropped,
+/// not installed, and asked again if the key returns to it. Built for a
+/// crossover change, it takes the bands of the topology over: no gain table
+/// is sampled for it, and the set dropped kept none of its own alive.
+#[test]
+fn a_band_set_for_a_key_left_behind_is_dropped_and_asked_again() {
+    let mut r = build_table_renderer(true, true);
+    let topology = r.control.active_topology();
+    let first = r.control.live.read().crossover_type;
+    let other = match first {
+        CrossoverType::Lr4 => CrossoverType::Fir,
+        CrossoverType::Fir => CrossoverType::Lr4,
+    };
+    let built = r.speaker_stage.built;
+    let engines = band_engines(&r.speaker_stage);
+    let answered = r.speaker_stage.worker.answered();
+
+    // Ask for the other engine, then go back before it is installed.
+    r.control.live.write().crossover_type = other;
+    assert!(
+        !r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    assert!(r.speaker_stage.rebuild_pending());
+    r.control.live.write().crossover_type = first;
+    assert!(
+        !r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    assert!(!r.speaker_stage.rebuild_pending());
+
+    // It lands, and is dropped: by the refresh above if the worker was that
+    // quick, by this one otherwise.
+    wait_for_answer(&r.speaker_stage, answered + 1);
+    assert!(
+        !r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    assert_eq!(r.speaker_stage.built, built);
+    assert!(!r.speaker_stage.worker.has_finished());
+    assert_eq!(
+        r.control.crossover_info().expect("crossover info").engine,
+        first,
+        "the control names the bank that renders, not the one dropped"
+    );
+
+    // The other engine again: asked again, installed when it lands.
+    r.control.live.write().crossover_type = other;
+    assert!(
+        !r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    assert!(r.speaker_stage.rebuild_pending());
+    wait_for_answer(&r.speaker_stage, answered + 2);
+    assert!(
+        r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    assert!(!r.speaker_stage.rebuild_pending());
+    assert_eq!(r.speaker_stage.built.unwrap().crossover_type, other);
+    assert_eq!(
+        r.control.crossover_info().expect("crossover info").engine,
+        other
+    );
+    assert!(
+        same_engines(&engines, &band_engines(&r.speaker_stage)),
+        "a crossover change takes the band engines over"
+    );
+}
+
+/// A set built by the worker comes with the crossover filter memory of the
+/// channels being filtered when it was asked for, made for its own bank: the
+/// first block mixed on it allocates none (the FIR engine's is large), and
+/// the memory of the bank it replaces is not freed by the render thread.
+#[test]
+fn a_band_set_comes_with_the_filter_memory_of_the_channels_in_use() {
+    const BLOCK: usize = 40;
+    let mut r = build_table_renderer(true, true);
+    // Channel 0: a direct bed, which bypasses the bank. Channels 1 and 2:
+    // objects, which go through it.
+    r.configure_channel_routing(&[ChannelRoute::Direct(bridge_api::RChannelLabel::LFE)]);
+    let events: Vec<SpatialChannelEvent> = (0..3)
+        .map(|channel_idx| SpatialChannelEvent {
+            channel_idx,
+            is_bed: channel_idx == 0,
+            gain_db: Some(0.0),
+            ramp_length: Some(0),
+            size: (channel_idx > 0).then_some([0.0, 0.0, 0.0]),
+            position: (channel_idx > 0).then_some([0.3, 0.5, 0.2]),
+            sample_pos: Some(0),
+        })
+        .collect();
+    r.render_frame(&noise_block(3, BLOCK, 0), 3, &events, Vec::new(), false)
+        .unwrap();
+    let filtered = |stage: &SpeakerRenderStage| -> Vec<bool> {
+        stage
+            .crossover_filter_states
+            .iter()
+            .map(Option::is_some)
+            .collect()
+    };
+    assert_eq!(filtered(&r.speaker_stage), [false, true, true]);
+
+    // The other engine, built by the worker.
+    let topology = r.control.active_topology();
+    let answered = r.speaker_stage.worker.answered();
+    r.control.live.write().crossover_type = CrossoverType::Fir;
+    assert!(
+        !r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    wait_for_answer(&r.speaker_stage, answered + 1);
+    assert!(
+        r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+
+    // Installed, nothing mixed on it yet: the memory is there, and it is the
+    // new bank's.
+    assert_eq!(filtered(&r.speaker_stage), [false, true, true]);
+    let bank = r
+        .speaker_stage
+        .crossover_filter_bank
+        .as_ref()
+        .expect("crossover bank");
+    assert!(matches!(bank, CrossoverBank::Fir(_)));
+    assert!(
+        r.speaker_stage
+            .crossover_filter_states
+            .iter()
+            .flatten()
+            .all(|states| bank.states_compatible(states))
+    );
 }

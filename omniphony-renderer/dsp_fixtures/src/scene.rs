@@ -13,7 +13,7 @@ use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
 // that crate (the `--test` build), whose `RampMode` is a distinct type from the
 // rlib one these fixtures are compiled against. Callers must name the type
 // through this crate or the argument types will not match.
-pub use renderer::live_params::RampMode;
+pub use renderer::live_params::{CrossoverType, RampMode};
 use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
 use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
 use renderer::speaker_layout::SpeakerLayout;

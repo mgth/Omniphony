@@ -470,7 +470,7 @@ impl Engine {
         );
 
         let params = SpatialRendererParams::from_render_config(render_cfg.as_ref());
-        let renderer = build_spatial_renderer(
+        let mut renderer = build_spatial_renderer(
             &params,
             layout,
             sample_rate,
@@ -559,6 +559,11 @@ impl Engine {
             .map(|m| m.as_str().to_string())
             .collect();
         control.set_bridge_supported_drc_modes(supported_drc);
+
+        // The band engines (a gain table per crossover band), now that the
+        // seed above has set the backend and the crossover engine: here, not
+        // on the first frame the player pulls.
+        renderer.prepare_speaker_stage()?;
 
         let engine = Self::new(bridge, renderer, sample_rate);
         log::info!(
