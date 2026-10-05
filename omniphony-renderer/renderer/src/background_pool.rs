@@ -24,6 +24,10 @@
 //! the global pool: the render thread's synchronous builds (the first band
 //! set, offline renders), engine start-up. Making it wait on idle threads
 //! would only stretch the wait.
+//!
+//! No thread is ever moved back out of the idle class: without privilege
+//! Linux refuses it (see [`run_in_background`]). A thread that serves other
+//! work hands its background build to a short-lived thread instead.
 
 use std::cell::Cell;
 use std::sync::OnceLock;
@@ -50,27 +54,35 @@ fn pool() -> &'static rayon::ThreadPool {
 /// Put the calling thread at background priority for the rest of its life.
 /// For threads that do nothing but background work.
 pub fn enter_background() {
-    set_idle_priority(true);
+    set_idle_priority();
     BACKGROUND.with(|b| b.set(true));
 }
 
-/// Run `work` on the calling thread at background priority, then restore
+/// Run `work` at background priority on a thread of its own, and wait for
 /// it. For a thread that serves other requests too (the OSC control thread
-/// building the gain table the Studio displays).
-pub fn as_background<T>(work: impl FnOnce() -> T) -> T {
+/// building the gain table the Studio displays): the caller keeps its
+/// priority throughout.
+///
+/// A thread is never moved back out of the idle class. Without privilege,
+/// Linux refuses that (`EPERM`) unless `RLIMIT_NICE` allows the nice value,
+/// and its default of 0 does not: a caller lowered in place would stay at
+/// idle priority for good. The short-lived thread is lowered instead, and
+/// ends with the work.
+pub fn run_in_background<T: Send>(work: impl FnOnce() -> T + Send) -> T {
     if BACKGROUND.with(Cell::get) {
         return work();
     }
-    struct Restore;
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            BACKGROUND.with(|b| b.set(false));
-            set_idle_priority(false);
-        }
-    }
-    enter_background();
-    let _restore = Restore;
-    work()
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("background-build".into())
+            .spawn_scoped(scope, || {
+                enter_background();
+                work()
+            })
+            .expect("spawn a background build thread")
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
 }
 
 /// Run `build` with its rayon loops on the pool that matches the calling
@@ -87,19 +99,13 @@ pub fn install<T: Send>(build: impl FnOnce() -> T + Send) -> T {
     pool().install(build)
 }
 
-/// Move the calling thread into the idle scheduling class, or back to the
-/// normal one. Linux applies it to the calling thread alone; leaving the idle
-/// class needs no privilege as long as the nice value stays where it was.
+/// Move the calling thread into the idle scheduling class (Linux applies it
+/// to the calling thread alone). One way only: see [`run_in_background`].
 #[cfg(target_os = "linux")]
-fn set_idle_priority(idle: bool) {
+fn set_idle_priority() {
     let param = libc::sched_param { sched_priority: 0 };
-    let policy = if idle {
-        libc::SCHED_IDLE
-    } else {
-        libc::SCHED_OTHER
-    };
     // SAFETY: `param` is a valid sched_param; pid 0 is the calling thread.
-    if unsafe { libc::sched_setscheduler(0, policy, &param) } != 0 {
+    if unsafe { libc::sched_setscheduler(0, libc::SCHED_IDLE, &param) } != 0 {
         log::debug!(
             "background thread priority not changed: {}",
             std::io::Error::last_os_error()
@@ -108,7 +114,7 @@ fn set_idle_priority(idle: bool) {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn set_idle_priority(_idle: bool) {}
+fn set_idle_priority() {}
 
 #[cfg(test)]
 mod tests {
@@ -164,14 +170,21 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn as_background_restores_the_normal_class() {
+    fn run_in_background_leaves_the_caller_in_its_class() {
         let (during, after) = std::thread::spawn(|| {
-            let during = as_background(policy);
+            let during = run_in_background(policy);
             (during, policy())
         })
         .join()
         .unwrap();
         assert_eq!(during, libc::SCHED_IDLE);
         assert_eq!(after, libc::SCHED_OTHER);
+    }
+
+    #[test]
+    fn run_in_background_uses_the_background_pool() {
+        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let threads = run_in_background(|| install(rayon::current_num_threads));
+        assert_eq!(threads, cpus.saturating_sub(1).max(1));
     }
 }
