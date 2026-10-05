@@ -1,4 +1,5 @@
-use abi_stable::library::RootModule;
+use abi_stable::library::{RootModule, lib_header_from_path};
+use abi_stable::sabi_types::VersionNumber;
 use abi_stable::std_types::RStr;
 use anyhow::{Context, Result, bail};
 use bridge_api::{
@@ -26,6 +27,7 @@ impl LoadedBridge {
     /// Format-specific options (e.g. presentation index) are applied afterwards via
     /// [`FormatBridgeBox::configure`] before the first [`FormatBridgeBox::push_packet`].
     pub fn load_with_params(path: &Path) -> Result<Self> {
+        check_bridge_api_version(path)?;
         let lib = BridgeLibRef::load_from_file(path)
             .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
         let bridge = open_bridge(&lib);
@@ -54,6 +56,68 @@ impl LoadedBridge {
     pub fn preferred_vbap_table_mode(&self) -> RVbapTableMode {
         self.bridge.preferred_vbap_table_mode()
     }
+}
+
+/// Refuse a plugin built against another `bridge_api` minor than this host,
+/// with a message naming both versions (`BRIDGE_API.md`, "Versioning").
+///
+/// abi_stable compares layouts before versions, and its layout check refuses
+/// any type whose package minor differs from the host's: left to itself, a
+/// plugin of another minor fails with a layout error ("too many fields",
+/// "package version") that says nothing a user can act on. So the version
+/// the plugin declares in its header is read first.
+fn check_bridge_api_version(path: &Path) -> Result<()> {
+    let header = lib_header_from_path(path)
+        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
+    let bridge = header.version_strings().parsed().with_context(|| {
+        format!(
+            "Bridge plugin {} has no valid bridge_api version",
+            path.display()
+        )
+    })?;
+    let host = host_bridge_api_version();
+    if let Err(reason) = bridge_api_compatible(host, bridge) {
+        bail!(
+            "Bridge plugin {} cannot be loaded: {reason}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// The `bridge_api` version this host was built against.
+pub fn host_bridge_api_version() -> VersionNumber {
+    BridgeLibRef::VERSION_STRINGS
+        .parsed()
+        .expect("bridge_api's own version parses")
+}
+
+/// The rule of `BRIDGE_API.md` ("Versioning"): a bridge loads in a host built
+/// against the same `bridge_api` minor (the patch does not matter, a patch
+/// release never changes the ABI). Older and newer minors are both refused:
+/// abi_stable refuses them anyway, this only says why.
+fn bridge_api_compatible(host: VersionNumber, bridge: VersionNumber) -> Result<(), String> {
+    if host.major == bridge.major && host.minor == bridge.minor {
+        return Ok(());
+    }
+    let (series, advice) = if (bridge.major, bridge.minor) < (host.major, host.minor) {
+        (
+            "older",
+            "install the bridge released with this version of Omniphony, or rebuild the bridge against it",
+        )
+    } else {
+        (
+            "newer",
+            "update the host (Omniphony, or the player's liborender) to the release that bridge was built for, \
+             or use a bridge built against this host",
+        )
+    };
+    Err(format!(
+        "it was built against bridge_api {bridge}, {series} than the bridge_api {}.{}.x this host \
+         loads; a bridge loads only in a host built against the same bridge_api minor version, \
+         so {advice}",
+        host.major, host.minor
+    ))
 }
 
 /// One more bridge instance from an already-loaded plugin, its logs routed to
@@ -366,6 +430,54 @@ mod tests {
         ));
         fs::write(&p, b"x").unwrap();
         p
+    }
+
+    fn version(major: u32, minor: u32, patch: u32) -> VersionNumber {
+        VersionNumber {
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    #[test]
+    fn a_bridge_of_the_same_minor_loads_whatever_its_patch() {
+        let host = version(0, 5, 2);
+        assert!(bridge_api_compatible(host, version(0, 5, 0)).is_ok());
+        assert!(bridge_api_compatible(host, version(0, 5, 7)).is_ok());
+    }
+
+    #[test]
+    fn an_older_minor_is_refused_naming_both_versions() {
+        let err = bridge_api_compatible(version(0, 5, 0), version(0, 4, 0)).unwrap_err();
+        assert!(err.contains("bridge_api 0.4.0"), "{err}");
+        assert!(err.contains("0.5.x"), "{err}");
+        assert!(err.contains("older"), "{err}");
+        assert!(err.contains("rebuild the bridge"), "{err}");
+    }
+
+    #[test]
+    fn a_newer_minor_or_another_major_is_refused() {
+        let err = bridge_api_compatible(version(0, 5, 0), version(0, 6, 0)).unwrap_err();
+        assert!(
+            err.contains("bridge_api 0.6.0") && err.contains("newer"),
+            "{err}"
+        );
+        assert!(bridge_api_compatible(version(1, 0, 0), version(0, 5, 0)).is_err());
+        assert!(bridge_api_compatible(version(0, 5, 0), version(1, 5, 0)).is_err());
+    }
+
+    /// A file that is not an abi_stable plugin fails on its header, before
+    /// anything of it is called, and the error names the file.
+    #[test]
+    fn a_file_that_is_no_plugin_is_refused_with_its_path() {
+        let f = tmp_bridge("notaplugin");
+        let err = LoadedBridge::load_with_params(&f).err().expect("refused");
+        fs::remove_file(&f).ok();
+        assert!(
+            format!("{err:#}").contains(&f.display().to_string()),
+            "{err:#}"
+        );
     }
 
     #[test]
