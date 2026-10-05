@@ -22,10 +22,15 @@
 //! bridge" while a capture stream is running.
 //!
 //! - A capture stream can only drain through its [`CaptureDrainClock`], which
-//!   takes the drain before it moves a sample: from the first chunk the
-//!   stream receives in the streaming state.
-//! - It gives the drain back when the stream leaves the streaming state (its
-//!   client paused or left), and when it is dropped with the stream.
+//!   takes the drain before it moves a sample, with each chunk the stream
+//!   receives in the streaming state.
+//! - Its hold lapses when the stream has delivered nothing for
+//!   [`CAPTURE_SILENCE_LIMIT`]: a client can keep a stream streaming and send
+//!   it nothing, and a stream that clocks nothing must not keep the tokens
+//!   out. The next chunk takes the drain back.
+//! - It gives the drain back at once when the stream leaves the streaming
+//!   state (its client paused or left), and when it is dropped with the
+//!   stream.
 //! - The token clock is only handed the pacer while no capture stream holds
 //!   the drain ([`InputControl::token_drain_pacer`]), and it asks again with
 //!   the drain's ends in hand ([`TokenDrainPacer::drain`]), so it cannot come
@@ -40,8 +45,19 @@
 
 use crate::InputControl;
 use audio_output::PacerHandle;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// How long a capture stream may hold the drain without receiving a chunk.
+/// Past it the stream is not clocking anything, and the token clock drains.
+///
+/// Above the longest gap between two chunks of a stream that is delivering:
+/// a chunk is a graph cycle, at most 8192 frames (PipeWire's default
+/// `clock.quantum-limit`), 171 ms at 48 kHz. Below the 250 ms without a real
+/// frame after which the speaker-test idle feed starts, so that a test
+/// started in front of a silent stream is drained from its first token.
+pub const CAPTURE_SILENCE_LIMIT: Duration = Duration::from_millis(200);
 
 /// The output pacer as the input side holds it: the handle of the current
 /// audio output, and whether a capture stream is its drain clock.
@@ -49,15 +65,23 @@ pub(crate) struct OutputPacerDrain {
     /// Installed by the writer lifecycle once the output exists; `None` while
     /// there is no output, or one built with pacing off.
     pacer: Mutex<Option<PacerHandle>>,
-    /// Capture streams that are delivering chunks: the capture is the drain
-    /// clock while this is not zero. A count rather than a flag, so that a
-    /// stream standing down gives back its own hold and no other. (It does
-    /// not go above one today: the live-input manager joins a capture stream
-    /// before it starts the next.)
+    /// Capture streams that hold the drain: streaming, and a chunk received
+    /// since they last started to. The capture is the drain clock while this
+    /// is not zero and `last_chunk_us` is recent. A count rather than a flag,
+    /// so that a stream standing down gives back its own hold and no other.
+    /// (It does not go above one today: the live-input manager joins a
+    /// capture stream before it starts the next.)
     ///
     /// It belongs to the input, not to the handle: a capture stream outlives
     /// the audio outputs that are rebuilt under it.
     delivering_captures: AtomicUsize,
+    /// When a capture stream last received a chunk, in microseconds since
+    /// `epoch`. Written before `delivering_captures` is raised and before
+    /// each transfer, so whoever sees a stream counted, or comes after one of
+    /// its transfers, also sees the chunk that goes with it.
+    last_chunk_us: AtomicU64,
+    /// What `last_chunk_us` counts from.
+    epoch: Instant,
 }
 
 impl OutputPacerDrain {
@@ -65,6 +89,8 @@ impl OutputPacerDrain {
         Self {
             pacer: Mutex::new(None),
             delivering_captures: AtomicUsize::new(0),
+            last_chunk_us: AtomicU64::new(0),
+            epoch: Instant::now(),
         }
     }
 
@@ -85,8 +111,17 @@ impl OutputPacerDrain {
         self.pacer.lock().ok().and_then(|guard| guard.clone())
     }
 
-    fn capture_is_clock(&self) -> bool {
+    fn micros(&self, at: Instant) -> u64 {
+        at.saturating_duration_since(self.epoch).as_micros() as u64
+    }
+
+    /// Whether a capture stream holds the drain at `now_us`: one is counted
+    /// as delivering, and its last chunk is not older than the silence limit.
+    /// A chunk stamped after `now_us` was taken counts as just arrived.
+    fn capture_is_clock(&self, now_us: u64) -> bool {
         self.delivering_captures.load(Ordering::Acquire) != 0
+            && now_us.saturating_sub(self.last_chunk_us.load(Ordering::Acquire))
+                < CAPTURE_SILENCE_LIMIT.as_micros() as u64
     }
 
     pub(crate) fn for_capture(self: &Arc<Self>) -> CaptureDrainClock {
@@ -97,12 +132,17 @@ impl OutputPacerDrain {
         }
     }
 
-    pub(crate) fn for_tokens(&self) -> Option<TokenDrainPacer<'_>> {
-        if self.capture_is_clock() {
+    pub(crate) fn for_tokens(&self, now: Instant) -> Option<TokenDrainPacer<'_>> {
+        let now_us = self.micros(now);
+        if self.capture_is_clock(now_us) {
             return None;
         }
         let pacer = self.pacer()?;
-        Some(TokenDrainPacer { pacer, drain: self })
+        Some(TokenDrainPacer {
+            pacer,
+            drain: self,
+            now_us,
+        })
     }
 }
 
@@ -129,9 +169,9 @@ impl CaptureDrainClock {
         }
     }
 
-    /// A chunk of `in_frames` frames at `in_rate_hz` arrived: this stream is
-    /// delivering, so it is the drain clock from here on, and the pacer is
-    /// drained by what the chunk lasts.
+    /// A chunk of `in_frames` frames at `in_rate_hz` arrived at `now`: this
+    /// stream is delivering, so it is the drain clock from here on, and the
+    /// pacer is drained by what the chunk lasts.
     ///
     /// Strict 1:1 between input-chunk duration and ring-write duration: the
     /// ring sees a smooth stream regardless of the decoder's burst pattern.
@@ -139,16 +179,21 @@ impl CaptureDrainClock {
     /// and until it is primed.
     ///
     /// A chunk handed over after the stream left the streaming state (it was
-    /// already queued) neither drains nor takes the drain back: nothing would
-    /// give it back again before the stream next stops.
+    /// already queued) neither drains nor takes the drain back: the stream is
+    /// not delivering again, and the hold would keep the tokens out until it
+    /// lapsed.
     ///
     /// Returns whether a drain went through. It does not for such a chunk,
     /// when the output has no pacer, or when a token drain was still in
     /// progress.
-    pub fn chunk_arrived(&mut self, in_frames: u64, in_rate_hz: u32) -> bool {
+    pub fn chunk_arrived(&mut self, now: Instant, in_frames: u64, in_rate_hz: u32) -> bool {
         if !self.streaming {
             return false;
         }
+        // Before the count and before the transfer: see `last_chunk_us`.
+        self.drain
+            .last_chunk_us
+            .store(self.drain.micros(now), Ordering::Release);
         if !self.delivering {
             self.delivering = true;
             self.drain
@@ -187,6 +232,8 @@ impl Drop for CaptureDrainClock {
 pub struct TokenDrainPacer<'a> {
     pacer: PacerHandle,
     drain: &'a OutputPacerDrain,
+    /// When this was handed out, in the drain's microseconds.
+    now_us: u64,
 }
 
 impl TokenDrainPacer<'_> {
@@ -201,16 +248,18 @@ impl TokenDrainPacer<'_> {
     }
 
     /// Move `drain_samples` from the pacer FIFO to the ring, unless a capture
-    /// stream has become the clock since this was handed out.
+    /// stream has become the clock since this was handed out: a first chunk,
+    /// or the chunk that ends a silence.
     ///
     /// That is checked with the drain's ends held. A capture stream takes the
-    /// drain before its first transfer, so once one of its transfers has gone
+    /// drain before each transfer, so once one of its transfers has gone
     /// through, every token drain that comes after it sees the capture
-    /// holding the drain, and moves nothing. Returns whether this one went
+    /// holding the drain, and moves nothing, until the stream has been silent
+    /// for [`CAPTURE_SILENCE_LIMIT`] again. Returns whether this one went
     /// through.
     pub fn drain(&self, drain_samples: usize) -> bool {
         self.pacer
-            .drain_if(drain_samples, || !self.drain.capture_is_clock())
+            .drain_if(drain_samples, || !self.drain.capture_is_clock(self.now_us))
     }
 }
 
@@ -222,10 +271,10 @@ impl InputControl {
         self.pacer_drain.for_capture()
     }
 
-    /// The output pacer for the token clock to drain: `None` when the output
-    /// has no pacer, and while a capture stream is the drain clock.
-    pub fn token_drain_pacer(&self) -> Option<TokenDrainPacer<'_>> {
-        self.pacer_drain.for_tokens()
+    /// The output pacer for the token clock to drain at `now`: `None` when
+    /// the output has no pacer, and while a capture stream is the drain clock.
+    pub fn token_drain_pacer(&self, now: Instant) -> Option<TokenDrainPacer<'_>> {
+        self.pacer_drain.for_tokens(now)
     }
 }
 
@@ -235,7 +284,6 @@ mod tests {
     use crate::{InputBackend, InputMode};
     use audio_output::pacer::PacerDrainEnds;
     use audio_output::ring_buffer_io::{RingReader, RingWriter, sample_ring};
-    use std::sync::atomic::AtomicU64;
 
     const RATE: u32 = 48_000;
     const CHANNELS: u32 = 2;
@@ -269,11 +317,17 @@ mod tests {
     }
 
     /// An input with `output`'s pacer installed, as the writer lifecycle
-    /// leaves it.
-    fn input_with(output: &Output) -> InputControl {
+    /// leaves it, and the instant the test counts from. Every instant of a
+    /// test is that one plus so many milliseconds: nothing here depends on
+    /// how long the test takes to run.
+    fn input_with(output: &Output) -> (InputControl, Instant) {
         let control = InputControl::default();
         control.install_output_pacer(output.pacer.clone());
-        control
+        (control, Instant::now())
+    }
+
+    fn ms(count: u64) -> Duration {
+        Duration::from_millis(count)
     }
 
     fn render(output: &mut Output, samples: usize) {
@@ -303,9 +357,9 @@ mod tests {
     #[test]
     fn the_token_clock_drains_while_no_capture_stream_delivers() {
         let mut output = output();
-        let input = input_with(&output);
+        let (input, t0) = input_with(&output);
         render(&mut output, QUANTUM);
-        let tokens = input.token_drain_pacer().expect("no capture stream at all");
+        let tokens = input.token_drain_pacer(t0).expect("no capture stream");
         assert_eq!((tokens.out_sample_rate(), tokens.out_channels()), (RATE, 2));
         assert!(tokens.drain(QUANTUM));
         assert_eq!(played(&mut output), vec![0.5; QUANTUM]);
@@ -314,7 +368,7 @@ mod tests {
         for streaming in [false, true] {
             capture.set_streaming(streaming);
             render(&mut output, QUANTUM);
-            let tokens = input.token_drain_pacer().expect("nothing delivered");
+            let tokens = input.token_drain_pacer(t0).expect("nothing delivered");
             assert!(tokens.drain(QUANTUM));
             assert_eq!(played(&mut output), vec![0.5; QUANTUM]);
         }
@@ -326,17 +380,17 @@ mod tests {
     #[test]
     fn a_delivering_capture_stream_is_the_only_drain_clock() {
         let mut output = output();
-        let input = input_with(&output);
+        let (input, t0) = input_with(&output);
         let mut capture = streaming_capture(&input);
 
         render(&mut output, QUANTUM);
-        assert!(capture.chunk_arrived(CHUNK_FRAMES, RATE));
+        assert!(capture.chunk_arrived(t0, CHUNK_FRAMES, RATE));
         assert_eq!(played(&mut output), vec![0.5; QUANTUM]);
 
         render(&mut output, QUANTUM);
-        assert!(input.token_drain_pacer().is_none());
+        assert!(input.token_drain_pacer(t0 + ms(5)).is_none());
         assert_eq!(output.fifo.fill(), QUANTUM, "left for the capture clock");
-        assert!(capture.chunk_arrived(CHUNK_FRAMES, RATE));
+        assert!(capture.chunk_arrived(t0 + ms(10), CHUNK_FRAMES, RATE));
         assert_eq!(played(&mut output), vec![0.5; QUANTUM]);
         assert_eq!(total(&output.pacer.diag_drain_total), 2.0 * QUANTUM as f64);
         assert_eq!(total(&output.pacer.diag_underrun_total), 0.0);
@@ -348,12 +402,12 @@ mod tests {
     #[test]
     fn a_token_drain_overtaken_by_a_capture_stream_moves_nothing() {
         let mut output = output();
-        let input = input_with(&output);
+        let (input, t0) = input_with(&output);
         let mut capture = streaming_capture(&input);
         render(&mut output, 2 * QUANTUM);
 
-        let tokens = input.token_drain_pacer().expect("nothing delivered yet");
-        assert!(capture.chunk_arrived(CHUNK_FRAMES, RATE));
+        let tokens = input.token_drain_pacer(t0).expect("nothing delivered yet");
+        assert!(capture.chunk_arrived(t0 + ms(1), CHUNK_FRAMES, RATE));
         assert!(!tokens.drain(QUANTUM));
 
         assert_eq!(output.fifo.fill(), QUANTUM, "one drain went through");
@@ -363,42 +417,109 @@ mod tests {
 
     /// The drain goes back to the token clock when the stream leaves the
     /// streaming state, returns to the capture with the first chunk after it
-    /// streams again, and goes back for good when the stream is gone.
+    /// streams again, and goes back for good when the stream is gone. None of
+    /// it waits for the silence limit.
     #[test]
     fn a_capture_stream_gives_the_drain_back_when_it_stops_streaming() {
         let output = output();
-        let input = input_with(&output);
+        let (input, t0) = input_with(&output);
         let mut capture = streaming_capture(&input);
 
-        capture.chunk_arrived(CHUNK_FRAMES, RATE);
-        assert!(input.token_drain_pacer().is_none());
+        capture.chunk_arrived(t0, CHUNK_FRAMES, RATE);
+        assert!(input.token_drain_pacer(t0).is_none());
         capture.set_streaming(false);
-        assert!(input.token_drain_pacer().is_some(), "client paused");
+        assert!(input.token_drain_pacer(t0).is_some(), "client paused");
         capture.set_streaming(true);
-        assert!(input.token_drain_pacer().is_some(), "nothing delivered yet");
-        capture.chunk_arrived(CHUNK_FRAMES, RATE);
-        assert!(input.token_drain_pacer().is_none(), "client resumed");
+        assert!(
+            input.token_drain_pacer(t0).is_some(),
+            "nothing delivered yet"
+        );
+        capture.chunk_arrived(t0 + ms(1), CHUNK_FRAMES, RATE);
+        assert!(input.token_drain_pacer(t0 + ms(1)).is_none(), "resumed");
         drop(capture);
-        assert!(input.token_drain_pacer().is_some(), "stream torn down");
+        assert!(input.token_drain_pacer(t0 + ms(1)).is_some(), "torn down");
+    }
+
+    /// A client can keep its stream in the streaming state and send it
+    /// nothing. The stream then clocks nothing, and must not keep out the
+    /// tokens of what does play (the input pipe, a speaker test): past the
+    /// silence limit they drain, and nothing is left in the FIFO.
+    #[test]
+    fn a_stream_that_stops_delivering_while_streaming_lets_the_tokens_drain() {
+        let mut output = output();
+        let (input, t0) = input_with(&output);
+        let mut capture = streaming_capture(&input);
+        render(&mut output, QUANTUM);
+        assert!(capture.chunk_arrived(t0, CHUNK_FRAMES, RATE));
+        assert_eq!(played(&mut output).len(), QUANTUM);
+
+        // Within the limit the stream may just be between two chunks.
+        let just_short = t0 + CAPTURE_SILENCE_LIMIT - ms(1);
+        assert!(input.token_drain_pacer(just_short).is_none());
+
+        // Past it, with no state change: 20 tokens of 10 ms each.
+        for token in 0..20 {
+            render(&mut output, QUANTUM);
+            let at = t0 + CAPTURE_SILENCE_LIMIT + ms(10 * token);
+            let tokens = input.token_drain_pacer(at).expect("stream silent");
+            assert!(tokens.drain(QUANTUM), "token {token}");
+            assert_eq!(played(&mut output), vec![0.5; QUANTUM], "token {token}");
+        }
+        assert_eq!(output.fifo.fill(), 0, "nothing left in the FIFO");
+        assert_eq!(total(&output.pacer.diag_underrun_total), 0.0);
+    }
+
+    /// When the chunks come back the capture has the drain again from that
+    /// chunk on: a token later than it is refused the pacer, and one that was
+    /// handed the pacer during the silence and drains after the chunk moves
+    /// nothing.
+    #[test]
+    fn a_stream_that_delivers_again_takes_the_drain_back_with_its_chunk() {
+        let mut output = output();
+        let (input, t0) = input_with(&output);
+        let mut capture = streaming_capture(&input);
+        capture.chunk_arrived(t0, CHUNK_FRAMES, RATE);
+        let silent = t0 + CAPTURE_SILENCE_LIMIT + ms(300);
+        let drained = total(&output.pacer.diag_drain_total);
+
+        render(&mut output, 2 * QUANTUM);
+        let handed_out_during_the_silence = input.token_drain_pacer(silent).expect("silent");
+        assert!(capture.chunk_arrived(silent + ms(1), CHUNK_FRAMES, RATE));
+        assert!(!handed_out_during_the_silence.drain(QUANTUM));
+        assert!(input.token_drain_pacer(silent + ms(2)).is_none());
+        assert_eq!(
+            total(&output.pacer.diag_drain_total),
+            drained + QUANTUM as f64,
+            "the chunk's drain only"
+        );
+
+        // And it keeps it for as long as chunks keep coming, however long
+        // after the first one.
+        for chunk in 1..=50 {
+            let at = silent + ms(1 + 10 * chunk);
+            capture.chunk_arrived(at, CHUNK_FRAMES, RATE);
+            assert!(input.token_drain_pacer(at + ms(9)).is_none(), "{chunk}");
+        }
     }
 
     /// A chunk that was queued when the stream paused is handed over after
-    /// the pause. It must not take the drain back: no state change would
-    /// follow to release it, and the token clock would stay out for the whole
-    /// pause.
+    /// the pause. It must not take the drain back: it is not the stream
+    /// delivering again.
     #[test]
     fn a_chunk_left_over_from_before_a_pause_does_not_take_the_drain_back() {
         let mut output = output();
-        let input = input_with(&output);
+        let (input, t0) = input_with(&output);
         let mut capture = streaming_capture(&input);
-        capture.chunk_arrived(CHUNK_FRAMES, RATE);
+        capture.chunk_arrived(t0, CHUNK_FRAMES, RATE);
         capture.set_streaming(false);
         let drained = total(&output.pacer.diag_drain_total);
 
         render(&mut output, QUANTUM);
-        assert!(!capture.chunk_arrived(CHUNK_FRAMES, RATE));
+        assert!(!capture.chunk_arrived(t0 + ms(1), CHUNK_FRAMES, RATE));
         assert_eq!(total(&output.pacer.diag_drain_total), drained);
-        let tokens = input.token_drain_pacer().expect("still the token clock's");
+        let tokens = input
+            .token_drain_pacer(t0 + ms(2))
+            .expect("still the token clock's");
         assert!(tokens.drain(QUANTUM));
     }
 
@@ -408,18 +529,21 @@ mod tests {
     #[test]
     fn a_stream_going_away_leaves_its_successor_the_drain() {
         let output = output();
-        let input = input_with(&output);
+        let (input, t0) = input_with(&output);
         let mut old = streaming_capture(&input);
         let mut new = streaming_capture(&input);
 
-        old.chunk_arrived(CHUNK_FRAMES, RATE);
-        new.chunk_arrived(CHUNK_FRAMES, RATE);
+        old.chunk_arrived(t0, CHUNK_FRAMES, RATE);
+        new.chunk_arrived(t0, CHUNK_FRAMES, RATE);
         old.set_streaming(false);
         old.set_streaming(false);
         drop(old);
-        assert!(input.token_drain_pacer().is_none(), "the new one delivers");
+        assert!(
+            input.token_drain_pacer(t0).is_none(),
+            "the new one delivers"
+        );
         new.set_streaming(false);
-        assert!(input.token_drain_pacer().is_some());
+        assert!(input.token_drain_pacer(t0).is_some());
     }
 
     /// The hold is the input's, not the output's: it is taken without a
@@ -428,26 +552,27 @@ mod tests {
     #[test]
     fn the_capture_keeps_the_drain_across_audio_outputs() {
         let input = InputControl::default();
+        let t0 = Instant::now();
         let mut capture = streaming_capture(&input);
         assert!(
-            !capture.chunk_arrived(CHUNK_FRAMES, RATE),
+            !capture.chunk_arrived(t0, CHUNK_FRAMES, RATE),
             "no pacer to drain"
         );
 
         let mut first = output();
         input.install_output_pacer(first.pacer.clone());
-        assert!(input.token_drain_pacer().is_none());
+        assert!(input.token_drain_pacer(t0).is_none());
         render(&mut first, QUANTUM);
-        assert!(capture.chunk_arrived(CHUNK_FRAMES, RATE));
+        assert!(capture.chunk_arrived(t0 + ms(10), CHUNK_FRAMES, RATE));
         assert_eq!(played(&mut first).len(), QUANTUM);
 
         input.clear_output_pacer();
-        assert!(!capture.chunk_arrived(CHUNK_FRAMES, RATE));
+        assert!(!capture.chunk_arrived(t0 + ms(20), CHUNK_FRAMES, RATE));
         let mut second = output();
         input.install_output_pacer(second.pacer.clone());
-        assert!(input.token_drain_pacer().is_none());
+        assert!(input.token_drain_pacer(t0 + ms(20)).is_none());
         render(&mut second, QUANTUM);
-        assert!(capture.chunk_arrived(CHUNK_FRAMES, RATE));
+        assert!(capture.chunk_arrived(t0 + ms(30), CHUNK_FRAMES, RATE));
         assert_eq!(played(&mut second).len(), QUANTUM);
         assert_eq!(total(&first.pacer.diag_drain_total), QUANTUM as f64);
     }
@@ -457,12 +582,22 @@ mod tests {
     #[test]
     fn a_chunk_is_drained_for_what_it_lasts() {
         let mut output = output();
-        let input = input_with(&output);
+        let (input, t0) = input_with(&output);
         let mut capture = streaming_capture(&input);
         render(&mut output, QUANTUM);
-        assert!(capture.chunk_arrived(1_920, 192_000));
+        assert!(capture.chunk_arrived(t0, 1_920, 192_000));
         assert_eq!(played(&mut output).len(), QUANTUM);
         assert_eq!(total(&output.pacer.diag_drain_total), QUANTUM as f64);
+    }
+
+    /// A stream that delivers is never taken for a silent one: the limit is
+    /// longer than the longest graph cycle, PipeWire's quantum limit at the
+    /// lowest of the usual rates. (That it is shorter than the idle feed's
+    /// holdoff is held next to that holdoff, in the renderer's `idle_feed`.)
+    #[test]
+    fn the_silence_limit_is_longer_than_a_graph_cycle() {
+        let longest_cycle = Duration::from_secs_f64(8192.0 / 44_100.0);
+        assert!(CAPTURE_SILENCE_LIMIT > longest_cycle);
     }
 
     /// The applied input state has no say. It reads "pipe bridge" in PipeWire
@@ -471,10 +606,10 @@ mod tests {
     #[test]
     fn the_applied_input_state_does_not_pick_the_clock() {
         let output = output();
-        let input = input_with(&output);
+        let (input, t0) = input_with(&output);
         let mut capture = streaming_capture(&input);
 
-        capture.chunk_arrived(CHUNK_FRAMES, RATE);
+        capture.chunk_arrived(t0, CHUNK_FRAMES, RATE);
         input.set_input_state(
             InputMode::Bridge,
             None,
@@ -484,7 +619,7 @@ mod tests {
             None,
             Some("bridge-decoded".to_string()),
         );
-        assert!(input.token_drain_pacer().is_none());
+        assert!(input.token_drain_pacer(t0).is_none());
 
         capture.set_streaming(false);
         input.set_input_state(
@@ -496,6 +631,6 @@ mod tests {
             Some("Omniphony Bridge Input".to_string()),
             Some("pipewire-iec61937".to_string()),
         );
-        assert!(input.token_drain_pacer().is_some());
+        assert!(input.token_drain_pacer(t0).is_some());
     }
 }

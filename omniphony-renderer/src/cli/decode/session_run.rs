@@ -829,18 +829,23 @@ impl PacerTokenClock {
         }
     }
 
-    /// Drain `emitted_us` of output, if the drain is this clock's.
+    /// Drain `emitted_us` of output for a token received at `now`, if the
+    /// drain is this clock's.
     ///
     /// It is not while a capture stream delivers: the capture clock drains
     /// then, and the token is dropped (`audio_input::pacer_drain`). Neither
     /// the requested input mode nor the applied one is consulted: both can
     /// read "pipe bridge" with a capture stream running.
-    fn on_token(&mut self, input_control: &audio_input::InputControl, emitted_us: u64) {
-        let Some(pacer) = input_control.token_drain_pacer() else {
+    fn on_token(
+        &mut self,
+        input_control: &audio_input::InputControl,
+        emitted_us: u64,
+        now: std::time::Instant,
+    ) {
+        let Some(pacer) = input_control.token_drain_pacer(now) else {
             self.frac_frames = 0.0;
             return;
         };
-        let now = std::time::Instant::now();
         let drain_dt_us = self
             .last_drain_at
             .map(|prev| now.saturating_duration_since(prev).as_micros() as u64)
@@ -906,7 +911,7 @@ fn spawn_pacer_drain_thread(
                     Err(mpsc::RecvTimeoutError::Timeout) => continue,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
-                clock.on_token(&input_control, emitted_us);
+                clock.on_token(&input_control, emitted_us, std::time::Instant::now());
             }
         })
         .expect("failed to spawn pacer drain thread")
@@ -1353,6 +1358,10 @@ mod tests {
         pacer: audio_output::PacerHandle,
         fifo: audio_output::ring_buffer_io::RingWriter,
         ring: audio_output::ring_buffer_io::RingReader,
+        /// The instant the test counts from. Every chunk and token of a test
+        /// arrives at this one plus so many milliseconds: nothing depends on
+        /// how long the test takes to run.
+        t0: std::time::Instant,
     }
 
     impl PacedOutput {
@@ -1378,7 +1387,12 @@ mod tests {
                 pacer,
                 fifo,
                 ring,
+                t0: std::time::Instant::now(),
             }
+        }
+
+        fn at_ms(&self, ms: u64) -> std::time::Instant {
+            self.t0 + Duration::from_millis(ms)
         }
 
         /// The renderer writes 10 ms.
@@ -1476,7 +1490,10 @@ mod tests {
         let mut capture = output.input.capture_drain_clock();
         capture.set_streaming(true);
         output.render_quantum();
-        assert!(capture.chunk_arrived(CHUNK_FRAMES, PACER_RATE));
+        // The thread reads the time itself. A chunk dated an hour ahead keeps
+        // the stream delivering for as long as the thread takes to run.
+        let in_an_hour = output.at_ms(3_600_000);
+        assert!(capture.chunk_arrived(in_an_hour, CHUNK_FRAMES, PACER_RATE));
         // What the handler writes on the first bitstream frame.
         output.apply_bridge_decoded_state();
         assert_eq!(output.played(), (QUANTUM, 0));
@@ -1511,9 +1528,9 @@ mod tests {
                 output.input.capture_drain_clock()
             });
             let mut tokens = pacer_token_clock();
-            for _ in 0..20 {
+            for step in 0..20 {
                 output.render_quantum();
-                tokens.on_token(&output.input, TOKEN_US);
+                tokens.on_token(&output.input, TOKEN_US, output.at_ms(10 * step));
             }
             assert_eq!(output.played(), (20 * QUANTUM, 0), "{pipewire_mode}");
             assert_eq!(output.underrun(), 0.0);
@@ -1532,7 +1549,7 @@ mod tests {
             let mut capture = output.input.capture_drain_clock();
             capture.set_streaming(true);
             output.render_quantum();
-            assert!(capture.chunk_arrived(CHUNK_FRAMES, PACER_RATE));
+            assert!(capture.chunk_arrived(output.t0, CHUNK_FRAMES, PACER_RATE));
             if bridge_decoded {
                 output.apply_bridge_decoded_state();
             }
@@ -1541,7 +1558,7 @@ mod tests {
             let mut tokens = pacer_token_clock();
             output.render_quantum();
             for _ in 0..20 {
-                tokens.on_token(&output.input, TOKEN_US);
+                tokens.on_token(&output.input, TOKEN_US, output.at_ms(5));
             }
             assert_eq!(output.drained(), QUANTUM as f64, "{bridge_decoded}");
             assert_eq!(output.played(), (0, 0), "nothing moved on a token");
@@ -1562,14 +1579,14 @@ mod tests {
         let mut capture = output.input.capture_drain_clock();
         capture.set_streaming(true);
         let mut tokens = pacer_token_clock();
-        capture.chunk_arrived(CHUNK_FRAMES, PACER_RATE);
+        capture.chunk_arrived(output.t0, CHUNK_FRAMES, PACER_RATE);
         output.apply_bridge_decoded_state();
         let (primed, _) = output.played();
 
-        for _ in 0..20 {
+        for step in 1..=20 {
             output.render_quantum();
-            tokens.on_token(&output.input, TOKEN_US);
-            capture.chunk_arrived(CHUNK_FRAMES, PACER_RATE);
+            tokens.on_token(&output.input, TOKEN_US, output.at_ms(10 * step - 5));
+            capture.chunk_arrived(output.at_ms(10 * step), CHUNK_FRAMES, PACER_RATE);
         }
         assert_eq!(output.played(), (20 * QUANTUM, 0));
         assert_eq!(output.drained(), (primed + 20 * QUANTUM) as f64);
@@ -1577,12 +1594,46 @@ mod tests {
         assert_eq!(underrun_while_delivering, primed as f64);
 
         capture.set_streaming(false);
-        for _ in 0..20 {
+        for step in 21..=40 {
             output.render_quantum();
-            tokens.on_token(&output.input, TOKEN_US);
+            tokens.on_token(&output.input, TOKEN_US, output.at_ms(10 * step));
         }
         assert_eq!(output.played(), (20 * QUANTUM, 0));
         assert_eq!(output.underrun(), underrun_while_delivering);
+    }
+
+    /// A client that keeps the sink streaming and sends nothing does not keep
+    /// the tokens out: once the capture has been silent for its limit, the
+    /// speaker test or the pipe that plays instead is drained on its tokens,
+    /// with no state change of the stream. The first chunk that comes back
+    /// takes the drain again.
+    #[test]
+    fn tokens_drain_in_front_of_a_stream_that_streams_and_delivers_nothing() {
+        let mut output = PacedOutput::new();
+        output.apply_pipewire_state();
+        let mut capture = output.input.capture_drain_clock();
+        capture.set_streaming(true);
+        let mut tokens = pacer_token_clock();
+        output.render_quantum();
+        assert!(capture.chunk_arrived(output.t0, CHUNK_FRAMES, PACER_RATE));
+        output.apply_bridge_decoded_state();
+        assert_eq!(output.played(), (QUANTUM, 0));
+
+        // The idle feed starts 250 ms after the last real frame.
+        for step in 0..20 {
+            output.render_quantum();
+            tokens.on_token(&output.input, TOKEN_US, output.at_ms(250 + 10 * step));
+        }
+        assert_eq!(output.played(), (20 * QUANTUM, 0), "all 20 tokens drained");
+        assert_eq!(output.fifo.fill(), 0);
+        assert_eq!(output.underrun(), 0.0);
+
+        output.render_quantum();
+        assert!(capture.chunk_arrived(output.at_ms(450), CHUNK_FRAMES, PACER_RATE));
+        assert_eq!(output.played(), (QUANTUM, 0));
+        output.render_quantum();
+        tokens.on_token(&output.input, TOKEN_US, output.at_ms(451));
+        assert_eq!(output.played(), (0, 0), "the capture's again");
     }
 
     /// The token clock keeps the fraction of a frame a token leaves over, and
@@ -1593,18 +1644,18 @@ mod tests {
         let mut output = PacedOutput::new();
         let mut tokens = pacer_token_clock();
         for _ in 0..25 {
-            tokens.on_token(&output.input, 10_010);
+            tokens.on_token(&output.input, 10_010, output.t0);
         }
         assert_eq!(output.drained(), (12_012 * PACER_CHANNELS) as f64);
         let (played, _) = output.played();
         assert_eq!(played, 12_012 * PACER_CHANNELS as usize);
 
-        tokens.on_token(&output.input, 10_010);
+        tokens.on_token(&output.input, 10_010, output.t0);
         assert!(tokens.frac_frames > 0.0);
         let mut capture = output.input.capture_drain_clock();
         capture.set_streaming(true);
-        capture.chunk_arrived(CHUNK_FRAMES, PACER_RATE);
-        tokens.on_token(&output.input, 10_010);
+        capture.chunk_arrived(output.t0, CHUNK_FRAMES, PACER_RATE);
+        tokens.on_token(&output.input, 10_010, output.t0);
         assert_eq!(tokens.frac_frames, 0.0);
     }
 }

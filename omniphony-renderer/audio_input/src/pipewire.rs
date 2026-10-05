@@ -111,10 +111,10 @@ struct BridgeCaptureUserData {
     diag_iec958_decode_dt_us: Arc<std::sync::atomic::AtomicU64>,
     /// Published mirror of `input_clock_us_cumulative` (f64::to_bits).
     diag_input_clock_us: Arc<std::sync::atomic::AtomicU64>,
-    /// This stream's hold on the output pacer drain: taken with the first
-    /// chunk of a streaming period, given back when the stream stops
-    /// streaming, and dropped with the listener that owns this struct. The
-    /// only way this stream drains.
+    /// This stream's hold on the output pacer drain: taken with each chunk
+    /// received while streaming, lapsed when no chunk comes for a while, given
+    /// back when the stream stops streaming, and dropped with the listener
+    /// that owns this struct. The only way this stream drains.
     pacer_drain: CaptureDrainClock,
 }
 
@@ -928,7 +928,7 @@ where
                     / (user_data.channels as u64 * user_data.bytes_per_sample as u64);
                 user_data
                     .pacer_drain
-                    .chunk_arrived(in_subframes, user_data.rate_hz);
+                    .chunk_arrived(now_chunk, in_subframes, user_data.rate_hz);
             }
             user_data.bytes_since_log += byte_len;
             user_data.buffers_since_log += 1;
