@@ -492,7 +492,7 @@ mod tests {
                 .declaration
                 .map(|declaration| StreamDeclaration::new(declaration, &table));
             spatial.take_declaration(data.source, declaration);
-            let declared = &spatial.stream.declaration;
+            let declared = &spatial.pipeline.stream.declaration;
             seen.push((
                 declared.family,
                 declared.poses.len(),

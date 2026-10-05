@@ -1090,7 +1090,7 @@ fn run_prepared_render(
         prepared.vbap_cartesian_defaults,
         prepared.preferred_evaluation_mode,
     )?;
-    handler.spatial.stream.coordinate_format = prepared.coordinate_format;
+    handler.spatial.pipeline.stream.coordinate_format = prepared.coordinate_format;
     // Live DRC changes reach both decoders through this value; the one the
     // live params were seeded with is already in it.
     handler.drc.shared = Some(Arc::clone(&prepared.drc_mode));
