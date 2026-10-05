@@ -22,6 +22,15 @@ pub struct Config {
     /// realigned by [`Config::save`]; the others are the switch targets.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profiles: BTreeMap<String, RenderConfig>,
+    /// Set only in a live-handoff sidecar written while the engine was
+    /// running on the defaults it fell back to because `config.yaml` failed
+    /// to parse. The state it carries is still those defaults, whatever the
+    /// file holds by the time the next instance restores it, so that instance
+    /// keeps `config_status = parse_error` (see [`boot_load_status`]) and
+    /// refuses to Save until a reload. A Save starts from `config.yaml`, never
+    /// from a sidecar, so this never reaches the persistent file.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live_from_parse_error: bool,
     /// Captures any top-level key not modelled above so a load → mutate
     /// → save round-trip preserves it verbatim. Without this, every
     /// embedder of the engine that triggers `persist::save_live_config`
@@ -733,24 +742,55 @@ impl Config {
         Ok(config)
     }
 
+    /// Read `path` once: `Ok(None)` when there is no file, an error when it is
+    /// present but fails to read or parse. The one place that tells a missing
+    /// file from a broken one; every loader below goes through it, so the
+    /// published `config_status` and the write refusal cannot disagree.
+    fn load_if_present(path: &Path) -> anyhow::Result<Option<Self>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        Self::load(path).map(Some)
+    }
+
     /// Load config from path, returning default if the file is absent.
     /// Prints a warning to stderr (not the log) if the file exists but fails to parse,
     /// because this may be called before the logger is initialized.
     pub fn load_or_default(path: &Path) -> Self {
-        if !path.exists() {
-            return Self::default();
-        }
-        match Self::load(path) {
-            Ok(cfg) => cfg,
+        Self::load_or_default_with_status(path).0
+    }
+
+    /// [`Config::load_or_default`], plus which of the three outcomes it was,
+    /// from a single read of the file.
+    pub fn load_or_default_with_status(path: &Path) -> (Self, ConfigLoadStatus) {
+        match Self::load_if_present(path) {
+            Ok(Some(cfg)) => (cfg, ConfigLoadStatus::Loaded),
+            Ok(None) => (Self::default(), ConfigLoadStatus::Missing),
             Err(e) => {
                 eprintln!(
                     "warning: failed to parse config file {}: {}",
                     path.display(),
                     e
                 );
-                Self::default()
+                (Self::default(), ConfigLoadStatus::ParseError)
             }
         }
+    }
+
+    /// Load the file a write is about to amend. A missing file starts from the
+    /// defaults, as [`Config::load_or_default`] does; a file that is present
+    /// but fails to parse is an error instead, so the write that follows
+    /// cannot replace the user's layout, profiles and unknown keys with
+    /// defaults. Every writer of the persistent config starts here.
+    pub fn load_for_update(path: &Path) -> anyhow::Result<Self> {
+        Self::load_if_present(path)
+            .map(Option::unwrap_or_default)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "{} failed to parse, so it was left untouched; fix or remove it first ({e})",
+                    path.display()
+                )
+            })
     }
 
     /// Diagnose what `load_or_default` would actually do for `path`, without
@@ -760,31 +800,40 @@ impl Config {
     /// the wrong geometry while looking like it "has" a config path. Studio
     /// surfaces this in About so the silent fallback becomes visible.
     pub fn load_status(path: &Path) -> ConfigLoadStatus {
-        if !path.exists() {
-            return ConfigLoadStatus::Missing;
-        }
-        match Self::load(path) {
-            Ok(_) => ConfigLoadStatus::Loaded,
+        match Self::load_if_present(path) {
+            Ok(Some(_)) => ConfigLoadStatus::Loaded,
+            Ok(None) => ConfigLoadStatus::Missing,
             Err(_) => ConfigLoadStatus::ParseError,
         }
     }
 
-    /// Serialize this config to YAML and write it to `path`.
-    /// Parent directories are created automatically.
+    /// Serialize this config to YAML and write it to `path`, keeping the file
+    /// it replaces as `<name>.bak` ([`backup_path`]). Parent directories are
+    /// created automatically. The write is atomic (see [`replace_file`]): a
+    /// crash or a full disk leaves the previous file, never half of the new one.
     ///
     /// Saving realigns the profile mirror first (see [`Config::sync_active_profile`]):
     /// the written file always has `profiles[active] == render`, and a flat
     /// legacy file is migrated into the implicit `"default"` profile on its
     /// first save by a profiles-aware binary.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        replace_file(path, self.to_yaml()?.as_bytes(), true, || Ok(()))
+    }
+
+    /// [`Config::save`] without the `.bak` and without syncing the directory:
+    /// still atomic, but cheap enough for the writes that are not a user's
+    /// deliberate save. The transient live-handoff sidecar is consumed once and
+    /// must not leave a backup behind; a targeted view write (meter rate,
+    /// head-tracker calibration) runs on the OSC thread and must not rotate
+    /// the `.bak` away from the file as it was before the last Save.
+    pub fn save_without_backup(&self, path: &Path) -> anyhow::Result<()> {
+        replace_file(path, self.to_yaml()?.as_bytes(), false, || Ok(()))
+    }
+
+    fn to_yaml(&self) -> anyhow::Result<String> {
         let mut out = self.clone();
         out.sync_active_profile();
-        let yaml = serde_yaml_ng::to_string(&out)?;
-        std::fs::write(path, yaml)?;
-        Ok(())
+        Ok(serde_yaml_ng::to_string(&out)?)
     }
 
     /// Name of the active profile (`"default"` when the file predates profiles).
@@ -975,6 +1024,189 @@ impl Config {
     }
 }
 
+/// Backup path for `path`: `config.yaml` → `config.yaml.bak`.
+pub fn backup_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".bak");
+    path.with_file_name(name)
+}
+
+/// Replace `path` with `contents` atomically: write a temp file in the same
+/// directory, sync it, copy the current file to [`backup_path`] when
+/// `deliberate` is set, then rename the temp file over `path` (and, when
+/// `deliberate`, sync the directory so the rename itself survives a crash). A failure at any step
+/// leaves the current file as it was. A symlinked `path` is written through,
+/// so the link survives, and the `.bak` sits next to the link, where the
+/// docs and the user look for it. `before_rename` is the test seam for a failure
+/// between the write and the rename.
+///
+/// The rename needs a writable directory and replaces the file's inode, so
+/// where that would refuse a write the old in-place `fs::write` allowed, or
+/// change what the file is, the file is rewritten in place instead (not
+/// atomic, as before this existed): the directory is not writable (a config
+/// under `/etc` whose file alone is writable), the file has other hard links,
+/// or it belongs to another owner or group (a save run as root on a user's
+/// file). ACLs and extended attributes are not carried over by the rename.
+fn replace_file(
+    path: &Path,
+    contents: &[u8],
+    deliberate: bool,
+    before_rename: impl FnOnce() -> std::io::Result<()>,
+) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    let target = resolve_symlinks(path)?;
+    let dir = match target.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    std::fs::create_dir_all(&dir)?;
+    let name = target
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("{} has no file name", target.display()))?
+        .to_string_lossy();
+    let current = std::fs::metadata(&target).ok();
+    // The rename only needs the directory, so it would replace a file the
+    // old in-place `fs::write` was refused (`chmod a-w`, an ACL): ask for
+    // write access to the file itself first. Opening without truncating
+    // changes nothing.
+    if current.is_some() {
+        std::fs::OpenOptions::new().write(true).open(&target)?;
+    }
+
+    let (tmp, mut file) = match create_temp_file(&dir, &name) {
+        Ok(created) => created,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && current.is_some() => {
+            return write_in_place(&target, &backup_path(path), contents, deliberate);
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(meta) = &current {
+        if !rename_keeps_identity(meta, &file.metadata()?) {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp);
+            return write_in_place(&target, &backup_path(path), contents, deliberate);
+        }
+    }
+
+    let result = (|| -> anyhow::Result<()> {
+        file.write_all(contents)?;
+        file.sync_all()?;
+        if let Some(meta) = &current {
+            file.set_permissions(meta.permissions())?;
+        }
+        drop(file);
+        before_rename()?;
+        if deliberate && current.is_some() {
+            std::fs::copy(&target, backup_path(path))?;
+        }
+        std::fs::rename(&tmp, &target)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return result;
+    }
+    // Make the rename itself durable. Best-effort: not every platform can
+    // open a directory. A light write skips it: the temp file was synced, so
+    // a crash leaves the old file or the new one, never a torn one.
+    #[cfg(unix)]
+    if deliberate {
+        if let Ok(dir) = std::fs::File::open(&dir) {
+            let _ = dir.sync_all();
+        }
+    }
+    Ok(())
+}
+
+/// Follow `path` through any chain of symlinks to the file a write lands on.
+/// Unlike `canonicalize`, the final file need not exist: a link to a config
+/// not created yet is written through, creating it, as `fs::write` did. A
+/// relative link resolves against the directory of the link itself.
+fn resolve_symlinks(path: &Path) -> std::io::Result<PathBuf> {
+    // The usual kernel limit (ELOOP).
+    const MAX_LINKS: usize = 40;
+    let mut target = path.to_path_buf();
+    for _ in 0..MAX_LINKS {
+        match std::fs::symlink_metadata(&target) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let link = std::fs::read_link(&target)?;
+                target = match target.parent() {
+                    Some(parent) => parent.join(link),
+                    None => link,
+                };
+            }
+            _ => return Ok(target),
+        }
+    }
+    Err(std::io::Error::other(format!(
+        "{}: too many levels of symbolic links",
+        path.display()
+    )))
+}
+
+/// Create a fresh temp file next to `name` in `dir`. The pid keeps two
+/// processes (the Studio engine and a player's liborender) apart and the
+/// counter two saves in one process; `create_new` makes sure no save ever
+/// opens, and truncates, another's temp file.
+fn create_temp_file(dir: &Path, name: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = dir.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => return Ok((tmp, file)),
+            // A leftover of a crashed process that had the same pid.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Whether renaming a file created by this process over `current` leaves it
+/// the same file to everyone else: the same owner and group, and no other
+/// hard link left pointing at the old contents.
+#[cfg(unix)]
+fn rename_keeps_identity(current: &std::fs::Metadata, created: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    current.nlink() == 1 && current.uid() == created.uid() && current.gid() == created.gid()
+}
+
+#[cfg(not(unix))]
+fn rename_keeps_identity(_current: &std::fs::Metadata, _created: &std::fs::Metadata) -> bool {
+    true
+}
+
+/// The non-atomic fallback of [`replace_file`]: truncate and rewrite `target`
+/// itself, which keeps its inode, owner, links and attributes. The `.bak` is
+/// best-effort here: a directory that refused a temp file may refuse it too,
+/// and that must not block the write the old `fs::write` allowed.
+fn write_in_place(
+    target: &Path,
+    backup: &Path,
+    contents: &[u8],
+    deliberate: bool,
+) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    if deliberate {
+        if let Err(e) = std::fs::copy(target, backup) {
+            log::warn!("no backup of {} kept: {e}", target.display());
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(target)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 // ── Live-state handoff sidecar ──────────────────────────────────────────────
 //
 // On graceful shutdown an instance writes its full live state as a complete
@@ -1005,6 +1237,32 @@ pub fn live_overlay_active(config_path: &Path) -> bool {
     LIVE_OVERLAY.lock().unwrap().contains_key(config_path)
 }
 
+/// The `config_status` a host booting on `config_path` publishes: the file's
+/// own [`Config::load_status`], unless the live state it restored from a
+/// handoff sidecar was the parse-error fallback of the previous instance
+/// ([`Config::live_from_parse_error`]). Call it after the sidecar was consumed
+/// ([`Config::load_or_default_with_live`]).
+pub fn boot_load_status(config_path: &Path) -> ConfigLoadStatus {
+    let overlay = LIVE_OVERLAY.lock().unwrap().get(config_path).cloned();
+    match overlay {
+        Some(overlay) => live_load_status(config_path, &overlay, true),
+        None => Config::load_status(config_path),
+    }
+}
+
+/// The `config_status` for a live state `loaded` from
+/// [`Config::load_or_default_with_live`] (`restored` as it returned): a
+/// restored parse-error fallback stays `parse_error`, anything else gets the
+/// file's own status. For a host adopting the state after boot (a standby
+/// resume), which has the result in hand.
+pub fn live_load_status(config_path: &Path, loaded: &Config, restored: bool) -> ConfigLoadStatus {
+    if restored && loaded.live_from_parse_error {
+        ConfigLoadStatus::ParseError
+    } else {
+        Config::load_status(config_path)
+    }
+}
+
 /// Forget any consumed sidecar. Called after writing a *new* sidecar (so a
 /// later boot-in-the-same-process re-reads it), after an explicit save (a
 /// deliberate save supersedes the overlay) and on reload_config (whose
@@ -1028,7 +1286,7 @@ pub fn amend_live_overlay(config_path: &Path, amend: impl Fn(&mut Config)) {
     match Config::load(&sidecar) {
         Ok(mut cfg) => {
             amend(&mut cfg);
-            if let Err(e) = cfg.save(&sidecar) {
+            if let Err(e) = cfg.save_without_backup(&sidecar) {
                 log::warn!("failed to amend {}: {e}", sidecar.display());
             }
         }
@@ -1644,6 +1902,212 @@ mod config_dir_override_tests {
         assert_ne!(
             pinned, shared,
             "the override must not resolve to the shared path"
+        );
+    }
+}
+
+#[cfg(test)]
+mod save_tests {
+    use super::*;
+
+    fn dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("orender-config-save-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn with_layout(name: &str) -> Config {
+        let mut config = Config::default();
+        config
+            .render
+            .get_or_insert_with(Default::default)
+            .output_file = Some(name.to_string());
+        config
+    }
+
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_file_that_fails_to_parse_is_refused_for_update() {
+        let dir = dir("refuse");
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, "render: [ not yaml").unwrap();
+        let err = Config::load_for_update(&path).unwrap_err().to_string();
+        assert!(err.contains("left untouched"), "{err}");
+        // A missing file is a fresh start, not an error.
+        assert!(Config::load_for_update(&dir.join("absent.yaml")).is_ok());
+    }
+
+    #[test]
+    fn save_keeps_the_previous_file_as_bak() {
+        let dir = dir("bak");
+        let path = dir.join("config.yaml");
+        with_layout("first").save(&path).unwrap();
+        assert!(!backup_path(&path).exists(), "nothing to back up yet");
+        let first = std::fs::read(&path).unwrap();
+        with_layout("second").save(&path).unwrap();
+        assert_eq!(std::fs::read(backup_path(&path)).unwrap(), first);
+        assert_eq!(entries(&dir), ["config.yaml", "config.yaml.bak"]);
+    }
+
+    #[test]
+    fn save_without_backup_leaves_no_bak() {
+        let dir = dir("no-bak");
+        let path = dir.join("config.live.yaml");
+        with_layout("first").save_without_backup(&path).unwrap();
+        with_layout("second").save_without_backup(&path).unwrap();
+        assert_eq!(entries(&dir), ["config.live.yaml"]);
+    }
+
+    #[test]
+    fn a_failure_before_the_rename_leaves_the_old_file_intact() {
+        let dir = dir("inject");
+        let path = dir.join("config.yaml");
+        with_layout("old").save(&path).unwrap();
+        let old = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(backup_path(&path));
+
+        let yaml = with_layout("new").to_yaml().unwrap();
+        let result = replace_file(&path, yaml.as_bytes(), true, || {
+            Err(std::io::Error::other("injected"))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+        assert_eq!(entries(&dir), ["config.yaml"], "temp file cleaned up");
+    }
+
+    /// Saves of one file from several threads of one process each get their
+    /// own temp file: none fails, and none is left behind.
+    #[test]
+    fn concurrent_saves_in_one_process_do_not_share_a_temp_file() {
+        let dir = dir("concurrent");
+        let path = dir.join("config.yaml");
+        with_layout("start").save(&path).unwrap();
+        std::thread::scope(|scope| {
+            for t in 0..4 {
+                let path = &path;
+                scope.spawn(move || {
+                    for i in 0..25 {
+                        with_layout(&format!("t{t}-{i}")).save(path).unwrap();
+                    }
+                });
+            }
+        });
+        assert!(Config::load(&path).is_ok());
+        assert_eq!(entries(&dir), ["config.yaml", "config.yaml.bak"]);
+    }
+
+    /// A config whose directory is not writable (only the file is) is still
+    /// saved, in place, as `fs::write` used to.
+    #[cfg(unix)]
+    #[test]
+    fn save_rewrites_in_place_when_the_directory_is_not_writable() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = dir("ro-dir");
+        let path = dir.join("config.yaml");
+        with_layout("older").save(&path).unwrap();
+        // The `.bak` already exists, so it can be rewritten in place too.
+        with_layout("old").save(&path).unwrap();
+        let old = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores the directory mode; there is nothing to check then.
+        let enforced = std::fs::File::create(dir.join("probe")).is_err();
+        let result = with_layout("new").save(&path);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !enforced {
+            return;
+        }
+        result.unwrap();
+        let back = Config::load(&path).unwrap();
+        assert_eq!(back.render.unwrap().output_file.as_deref(), Some("new"));
+        assert_eq!(std::fs::read(backup_path(&path)).unwrap(), old);
+        assert_eq!(entries(&dir), ["config.yaml", "config.yaml.bak"]);
+    }
+
+    /// A read-only config stays read-only: the save is refused, as the old
+    /// `fs::write` was, although the directory would allow the rename.
+    #[cfg(unix)]
+    #[test]
+    fn save_refuses_a_read_only_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = dir("ro-file");
+        let path = dir.join("config.yaml");
+        with_layout("old").save(&path).unwrap();
+        let old = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        // Root ignores the file mode; there is nothing to check then.
+        if std::fs::OpenOptions::new().write(true).open(&path).is_ok() {
+            return;
+        }
+        assert!(with_layout("new").save(&path).is_err());
+        assert!(with_layout("new").save_without_backup(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+        assert_eq!(entries(&dir), ["config.yaml"]);
+    }
+
+    /// A link to a config not created yet is written through, creating it.
+    #[cfg(unix)]
+    #[test]
+    fn save_creates_the_missing_target_of_a_symlink() {
+        let dir = dir("dangling");
+        let link = dir.join("config.yaml");
+        std::os::unix::fs::symlink("absent.yaml", &link).unwrap();
+        assert!(Config::load_for_update(&link).is_ok(), "a missing config");
+        with_layout("new").save(&link).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let back = Config::load(&dir.join("absent.yaml")).unwrap();
+        assert_eq!(back.render.unwrap().output_file.as_deref(), Some("new"));
+    }
+
+    /// A hard-linked config stays one file under both names.
+    #[cfg(unix)]
+    #[test]
+    fn save_keeps_hard_links() {
+        let dir = dir("hardlink");
+        let path = dir.join("config.yaml");
+        let other = dir.join("other.yaml");
+        with_layout("old").save(&path).unwrap();
+        std::fs::hard_link(&path, &other).unwrap();
+        with_layout("new").save(&path).unwrap();
+        let back = Config::load(&other).unwrap();
+        assert_eq!(back.render.unwrap().output_file.as_deref(), Some("new"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_writes_through_a_symlink() {
+        let dir = dir("symlink");
+        let real = dir.join("real.yaml");
+        let link = dir.join("config.yaml");
+        with_layout("old").save_without_backup(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        with_layout("new").save(&link).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let back = Config::load(&real).unwrap();
+        assert_eq!(back.render.unwrap().output_file.as_deref(), Some("new"));
+        assert_eq!(
+            entries(&dir),
+            ["config.yaml", "config.yaml.bak", "real.yaml"],
+            "the .bak sits next to the link"
         );
     }
 }

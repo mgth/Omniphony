@@ -1692,12 +1692,20 @@ pub struct RendererControl {
     /// next to the build fingerprint.
     pub host_abi: Mutex<Option<(u32, u32)>>,
 
-    /// Facts about the crossover bank the speaker stage actually built
-    /// (engine, bands, cutoffs, taps, latency). Written by the render thread
-    /// on every bank (re)build, broadcast in the `/state/renderer` snapshot so
+    /// Facts about the crossover bank the speaker stage is rendering with
+    /// (engine, bands, cutoffs, taps, latency). Written when the stage
+    /// installs a band set, broadcast in the `/state/renderer` snapshot so
     /// Studio can annotate the crossover control. `None` until the first
     /// build.
     crossover_info: Mutex<Option<CrossoverInfo>>,
+
+    /// A band-build outcome of the speaker stage not broadcast yet: the
+    /// reason its worker could not build the band engines for a topology or
+    /// crossover change (the previous ones keep rendering), or an empty
+    /// string once a later build went through. The OSC listener takes it and
+    /// broadcasts it on the recompute-error address, where a failed topology
+    /// rebuild is reported too. Coalesced: only the latest outcome is kept.
+    band_build_error: Mutex<Option<String>>,
 
     /// Actual renderer input path used for this process.
     pub input_path: Mutex<Option<String>>,
@@ -1823,6 +1831,7 @@ impl RendererControl {
             bridge_error: Mutex::new(None),
             host_abi: Mutex::new(None),
             crossover_info: Mutex::new(None),
+            band_build_error: Mutex::new(None),
             input_path: Mutex::new(None),
             bridge_path: Mutex::new(None),
             bridge_supported_drc_modes: Mutex::new(Vec::new()),
@@ -2238,10 +2247,10 @@ impl RendererControl {
         *self.host_abi.lock() = Some((major, minor));
     }
 
-    /// Publish the crossover bank the speaker stage just built. Bumps the
-    /// live-state generation only when the facts actually changed, so the
-    /// per-frame refresh path can call this unconditionally without
-    /// re-broadcast churn (a bank rebuild is rare: topology or engine flip).
+    /// Publish the crossover bank the speaker stage just installed. Bumps the
+    /// live-state generation only when the facts actually changed, so an
+    /// install can call this unconditionally without re-broadcast churn (a
+    /// bank swap is rare: topology or engine flip).
     pub fn set_crossover_info(&self, info: CrossoverInfo) {
         let mut guard = self.crossover_info.lock();
         if guard.as_ref() != Some(&info) {
@@ -2251,9 +2260,21 @@ impl RendererControl {
         }
     }
 
-    /// Facts about the last crossover bank built (see [`CrossoverInfo`]).
+    /// Facts about the crossover bank in use (see [`CrossoverInfo`]).
     pub fn crossover_info(&self) -> Option<CrossoverInfo> {
         self.crossover_info.lock().clone()
+    }
+
+    /// Record why the speaker stage could not build its band engines, for
+    /// the OSC listener to broadcast; an empty string clears the error on
+    /// the clients. See the field.
+    pub fn report_band_build_error(&self, message: String) {
+        *self.band_build_error.lock() = Some(message);
+    }
+
+    /// Take the band-build outcome reported since the last call, if any.
+    pub fn take_band_build_error(&self) -> Option<String> {
+        self.band_build_error.lock().take()
     }
 
     pub fn host_abi(&self) -> Option<(u32, u32)> {
