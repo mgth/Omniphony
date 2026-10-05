@@ -83,6 +83,30 @@ Nothing writes the whole live state to `config.yaml` except the explicit Save.
 A change only a restart can apply (a new bridge) uses `/control/restart`, which
 carries the unsaved state over in the sidecar instead of saving it.
 
+Every write starts from the file on disk (`Config::load_for_update`). A
+`config.yaml` that fails to parse — the engine then runs on defaults and
+publishes `config_status = parse_error` — is never written: the Save, a
+profile operation and a targeted view write are all refused, and the Save
+error says the file was left untouched. Fixing the file is not enough to save
+again: until a Reload (a restart on the CLI) or a profile switch reads it back
+into the live state, `config_status` stays `parse_error` and the Save is still
+refused, since the live state it would write is those defaults. A live state
+handed over to the next instance (a restart keeping it, mpv taking over)
+carries that origin in the sidecar (`live_from_parse_error`), so the next
+instance keeps `parse_error` too, whatever the file now holds.
+
+A write that goes through replaces the file atomically (temp file, sync,
+rename) and a Save or a profile operation keeps the previous one as
+`config.yaml.bak`. A targeted view write and the handoff sidecar are written
+the same way but without the `.bak` and without syncing the directory, so a
+view change never rotates away the file as it was before the last Save. Where
+the rename would fail or change what the file is — a directory that is not
+writable, a file with other hard links or owned by another user or group — the
+file is rewritten in place instead, as before (not atomic; the `.bak` is then
+best-effort). A file without write permission (`chmod a-w`, an ACL) is
+refused, as before, although the directory would allow the rename; a symlink
+is written through even when its target does not exist yet, creating it.
+
 ### Studio (`omniphony-studio-egui`)
 
 - **View** state lives in `crate::prefs::Prefs` and is written through the

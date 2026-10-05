@@ -679,9 +679,10 @@ pub fn seed_host_state(control: &RendererControl, seed: &HostStateSeed<'_>) {
         control.set_config_path(path.to_path_buf());
         // Whether the config actually loaded, so Studio's About can compare
         // hosts; `render_cfg` can't tell, `load_or_default` collapses a
-        // missing or broken file into defaults.
+        // missing or broken file into defaults. A restored sidecar that was
+        // the previous instance's fallback keeps parse_error.
         control.set_config_status(Some(
-            renderer::config::Config::load_status(path)
+            renderer::config::boot_load_status(path)
                 .as_str()
                 .to_string(),
         ));

@@ -495,8 +495,10 @@ impl Engine {
             // Diagnose whether that path actually loaded or silently fell back
             // to defaults — `render_cfg` above can't tell us, since
             // `load_or_default` collapses missing/parse-error into defaults.
-            // Surfaced in Studio's About to catch host config mismatches.
-            let status = renderer::config::Config::load_status(path);
+            // Surfaced in Studio's About to catch host config mismatches. A
+            // restored sidecar that was the previous instance's fallback
+            // keeps parse_error, whatever the file now holds.
+            let status = renderer::config::boot_load_status(path);
             if status != renderer::config::ConfigLoadStatus::Loaded {
                 log::warn!(
                     "config '{}' not loaded ({}); running on built-in defaults",
