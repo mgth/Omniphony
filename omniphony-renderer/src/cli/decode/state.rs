@@ -5,8 +5,10 @@ use audio_input::InputControl;
 use audio_output::AdaptiveResamplingConfig;
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::PipewireBufferConfig;
+use bridge_api::RCoordinateFormat;
+use orender_engine::frame_pipeline::FramePipeline;
 use orender_engine::osc::OscSender;
-use orender_engine::stream_state::{StreamDeclaration, StreamState};
+use orender_engine::stream_state::StreamDeclaration;
 use renderer::metering::AudioMeter;
 use renderer::placement::{PlacementState, SourceFamily};
 use renderer::spatial_renderer::SpatialRenderer;
@@ -116,12 +118,16 @@ impl Default for TelemetryState {
     }
 }
 
-/// The CLI's per-stream state: the state both hosts keep
-/// ([`StreamState`], with the rules that update it), plus what only this host
-/// needs — the bed-conformed export's bed ids, and which of the PipeWire
-/// sink's two producers the declaration and the dialogue level are for.
+/// The CLI's per-stream state: the frame sequence both hosts run and the
+/// state it keeps ([`FramePipeline`], whose [`StreamState`] holds the rules
+/// that update it), plus what only this host needs — the bed-conformed
+/// export's bed ids, and which of the PipeWire sink's two producers the
+/// declaration and the dialogue level are for.
+///
+/// [`StreamState`]: orender_engine::stream_state::StreamState
 pub struct SpatialState {
-    pub stream: StreamState,
+    /// The frame sequence both hosts run, and the per-stream state it keeps.
+    pub pipeline: FramePipeline,
     /// Fixed-channel bed ids in the legacy 0-9 EXPORT order (file-output
     /// conformance only — rendering goes through the stream's planners).
     pub bed_indices: Option<Vec<usize>>,
@@ -140,7 +146,7 @@ pub struct SpatialState {
 impl Default for SpatialState {
     fn default() -> Self {
         Self {
-            stream: StreamState::default(),
+            pipeline: FramePipeline::new(RCoordinateFormat::Cartesian),
             bed_indices: None,
             declared_for: None,
             bridge_declaration_aside: None,
@@ -161,7 +167,23 @@ impl SpatialState {
     /// session. A live PCM frame is channel content by construction — fixed
     /// labels, no metadata — whatever played before it.
     pub fn frame_has_objects(&self, source: DecodedSource) -> bool {
-        self.stream.has_objects && !matches!(source, DecodedSource::Live)
+        self.pipeline.stream.has_objects && !matches!(source, DecodedSource::Live)
+    }
+
+    /// The legacy bed ids of an object frame's fixed channels, for the
+    /// bed-conformed export only (rendering goes through the stream's
+    /// planners, in [`FramePipeline::prepare`]).
+    ///
+    /// [`FramePipeline::prepare`]: orender_engine::frame_pipeline::FramePipeline::prepare
+    pub fn note_export_bed_ids(&mut self, frame: &bridge_api::RDecodedFrame) {
+        if frame.metadata.is_empty() {
+            return;
+        }
+        let bed_indices = orender_engine::spatial::derive_bed_indices(&frame.channel_labels);
+        if self.bed_indices.as_ref() != Some(&bed_indices) {
+            log::debug!("Derived export bed ids from channel labels: {bed_indices:?}");
+            self.bed_indices = Some(bed_indices);
+        }
     }
 
     /// Take on the input a frame came from: its declaration
@@ -184,13 +206,13 @@ impl SpatialState {
         let loudness_changed = match renderer {
             Some(renderer) if self.declared_for != Some(source) => match source {
                 DecodedSource::Live => {
-                    self.bridge_dialnorm_aside = self.stream.dialnorm.take();
+                    self.bridge_dialnorm_aside = self.pipeline.stream.dialnorm.take();
                     renderer.clear_loudness()
                 }
                 DecodedSource::Bridge => match self.bridge_dialnorm_aside.take() {
                     Some(level) => {
                         renderer.set_loudness(level);
-                        self.stream.dialnorm = Some(level);
+                        self.pipeline.stream.dialnorm = Some(level);
                         true
                     }
                     None => false,
@@ -205,6 +227,8 @@ impl SpatialState {
     /// The bridge's segment starts over: the level set aside for it goes with
     /// the latch ([`StreamState::reset_segment`]), the new segment brings its
     /// own.
+    ///
+    /// [`StreamState::reset_segment`]: orender_engine::stream_state::StreamState::reset_segment
     pub fn drop_dialnorm_aside(&mut self) {
         self.bridge_dialnorm_aside = None;
     }
@@ -231,7 +255,7 @@ impl SpatialState {
         let previous = self.declared_for.replace(source);
         if let Some(declaration) = declaration {
             self.bridge_declaration_aside = None;
-            self.stream.set_declaration(declaration);
+            self.pipeline.stream.set_declaration(declaration);
             return;
         }
         if previous == Some(source) {
@@ -246,13 +270,16 @@ impl SpatialState {
                     label: LIVE_PCM_LABEL.to_owned(),
                     ..StreamDeclaration::default()
                 };
-                self.bridge_declaration_aside =
-                    Some(std::mem::replace(&mut self.stream.declaration, pcm));
+                self.bridge_declaration_aside = Some(std::mem::replace(
+                    &mut self.pipeline.stream.declaration,
+                    pcm,
+                ));
             }
             DecodedSource::Bridge => {
                 // Nothing set aside: the bridge never declared, as for a
                 // fresh stream.
-                self.stream.declaration = self.bridge_declaration_aside.take().unwrap_or_default();
+                self.pipeline.stream.declaration =
+                    self.bridge_declaration_aside.take().unwrap_or_default();
             }
         }
     }
@@ -283,7 +310,6 @@ pub struct OutputState {
     pub bootstrap_frames_seen: u32,
     pub bootstrap_started_at: Option<Instant>,
     pub render_buf: Vec<f32>,
-    pub pcm_f32_buf: Vec<f32>,
     /// Reused copy of the decoded PCM for the unrendered writes.
     pub pcm_i32_buf: Vec<i32>,
     pub output_init_failed: bool,
@@ -293,10 +319,6 @@ pub struct OutputState {
     pub last_audio_sample_rate_hz: Option<u32>,
     pub last_audio_sample_format: Option<String>,
     pub last_audio_output_device: Option<String>,
-    /// Duty-cycle EMA of the render cost for the meter bundle, as in the
-    /// embedded engine: raw per-frame timings alias with 40-sample access
-    /// units, so the published figure is a smoothed per-frame equivalent.
-    pub render_duty: renderer::metering::DutyEma,
 }
 
 impl Default for OutputState {
@@ -308,7 +330,6 @@ impl Default for OutputState {
             bootstrap_frames_seen: 0,
             bootstrap_started_at: None,
             render_buf: Vec::new(),
-            pcm_f32_buf: Vec::new(),
             pcm_i32_buf: Vec::new(),
             output_init_failed: false,
             last_audio_delay_written_ms: None,
@@ -317,7 +338,6 @@ impl Default for OutputState {
             last_audio_sample_rate_hz: None,
             last_audio_sample_format: None,
             last_audio_output_device: None,
-            render_duty: Default::default(),
         }
     }
 }
@@ -454,7 +474,7 @@ mod tests {
     }
 
     fn state(s: &SpatialState) -> (SourceFamily, usize, &str) {
-        let d = &s.stream.declaration;
+        let d = &s.pipeline.stream.declaration;
         (d.family, d.poses.len(), &d.label)
     }
 
@@ -470,10 +490,10 @@ mod tests {
         s.take_declaration(Live, None);
         assert_eq!(state(&s), pcm);
         // Declared once: a later PCM frame leaves the state alone.
-        s.stream.declaration.label.push('!');
+        s.pipeline.stream.declaration.label.push('!');
         s.take_declaration(Live, None);
-        assert_eq!(s.stream.declaration.label, "PCM!");
-        s.stream.declaration.label.pop();
+        assert_eq!(s.pipeline.stream.declaration.label, "PCM!");
+        s.pipeline.stream.declaration.label.pop();
 
         // A bitstream declares for itself.
         s.take_declaration(Bridge, declared("dts", 2, "DTS"));
@@ -535,7 +555,8 @@ mod tests {
         // A bitstream, and the level its bridge sends.
         assert!(!s.take_input(Bridge, None, Some(&renderer)));
         assert!(
-            s.stream
+            s.pipeline
+                .stream
                 .latch_dialnorm(&frame_with_dialogue_level(-11), &renderer)
         );
         assert_eq!(applied(), Some(-11));
@@ -550,7 +571,8 @@ mod tests {
         assert!(s.take_input(Bridge, None, Some(&renderer)));
         assert_eq!(applied(), Some(-11));
         assert!(
-            !s.stream
+            !s.pipeline
+                .stream
                 .latch_dialnorm(&frame_with_dialogue_level(-11), &renderer)
         );
         assert!(!s.take_input(Bridge, None, Some(&renderer)));
@@ -567,7 +589,8 @@ mod tests {
         assert!(!s.take_input(Bridge, None, Some(&renderer)));
         assert_eq!(applied(), None);
         assert!(
-            s.stream
+            s.pipeline
+                .stream
                 .latch_dialnorm(&frame_with_dialogue_level(-21), &renderer)
         );
         assert_eq!(applied(), Some(-21));

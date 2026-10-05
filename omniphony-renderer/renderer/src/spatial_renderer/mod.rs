@@ -1535,13 +1535,29 @@ impl SpatialRenderer {
     /// (headphone) mode, otherwise the speaker count. Hosts must size their sink
     /// and `RenderedAudio` from this, not from [`num_speakers`](Self::num_speakers).
     pub fn output_channel_count(&self) -> usize {
-        // The ACTIVE mode, not the live one: across a cross-fade the live flag
-        // already names the incoming mode while the samples are still the
-        // outgoing one's. Reporting the request would tell the host to resize
-        // its sink for audio that has not been rendered yet.
-        match self.active_output_mode {
+        match self.emitted_output_mode() {
             crate::live_params::OutputMode::Binaural => 2,
             crate::live_params::OutputMode::SpeakerArray => self.num_speakers,
+        }
+    }
+
+    /// The output mode the next rendered frame comes out in.
+    ///
+    /// The ACTIVE mode, not the live one: across a cross-fade the live flag
+    /// already names the incoming mode while the samples are still the
+    /// outgoing one's. Reporting the request would tell the host to resize
+    /// its sink for audio that has not been rendered yet.
+    ///
+    /// Except before the first frame, which takes the request as it stands
+    /// (there is nothing to fade from): reporting the mode the renderer was
+    /// built with sized the CLI's sink for the speakers when the config asked
+    /// for headphones, and the rebuild at the right width on the next frame
+    /// reopened the output file — the opening block was lost.
+    fn emitted_output_mode(&self) -> crate::live_params::OutputMode {
+        if self.has_rendered_frame {
+            self.active_output_mode
+        } else {
+            self.control.live.read().binaural.output_mode
         }
     }
 
@@ -1550,7 +1566,7 @@ impl SpatialRenderer {
     /// [`output_channel_count`](Self::output_channel_count).
     pub fn output_is_speaker_array(&self) -> bool {
         matches!(
-            self.active_output_mode,
+            self.emitted_output_mode(),
             crate::live_params::OutputMode::SpeakerArray
         )
     }

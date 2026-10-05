@@ -13,8 +13,8 @@
 //! cargo test -p orender_engine --test parity -- --include-ignored --nocapture
 //! ```
 //!
-//! Not written yet: a bit-exact comparison of this path against the `orender`
-//! CLI's file output (`tests/file_render.rs` at the workspace root).
+//! The bit-exact comparison with the `orender` CLI runs in CI on the bundled
+//! demo and the reference bridge: `tests/host_parity.rs` in the CLI crate.
 
 mod common;
 
