@@ -1801,6 +1801,16 @@ impl Default for ProfilesInfo {
     }
 }
 
+/// A generation that tells readers the live params changed must be bumped
+/// once they are published, not while the write guard is still held.
+#[track_caller]
+fn debug_assert_bumped_after_publish() {
+    debug_assert!(
+        !crate::live_cell::write_held_on_this_thread(),
+        "live params generation bumped while their write guard is held: drop it first"
+    );
+}
+
 impl RendererControl {
     /// Create a new `RendererControl` and wrap it in an `Arc`.
     ///
@@ -2314,14 +2324,22 @@ impl RendererControl {
         *self.backend_rebuild_params.write() = params;
     }
 
+    /// Tell the render thread the per-object live params changed. Call it
+    /// after the write guard is dropped: the render thread loads the live
+    /// params after this generation, so a bump it sees comes with the data
+    /// (see [`LiveCell`]).
     pub fn mark_object_params_dirty(&self) {
+        debug_assert_bumped_after_publish();
         self.object_params_generation
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Release);
     }
 
+    /// [`mark_object_params_dirty`](Self::mark_object_params_dirty) for the
+    /// per-speaker live params.
     pub fn mark_speaker_params_dirty(&self) {
+        debug_assert_bumped_after_publish();
         self.speaker_params_generation
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Release);
     }
 
     /// The last binaural HRIR build's outcome (see the field).
@@ -2355,12 +2373,15 @@ impl RendererControl {
 
     /// Bump the options epoch: a `REPLAN`-flagged live option changed, so the
     /// synthesized-object plan signatures must invalidate (see [`crate::options`]).
+    /// Like the params generations, bumped after the write guard is dropped
+    /// and read before the live params are loaded.
     pub fn bump_options_epoch(&self) {
-        self.options_epoch.fetch_add(1, Ordering::Relaxed);
+        debug_assert_bumped_after_publish();
+        self.options_epoch.fetch_add(1, Ordering::Release);
     }
 
     pub fn options_epoch(&self) -> u64 {
-        self.options_epoch.load(Ordering::Relaxed)
+        self.options_epoch.load(Ordering::Acquire)
     }
 
     /// Flag that output clipping was detected this frame on `speaker_idx`

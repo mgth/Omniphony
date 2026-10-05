@@ -777,16 +777,21 @@ impl SpatialRenderer {
         // ── 1. Snapshot the live params this frame needs (a lock-free read) ──
         let live_position_interpolation;
         let live = {
-            let g = self.control.live.read();
-            live_position_interpolation = g.evaluation.position_interpolation;
+            // The generations first, then the params: a writer bumps them
+            // once its write is published, so a generation seen here comes
+            // with its data. The other order could record a new generation
+            // over params loaded just before the write, and the caches
+            // would keep them until the next change.
             let object_params_generation = self
                 .control
                 .object_params_generation
-                .load(std::sync::atomic::Ordering::Relaxed);
+                .load(std::sync::atomic::Ordering::Acquire);
             let speaker_params_generation = self
                 .control
                 .speaker_params_generation
-                .load(std::sync::atomic::Ordering::Relaxed);
+                .load(std::sync::atomic::Ordering::Acquire);
+            let g = self.control.live.read();
+            live_position_interpolation = g.evaluation.position_interpolation;
 
             if self.object_params_generation_seen != object_params_generation {
                 if self.object_params_buf.len() < input_channel_count {

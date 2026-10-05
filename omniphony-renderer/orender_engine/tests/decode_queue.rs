@@ -548,6 +548,19 @@ fn a_control_write_in_progress_does_not_stall_the_render_path() {
     assert_eq!(control.live.read().master_gain, 0.5, "published on release");
 }
 
+/// A params generation bumped while the live write guard is still held could
+/// be seen with the params from before the write, and the render thread's
+/// cache would keep them under the new generation: debug builds refuse it.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "while their write guard is held")]
+fn a_params_generation_bumped_inside_the_write_guard_is_refused() {
+    let (_engine, _, control) = engine_with_control();
+    let mut live = control.live.write();
+    live.objects.entry(0).or_default().muted = true;
+    control.mark_object_params_dirty();
+}
+
 /// Every OSC message that reached `socket` within `wait`, bundles flattened,
 /// in arrival order.
 fn osc_messages(socket: &std::net::UdpSocket, wait: Duration) -> Vec<rosc::OscMessage> {

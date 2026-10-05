@@ -268,6 +268,8 @@ impl ChannelObjectStages {
     /// channel frame. In steady state that is one atomic load: the plugin
     /// store is only locked when something moved.
     pub fn sync_from_control(&mut self, control: &RendererControl, ctx: &PrepareCtx) -> StageSync {
+        // The epoch before the params, so a bump seen here comes with its
+        // write (see `renderer::live_cell`).
         let options_epoch = control.options_epoch();
         let live = control.live.read();
         let selection = StageSelection {
