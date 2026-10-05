@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow, bail};
 use bridge_api::{RVbapCartesianDefaults, RVbapTableMode};
 use renderer::config::RenderConfig;
 use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode, RendererControl};
-use renderer::spatial_renderer::SpatialRenderer;
+use renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
 use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
 use renderer::speaker_layout::SpeakerLayout;
 use std::path::PathBuf;
@@ -295,53 +295,53 @@ pub fn build_spatial_renderer(
         let distance_step =
             params.evaluation_polar_distance_max.max(0.01) / (distance_cells as f32);
 
-        let renderer = SpatialRenderer::new(
-            layout,
+        let renderer = SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
             sample_rate,
-            azimuth_step_deg,
-            elevation_step_deg,
-            distance_step,
-            params.evaluation_polar_distance_max,
-            vbap_table_mode,
-            vbap_allow_negative_z,
-            params.render_evaluation_position_interpolation,
+            az_res_deg: azimuth_step_deg,
+            el_res_deg: elevation_step_deg,
+            spread_resolution: distance_step,
+            distance_max: params.evaluation_polar_distance_max,
+            table_mode: vbap_table_mode,
+            allow_negative_z: vbap_allow_negative_z,
+            vbap_position_interpolation: params.render_evaluation_position_interpolation,
             distance_model,
-            params.spread_from_distance,
-            params.spread_distance_range,
-            params.spread_distance_curve,
-            params.vbap_spread_min,
-            params.vbap_spread_max,
-            params.log_object_positions,
+            spread_from_distance: params.spread_from_distance,
+            spread_distance_range: params.spread_distance_range,
+            spread_distance_curve: params.spread_distance_curve,
+            spread_min: params.vbap_spread_min,
+            spread_max: params.vbap_spread_max,
+            log_object_positions: params.log_object_positions,
             room_ratio,
             room_ratio_rear,
             room_ratio_lower,
             room_ratio_center_blend,
-            params.master_gain,
-            params.auto_gain,
-            params.use_loudness,
-            params.distance_diffuse,
-            params.distance_diffuse_threshold,
-            params.distance_diffuse_curve,
-            match preferred_evaluation_mode {
+            master_gain_db: params.master_gain,
+            auto_gain: params.auto_gain,
+            use_loudness: params.use_loudness,
+            distance_diffuse: params.distance_diffuse,
+            distance_diffuse_threshold: params.distance_diffuse_threshold,
+            distance_diffuse_curve: params.distance_diffuse_curve,
+            preferred_evaluation_mode: match preferred_evaluation_mode {
                 RVbapTableMode::Polar => PreferredEvaluationMode::PrecomputedPolar,
                 RVbapTableMode::Cartesian => PreferredEvaluationMode::PrecomputedCartesian,
             },
-            match params.render_evaluation_mode {
+            initial_evaluation_mode: match params.render_evaluation_mode {
                 Some(EvalMode::Polar) => LiveEvaluationMode::PrecomputedPolar,
                 Some(EvalMode::Cartesian) => LiveEvaluationMode::PrecomputedCartesian,
                 None => LiveEvaluationMode::Auto,
             },
-            params
+            cartesian_default_x_size: params
                 .evaluation_cartesian_x_size
                 .unwrap_or(vbap_cartesian_defaults.x_size as usize),
-            params
+            cartesian_default_y_size: params
                 .evaluation_cartesian_y_size
                 .unwrap_or(vbap_cartesian_defaults.y_size as usize),
-            params
+            cartesian_default_z_size: params
                 .evaluation_cartesian_z_size
                 .unwrap_or(vbap_cartesian_defaults.z_size as usize),
-            params.evaluation_cartesian_z_neg_size.unwrap_or(0),
-        )?;
+            cartesian_default_z_neg_size: params.evaluation_cartesian_z_neg_size.unwrap_or(0),
+        })?;
         let elapsed = start_time.elapsed();
         // No gain table yet: the speaker stage samples one per crossover band
         // on the first frame, once the config seed below has landed.
