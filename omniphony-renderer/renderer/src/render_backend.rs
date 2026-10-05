@@ -220,26 +220,28 @@ fn sample_rows(
     if row_len == 0 {
         return Ok(gains);
     }
-    gains
-        .par_chunks_mut(row_len)
-        .enumerate()
-        .try_for_each(|(row, row_gains)| {
-            let mut hint = NeighbourHint::new();
-            let mut request = template;
-            for (cell, cell_gains) in row_gains.chunks_mut(speaker_count).enumerate() {
-                request.adm_position = position(row, cell);
-                hint.begin_cell();
-                let response = model.compute_gains_with_hint(&request, &mut hint);
-                check_sampled_gain_count(
-                    model,
-                    speaker_count,
-                    response.gains.len(),
-                    request.adm_position,
-                )?;
-                cell_gains.copy_from_slice(&response.gains[..]);
-            }
-            Ok::<(), anyhow::Error>(())
-        })?;
+    crate::background_pool::install(|| {
+        gains
+            .par_chunks_mut(row_len)
+            .enumerate()
+            .try_for_each(|(row, row_gains)| {
+                let mut hint = NeighbourHint::new();
+                let mut request = template;
+                for (cell, cell_gains) in row_gains.chunks_mut(speaker_count).enumerate() {
+                    request.adm_position = position(row, cell);
+                    hint.begin_cell();
+                    let response = model.compute_gains_with_hint(&request, &mut hint);
+                    check_sampled_gain_count(
+                        model,
+                        speaker_count,
+                        response.gains.len(),
+                        request.adm_position,
+                    )?;
+                    cell_gains.copy_from_slice(&response.gains[..]);
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+    })?;
     Ok(gains)
 }
 
