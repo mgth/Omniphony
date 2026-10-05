@@ -26,7 +26,11 @@ fn the_documented_options_tables_match_the_registry() {
     let mut stale = Vec::new();
     for (file, name, table) in blocks() {
         let path = docs.join(file);
-        let doc = std::fs::read_to_string(&path).expect("doc readable");
+        // A checkout may turn the line endings into CRLF (Windows,
+        // `core.autocrlf`): the tables are compared, and written, in LF.
+        let doc = std::fs::read_to_string(&path)
+            .expect("doc readable")
+            .replace("\r\n", "\n");
         let fresh = doc_table::replace_block(&doc, name, &table)
             .unwrap_or_else(|| panic!("docs/{file} has no generated block `{name}`"));
         if fresh != doc {
