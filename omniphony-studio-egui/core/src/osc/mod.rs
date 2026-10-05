@@ -16,6 +16,7 @@ pub mod dispatch;
 #[allow(dead_code)]
 pub mod parser;
 mod playout;
+pub mod state_sync;
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -294,6 +295,23 @@ fn listener_loop(
                                 playout.reset();
                             }
                             model.playout_delay = playout.delay(Instant::now());
+                            // Asked here, where the model is locked anyway:
+                            // packets keep coming (meters, the heartbeat
+                            // acks), so a lost reply is asked again soon.
+                            outcome.refresh = model.state_sync.refresh_due(Instant::now());
+                        }
+                        // A state update went missing: the snapshot again,
+                        // and nothing else.
+                        if outcome.refresh
+                            && let Some(addr) = register
+                        {
+                            log::debug!("[osc] state generation fell behind, asking for a refresh");
+                            send_int(
+                                &socket,
+                                addr,
+                                crate::osc_contract::CONTROL_STATE_REFRESH,
+                                i32::from(port),
+                            );
                         }
                         if outcome.reregister
                             && let Some(addr) = register
@@ -556,6 +574,8 @@ struct PacketOutcome {
     lost_registration: bool,
     /// Another renderer answers now: nothing held is about its stream.
     producer_changed: bool,
+    /// The state generation fell behind: ask for the snapshot.
+    refresh: bool,
 }
 
 impl Default for Change {
@@ -598,10 +618,15 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
     }
     match is_heartbeat_address(&m.addr) {
         HeartbeatResponse::Ack => {
-            if let Some(epoch) = m.args.iter().find_map(|arg| match arg {
-                OscType::Int(epoch) => Some(*epoch),
+            // `[epoch, state_generation]`; an engine older than contract
+            // revision 1 sends the epoch alone.
+            let mut ints = m.args.iter().filter_map(|arg| match arg {
+                OscType::Int(value) => Some(*value),
                 _ => None,
-            }) {
+            });
+            let epoch = ints.next();
+            let generation = ints.next();
+            if let Some(epoch) = epoch {
                 let changed = live
                     .app
                     .producer_epoch
@@ -614,6 +639,9 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
                     out.change = out.change.max(Change::Snapshot);
                 }
                 live.app.producer_epoch = Some(epoch);
+            }
+            if let Some(generation) = generation {
+                live.state_sync.on_ack(generation);
             }
             if !stats.registered.swap(true, Ordering::Relaxed) {
                 stats.connection_epoch.fetch_add(1, Ordering::Relaxed);
@@ -1012,6 +1040,74 @@ mod connection_tests {
             &mut PacketOutcome::default(),
         );
         assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
+    }
+
+    /// The review's loss case, through the real parser and dispatch: the
+    /// first datagram of a two-part snapshot is lost and the last one arrives,
+    /// `snapshot_complete` and all. The acknowledgement that follows reports
+    /// the snapshot's generation, and the client still asks again, and is
+    /// current once the refresh is in.
+    #[test]
+    fn a_split_snapshot_missing_its_first_part_is_asked_again() {
+        use crate::osc_contract;
+        let stats = OscStats::new();
+        *stats.target.lock().unwrap() = Some("127.0.0.1:9000".parse().unwrap());
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        let message = |addr: &str, args: Vec<OscType>| OscMessage {
+            addr: addr.into(),
+            args,
+        };
+        let generation = |part, parts| {
+            message(
+                osc_contract::STATE_GENERATION,
+                vec![
+                    OscType::Int(4),
+                    OscType::Int(1),
+                    OscType::Int(part),
+                    OscType::Int(parts),
+                ],
+            )
+        };
+        let mut handle = |m: &OscMessage, live: &mut Live| {
+            handle_message(m, live, &stats, &mut PacketOutcome::default())
+        };
+        // Part 0 of 2, carrying the log level, never arrives.
+        handle(&generation(1, 2), &mut live);
+        handle(
+            &message(osc_contract::STATE_SNAPSHOT_COMPLETE, vec![OscType::Int(1)]),
+            &mut live,
+        );
+        handle(
+            &message(
+                osc_contract::HEARTBEAT_ACK,
+                vec![OscType::Int(7), OscType::Int(4)],
+            ),
+            &mut live,
+        );
+        assert!(live.app.osc_snapshot_ready);
+        assert_ne!(
+            live.app.log_level.as_deref(),
+            Some("debug"),
+            "the lost part's state is missing"
+        );
+        assert!(
+            live.state_sync.refresh_due(Instant::now()),
+            "and the client knows it"
+        );
+
+        // The refresh: the same generation, whole.
+        for m in [
+            generation(0, 1),
+            message(
+                osc_contract::STATE_LOG_LEVEL,
+                vec![OscType::String("debug".into())],
+            ),
+            message(osc_contract::STATE_SNAPSHOT_COMPLETE, vec![OscType::Int(1)]),
+        ] {
+            handle(&m, &mut live);
+        }
+        assert_eq!(live.app.log_level.as_deref(), Some("debug"));
+        assert!(!live.state_sync.is_stale());
     }
 
     #[test]

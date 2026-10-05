@@ -676,12 +676,18 @@ fn heard_us_publishes_the_listener_and_marks_each_block() {
     assert!(blocks[0] >= 8 * 1536, "the timeline runs on: {blocks:?}");
 
     // A reset starts the timeline again, and its first block is marked even
-    // though it starts where an earlier one did.
+    // though it starts where an earlier one did. Markers of blocks rendered
+    // before the reset can still arrive first, for the same reason as above
+    // (block 15 on a macOS runner): they carry on the old timeline, past the
+    // last block heard from it, so the new timeline's first marker is the
+    // first one at or before that.
+    let last_before = *blocks.last().unwrap();
     engine.reset();
     let again = feed_and_listen(&mut engine, &socket, 4);
     let first = again
         .iter()
-        .find(|m| m.addr == PLAYOUT_BLOCK)
-        .and_then(|m| long_arg(m, 0));
+        .filter(|m| m.addr == PLAYOUT_BLOCK)
+        .filter_map(|m| long_arg(m, 0))
+        .find(|&pos| pos <= last_before);
     assert!(first.is_some_and(|pos| pos < 4 * 1536), "{first:?}");
 }
