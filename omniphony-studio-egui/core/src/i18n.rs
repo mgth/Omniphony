@@ -1,6 +1,6 @@
-//! Studio strings. The catalogues are the web Studio's own `i18n/*.json`,
-//! embedded at build time so both hosts stay key-for-key identical until the
-//! cutover moves them into this crate.
+//! Studio strings. The catalogues are `omniphony-studio-egui/i18n/*.json`,
+//! embedded at build time. The deprecated web Studio imports the same files,
+//! so both hosts stay key-for-key identical while both ship.
 //!
 //! Every locale is English overridden by its own entries, exactly as the web
 //! spreads `{...enTranslations, ...frTranslations}`: a key a translator has not
@@ -14,38 +14,14 @@ use std::sync::{Mutex, OnceLock};
 /// The locales, in the order the language picker offers them. The first is the
 /// base every other one falls back to.
 const CATALOGUES: &[(&str, &str)] = &[
-    (
-        "en",
-        include_str!("../../../omniphony-studio/src/i18n/en.json"),
-    ),
-    (
-        "fr",
-        include_str!("../../../omniphony-studio/src/i18n/fr.json"),
-    ),
-    (
-        "de",
-        include_str!("../../../omniphony-studio/src/i18n/de.json"),
-    ),
-    (
-        "ja",
-        include_str!("../../../omniphony-studio/src/i18n/ja.json"),
-    ),
-    (
-        "es",
-        include_str!("../../../omniphony-studio/src/i18n/es.json"),
-    ),
-    (
-        "it",
-        include_str!("../../../omniphony-studio/src/i18n/it.json"),
-    ),
-    (
-        "pt-BR",
-        include_str!("../../../omniphony-studio/src/i18n/pt-BR.json"),
-    ),
-    (
-        "zh-CN",
-        include_str!("../../../omniphony-studio/src/i18n/zh-CN.json"),
-    ),
+    ("en", include_str!("../../i18n/en.json")),
+    ("fr", include_str!("../../i18n/fr.json")),
+    ("de", include_str!("../../i18n/de.json")),
+    ("ja", include_str!("../../i18n/ja.json")),
+    ("es", include_str!("../../i18n/es.json")),
+    ("it", include_str!("../../i18n/it.json")),
+    ("pt-BR", include_str!("../../i18n/pt-BR.json")),
+    ("zh-CN", include_str!("../../i18n/zh-CN.json")),
 ];
 
 /// Which catalogue `t` reads. An index rather than a name, so resolving a key
