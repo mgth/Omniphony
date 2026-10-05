@@ -52,8 +52,18 @@ cargo fmt --all -- --check       # formatting must be clean
 CI (`.github/workflows/ci.yml`) checks formatting, builds and tests the renderer
 and native Studio, checks the Studio frontend and contracts, and compiles the
 platform targets. Consult the workflow for the exact current matrix; release
-bundling is separate. Clippy is not gated yet because of an existing warning
-backlog; avoid introducing new warnings.
+bundling is separate. It also gates:
+
+- **clippy**, as a ratchet: warnings per crate and lint may only go down
+  (`omniphony-renderer/clippy-baseline.txt`, which also pins the clippy
+  toolchain). Run `omniphony-renderer/scripts/clippy-ratchet.sh`; when you
+  remove warnings, lock it in with `UPDATE_CLIPPY_BASELINE=1` and commit the
+  baseline with your change.
+- **cargo-deny** (`cargo deny --workspace check` in `omniphony-renderer/`):
+  advisories, licences, sources and duplicate crate versions, per `deny.toml`.
+- **the MSRV**: the renderer workspace must still build on its declared
+  `rust-version`.
+- **pinned actions**: every third-party action is referenced by commit SHA.
 
 Before opening a PR, make sure `cargo fmt --all -- --check`, `cargo build`, and
 `cargo test` all pass locally.
