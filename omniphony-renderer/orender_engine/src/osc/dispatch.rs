@@ -1108,6 +1108,59 @@ mod notify_tests {
         );
     }
 
+    /// A maximum-size `backend/file/put`, sent through the control listener's
+    /// real UDP socket, is received whole, written and acknowledged: the
+    /// datagram is well over the 4 KiB the listener used to read.
+    #[test]
+    fn a_maximum_size_backend_file_put_crosses_the_socket() {
+        let dir = std::env::temp_dir().join(format!("orender-osc-big-put-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let control = fixture_control();
+        control.set_config_path(dir.join("config.yaml"));
+
+        let mut sender = crate::osc::OscSender::new(std::net::SocketAddrV4::new(
+            std::net::Ipv4Addr::LOCALHOST,
+            1,
+        ))
+        .unwrap();
+        sender.attach_renderer_control(Arc::clone(&control));
+        let port = UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        sender.start_listener(port, false).unwrap();
+        assert!(sender.is_listening());
+
+        let content = "x".repeat(BACKEND_FILE_MAX_BYTES);
+        let put = rosc::encoder::encode(&rosc::OscPacket::Message(OscMessage {
+            addr: osc_contract::CONTROL_BACKEND_FILE_PUT.to_string(),
+            args: vec![
+                OscType::String("test".into()),
+                OscType::String("script".into()),
+                OscType::String("big.lua".into()),
+                OscType::String(content.clone()),
+            ],
+        }))
+        .unwrap();
+        assert!(put.len() > BACKEND_FILE_MAX_BYTES);
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.send_to(&put, ("127.0.0.1", port)).unwrap();
+
+        let replies = received(&client);
+        let ack = replies
+            .iter()
+            .find(|m| m.addr == osc_contract::STATE_BACKEND_FILE_CONTENT)
+            .expect("the put is acknowledged");
+        assert_eq!(ack.args.get(3), Some(&OscType::String(content.clone())));
+        let path = backend_files::resolve(Some(&dir), "test", "big.lua", false).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+
+        drop(sender);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Every message the bystander receives until the socket goes quiet.
     fn received(socket: &UdpSocket) -> Vec<OscMessage> {
         fn flatten(packet: rosc::OscPacket, out: &mut Vec<OscMessage>) {

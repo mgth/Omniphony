@@ -380,6 +380,46 @@ pub struct OscSender {
     playout: playout::PlayoutMarks,
 }
 
+/// Receive buffer of the control listener: the largest UDP payload, so no
+/// datagram is ever truncated. Control messages run to tens of kilobytes (a
+/// backend file of up to 60 000 bytes, a whole-layout JSON).
+const RX_DATAGRAM_MAX: usize = 65_536;
+
+/// Undecodable datagrams are logged at `warn`, at most once per
+/// [`Self::INTERVAL`], with the count of the ones held back in between, so a
+/// lost control message is visible without a misbehaving sender flooding the
+/// log.
+#[derive(Default)]
+struct DecodeErrorLog {
+    last: Option<std::time::Instant>,
+    held_back: u32,
+}
+
+impl DecodeErrorLog {
+    const INTERVAL: Duration = Duration::from_secs(5);
+
+    fn report(&mut self, src: SocketAddr, len: usize, error: &rosc::OscError) {
+        let now = std::time::Instant::now();
+        if self
+            .last
+            .is_some_and(|last| now.duration_since(last) < Self::INTERVAL)
+        {
+            self.held_back += 1;
+            return;
+        }
+        let held_back = std::mem::take(&mut self.held_back);
+        self.last = Some(now);
+        if held_back > 0 {
+            log::warn!(
+                "OSC: dropped an undecodable {len}-byte datagram from {src}: {error} \
+                 ({held_back} more since the last report)"
+            );
+        } else {
+            log::warn!("OSC: dropped an undecodable {len}-byte datagram from {src}: {error}");
+        }
+    }
+}
+
 impl OscSender {
     pub fn new(default_target: SocketAddrV4) -> Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
@@ -518,7 +558,11 @@ impl OscSender {
                     }
                 }
 
-                let mut buf = [0u8; 4096];
+                // Large enough for any UDP datagram, allocated once: a
+                // truncated control message (a backend file, a layout) would
+                // fail to decode and be lost.
+                let mut buf = vec![0u8; RX_DATAGRAM_MAX];
+                let mut decode_errors = DecodeErrorLog::default();
                 loop {
                     if stop.load(Ordering::Relaxed) {
                         break;
@@ -656,9 +700,7 @@ impl OscSender {
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    log::debug!("OSC decode error from {}: {}", src, e)
-                                }
+                                Err(e) => decode_errors.report(src, len, &e),
                             }
                         }
                         Err(e)
