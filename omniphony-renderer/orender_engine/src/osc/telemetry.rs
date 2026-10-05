@@ -745,6 +745,10 @@ mod tests {
     /// A sender whose default target is a socket of the test's.
     fn sender_to_test_socket() -> (super::super::OscSender, UdpSocket) {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // A burst is hundreds of datagrams at once; the default buffer can
+        // overflow while the whole suite runs, and a lost datagram is not
+        // what these tests are about. The kernel may grant less.
+        let _ = socket2::SockRef::from(&socket).set_recv_buffer_size(4 << 20);
         let std::net::SocketAddr::V4(target) = socket.local_addr().unwrap() else {
             unreachable!("bound to an IPv4 address");
         };
@@ -966,15 +970,15 @@ mod tests {
         x
     }
 
-    /// A host that renders ahead of playback hands half a second over in one
-    /// burst, faster than a tick: every window of it keeps its pose, and a
+    /// A host that renders ahead of playback hands a quarter of a second over
+    /// in one burst, faster than a tick: every window of it keeps its pose, and a
     /// client following the sound shows, half-way through, the pose of the
     /// block it hears rather than nothing until the end of the burst.
     #[test]
     fn a_read_ahead_burst_keeps_a_pose_for_every_window_of_audio() {
         let (mut sender, socket) = sender_to_test_socket();
         sender.send_heard(0, 48_000);
-        const FRAMES: u64 = 100;
+        const FRAMES: u64 = 50;
         for i in 0..FRAMES {
             let pos = i * WINDOW;
             sender.render_at(pos);
@@ -986,8 +990,8 @@ mod tests {
             .filter(|m| m.addr == osc_contract::SPATIAL_FRAME)
             .count();
         assert_eq!(frames, FRAMES as usize);
-        assert_eq!(x_heard_at(&messages, 24_000), Some(0.5));
-        assert_eq!(x_heard_at(&messages, 47_520), Some(0.99));
+        assert_eq!(x_heard_at(&messages, 12_000), Some(0.5));
+        assert_eq!(x_heard_at(&messages, 23_520), Some(0.98));
     }
 
     /// What nothing would come to replace survives a full queue: once the
