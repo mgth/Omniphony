@@ -39,9 +39,10 @@ impl OscSender {
             force_full: self.telemetry.force_full,
             objects: list,
         };
-        if self.telemetry.push(Event::Objects(frame)) {
-            self.telemetry.force_full = false;
-        }
+        // Queued, or held until the ring has room: either way the flag goes
+        // with this frame.
+        self.telemetry.push(Event::Objects(frame));
+        self.telemetry.force_full = false;
     }
 
     /// The content generation stamped on outgoing object frames; bumped when

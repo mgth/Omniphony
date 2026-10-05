@@ -10,20 +10,27 @@
 //!
 //! **Rate cap.** The thread wakes every [`TICK`] and sends what arrived since
 //! the previous tick, in arrival order, except that of the object frames and
-//! the timestamps only the latest goes out. Those two are the ones the render
-//! path emits per block with no rate of their own: a 40-sample access unit
-//! renders 1,200 blocks a second, and a channel bed's object frame went out for
-//! every one of them, where a client draws at display rate. Both are state a
-//! later value supersedes: object poses are delta-encoded against what was
-//! last *sent*, so nothing a client holds goes stale, and a content-generation
-//! change or a forced full resend rides the frame that supersedes the one it
-//! came with. Everything else already has its own cadence (the meter and diag
-//! rates a client sets, the heard position's interval) and passes through as
-//! it is.
+//! the timestamps describing the same [`WINDOW`] of the render timeline only
+//! the latest goes out. Those two are the ones the render path emits per block
+//! with no rate of their own: a 40-sample access unit renders 1,200 blocks a
+//! second, and a channel bed's object frame went out for every one of them,
+//! where a client draws at display rate. The window is one of audio, not of
+//! wall-clock time: a host that renders ahead of playback, in bursts, still
+//! gets a pose for every window of what will be heard, which a client
+//! following the sound ([`super::playout`]) shows when it is heard. Object
+//! poses are delta-encoded against what was last *sent*, so nothing a client
+//! holds goes stale, and a content-generation change or a forced full resend
+//! rides the frame that supersedes the one it came with. Everything else
+//! already has its own cadence (the meter and diag rates a client sets, the
+//! heard position's interval) and passes through as it is.
 //!
 //! **Back-pressure.** The ring never blocks the render thread. When it is full
-//! (this thread stalled on a socket), the event is dropped and counted (a later
-//! one supersedes it), and the drops are logged here.
+//! (this thread stalled on a socket), a sample a later one replaces (a meter,
+//! a timestamp, a heard position) is dropped and counted, and the drops are
+//! logged here. What nothing may come to replace is held on the render path's
+//! side instead and pushed again, ahead of anything else, once the ring has
+//! room: the latest object frame (the poses a client keeps once the stream
+//! stops), the loudness (published once a segment) and a live-state refresh.
 //!
 //! The buffers the events carry come back over a second pair of rings, so once
 //! they are primed the render path refills the object list, and hands the
@@ -47,9 +54,13 @@ use super::export::build_live_state;
 use super::metadata_emit::ObjectDeltas;
 use super::{ObjectMeta, WarnLimiter};
 
-/// How often the thread sends: at most one object frame and one timestamp per
-/// tick, so their cap is 100 a second.
+/// How often the thread sends.
 pub(super) const TICK: Duration = Duration::from_millis(10);
+
+/// Of the object frames and timestamps describing blocks within the same
+/// window of this many samples, only the latest goes out: at most 100 a second
+/// of audio each at 48 kHz.
+pub(super) const WINDOW: u64 = 480;
 
 /// After this many ticks without an event (a second), the thread wakes less
 /// often: nothing is playing.
@@ -76,6 +87,13 @@ pub(super) const HEARD_INTERVAL_MS: u64 = 20;
 pub(super) struct Block {
     pub(super) restarts: u32,
     pub(super) pos: u64,
+}
+
+impl Block {
+    /// The [`WINDOW`] of the timeline this block starts in.
+    fn window(self) -> (u32, u64) {
+        (self.restarts, self.pos / WINDOW)
+    }
 }
 
 /// One object frame, as the render path describes it.
@@ -161,16 +179,31 @@ pub(super) enum Event {
     },
 }
 
-/// The kinds of which a tick sends only the latest: see the module doc.
+/// The kinds of which only the latest of a window goes out: see the module
+/// doc.
 const COALESCED: usize = 2;
 
 impl Event {
-    fn coalesced_kind(&self) -> Option<usize> {
+    /// The coalesced kind of this event, and the block it describes.
+    fn coalesced(&self) -> Option<(usize, Block)> {
         match self {
-            Event::Objects(_) => Some(0),
-            Event::Timestamp { .. } => Some(1),
+            Event::Objects(frame) => Some((0, frame.block)),
+            Event::Timestamp { block, .. } => Some((1, *block)),
             _ => None,
         }
+    }
+}
+
+/// Kinds held back by a full ring rather than dropped: see the module doc.
+const HELD: usize = 3;
+
+/// Where a held event of this kind waits, in the order they are pushed again.
+fn held_slot(event: &Event) -> Option<usize> {
+    match event {
+        Event::Objects(_) => Some(0),
+        Event::Loudness { .. } => Some(1),
+        Event::LiveState { .. } => Some(2),
+        _ => None,
     }
 }
 
@@ -186,8 +219,10 @@ pub(super) struct Telemetry {
     events: rtrb::Producer<Event>,
     spare_objects: rtrb::Consumer<Vec<ObjectMeta>>,
     spare_meter: rtrb::Consumer<MeterLists>,
-    /// Buffers of an event the full ring refused, for the next one.
-    held_objects: Option<Vec<ObjectMeta>>,
+    /// Events the full ring refused that no later sample replaces, one per
+    /// kind ([`held_slot`]), pushed again in that order before anything else.
+    held: [Option<Event>; HELD],
+    /// Meter lists of a report the full ring refused, for the next one.
     held_meter: Option<MeterLists>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
@@ -236,7 +271,7 @@ impl Telemetry {
             events,
             spare_objects,
             spare_meter,
-            held_objects: None,
+            held: [None, None, None],
             held_meter: None,
             shared,
             thread: Some(thread),
@@ -247,31 +282,63 @@ impl Telemetry {
         })
     }
 
-    /// Queue `event`. `false` when the ring is full: the event is dropped and
-    /// counted, and the buffers it carries are kept for the next one.
+    /// Queue `event`, after what an earlier full ring held back. `false`
+    /// when the ring is full: the event is held if nothing would replace it,
+    /// dropped and counted otherwise.
     pub(super) fn push(&mut self, event: Event) -> bool {
+        if !self.retry_held() {
+            self.refused(event);
+            return false;
+        }
         match self.events.push(event) {
             Ok(()) => true,
             Err(rtrb::PushError::Full(event)) => {
-                self.shared.dropped.fetch_add(1, Ordering::Relaxed);
-                match event {
-                    Event::Objects(frame) => self.held_objects = Some(frame.objects),
-                    Event::Meter(report) => {
-                        self.held_meter = Some((report.object_gains, report.object_band_gains))
-                    }
-                    _ => {}
-                }
+                self.refused(event);
                 false
+            }
+        }
+    }
+
+    /// Push again what a full ring held back. `false` while it is still full.
+    /// A check and nothing else when nothing is held, so cheap enough for
+    /// every block.
+    pub(super) fn retry_held(&mut self) -> bool {
+        for i in 0..HELD {
+            let Some(event) = self.held[i].take() else {
+                continue;
+            };
+            if let Err(rtrb::PushError::Full(event)) = self.events.push(event) {
+                self.held[i] = Some(event);
+                return false;
+            }
+        }
+        true
+    }
+
+    fn refused(&mut self, mut event: Event) {
+        match held_slot(&event) {
+            Some(i) => {
+                // The latest of a kind supersedes the one held, but a forced
+                // resend carries over.
+                if let (Some(Event::Objects(old)), Event::Objects(new)) =
+                    (self.held[i].take(), &mut event)
+                {
+                    new.force_full |= old.force_full;
+                }
+                self.held[i] = Some(event);
+            }
+            None => {
+                self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                if let Event::Meter(report) = event {
+                    self.held_meter = Some((report.object_gains, report.object_band_gains));
+                }
             }
         }
     }
 
     /// An object list to fill, with the strings of an earlier one to reuse.
     pub(super) fn object_list(&mut self) -> Vec<ObjectMeta> {
-        self.held_objects
-            .take()
-            .or_else(|| self.spare_objects.pop().ok())
-            .unwrap_or_default()
+        self.spare_objects.pop().unwrap_or_default()
     }
 
     /// Meter lists to hand the renderer in place of the ones a report takes.
@@ -287,6 +354,7 @@ impl Telemetry {
         let Some(thread) = self.thread.take() else {
             return;
         };
+        self.retry_held();
         self.shared.stop.store(true, Ordering::Release);
         thread.thread().unpark();
         let _ = thread.join();
@@ -474,10 +542,18 @@ impl Worker {
     }
 
     /// Queue `event` for this tick, in place of the one of its kind it
-    /// supersedes, if it is coalesced.
+    /// supersedes: a coalesced one describing a block in the same window.
     fn absorb(&mut self, mut event: Event) {
-        if let Some(kind) = event.coalesced_kind() {
-            let superseded = self.latest[kind].and_then(|i| self.pending[i].take());
+        if let Some((kind, block)) = event.coalesced() {
+            let pending = &self.pending;
+            let superseded = self.latest[kind]
+                .filter(|&i| {
+                    pending[i]
+                        .as_ref()
+                        .and_then(Event::coalesced)
+                        .is_some_and(|(_, latest)| latest.window() == block.window())
+                })
+                .and_then(|i| self.pending[i].take());
             if let (Some(Event::Objects(old)), Event::Objects(new)) = (superseded, &mut event) {
                 new.force_full |= old.force_full;
                 self.recycle_objects(old.objects);
@@ -868,5 +944,92 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(sender.telemetry.shared.dropped.load(Ordering::Relaxed) > 0);
         drop(held);
+    }
+
+    /// What a client following the sound shows once the listener hears
+    /// `heard`, as Studio's playout queue decides it: each stream message
+    /// belongs to the block the last marker named, and is applied once the
+    /// listener reaches that block. The `x` of object 0's last pose applied.
+    fn x_heard_at(messages: &[OscMessage], heard: u64) -> Option<f32> {
+        let mut block = None;
+        let mut x = None;
+        for m in messages {
+            if m.addr == osc_contract::PLAYOUT_BLOCK {
+                block = match m.args.first() {
+                    Some(OscType::Long(pos)) => Some(*pos as u64),
+                    _ => None,
+                };
+            } else if m.addr == "/omniphony/object/0/xyz" && block.is_some_and(|b| b <= heard) {
+                x = first_float(m);
+            }
+        }
+        x
+    }
+
+    /// A host that renders ahead of playback hands half a second over in one
+    /// burst, faster than a tick: every window of it keeps its pose, and a
+    /// client following the sound shows, half-way through, the pose of the
+    /// block it hears rather than nothing until the end of the burst.
+    #[test]
+    fn a_read_ahead_burst_keeps_a_pose_for_every_window_of_audio() {
+        let (mut sender, socket) = sender_to_test_socket();
+        sender.send_heard(0, 48_000);
+        const FRAMES: u64 = 100;
+        for i in 0..FRAMES {
+            let pos = i * WINDOW;
+            sender.render_at(pos);
+            sender.send_object_frame(pos, 0, 0, &[object_at(i as f32 / FRAMES as f32)]);
+        }
+        let messages = received(&socket, Duration::from_millis(300));
+        let frames = messages
+            .iter()
+            .filter(|m| m.addr == osc_contract::SPATIAL_FRAME)
+            .count();
+        assert_eq!(frames, FRAMES as usize);
+        assert_eq!(x_heard_at(&messages, 24_000), Some(0.5));
+        assert_eq!(x_heard_at(&messages, 47_520), Some(0.99));
+    }
+
+    /// What nothing would come to replace survives a full queue: once the
+    /// telemetry thread catches up, the loudness, the live state and the last
+    /// object frame go out, with no other message after them to carry them.
+    #[test]
+    fn a_full_queue_holds_back_what_no_later_message_replaces() {
+        let (mut sender, socket) = sender_to_test_socket();
+        sender.attach_renderer_control(fixture_control());
+        let clients = Arc::clone(&sender.clients);
+        let held = clients.lock_for_test();
+        for i in 0..(EVENT_CAPACITY as u64 * 2) {
+            sender.send_timestamp(i, 0.0);
+        }
+        sender.send_object_frame(0, 0, 0, &[object_at(0.75)]);
+        sender.send_loudness_state();
+        sender.send_live_state_bundle();
+        assert!(
+            sender.telemetry.held.iter().all(Option::is_some),
+            "the queue was full"
+        );
+        drop(held);
+        // The thread catches up on the stalled queue.
+        let _ = received(&socket, Duration::from_millis(200));
+
+        sender.render_at(40);
+        let addrs: Vec<(String, Option<f32>)> = received(&socket, Duration::from_millis(500))
+            .iter()
+            .map(|m| (m.addr.clone(), first_float(m)))
+            .collect();
+        for addr in [
+            osc_contract::STATE_LOUDNESS,
+            osc_contract::STATE_SNAPSHOT_COMPLETE,
+        ] {
+            assert!(
+                addrs.iter().any(|(a, _)| a == addr),
+                "{addr} not in {addrs:?}"
+            );
+        }
+        assert!(
+            addrs.contains(&("/omniphony/object/0/xyz".to_string(), Some(0.75))),
+            "{addrs:?}"
+        );
     }
 }

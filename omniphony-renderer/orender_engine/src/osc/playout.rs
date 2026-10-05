@@ -24,8 +24,11 @@ use super::telemetry::{Block, Event};
 impl OscSender {
     /// The stream messages sent from now on describe the block starting at
     /// sample `pos`. Cheap enough for every block: a store, and nothing is
-    /// sent until a stream message actually goes out.
+    /// sent until a stream message actually goes out. Also where what a full
+    /// queue held back is pushed again, so it goes out even when no other
+    /// message follows it.
     pub fn render_at(&mut self, pos: u64) {
+        self.telemetry.retry_held();
         self.telemetry.block.pos = pos;
     }
 
