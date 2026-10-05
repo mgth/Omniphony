@@ -28,7 +28,7 @@ omniphony-renderer/          Cargo workspace (the engine)
   audio_input/               live PipeWire capture
   orender_engine/            engine glue: bridge loading, decode loop, OSC
   runtime_control/           shared control/state types and OSC plumbing
-  bridge_api/                stable ABI for external format bridges
+  bridge_api/                versioned ABI for external format bridges
   spdif/                     IEC61937 / S/PDIF parsing
   example_backend/           reference backend — copy this to start your own
 omniphony-studio/            Tauri control-surface app
