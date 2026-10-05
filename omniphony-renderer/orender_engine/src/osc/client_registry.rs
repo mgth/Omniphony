@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
@@ -50,6 +51,13 @@ pub(crate) struct OscClientRegistry {
     /// out under the higher count and pass for current. Taken before the
     /// clients lock, never inside it.
     publication: Mutex<StateGeneration>,
+    /// Whether any client is live, any subscribes to the meters, any to the
+    /// diag traces: what the render path asks every block, so it reads these
+    /// rather than take the lock (#670). Published on every change and on
+    /// every telemetry tick, which is when a timed-out client is noticed.
+    any_live: AtomicBool,
+    any_metering_live: AtomicBool,
+    any_diag_live: AtomicBool,
 }
 
 /// The state count, as a publication holding the lock sees it.
@@ -73,6 +81,9 @@ impl OscClientRegistry {
             clients: Mutex::new(HashMap::new()),
             timeout,
             publication: Mutex::new(StateGeneration(0)),
+            any_live: AtomicBool::new(false),
+            any_metering_live: AtomicBool::new(false),
+            any_diag_live: AtomicBool::new(false),
         }
     }
 
@@ -93,8 +104,34 @@ impl OscClientRegistry {
         publish(&mut generation)
     }
 
+    /// Publish who is live in `clients` for the lock-free queries.
+    fn publish_presence(&self, clients: &HashMap<SocketAddr, OscClientState>) {
+        let now = Instant::now();
+        let (mut live, mut metering, mut diag) = (false, false, false);
+        for client in clients.values() {
+            if client
+                .last_seen
+                .is_some_and(|t| now.duration_since(t) >= self.timeout)
+            {
+                continue;
+            }
+            live = true;
+            metering |= client.metering_enabled;
+            diag |= client.diag_enabled;
+        }
+        self.any_live.store(live, Ordering::Relaxed);
+        self.any_metering_live.store(metering, Ordering::Relaxed);
+        self.any_diag_live.store(diag, Ordering::Relaxed);
+    }
+
+    /// Publish who is live now, for the timeouts no change reports.
+    pub(crate) fn refresh_presence(&self) {
+        self.publish_presence(&self.clients.lock().unwrap());
+    }
+
     pub(crate) fn insert_permanent(&self, addr: SocketAddr) {
-        self.clients.lock().unwrap().insert(
+        let mut clients = self.clients.lock().unwrap();
+        clients.insert(
             addr,
             OscClientState {
                 last_seen: None,
@@ -104,6 +141,7 @@ impl OscClientRegistry {
                 gaintable_targets: BTreeMap::new(),
             },
         );
+        self.publish_presence(&clients);
     }
 
     pub(crate) fn register(&self, addr: SocketAddr) -> (bool, bool) {
@@ -129,6 +167,7 @@ impl OscClientRegistry {
                 gaintable_targets,
             },
         );
+        self.publish_presence(&clients);
         (prev.is_none(), metering_enabled)
     }
 
@@ -138,6 +177,7 @@ impl OscClientRegistry {
             // Actively-registered client: refresh its liveness and ack.
             Some(entry) if entry.last_seen.is_some() => {
                 entry.last_seen = Some(Instant::now());
+                self.publish_presence(&clients);
                 true
             }
             // Known only as a config-seeded *permanent* target that has never
@@ -165,12 +205,14 @@ impl OscClientRegistry {
                 client.metering_enabled = enabled;
             }
         }
+        self.publish_presence(&clients);
     }
 
     pub(crate) fn set_metering(&self, addr: SocketAddr, enabled: bool) -> bool {
         let mut clients = self.clients.lock().unwrap();
         if let Some(entry) = clients.get_mut(&addr) {
             entry.metering_enabled = enabled;
+            self.publish_presence(&clients);
             true
         } else {
             false
@@ -181,6 +223,7 @@ impl OscClientRegistry {
         let mut clients = self.clients.lock().unwrap();
         if let Some(entry) = clients.get_mut(&addr) {
             entry.diag_enabled = enabled;
+            self.publish_presence(&clients);
             true
         } else {
             false
@@ -279,38 +322,23 @@ impl OscClientRegistry {
     }
 
     pub(crate) fn is_any_live(&self) -> bool {
-        let clients = self.clients.lock().unwrap();
-        let now = Instant::now();
-        clients.values().any(|client| {
-            client
-                .last_seen
-                .map(|t| now.duration_since(t) < self.timeout)
-                .unwrap_or(true)
-        })
+        self.any_live.load(Ordering::Relaxed)
     }
 
     pub(crate) fn is_any_metering_live(&self) -> bool {
-        let clients = self.clients.lock().unwrap();
-        let now = Instant::now();
-        clients.values().any(|client| {
-            client.metering_enabled
-                && client
-                    .last_seen
-                    .map(|t| now.duration_since(t) < self.timeout)
-                    .unwrap_or(true)
-        })
+        self.any_metering_live.load(Ordering::Relaxed)
     }
 
     pub(crate) fn is_any_diag_live(&self) -> bool {
-        let clients = self.clients.lock().unwrap();
-        let now = Instant::now();
-        clients.values().any(|client| {
-            client.diag_enabled
-                && client
-                    .last_seen
-                    .map(|t| now.duration_since(t) < self.timeout)
-                    .unwrap_or(true)
-        })
+        self.any_diag_live.load(Ordering::Relaxed)
+    }
+
+    /// Hold the registry, as a slow or contended sender would.
+    #[cfg(test)]
+    pub(crate) fn lock_for_test(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<SocketAddr, OscClientState>> {
+        self.clients.lock().unwrap()
     }
 
     #[cfg(test)]
@@ -339,6 +367,7 @@ impl OscClientRegistry {
                 }
             }
         });
+        self.publish_presence(&clients);
         for (addr, client) in clients.iter() {
             if predicate(client) {
                 if let Err(e) = socket.send_to(bytes, *addr) {

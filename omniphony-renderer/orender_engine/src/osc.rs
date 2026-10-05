@@ -19,7 +19,10 @@ mod playout;
 mod profiles;
 mod recompute;
 mod state_emit;
+mod telemetry;
 mod transport;
+
+pub use self::telemetry::MeterTimings;
 
 use self::client_registry::OscClientRegistry;
 use self::dispatch::{ControlOutcome, RealtimeSeqState, handle_control_message};
@@ -241,7 +244,6 @@ pub fn negotiate_rx_port(rx_port: u16) -> bool {
 
 /// Generic description of a single spatial audio object for OSC broadcast.
 /// Built by the caller from whatever source format it uses.
-#[derive(Clone)]
 pub struct ObjectMeta {
     pub name: String,
     pub x: f32,
@@ -267,6 +269,34 @@ pub struct ObjectMeta {
     /// the same reason as `fixed`: clients used to read it off the name with a
     /// regular expression, so a rename silently reclassified everything.
     pub kind: crate::object_gen::ObjectKind,
+}
+
+impl Clone for ObjectMeta {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            coord_mode: self.coord_mode.clone(),
+            label: self.label.clone(),
+            ..*self
+        }
+    }
+
+    /// Field by field, so the strings reuse their buffers: the render path
+    /// copies each object frame into a list the telemetry thread handed back.
+    fn clone_from(&mut self, source: &Self) {
+        self.name.clone_from(&source.name);
+        self.x = source.x;
+        self.y = source.y;
+        self.z = source.z;
+        self.coord_mode.clone_from(&source.coord_mode);
+        self.direct_speaker_index = source.direct_speaker_index;
+        self.gain = source.gain;
+        self.priority = source.priority;
+        self.size = source.size;
+        self.fixed = source.fixed;
+        self.label.clone_from(&source.label);
+        self.kind = source.kind;
+    }
 }
 
 /// Epsilon for position/float comparison in delta OSC sending.
@@ -343,12 +373,12 @@ pub struct OscSender {
     /// Receives /control/{audio,input}/* messages the core doesn't handle and
     /// contributes /state/audio + /state/input to the live-state bundle.
     host_handler: Option<Arc<dyn HostControlHandler>>,
-    /// Previous frame's object snapshots for delta detection.
-    prev_objects: Option<Vec<ObjectSnapshot>>,
-    /// Force next send_object_frame call to emit all objects.
+    /// Set by the listener when a client registers: the telemetry thread sends
+    /// the next object frame in full.
     force_full_next: Arc<AtomicBool>,
-    /// Monotonic identifier for the current logical content generation.
-    content_generation: u64,
+    /// The stream telemetry's queue to its thread (#670): what the render path
+    /// reports goes out from there, never from the caller.
+    telemetry: telemetry::Telemetry,
     /// Random identifier for THIS producer instance, echoed in every
     /// `/omniphony/heartbeat/ack`. A client that sees this value change knows a
     /// *different* renderer instance now answers on the same RX port (a CLI⇄mpv
@@ -376,9 +406,6 @@ pub struct OscSender {
     /// another instance; the first `start_listener` of a process follows the
     /// engine's own startup load, which already consumed any sidecar.
     adopt_live_on_listen: bool,
-    /// Block markers and the heard position, for clients that show what is
-    /// heard rather than what was just rendered (see [`playout`]).
-    playout: playout::PlayoutMarks,
 }
 
 /// Receive buffer of the control listener: larger than any UDP payload, so no
@@ -502,14 +529,20 @@ impl OscSender {
                 .unwrap_or(0);
             (std::process::id() ^ nanos.rotate_left(13)) as i32
         };
+        let socket = Arc::new(socket);
+        let force_full_next = Arc::new(AtomicBool::new(true));
+        let telemetry = telemetry::Telemetry::spawn(
+            Arc::clone(&socket),
+            Arc::clone(&clients),
+            Arc::clone(&force_full_next),
+        )?;
         Ok(Self {
-            socket: Arc::new(socket),
+            socket,
             clients,
             control: None,
             host_handler: None,
-            prev_objects: None,
-            force_full_next: Arc::new(AtomicBool::new(true)),
-            content_generation: 0,
+            force_full_next,
+            telemetry,
             instance_epoch,
             listener_stop: Arc::new(AtomicBool::new(false)),
             listener_thread: Mutex::new(None),
@@ -518,7 +551,6 @@ impl OscSender {
             standby_thread: Mutex::new(None),
             listener_bound: false,
             adopt_live_on_listen: false,
-            playout: playout::PlayoutMarks::new(),
         })
     }
 
@@ -977,39 +1009,9 @@ impl OscSender {
         self.listener_bound
     }
 
-    /// Send bytes to every live client.
-    ///
-    /// Clients with a timed entry (`Some(t)`) are dropped if `t.elapsed() >= CLIENT_TIMEOUT`.
-    /// Permanent clients (`None`) are never dropped.
-    ///
-    /// Only the stream comes through here (object frames, timestamps, bed
-    /// config), so each message is preceded by its block's marker the first
-    /// time — see [`playout`].
-    fn send_to_all(&self, bytes: &[u8]) {
-        self.mark_block();
-        self.send_raw_to_all(bytes);
-    }
-
-    fn send_raw_to_all(&self, bytes: &[u8]) {
-        send_raw_filtered(&self.socket, &self.clients, bytes, |_| true);
-    }
-
-    /// The meter bundles: stream too, marked like [`send_to_all`].
-    ///
-    /// [`send_to_all`]: Self::send_to_all
-    fn send_to_metering_clients(&self, bytes: &[u8]) {
-        self.mark_block();
-        send_raw_filtered(&self.socket, &self.clients, bytes, |client| {
-            client.metering_enabled
-        });
-    }
-
-    pub(crate) fn send_to_diag_clients(&self, bytes: &[u8]) {
-        send_raw_filtered(&self.socket, &self.clients, bytes, |client| {
-            client.diag_enabled
-        });
-    }
-
+    /// Whether any client is live. Lock-free, for the render path: the
+    /// answer is refreshed on every registry change and every telemetry tick,
+    /// so a client that timed out is noticed within one.
     pub fn has_osc_clients(&self) -> bool {
         self.clients.is_any_live()
     }
@@ -1032,6 +1034,9 @@ impl OscSender {
 
 impl Drop for OscSender {
     fn drop(&mut self) {
+        // What the render path queued goes out before the goodbye below.
+        self.telemetry.shutdown();
+
         // Are we still the current same-process RX-port registrant? A successor
         // engine (mpv switching audio tracks) overwrites LOCAL_RX_RELEASE with
         // its own stop flag when it reclaims the port in `start_listener`, which
@@ -1569,7 +1574,12 @@ mod send_size_tests {
         };
         let sender = OscSender::new(target).unwrap();
 
-        sender.send_raw_to_all(&vec![0x5a; MAX_STATE_DATAGRAM]);
+        send_raw_filtered(
+            &sender.socket,
+            &sender.clients,
+            &vec![0x5a; MAX_STATE_DATAGRAM],
+            |_| true,
+        );
 
         let mut buf = vec![0u8; 70_000];
         let len = receiver.recv(&mut buf).expect("the datagram arrives");
