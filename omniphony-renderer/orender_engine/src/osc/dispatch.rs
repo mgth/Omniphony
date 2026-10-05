@@ -1112,26 +1112,21 @@ mod notify_tests {
     /// real UDP socket, is received whole, written and acknowledged: the
     /// datagram is well over the 4 KiB the listener used to read.
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS refuses to send a datagram over net.inet.udp.maxdgram (9216 bytes by default)"
+    )]
     fn a_maximum_size_backend_file_put_crosses_the_socket() {
+        use crate::osc::test_support::{SERIAL, listening_sender};
+        // The listener registers in the process-wide port registry and its
+        // drop consumes the resume target, like the yield tests.
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("orender-osc-big-put-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let control = fixture_control();
         control.set_config_path(dir.join("config.yaml"));
-
-        let mut sender = crate::osc::OscSender::new(std::net::SocketAddrV4::new(
-            std::net::Ipv4Addr::LOCALHOST,
-            1,
-        ))
-        .unwrap();
-        sender.attach_renderer_control(Arc::clone(&control));
-        let port = UdpSocket::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        sender.start_listener(port, false).unwrap();
-        assert!(sender.is_listening());
+        let (sender, port) = listening_sender(&control);
 
         let content = "x".repeat(BACKEND_FILE_MAX_BYTES);
         let put = rosc::encoder::encode(&rosc::OscPacket::Message(OscMessage {
@@ -1148,10 +1143,7 @@ mod notify_tests {
         let client = UdpSocket::bind("127.0.0.1:0").unwrap();
         client.send_to(&put, ("127.0.0.1", port)).unwrap();
 
-        let replies = received(&client);
-        let ack = replies
-            .iter()
-            .find(|m| m.addr == osc_contract::STATE_BACKEND_FILE_CONTENT)
+        let ack = awaited(&client, osc_contract::STATE_BACKEND_FILE_CONTENT)
             .expect("the put is acknowledged");
         assert_eq!(ack.args.get(3), Some(&OscType::String(content.clone())));
         let path = backend_files::resolve(Some(&dir), "test", "big.lua", false).unwrap();
@@ -1159,6 +1151,28 @@ mod notify_tests {
 
         drop(sender);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The first message on `addr` the socket receives. A reply produced on
+    /// the listener thread arrives when that thread gets to it, so this waits
+    /// for it rather than for the socket to go quiet like [`received`].
+    fn awaited(socket: &UdpSocket, addr: &str) -> Option<OscMessage> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut buf = vec![0u8; 70_000];
+        socket
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        while std::time::Instant::now() < deadline {
+            let Ok(len) = socket.recv(&mut buf) else {
+                continue;
+            };
+            if let Ok((_, rosc::OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len])
+                && msg.addr == addr
+            {
+                return Some(msg);
+            }
+        }
+        None
     }
 
     /// Every message the bystander receives until the socket goes quiet.
