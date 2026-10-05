@@ -671,6 +671,53 @@ mod tests {
         assert_eq!(cli.vbap_distance_model, "linear");
     }
 
+    /// Room flags reach the renderer as given, a width other than 1 and
+    /// explicit rear and lower ratios included, whether the file sets no room
+    /// or one in metres (which a load derives into ratios).
+    #[test]
+    fn room_flags_reach_the_renderer_as_given() {
+        let flags = [
+            "--room-ratio",
+            "2,6,2",
+            "--room-ratio-rear",
+            "4",
+            "--room-ratio-lower",
+            "1",
+        ];
+        let mut in_metres = renderer::config::RenderConfig {
+            room_width_m: Some(4.0),
+            room_front_m: Some(5.0),
+            room_rear_m: Some(3.0),
+            room_height_m: Some(2.5),
+            room_lower_m: Some(1.0),
+            ..Default::default()
+        };
+        in_metres.normalize_room_meters();
+        for file in [renderer::config::RenderConfig::default(), in_metres] {
+            let (cli, args) = render_invocation(&flags);
+            let mut render = file.clone();
+            crate::cli::options::store_given_values(
+                &mut render,
+                &cli.render_sources().option_values(),
+            )
+            .expect("valid flags");
+            super::apply_explicit_renderer_args(&mut render, &args, &cli.render_sources());
+            let params = super::renderer_params(&render, &args);
+            let room = renderer::config_fields::room::parse(
+                &params.room_ratio,
+                params.room_ratio_rear,
+                params.room_ratio_lower,
+                params.room_ratio_center_blend,
+            )
+            .expect("room parses");
+            assert_eq!(room.ratio, [2.0, 6.0, 2.0], "{file:?}");
+            assert_eq!(room.rear, 4.0);
+            assert_eq!(room.lower, 1.0);
+            // The live seed reads the same room.
+            assert_eq!(renderer::config_fields::room::resolve(&render), Ok(room));
+        }
+    }
+
     /// The `file` output backend destination + format survive a save → load
     /// round-trip: `effective_to_config` persists them, `merge_render_config`
     /// reads them back into a fresh (un-overridden) arg set.

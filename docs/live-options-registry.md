@@ -390,8 +390,10 @@ no flag. A value given goes into the run's config through its row, as a
 save of the same live change writes it (`options::store_client_values`, on
 a scratch `LiveParams` seeded from the file; `host_audio::store_host_values`
 on a blank `HostIo`): validated and bounded as an OSC write, refused with an
-error naming the flag, kept by `--save-config`. A room flag stores the whole
-room (its metres are read only as a set).
+error naming the flag, kept by `--save-config`. A room flag is pinned as its
+ratio key rather than stored in metres as a save does: the metres carry a
+width other than 1 in the layout radius, folded in only when the file is
+loaded again, and a launch reads the ratio keys.
 
 ### Outside the registry: the command tables
 

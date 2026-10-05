@@ -2935,25 +2935,34 @@ pub fn store_client_values(
             _ => refused.push((*key).to_string()),
         }
     }
-    // The room is stored as one set of metres (`config_fields::room`), read
-    // only whole: a member given alone stores every member, the others as
-    // the config had them.
-    if applied
-        .iter()
-        .any(|spec| spec.group.is_some_and(|g| g.key == ROOM.key))
-    {
-        for spec in LIVE_OPTIONS {
-            if spec.group.is_some_and(|g| g.key == ROOM.key)
-                && !applied.iter().any(|a| a.key == spec.key)
-            {
-                applied.push(spec);
-            }
+    for spec in applied {
+        if !pin_room_ratio(render, &live, spec.key) {
+            (spec.config_store)(render, &live, env);
         }
     }
-    for spec in applied {
-        (spec.config_store)(render, &live, env);
-    }
     refused
+}
+
+/// A room value given on its own is pinned as its ratio key, not stored as a
+/// save writes it. A save stores the room in metres against the layout
+/// radius, width being the reference, so a width other than 1 is folded into
+/// the radius when the file is loaded again; a launch never reloads, and the
+/// renderer build reads the ratio keys (which win over the metres in a loaded
+/// config, `config_fields::room::resolve`). `false` for any other key.
+fn pin_room_ratio(render: &mut RenderConfig, live: &LiveParams, key: &str) -> bool {
+    match key {
+        "room_ratio" => {
+            let [width, length, height] = live.room_ratio;
+            render.room_ratio = Some(format!("{width},{length},{height}"));
+        }
+        "room_ratio_rear" => render.room_ratio_rear = Some(live.room_ratio_rear),
+        "room_ratio_lower" => render.room_ratio_lower = Some(live.room_ratio_lower),
+        "room_ratio_center_blend" => {
+            render.room_ratio_center_blend = Some(live.room_ratio_center_blend)
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// Write every declared live option — plus the placement — into a config

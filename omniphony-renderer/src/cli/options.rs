@@ -348,13 +348,9 @@ mod tests {
             (OptionKind::FloatArray { len, min, max, .. }, default) => {
                 let mid = ((min + max.min(4.0)) / 2.0) as f64;
                 let values: Vec<String> = match default {
-                    // The first value kept: the room's width is its reference,
-                    // a ratio the file stores against the layout radius.
-                    OptionDefault::FloatArray(d) => d
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| (*v as f64 + if i == 0 { 0.0 } else { 0.25 }).to_string())
-                        .collect(),
+                    OptionDefault::FloatArray(d) => {
+                        d.iter().map(|v| (*v as f64 + 0.25).to_string()).collect()
+                    }
                     _ => vec![mid.to_string(); len],
                 };
                 vec![flag, values.join(",")]
