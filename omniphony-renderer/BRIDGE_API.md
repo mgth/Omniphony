@@ -10,6 +10,63 @@ The ABI is defined in:
 `omniphony-renderer` does not decode immersive formats directly. A bridge plugin owns the
 format-specific parsing, decode pipeline, and spatial metadata extraction.
 
+## Versioning
+
+**A bridge loads only in a host built against the same `bridge_api` minor
+version.** Rebuild the bridge with the host: a bridge built against
+`bridge_api` 0.5.x loads in every host built against 0.5.x, and in no other.
+
+- **What bumps the minor.** Any change to what crosses the boundary: a
+  `FormatBridge` method, a `BridgeLib` field, a field, a variant or a
+  discriminant of a type the two sides exchange. Adding a method with a
+  default body is a change too: the vtable grows. The bump goes in
+  `bridge_api/Cargo.toml` and in the workspace dependency.
+- **What a patch release may change.** Documentation, constants, plain Rust
+  helpers: anything that leaves the layout alone.
+- **The check.** `bridge_api/tests/abi_baseline.rs` writes the layout a
+  bridge sees, from the root module down to every type it reaches, and
+  compares it with the committed `bridge_api/abi-baseline.txt`. A layout
+  change without a minor bump fails it, whatever the environment says; with
+  the bump, regenerate the baseline and commit it with the change:
+
+  ```sh
+  UPDATE_BRIDGE_ABI_BASELINE=1 cargo test -p bridge_api --test abi_baseline
+  ```
+
+- **At load.** The host reads the version a plugin declares in its header
+  before anything else, and refuses another minor with an error naming both
+  versions. (abi_stable refuses it anyway, since it compares each type's
+  package minor, but only after a layout comparison whose error — "too many
+  fields" — says nothing a user can act on.)
+- **In CI.** The reference bridge built at the last release tag is loaded
+  into the current host, which must load it when both share a minor and
+  refuse it by version otherwise (`orender_engine/tests/previous_release_bridge.rs`).
+
+Why this policy rather than a C vtable with optional, probed slots (the way
+`liborender`'s ABI keeps older players working): a bridge is rebuilt and
+released together with the host it targets, while players outlive several
+engine releases. The cost is that a host whose minor changed needs a new
+bridge; releases name the `bridge_api` version they expect.
+
+## Panics
+
+**Nothing may unwind out of a bridge.** A panic that reaches the ABI boundary
+ends the process: abi_stable's method shims call `exit(1)` on it, and an
+`extern "C" fn` aborts. When the engine runs as `liborender`, that process is
+the media player.
+
+- Catch panics in every method that does real work — `push_packet` above
+  all, and `configure`, `reset`, `set_drc_mode` when they parse or rebuild
+  anything — with `std::panic::catch_unwind`, and turn a caught one into the
+  method's failure value. For `push_packet` that is the same as any chunk the
+  bridge could not decode: reset the pipeline and set `did_reset` (and, for a
+  strict bridge, `error_message`).
+- The root-module entry points (`new_bridge`, `set_host_log_sink`,
+  `source_families`) are `extern "C"`: keep them free of work that can fail.
+  `new_bridge` constructs; fallible setup belongs in `configure` or the
+  first `push_packet`.
+- `reference_bridge` shows the pattern (`WavBridge::recover_from_panic`).
+
 ## Loading Model
 
 Bridge lookup order:
@@ -63,7 +120,7 @@ Host lifecycle:
 
 Important expectations:
 - `configure(...)` happens before the first `push_packet(...)`
-- `is_spatial()` is meaningful after configuration
+- `has_objects()` is meaningful after configuration
 - `coordinate_format()` should stay stable for the instance lifetime
 
 ## Main Trait
@@ -79,13 +136,24 @@ pub trait FormatBridge: Send + Sync + 'static {
 
     fn reset(&mut self);
     fn is_ready(&self) -> bool;
-    fn is_spatial(&self) -> bool;
+    fn has_objects(&self) -> bool;
     fn configure(&mut self, key: RStr<'_>, value: RStr<'_>) -> bool;
     fn coordinate_format(&self) -> RCoordinateFormat;
     fn vbap_cartesian_defaults(&self) -> RVbapCartesianDefaults;
     fn preferred_vbap_table_mode(&self) -> RVbapTableMode;
+    fn supported_drc_modes(&self) -> RVec<RString>;
+    fn set_drc_mode(&mut self, mode: RStr<'_>) -> bool;
+    fn fixed_channel_poses(&self) -> RVec<RChannelPose>;
+
+    // With a default body: a bridge that does not implement them still builds.
+    fn source_family(&self) -> RString;
+    fn source_label(&self) -> RString;
+    fn channel_tags(&self) -> RVec<RChannelTag>;
 }
 ```
+
+`bridge_api/src/lib.rs` documents each method; this file covers the contract
+around them.
 
 ## Input Contract
 
@@ -132,6 +200,8 @@ pub struct RDecodedFrame {
     pub pcm: RVec<i32>,
     pub channel_labels: RVec<RChannelLabel>,
     pub metadata: RVec<RMetadataFrame>,
+    pub drc_gain: f32,
+    pub drc_ramp_duration: u32,
     pub dialogue_level: ROption<i8>,
     pub is_new_segment: bool,
 }
@@ -148,7 +218,8 @@ PCM rules:
 ```rust
 pub struct RMetadataFrame {
     pub events: RVec<REvent>,
-    pub bed_indices: RVec<usize>,
+    pub object_channels: RVec<RObjectChannel>,
+    pub channel_gains: RVec<RChannelGain>,
     pub name_updates: RVec<RNameUpdate>,
     pub sample_pos: u64,
     pub ramp_duration: u32,
@@ -164,7 +235,7 @@ pub struct REvent {
     pub has_pos: bool,
     pub pos: [f64; 3],
     pub gain_db: i8,
-    pub spread: f64,
+    pub size: [f64; 3],
     pub ramp_duration: u32,
 }
 ```
@@ -182,13 +253,15 @@ pub struct REvent {
   - elevation in `[-90°, +90°]`
   - distance non-negative
 
-If `has_pos == false`, the event is non-positional. That is typical for direct
-bed-style channels.
+If `has_pos == false`, the event is a gain/ramp-only update for its object.
 
-### Beds and names
+### Objects, channel gains and names
 
-- `bed_indices`
-  - format-provided bed channel IDs in the same ID space as `REvent.id`
+- `object_channels`
+  - binds each dynamic object ID to the PCM channel carrying its audio (see
+    [`docs/channel-object-contract.md`](../docs/channel-object-contract.md))
+- `channel_gains`
+  - metadata-driven gain automation for fixed channels
 - `name_updates`
   - sparse object-name updates keyed by object ID
 
@@ -197,9 +270,9 @@ bed-style channels.
 ### `is_ready()`
 - `true` once the bridge has successfully decoded at least one frame
 
-### `is_spatial()`
-- `true` if the current configured presentation may carry spatial objects
-- called after configuration and before decode starts
+### `has_objects()`
+- `true` while the current presentation carries dynamic objects
+- may flip mid-stream; callers must not latch it
 
 ### `coordinate_format()`
 - declares how `REvent.pos` must be interpreted
