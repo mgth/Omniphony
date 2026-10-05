@@ -207,6 +207,11 @@ jobs:
       # missed every one named otherwise. Optimised, the full suite runs in a
       # few seconds; the cost is the optimised build, paid either way.
       #
+      # With the wide DSP validation matrix: three extra sweeps (crossover
+      # flatness, VBAP energy, binaural ITD) that cost a fraction of a second
+      # optimised, so they need not wait for a separate job. Its known misses
+      # stay `#[ignore]`d with their measured value (dsp_fixtures/README.md).
+      #
       # What the comparison exercises depends on the runner's CPU: a test whose
       # wider build this CPU lacks prints that it skipped the comparison and
       # passes. `--nocapture` keeps that line in the log, and the CPU's vector
@@ -216,7 +221,17 @@ jobs:
         run: |
           echo "Runner CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
           echo "Vector extensions: $(grep -m1 '^flags' /proc/cpuinfo | grep -o 'avx[^ ]*' | sort -u | tr '\n' ' ')"
-          cargo test --release -p renderer --lib --locked -- --nocapture
+          cargo test --release -p renderer --lib --features wide-matrix --locked -- --nocapture
+
+      # The criterion bench, run once per measurement as a test (`cargo test`
+      # on a criterion target runs each benchmark a single time and checks it
+      # completes; it times nothing). Without it the bench was not even
+      # compiled, and a renderer API change could break it unnoticed until
+      # someone sat down to measure. Same features as the step above, so it
+      # reuses its optimised build.
+      - name: Run the render benchmarks once (release, test mode)
+        working-directory: omniphony-renderer
+        run: cargo test --release -p renderer --benches --features wide-matrix --locked
 
       # The worst-case block-time gate (renderer/src/spatial_renderer/
       # perf_gate.rs): a high percentile of per-block render time, budgeted as
