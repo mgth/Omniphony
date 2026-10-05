@@ -333,6 +333,7 @@ export const app = {
   // C-ABI version ("major.minor") of the liborender shim hosting the engine.
   // Null when the engine is linked as a Rust crate (the CLI — no C ABI).
   renderAbi: null,
+  renderBridgeApi: null,
   // Non-empty when the renderer came up degraded (decoder bridge missing) —
   // drives a red banner under the OSC status. Cleared when a healthy renderer
   // reports an empty value.
