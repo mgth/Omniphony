@@ -150,8 +150,10 @@ pub fn spawn_live_input_manager(
                 #[cfg(target_os = "linux")]
                 if input_control.requested_snapshot().mode != InputMode::Bridge
                     && current_capture.as_ref().is_some_and(|capture| {
-                        requested_live_input_latency_ms(&audio_control)
-                            != Some(capture.config.target_latency_ms)
+                        capture_latency_is_stale(
+                            audio_control.requested_latency_target_ms(),
+                            capture.config.target_latency_ms,
+                        )
                     })
                 {
                     reconcile_live_input(
@@ -401,17 +403,31 @@ fn resolve_pipewire_bridge_config(
             .unwrap_or_else(|| DEFAULT_LIVE_BRIDGE_DESCRIPTION.to_string()),
         channels,
         sample_rate_hz: DEFAULT_LIVE_BRIDGE_SAMPLE_RATE_HZ,
-        target_latency_ms: requested_live_input_latency_ms(audio_control)
-            .unwrap_or(PipewireBufferConfig::default().latency_ms)
-            .max(1),
+        target_latency_ms: resolve_live_input_latency_ms(
+            audio_control.requested_latency_target_ms(),
+        ),
         clock_mode: requested.clock_mode,
         runtime: bridge_runtime.clone(),
     })
 }
 
+/// The latency target a PipeWire capture runs at for a requested one: the
+/// PipeWire default while none is requested, and never below 1 ms.
 #[cfg(target_os = "linux")]
-fn requested_live_input_latency_ms(audio_control: &AudioControl) -> Option<u32> {
-    audio_control.requested_latency_target_ms()
+fn resolve_live_input_latency_ms(requested: Option<u32>) -> u32 {
+    requested
+        .unwrap_or(PipewireBufferConfig::default().latency_ms)
+        .max(1)
+}
+
+/// Whether a capture running at `capture_latency_ms` no longer serves the
+/// requested target. Both sides are resolved the same way: the request is
+/// raw (unset, or below the floor) where the capture holds what it resolved
+/// to, and comparing them as they come reads a request the capture already
+/// serves as a change.
+#[cfg(target_os = "linux")]
+fn capture_latency_is_stale(requested: Option<u32>, capture_latency_ms: u32) -> bool {
+    resolve_live_input_latency_ms(requested) != capture_latency_ms
 }
 
 // Bridge capture entrypoints.
@@ -647,6 +663,40 @@ mod tests {
         assert_eq!(frame.sample_count, 1);
         assert_eq!(frame.channel_count, 8);
         assert_eq!(frame.sampling_frequency, 48_000);
+    }
+
+    /// A capture started while no latency target is requested runs at the
+    /// PipeWire default. The manager polls this every 50 ms: reading the unset
+    /// request as a change would reconcile, republish the input state and log
+    /// on every tick for as long as the target stays unset.
+    #[test]
+    fn an_unset_latency_target_leaves_a_capture_at_the_default_alone() {
+        let running = resolve_live_input_latency_ms(None);
+
+        assert_eq!(running, PipewireBufferConfig::default().latency_ms);
+        assert!(!capture_latency_is_stale(None, running));
+        assert!(!capture_latency_is_stale(Some(running), running));
+    }
+
+    /// `--latency-target-ms 0` is a request the capture cannot run at: it is
+    /// started at 1 ms, and that is not a change to reconcile either.
+    #[test]
+    fn a_zero_latency_target_leaves_a_capture_at_the_floor_alone() {
+        let running = resolve_live_input_latency_ms(Some(0));
+
+        assert_eq!(running, 1);
+        assert!(!capture_latency_is_stale(Some(0), running));
+    }
+
+    /// A target that really moved still restarts the capture, in both
+    /// directions: a new value, and a value cleared back to the default.
+    #[test]
+    fn a_changed_latency_target_makes_the_capture_stale() {
+        let default_ms = resolve_live_input_latency_ms(None);
+        let other_ms = default_ms + 120;
+
+        assert!(capture_latency_is_stale(Some(other_ms), default_ms));
+        assert!(capture_latency_is_stale(None, other_ms));
     }
 
     /// Samples beyond full scale must clamp, not wrap into the opposite sign.
