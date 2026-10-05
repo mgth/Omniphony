@@ -7,7 +7,7 @@
 
 use crate::bridge_loader::{LoadedBridge, configure_presentation, resolve_bridge};
 use crate::decode_step::{
-    Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, decode_packet,
+    Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
 };
 use crate::events::Configuration;
 use crate::osc::{ObjectMeta, OscSender};
@@ -135,6 +135,9 @@ pub struct Engine {
     /// extracts → drives `frame.drc_gain`). Synced from the live param each
     /// `process` so config + OSC changes reach the decoder, as in the CLI.
     drc_mode: DrcModeSync,
+    /// Log level last pushed to the bridge, so its diagnostics follow
+    /// `log_level` changes made over OSC.
+    log_level: LogLevelSync,
 
     // ── reusable scratch ──
     pcm_f32_buf: Vec<f32>,
@@ -308,6 +311,7 @@ impl Engine {
             last_object_count: 0,
             last_bed_labels: Vec::new(),
             drc_mode: DrcModeSync::new(),
+            log_level: LogLevelSync::new(),
             pcm_f32_buf: Vec::new(),
             output_pool: Vec::new(),
             held: None,
@@ -796,10 +800,11 @@ impl Engine {
 
     /// Bring the decoder in line with the live options it follows, before the
     /// next packet: the DRC mode (which DRC words the decoder extracts; mirrors
-    /// the CLI's [`DrcModeSync`]) and, in [`DecodeThreadMode::Live`], the
-    /// decode thread. One read of the live params per packet; the bridge is
-    /// locked only when the DRC mode changed. The bridge preserves the mode
-    /// across `reset`, so a seek keeps it.
+    /// the CLI's [`DrcModeSync`]), the log level and, in
+    /// [`DecodeThreadMode::Live`], the decode thread. One read of the live
+    /// params per packet; the bridge is locked only when the DRC mode or the
+    /// log level changed. The bridge preserves both across `reset`, so a seek
+    /// keeps them.
     fn sync_live_options(&mut self) {
         let (drc_changed, want_thread) = {
             let control = self.renderer.renderer_control();
@@ -810,6 +815,10 @@ impl Engine {
             self.lock_bridge()
                 .bridge
                 .set_drc_mode(self.drc_mode.mode().into());
+        }
+        if self.log_level.update(live_log::current_runtime_level()) {
+            let mut bridge = self.bridge.lock().unwrap_or_else(|e| e.into_inner());
+            self.log_level.push(&mut bridge.bridge);
         }
         self.follow_live_decode_thread(want_thread);
     }
@@ -827,8 +836,8 @@ impl Engine {
         if matches!(self.held, Some((HeldFor::Drain, _))) {
             bail!("drain output is pending; retry drain with a larger buffer before new input");
         }
-        // Push any DRC-mode or decode-thread change (config-seeded or
-        // OSC-driven) to the decoder before it decodes this packet.
+        // Push any DRC-mode, log-level or decode-thread change (config-seeded
+        // or OSC-driven) to the decoder before it decodes this packet.
         self.sync_live_options();
         let pts = self.input_pts_us.take();
 

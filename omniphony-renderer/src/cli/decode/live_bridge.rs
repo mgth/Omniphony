@@ -11,7 +11,7 @@ use super::decoder_thread::{DecodedAudioData, DecodedSource, DecoderMessage};
 use anyhow::{Result, anyhow};
 use bridge_api::{FormatBridgeBox, RInputTransport};
 use orender_engine::decode_step::{
-    Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, decode_packet,
+    Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, mpsc};
@@ -64,6 +64,7 @@ fn run_live_bridge_decoder(
 ) {
     let mut first_frame_logs_remaining = 16usize;
     let mut drc_mode = DrcModeSync::new();
+    let mut log_level = LogLevelSync::new();
     let mut declarations = DeclarationTracker::new();
     // A declaration whose frame the handler had no room for.
     let mut undelivered: Option<Declaration> = None;
@@ -75,6 +76,8 @@ fn run_live_bridge_decoder(
             let requested = requested.read().unwrap_or_else(|e| e.into_inner());
             drc_mode.apply(&requested, &mut bridge);
         }
+        // The bridge's diagnostics follow `log_level` changes made over OSC.
+        log_level.apply(live_log::current_runtime_level(), &mut bridge);
         let push_packet_at = Instant::now();
         let push_packet_dt_us = last_push_packet_at
             .map(|prev| push_packet_at.saturating_duration_since(prev).as_micros() as u64)
@@ -200,6 +203,8 @@ mod tests {
     struct ScriptedBridge {
         labels: Vec<RChannelLabel>,
         drc_modes: Arc<Mutex<Vec<String>>>,
+        /// Every `configure` call, as `key=value`.
+        configured: Arc<Mutex<Vec<String>>>,
     }
 
     impl FormatBridge for ScriptedBridge {
@@ -235,7 +240,11 @@ mod tests {
         fn has_objects(&self) -> bool {
             false
         }
-        fn configure(&mut self, _: RStr<'_>, _: RStr<'_>) -> bool {
+        fn configure(&mut self, key: RStr<'_>, value: RStr<'_>) -> bool {
+            self.configured
+                .lock()
+                .unwrap()
+                .push(format!("{key}={value}"));
             true
         }
         fn coordinate_format(&self) -> RCoordinateFormat {
@@ -281,13 +290,38 @@ mod tests {
     }
 
     fn bridge(drc_modes: &Arc<Mutex<Vec<String>>>) -> FormatBridgeBox {
+        bridge_recording(drc_modes, &Arc::default())
+    }
+
+    fn bridge_recording(
+        drc_modes: &Arc<Mutex<Vec<String>>>,
+        configured: &Arc<Mutex<Vec<String>>>,
+    ) -> FormatBridgeBox {
         FormatBridge_TO::from_value(
             ScriptedBridge {
                 labels: Vec::new(),
                 drc_modes: Arc::clone(drc_modes),
+                configured: Arc::clone(configured),
             },
             TD_Opaque,
         )
+    }
+
+    /// The worker hands the bridge the host's log level before its first
+    /// packet, and not again while it stays the same (no logger is installed
+    /// in tests, so the host's level is `info`).
+    #[test]
+    fn the_bridge_gets_the_host_log_level_once() {
+        let configured = Arc::default();
+        let (raw_tx, raw_rx) = mpsc::sync_channel(3);
+        let (tx, _rx) = mpsc::sync_channel(8);
+        for p in [0, 1, 0] {
+            raw_tx.send((0x0B, vec![p])).unwrap();
+        }
+        drop(raw_tx);
+        let bridge = bridge_recording(&Arc::default(), &configured);
+        run_live_bridge_decoder(bridge, raw_rx, None, None, tx);
+        assert_eq!(*configured.lock().unwrap(), ["log_level=info"]);
     }
 
     /// Run the worker over `packets` (byte 0 of each: its layout) with a

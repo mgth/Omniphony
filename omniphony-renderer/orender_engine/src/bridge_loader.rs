@@ -121,14 +121,31 @@ fn bridge_api_compatible(host: VersionNumber, bridge: VersionNumber) -> Result<(
 }
 
 /// One more bridge instance from an already-loaded plugin, its logs routed to
-/// the host's: how every host opens one, from a path ([`LoadedBridge`]) or
-/// from the plugin a session already holds (the PipeWire sink's own bridge).
+/// the host's and filtered at the host's level: how every host opens one, from
+/// a path ([`LoadedBridge`]) or from the plugin a session already holds (the
+/// PipeWire sink's own bridge). Later level changes reach it through
+/// [`LogLevelSync`](crate::decode_step::LogLevelSync).
 pub fn open_bridge(lib: &BridgeLibRef) -> FormatBridgeBox {
     install_bridge_host_log_sink(lib);
     let new_bridge = lib.new_bridge();
     // strict mode removed from the host; bridges ignore the flag. The ABI
     // parameter is kept for compatibility and always passed as `false`.
-    new_bridge(false)
+    let mut bridge = new_bridge(false);
+    configure_log_level(&mut bridge, live_log::current_runtime_level());
+    bridge
+}
+
+/// Ask `bridge` to format and forward only the diagnostics at `level` or
+/// below, so the ones the host would drop cost it nothing. `false` from a
+/// bridge that predates the `log_level` key: it keeps its own level
+/// (`HARLETTY_LOG`, info by default), which is no fault worth a warning.
+pub fn configure_log_level(bridge: &mut FormatBridgeBox, level: log::LevelFilter) -> bool {
+    let name = live_log::level_name(level);
+    let accepted = bridge.configure("log_level".into(), name.into());
+    if !accepted {
+        log::debug!("bridge does not take log_level {name}; it keeps its own level");
+    }
+    accepted
 }
 
 /// Ask `bridge` for `presentation` (before its first packet); an error naming

@@ -1,6 +1,8 @@
 use anyhow::Result;
 use bridge_api::{FormatBridgeBox, RInputTransport};
-use orender_engine::decode_step::{DeclarationTracker, DecodedPacket, DrcModeSync, decode_packet};
+use orender_engine::decode_step::{
+    DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
+};
 use spdif::SpdifParser;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -113,6 +115,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
 
         let mut frame_count: u64 = 0;
         let mut drc_mode = DrcModeSync::new();
+        let mut log_level = LogLevelSync::new();
         // When a frame carries the bridge's declaration: the same rule as the
         // embedded engine and the PipeWire sink's bridge decoder.
         let mut declarations = DeclarationTracker::new();
@@ -183,6 +186,8 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     let requested = requested_drc_mode.read().unwrap_or_else(|e| e.into_inner());
                     drc_mode.apply(&requested, &mut bridge);
                 }
+                // The bridge's diagnostics follow `log_level` changes made over OSC.
+                log_level.apply(live_log::current_runtime_level(), &mut bridge);
 
                 let now = Instant::now();
                 let chunk_gap_ms = last_chunk_at
