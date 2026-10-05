@@ -2418,21 +2418,24 @@ impl RendererControl {
                     .prepare_topology_rebuild_for_layout(band_layout)
                     .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology"))?
                     .build_band_topology_reusing(None)?;
-                let per_cell: Vec<crate::spatial_vbap::Gains> = (0..cell_count)
-                    .into_par_iter()
-                    .map(|idx| {
-                        let xi = idx % nx;
-                        let yi = (idx / nx) % ny;
-                        let zi = idx / (nx * ny);
-                        let mut req = template;
-                        req.adm_position = [
-                            x_positions[xi] as f64,
-                            y_positions[yi] as f64,
-                            z_positions[zi] as f64,
-                        ];
-                        band_topology.backend.compute_gains(&req).gains
-                    })
-                    .collect();
+                let per_cell: Vec<crate::spatial_vbap::Gains> =
+                    crate::background_pool::install(|| {
+                        (0..cell_count)
+                            .into_par_iter()
+                            .map(|idx| {
+                                let xi = idx % nx;
+                                let yi = (idx / nx) % ny;
+                                let zi = idx / (nx * ny);
+                                let mut req = template;
+                                req.adm_position = [
+                                    x_positions[xi] as f64,
+                                    y_positions[yi] as f64,
+                                    z_positions[zi] as f64,
+                                ];
+                                band_topology.backend.compute_gains(&req).gains
+                            })
+                            .collect()
+                    });
                 for (idx, cell) in per_cell.iter().enumerate() {
                     let base = idx * speaker_count;
                     for (gi, &g) in cell.iter().enumerate() {
