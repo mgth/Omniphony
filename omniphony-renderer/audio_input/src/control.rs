@@ -1,3 +1,4 @@
+use crate::pacer_drain::OutputPacerDrain;
 use diag::DiagRegistry;
 use std::path::PathBuf;
 use std::sync::{
@@ -129,12 +130,14 @@ pub struct InputControl {
     /// so the servo sees a decoder-batching-free clock reference instead of
     /// the post-decode ring buffer level. Also published to the diag plot.
     input_clock_us: Arc<AtomicU64>,
-    /// Cross-crate handle to the audio_output post-rendering pacer. The
-    /// PipeWire input thread uses this to drain rendered samples from the
-    /// pacer FIFO into the ring buffer in lockstep with IEC958 chunk
-    /// arrival, smoothing the decoder's burst pattern out of the ring.
-    /// Installed by the writer lifecycle once both sides exist.
-    output_pacer: Mutex<Option<audio_output::PacerHandle>>,
+    /// Cross-crate handle to the audio_output post-rendering pacer, and
+    /// which clock drains it. A capture stream that is delivering drains
+    /// rendered samples from the pacer FIFO into the ring buffer in lockstep
+    /// with chunk arrival, smoothing the decoder's burst pattern out of the
+    /// ring; the token clock drains the rest of the time. The handle is
+    /// installed by the writer lifecycle once both sides exist. See
+    /// [`crate::pacer_drain`].
+    pub(crate) pacer_drain: Arc<OutputPacerDrain>,
     /// Total latency of everything BEHIND the bridge sink's input, in
     /// nanoseconds: render DSP latency (e.g. the linear-phase FIR crossover)
     /// plus the measured output-chain latency (post-render ring + pacer FIFO
@@ -178,7 +181,7 @@ impl InputControl {
                 r
             },
             input_clock_us: Arc::new(AtomicU64::new(0)),
-            output_pacer: Mutex::new(None),
+            pacer_drain: Arc::new(OutputPacerDrain::new()),
             downstream_latency_ns: AtomicU64::new(0),
         }
     }
@@ -208,12 +211,11 @@ impl InputControl {
 
     /// Install a cross-crate handle to the audio_output post-rendering
     /// pacer. Called from the decode lifecycle once the PipewireWriter is
-    /// created. The PipeWire input thread reads the handle via
-    /// [`output_pacer`] on each chunk and drains the FIFO into the ring.
+    /// created. Whichever clock has the drain then moves the FIFO into the
+    /// ring: [`capture_drain_clock`](Self::capture_drain_clock) or
+    /// [`token_drain_pacer`](Self::token_drain_pacer).
     pub fn install_output_pacer(&self, handle: audio_output::PacerHandle) {
-        if let Ok(mut guard) = self.output_pacer.lock() {
-            *guard = Some(handle);
-        }
+        self.pacer_drain.install(handle);
     }
 
     /// Drop the installed pacer handle. Called from the decode lifecycle when
@@ -224,17 +226,7 @@ impl InputControl {
     /// on the RT thread and pile phantom underruns into the pacer telemetry.
     /// The next writer installs its own handle when it is built.
     pub fn clear_output_pacer(&self) {
-        if let Ok(mut guard) = self.output_pacer.lock() {
-            *guard = None;
-        }
-    }
-
-    /// Clone the currently-installed pacer handle, if any.
-    pub fn output_pacer(&self) -> Option<audio_output::PacerHandle> {
-        self.output_pacer
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
+        self.pacer_drain.clear();
     }
 
     pub fn set_output_rate_adjust(&self, rate: f32) {
