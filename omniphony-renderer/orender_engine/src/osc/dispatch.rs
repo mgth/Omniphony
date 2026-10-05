@@ -1074,7 +1074,11 @@ mod notify_tests {
     }
 
     fn wire() -> Wire {
-        let engine = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let engine = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // As OscSender's socket: without it macOS refuses the live-state
+        // bundle (EMSGSIZE above net.inet.udp.maxdgram) and nothing arrives.
+        crate::osc::transport::ensure_send_buffer(&engine);
+        let engine = Arc::new(engine);
         let writer = UdpSocket::bind("127.0.0.1:0").unwrap();
         let bystander = UdpSocket::bind("127.0.0.1:0").unwrap();
         bystander
