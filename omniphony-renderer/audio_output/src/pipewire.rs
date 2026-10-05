@@ -20,11 +20,11 @@ use crate::pipewire_registry::{
 };
 use crate::{
     AdaptiveResamplingConfig, local_resampler_ratio_bounds,
-    pacer::{PacerDrainEnds, PacerHandle},
+    pacer::{PacerDrainEnds, PacerHandle, paced_ring_frames, pre_roll_frames},
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, new_output_resampler},
     ring_buffer_io::{
-        OUTPUT_RING_CAPACITY, RingMonitor, RingReader, RingWriter, flush_ring_buffer,
-        push_samples_drop_overflow, push_samples_with_backpressure, sample_ring,
+        RingMonitor, RingReader, RingWriter, flush_ring_buffer, push_samples_drop_overflow,
+        push_samples_with_backpressure, sample_ring,
     },
 };
 
@@ -88,7 +88,8 @@ fn output_target_properties(target: &str) -> [(&'static str, &str); 4] {
 pub struct PipewireBufferConfig {
     /// Target latency used by the PI controller (ms). Default: 500.
     pub latency_ms: u32,
-    /// Maximum buffer fill before applying back-pressure (ms). Default: latency_ms × 2.
+    /// Maximum buffer fill before applying back-pressure (ms), and the ring's
+    /// capacity (plus one pacer FIFO with pacing on). Default: latency_ms × 2.
     pub max_latency_ms: u32,
     /// PipeWire processing quantum in frames. Default: 1024 (~21ms at 48kHz).
     pub quantum_frames: u32,
@@ -358,24 +359,38 @@ impl PipewireWriter {
             buffer_config.max_latency_ms = corrected;
         }
 
-        let (ring_writer, ring_reader) = sample_ring(OUTPUT_RING_CAPACITY);
-        let ring = ring_writer.monitor();
+        // The ring holds what the back-pressure threshold lets in:
+        // `max_latency_ms` of frames, plus one full pacer FIFO when the pacer
+        // drain writes it (see `paced_ring_frames`). A change of latency
+        // rebuilds the writer, and the ring with it.
+        let channels = channel_count as usize;
+        let max_buffer_frames =
+            (buffer_config.max_latency_ms as usize * sample_rate as usize / 1000).max(1);
         let pacer_enabled = adaptive_config.use_output_pacing;
+        let ring_frames = if pacer_enabled {
+            paced_ring_frames(max_buffer_frames, sample_rate)
+        } else {
+            max_buffer_frames
+        };
+        let (ring_writer, ring_reader) = sample_ring(ring_frames, channels);
+        let ring = ring_writer.monitor();
         let backpressure_disabled = Arc::new(AtomicBool::new(adaptive_config.disable_backpressure));
         let shared = CallbackShared::new(adaptive_config);
         let telemetry = &shared.telemetry;
-        // 64 ms of audio at the output rate × channel count. Covers >1 AU
-        // for both supported input codecs (~32 ms per AU) with margin.
-        let pacer_pre_roll_threshold_samples =
-            ((sample_rate as usize) * (channel_count as usize) * 64 / 1000).max(1);
+        // 64 ms of audio at the output rate (see `pre_roll_frames`). Whole
+        // frames: the FIFO only ever holds whole frames, so a threshold inside
+        // one would never be reached.
+        let pacer_pre_roll_frames = pre_roll_frames(sample_rate);
+        let pacer_pre_roll_threshold_samples = pacer_pre_roll_frames * channels;
         // The ring's writing end goes to the renderer, or to the pacer drain
         // with the renderer writing to the pacer FIFO instead. The callback
         // gets the pacer's flags, to make it re-prime after a recovery.
         let (write_target, pacer, pacer_link) = if pacer_enabled {
-            // Pacer FIFO: capacity matches the ring so worst-case can buffer
-            // the same amount of audio. It only fills meaningfully when the
-            // input-thread drain lags or is paused (eg. during pre-roll).
-            let (fifo_writer, fifo_reader) = sample_ring(OUTPUT_RING_CAPACITY);
+            // Pacer FIFO: the renderer's writes are held below the pre-roll
+            // threshold (see `write_samples`), so that is all it ever holds.
+            // The drain clock does not wait for the ring: what goes above
+            // the ring's capacity is dropped by the drain.
+            let (fifo_writer, fifo_reader) = sample_ring(pacer_pre_roll_frames, channels);
             let pre_roll_complete = Arc::new(AtomicBool::new(false));
             let flush_requested = Arc::new(AtomicBool::new(false));
             let handle = PacerHandle {
@@ -411,7 +426,6 @@ impl PipewireWriter {
         let shared_for_thread = shared.clone();
 
         // Capture before moving buffer_config into the thread closure.
-        let max_latency_ms = buffer_config.max_latency_ms;
         let target_latency_ms = buffer_config.latency_ms;
         let output_rate_for_quantum = output_sample_rate.unwrap_or(sample_rate);
         let quantum_ms =
@@ -466,8 +480,7 @@ impl PipewireWriter {
             log::info!("PipeWire adaptive resampling disabled (fixed playback rate)");
         }
 
-        let max_buffer_samples =
-            (max_latency_ms as usize * sample_rate as usize / 1000) * channel_count as usize;
+        let max_buffer_samples = max_buffer_frames * channels;
 
         Ok(Self {
             ring,
