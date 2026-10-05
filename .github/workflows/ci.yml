@@ -458,7 +458,9 @@ jobs:
 
       # The whole suite, as on Linux. Tests that need a sound device or a
       # PipeWire daemon are #[ignore]d or compiled for Linux only, so none of
-      # them runs here.
+      # them runs here. --no-fail-fast here and on the other non-Linux-x64
+      # jobs: a platform break tends to fail several crates at once, and one
+      # run should name them all rather than stop at the first.
       #
       # One part of it matters on macOS more than anywhere: macOS refuses a
       # UDP send larger than the socket's send buffer (EMSGSIZE), and that
@@ -471,14 +473,14 @@ jobs:
         working-directory: omniphony-renderer
         run: |
           sysctl net.inet.udp.maxdgram net.inet.udp.recvspace
-          cargo test --workspace --locked
+          cargo test --workspace --locked --no-fail-fast
 
       - name: Test the OSC contract (macOS arm64)
-        run: cargo test --locked --manifest-path osc-contract/Cargo.toml
+        run: cargo test --locked --no-fail-fast --manifest-path osc-contract/Cargo.toml
 
       - name: Test native Studio (macOS arm64)
         working-directory: omniphony-studio-egui
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
   build-windows:
     # Windows x64 build and test gate. On Windows cpal always pulls its ASIO backend
@@ -524,10 +526,10 @@ jobs:
       # #[ignore]d or compiled for Linux only, so none of them runs here.
       - name: Test renderer workspace (Windows x64)
         working-directory: omniphony-renderer
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
       - name: Test the OSC contract (Windows x64)
-        run: cargo test --locked --manifest-path osc-contract/Cargo.toml
+        run: cargo test --locked --no-fail-fast --manifest-path osc-contract/Cargo.toml
 
       # The native Studio's core, which the Tauri host depends on. Its Windows
       # path — the process-tree working-set readout — had never been compiled
@@ -559,7 +561,7 @@ jobs:
 
       - name: Test native Studio (Windows x64)
         working-directory: omniphony-studio-egui
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
   build-linux-arm64:
     # Linux arm64 build and test gate, on GitHub's native arm64 runner (no
@@ -618,10 +620,10 @@ jobs:
       # as on x64.
       - name: Test renderer workspace (Linux arm64)
         working-directory: omniphony-renderer
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
       - name: Test the OSC contract (Linux arm64)
-        run: cargo test --locked --manifest-path osc-contract/Cargo.toml
+        run: cargo test --locked --no-fail-fast --manifest-path osc-contract/Cargo.toml
 
       # liborender is what the embedded box's mpv loads: same header/link
       # smoke test as the x64 job.
