@@ -1647,6 +1647,11 @@ mod tests {
             .expect("free port")
             .port()
             .to_string();
+        // Where the state is broadcast: a socket of the test's own, never the
+        // default port (9000, or the shell's OMNIPHONY_OSC_PORT) a live
+        // instance may be listening on.
+        let sink = std::net::UdpSocket::bind("127.0.0.1:0").expect("sink socket");
+        let tx_port = sink.local_addr().expect("sink address").port().to_string();
         let bridge = "/nonexistent/libnone_bridge.so";
         let error = format!("bridge path '{bridge}' does not exist");
 
@@ -1660,6 +1665,8 @@ mod tests {
             "--bridge-path",
             bridge,
             "--osc",
+            "--osc-port",
+            &tx_port,
             "--osc-rx-port",
             &rx_port,
             "in.thd",
