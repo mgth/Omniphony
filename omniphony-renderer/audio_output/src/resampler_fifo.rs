@@ -30,6 +30,21 @@ pub fn output_resampler_params() -> rubato::SincInterpolationParameters {
     }
 }
 
+/// The local output resampler of every backend, at `ratio` (output/input),
+/// free to move within [`crate::LOCAL_RESAMPLER_MAX_RELATIVE_RATIO`] of it.
+pub fn new_output_resampler(
+    ratio: f64,
+    channels: usize,
+) -> Result<rubato::SincFixedIn<f32>, rubato::ResamplerConstructionError> {
+    rubato::SincFixedIn::new(
+        ratio,
+        crate::LOCAL_RESAMPLER_MAX_RELATIVE_RATIO,
+        output_resampler_params(),
+        RESAMPLER_CHUNK_SIZE,
+        channels,
+    )
+}
+
 pub struct ResamplerFifoEngine {
     channel_count: usize,
     resampler_input: Vec<Vec<f32>>,
@@ -165,13 +180,19 @@ impl ResamplerFifoEngine {
     ) -> usize {
         debug_assert!(channels > 0 && dest_channels >= channels);
         let frames = (dest.len() / dest_channels).min(self.output_fifo.len() / channels);
-        for (dst, src) in dest
-            .chunks_exact_mut(dest_channels)
-            .zip(self.output_fifo.chunks_exact(channels))
-            .take(frames)
-        {
-            dst[..channels].copy_from_slice(src);
-            dst[channels..].fill(0.0);
+        if dest_channels == channels {
+            // Same layout: one copy, not one per frame.
+            let samples = frames * channels;
+            dest[..samples].copy_from_slice(&self.output_fifo[..samples]);
+        } else {
+            for (dst, src) in dest
+                .chunks_exact_mut(dest_channels)
+                .zip(self.output_fifo.chunks_exact(channels))
+                .take(frames)
+            {
+                dst[..channels].copy_from_slice(src);
+                dst[channels..].fill(0.0);
+            }
         }
         self.output_fifo.drain(0..frames * channels);
         frames
