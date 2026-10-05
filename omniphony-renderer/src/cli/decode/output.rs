@@ -265,13 +265,13 @@ impl AudioWriter {
     }
 
     /// Cross-crate handle to the post-rendering pacer, if this backend has
-    /// one. Used by the decode lifecycle to install the handle on the
-    /// audio_input `InputControl` so the PipeWire input thread can drain
-    /// the FIFO into the ring.
+    /// one and was built with pacing on. Used by the decode lifecycle to
+    /// install the handle on the audio_input `InputControl` so the PipeWire
+    /// input thread can drain the FIFO into the ring.
     #[cfg(target_os = "linux")]
     pub fn pacer_handle(&self) -> Option<audio_output::PacerHandle> {
         match self {
-            AudioWriter::Pipewire(w) => Some(w.pacer_handle()),
+            AudioWriter::Pipewire(w) => w.pacer_handle(),
             _ => None,
         }
     }

@@ -843,10 +843,7 @@ fn spawn_pacer_drain_thread(
                     frac_frames = 0.0;
                     continue;
                 };
-                if !pacer.enabled
-                    || input_control.applied_snapshot().active_mode
-                        != audio_input::InputMode::Bridge
-                {
+                if input_control.applied_snapshot().active_mode != audio_input::InputMode::Bridge {
                     frac_frames = 0.0;
                     continue;
                 }
