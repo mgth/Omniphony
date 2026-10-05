@@ -2,6 +2,7 @@ pub mod backend_conformance;
 pub mod backend_files;
 pub mod backend_params;
 pub mod backend_registry;
+pub mod background_pool;
 pub mod band_gaintable;
 pub mod binaural;
 pub mod config;
