@@ -256,14 +256,17 @@ jobs:
       # a fraction of the block period rather than in microseconds, so a slow
       # runner does not fail it. Steady and all-moving measured 2-5 % of real
       # time on these runners against a 25 % budget. The topology-change cases
-      # time the render thread while the band worker builds: they hold on a
-      # 4-vCPU runner because background builds run in the idle scheduling
-      # class (renderer/src/background_pool.rs); without it the render thread
-      # lost whole 3 ms scheduler slices to them. Release only, behind the
-      # perf-gate feature and on one test thread: a timing measurement must
-      # not share the machine with the rest of the suite, and in this step it
-      # does not. Placed after the step above, which already built the
-      # dependencies in release; the feature only rebuilds the renderer crate.
+      # time the render thread while the band worker builds, and gate what a
+      # change adds over as many blocks rendered with no change (the FIR
+      # crossover's own slowest block varies 10-32 % by runner CPU): they
+      # hold on a 4-vCPU runner because background builds run in the idle
+      # scheduling class (renderer/src/background_pool.rs); without it the
+      # render thread lost whole 3 ms scheduler slices to them. Release only,
+      # behind the perf-gate feature and on one test thread: a timing
+      # measurement must not share the machine with the rest of the suite,
+      # and in this step it does not. Placed after the step above, which
+      # already built the dependencies in release; the feature only rebuilds
+      # the renderer crate.
       - name: Run the perf gate (release)
         working-directory: omniphony-renderer
         run: cargo test --release -p renderer --features perf-gate --lib --locked -- spatial_renderer::perf_gate --test-threads=1 --nocapture
