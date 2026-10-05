@@ -443,8 +443,7 @@ fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> Contro
             log::warn!("OSC placement mode: unknown family '{}'", name);
             return ControlEffects::default();
         };
-        let slot = &mut live.placement.family_mut(family).mode;
-        std::mem::replace(slot, mode) != mode
+        live.placement.family_mut(family).set_mode(mode)
     };
     // The mode re-plans the stream: the fixed-prefix planner caches on the
     // options epoch. Bumped only on a real change, like a `REPLAN` registry

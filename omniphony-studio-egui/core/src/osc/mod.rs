@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, decoder, encoder};
+use rosc::{OscBundle, OscError, OscMessage, OscPacket, OscTime, OscType, decoder, encoder};
 
 use crate::host::runtime::{StopToken, Worker};
 use dispatch::{Change, Live, apply_event};
@@ -277,8 +277,8 @@ fn listener_loop(
                 stats
                     .last_packet_ms
                     .store(stats.start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                match decoder::decode_udp(&buf[..n]) {
-                    Ok((_, packet)) => {
+                match decode_datagram(&buf[..n]) {
+                    Ok(packet) => {
                         let mut outcome = PacketOutcome::default();
                         {
                             let mut model = live.lock().unwrap();
@@ -485,6 +485,19 @@ fn accepts_sender(target: Option<SocketAddr>, sender: SocketAddr) -> bool {
     target.is_none_or(|target| target.ip() == sender.ip())
 }
 
+/// Decode a datagram the listener accepted: `rosc`'s decoder, refusing first
+/// what nests deeper than the contract allows.
+///
+/// `rosc` decodes nested bundles by recursion and frees nested arrays by
+/// recursion, and [`RECV_BUF`] holds thousands of levels of either. Decoded,
+/// one such datagram overflows the listener thread's stack, which aborts the
+/// whole Studio. The contract's walk reads the nesting off the raw bytes
+/// instead, without recursing, as the engine's listener has it do.
+fn decode_datagram(datagram: &[u8]) -> Result<OscPacket, OscError> {
+    crate::osc_contract::nesting::check(datagram).map_err(OscError::BadPacket)?;
+    decoder::decode_udp(datagram).map(|(_, packet)| packet)
+}
+
 fn apply_connection_reset(model: &mut Live, request: u64) {
     reset_connection_model(model);
     if model.queued_connection_request == Some(request) {
@@ -551,6 +564,8 @@ impl Default for Change {
     }
 }
 
+/// Recurses into bundles, which [`decode_datagram`] lets through no deeper
+/// than the contract's `MAX_NESTING`.
 fn handle_packet(
     packet: &OscPacket,
     live: &mut Live,
@@ -808,6 +823,89 @@ pub fn spawn_synthetic(
             }
         }
     })
+}
+
+/// The contract's bound on nesting, where the Studio's datagrams arrive.
+#[cfg(test)]
+mod nesting_tests {
+    use super::*;
+    use crate::osc_contract::nesting::{MAX_NESTING, nested_arrays, nested_bundles};
+
+    #[test]
+    fn the_decoder_refuses_what_nests_past_the_contracts_limit() {
+        for nested in [nested_bundles, nested_arrays] {
+            assert!(decode_datagram(&nested(MAX_NESTING)).is_ok());
+            let refused = decode_datagram(&nested(MAX_NESTING + 1)).unwrap_err();
+            assert!(refused.to_string().contains("nested too deep"), "{refused}");
+        }
+    }
+
+    /// Datagrams nested thousands of levels deep, in bundles and in arrays,
+    /// are dropped and the listener goes on listening. Decoded, either one
+    /// overflows the listener thread's stack, which aborts the whole process.
+    /// A datagram one level past the limit is dropped the same way; one at
+    /// the limit is decoded and its message handled.
+    #[test]
+    fn a_deeply_nested_datagram_does_not_take_the_listener_down() {
+        let renderer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let stats = OscStats::new();
+        let (port, _control, mut worker) = spawn_listener(
+            Arc::new(Mutex::new(Live::new(
+                crate::model::app_state::AppState::new(Vec::new()),
+            ))),
+            Arc::new(|| {}),
+            stats.clone(),
+            ListenerConfig {
+                listen_port: 0,
+                register: Some(renderer.local_addr().unwrap()),
+                metering: false,
+                playout_sync: false,
+            },
+        )
+        .unwrap();
+
+        // Any socket at the renderer's address is listened to.
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // The two large datagrams have the same send limit to get past as
+        // the Studio's own.
+        ensure_send_buffer(&sender);
+        let awaited = |what: &str, counter: &AtomicU64, count: u64| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while counter.load(Ordering::Relaxed) != count {
+                assert!(Instant::now() < deadline, "{what}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        // One at a time, so that none waits in the socket's buffer behind
+        // another and all of them reach the decoder.
+        let mut sent = 0;
+        let mut send = |datagram: &[u8]| {
+            sender.send_to(datagram, ("127.0.0.1", port)).unwrap();
+            sent += 1;
+            awaited("the listener receives the datagram", &stats.packets, sent);
+        };
+
+        for nested in [nested_bundles(3_000), nested_arrays(30_000)] {
+            assert_eq!(nested.len(), 60_008);
+            send(&nested);
+        }
+        send(&nested_bundles(MAX_NESTING + 1));
+        send(&nested_arrays(MAX_NESTING + 1));
+        send(&nested_bundles(MAX_NESTING));
+        send(&nested_arrays(MAX_NESTING));
+        let ack = encoder::encode(&OscPacket::Message(OscMessage {
+            addr: crate::osc_contract::HEARTBEAT_ACK.into(),
+            args: vec![],
+        }))
+        .unwrap();
+        send(&ack);
+
+        awaited("the ack is handled", &stats.heartbeat_acks, 1);
+        // The one message of each datagram at the limit, and the ack: nothing
+        // of the four refused ones was handled.
+        assert_eq!(stats.messages.load(Ordering::Relaxed), 3);
+        worker.shutdown();
+    }
 }
 
 #[cfg(test)]
