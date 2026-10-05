@@ -605,8 +605,11 @@ mod tests {
         save_errors(&client)
     }
 
-    /// The `save_error` strings queued on `client`: everything was sent
-    /// before the handler returned, so draining without waiting is enough.
+    /// The `save_error` strings `client` received: everything was sent
+    /// before the handler returned, but not necessarily received. macOS hands
+    /// a loopback datagram to the receiving socket from another thread, so it
+    /// can still be on its way when the handler returns; the drain waits for
+    /// the socket to go quiet rather than take only what is already there.
     fn save_errors(client: &UdpSocket) -> Vec<String> {
         fn collect(packet: rosc::OscPacket, out: &mut Vec<String>) {
             match packet {
@@ -624,7 +627,9 @@ mod tests {
                 }
             }
         }
-        client.set_nonblocking(true).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
         let mut out = Vec::new();
         let mut buf = vec![0u8; 70_000];
         while let Ok(len) = client.recv(&mut buf) {
