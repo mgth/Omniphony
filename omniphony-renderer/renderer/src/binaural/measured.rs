@@ -153,13 +153,14 @@ impl MeasuredHrirData {
         // Consuming the input frees each raw pair once it is converted, so
         // the set is never held twice.
         let len = irs.first().map_or(0, |(l, _)| l.len());
-        let irs = irs
-            .into_par_iter()
-            .map_init(
-                || MinPhase::new(len),
-                |min_phase, (l, r)| (min_phase.run(&l), min_phase.run(&r)),
-            )
-            .collect();
+        let irs = crate::background_pool::install(|| {
+            irs.into_par_iter()
+                .map_init(
+                    || MinPhase::new(len),
+                    |min_phase, (l, r)| (min_phase.run(&l), min_phase.run(&r)),
+                )
+                .collect()
+        });
         let (tri, tri_inv, vert_tris) = triangulate(&vecs);
         Self {
             sample_rate,
@@ -278,19 +279,20 @@ impl MeasuredHrirData {
         let out_len = self.irs.first().map_or(0, |(l, _)| kernel.out_len(l.len()));
         // `collect` on an indexed parallel iterator restores the input order,
         // which `dirs`, `vecs` and `tri` index into.
-        let irs = self
-            .irs
-            .par_iter()
-            .map_init(
-                || (MinPhase::new(out_len), Vec::new()),
-                |(min_phase, buf), (l, r)| {
-                    kernel.resample_into(l, buf);
-                    let left = min_phase.run(buf);
-                    kernel.resample_into(r, buf);
-                    (left, min_phase.run(buf))
-                },
-            )
-            .collect();
+        let irs = crate::background_pool::install(|| {
+            self.irs
+                .par_iter()
+                .map_init(
+                    || (MinPhase::new(out_len), Vec::new()),
+                    |(min_phase, buf), (l, r)| {
+                        kernel.resample_into(l, buf);
+                        let left = min_phase.run(buf);
+                        kernel.resample_into(r, buf);
+                        (left, min_phase.run(buf))
+                    },
+                )
+                .collect()
+        });
         Self {
             sample_rate: target,
             dirs: self.dirs,
