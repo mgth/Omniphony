@@ -2405,6 +2405,36 @@ fn interp_survives_speaker_cascade_width_switch() {
 // TODO: Add integration test with real spatial metadata
 // For now, testing is done via real spatial audio content decoding
 
+/// A headphone request made before the first frame (a config read after the
+/// renderer was built) is the width the host is told, and the width that
+/// frame comes out at: the first render takes the request without a fade, so
+/// sizing the sink for the speakers lost the opening block to a rebuild.
+#[test]
+fn width_before_the_first_frame_is_the_width_it_renders_at() {
+    let mut r = renderer_for_layout(SpeakerLayout::preset("7.1.4").unwrap());
+    assert_eq!(r.output_channel_count(), 12);
+    r.control.live.write().binaural.output_mode = crate::live_params::OutputMode::Binaural;
+    assert_eq!(r.output_channel_count(), 2, "the width the host sizes from");
+    assert!(!r.output_is_speaker_array());
+    assert_eq!(r.output_channel_names(), ["FL", "FR"]);
+    let pcm = vec![0.25f32; 40];
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(40),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([0.0, 1.0, 0.0]),
+        sample_pos: Some(0),
+    }];
+    let out = r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
+    assert_eq!(out.n_channels, 2, "the width the first frame renders at");
+    // From then on a request goes through the fade: the width stays the
+    // rendered one until the fade swaps the chains.
+    r.control.live.write().binaural.output_mode = crate::live_params::OutputMode::SpeakerArray;
+    assert_eq!(r.output_channel_count(), 2);
+}
+
 /// Render until the output-mode cross-fade has settled at `expect_samples`.
 ///
 /// A live mode change is deferred: the outgoing path keeps rendering while it
