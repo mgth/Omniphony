@@ -25,8 +25,8 @@ use self::dispatch::{RealtimeSeqState, handle_control_message};
 use self::export::build_live_state;
 use self::gaintable::GaintableCache;
 use self::transport::{
-    flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client, send_metering_state,
-    send_raw_filtered,
+    ensure_send_buffer, flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client,
+    send_metering_state, send_raw_filtered,
 };
 use runtime_control::osc_contract;
 
@@ -451,6 +451,8 @@ impl WarnLimiter {
 impl OscSender {
     pub fn new(default_target: SocketAddrV4) -> Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
+        // Every state bundle and every reply leaves through this socket.
+        ensure_send_buffer(&socket);
         let clients = Arc::new(OscClientRegistry::new(CLIENT_TIMEOUT));
         clients.insert_permanent(SocketAddr::V4(default_target));
         // Per-instance id: mixes pid and a sub-second timestamp so it differs

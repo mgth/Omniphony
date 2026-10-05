@@ -29,6 +29,23 @@ address is missing from it. Keep this document and that crate in sync.
 - Larger structured payloads (layout / speakers / audio / input config) are sent
   as a single **JSON string** argument.
 
+## Datagram size
+
+Every OSC packet travels as one UDP datagram, and some are large: a snapshot
+bundle runs up to 65 000 bytes, and `/control/backend/file/put` and its
+`/state/backend/file/content` reply carry a file of up to 60 000 bytes. A
+client therefore needs to:
+
+- **receive** into a buffer that fits any UDP payload (65 536 bytes): a shorter
+  one truncates or loses the datagram;
+- **raise its socket's send buffer** (`SO_SNDBUF`) to 65 536 bytes when it is
+  lower, before sending a large message. macOS and the BSDs refuse a UDP send
+  larger than that buffer (`EMSGSIZE`, "Message too long"), and it starts at
+  `net.inet.udp.maxdgram`: 9 216 bytes. Only ever raise it: Linux starts
+  higher, and setting it there would shrink it.
+
+The engine and Studio do both on their own sockets.
+
 ## Notification
 
 Every control write falls in one of the classes of

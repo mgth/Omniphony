@@ -1137,6 +1137,8 @@ mod notify_tests {
         .unwrap();
         assert!(put.len() > BACKEND_FILE_MAX_BYTES);
         let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // A client has the same send limit to lift as the engine.
+        crate::osc::transport::ensure_send_buffer(&client);
         client.send_to(&put, ("127.0.0.1", port)).unwrap();
 
         let ack = awaited(&client, osc_contract::STATE_BACKEND_FILE_CONTENT)

@@ -445,7 +445,6 @@ jobs:
           cargo test -p orender_engine --lib --locked -- maximum_size send_buffer
 
       - name: Test large OSC datagrams from the native Studio (macOS arm64)
-        if: ${{ !cancelled() }}
         working-directory: omniphony-studio-egui
         run: cargo test -p omniphony-studio-core --lib --locked -- maximum_size send_buffer
 
