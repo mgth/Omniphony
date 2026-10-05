@@ -21,7 +21,8 @@ fn collect(engine: &mut Engine, chunks: Vec<RenderedAudio>) -> Output {
 /// Every packet's output with a buffer that always fits.
 fn reference() -> Vec<Output> {
     let (mut engine, data) = setup();
-    data.chunks(PACKET)
+    let outputs: Vec<Output> = data
+        .chunks(PACKET)
         .map(|p| {
             let chunks = engine
                 .process_raw_within(p, usize::MAX)
@@ -29,7 +30,12 @@ fn reference() -> Vec<Output> {
                 .expect("an unbounded buffer always fits");
             collect(&mut engine, chunks)
         })
-        .collect()
+        .collect();
+    assert!(
+        outputs.iter().any(|o| !o.is_empty()),
+        "the stream renders no audio: nothing to compare"
+    );
+    outputs
 }
 
 /// A host that starts with a small buffer and, on each "too small", doubles it

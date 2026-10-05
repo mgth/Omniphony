@@ -46,6 +46,10 @@ fn reference() -> Stream {
         drained, 0,
         "with the thread off there is nothing left to drain"
     );
+    assert!(
+        !out.is_empty(),
+        "the stream renders no audio: nothing to compare"
+    );
     out
 }
 
@@ -118,19 +122,25 @@ fn a_reset_discards_what_was_in_flight() {
     let run = |thread: bool| -> (Stream, Stream) {
         let (mut engine, data) = setup(thread);
         let packets: Vec<&[u8]> = data.chunks(PACKET).collect();
-        let (first, second) = packets.split_at(packets.len() / 2);
         let mut before = Stream::new();
-        for p in first {
+        for p in &packets[..packets.len() / 2] {
             let chunks = engine.process_raw_within(p, usize::MAX).unwrap().unwrap();
             collect(&mut engine, chunks, &mut before);
         }
         engine.reset();
+        // A reset is a seek: what follows must be decodable from where it
+        // starts. The stream from its beginning is, for any bridge — the
+        // second half of a WAV is not, its header is in the first.
         let mut after = Stream::new();
-        render(&mut engine, second, &mut after);
+        render(&mut engine, &packets, &mut after);
         (before, after)
     };
     let (inline_before, inline_after) = run(false);
     let (threaded_before, threaded_after) = run(true);
+    assert!(
+        !inline_before.is_empty() && !inline_after.is_empty(),
+        "audio on both sides of the reset, or the comparisons below prove nothing"
+    );
     assert!(
         inline_before.starts_with(&threaded_before),
         "before the reset the thread may hold packets back, never change them"
@@ -160,6 +170,10 @@ fn switching_between_streams() {
         second
     };
     let kept_on = run(None);
+    assert!(
+        !kept_on.is_empty(),
+        "no audio after the reset: nothing to compare"
+    );
     assert!(
         run(Some(false)) == kept_on,
         "turning the thread off after a reset changed the audio"
