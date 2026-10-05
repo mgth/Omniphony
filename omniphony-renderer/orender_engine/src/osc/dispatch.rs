@@ -1438,6 +1438,86 @@ mod notify_tests {
         osc_contract::CONTROL_RESUME,
     ];
 
+    /// Every control address a sender can reach: the contract's, minus the
+    /// process lifecycle commands, plus each prefixed family's real fields —
+    /// the registry's prefixed rows and the hand-wired ones — and a few
+    /// malformed instances of each family. The contract lists the families by
+    /// prefix only, so without the real fields their handlers go unswept.
+    fn control_addresses() -> Vec<String> {
+        let mut addresses: Vec<String> = osc_contract::ALL_CONTROL
+            .iter()
+            .filter(|address| !PROCESS_COMMANDS.contains(address))
+            .map(|address| address.to_string())
+            .collect();
+        let registry_fields = renderer::options::LIVE_OPTIONS
+            .iter()
+            .filter_map(|spec| match spec.legacy_control_addr {
+                renderer::options::LegacyAddr::Prefixed { prefix, tail } => {
+                    Some(format!("{prefix}{tail}"))
+                }
+                _ => None,
+            });
+        addresses.extend(registry_fields);
+        // Hand-wired fields, outside the registry.
+        for (prefix, tail) in [
+            (osc_contract::CONTROL_HYBRID_PREFIX, "curve"),
+            (osc_contract::CONTROL_HYBRID_PREFIX, "external_backend"),
+            (osc_contract::CONTROL_HYBRID_PREFIX, "internal_backend"),
+            (osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX, "threshold"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "1/mute"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "0/mute"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "-1/mute"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "4294967296/mute"),
+        ] {
+            addresses.push(format!("{prefix}{tail}"));
+        }
+        // And what a sender gets wrong under each family.
+        for prefix in [
+            osc_contract::CONTROL_OBJECT_PREFIX,
+            osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            osc_contract::CONTROL_HYBRID_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+        ] {
+            for suffix in ["", "1", "x", "x/y/z", "x/mute"] {
+                addresses.push(format!("{prefix}{suffix}"));
+            }
+        }
+        addresses.sort();
+        addresses.dedup();
+        addresses
+    }
+
+    /// The address list reaches the prefixed families' real fields, not only
+    /// the contract's exact addresses: one per registry row with a prefixed
+    /// address, and the hand-wired hybrid curve.
+    #[test]
+    fn the_sweeps_reach_every_prefixed_field() {
+        let addresses = control_addresses();
+        let prefixed = renderer::options::LIVE_OPTIONS
+            .iter()
+            .filter(|spec| {
+                matches!(
+                    spec.legacy_control_addr,
+                    renderer::options::LegacyAddr::Prefixed { .. }
+                )
+            })
+            .count();
+        assert!(
+            prefixed > 5,
+            "the registry declares prefixed fields: {prefixed}"
+        );
+        let in_families = |prefix: &str| {
+            addresses
+                .iter()
+                .filter(|a| a.starts_with(prefix) && a.len() > prefix.len() + 1)
+                .count()
+        };
+        assert!(in_families(osc_contract::CONTROL_HYBRID_PREFIX) > 3);
+        assert!(addresses.contains(&format!("{}curve", osc_contract::CONTROL_HYBRID_PREFIX)));
+        assert!(in_families(osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX) >= 4);
+    }
+
     /// A control datagram is untrusted: whatever its arguments, the handler
     /// ignores or applies it and never panics, which would end the control
     /// listener thread and leave the engine deaf to every client.
@@ -1456,25 +1536,7 @@ mod notify_tests {
         control.set_config_path(dir.join("config.yaml"));
         let wire = wire();
 
-        let mut addresses: Vec<String> = Vec::new();
-        for &address in osc_contract::ALL_CONTROL {
-            if PROCESS_COMMANDS.contains(&address) {
-                continue;
-            }
-            addresses.push(address.to_string());
-        }
-        // The families the contract names by prefix, one instance each.
-        for prefix in [
-            osc_contract::CONTROL_OBJECT_PREFIX,
-            osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
-            osc_contract::CONTROL_HYBRID_PREFIX,
-            osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
-            osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
-        ] {
-            for suffix in ["", "1", "1/mute", "x", "x/y/z"] {
-                addresses.push(format!("{prefix}{suffix}"));
-            }
-        }
+        let addresses = control_addresses();
 
         let mut sent = 0;
         for address in &addresses {
@@ -1530,12 +1592,11 @@ mod notify_tests {
         control.set_config_path(config.clone());
         let wire = wire();
 
+        let addresses = control_addresses();
         let mut writers_seen = Vec::new();
         let mut violations = Vec::new();
-        for &address in osc_contract::ALL_CONTROL {
-            if PROCESS_COMMANDS.contains(&address) {
-                continue;
-            }
+        for address in &addresses {
+            let address = address.as_str();
             for args in argument_lists() {
                 let _ = send(&wire, &control, address, args.clone());
                 let now = std::fs::read_to_string(&config).unwrap_or_default();
