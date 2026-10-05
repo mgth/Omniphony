@@ -220,6 +220,13 @@ impl AudioWriter {
         Ok(AudioWriter::File(writer))
     }
 
+    /// Whether this is a `file` sink writing to a regular file, which building
+    /// the sink again would start over
+    /// ([`FileAudioWriter::is_regular_file`](audio_output::FileAudioWriter::is_regular_file)).
+    pub fn is_regular_file_sink(&self) -> bool {
+        matches!(self, AudioWriter::File(writer) if writer.is_regular_file())
+    }
+
     pub fn write_pcm_samples(
         &mut self,
         samples: &AudioSamples,

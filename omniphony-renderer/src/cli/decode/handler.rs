@@ -672,6 +672,52 @@ impl DecodeHandler {
         Ok(())
     }
 
+    /// The stream ended (continuous mode) and its output is flushed: the
+    /// handler starts over for the next one, keeping what outlives a stream.
+    ///
+    /// That includes a sink writing to a regular file. The next frame would
+    /// build a new one, and opening the path again truncates it: a capture
+    /// then only ever held what followed the last stream end, where the same
+    /// run to stdout holds everything. Any other writer is dropped, as it
+    /// always was — which is what tells a FIFO's reader the stream is over.
+    pub fn reset_for_next_stream(&mut self) {
+        let spatial_renderer = self.spatial_renderer.take();
+        let audio_control = self.audio_control.take();
+        let input_control = self.input_control.take();
+        // The decoders outlive the stream: without their DRC links, a mode picked
+        // after the first stream end never reached them.
+        let drc = std::mem::take(&mut self.drc);
+        let osc_sender = self.telemetry.osc_sender.take();
+        let audio_meter = self.telemetry.audio_meter.take();
+        let runtime = self.runtime.clone();
+        // A property of the bridge, which outlives the stream too.
+        let coordinate_format = self.spatial.stream.coordinate_format;
+        let file_capture = self
+            .output
+            .audio_writer
+            .take_if(|writer| writer.is_regular_file_sink());
+        let file_capture_channels = self.output.audio_writer_channels;
+
+        *self = DecodeHandler::default();
+
+        self.spatial.stream.coordinate_format = coordinate_format;
+
+        self.spatial_renderer = spatial_renderer;
+        self.audio_control = audio_control;
+        self.input_control = input_control;
+        self.drc = drc;
+        self.telemetry.osc_sender = osc_sender;
+        self.telemetry.audio_meter = audio_meter;
+        self.runtime = runtime;
+        if file_capture.is_some() {
+            self.output.audio_writer = file_capture;
+            self.output.audio_writer_channels = file_capture_channels;
+        }
+        if let Some(ref mut osc_sender) = self.telemetry.osc_sender {
+            osc_sender.bump_content_generation();
+        }
+    }
+
     fn reset_spatial_state_for_segment(&mut self) {
         SpatialMetadataCoordinator::new(
             &mut self.spatial,
@@ -873,5 +919,98 @@ mod tests {
             2 * 480 * 2 * 4,
             "the block before the restart was lost"
         );
+    }
+
+    /// What one [`bed_frame`] takes in a raw f32 sink, written unrendered.
+    const BED_FRAME_BYTES: usize = 480 * 6 * 4;
+
+    /// A handler as `--output-backend file --output-file <destination>` leaves
+    /// it, with no renderer: frames reach the sink as decoded.
+    fn file_output_handler(destination: &std::path::Path) -> DecodeHandler {
+        let mut handler = DecodeHandler::default();
+        handler.runtime.active_output_backend = OutputBackend::File;
+        handler.runtime.output_file = destination.to_str().expect("utf-8 path").to_owned();
+        handler
+    }
+
+    /// One frame through the handler, as the decoder thread hands it over.
+    fn feed_bed_frame(handler: &mut DecodeHandler) {
+        let ctx = FrameHandlerContext {
+            bed_conform: false,
+            decode_time_ms: 0.0,
+            queue_delay_ms: 0.0,
+        };
+        handler
+            .handle_decoded_frame(DecodedSource::Bridge, bed_frame(), &ctx)
+            .expect("frame");
+    }
+
+    /// A capture to a regular file holds the streams of a continuous run one
+    /// after the other. The stream end used to drop the sink with the rest of
+    /// the handler, and the next frame built a new one — truncating the file,
+    /// so it only ever held what followed the last stream end.
+    #[test]
+    fn a_stream_end_keeps_a_regular_file_sink() {
+        let path =
+            std::env::temp_dir().join(format!("orender-stream-end-{}.f32", std::process::id()));
+        let mut handler = file_output_handler(&path);
+
+        feed_bed_frame(&mut handler);
+        handler.finalize().expect("finalize");
+        handler.reset_for_next_stream();
+        feed_bed_frame(&mut handler);
+        handler.finalize().expect("finalize");
+        drop(handler);
+
+        let written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            written,
+            2 * BED_FRAME_BYTES as u64,
+            "the stream before the stream end was lost"
+        );
+    }
+
+    /// A FIFO sink is still closed by a stream end, which is how its reader
+    /// learns the stream is over, and opened again by the next stream.
+    #[cfg(unix)]
+    #[test]
+    fn a_stream_end_still_closes_a_fifo_sink() {
+        use std::io::Read;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let path =
+            std::env::temp_dir().join(format!("orender-stream-end-{}.fifo", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        // Non-blocking, so an empty pipe reads as `WouldBlock` while a writer
+        // holds it and as end of file once none does.
+        let mut reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .expect("fifo reader");
+        let mut stream = vec![0u8; BED_FRAME_BYTES];
+        let mut handler = file_output_handler(&path);
+
+        feed_bed_frame(&mut handler);
+        handler.finalize().expect("finalize");
+        reader.read_exact(&mut stream).expect("first stream");
+        let pending = reader
+            .read(&mut stream)
+            .expect_err("the sink is still open");
+        assert_eq!(pending.kind(), std::io::ErrorKind::WouldBlock);
+
+        handler.reset_for_next_stream();
+        assert!(handler.output.audio_writer.is_none());
+        assert_eq!(reader.read(&mut stream).expect("end of stream"), 0);
+
+        feed_bed_frame(&mut handler);
+        handler.finalize().expect("finalize");
+        reader.read_exact(&mut stream).expect("second stream");
+        drop(handler);
+        let _ = std::fs::remove_file(&path);
     }
 }

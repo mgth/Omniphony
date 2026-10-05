@@ -452,32 +452,7 @@ fn handle_stream_end(handler: &mut DecodeHandler) -> Result<()> {
 
     log_auto_gain_summary(handler);
 
-    let spatial_renderer = handler.spatial_renderer.take();
-    let audio_control = handler.audio_control.take();
-    let input_control = handler.input_control.take();
-    // The decoders outlive the stream: without their DRC links, a mode picked
-    // after the first stream end never reached them.
-    let drc = std::mem::take(&mut handler.drc);
-    let osc_sender = handler.telemetry.osc_sender.take();
-    let audio_meter = handler.telemetry.audio_meter.take();
-    let runtime = handler.runtime.clone();
-    // A property of the bridge, which outlives the stream too.
-    let coordinate_format = handler.spatial.stream.coordinate_format;
-
-    *handler = DecodeHandler::default();
-
-    handler.spatial.stream.coordinate_format = coordinate_format;
-
-    handler.spatial_renderer = spatial_renderer;
-    handler.audio_control = audio_control;
-    handler.input_control = input_control;
-    handler.drc = drc;
-    handler.telemetry.osc_sender = osc_sender;
-    handler.telemetry.audio_meter = audio_meter;
-    handler.runtime = runtime;
-    if let Some(ref mut osc_sender) = handler.telemetry.osc_sender {
-        osc_sender.bump_content_generation();
-    }
+    handler.reset_for_next_stream();
 
     log::info!("Handler reset complete, ready for next stream");
     sys::notify_ready();
