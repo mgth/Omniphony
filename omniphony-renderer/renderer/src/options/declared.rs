@@ -354,7 +354,18 @@ macro_rules! declared_options {
                     }
                     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
                         let mut config = DeclaredOptionsConfig::default();
+                        // Which keys were read, apart from their value: a key
+                        // given twice is refused, as the derived reading of
+                        // the section did, even when the first read `null` or
+                        // an enum value kept as unknown.
+                        let mut seen = [false; DECLARED_KEYS.len()];
                         while let Some(key) = map.next_key::<String>()? {
+                            let index = DECLARED_KEYS.iter().position(|k| *k == key);
+                            if let Some(index) = index {
+                                if std::mem::replace(&mut seen[index], true) {
+                                    return Err(serde::de::Error::duplicate_field(DECLARED_KEYS[index]));
+                                }
+                            }
                             match key.as_str() {
                                 $(
                                     stringify!($name) => {
@@ -736,5 +747,22 @@ mod tests {
         assert!(!yaml.contains("dialogue_gain_db"), "{yaml}");
         let reread: RenderConfig = serde_yaml_ng::from_str(&yaml).unwrap();
         assert_eq!(reread.options, render.options);
+    }
+
+    /// A declared key given twice fails the section, whatever the first
+    /// occurrence held (a value, `null`, an enum value this build does not
+    /// know), as the derived reading did before the options were declared.
+    #[test]
+    fn a_declared_key_given_twice_is_refused() {
+        for yaml in [
+            "render:\n  auto_gain: false\n  auto_gain: true\n",
+            "render:\n  auto_gain: null\n  auto_gain: true\n",
+            "render:\n  crossover_type: brickwall\n  crossover_type: fir\n",
+            "render:\n  dialogue_gain_db: -3\n  master_gain: 0\n  dialogue_gain_db: 2\n",
+        ] {
+            let err = serde_yaml_ng::from_str::<Config>(yaml)
+                .expect_err(&format!("accepted a repeated key: {yaml}"));
+            assert!(err.to_string().contains("duplicate field"), "{yaml}: {err}");
+        }
     }
 }
