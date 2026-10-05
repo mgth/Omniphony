@@ -806,18 +806,61 @@ fn finalize_render_run(prepared: PreparedDecodeRun, handler: &mut DecodeHandler)
     complete_render_run(prepared, handler, is_shutdown)
 }
 
+/// How long the token clock waits for a token when it has nothing to catch
+/// up on: the bound on how late it notices a shutdown.
+const PACER_TOKEN_WAIT: Duration = Duration::from_millis(200);
+
+/// How often the token clock tries to pay what it owes while it catches up.
+/// Half the renderer's back-pressure retry period (10 ms), so the room a
+/// payment makes is found by the renderer's next retry, and what it writes
+/// is moved before the one after.
+const PACER_CATCH_UP_POLL: Duration = Duration::from_millis(5);
+
+/// What the token clock owes the ring: the tokens it was refused while a
+/// capture stream held the drain, for time that stream did not clock.
+#[derive(Debug, PartialEq)]
+enum PacerDebt {
+    None,
+    /// `us` of tokens refused under `hold`. Owed if the hold lapses with no
+    /// chunk since: the stream stopped clocking at that chunk, and nothing
+    /// drained for those tokens. Moot if a chunk comes: the stream clocked
+    /// that time itself.
+    Refused {
+        hold: audio_input::CaptureHold,
+        us: u64,
+    },
+    /// The hold lapsed with no chunk since: `samples` to move as the FIFO
+    /// holds them. `stalled_since`: since when every payment has found
+    /// nothing to move.
+    Paying {
+        samples: usize,
+        stalled_since: Option<std::time::Instant>,
+    },
+}
+
 /// The token clock of the output pacer drain: one token is the duration of
 /// what a producer just emitted, and is drained as that much output.
 ///
 /// Tokens are posted by the input-pipe decoder thread, a packet at a time,
 /// and by the speaker-test idle feed. The clock is the source's, so the ring
 /// follows the source rather than the decoder's bursts.
+///
+/// A capture stream that delivers is the drain clock instead, and the tokens
+/// are refused (`audio_input::pacer_drain`). When its hold lapses with no
+/// chunk since the refusal, what the refused tokens stood for is owed to the
+/// ring: their producer is typically held back by the full FIFO by then, and
+/// will post nothing more until something drains. The clock wakes when the
+/// hold lapses, without waiting for a token, and pays from what the FIFO
+/// holds as the producer refills it: draining it all at once would make up
+/// with silence what the producer has not written yet, and leave its backlog
+/// behind as latency.
 struct PacerTokenClock {
     /// The sub-frame remainder, carried across tokens so per-token rounding
     /// can't accumulate into audible drift over a long stream.
     frac_frames: f64,
     last_drain_at: Option<std::time::Instant>,
     diag: PacerBridgeDiag,
+    debt: PacerDebt,
 }
 
 impl PacerTokenClock {
@@ -826,6 +869,20 @@ impl PacerTokenClock {
             frac_frames: 0.0,
             last_drain_at: None,
             diag,
+            debt: PacerDebt::None,
+        }
+    }
+
+    /// How long to wait for the next token from `now`: until the hold that
+    /// refused tokens lapses, or the next payment while catching up.
+    fn wait_limit(&self, now: std::time::Instant) -> Duration {
+        match &self.debt {
+            PacerDebt::None => PACER_TOKEN_WAIT,
+            PacerDebt::Refused { hold, .. } => hold
+                .lapses_at()
+                .saturating_duration_since(now)
+                .min(PACER_TOKEN_WAIT),
+            PacerDebt::Paying { .. } => PACER_CATCH_UP_POLL,
         }
     }
 
@@ -833,29 +890,45 @@ impl PacerTokenClock {
     /// drain is this clock's.
     ///
     /// It is not while a capture stream delivers: the capture clock drains
-    /// then, and the token is dropped (`audio_input::pacer_drain`). Neither
-    /// the requested input mode nor the applied one is consulted: both can
-    /// read "pipe bridge" with a capture stream running.
+    /// then, and the token is refused (`audio_input::pacer_drain`), kept as
+    /// owed in case the stream turns out to have stopped. Neither the
+    /// requested input mode nor the applied one is consulted: both can read
+    /// "pipe bridge" with a capture stream running.
     fn on_token(
         &mut self,
         input_control: &audio_input::InputControl,
         emitted_us: u64,
         now: std::time::Instant,
     ) {
-        let Some(pacer) = input_control.token_drain_pacer(now) else {
-            self.frac_frames = 0.0;
-            return;
+        let pacer = match input_control.token_drain(now) {
+            audio_input::TokenDrain::Granted(pacer) => pacer,
+            audio_input::TokenDrain::Held(hold) => {
+                self.frac_frames = 0.0;
+                self.debt = match self.debt {
+                    PacerDebt::Refused { hold: owed, us } if owed == hold => PacerDebt::Refused {
+                        hold,
+                        us: us + emitted_us,
+                    },
+                    _ => PacerDebt::Refused {
+                        hold,
+                        us: emitted_us,
+                    },
+                };
+                return;
+            }
+            audio_input::TokenDrain::NoPacer => {
+                self.frac_frames = 0.0;
+                self.debt = PacerDebt::None;
+                return;
+            }
         };
+        self.settle(&pacer);
         let drain_dt_us = self
             .last_drain_at
             .map(|prev| now.saturating_duration_since(prev).as_micros() as u64)
             .unwrap_or(0);
         self.last_drain_at = Some(now);
-        let exact_frames =
-            emitted_us as f64 * pacer.out_sample_rate() as f64 / 1_000_000.0 + self.frac_frames;
-        let drain_frames = exact_frames.floor();
-        self.frac_frames = exact_frames - drain_frames;
-        let drain_samples = drain_frames as usize * pacer.out_channels() as usize;
+        let drain_samples = self.samples_for(emitted_us, &pacer);
         self.diag.emitted_us.store(
             (emitted_us as f64).to_bits(),
             std::sync::atomic::Ordering::Relaxed,
@@ -872,9 +945,89 @@ impl PacerTokenClock {
             (drain_dt_us as f64).to_bits(),
             std::sync::atomic::Ordering::Relaxed,
         );
-        if drain_samples > 0 {
+        if let PacerDebt::Paying { samples, .. } = &mut self.debt {
+            // Still catching up: this token joins the queue rather than
+            // drawing on a FIFO the payments are emptying.
+            *samples += drain_samples;
+            self.pay(&pacer, now);
+        } else if drain_samples > 0 {
             pacer.drain(drain_samples);
         }
+    }
+
+    /// No token came by the wait limit: pay what is owed, if it is.
+    fn on_tick(&mut self, input_control: &audio_input::InputControl, now: std::time::Instant) {
+        if self.debt == PacerDebt::None {
+            return;
+        }
+        match input_control.token_drain(now) {
+            audio_input::TokenDrain::Granted(pacer) => {
+                self.settle(&pacer);
+                self.pay(&pacer, now);
+            }
+            // The hold that refused the tokens, not lapsed yet.
+            audio_input::TokenDrain::Held(hold) if matches!(self.debt, PacerDebt::Refused { hold: owed, .. } if owed == hold) =>
+                {}
+            // A later chunk: the stream clocks again, and that time is its own.
+            audio_input::TokenDrain::Held(_) | audio_input::TokenDrain::NoPacer => {
+                self.debt = PacerDebt::None;
+            }
+        }
+    }
+
+    /// The drain is this clock's again: tokens refused under a hold that
+    /// lapsed with no chunk since are owed, in samples; refused under one
+    /// that a later chunk replaced, they were the stream's to clock.
+    fn settle(&mut self, pacer: &audio_input::TokenDrainPacer<'_>) {
+        if let PacerDebt::Refused { hold, us } = self.debt {
+            self.debt = if pacer.follows(hold) {
+                PacerDebt::Paying {
+                    samples: self.samples_for(us, pacer),
+                    stalled_since: None,
+                }
+            } else {
+                PacerDebt::None
+            };
+        }
+    }
+
+    /// Move what the FIFO holds of what is owed. A producer that has written
+    /// nothing for [`audio_input::pacer_drain::CAPTURE_SILENCE_LIMIT`] while
+    /// it is owed has stopped, and the rest is forgiven: the ring is not
+    /// made up with silence for audio that never comes.
+    fn pay(&mut self, pacer: &audio_input::TokenDrainPacer<'_>, now: std::time::Instant) {
+        let PacerDebt::Paying {
+            samples,
+            stalled_since,
+        } = &mut self.debt
+        else {
+            return;
+        };
+        // `None`: another drain is in progress, or the capture is the clock
+        // again; the next token or tick says which.
+        let Some(moved) = pacer.drain_available(*samples) else {
+            return;
+        };
+        *samples -= moved;
+        if *samples == 0 {
+            self.debt = PacerDebt::None;
+        } else if moved > 0 {
+            *stalled_since = None;
+        } else if now.saturating_duration_since(*stalled_since.get_or_insert(now))
+            >= audio_input::pacer_drain::CAPTURE_SILENCE_LIMIT
+        {
+            self.debt = PacerDebt::None;
+        }
+    }
+
+    /// `us` of output in whole frames, in samples across channels, carrying
+    /// the sub-frame remainder.
+    fn samples_for(&mut self, us: u64, pacer: &audio_input::TokenDrainPacer<'_>) -> usize {
+        let exact_frames =
+            us as f64 * pacer.out_sample_rate() as f64 / 1_000_000.0 + self.frac_frames;
+        let frames = exact_frames.floor();
+        self.frac_frames = exact_frames - frames;
+        frames as usize * pacer.out_channels() as usize
     }
 }
 
@@ -889,8 +1042,8 @@ impl PacerTokenClock {
 /// handler is blocked in `write_samples`.
 ///
 /// Only one clock may drain the FIFO at a time, so this thread stands down
-/// while a capture stream delivers chunks and its tokens are dropped: see
-/// [`PacerTokenClock::on_token`].
+/// while a capture stream delivers chunks, and catches up on its refused
+/// tokens if the stream stops without a word: see [`PacerTokenClock`].
 fn spawn_pacer_drain_thread(
     input_control: std::sync::Arc<audio_input::InputControl>,
     drain_rx: mpsc::Receiver<u64>,
@@ -906,12 +1059,16 @@ fn spawn_pacer_drain_thread(
                 {
                     break;
                 }
-                let emitted_us = match drain_rx.recv_timeout(Duration::from_millis(200)) {
-                    Ok(value) => value,
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                let wait = clock.wait_limit(std::time::Instant::now());
+                match drain_rx.recv_timeout(wait) {
+                    Ok(emitted_us) => {
+                        clock.on_token(&input_control, emitted_us, std::time::Instant::now())
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        clock.on_tick(&input_control, std::time::Instant::now())
+                    }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                };
-                clock.on_token(&input_control, emitted_us, std::time::Instant::now());
+                }
             }
         })
         .expect("failed to spawn pacer drain thread")
@@ -1397,7 +1554,13 @@ mod tests {
 
         /// The renderer writes 10 ms.
         fn render_quantum(&mut self) {
-            assert_eq!(self.fifo.push_slice(&[0.25; QUANTUM]), QUANTUM);
+            self.render_quanta(1);
+        }
+
+        /// The renderer writes `count` times 10 ms.
+        fn render_quanta(&mut self, count: usize) {
+            let samples = count * QUANTUM;
+            assert_eq!(self.fifo.push_slice(&vec![0.25; samples]), samples);
         }
 
         /// What reached the ring since the last call: samples, and how many
@@ -1657,5 +1820,177 @@ mod tests {
         capture.chunk_arrived(output.t0, CHUNK_FRAMES, PACER_RATE);
         tokens.on_token(&output.input, 10_010, output.t0);
         assert_eq!(tokens.frac_frames, 0.0);
+    }
+
+    /// The reviewer's case: the capture delivered a chunk and then streams
+    /// nothing; the FIFO is at its back-pressure cap; one token arrives
+    /// before the hold lapses, its write blocks on the full FIFO, and no
+    /// other token comes. The lapse alone must let the drain thread move the
+    /// refused token, so the write goes through.
+    #[test]
+    fn a_token_refused_before_the_lapse_is_drained_when_the_hold_lapses() {
+        let mut output = PacedOutput::new();
+        output.apply_pipewire_state();
+        // Pre-roll cap: 64 ms at 48 kHz stereo.
+        let cap = 6_144;
+        assert_eq!(output.fifo.push_slice(&vec![0.25; cap]), cap);
+        let mut capture = output.input.capture_drain_clock();
+        capture.set_streaming(true);
+        let started = std::time::Instant::now();
+        capture.chunk_arrived(started, 0, PACER_RATE);
+
+        let (drain_tx, drain_rx) = mpsc::channel::<u64>();
+        let thread =
+            spawn_pacer_drain_thread(Arc::clone(&output.input), drain_rx, pacer_bridge_diag());
+        // 32 ms of audio: its token, then its write, as the idle feed does.
+        drain_tx.send(32_000).unwrap();
+        let report = audio_output::ring_buffer_io::push_samples_with_backpressure(
+            &mut output.fifo,
+            &[0.5; 3_072],
+            cap,
+            10,
+            200,
+        );
+        let waited = started.elapsed();
+        drop(drain_tx);
+        thread.join().unwrap();
+
+        assert!(!report.timed_out, "the write timed out after {waited:?}");
+        assert_eq!(report.pushed_samples, 3_072);
+        assert!(waited < Duration::from_secs(1), "waited {waited:?}");
+        assert_eq!(output.played(), (3_072, 0), "the refused token's audio");
+    }
+
+    /// A capture stream that delivered one chunk at `t0` and streams on
+    /// without delivering, and a token clock that was refused `tokens` of
+    /// 10 ms at `t0 + 5 ms`.
+    fn refused_by_a_silent_stream(
+        output: &mut PacedOutput,
+        tokens: usize,
+    ) -> (audio_input::CaptureDrainClock, PacerTokenClock) {
+        output.apply_pipewire_state();
+        let mut capture = output.input.capture_drain_clock();
+        capture.set_streaming(true);
+        assert!(capture.chunk_arrived(output.t0, 0, PACER_RATE));
+        let mut clock = pacer_token_clock();
+        for _ in 0..tokens {
+            clock.on_token(&output.input, TOKEN_US, output.at_ms(5));
+        }
+        assert_eq!(output.played(), (0, 0), "refused");
+        (capture, clock)
+    }
+
+    /// The token clock waits for the hold that refused it to lapse, then
+    /// moves what it was refused without a token of its own, and goes back to
+    /// waiting for tokens.
+    #[test]
+    fn a_refused_token_is_paid_when_the_hold_lapses_with_no_chunk_since() {
+        let mut output = PacedOutput::new();
+        output.render_quanta(2);
+        let (_capture, mut clock) = refused_by_a_silent_stream(&mut output, 1);
+        let lapse = audio_input::pacer_drain::CAPTURE_SILENCE_LIMIT;
+        let wait = clock.wait_limit(output.at_ms(5));
+        assert!(wait <= lapse - Duration::from_millis(5));
+        assert!(wait > lapse - Duration::from_millis(6));
+
+        clock.on_tick(&output.input, output.at_ms(100));
+        assert_eq!(output.played(), (0, 0), "not lapsed yet");
+        clock.on_tick(&output.input, output.t0 + lapse);
+        assert_eq!(output.played(), (QUANTUM, 0));
+        assert_eq!(clock.debt, PacerDebt::None);
+        assert_eq!(clock.wait_limit(output.t0 + lapse), PACER_TOKEN_WAIT);
+        assert_eq!(output.underrun(), 0.0);
+    }
+
+    /// A chunk after the refusal means the stream was clocking: the refused
+    /// token is not owed, and nothing moves when the first hold would have
+    /// lapsed, nor when the second does.
+    #[test]
+    fn a_refused_token_is_not_owed_once_the_stream_delivers_again() {
+        let mut output = PacedOutput::new();
+        output.render_quanta(2);
+        let (mut capture, mut clock) = refused_by_a_silent_stream(&mut output, 1);
+        assert!(capture.chunk_arrived(output.at_ms(10), CHUNK_FRAMES, PACER_RATE));
+        assert_eq!(output.played(), (QUANTUM, 0), "the chunk's own drain");
+
+        let lapse = audio_input::pacer_drain::CAPTURE_SILENCE_LIMIT;
+        clock.on_tick(&output.input, output.t0 + lapse);
+        assert_eq!(clock.debt, PacerDebt::None);
+        clock.on_tick(&output.input, output.at_ms(10) + lapse);
+        assert_eq!(output.played(), (0, 0));
+        assert_eq!(output.drained(), QUANTUM as f64);
+    }
+
+    /// The renderer is held back by the full FIFO while the tokens are
+    /// refused, so what they stood for is not all in the FIFO when the hold
+    /// lapses. The clock moves what is there, waits for the renderer to write
+    /// the rest, joins the tokens that come meanwhile to what it owes, and
+    /// never makes anything up with silence.
+    #[test]
+    fn catching_up_moves_the_owed_audio_as_it_is_written_and_no_silence() {
+        let mut output = PacedOutput::new();
+        output.render_quantum();
+        let (_capture, mut clock) = refused_by_a_silent_stream(&mut output, 3);
+        let lapse = output.t0 + audio_input::pacer_drain::CAPTURE_SILENCE_LIMIT;
+
+        clock.on_tick(&output.input, lapse);
+        assert_eq!(output.played(), (QUANTUM, 0), "what the FIFO held");
+        assert_eq!(clock.wait_limit(lapse), PACER_CATCH_UP_POLL);
+        output.render_quantum();
+        clock.on_tick(&output.input, lapse + Duration::from_millis(5));
+        assert_eq!(output.played(), (QUANTUM, 0));
+        // A token while the FIFO is empty: queued behind the debt.
+        clock.on_token(&output.input, TOKEN_US, lapse + Duration::from_millis(7));
+        assert_eq!(output.played(), (0, 0), "no silence for it");
+        output.render_quanta(2);
+        clock.on_tick(&output.input, lapse + Duration::from_millis(10));
+        assert_eq!(output.played(), (2 * QUANTUM, 0));
+
+        assert_eq!(clock.debt, PacerDebt::None, "caught up");
+        assert_eq!(output.underrun(), 0.0);
+        output.render_quantum();
+        clock.on_token(&output.input, TOKEN_US, lapse + Duration::from_millis(20));
+        assert_eq!(output.played(), (QUANTUM, 0), "an ordinary token again");
+    }
+
+    /// A producer that writes nothing for the silence limit while it is owed
+    /// has stopped: the rest is forgiven, not made up with silence, and the
+    /// clock goes back to waiting for tokens.
+    #[test]
+    fn catching_up_forgives_what_the_producer_never_writes() {
+        let mut output = PacedOutput::new();
+        output.render_quantum();
+        let (_capture, mut clock) = refused_by_a_silent_stream(&mut output, 3);
+        let limit = audio_input::pacer_drain::CAPTURE_SILENCE_LIMIT;
+        let lapse = output.t0 + limit;
+
+        clock.on_tick(&output.input, lapse);
+        assert_eq!(output.played(), (QUANTUM, 0));
+        clock.on_tick(&output.input, lapse + Duration::from_millis(5));
+        clock.on_tick(&output.input, lapse + limit - Duration::from_millis(1));
+        assert!(matches!(clock.debt, PacerDebt::Paying { .. }), "not yet");
+        clock.on_tick(&output.input, lapse + limit + Duration::from_millis(5));
+        assert_eq!(clock.debt, PacerDebt::None);
+        assert_eq!(output.played(), (0, 0));
+        assert_eq!(output.underrun(), 0.0);
+    }
+
+    /// The capture stream delivering again in the middle of a catch-up takes
+    /// the drain back, and what was still owed with it.
+    #[test]
+    fn catching_up_stops_when_the_capture_delivers_again() {
+        let mut output = PacedOutput::new();
+        output.render_quantum();
+        let (mut capture, mut clock) = refused_by_a_silent_stream(&mut output, 3);
+        let lapse = output.t0 + audio_input::pacer_drain::CAPTURE_SILENCE_LIMIT;
+        clock.on_tick(&output.input, lapse);
+        assert_eq!(output.played(), (QUANTUM, 0));
+
+        output.render_quanta(2);
+        assert!(capture.chunk_arrived(lapse + Duration::from_millis(1), CHUNK_FRAMES, PACER_RATE));
+        assert_eq!(output.played(), (QUANTUM, 0), "the chunk's drain");
+        clock.on_tick(&output.input, lapse + Duration::from_millis(5));
+        assert_eq!(clock.debt, PacerDebt::None);
+        assert_eq!(output.played(), (0, 0));
     }
 }

@@ -15,4 +15,4 @@ pub use control::{
     AppliedAudioInputState, InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode,
     InputMode, RequestedAudioInputConfig,
 };
-pub use pacer_drain::{CaptureDrainClock, TokenDrainPacer};
+pub use pacer_drain::{CaptureDrainClock, CaptureHold, TokenDrain, TokenDrainPacer};

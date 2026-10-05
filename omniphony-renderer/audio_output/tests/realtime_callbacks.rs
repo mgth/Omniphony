@@ -69,6 +69,19 @@ const CALLEE_FUNCTIONS: &[(&str, &str)] = &[
         "src/pacer.rs",
         "pub fn drain_if(&self, drain_samples: usize, still_mine: impl FnOnce() -> bool) -> bool {",
     ),
+    ("src/pacer.rs", "pub fn drain_available_if("),
+    (
+        "src/pacer.rs",
+        "fn flush_and_prime(&self, fifo: &mut RingReader) -> bool {",
+    ),
+    (
+        "src/pacer.rs",
+        "fn transfer(fifo: &mut RingReader, ring: &mut RingWriter, count: usize) -> bool {",
+    ),
+    (
+        "src/pacer.rs",
+        "fn add_to(counter: &AtomicU64, count: usize) {",
+    ),
     (
         "src/pipewire.rs",
         "fn pipewire_rate_for_consume_adjust(consume_adjust: f64) -> f32 {",

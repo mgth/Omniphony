@@ -176,18 +176,7 @@ impl PacerHandle {
             return false;
         }
         let PacerDrainEnds { fifo, ring } = &mut *ends;
-        // Honour a deferred flush first, so no stale sample reaches the ring.
-        // Done here because this is the FIFO's only consumer — see
-        // [`request_flush_and_rearm`](Self::request_flush_and_rearm).
-        if self.flush_requested.swap(false, Ordering::Acquire) {
-            fifo.discard(usize::MAX);
-            self.pre_roll_complete.store(false, Ordering::Relaxed);
-        }
-        let mut primed = self.pre_roll_complete.load(Ordering::Relaxed);
-        if !primed && fifo.available() >= self.pre_roll_threshold_samples {
-            self.pre_roll_complete.store(true, Ordering::Relaxed);
-            primed = true;
-        }
+        let primed = self.flush_and_prime(fifo);
         // While priming, nothing is drawn from the FIFO and the whole quantum
         // is silence; once primed, silence only makes up for what the FIFO
         // does not hold.
@@ -196,32 +185,96 @@ impl PacerHandle {
         } else {
             0
         };
-        // The FIFO is drawn down by the clock whatever the ring takes: what a
-        // full ring refuses is dropped, from the first sample it refuses on.
-        let mut ring_full = false;
-        fifo.pop_with(from_fifo, |block| {
-            if !ring_full {
-                ring_full = ring.push_slice(block) < block.len();
-            }
-        });
+        let ring_full = transfer(fifo, ring, from_fifo);
         let underruns = drain_samples - from_fifo;
         if underruns > 0 && !ring_full {
             ring.push_silence(underruns);
         }
-        let prev_drain = f64::from_bits(self.diag_drain_total.load(Ordering::Relaxed));
-        self.diag_drain_total.store(
-            (prev_drain + drain_samples as f64).to_bits(),
-            Ordering::Relaxed,
-        );
+        add_to(&self.diag_drain_total, drain_samples);
         if underruns > 0 {
-            let prev_under = f64::from_bits(self.diag_underrun_total.load(Ordering::Relaxed));
-            self.diag_underrun_total
-                .store((prev_under + underruns as f64).to_bits(), Ordering::Relaxed);
+            add_to(&self.diag_underrun_total, underruns);
         }
         self.diag_fifo_level
             .store((fifo.available() as f64).to_bits(), Ordering::Relaxed);
         true
     }
+
+    /// Move what the FIFO holds, up to `max_samples` and in whole frames,
+    /// for a clock that is catching up: it makes up no silence, and moves
+    /// nothing while the pacer is priming.
+    ///
+    /// [`drain`](Self::drain) is a clock tick: it draws its whole quantum
+    /// whatever the FIFO holds, and makes up the rest with silence. A clock
+    /// that owes the ring more than the FIFO holds (it was kept from draining
+    /// while the renderer was held back by the full FIFO) would insert that
+    /// silence and leave the renderer's backlog behind it as latency. This
+    /// moves what is there, so the clock can pay the rest as the renderer
+    /// refills.
+    ///
+    /// Same rules as [`drain_if`](Self::drain_if) otherwise: a deferred flush
+    /// is honoured first, and `still_mine` is asked with the ends held.
+    /// Returns the samples moved, or `None`, having moved nothing, when
+    /// another drain is in progress or `still_mine` says no.
+    pub fn drain_available_if(
+        &self,
+        max_samples: usize,
+        still_mine: impl FnOnce() -> bool,
+    ) -> Option<usize> {
+        let mut ends = self.ends.try_lock()?;
+        if !still_mine() {
+            return None;
+        }
+        let PacerDrainEnds { fifo, ring } = &mut *ends;
+        if !self.flush_and_prime(fifo) {
+            return Some(0);
+        }
+        let channels = (self.out_channels as usize).max(1);
+        let moved = max_samples.min(fifo.available()) / channels * channels;
+        transfer(fifo, ring, moved);
+        add_to(&self.diag_drain_total, moved);
+        self.diag_fifo_level
+            .store((fifo.available() as f64).to_bits(), Ordering::Relaxed);
+        Some(moved)
+    }
+
+    /// Honour a deferred flush, then mark the pacer primed once the FIFO
+    /// holds the pre-roll. Returns whether it is primed. For a drain, with
+    /// the ends held.
+    fn flush_and_prime(&self, fifo: &mut RingReader) -> bool {
+        // Honour a deferred flush first, so no stale sample reaches the ring.
+        // Done here because this is the FIFO's only consumer — see
+        // [`request_flush_and_rearm`](Self::request_flush_and_rearm).
+        if self.flush_requested.swap(false, Ordering::Acquire) {
+            fifo.discard(usize::MAX);
+            self.pre_roll_complete.store(false, Ordering::Relaxed);
+        }
+        let primed = self.pre_roll_complete.load(Ordering::Relaxed);
+        if !primed && fifo.available() >= self.pre_roll_threshold_samples {
+            self.pre_roll_complete.store(true, Ordering::Relaxed);
+            return true;
+        }
+        primed
+    }
+}
+
+/// Move `count` samples from `fifo` to `ring`. The FIFO is drawn down by the
+/// clock whatever the ring takes: what a full ring refuses is dropped, from
+/// the first sample it refuses on. Returns whether the ring was full.
+fn transfer(fifo: &mut RingReader, ring: &mut RingWriter, count: usize) -> bool {
+    let mut ring_full = false;
+    fifo.pop_with(count, |block| {
+        if !ring_full {
+            ring_full = ring.push_slice(block) < block.len();
+        }
+    });
+    ring_full
+}
+
+/// Add `count` to an f64-encoded diagnostic counter. One writer at a time:
+/// the drain's ends are held.
+fn add_to(counter: &AtomicU64, count: usize) {
+    let total = f64::from_bits(counter.load(Ordering::Relaxed)) + count as f64;
+    counter.store(total.to_bits(), Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -433,6 +486,46 @@ mod tests {
         p.handle.flush_requested.store(false, Ordering::Relaxed);
         assert!(p.handle.drain_if(2, || true));
         assert_eq!(drain_ring(&mut p), vec![1.0, 2.0]);
+    }
+
+    /// Catching up moves what the FIFO holds, in whole frames, and makes up
+    /// no silence: what it could not move is left to the next call.
+    #[test]
+    fn catching_up_moves_what_the_fifo_holds_and_no_silence() {
+        let mut p = pacer(0);
+        fill(&mut p, &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(p.handle.drain_available_if(8, || true), Some(4));
+        assert_eq!(drain_ring(&mut p), vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(p.fifo.fill(), 1, "half a frame stays");
+        assert_eq!(diag(&p.handle.diag_drain_total), 4.0);
+        assert_eq!(diag(&p.handle.diag_underrun_total), 0.0);
+
+        fill(&mut p, &[6.0, 7.0, 8.0]);
+        assert_eq!(p.handle.drain_available_if(2, || true), Some(2));
+        assert_eq!(drain_ring(&mut p), vec![5.0, 6.0], "no more than asked");
+    }
+
+    /// Catching up follows the drain's rules: a deferred flush first, nothing
+    /// while priming, and nothing for a clock that lost the drain.
+    #[test]
+    fn catching_up_follows_the_rules_of_the_drain() {
+        let mut p = pacer(4);
+        fill(&mut p, &[1.0, 2.0]);
+        p.handle.request_flush_and_rearm();
+        assert_eq!(p.handle.drain_available_if(2, || true), Some(0));
+        assert_eq!(p.fifo.fill(), 0, "flushed");
+        fill(&mut p, &[3.0, 4.0]);
+        assert_eq!(p.handle.drain_available_if(2, || true), Some(0), "priming");
+        assert_eq!(drain_ring(&mut p), Vec::<f32>::new(), "and no silence");
+
+        fill(&mut p, &[5.0, 6.0]);
+        assert_eq!(p.handle.drain_available_if(2, || false), None);
+        assert_eq!(p.handle.drain_available_if(2, || true), Some(2), "primed");
+        assert_eq!(drain_ring(&mut p), vec![3.0, 4.0]);
+
+        let in_progress = p.handle.ends.try_lock().unwrap();
+        assert_eq!(p.handle.drain_available_if(2, || true), None);
+        drop(in_progress);
     }
 
     /// The question is put with the ends held: whoever answers it knows that

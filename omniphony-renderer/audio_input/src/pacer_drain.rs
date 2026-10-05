@@ -32,9 +32,14 @@
 //!   state (its client paused or left), and when it is dropped with the
 //!   stream.
 //! - The token clock is only handed the pacer while no capture stream holds
-//!   the drain ([`InputControl::token_drain_pacer`]), and it asks again with
-//!   the drain's ends in hand ([`TokenDrainPacer::drain`]), so it cannot come
+//!   the drain ([`InputControl::token_drain`]), and it asks again with the
+//!   drain's ends in hand ([`TokenDrainPacer::drain`]), so it cannot come
 //!   after a capture drain it did not see.
+//! - A token refused under a hold that then lapses, with no chunk since,
+//!   stood for audio nothing drained: the capture had stopped clocking. The
+//!   token clock is told which hold refused it and when that hold lapses
+//!   ([`CaptureHold`]), so that it can drain it then, without waiting for a
+//!   token of its own ([`TokenDrainPacer::follows`]).
 //!
 //! A capture stream that is connected but idle is therefore not the clock: it
 //! has no chunk to clock anything with, and what plays then (the input pipe,
@@ -115,13 +120,21 @@ impl OutputPacerDrain {
         at.saturating_duration_since(self.epoch).as_micros() as u64
     }
 
-    /// Whether a capture stream holds the drain at `now_us`: one is counted
-    /// as delivering, and its last chunk is not older than the silence limit.
-    /// A chunk stamped after `now_us` was taken counts as just arrived.
+    /// The chunk a capture stream holds the drain from at `now_us`, if one
+    /// does: it is counted as delivering, and its last chunk is not older
+    /// than the silence limit. A chunk stamped after `now_us` was taken
+    /// counts as just arrived.
+    fn hold_at(&self, now_us: u64) -> Option<u64> {
+        if self.delivering_captures.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        let chunk_us = self.last_chunk_us.load(Ordering::Acquire);
+        (now_us.saturating_sub(chunk_us) < CAPTURE_SILENCE_LIMIT.as_micros() as u64)
+            .then_some(chunk_us)
+    }
+
     fn capture_is_clock(&self, now_us: u64) -> bool {
-        self.delivering_captures.load(Ordering::Acquire) != 0
-            && now_us.saturating_sub(self.last_chunk_us.load(Ordering::Acquire))
-                < CAPTURE_SILENCE_LIMIT.as_micros() as u64
+        self.hold_at(now_us).is_some()
     }
 
     pub(crate) fn for_capture(self: &Arc<Self>) -> CaptureDrainClock {
@@ -132,16 +145,22 @@ impl OutputPacerDrain {
         }
     }
 
-    pub(crate) fn for_tokens(&self, now: Instant) -> Option<TokenDrainPacer<'_>> {
+    pub(crate) fn for_tokens(&self, now: Instant) -> TokenDrain<'_> {
+        let Some(pacer) = self.pacer() else {
+            return TokenDrain::NoPacer;
+        };
         let now_us = self.micros(now);
-        if self.capture_is_clock(now_us) {
-            return None;
+        if let Some(chunk_us) = self.hold_at(now_us) {
+            return TokenDrain::Held(CaptureHold {
+                chunk_us,
+                lapses_at: self.epoch + Duration::from_micros(chunk_us) + CAPTURE_SILENCE_LIMIT,
+            });
         }
-        let pacer = self.pacer()?;
-        Some(TokenDrainPacer {
+        TokenDrain::Granted(TokenDrainPacer {
             pacer,
             drain: self,
             now_us,
+            last_chunk_us: self.last_chunk_us.load(Ordering::Acquire),
         })
     }
 }
@@ -227,13 +246,53 @@ impl Drop for CaptureDrainClock {
     }
 }
 
+/// Whether the token clock may drain the output pacer, as
+/// [`InputControl::token_drain`] answers it.
+pub enum TokenDrain<'a> {
+    /// It may: no capture stream holds the drain.
+    Granted(TokenDrainPacer<'a>),
+    /// A capture stream holds the drain.
+    Held(CaptureHold),
+    /// There is nothing to drain: no audio output, or one built with pacing
+    /// off.
+    NoPacer,
+}
+
+impl<'a> TokenDrain<'a> {
+    /// The pacer, if the token clock may drain it.
+    pub fn granted(self) -> Option<TokenDrainPacer<'a>> {
+        match self {
+            Self::Granted(pacer) => Some(pacer),
+            Self::Held(_) | Self::NoPacer => None,
+        }
+    }
+}
+
+/// A capture stream's hold on the drain, as the token clock was refused by
+/// it: which chunk it dates from, and when it lapses if no other chunk comes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureHold {
+    /// The chunk the hold dates from, in the drain's microseconds.
+    chunk_us: u64,
+    lapses_at: Instant,
+}
+
+impl CaptureHold {
+    /// When this hold lapses, if the stream delivers nothing more.
+    pub fn lapses_at(&self) -> Instant {
+        self.lapses_at
+    }
+}
+
 /// The output pacer, for the token clock to drain. Only handed out while no
-/// capture stream is the clock: see [`InputControl::token_drain_pacer`].
+/// capture stream is the clock: see [`InputControl::token_drain`].
 pub struct TokenDrainPacer<'a> {
     pacer: PacerHandle,
     drain: &'a OutputPacerDrain,
     /// When this was handed out, in the drain's microseconds.
     now_us: u64,
+    /// The last chunk a capture stream received when this was handed out.
+    last_chunk_us: u64,
 }
 
 impl TokenDrainPacer<'_> {
@@ -261,6 +320,25 @@ impl TokenDrainPacer<'_> {
         self.pacer
             .drain_if(drain_samples, || !self.drain.capture_is_clock(self.now_us))
     }
+
+    /// Move what the pacer FIFO holds, up to `max_samples`, making up no
+    /// silence (`PacerHandle::drain_available_if`): for the token clock
+    /// catching up on what it was refused. Same check as
+    /// [`drain`](Self::drain). Returns the samples moved, or `None` when the
+    /// drain is not the token clock's or another drain is in progress.
+    pub fn drain_available(&self, max_samples: usize) -> Option<usize> {
+        self.pacer
+            .drain_available_if(max_samples, || !self.drain.capture_is_clock(self.now_us))
+    }
+
+    /// Whether this was handed out once `hold` had lapsed, with no chunk
+    /// since: the capture stream stopped clocking at the chunk `hold` dates
+    /// from, so what the token clock was refused under it is still owed to
+    /// the ring. Not after a later chunk: the stream clocked that time
+    /// itself.
+    pub fn follows(&self, hold: CaptureHold) -> bool {
+        self.last_chunk_us == hold.chunk_us
+    }
 }
 
 impl InputControl {
@@ -271,10 +349,16 @@ impl InputControl {
         self.pacer_drain.for_capture()
     }
 
-    /// The output pacer for the token clock to drain at `now`: `None` when
-    /// the output has no pacer, and while a capture stream is the drain clock.
-    pub fn token_drain_pacer(&self, now: Instant) -> Option<TokenDrainPacer<'_>> {
+    /// Whether the token clock may drain the output pacer at `now`: granted
+    /// while the output has a pacer and no capture stream is the drain clock.
+    pub fn token_drain(&self, now: Instant) -> TokenDrain<'_> {
         self.pacer_drain.for_tokens(now)
+    }
+
+    /// The output pacer, if the token clock may drain it at `now`: see
+    /// [`token_drain`](Self::token_drain).
+    pub fn token_drain_pacer(&self, now: Instant) -> Option<TokenDrainPacer<'_>> {
+        self.token_drain(now).granted()
     }
 }
 
@@ -500,6 +584,99 @@ mod tests {
             capture.chunk_arrived(at, CHUNK_FRAMES, RATE);
             assert!(input.token_drain_pacer(at + ms(9)).is_none(), "{chunk}");
         }
+    }
+
+    /// A refused token is told which hold refused it and when that hold
+    /// lapses: the stream's last chunk plus the silence limit, the first
+    /// instant the hold reads lapsed. A later chunk is a later hold.
+    #[test]
+    fn a_refused_token_is_told_when_the_hold_lapses() {
+        let output = output();
+        let (input, t0) = input_with(&output);
+        let mut capture = streaming_capture(&input);
+        capture.chunk_arrived(t0, CHUNK_FRAMES, RATE);
+
+        let TokenDrain::Held(hold) = input.token_drain(t0 + ms(5)) else {
+            panic!("the capture holds the drain");
+        };
+        // The first instant the hold reads lapsed: the chunk's time counts in
+        // whole microseconds.
+        let lapse = t0 + CAPTURE_SILENCE_LIMIT;
+        assert!(hold.lapses_at() <= lapse);
+        assert!(lapse - hold.lapses_at() < Duration::from_micros(1));
+        let just_before = hold.lapses_at() - Duration::from_micros(1);
+        assert!(matches!(
+            input.token_drain(just_before),
+            TokenDrain::Held(_)
+        ));
+        assert!(matches!(
+            input.token_drain(hold.lapses_at()),
+            TokenDrain::Granted(_)
+        ));
+
+        capture.chunk_arrived(t0 + ms(10), CHUNK_FRAMES, RATE);
+        let TokenDrain::Held(later) = input.token_drain(t0 + ms(15)) else {
+            panic!("still held");
+        };
+        assert_ne!(later, hold);
+        assert!(later.lapses_at() > hold.lapses_at() + ms(9));
+    }
+
+    /// The pacer handed out once a hold has lapsed follows that hold if no
+    /// chunk came since, whether the hold lapsed by silence or the stream
+    /// stopped streaming; not once the stream has delivered again.
+    #[test]
+    fn a_grant_follows_the_hold_it_comes_after_only_with_no_chunk_since() {
+        let output = output();
+        let (input, t0) = input_with(&output);
+        let mut capture = streaming_capture(&input);
+        capture.chunk_arrived(t0, CHUNK_FRAMES, RATE);
+        let TokenDrain::Held(hold) = input.token_drain(t0 + ms(5)) else {
+            panic!("held");
+        };
+
+        let lapsed = input.token_drain_pacer(hold.lapses_at()).expect("lapsed");
+        assert!(lapsed.follows(hold), "lapsed by silence");
+        capture.set_streaming(false);
+        let paused = input.token_drain_pacer(t0 + ms(6)).expect("paused");
+        assert!(paused.follows(hold), "the stream stopped streaming");
+
+        capture.set_streaming(true);
+        capture.chunk_arrived(t0 + ms(50), CHUNK_FRAMES, RATE);
+        let later = input
+            .token_drain_pacer(t0 + ms(50) + CAPTURE_SILENCE_LIMIT)
+            .expect("lapsed again");
+        assert!(!later.follows(hold), "the stream clocked in between");
+    }
+
+    /// Catching up goes through the same check as a drain: a capture stream
+    /// that delivers in the meantime keeps it out.
+    #[test]
+    fn catching_up_is_refused_once_the_capture_delivers_again() {
+        let mut output = output();
+        let (input, t0) = input_with(&output);
+        let mut capture = streaming_capture(&input);
+        render(&mut output, 2 * QUANTUM);
+
+        let tokens = input.token_drain_pacer(t0).expect("nothing delivered yet");
+        assert_eq!(tokens.drain_available(QUANTUM), Some(QUANTUM));
+        capture.chunk_arrived(t0 + ms(1), CHUNK_FRAMES, RATE);
+        assert_eq!(tokens.drain_available(QUANTUM), None);
+        assert_eq!(
+            played(&mut output).len(),
+            2 * QUANTUM,
+            "token's, then chunk's"
+        );
+    }
+
+    /// No pacer, no hold: there is nothing for the token clock to owe.
+    #[test]
+    fn without_a_pacer_the_token_clock_is_neither_granted_nor_held() {
+        let input = InputControl::default();
+        let t0 = Instant::now();
+        let mut capture = streaming_capture(&input);
+        capture.chunk_arrived(t0, CHUNK_FRAMES, RATE);
+        assert!(matches!(input.token_drain(t0), TokenDrain::NoPacer));
     }
 
     /// A chunk that was queued when the stream paused is handed over after
