@@ -1280,7 +1280,9 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
             // overlay so the next iteration re-reads the config from disk. (A
             // restart that keeps the live state wrote a fresh sidecar on the
             // way down, which the next iteration reads before the cache.)
-            renderer::config::clear_live_overlay_cache();
+            if let Some(path) = run.config_path.as_deref() {
+                renderer::config::clear_live_overlay_cache(path);
+            }
             log::info!("Restarting render pipeline from config");
             continue;
         }
