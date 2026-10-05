@@ -717,18 +717,24 @@ impl SpatialRenderer {
         // ── 1. Load the current immutable render topology and keep band engines in sync ──
         let topology_guard = self.control.active_topology();
         let topology = &*topology_guard;
-        let topology_identity = std::sync::Arc::as_ptr(&topology_guard) as usize;
         if self
             .speaker_stage
             .refresh_for_topology(&self.control, &topology_guard)?
         {
             self.speaker_stage_builds += 1;
         }
-        // Cascaded binaural geometry: derived from the active topology, kept
-        // in sync only while the mode is active. Must run before the live
-        // snapshot below, which borrows `self` fields for the rest of the frame.
-        if binaural_active && cascade_active {
-            self.refresh_cascade_for_topology(topology, topology_identity);
+        // Cascaded binaural geometry: derived from the topology the installed
+        // bands were built for, not the published one. The virtual speakers
+        // must stand where the gains feeding them place them, so they move
+        // with the band set: a few blocks after a publish, and not at all if
+        // the set could not be built. Kept in sync only while the mode is
+        // active. Must run before the live snapshot below, which borrows
+        // `self` fields for the rest of the frame.
+        if binaural_active
+            && cascade_active
+            && let Some(installed) = self.speaker_stage.installed_topology()
+        {
+            cascade::CascadeStage::follow(&mut self.cascade, installed);
         }
 
         // BRIR source: track the file and options (one compare per frame;

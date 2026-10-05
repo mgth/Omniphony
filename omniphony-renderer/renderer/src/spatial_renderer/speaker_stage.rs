@@ -1306,6 +1306,14 @@ impl SpeakerRenderStage {
         Ok(installed)
     }
 
+    /// The topology the installed bands were built for: the published one,
+    /// or the one before it while the worker builds the bands of a change, or
+    /// for good if it could not. `None` before the first build. What derives
+    /// from the layout and must agree with the gains follows this one.
+    pub(super) fn installed_topology(&self) -> Option<&Arc<RenderTopology>> {
+        self.built.and(self.built_topology.as_ref())
+    }
+
     /// Whether a band set has been asked of the worker and not answered yet:
     /// neither installed nor failed.
     pub(super) fn rebuild_pending(&self) -> bool {
