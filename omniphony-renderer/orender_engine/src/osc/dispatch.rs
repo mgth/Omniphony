@@ -1215,7 +1215,7 @@ mod notify_tests {
     #[test]
     fn a_generator_param_write_reaches_the_other_clients() {
         let control = fixture_control();
-        control.live.write().object_generator_id = "pad".to_string();
+        control.live.write().options.object_generator_id = "pad".to_string();
         let wire = wire();
         let generation = control.live_state_generation();
         send(

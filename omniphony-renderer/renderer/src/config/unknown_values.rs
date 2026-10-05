@@ -41,6 +41,11 @@ pub(crate) struct EnumKey<S> {
 /// A config section that keeps the enum values it does not know.
 pub(crate) trait KeepsUnknownValues: Clone + Sized + 'static {
     const ENUM_KEYS: &'static [EnumKey<Self>];
+    /// Every enum-typed key: [`Self::ENUM_KEYS`], and those a section takes
+    /// from elsewhere (the declared options of `render`).
+    fn enum_keys() -> impl Iterator<Item = &'static EnumKey<Self>> {
+        Self::ENUM_KEYS.iter()
+    }
     /// The `extra` mapping of the section (`parent: None`) or of the mapping
     /// `parent` inside it, when it is present.
     fn extra(&self, parent: Option<&str>) -> Option<&Mapping>;
@@ -157,11 +162,11 @@ where
             .is_some_and(|extra| extra.contains_key(key.key))
     };
     // The common case: nothing kept, nothing to copy.
-    if !S::ENUM_KEYS.iter().any(|key| is_kept(&key)) {
+    if !S::enum_keys().any(|key| is_kept(&key)) {
         return fields(section, serializer);
     }
     let mut out = section.clone();
-    for key in S::ENUM_KEYS.iter().filter(is_kept) {
+    for key in S::enum_keys().filter(is_kept) {
         if (key.chosen)(section) {
             if let Some(extra) = out.extra_mut(key.parent) {
                 extra.shift_remove(key.key);

@@ -25,12 +25,12 @@ impl OscSender {
         let socket = &self.socket;
         let clients = &self.clients;
 
-        let gain_linear: f32 = match (live.use_loudness, live.dialogue_level) {
+        let gain_linear: f32 = match (live.options.use_loudness, live.dialogue_level) {
             (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
             _ => 1.0,
         };
         let payload = json!({
-            "enabled": live.use_loudness,
+            "enabled": live.options.use_loudness,
             "source": live.dialogue_level,
             "gain": gain_linear
         })

@@ -170,6 +170,21 @@ What the implementation settled on, where it differs from the proposal below:
   `set` / `get_json` / `config_store` / `config_seed` function pointers that
   reach them. The registry is the declaration and plumbing layer, not the
   storage — which is what the realtime rules asked for anyway.
+- **Declared rows** (#682): an option whose live value is a top-level field
+  is one row of `declared_options!` (`renderer/src/options/declared.rs`):
+  `key: Category = default => { kind, flags, group, i18n, help, alias }`,
+  the category being `Bool`, `Float`, `Int`, `Str` or `Enum(Type)`. The
+  macro generates the `LiveParams::options` field and its default, the
+  `RenderConfig::options` field (flattened: the YAML key is the option key;
+  an enum is read through its `from_str`, aliases included, and an unknown
+  value is kept like any other enum key's), the `options::defaults`
+  constant and the registry row, whose four functions follow from the
+  category (a float is saved to six decimals and omitted within 1e-4 of its
+  default; a config value is bounded like a client write). A row may
+  replace any of them (`set:` / `store:` / `seed:`) for a legacy wire shape
+  or a value always written. The other options sit inside a larger structure
+  (binaural, room, evaluation, hybrid) and stay hand-written rows
+  (`HAND_WIRED_ROWS`); `LIVE_OPTIONS` is the declared rows, then those.
 - **Per-row extras**: `help_i18n_key` is optional; `legacy_control_addr` names
   the pre-registry address kept as an alias.
 - **Profile switch**: `reset_live_to_defaults` puts every declared option (and
@@ -296,18 +311,21 @@ reads ratios back through `room::resolve`, the single reading shared by the
 renderer build, the live seed and the profile switch — so the dependent
 default (an absent rear follows the length) lives in one place.
 
-## Adding a live option today (post-phase-2)
+## Adding a live option today
 
-1. Add the typed field to `LiveParams` (+ its `RenderConfig`/`config_fields`
-   descriptor).
-2. Add ONE `OptionSpec` row in `renderer/src/options.rs` (+ Studio i18n keys).
-3. Add the control markup with its `data-option` attribute (a switch, a
+1. Add ONE row to `declared_options!` in `renderer/src/options/declared.rs`
+   (+ Studio i18n keys). It generates the live field, the config key, the
+   default and the registry row. (An option inside the binaural, room,
+   evaluation or hybrid structures is a hand-written `OptionSpec` in
+   `HAND_WIRED_ROWS`, next to the field it reaches.)
+2. Add the control markup with its `data-option` attribute (a switch, a
    toggle-btn pair or a select — no JS).
-4. Done: OSC (generic + schema), persistence, CLI/FFI seeding, replan
+3. Done: OSC (generic + schema), persistence, CLI/FFI seeding, replan
    invalidation, the snapshot block, the UI wiring and the CI contract checks
    all derive from the row + the markup. The conformance net fails if a layer
-   is missing. Only an option with bespoke UI side effects needs code (one
-   entry in the binder's `AFTER_SET`).
+   is missing, and derives its non-default sample from the row (only a
+   free-form string needs one listed). Only an option with bespoke UI side
+   effects needs code (one entry in the binder's `AFTER_SET`).
 
 ## The problem
 

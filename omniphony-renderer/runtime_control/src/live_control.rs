@@ -130,7 +130,7 @@ pub fn apply_live_control(
         };
         let (kind, id) = if generator {
             let id = target
-                .unwrap_or_else(|| control.live.read().object_generator_id.clone())
+                .unwrap_or_else(|| control.live.read().options.object_generator_id.clone())
                 .trim()
                 .to_string();
             // "No generator" is a selection, not a plugin with values.
@@ -697,7 +697,7 @@ mod tests {
         .expect("handled");
         assert!(effects.mark_dirty);
         assert!(!effects.trigger_layout_recompute);
-        assert!(ctx.renderer.live.read().auto_gain);
+        assert!(ctx.renderer.live.read().options.auto_gain);
 
         let effects = apply_live_control(
             &msg(
@@ -1087,7 +1087,7 @@ mod tests {
     fn a_host_with_audio_refuses_the_embedded_engines_options() {
         let ctx = ctx();
         let host = StubHost::new();
-        let before = ctx.renderer.live.read().decode_thread;
+        let before = ctx.renderer.live.read().options.decode_thread;
         for message in [
             msg(osc_contract::CONTROL_DECODE_THREAD, vec![OscType::Int(1)]),
             msg(
@@ -1098,7 +1098,7 @@ mod tests {
             let effects = apply_live_control(&message, &ctx, Some(&host)).expect("handled");
             assert!(!effects.mark_dirty, "{}", message.addr);
         }
-        assert_eq!(ctx.renderer.live.read().decode_thread, before);
+        assert_eq!(ctx.renderer.live.read().options.decode_thread, before);
         let effects = apply_live_control(
             &msg(
                 osc_contract::CONTROL_OPTIONS,
@@ -1114,8 +1114,8 @@ mod tests {
         )
         .expect("handled");
         assert!(effects.mark_dirty);
-        assert_eq!(ctx.renderer.live.read().decode_thread, before);
-        assert!(ctx.renderer.live.read().auto_gain);
+        assert_eq!(ctx.renderer.live.read().options.decode_thread, before);
+        assert!(ctx.renderer.live.read().options.auto_gain);
 
         // The embedded engine (no host) still takes it.
         let effects = apply_live_control(
@@ -1177,7 +1177,7 @@ mod tests {
         use renderer::backend_params::ParamValue;
         use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind};
         let ctx = ctx();
-        ctx.renderer.live.write().object_generator_id = "pad".to_string();
+        ctx.renderer.live.write().options.object_generator_id = "pad".to_string();
         let write = |addr: &str, args: Vec<OscType>| {
             apply_live_control(&msg(addr, args), &ctx, None).expect("handled")
         };
@@ -1217,7 +1217,7 @@ mod tests {
         );
 
         // Without a generator selected there is nothing to address.
-        ctx.renderer.live.write().object_generator_id = "none".to_string();
+        ctx.renderer.live.write().options.object_generator_id = "none".to_string();
         let effects = write(
             osc_contract::CONTROL_OBJECT_GENERATOR_PARAM,
             vec![OscType::String("strength".into()), OscType::Float(0.5)],

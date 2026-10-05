@@ -249,7 +249,7 @@ impl DecodeHandler {
 
         if let Some(renderer) = self.spatial_renderer.as_ref() {
             let control = renderer.renderer_control();
-            self.drc.forward(&control.live.read().drc_mode);
+            self.drc.forward(&control.live.read().options.drc_mode);
         }
 
         let Some(input_control) = self.input_control.as_ref() else {
