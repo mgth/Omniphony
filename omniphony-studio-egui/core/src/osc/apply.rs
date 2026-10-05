@@ -1271,3 +1271,87 @@ mod gaintable_untrusted_tests {
         assert_eq!(table.version(), version);
     }
 }
+
+#[cfg(test)]
+mod domain_state_tests {
+    use super::*;
+
+    /// The live layout the renderer publishes is in the ADM frame, same as a
+    /// layout file. (Ported from the Tauri host, whose copy of this path is
+    /// going away with it.)
+    #[test]
+    fn derives_live_speaker_angles_in_the_adm_frame() {
+        let speaker = normalized_layout_domain_speaker(LayoutDomainSpeakerState {
+            name: Some(serde_json::json!("FR")),
+            x: Some(1.0),
+            y: Some(1.0),
+            z: Some(0.0),
+            ..LayoutDomainSpeakerState::default()
+        });
+        assert!(
+            (speaker.azimuth_deg - 45.0).abs() < 1e-6,
+            "{}",
+            speaker.azimuth_deg
+        );
+        assert!(
+            speaker.elevation_deg.abs() < 1e-6,
+            "{}",
+            speaker.elevation_deg
+        );
+    }
+
+    /// Polar to cartesian on the same path: hard right is +X.
+    #[test]
+    fn derives_live_speaker_cartesian_in_the_adm_frame() {
+        let speaker = normalized_layout_domain_speaker(LayoutDomainSpeakerState {
+            name: Some(serde_json::json!("R")),
+            azimuth: Some(90.0),
+            elevation: Some(0.0),
+            distance: Some(1.0),
+            ..LayoutDomainSpeakerState::default()
+        });
+        assert!((speaker.x - 1.0).abs() < 1e-6, "x {}", speaker.x);
+        assert!(speaker.y.abs() < 1e-6 && speaker.z.abs() < 1e-6);
+    }
+
+    /// The domain states arrive from the network as JSON: anything that is not
+    /// the shape a domain expects is refused (`false`) or applied field by
+    /// field, never a panic.
+    #[test]
+    fn malformed_domain_states_never_panic() {
+        let appliers: [(&str, fn(&mut AppState, &str) -> bool); 8] = [
+            ("layout", apply_layout_domain_state),
+            ("speakers", apply_speakers_domain_state),
+            ("audio", apply_audio_domain_state),
+            ("input", apply_input_domain_state),
+            ("renderer", apply_renderer_domain_state),
+            ("loudness", apply_loudness_domain_state),
+            ("profiles", apply_profiles_domain_state),
+            ("monitoring", apply_monitoring_domain_state),
+        ];
+        let inputs = [
+            "",
+            "not json",
+            "null",
+            "42",
+            "[]",
+            "{}",
+            r#"{"speakers": "x"}"#,
+            r#"{"speakers": [{"id": -1, "gain": 1e308, "delay_ms": -5}]}"#,
+            r#"{"speakers": [{"id": 4294967295, "delay_ms": 10}]}"#,
+            r#"{"speakers": [{"x": 1e308, "y": -1e308, "z": 0, "distance": -3}]}"#,
+            r#"{"speakers": [{"azimuth": 1e308, "elevation": -1e308}], "radius_m": -1}"#,
+            r#"{"outputDevices": 7, "latencyTargetMs": "soon"}"#,
+            r#"{"active": {"nested": [1, 2, {"deep": null}]}}"#,
+        ];
+        for (domain, apply) in appliers {
+            for input in inputs {
+                let mut state = AppState::default();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    apply(&mut state, input)
+                }));
+                assert!(outcome.is_ok(), "{domain} panicked on {input:?}");
+            }
+        }
+    }
+}
