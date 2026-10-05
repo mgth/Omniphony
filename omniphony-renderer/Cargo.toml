@@ -51,6 +51,9 @@ rosc = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.142"
 serde_yaml_ng = "0.10"
+# Socket options std does not expose (the UDP send buffer). Pure Rust over
+# libc / windows-sys, both already in the lockfile.
+socket2 = "0.6"
 vergen-gitcl = { version = "1.0.8", default-features = false, features = ["build"] }
 # Feature level v0_3_49: what cargo's feature unification made effective for
 # every member anyway (audio_output needs it).

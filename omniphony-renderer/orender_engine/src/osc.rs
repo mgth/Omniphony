@@ -26,8 +26,8 @@ use self::dispatch::{RealtimeSeqState, handle_control_message};
 use self::export::build_live_state;
 use self::gaintable::GaintableCache;
 use self::transport::{
-    broadcast_string, flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client,
-    send_metering_state, send_raw_filtered,
+    broadcast_string, ensure_send_buffer, flush_pending_logs, resolve_register_addr,
+    send_buffered_logs_to_client, send_metering_state, send_raw_filtered,
 };
 use runtime_control::osc_contract;
 
@@ -452,6 +452,8 @@ impl WarnLimiter {
 impl OscSender {
     pub fn new(default_target: SocketAddrV4) -> Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
+        // Every state bundle and every reply leaves through this socket.
+        ensure_send_buffer(&socket);
         let clients = Arc::new(OscClientRegistry::new(CLIENT_TIMEOUT));
         clients.insert_permanent(SocketAddr::V4(default_target));
         // Per-instance id: mixes pid and a sub-second timestamp so it differs
@@ -1467,5 +1469,33 @@ mod yield_tests {
             bind_rx_socket(port, true, Duration::from_secs(5)).expect("port freed after yield");
         assert_eq!(socket.local_addr().unwrap().port(), port);
         t.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod send_size_tests {
+    use super::export::MAX_STATE_DATAGRAM;
+    use super::*;
+
+    /// A datagram of the largest size the live state is split into leaves the
+    /// sender's own socket and arrives whole. macOS and the BSDs refuse a UDP
+    /// send larger than the socket's send buffer, which starts at 9,216 bytes
+    /// there, so this only passes on them when the sender has raised it.
+    #[test]
+    fn a_maximum_size_state_datagram_leaves_the_sender_socket() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let SocketAddr::V4(target) = receiver.local_addr().unwrap() else {
+            unreachable!("bound to an IPv4 address");
+        };
+        let sender = OscSender::new(target).unwrap();
+
+        sender.send_raw_to_all(&vec![0x5a; MAX_STATE_DATAGRAM]);
+
+        let mut buf = vec![0u8; 70_000];
+        let len = receiver.recv(&mut buf).expect("the datagram arrives");
+        assert_eq!(len, MAX_STATE_DATAGRAM);
     }
 }

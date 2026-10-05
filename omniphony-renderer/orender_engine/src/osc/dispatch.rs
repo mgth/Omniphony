@@ -1112,10 +1112,6 @@ mod notify_tests {
     /// real UDP socket, is received whole, written and acknowledged: the
     /// datagram is well over the 4 KiB the listener used to read.
     #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "macOS refuses to send a datagram over net.inet.udp.maxdgram (9216 bytes by default)"
-    )]
     fn a_maximum_size_backend_file_put_crosses_the_socket() {
         use crate::osc::test_support::{SERIAL, listening_sender};
         // The listener registers in the process-wide port registry and its
@@ -1141,6 +1137,8 @@ mod notify_tests {
         .unwrap();
         assert!(put.len() > BACKEND_FILE_MAX_BYTES);
         let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // A client has the same send limit to lift as the engine.
+        crate::osc::transport::ensure_send_buffer(&client);
         client.send_to(&put, ("127.0.0.1", port)).unwrap();
 
         let ack = awaited(&client, osc_contract::STATE_BACKEND_FILE_CONTENT)
@@ -1348,10 +1346,6 @@ mod notify_tests {
     /// overflows the listener thread's stack, which aborts the whole process;
     /// only the larger receive buffer lets a datagram hold that many levels.
     #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "macOS refuses to send a datagram over net.inet.udp.maxdgram (9216 bytes by default)"
-    )]
     fn a_deeply_nested_datagram_does_not_take_the_listener_down() {
         use crate::osc::decode::{nested_arrays, nested_bundles};
         use crate::osc::test_support::{SERIAL, listening_sender};
@@ -1360,6 +1354,7 @@ mod notify_tests {
         let (sender, port) = listening_sender(&control);
 
         let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        crate::osc::transport::ensure_send_buffer(&client);
         for nested in [nested_bundles(3_000), nested_arrays(30_000)] {
             assert_eq!(nested.len(), 60_008);
             client.send_to(&nested, ("127.0.0.1", port)).unwrap();

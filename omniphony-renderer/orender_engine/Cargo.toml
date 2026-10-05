@@ -28,6 +28,10 @@ anyhow.workspace = true
 log.workspace = true
 rosc.workspace = true
 serde_json.workspace = true
+# The OSC sockets' send buffer, which std cannot set (see osc::transport).
+# Pure Rust over libc / windows-sys, no system library: safe for the
+# liborender cdylib and its cross builds.
+socket2.workspace = true
 # Real-input FFT for the DirAC diffuse→height object generator (pure Rust, no
 # system deps — safe for the liborender cdylib). Already in the workspace lock.
 realfft.workspace = true
