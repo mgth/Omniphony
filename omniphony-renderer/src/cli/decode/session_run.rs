@@ -489,7 +489,7 @@ fn handle_audio_message(
         if let Some(osc_sender) = handler
             .telemetry
             .osc_sender
-            .as_ref()
+            .as_mut()
             .filter(|sender| sender.has_osc_clients())
         {
             osc_sender.send_loudness_state();
