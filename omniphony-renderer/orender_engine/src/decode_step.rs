@@ -186,10 +186,10 @@ pub fn decode_packet(
 }
 
 /// The DRC mode last pushed to a bridge, so a host pushes the one the user
-/// asked for only when it changes. The requested mode lives behind a lock the
-/// control thread writes; [`update`](Self::update) compares it where it
-/// stands, under the host's read lock, and copies it only on a change, so a
-/// steady stream neither allocates nor calls into the bridge.
+/// asked for only when it changes. The requested mode lives in the live
+/// params the control thread writes; [`update`](Self::update) compares it
+/// where it stands, in the host's read of them, and copies it only on a
+/// change, so a steady stream neither allocates nor calls into the bridge.
 ///
 /// The first update always reports a change: a bridge starts on its own
 /// default, which is not necessarily the one requested.

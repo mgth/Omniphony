@@ -21,7 +21,7 @@ rust-version = "1.89"
 # Workspace crates.
 audio_input = { version = "0.2.4", path = "audio_input" }
 audio_output = { version = "0.2.4", path = "audio_output" }
-bridge_api = { version = "0.4.0", path = "bridge_api" }
+bridge_api = { version = "0.5.0", path = "bridge_api" }
 diag = { version = "0.1.0", path = "diag" }
 dsp_fixtures = { version = "0.1.0", path = "dsp_fixtures" }
 example_backend = { version = "0.1.0", path = "example_backend" }
@@ -51,6 +51,9 @@ rosc = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.142"
 serde_yaml_ng = "0.10"
+# Socket options std does not expose (the UDP send buffer). Pure Rust over
+# libc / windows-sys, both already in the lockfile.
+socket2 = "0.6"
 vergen-gitcl = { version = "1.0.8", default-features = false, features = ["build"] }
 # Feature level v0_3_49: what cargo's feature unification made effective for
 # every member anyway (audio_output needs it).

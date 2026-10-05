@@ -151,8 +151,8 @@ What the implementation settled on, where it differs from the proposal below:
 - **Environment**: every `set` / `config_seed` / `config_store` receives an
   `OptionEnv`: the registered backends (`has_backend`) and the facts the
   running renderer was built with (`build_facts`: preferred evaluation mode,
-  negative elevations). Never the live params — a setter runs under their
-  write lock. `OptionEnv::detached()` serves code without a control.
+  negative elevations). Never the live params — a setter runs inside their
+  write guard. `OptionEnv::detached()` serves code without a control.
 - **Aliases**: `LegacyAddr::Exact(addr)` for a whole address,
   `LegacyAddr::Prefixed { prefix, tail }` for the contract's prefix families
   (`distance_diffuse/…`, `hybrid/…`, `render_evaluation/{cartesian,polar}/…`).
@@ -203,8 +203,8 @@ rows (`OptionSpec::group`). It carries:
   evaluation) or `Evaluation` (rebuild the evaluation layer, reuse the gain
   models). Reload and restart effects join with the groups that need them.
 
-`options::apply_batch` applies a list of (option, value) pairs under one
-write lock, then — only if something changed — marks the config dirty once,
+`options::apply_batch` applies a list of (option, value) pairs in one
+write of the live params (published once), then — only if something changed — marks the config dirty once,
 bumps the options epoch at most once, and returns the widest `Rebuild` any
 changed option's group asks for. `/control/option`, the legacy aliases and
 `/control/options` all go through it (`runtime_control::live_control`), so a

@@ -664,8 +664,8 @@ pub fn apply_simple_osc_control(
                 // Per-speaker live params are keyed by position, so a wholesale
                 // swap invalidates every entry: reseed them from the new
                 // speakers' delays and gains.
-                // (The live lock is taken after the layout's is released: the
-                // save path holds the live lock while it reads the layout.)
+                // (The live params are written after the layout's lock is
+                // released, so the live write guard never nests with it.)
                 let speakers = ctx.renderer.with_editable_layout(|layout| {
                     if let Some(radius_m) = replace.radius_m {
                         layout.radius_m = radius_m.max(0.01);
