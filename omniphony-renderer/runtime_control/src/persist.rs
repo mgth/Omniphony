@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
-use renderer::config::RenderConfig;
+use anyhow::{Result, anyhow, bail};
+use renderer::config::{ConfigLoadStatus, RenderConfig};
 use renderer::live_params::{LiveParams, RendererControl};
 
 use crate::HostControlHandler;
@@ -34,6 +34,7 @@ pub fn save_live_config(
             .ok_or_else(|| anyhow!("no config path available"))?
     };
 
+    refuse_live_state_from_defaults(control, &path)?;
     let mut config = renderer::config::Config::load_for_update(&path)?;
     store_live_into_config(control, host, &mut config);
     // A deliberate save supersedes any pending live-handoff overlay.
@@ -44,6 +45,25 @@ pub fn save_live_config(
         path,
         restart_required: false,
     })
+}
+
+/// Refuse to write the live state over `path` while it is the defaults the
+/// engine fell back to because the file failed to parse when it was loaded
+/// (`config_status = parse_error`). Parsing the file again at write time is
+/// not enough: once the user has fixed it, it parses, and the Save would then
+/// replace their layout with those defaults. Only re-reading the file into the
+/// live state lifts this: a reload (a restart on the CLI) or a profile switch,
+/// which both set the status again.
+fn refuse_live_state_from_defaults(control: &RendererControl, path: &Path) -> Result<()> {
+    if control.config_status().as_deref() == Some(ConfigLoadStatus::ParseError.as_str()) {
+        bail!(
+            "{} failed to parse when it was loaded, so the engine is running on built-in \
+             defaults and a save would replace the file with them; fix or remove the file, \
+             press Reload, then save",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Serialize the current live state into a complete config file at `out_path`,
@@ -365,6 +385,31 @@ mod tests {
         persist_render_fields_to_path(&path, |render| render.output_file = Some("x".into()));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
         assert!(!renderer::config::backup_path(&path).exists());
+    }
+
+    /// The engine came up on defaults because the file failed to parse; the
+    /// user then fixes the file. A Save must still be refused, or it would
+    /// write those defaults over the fixed file. Once the file has been read
+    /// back into the live state (a reload sets the status again), it goes
+    /// through.
+    #[test]
+    fn save_is_refused_while_the_live_state_is_the_parse_error_fallback() {
+        let path = temp_config_path("parse-error-fixed");
+        let fixed = "render:\n  output_file: kept\n";
+        std::fs::write(&path, fixed).unwrap();
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        control.set_config_status(Some(ConfigLoadStatus::ParseError.as_str().into()));
+
+        let err = save_live_config(&control, None)
+            .err()
+            .expect("save refused");
+        assert!(err.to_string().contains("press Reload"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), fixed);
+
+        control.set_config_status(Some(ConfigLoadStatus::Loaded.as_str().into()));
+        save_live_config(&control, None).expect("save after reload");
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), fixed);
     }
 
     fn temp_config_path(tag: &str) -> PathBuf {

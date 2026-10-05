@@ -10,6 +10,7 @@
 use std::net::UdpSocket;
 use std::sync::Arc;
 
+use renderer::config::ConfigLoadStatus;
 use renderer::live_params::RendererControl;
 use rosc::{OscMessage, OscType};
 use runtime_control::HostControlHandler;
@@ -212,6 +213,9 @@ pub(crate) fn handle_profile_message(
         apply_switched_profile(&config, control, socket, clients, gaintable_cache);
         // The live state is now the switched-in profile, as its file says.
         control.mark_clean();
+        // That file parsed, so the live state is no longer the parse-error
+        // fallback, and a Save may write it again.
+        control.set_config_status(Some(ConfigLoadStatus::Loaded.as_str().into()));
         broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
         broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
     }
@@ -335,11 +339,14 @@ pub(crate) fn reload_config_in_place(
         return;
     };
     renderer::config::discard_live_sidecar(&path);
+    let status = renderer::config::Config::load_status(&path);
     let config = renderer::config::Config::load_or_default(&path);
     control.set_profiles_info(config.profiles_info());
     apply_switched_profile(&config, control, socket, clients, gaintable_cache);
-    // The live state now is the file: nothing left to save.
+    // The live state now is the file: nothing left to save. A file the user
+    // fixed lifts the parse-error refusal on Save; one still broken keeps it.
     control.mark_clean();
+    control.set_config_status(Some(status.as_str().into()));
     broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
     broadcast_profiles_state(control, socket, clients);
@@ -485,6 +492,8 @@ mod tests {
         let control = fixture_control();
         control.set_config_path(path.clone());
         control.mark_dirty();
+        // The engine came up on a file that failed to parse, since fixed.
+        control.set_config_status(Some("parse_error".into()));
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
         let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
         let gaintable_cache = Arc::new(GaintableCache::new());
@@ -498,6 +507,7 @@ mod tests {
         );
         assert!(!sidecar.exists(), "stale sidecar not discarded");
         assert!(!control.config_dirty.load(Ordering::Relaxed));
+        assert_eq!(control.config_status().as_deref(), Some("loaded"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -559,6 +569,30 @@ mod tests {
             run(&control, addr, args);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt, "{addr}");
         }
+    }
+
+    /// The engine came up on defaults because the file failed to parse, and
+    /// the user has since fixed it. Save-and-switch must not write those
+    /// defaults into the outgoing profile; a plain switch reads the file into
+    /// the live state, after which saving is allowed again.
+    #[test]
+    fn a_switch_lifts_the_parse_error_refusal_a_save_and_switch_hits() {
+        let (path, control) = two_profiles_with_an_unsaved_edit("parse-error-fixed");
+        control.set_config_status(Some("parse_error".into()));
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        run(
+            &control,
+            osc_contract::CONTROL_PROFILE_SWITCH,
+            &["b", "save"],
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert_eq!(Config::load_or_default(&path).active_profile_name(), "a");
+
+        run(&control, osc_contract::CONTROL_PROFILE_SWITCH, &["b"]);
+        assert_eq!(Config::load_or_default(&path).active_profile_name(), "b");
+        assert_eq!(control.config_status().as_deref(), Some("loaded"));
+        runtime_control::persist::save_live_config(&control, None).expect("save after switch");
     }
 
     /// Whether profile `name`, as the file says, sets surround placement to

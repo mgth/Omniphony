@@ -87,10 +87,13 @@ Every write starts from the file on disk (`Config::load_for_update`). A
 `config.yaml` that fails to parse — the engine then runs on defaults and
 publishes `config_status = parse_error` — is never written: the Save, a
 profile operation and a targeted view write are all refused, and the Save
-error says the file was left untouched. A write that goes through replaces the
-file atomically (temp file, sync, rename) and keeps the previous one as
-`config.yaml.bak`; the handoff sidecar is written the same way, without the
-`.bak`.
+error says the file was left untouched. Fixing the file is not enough to save
+again: until a Reload (a restart on the CLI) or a profile switch reads it back
+into the live state, `config_status` stays `parse_error` and the Save is still
+refused, since the live state it would write is those defaults. A write that
+goes through replaces the file atomically (temp file, sync, rename) and keeps
+the previous one as `config.yaml.bak`; the handoff sidecar is written the same
+way, without the `.bak`.
 
 ### Studio (`omniphony-studio-egui`)
 

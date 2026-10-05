@@ -764,7 +764,7 @@ impl Config {
         }
         Self::load(path).map_err(|e| {
             anyhow::anyhow!(
-                "{} failed to parse, so it was left untouched; fix or remove it, then save again ({e})",
+                "{} failed to parse, so it was left untouched; fix or remove it first ({e})",
                 path.display()
             )
         })
