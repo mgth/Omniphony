@@ -27,8 +27,9 @@
 //! cargo test --release -p renderer -- spatial_renderer::perf_gate --nocapture
 //! ```
 //!
-//! That keeps them out of the default PR gate, which has no release build to
-//! spare. Their home is the tag-triggered release workflow.
+//! That keeps them out of the debug test run. CI runs them in a step of their
+//! own (`ci.yml`, "Run the perf gate"), on the release build it already makes
+//! for the SIMD bit-identity tests.
 //!
 //! **Run alone.** They are additionally behind the `perf-gate` feature, because
 //! a timing measurement must not share the machine with the rest of the suite
