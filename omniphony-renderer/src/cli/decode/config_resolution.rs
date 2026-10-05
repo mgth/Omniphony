@@ -606,6 +606,8 @@ pub(super) fn effective_to_config(
         active_profile: existing.and_then(|c| c.active_profile.clone()),
         profiles: existing.map(|c| c.profiles.clone()).unwrap_or_default(),
         extra: existing.map(|c| c.extra.clone()).unwrap_or_default(),
+        // A sidecar mark, never written to the persistent file.
+        live_from_parse_error: false,
     })
 }
 

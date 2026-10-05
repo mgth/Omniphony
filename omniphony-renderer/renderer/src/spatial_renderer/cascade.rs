@@ -33,17 +33,19 @@
 //! loudspeaker, and the mode is implied by the source — a room response only
 //! knows its loudspeakers, so it is the virtual room whatever `mode` says.
 
+use std::sync::Arc;
+
 use crate::binaural::brir::{BrirLoadOptions, OrientationSelection};
 use crate::live_params::{BinauralLiveParams, RenderTopology};
 
+use super::ChannelState;
 use super::speaker_stage::{SpeakerRenderStage, SpeakerStageDiagnostics, SpeakerStageFrame};
-use super::{ChannelState, SpatialRenderer};
 
 /// Binaural input geometry + bus scratch for the cascaded mode, derived from
-/// the active topology's speaker layout. Cheap to rebuild (no engines — the
-/// mode reuses the main [`SpeakerRenderStage`]).
+/// the speaker layout the main stage's bands were built for. Cheap to rebuild
+/// (no engines — the mode reuses the main [`SpeakerRenderStage`]).
 pub(super) struct CascadeStage {
-    /// Main topology identity this geometry was derived from.
+    /// Identity of the topology this geometry was derived from.
     pub(super) topology_identity: usize,
     /// One entry per speaker of the app layout. Non-spatialized entries (the
     /// LFE) are flagged direct: both ears, −3 dB, no HRTF — the binaural
@@ -81,21 +83,20 @@ impl CascadeStage {
     }
 }
 
-impl SpatialRenderer {
-    /// Keep the cascade geometry in sync with the active topology. Called from
+impl CascadeStage {
+    /// Keep the cascade geometry in `slot` in step with `topology`: the one
+    /// the main stage's installed bands were built for
+    /// ([`SpeakerRenderStage::installed_topology`]), which the published one
+    /// only becomes once the stage's worker has built its bands. Called from
     /// `render_frame` *before* the live snapshot is taken. Infallible and
     /// cheap — just position/flag vectors off the layout.
-    pub(super) fn refresh_cascade_for_topology(
-        &mut self,
-        topology: &RenderTopology,
-        topology_identity: usize,
-    ) {
-        let up_to_date = self
-            .cascade
+    pub(super) fn follow(slot: &mut Option<Self>, topology: &Arc<RenderTopology>) {
+        let topology_identity = Arc::as_ptr(topology) as usize;
+        let up_to_date = slot
             .as_ref()
             .is_some_and(|c| c.topology_identity == topology_identity);
         if !up_to_date {
-            self.cascade = Some(CascadeStage::from_topology(topology, topology_identity));
+            *slot = Some(Self::from_topology(topology, topology_identity));
         }
     }
 }

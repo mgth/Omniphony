@@ -586,8 +586,36 @@ fn the_published_topology_samples_no_gain_table() {
     assert_eq!(calls.load(Ordering::Relaxed) - before, smoke);
     assert!(!recomputed.backend.has_sampled_table());
     control.publish_topology(recomputed);
+    // The render thread samples nothing for it: it asks the band worker and
+    // keeps rendering the bands it has until the new ones land.
+    let sampled_here = crate::backend_registry::tables_sampled_on_this_thread();
+    let old_band = Arc::clone(r.speaker_stage.render_bands[0].engine().unwrap());
     r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
-    assert_eq!(r.speaker_stage_builds(), 2);
+    assert!(r.speaker_stage_rebuild_pending());
+    assert_eq!(r.speaker_stage_builds(), 1, "the old bands still render");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while r.speaker_stage_rebuild_pending() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never delivered"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
+    }
+    assert_eq!(
+        r.speaker_stage_builds(),
+        2,
+        "the worker's bands are installed"
+    );
+    assert!(!Arc::ptr_eq(
+        &old_band,
+        r.speaker_stage.render_bands[0].engine().unwrap()
+    ));
+    assert_eq!(
+        crate::backend_registry::tables_sampled_on_this_thread(),
+        sampled_here,
+        "no table sampled on the render thread"
+    );
     assert_eq!(calls.load(Ordering::Relaxed) - before, smoke + band_calls);
 
     // An evaluation-only recompute (grid size) reuses the published model.
@@ -612,6 +640,293 @@ fn the_published_topology_samples_no_gain_table() {
     assert_eq!(table.bands.len(), 1);
     assert!(table.bands[0].gains.iter().any(|g| *g > 0.0));
     assert!(calls.load(Ordering::Relaxed) - before > smoke);
+}
+
+/// What [`FlakyFactory`] does with the next gain model it is asked for.
+const FLAKY_BUILDS: u8 = 0;
+const FLAKY_FAILS: u8 = 1;
+const FLAKY_PANICS: u8 = 2;
+
+/// A backend whose model build can be made to fail or to panic.
+struct FlakyFactory(Arc<std::sync::atomic::AtomicU8>);
+
+impl crate::plugin::PluginFactory for FlakyFactory {
+    fn id(&self) -> &'static str {
+        "flaky"
+    }
+}
+
+impl crate::backend_registry::BackendFactory for FlakyFactory {
+    fn build_plan(
+        &self,
+        ctx: &crate::backend_registry::BackendBuildCtx<'_>,
+    ) -> Option<crate::backend_registry::BackendBuildPlan> {
+        let speakers = ctx.layout.spatializable_positions().1.len();
+        let mode = Arc::clone(&self.0);
+        Some(crate::backend_registry::BackendBuildPlan::Dynamic(
+            crate::backend_registry::DynamicBackendPlan::new("flaky", move || {
+                match mode.load(std::sync::atomic::Ordering::Relaxed) {
+                    FLAKY_FAILS => Err(anyhow::anyhow!("no hull")),
+                    FLAKY_PANICS => panic!("backend bug"),
+                    _ => Ok(Box::new(CountingModel {
+                        speakers,
+                        calls: Arc::default(),
+                    })),
+                }
+            }),
+        ))
+    }
+}
+
+/// Render a frame, which asks the band worker for the set a change needs, then
+/// frames until the worker has answered.
+fn settle(r: &mut SpatialRenderer, pcm: &[f32]) {
+    r.render_frame(pcm, 1, &[], Vec::new(), false).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while r.speaker_stage_rebuild_pending() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never answered"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        r.render_frame(pcm, 1, &[], Vec::new(), false).unwrap();
+    }
+}
+
+/// A band set the worker cannot build — its backend fails, or panics — is
+/// answered all the same: the stage stops waiting, keeps the bands it has,
+/// does not ask again every frame, and the reason reaches the control for the
+/// clients. The worker survives the panic and builds the next set, which
+/// takes the error back.
+#[test]
+fn a_band_build_that_fails_on_the_worker_is_reported_and_not_awaited() {
+    use std::sync::atomic::Ordering;
+    let mut r = build_table_renderer(true, false);
+    let control = r.renderer_control();
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(FLAKY_BUILDS));
+    control.register_backend(Box::new(FlakyFactory(Arc::clone(&mode))));
+    control.live.write().backend_id = "flaky".to_string();
+
+    let pcm = vec![0.25f32; 40];
+    // A speaker edit: the recompute builds and publishes the topology while
+    // the backend still works, then the band build meets `then`.
+    let publish_then = |then: u8| {
+        mode.store(FLAKY_BUILDS, Ordering::Relaxed);
+        control.bump_geometry_generation();
+        let plan = control.prepare_topology_rebuild().expect("plan");
+        let topology = plan
+            .build_topology_reusing(Some(&control.active_topology()))
+            .expect("topology");
+        mode.store(then, Ordering::Relaxed);
+        control.publish_topology(topology);
+    };
+    // The flaky backend, working: its bands are installed.
+    publish_then(FLAKY_BUILDS);
+    settle(&mut r, &pcm);
+    assert!(!r.speaker_stage_rebuild_failed());
+    let builds = r.speaker_stage_builds();
+    assert_eq!(control.take_band_build_error(), None);
+
+    for (then, reason) in [(FLAKY_FAILS, "no hull"), (FLAKY_PANICS, "backend bug")] {
+        publish_then(then);
+        settle(&mut r, &pcm);
+        assert!(r.speaker_stage_rebuild_failed());
+        assert_eq!(
+            r.speaker_stage_builds(),
+            builds,
+            "the previous bands keep rendering"
+        );
+        let error = control.take_band_build_error().expect("reported");
+        assert!(error.contains(reason), "{error}");
+        // Not asked again while the key stays on it.
+        for _ in 0..4 {
+            r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+            assert!(!r.speaker_stage_rebuild_pending());
+        }
+        assert!(r.speaker_stage_rebuild_failed());
+        assert_eq!(control.take_band_build_error(), None);
+    }
+
+    // The worker outlived the panic: the next edit is built and installed.
+    publish_then(FLAKY_BUILDS);
+    settle(&mut r, &pcm);
+    assert!(!r.speaker_stage_rebuild_failed());
+    assert_eq!(r.speaker_stage_builds(), builds + 1);
+    assert_eq!(
+        control.take_band_build_error().as_deref(),
+        Some(""),
+        "the error is taken back"
+    );
+}
+
+/// In cascaded binaural mode the virtual speakers stand where the installed
+/// bands place them. After a speaker move the bands of the previous layout
+/// render on until the worker's set lands, and for good if it cannot be built:
+/// the geometry binauralised must be theirs all that time, not the published
+/// one, or gains computed for one placement feed sources standing at another.
+#[test]
+fn the_cascade_geometry_follows_the_installed_bands() {
+    use std::sync::atomic::Ordering;
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+    {
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        live.binaural.mode = crate::live_params::BinauralMode::Cascaded;
+    }
+    let control = r.renderer_control();
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(FLAKY_BUILDS));
+    control.register_backend(Box::new(FlakyFactory(Arc::clone(&mode))));
+    control.live.write().backend_id = "flaky".to_string();
+
+    let pcm = vec![0.25f32; 40];
+    // A speaker moved in Studio: the recompute publishes the topology while
+    // the backend still works, then the band build meets `then`.
+    let publish_move_then = |then: u8| {
+        mode.store(FLAKY_BUILDS, Ordering::Relaxed);
+        control.with_editable_layout(|layout| layout.speakers[0].x -= 0.05);
+        control.bump_geometry_generation();
+        let plan = control.prepare_topology_rebuild().expect("plan");
+        let topology = plan
+            .build_topology_reusing(Some(&control.active_topology()))
+            .expect("topology");
+        mode.store(then, Ordering::Relaxed);
+        control.publish_topology(topology);
+    };
+    let positions = |r: &SpatialRenderer| r.cascade.as_ref().expect("cascade").bin_pos.clone();
+    let engine =
+        |r: &SpatialRenderer| Arc::clone(r.speaker_stage.render_bands[0].engine().expect("engine"));
+
+    r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+    let (first_positions, first_engine) = (positions(&r), engine(&r));
+
+    // A move the worker builds. On the frame after the publish the previous
+    // bands still render, onto virtual speakers that have not moved.
+    publish_move_then(FLAKY_BUILDS);
+    r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+    assert!(r.speaker_stage_rebuild_pending());
+    assert!(Arc::ptr_eq(&first_engine, &engine(&r)));
+    assert_eq!(positions(&r), first_positions);
+    // They move with the bands.
+    settle(&mut r, &pcm);
+    assert!(!Arc::ptr_eq(&first_engine, &engine(&r)));
+    let moved = positions(&r);
+    assert_ne!(moved, first_positions);
+
+    // A move whose bands cannot be built: neither changes.
+    let moved_engine = engine(&r);
+    publish_move_then(FLAKY_FAILS);
+    settle(&mut r, &pcm);
+    assert!(r.speaker_stage_rebuild_failed());
+    r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+    assert!(Arc::ptr_eq(&moved_engine, &engine(&r)));
+    assert_eq!(positions(&r), moved);
+
+    // The next move that builds brings both to the published layout.
+    publish_move_then(FLAKY_BUILDS);
+    settle(&mut r, &pcm);
+    assert!(!Arc::ptr_eq(&moved_engine, &engine(&r)));
+    let published = &control.active_topology().speaker_layout.speakers[0];
+    assert_eq!(positions(&r)[0][0], published.x as f64);
+}
+
+/// The band gain models are recorded under the geometry generation of the
+/// topology they are cut from, not the one the control has reached when they
+/// are built. An edit made after a topology was published and before its
+/// bands were built (the worker was busy, or simply the frame had not come)
+/// has bumped the control already: recorded under that generation, the bands
+/// of the old layout would be reused as they are for the topology of that
+/// edit, and the last speaker move would never reach the audio.
+#[test]
+fn bands_built_after_a_later_edit_are_not_reused_for_it() {
+    let mut r = build_table_renderer(true, false);
+    let control = r.renderer_control();
+    let band_model = |r: &SpatialRenderer| {
+        r.speaker_stage.render_bands[0]
+            .engine()
+            .expect("band engine")
+            .decorated_model()
+            .expect("model")
+    };
+    let recompute = || {
+        let plan = control.prepare_topology_rebuild().expect("plan");
+        plan.build_topology_reusing(Some(&control.active_topology()))
+            .expect("topology")
+    };
+
+    // A first edit, published.
+    control.bump_geometry_generation();
+    control.publish_topology(recompute());
+    // A second one lands before the stage has built the bands of the first.
+    control.bump_geometry_generation();
+    r.prepare_speaker_stage().unwrap();
+    let first_edit = band_model(&r);
+
+    // Its own topology: the bands are built anew.
+    control.publish_topology(recompute());
+    r.prepare_speaker_stage().unwrap();
+    assert!(
+        !Arc::ptr_eq(&first_edit, &band_model(&r)),
+        "the bands of the second edit reuse the gain model of the first"
+    );
+
+    // Whereas an evaluation-only recompute, at the same generation, does
+    // reuse it.
+    let second_edit = band_model(&r);
+    control.publish_topology(recompute());
+    r.prepare_speaker_stage().unwrap();
+    assert!(Arc::ptr_eq(&second_edit, &band_model(&r)));
+}
+
+/// A sample-rate change rebuilds everything timed in samples, the crossover
+/// bank among it, but takes the band engines over: a gain table does not
+/// depend on the rate. A host that prepared the stage before it knew the
+/// stream's rate (the CLI always does) would otherwise sample every table a
+/// second time, on the first frame.
+#[test]
+fn a_sample_rate_change_takes_the_band_engines_over() {
+    let mut r = build_table_renderer(true, true);
+    let engines = |r: &SpatialRenderer| -> Vec<_> {
+        r.speaker_stage
+            .render_bands
+            .iter()
+            .map(|band| Arc::clone(band.engine().expect("band engine")))
+            .collect()
+    };
+    let before = engines(&r);
+    assert!(before.len() > 1, "a crossover layout");
+    let builds = r.speaker_stage_builds();
+    let sampled = crate::backend_registry::tables_sampled_on_this_thread();
+
+    r.set_sample_rate(96_000).unwrap();
+    assert!(
+        r.speaker_stage.crossover_filter_bank.is_none(),
+        "the stage is rebuilt by the next frame"
+    );
+    let pcm = vec![0.0f32; 40];
+    r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+
+    assert_eq!(r.speaker_stage_builds(), builds + 1);
+    assert_eq!(
+        crate::backend_registry::tables_sampled_on_this_thread(),
+        sampled,
+        "no gain table is sampled again"
+    );
+    let after = engines(&r);
+    assert_eq!(before.len(), after.len());
+    assert!(
+        before.iter().zip(&after).all(|(a, b)| Arc::ptr_eq(a, b)),
+        "the band engines are the same"
+    );
+    assert!(r.speaker_stage.unified_table.is_some());
+    assert!(r.speaker_stage.crossover_filter_bank.is_some());
+    assert_eq!(
+        r.control
+            .crossover_info()
+            .expect("crossover info")
+            .sample_rate,
+        96_000,
+        "the bank is built for the new rate"
+    );
 }
 
 #[test]
