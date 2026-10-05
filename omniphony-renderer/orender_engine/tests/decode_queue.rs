@@ -676,12 +676,19 @@ fn heard_us_publishes_the_listener_and_marks_each_block() {
     assert!(blocks[0] >= 8 * 1536, "the timeline runs on: {blocks:?}");
 
     // A reset starts the timeline again, and its first block is marked even
-    // though it starts where an earlier one did.
+    // though it starts where an earlier one did. Markers of blocks rendered
+    // before the reset may still arrive first on a slow runner (the telemetry
+    // thread sends in order, behind the render path): what must be there is
+    // a marker back at the start of the timeline.
     engine.reset();
     let again = feed_and_listen(&mut engine, &socket, 4);
-    let first = again
+    let marked: Vec<i64> = again
         .iter()
-        .find(|m| m.addr == PLAYOUT_BLOCK)
-        .and_then(|m| long_arg(m, 0));
-    assert!(first.is_some_and(|pos| pos < 4 * 1536), "{first:?}");
+        .filter(|m| m.addr == PLAYOUT_BLOCK)
+        .filter_map(|m| long_arg(m, 0))
+        .collect();
+    assert!(
+        marked.iter().any(|&pos| pos < 4 * 1536),
+        "no block marked after the reset: {marked:?}"
+    );
 }
