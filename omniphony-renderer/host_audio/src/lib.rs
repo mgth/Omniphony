@@ -15,6 +15,8 @@
 //! `liborender`) registers nothing, so the core stays audio-free and
 //! cross-compiles without cpal/pipewire/asio.
 
+#[cfg(test)]
+mod doc_tables;
 mod options;
 
 use std::sync::Arc;
