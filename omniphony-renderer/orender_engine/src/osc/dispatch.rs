@@ -1342,4 +1342,40 @@ mod notify_tests {
         );
         assert_ne!(control.live_state_generation(), generation);
     }
+
+    /// Datagrams nested thousands of levels deep, in bundles and in arrays,
+    /// are dropped and the listener goes on answering. Decoded, either one
+    /// overflows the listener thread's stack, which aborts the whole process;
+    /// only the larger receive buffer lets a datagram hold that many levels.
+    #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS refuses to send a datagram over net.inet.udp.maxdgram (9216 bytes by default)"
+    )]
+    fn a_deeply_nested_datagram_does_not_take_the_listener_down() {
+        use crate::osc::decode::{nested_arrays, nested_bundles};
+        use crate::osc::test_support::{SERIAL, listening_sender};
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let control = fixture_control();
+        let (sender, port) = listening_sender(&control);
+
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        for nested in [nested_bundles(3_000), nested_arrays(30_000)] {
+            assert_eq!(nested.len(), 60_008);
+            client.send_to(&nested, ("127.0.0.1", port)).unwrap();
+        }
+
+        let heartbeat = rosc::encoder::encode(&rosc::OscPacket::Message(OscMessage {
+            addr: osc_contract::HEARTBEAT.to_string(),
+            args: vec![],
+        }))
+        .unwrap();
+        client.send_to(&heartbeat, ("127.0.0.1", port)).unwrap();
+        assert!(
+            awaited(&client, osc_contract::HEARTBEAT_UNKNOWN).is_some(),
+            "the listener still answers"
+        );
+
+        drop(sender);
+    }
 }
