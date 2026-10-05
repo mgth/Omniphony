@@ -4,7 +4,7 @@ use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use renderer::live_params::RendererControl;
 use runtime_control::HostControlHandler;
@@ -41,6 +41,50 @@ const YIELD_REBIND_BUDGET: Duration = Duration::from_secs(5);
 
 /// Poll interval while waiting for the RX port to free up after a yield request.
 const YIELD_REBIND_POLL: Duration = Duration::from_millis(50);
+
+/// Receive buffer of the control listener: the largest UDP payload IPv4 can
+/// carry (65 507 bytes) fits, so no datagram is ever truncated. Control
+/// messages go well past a few KiB (`backend/file/put` carries up to 60 000
+/// bytes of file content, a layout replace grows with the speaker count).
+const MAX_RX_DATAGRAM: usize = 65_536;
+
+/// Minimum spacing between two "undecodable datagram" warnings.
+const DECODE_WARN_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Warns about datagrams that do not decode as OSC (the sender gets no reply,
+/// so the log is the only trace), at most once per [`DECODE_WARN_INTERVAL`]:
+/// a misbehaving sender must not flood the log. The warnings held back in the
+/// meantime are counted and reported with the next one.
+#[derive(Default)]
+struct DecodeErrorLog {
+    last_warn: Option<Instant>,
+    suppressed: u32,
+}
+
+impl DecodeErrorLog {
+    fn report(&mut self, src: SocketAddr, len: usize, err: &rosc::OscError) {
+        let now = Instant::now();
+        if self
+            .last_warn
+            .is_some_and(|last| now.duration_since(last) < DECODE_WARN_INTERVAL)
+        {
+            self.suppressed = self.suppressed.saturating_add(1);
+            log::debug!("OSC decode error from {src} ({len} bytes): {err}");
+            return;
+        }
+        if self.suppressed > 0 {
+            log::warn!(
+                "OSC: undecodable {len}-byte datagram from {src} dropped: {err} \
+                 ({} more since the last warning)",
+                self.suppressed
+            );
+        } else {
+            log::warn!("OSC: undecodable {len}-byte datagram from {src} dropped: {err}");
+        }
+        self.last_warn = Some(now);
+        self.suppressed = 0;
+    }
+}
 
 /// Dynamic resume port advertised by a standby instance we displaced. When this
 /// (port-taking) instance later releases the RX port — at `OscSender::Drop`,
@@ -518,7 +562,10 @@ impl OscSender {
                     }
                 }
 
-                let mut buf = [0u8; 4096];
+                // Allocated once for the thread's lifetime, on the heap: 64 KiB
+                // is too large for a stack array on small thread stacks.
+                let mut buf = vec![0u8; MAX_RX_DATAGRAM].into_boxed_slice();
+                let mut decode_errors = DecodeErrorLog::default();
                 loop {
                     if stop.load(Ordering::Relaxed) {
                         break;
@@ -669,9 +716,7 @@ impl OscSender {
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    log::debug!("OSC decode error from {}: {}", src, e)
-                                }
+                                Err(e) => decode_errors.report(src, len, &e),
                             }
                         }
                         Err(e)
@@ -1083,6 +1128,62 @@ mod yield_tests {
 
     fn test_sender() -> OscSender {
         OscSender::new(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1)).unwrap()
+    }
+
+    /// A maximum-size `backend/file/put` goes through the listener's real UDP
+    /// socket intact: the engine writes the file and acknowledges it with the
+    /// full content. A receive buffer smaller than the datagram would truncate
+    /// it, and the put would be lost without a reply.
+    #[test]
+    fn a_maximum_size_backend_file_put_crosses_the_socket() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("orender-osc-rx-{}", std::process::id()));
+        let path = dir.join("max-size.lua");
+        let content = "-".repeat(dispatch::BACKEND_FILE_MAX_BYTES);
+
+        let mut sender = test_sender();
+        sender.attach_renderer_control(dispatch::notify_tests::fixture_control());
+        let port = free_port();
+        sender.start_listener(port, false).unwrap();
+        assert!(sender.is_listening());
+
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let request = rosc::encoder::encode(&OscPacket::Message(OscMessage {
+            addr: osc_contract::CONTROL_BACKEND_FILE_PUT.to_string(),
+            args: vec![
+                rosc::OscType::String("lua".into()),
+                rosc::OscType::String("script".into()),
+                // A loopback caller may name an absolute path.
+                rosc::OscType::String(path.to_string_lossy().into_owned()),
+                rosc::OscType::String(content.clone()),
+                rosc::OscType::String("rx-max".into()),
+            ],
+        }))
+        .unwrap();
+        assert!(request.len() > dispatch::BACKEND_FILE_MAX_BYTES);
+        client.send_to(&request, ("127.0.0.1", port)).unwrap();
+
+        let mut buf = vec![0u8; MAX_RX_DATAGRAM];
+        let (len, _) = client.recv_from(&mut buf).expect("the put is acknowledged");
+        let (_, packet) = rosc::decoder::decode_udp(&buf[..len]).expect("valid OSC");
+        let OscPacket::Message(reply) = packet else {
+            panic!("expected a message, got {packet:?}");
+        };
+        assert_eq!(
+            reply.addr,
+            osc_contract::STATE_BACKEND_FILE_CONTENT,
+            "{:?}",
+            reply.args
+        );
+        assert_eq!(reply.args[3], rosc::OscType::String(content.clone()));
+        assert_eq!(reply.args[4], rosc::OscType::String("rx-max".into()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+
+        drop(sender);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A resume that re-acquires the port must arm the handoff adoption and then

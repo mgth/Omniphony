@@ -636,7 +636,7 @@ fn apply_control_effects(
 /// Max bytes for an editable backend file carried in one OSC datagram. Scripts
 /// are tiny, so a save/load stays a single all-or-nothing message (no chunk
 /// reassembly), well under the UDP datagram limit.
-const BACKEND_FILE_MAX_BYTES: usize = 60_000;
+pub(super) const BACKEND_FILE_MAX_BYTES: usize = 60_000;
 
 fn str_arg(msg: &OscMessage, index: usize) -> Option<String> {
     match msg.args.get(index) {
@@ -1008,7 +1008,7 @@ mod backend_file_request_tests {
 }
 
 #[cfg(test)]
-mod notify_tests {
+pub(super) mod notify_tests {
     use super::*;
     use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
     use renderer::spatial_renderer::SpatialRenderer;
@@ -1018,7 +1018,7 @@ mod notify_tests {
 
     /// A real `RendererControl` on 7.1.4 with a trivial cartesian grid (the
     /// live-options conformance fixture).
-    fn fixture_control() -> Arc<RendererControl> {
+    pub(in crate::osc) fn fixture_control() -> Arc<RendererControl> {
         let layout = SpeakerLayout::preset("7.1.4").expect("7.1.4 preset");
         SpatialRenderer::new(
             layout,
