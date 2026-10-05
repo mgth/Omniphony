@@ -86,6 +86,7 @@ impl BandWorker {
         std::thread::Builder::new()
             .name("speaker-band-worker".into())
             .spawn(move || {
+                crate::background_pool::enter_background();
                 Self::run(rx, &control, num_speakers, sample_rate, |outcome| {
                     // An older outcome still waiting is superseded: it drops
                     // here.

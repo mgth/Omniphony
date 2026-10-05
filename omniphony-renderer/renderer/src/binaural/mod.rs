@@ -529,6 +529,7 @@ impl BinauralRenderer {
             std::thread::Builder::new()
                 .name("binaural-hrir-rebuild".into())
                 .spawn(move || {
+                    crate::background_pool::enter_background();
                     while let Ok(mut req) = rebuild_rx.recv() {
                         while let Ok(newer) = rebuild_rx.try_recv() {
                             req = newer;
