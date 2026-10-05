@@ -1130,16 +1130,16 @@ mod tests {
     }
 
     /// End-to-end through the SOFA reader on files generated outside the
-    /// repo (see the loader's PR): skipped unless `BRIR_SOFA_DIR` points at
-    /// a directory holding `msbrir.sofa` (48 k), `msbrir44.sofa` (44.1 k),
-    /// `srir.sofa` and `longhrir.sofa`, all 5 emitters or views at
-    /// 30/−30/0/110/−110° or −20..20°.
+    /// repo (see the loader's PR): `BRIR_SOFA_DIR` must point at a directory
+    /// holding `msbrir.sofa` (48 k), `msbrir44.sofa` (44.1 k), `srir.sofa` and
+    /// `longhrir.sofa`, all 5 emitters or views at 30/−30/0/110/−110° or
+    /// −20..20°. Run it with `--ignored`.
     #[cfg(feature = "sofa")]
     #[test]
+    #[ignore = "needs BRIR_SOFA_DIR: SOFA files generated outside the repository"]
     fn loads_generated_sofa_files() {
-        let Some(dir) = std::env::var_os("BRIR_SOFA_DIR") else {
-            return;
-        };
+        let dir = std::env::var_os("BRIR_SOFA_DIR")
+            .expect("set BRIR_SOFA_DIR to the directory of generated SOFA files");
         let dir = std::path::PathBuf::from(dir);
         let load = |name: &str| {
             BrirSet::from_sofa(
