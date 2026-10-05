@@ -7,13 +7,13 @@ use super::live_bridge::{LiveBridgeDiag, spawn_live_bridge_decoder};
 use super::output::I32_PCM_FULL_SCALE;
 use anyhow::Result;
 #[cfg(target_os = "linux")]
+use audio_input::RequestedAudioInputConfig;
+#[cfg(target_os = "linux")]
 use audio_input::bridge::LiveBridgeIngestRuntime;
 #[cfg(target_os = "linux")]
 use audio_input::pipewire::{
     PipewireBridgeBackendKind, PipewireBridgeStreamConfig, run_pipewire_bridge_input_stream,
 };
-#[cfg(target_os = "linux")]
-use audio_input::{InputBackend, RequestedAudioInputConfig};
 use audio_input::{InputClockMode, InputControl, InputMode};
 use audio_output::AudioControl;
 #[cfg(target_os = "linux")]
@@ -299,14 +299,12 @@ fn reconcile_live_input(
                     }
                 }
 
-                input_control.set_input_state(
-                    InputMode::Pipewire,
-                    Some(InputBackend::Pipewire),
-                    Some(config.channels),
-                    Some(config.sample_rate_hz),
-                    Some(config.node_name.clone()),
-                    Some(config.node_description.clone()),
-                    Some("pipewire-iec61937".to_string()),
+                publish_pipewire_capture_state(
+                    input_control,
+                    &config.node_name,
+                    &config.node_description,
+                    config.channels,
+                    config.sample_rate_hz,
                 );
                 log::info!(
                     "Live input active: mode=pipewire backend=pipewire node={} channels={} rate={}Hz",
@@ -333,6 +331,33 @@ fn reconcile_live_input(
             }
         }
     }
+}
+
+/// Publish the applied input state of a running PipeWire capture: the sink's
+/// node and the carrier it was opened with.
+///
+/// This is what the applied state reads for as long as the capture is up,
+/// whatever the sink's client negotiates (a bitstream or linear PCM) and
+/// whichever producer the rendered frames come from. The handler accepts the
+/// sink's PCM on the strength of this mode (`DecodeHandler::should_accept_source`)
+/// and does not rewrite the state from a decoded frame.
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn publish_pipewire_capture_state(
+    input_control: &InputControl,
+    node_name: &str,
+    node_description: &str,
+    channels: u16,
+    sample_rate_hz: u32,
+) {
+    input_control.set_input_state(
+        InputMode::Pipewire,
+        Some(audio_input::InputBackend::Pipewire),
+        Some(channels),
+        Some(sample_rate_hz),
+        Some(node_name.to_string()),
+        Some(node_description.to_string()),
+        Some("pipewire-iec61937".to_string()),
+    );
 }
 
 // Requested config resolution.

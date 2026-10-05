@@ -147,6 +147,16 @@ mod tests {
         }
     }
 
+    /// With output pacing on, a test started in front of a capture stream
+    /// that streams and delivers nothing is drained on the feed's tokens, and
+    /// those only drain once the capture has been silent for its limit. The
+    /// feed must not start before that, or its first chunks would sit in the
+    /// pacer with their tokens dropped.
+    #[test]
+    fn the_feed_starts_after_a_silent_capture_has_lost_the_pacer_drain() {
+        assert!(audio_input::pacer_drain::CAPTURE_SILENCE_LIMIT < REAL_FRAME_HOLDOFF);
+    }
+
     #[test]
     fn disarmed_never_feeds() {
         let mut feeder = IdleFeeder::default();

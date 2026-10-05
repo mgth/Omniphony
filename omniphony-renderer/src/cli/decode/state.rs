@@ -9,6 +9,7 @@ use orender_engine::osc::OscSender;
 use orender_engine::stream_state::{StreamDeclaration, StreamState};
 use renderer::metering::AudioMeter;
 use renderer::placement::{PlacementState, SourceFamily};
+use renderer::spatial_renderer::SpatialRenderer;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -118,7 +119,7 @@ impl Default for TelemetryState {
 /// The CLI's per-stream state: the state both hosts keep
 /// ([`StreamState`], with the rules that update it), plus what only this host
 /// needs — the bed-conformed export's bed ids, and which of the PipeWire
-/// sink's two producers the declaration is for.
+/// sink's two producers the declaration and the dialogue level are for.
 pub struct SpatialState {
     pub stream: StreamState,
     /// Fixed-channel bed ids in the legacy 0-9 EXPORT order (file-output
@@ -130,6 +131,9 @@ pub struct SpatialState {
     /// The bridge's declaration, set aside while the PipeWire sink plays
     /// plain PCM.
     bridge_declaration_aside: Option<StreamDeclaration>,
+    /// The bridge's dialogue normalisation level, set aside likewise (see
+    /// [`SpatialState::take_input`]).
+    bridge_dialnorm_aside: Option<i8>,
     pub au_index: u64,
 }
 
@@ -140,6 +144,7 @@ impl Default for SpatialState {
             bed_indices: None,
             declared_for: None,
             bridge_declaration_aside: None,
+            bridge_dialnorm_aside: None,
             au_index: 0,
         }
     }
@@ -157,6 +162,51 @@ impl SpatialState {
     /// labels, no metadata — whatever played before it.
     pub fn frame_has_objects(&self, source: DecodedSource) -> bool {
         self.stream.has_objects && !matches!(source, DecodedSource::Live)
+    }
+
+    /// Take on the input a frame came from: its declaration
+    /// ([`take_declaration`](Self::take_declaration)) and, with a renderer,
+    /// its dialogue normalisation. True when the renderer's loudness changed,
+    /// for the host to publish it.
+    ///
+    /// The level a bridge sent is its stream's, like its declaration. Plain
+    /// PCM carries none: while it plays the renderer applies no correction,
+    /// and the bridge's level waits here. The bitstream gets it back when it
+    /// returns, as its bridge only sends it at a major sync. A level left in
+    /// the renderer by a stream that has ended is dropped for PCM all the
+    /// same.
+    pub fn take_input(
+        &mut self,
+        source: DecodedSource,
+        declaration: Option<StreamDeclaration>,
+        renderer: Option<&SpatialRenderer>,
+    ) -> bool {
+        let loudness_changed = match renderer {
+            Some(renderer) if self.declared_for != Some(source) => match source {
+                DecodedSource::Live => {
+                    self.bridge_dialnorm_aside = self.stream.dialnorm.take();
+                    renderer.clear_loudness()
+                }
+                DecodedSource::Bridge => match self.bridge_dialnorm_aside.take() {
+                    Some(level) => {
+                        renderer.set_loudness(level);
+                        self.stream.dialnorm = Some(level);
+                        true
+                    }
+                    None => false,
+                },
+            },
+            _ => false,
+        };
+        self.take_declaration(source, declaration);
+        loudness_changed
+    }
+
+    /// The bridge's segment starts over: the level set aside for it goes with
+    /// the latch ([`StreamState::reset_segment`]), the new segment brings its
+    /// own.
+    pub fn drop_dialnorm_aside(&mut self) {
+        self.bridge_dialnorm_aside = None;
     }
 
     /// Take on the declaration a frame from `source` came with.
@@ -225,6 +275,11 @@ pub struct OutputState {
     /// speaker array for a stereo pair). Remembering what was built is what lets
     /// the caller notice the two have parted company and rebuild.
     pub audio_writer_channels: Option<usize>,
+    /// Stream rate of the file capture carried over a stream end
+    /// (`DecodeHandler::reset_for_next_stream`), until the next frame is
+    /// checked against it: the sink writes samples as they come, so a stream
+    /// at another rate cannot continue the capture.
+    pub carried_capture_rate: Option<u32>,
     pub bootstrap_frames_seen: u32,
     pub bootstrap_started_at: Option<Instant>,
     pub render_buf: Vec<f32>,
@@ -249,6 +304,7 @@ impl Default for OutputState {
         Self {
             audio_writer: None,
             audio_writer_channels: None,
+            carried_capture_rate: None,
             bootstrap_frames_seen: 0,
             bootstrap_started_at: None,
             render_buf: Vec::new(),
@@ -280,6 +336,7 @@ impl OutputState {
     ) -> Option<AudioWriter> {
         self.output_init_failed = false;
         self.audio_writer_channels = None;
+        self.carried_capture_rate = None;
         if let Some(control) = input_control {
             control.clear_output_pacer();
         }
@@ -447,6 +504,97 @@ mod tests {
         s.take_declaration(Live, None);
         s.take_declaration(Bridge, None);
         assert_eq!(state(&s), (SourceFamily::GENERIC, 0, ""));
+    }
+
+    /// A frame carrying `level`, as a bridge sends it at a major sync.
+    fn frame_with_dialogue_level(level: i8) -> bridge_api::RDecodedFrame {
+        bridge_api::RDecodedFrame {
+            sampling_frequency: 48_000,
+            sample_count: 0,
+            channel_count: 0,
+            pcm: Vec::new().into(),
+            channel_labels: Vec::new().into(),
+            metadata: Vec::new().into(),
+            drc_gain: 1.0,
+            drc_ramp_duration: 0,
+            dialogue_level: Some(level).into(),
+            is_new_segment: false,
+        }
+    }
+
+    /// The dialogue level a bridge sent is its stream's: the sink's plain PCM
+    /// plays without it, and the bitstream gets it back, without its bridge
+    /// sending it again.
+    #[test]
+    fn the_dialogue_level_follows_the_sinks_input() {
+        use DecodedSource::{Bridge, Live};
+        let renderer = super::super::handler::tests::test_renderer();
+        let applied = || renderer.renderer_control().live.read().dialogue_level;
+        let mut s = SpatialState::default();
+
+        // A bitstream, and the level its bridge sends.
+        assert!(!s.take_input(Bridge, None, Some(&renderer)));
+        assert!(
+            s.stream
+                .latch_dialnorm(&frame_with_dialogue_level(-11), &renderer)
+        );
+        assert_eq!(applied(), Some(-11));
+
+        // PCM after it: no correction, published once.
+        assert!(s.take_input(Live, None, Some(&renderer)));
+        assert_eq!(applied(), None);
+        assert!(!s.take_input(Live, None, Some(&renderer)));
+
+        // Back to the bitstream: its level, and the latch closed on it, so a
+        // repeat at the next major sync changes nothing.
+        assert!(s.take_input(Bridge, None, Some(&renderer)));
+        assert_eq!(applied(), Some(-11));
+        assert!(
+            !s.stream
+                .latch_dialnorm(&frame_with_dialogue_level(-11), &renderer)
+        );
+        assert!(!s.take_input(Bridge, None, Some(&renderer)));
+
+        // The bridge resets while PCM plays: its next segment brings its own
+        // level, the one set aside is not given back.
+        assert!(s.take_input(Live, None, Some(&renderer)));
+        super::super::spatial_metadata::SpatialMetadataCoordinator::new(
+            &mut s,
+            Some(&renderer),
+            None,
+        )
+        .reset_for_segment();
+        assert!(!s.take_input(Bridge, None, Some(&renderer)));
+        assert_eq!(applied(), None);
+        assert!(
+            s.stream
+                .latch_dialnorm(&frame_with_dialogue_level(-21), &renderer)
+        );
+        assert_eq!(applied(), Some(-21));
+
+        // The stream ended (the handler starts its state over) and left its
+        // level in the renderer: PCM does not play with it either.
+        let mut s = SpatialState::default();
+        assert!(s.take_input(Live, None, Some(&renderer)));
+        assert_eq!(applied(), None);
+        assert!(!s.take_input(Bridge, None, Some(&renderer)));
+        assert_eq!(applied(), None);
+    }
+
+    /// With the bridge as the only input nothing is handed over: the level
+    /// stays the stream's business (`StreamState::latch_dialnorm`), as in the
+    /// embedded engine.
+    #[test]
+    fn a_bridge_only_input_keeps_its_dialogue_level() {
+        let renderer = super::super::handler::tests::test_renderer();
+        renderer.set_loudness(-27);
+        let mut s = SpatialState::default();
+        assert!(!s.take_input(DecodedSource::Bridge, None, Some(&renderer)));
+        assert!(!s.take_input(DecodedSource::Bridge, None, Some(&renderer)));
+        assert_eq!(
+            renderer.renderer_control().live.read().dialogue_level,
+            Some(-27)
+        );
     }
 
     /// The pipe only ever has the bridge: its declarations apply as they come,

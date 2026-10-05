@@ -81,13 +81,15 @@ pub struct DecoderThreadConfig {
     /// starts, so the bridge decodes the first packet in that mode; a later
     /// change reaches it before the next input chunk.
     pub requested_drc_mode: Arc<RwLock<String>>,
-    /// Post-rendering output pacer drain clock (pure pipe-bridge mode only).
-    /// Each decoded packet posts its emitted source duration (microseconds)
-    /// here, before the (potentially blocking) frame send. An independent
-    /// drain thread converts that to output frames and drains the pacer FIFO
-    /// into the ring — keeping the drain off this thread avoids the
-    /// backpressure deadlock (send blocks → FIFO never drains → send stays
-    /// blocked). `None` when output pacing is unused.
+    /// Post-rendering output pacer drain clock (the token clock), for the
+    /// frames this thread decodes, in pure pipe mode and beside a PipeWire
+    /// capture alike; it stands down while a capture stream delivers. Each
+    /// decoded packet posts its emitted source duration (microseconds) here,
+    /// before the (potentially blocking) frame send. An independent drain
+    /// thread converts that to output frames and drains the pacer FIFO into
+    /// the ring — keeping the drain off this thread avoids the backpressure
+    /// deadlock (send blocks → FIFO never drains → send stays blocked).
+    /// `None` when output pacing is unused.
     pub drain_tx: Option<mpsc::Sender<u64>>,
     /// Optional diag handles for the named-pipe / stdin input path. Published
     /// from the decoder thread so we can correlate upstream delivery cadence

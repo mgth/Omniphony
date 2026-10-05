@@ -13,6 +13,15 @@
 //! output PipewireWriter exist. Passing one struct keeps the wiring stable
 //! as fields evolve.
 //!
+//! The drain has two clocks, on two threads: the capture stream, and the
+//! token clock that stands in for it when no capture stream delivers. Which
+//! of the two drains at a given time is the input side's to say (it is the
+//! one that knows whether a capture stream is delivering): see
+//! `audio_input::pacer_drain`. This module only makes sure a drain is never
+//! joined by another one ([`PacerHandle::drain`]), and lets a clock check
+//! that the drain is still its own once nobody else can be in it
+//! ([`PacerHandle::drain_if`]).
+//!
 //! A handle exists only for an output built with pacing on
 //! (`AdaptiveResamplingConfig::use_output_pacing`). Pacing decides *which
 //! thread produces into the ring* — the drain when on, the renderer when off
@@ -67,11 +76,12 @@ pub struct PacerHandle {
     /// time.
     ///
     /// [`drain`](Self::drain) has two callers on two threads — the PipeWire
-    /// input callback, and the pipe-bridge drain thread — which are meant to
-    /// alternate with the input mode and are not kept apart by anything else.
-    /// So the ends are taken with `try_lock`: a drain that finds another one
-    /// in progress moves nothing and returns, and neither waits. Nothing
-    /// takes this lock blocking, and the device callback never touches it.
+    /// input callback, and the token-clock drain thread — which take turns
+    /// (`audio_input::pacer_drain` says whose turn it is). At a handover one
+    /// of them can still be in the middle of a transfer, so the ends are
+    /// taken with `try_lock`: a drain that finds another one in progress
+    /// moves nothing and returns, and neither waits. Nothing takes this lock
+    /// blocking, and the device callback never touches it.
     pub(crate) ends: Arc<Mutex<PacerDrainEnds>>,
     /// `false` until the pacer FIFO has accumulated at least
     /// `pre_roll_threshold_samples` — until then the input-thread drain
@@ -113,6 +123,26 @@ pub struct PacerHandle {
 }
 
 impl PacerHandle {
+    /// A pacer over `ends`, not primed yet, with counters of its own.
+    pub fn new(
+        ends: PacerDrainEnds,
+        pre_roll_threshold_samples: usize,
+        out_sample_rate: u32,
+        out_channels: u32,
+    ) -> Self {
+        Self {
+            ends: Arc::new(Mutex::new(ends)),
+            pre_roll_complete: Arc::new(AtomicBool::new(false)),
+            pre_roll_threshold_samples,
+            out_sample_rate,
+            out_channels,
+            diag_drain_total: Arc::new(AtomicU64::new(0)),
+            diag_underrun_total: Arc::new(AtomicU64::new(0)),
+            diag_fifo_level: Arc::new(AtomicU64::new(0)),
+            flush_requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Ask for the FIFO to be flushed and the pre-roll re-armed.
     ///
     /// Called on `recovery_reacquire_pending` consumption or codec switch from
@@ -137,32 +167,38 @@ impl PacerHandle {
     /// quantum is rounded down to one, and what a full ring refuses is
     /// dropped from a frame boundary: the ring's channels never shift.
     ///
-    /// Both the PipeWire input RT callback (Pipewire mode) and the pure
-    /// pipe-bridge drain thread share this single drain implementation; the
-    /// difference is only how each computes `drain_samples` and what clock
-    /// drives the call.
+    /// Both the PipeWire input callback and the token-clock drain thread
+    /// share this single drain implementation; the difference is only how
+    /// each computes `drain_samples` and what clock drives the call.
     ///
     /// Returns `false`, having moved nothing, when another drain is in
     /// progress on another thread. It never waits: no lock is taken blocking,
     /// and the transfer is a few block copies whatever `drain_samples` is.
     pub fn drain(&self, drain_samples: usize) -> bool {
+        self.drain_if(drain_samples, || true)
+    }
+
+    /// [`drain`](Self::drain), for a clock that may have lost the drain to
+    /// the other one since it last looked.
+    ///
+    /// `still_mine` is asked once the drain's ends are taken, that is once no
+    /// other drain can be in progress: a clock that lost the drain before the
+    /// other one's transfer went through is refused here, however far it had
+    /// got before taking the ends. Returns `false`, having moved nothing and
+    /// counted nothing, when `still_mine` says no.
+    ///
+    /// `still_mine` runs with the ends held and must not wait: an atomic
+    /// load, not a lock.
+    pub fn drain_if(&self, drain_samples: usize, still_mine: impl FnOnce() -> bool) -> bool {
         let Some(mut ends) = self.ends.try_lock() else {
             return false;
         };
+        if !still_mine() {
+            return false;
+        }
         let PacerDrainEnds { fifo, ring } = &mut *ends;
         let drain_samples = drain_samples - drain_samples % ring.frame_len();
-        // Honour a deferred flush first, so no stale sample reaches the ring.
-        // Done here because this is the FIFO's only consumer — see
-        // [`request_flush_and_rearm`](Self::request_flush_and_rearm).
-        if self.flush_requested.swap(false, Ordering::Acquire) {
-            fifo.discard(usize::MAX);
-            self.pre_roll_complete.store(false, Ordering::Relaxed);
-        }
-        let mut primed = self.pre_roll_complete.load(Ordering::Relaxed);
-        if !primed && fifo.available() >= self.pre_roll_threshold_samples {
-            self.pre_roll_complete.store(true, Ordering::Relaxed);
-            primed = true;
-        }
+        let primed = self.flush_and_prime(fifo);
         // While priming, nothing is drawn from the FIFO and the whole quantum
         // is silence; once primed, silence only makes up for what the FIFO
         // does not hold.
@@ -171,31 +207,96 @@ impl PacerHandle {
         } else {
             0
         };
-        // The FIFO is drawn down by the clock whatever the ring takes: what a
-        // full ring refuses is dropped, from the first frame it refuses.
-        let moved = ring.transfer_from(fifo, from_fifo);
-        let ring_full = moved < from_fifo;
-        if ring_full {
-            fifo.discard(from_fifo - moved);
-        }
+        let ring_full = transfer(fifo, ring, from_fifo);
         let underruns = drain_samples - from_fifo;
         if underruns > 0 && !ring_full {
             ring.push_silence(underruns);
         }
-        let prev_drain = f64::from_bits(self.diag_drain_total.load(Ordering::Relaxed));
-        self.diag_drain_total.store(
-            (prev_drain + drain_samples as f64).to_bits(),
-            Ordering::Relaxed,
-        );
+        add_to(&self.diag_drain_total, drain_samples);
         if underruns > 0 {
-            let prev_under = f64::from_bits(self.diag_underrun_total.load(Ordering::Relaxed));
-            self.diag_underrun_total
-                .store((prev_under + underruns as f64).to_bits(), Ordering::Relaxed);
+            add_to(&self.diag_underrun_total, underruns);
         }
         self.diag_fifo_level
             .store((fifo.available() as f64).to_bits(), Ordering::Relaxed);
         true
     }
+
+    /// Move what the FIFO holds, up to `max_samples` and in whole frames,
+    /// for a clock that is catching up: it makes up no silence, and moves
+    /// nothing while the pacer is priming.
+    ///
+    /// [`drain`](Self::drain) is a clock tick: it draws its whole quantum
+    /// whatever the FIFO holds, and makes up the rest with silence. A clock
+    /// that owes the ring more than the FIFO holds (it was kept from draining
+    /// while the renderer was held back by the full FIFO) would insert that
+    /// silence and leave the renderer's backlog behind it as latency. This
+    /// moves what is there, so the clock can pay the rest as the renderer
+    /// refills.
+    ///
+    /// Same rules as [`drain_if`](Self::drain_if) otherwise: a deferred flush
+    /// is honoured first, and `still_mine` is asked with the ends held.
+    /// Returns the samples moved, or `None`, having moved nothing, when
+    /// another drain is in progress or `still_mine` says no.
+    pub fn drain_available_if(
+        &self,
+        max_samples: usize,
+        still_mine: impl FnOnce() -> bool,
+    ) -> Option<usize> {
+        let mut ends = self.ends.try_lock()?;
+        if !still_mine() {
+            return None;
+        }
+        let PacerDrainEnds { fifo, ring } = &mut *ends;
+        if !self.flush_and_prime(fifo) {
+            return Some(0);
+        }
+        let moved = max_samples.min(fifo.available());
+        let moved = moved - moved % ring.frame_len();
+        transfer(fifo, ring, moved);
+        add_to(&self.diag_drain_total, moved);
+        self.diag_fifo_level
+            .store((fifo.available() as f64).to_bits(), Ordering::Relaxed);
+        Some(moved)
+    }
+
+    /// Honour a deferred flush, then mark the pacer primed once the FIFO
+    /// holds the pre-roll. Returns whether it is primed. For a drain, with
+    /// the ends held.
+    fn flush_and_prime(&self, fifo: &mut RingReader) -> bool {
+        // Honour a deferred flush first, so no stale sample reaches the ring.
+        // Done here because this is the FIFO's only consumer — see
+        // [`request_flush_and_rearm`](Self::request_flush_and_rearm).
+        if self.flush_requested.swap(false, Ordering::Acquire) {
+            fifo.discard(usize::MAX);
+            self.pre_roll_complete.store(false, Ordering::Relaxed);
+        }
+        let primed = self.pre_roll_complete.load(Ordering::Relaxed);
+        if !primed && fifo.available() >= self.pre_roll_threshold_samples {
+            self.pre_roll_complete.store(true, Ordering::Relaxed);
+            return true;
+        }
+        primed
+    }
+}
+
+/// Move `count` samples, whole frames, from `fifo` to `ring`. The FIFO is
+/// drawn down by the clock whatever the ring takes: what a full ring refuses
+/// is dropped, from the first frame it refuses. Returns whether the ring was
+/// full.
+fn transfer(fifo: &mut RingReader, ring: &mut RingWriter, count: usize) -> bool {
+    let moved = ring.transfer_from(fifo, count);
+    let ring_full = moved < count;
+    if ring_full {
+        fifo.discard(count - moved);
+    }
+    ring_full
+}
+
+/// Add `count` to an f64-encoded diagnostic counter. One writer at a time:
+/// the drain's ends are held.
+fn add_to(counter: &AtomicU64, count: usize) {
+    let total = f64::from_bits(counter.load(Ordering::Relaxed)) + count as f64;
+    counter.store(total.to_bits(), Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -464,5 +565,92 @@ mod tests {
         fill(&mut p, &packet);
         p.handle.drain(PACKET);
         assert_eq!(drain_ring(&mut p).len(), ceiling_samples);
+    }
+
+    /// A clock that no longer has the drain moves nothing and counts nothing,
+    /// flush request included: all of it is the other clock's now.
+    #[test]
+    fn a_clock_that_lost_the_drain_moves_nothing() {
+        let mut p = pacer(0);
+        fill(&mut p, &[1.0, 2.0, 3.0, 4.0]);
+        p.handle.flush_requested.store(true, Ordering::Relaxed);
+
+        assert!(!p.handle.drain_if(2, || false));
+        assert_eq!(p.fifo.fill(), 4, "nothing moved, nothing flushed");
+        assert_eq!(drain_ring(&mut p), Vec::<f32>::new());
+        assert_eq!(diag(&p.handle.diag_drain_total), 0.0);
+        assert_eq!(diag(&p.handle.diag_underrun_total), 0.0);
+        assert!(p.handle.flush_requested.load(Ordering::Relaxed));
+
+        // The clock that has it drains as usual.
+        p.handle.flush_requested.store(false, Ordering::Relaxed);
+        assert!(p.handle.drain_if(2, || true));
+        assert_eq!(drain_ring(&mut p), vec![1.0, 2.0]);
+    }
+
+    /// The question is put with the ends held: whoever answers it knows that
+    /// no other drain is in progress, and none can start before this one is
+    /// done.
+    #[test]
+    fn the_clock_is_asked_once_no_other_drain_can_be_in_progress() {
+        let mut p = pacer(0);
+        fill(&mut p, &[1.0, 2.0]);
+        let other = p.handle.clone();
+        let mut asked = false;
+        assert!(p.handle.drain_if(2, || {
+            asked = true;
+            assert!(!other.drain(2), "the ends are held while it answers");
+            true
+        }));
+        assert!(asked);
+        assert_eq!(drain_ring(&mut p), vec![1.0, 2.0]);
+
+        // Not asked at all behind a drain in progress.
+        let in_progress = p.handle.ends.try_lock().unwrap();
+        assert!(
+            !other.drain_if(2, || panic!("asked without the ends")),
+            "refused before the question"
+        );
+        drop(in_progress);
+    }
+
+    /// Catching up moves what the FIFO holds, in whole frames, and makes up
+    /// no silence: what it could not move is left to the next call.
+    #[test]
+    fn catching_up_moves_what_the_fifo_holds_and_no_silence() {
+        let mut p = pacer(0);
+        fill(&mut p, &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(p.handle.drain_available_if(8, || true), Some(4));
+        assert_eq!(drain_ring(&mut p), vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(diag(&p.handle.diag_drain_total), 4.0);
+        assert_eq!(diag(&p.handle.diag_underrun_total), 0.0);
+
+        fill(&mut p, &[5.0, 6.0, 7.0, 8.0]);
+        assert_eq!(p.handle.drain_available_if(3, || true), Some(2), "a frame");
+        assert_eq!(drain_ring(&mut p), vec![5.0, 6.0], "no more than asked");
+        assert_eq!(p.fifo.fill(), 2);
+    }
+
+    /// Catching up follows the drain's rules: a deferred flush first, nothing
+    /// while priming, and nothing for a clock that lost the drain.
+    #[test]
+    fn catching_up_follows_the_rules_of_the_drain() {
+        let mut p = pacer(4);
+        fill(&mut p, &[1.0, 2.0]);
+        p.handle.request_flush_and_rearm();
+        assert_eq!(p.handle.drain_available_if(2, || true), Some(0));
+        assert_eq!(p.fifo.fill(), 0, "flushed");
+        fill(&mut p, &[3.0, 4.0]);
+        assert_eq!(p.handle.drain_available_if(2, || true), Some(0), "priming");
+        assert_eq!(drain_ring(&mut p), Vec::<f32>::new(), "and no silence");
+
+        fill(&mut p, &[5.0, 6.0]);
+        assert_eq!(p.handle.drain_available_if(2, || false), None);
+        assert_eq!(p.handle.drain_available_if(2, || true), Some(2), "primed");
+        assert_eq!(drain_ring(&mut p), vec![3.0, 4.0]);
+
+        let in_progress = p.handle.ends.try_lock().unwrap();
+        assert_eq!(p.handle.drain_available_if(2, || true), None);
+        drop(in_progress);
     }
 }
