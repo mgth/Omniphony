@@ -1,3 +1,4 @@
+use crate::decode_step::LogLevelSync;
 use abi_stable::library::{RootModule, lib_header_from_path};
 use abi_stable::sabi_types::VersionNumber;
 use abi_stable::std_types::RStr;
@@ -19,6 +20,9 @@ pub struct LoadedBridge {
     pub lib: BridgeLibRef,
     /// The live bridge instance (stateful, called per chunk).
     pub bridge: FormatBridgeBox,
+    /// The log level `bridge` was opened with, for the host that drives it to
+    /// keep in line with its own ([`open_bridge`]).
+    pub log_level: LogLevelSync,
 }
 
 impl LoadedBridge {
@@ -30,8 +34,12 @@ impl LoadedBridge {
         check_bridge_api_version(path)?;
         let lib = BridgeLibRef::load_from_file(path)
             .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
-        let bridge = open_bridge(&lib);
-        Ok(Self { lib, bridge })
+        let (bridge, log_level) = open_bridge(&lib);
+        Ok(Self {
+            lib,
+            bridge,
+            log_level,
+        })
     }
 
     /// [`load_with_params`](Self::load_with_params), then ask the bridge for
@@ -121,14 +129,31 @@ fn bridge_api_compatible(host: VersionNumber, bridge: VersionNumber) -> Result<(
 }
 
 /// One more bridge instance from an already-loaded plugin, its logs routed to
-/// the host's: how every host opens one, from a path ([`LoadedBridge`]) or
-/// from the plugin a session already holds (the PipeWire sink's own bridge).
-pub fn open_bridge(lib: &BridgeLibRef) -> FormatBridgeBox {
+/// the host's and filtered at the host's level: how every host opens one, from
+/// a path ([`LoadedBridge`]) or from the plugin a session already holds (the
+/// PipeWire sink's own bridge). Later level changes reach it through the
+/// [`LogLevelSync`] returned with it, which the host keeps with the bridge.
+pub fn open_bridge(lib: &BridgeLibRef) -> (FormatBridgeBox, LogLevelSync) {
     install_bridge_host_log_sink(lib);
     let new_bridge = lib.new_bridge();
     // strict mode removed from the host; bridges ignore the flag. The ABI
     // parameter is kept for compatibility and always passed as `false`.
-    new_bridge(false)
+    let mut bridge = new_bridge(false);
+    let log_level = LogLevelSync::open(live_log::current_runtime_level(), &mut bridge);
+    (bridge, log_level)
+}
+
+/// Ask `bridge` to format and forward only the diagnostics at `level` or
+/// below, so the ones the host would drop cost it nothing. `false` from a
+/// bridge that predates the `log_level` key: it keeps its own level
+/// (`HARLETTY_LOG`, info by default), which is no fault worth a warning.
+pub fn configure_log_level(bridge: &mut FormatBridgeBox, level: log::LevelFilter) -> bool {
+    let name = live_log::level_name(level);
+    let accepted = bridge.configure("log_level".into(), name.into());
+    if !accepted {
+        log::debug!("bridge does not take log_level {name}; it keeps its own level");
+    }
+    accepted
 }
 
 /// Ask `bridge` for `presentation` (before its first packet); an error naming
