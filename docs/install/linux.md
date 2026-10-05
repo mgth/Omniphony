@@ -150,9 +150,13 @@ mkdir -p ~/omniphony/studio && cd ~/omniphony/studio
 tar xzf ~/Downloads/omniphony-studio-egui-v0.6.0-linux-x86_64.tar.gz --strip-components=1
 ```
 
-1. Start the player first, with OSC on: `./mpv --ad=orender --ad-orender-osc film.mkv`
-   (or set `osc: true` under `render:` in the config).
-2. Then start `./omniphony-studio-egui`. It connects by itself.
+1. Start the player first, with OSC on:
+   `~/omniphony/mpv --ad=orender --ad-orender-osc film.mkv`
+   (or set `osc: true` under `render:` in the config). With the AUR packages
+   the player is on your `PATH`: `mpv --ad=orender --ad-orender-osc film.mkv`.
+2. Then, from another terminal, start `~/omniphony/studio/omniphony-studio-egui`
+   (with the AUR, `paru -S omniphony-studio-egui`, then `omniphony-studio-egui`).
+   It connects by itself.
 
 Start them in this order. If Studio finds no renderer for six seconds, it starts
 its own (*Auto-start local renderer*, in the connection settings), and that one

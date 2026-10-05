@@ -139,7 +139,9 @@ It creates the folder `omniphony-studio-egui-v0.6.0-windows-x86_64` holding
 1. Start the player first, with OSC on:
    `.\mpv --ad=orender --ad-orender-osc "D:\Films\film.mkv"`
    (or set `osc: true` under `render:` in the config).
-2. Then start `omniphony-studio-egui.exe`. It connects by itself. Allow it
+2. Then start
+   `C:\omniphony\omniphony-studio-egui-v0.6.0-windows-x86_64\omniphony-studio-egui.exe`
+   (double-click it, or from another terminal). It connects by itself. Allow it
    through the Windows firewall if asked.
 
 Start them in this order. If Studio finds no renderer for six seconds, it starts
