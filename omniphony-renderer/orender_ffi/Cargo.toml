@@ -24,6 +24,9 @@ env_logger.workspace = true
 [dev-dependencies]
 # The OrenderChannelLabel ↔ RChannelLabel discriminant-parity unit test.
 bridge_api.workspace = true
+# Not linked: depending on it makes `cargo test` build its cdylib, the bridge
+# the live-session tests load.
+reference_bridge.workspace = true
 
 [features]
 # SOFA (personalised HRTF) support, on by default: liborender is the desktop

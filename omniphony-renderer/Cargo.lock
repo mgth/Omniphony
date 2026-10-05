@@ -1641,6 +1641,7 @@ dependencies = [
  "env_logger",
  "log",
  "orender_engine",
+ "reference_bridge",
  "runtime_control",
 ]
 
