@@ -101,7 +101,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                     self.output
                         .bootstrap_started_at
                         .get_or_insert_with(Instant::now);
-                    if !self.spatial.stream.has_objects {
+                    if !self.spatial.pipeline.stream.has_objects {
                         self.output.bootstrap_frames_seen =
                             self.output.bootstrap_frames_seen.saturating_add(1);
                         if self.output.bootstrap_frames_seen < 8 {
@@ -125,7 +125,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                     sample_rate,
                     channel_count,
                     self.output.bootstrap_frames_seen,
-                    self.spatial.stream.has_objects,
+                    self.spatial.pipeline.stream.has_objects,
                     self.spatial.bed_indices,
                     self.session.decoded_frames,
                     self.session.decoded_samples,
