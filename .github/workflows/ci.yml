@@ -379,15 +379,19 @@ jobs:
       # forgets to move shows up at the next release, when the release build
       # refuses its lockfile (#712 review: the Tauri lock's studio-core
       # entry). So bump for real, resolve the three workspaces `--locked` as
-      # the builds will, then put the tree back. Offline: the steps above
-      # already fetched every dependency.
+      # the builds will, then put the tree back. Offline, for this runner's
+      # platform only: the steps above fetched its dependencies, not the
+      # Windows/macOS-only ones, and the lockfile is checked as a whole
+      # either way.
       - name: Bump the release version and resolve every lockfile
         run: |
           set -euo pipefail
           trap 'git checkout -- .' EXIT
+          host="$(rustc -vV | sed -n 's/^host: //p')"
           python3 scripts/release_version.py set 99.0.0 --player mpv-v99.0.0
           for workspace in omniphony-renderer omniphony-studio/src-tauri omniphony-studio-egui; do
-            (cd "$workspace" && cargo metadata --locked --offline --format-version 1 > /dev/null)
+            (cd "$workspace" && cargo metadata --locked --offline --filter-platform "$host" \
+              --format-version 1 > /dev/null)
             echo "$workspace: lockfile valid at 99.0.0"
           done
 
