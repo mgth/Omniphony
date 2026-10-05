@@ -135,8 +135,8 @@ phase the entries it sent, the rest falling back to the room.
 ## Engine notes
 
 - Both channel planners key their cache on the family and its effective
-  placement, compared by value under the read lock on every frame (a short
-  slice and a few scalars), so an edit re-plans on the next frame without
+  placement, compared by value against the live params on every frame (a
+  short slice and a few scalars), so an edit re-plans on the next frame without
   relying on an options-epoch bump; a steady stream never re-plans.
 - The display objects of fixed channels are named by their canonical label
   whatever gave the pose (a layout entry's own spelling, a corner, a
