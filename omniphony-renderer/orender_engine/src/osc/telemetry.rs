@@ -336,9 +336,17 @@ impl Telemetry {
         }
     }
 
-    /// An object list to fill, with the strings of an earlier one to reuse.
-    pub(super) fn object_list(&mut self) -> Vec<ObjectMeta> {
-        self.spare_objects.pop().unwrap_or_default()
+    /// An object list to fill, with the strings of an earlier one to reuse,
+    /// and whether the frame it held was to go out in full.
+    ///
+    /// A frame a full ring held back comes first: the new frame supersedes it,
+    /// so it takes over its list and its flag rather than leaving it to be
+    /// freed here while the ring stays full.
+    pub(super) fn object_list(&mut self) -> (Vec<ObjectMeta>, bool) {
+        if let Some(Event::Objects(held)) = self.held[0].take() {
+            return (held.objects, held.force_full);
+        }
+        (self.spare_objects.pop().unwrap_or_default(), false)
     }
 
     /// Meter lists to hand the renderer in place of the ones a report takes.
@@ -942,12 +950,14 @@ mod tests {
         // The thread stalls on the registry, so the queue fills.
         let held = clients.lock_for_test();
         let started = Instant::now();
-        for i in 0..(EVENT_CAPACITY as u64 * 4) {
-            sender.send_timestamp(i, 0.0);
-        }
-        assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(sender.telemetry.shared.dropped.load(Ordering::Relaxed) > 0);
+        overfill(&mut sender);
+        let elapsed = started.elapsed();
+        let dropped = sender.telemetry.shared.dropped.load(Ordering::Relaxed);
+        // Asserted with the registry released: a panic holding it would
+        // poison it for the telemetry thread.
         drop(held);
+        assert!(elapsed < Duration::from_secs(1));
+        assert!(dropped > 0);
     }
 
     /// What a client following the sound shows once the listener hears
@@ -1003,17 +1013,13 @@ mod tests {
         sender.attach_renderer_control(fixture_control());
         let clients = Arc::clone(&sender.clients);
         let held = clients.lock_for_test();
-        for i in 0..(EVENT_CAPACITY as u64 * 2) {
-            sender.send_timestamp(i, 0.0);
-        }
+        overfill(&mut sender);
         sender.send_object_frame(0, 0, 0, &[object_at(0.75)]);
         sender.send_loudness_state();
         sender.send_live_state_bundle();
-        assert!(
-            sender.telemetry.held.iter().all(Option::is_some),
-            "the queue was full"
-        );
+        let all_held = sender.telemetry.held.iter().all(Option::is_some);
         drop(held);
+        assert!(all_held, "the queue was full");
         // The thread catches up on the stalled queue.
         let _ = received(&socket, Duration::from_millis(200));
 
@@ -1035,5 +1041,48 @@ mod tests {
             addrs.contains(&("/omniphony/object/0/xyz".to_string(), Some(0.75))),
             "{addrs:?}"
         );
+    }
+
+    /// Fill the ring while the telemetry thread is stalled on the registry.
+    /// The thread drains it once before it blocks, whenever its tick comes:
+    /// wait for that, then fill it again, which then holds.
+    fn overfill(sender: &mut super::super::OscSender) {
+        let fill = |sender: &mut super::super::OscSender| {
+            for i in 0..(EVENT_CAPACITY as u64 * 2) {
+                sender.send_timestamp(i, 0.0);
+            }
+        };
+        fill(sender);
+        std::thread::sleep(IDLE_TICK * 2);
+        fill(sender);
+    }
+
+    #[global_allocator]
+    static GLOBAL: renderer::backend_conformance::CountingAllocator =
+        renderer::backend_conformance::CountingAllocator;
+
+    /// While the queue stays full, a frame refused after another takes over
+    /// the held one's list: the render path neither allocates a new one nor
+    /// frees the old.
+    #[test]
+    fn a_full_queue_refuses_object_frames_without_allocating() {
+        let (mut sender, _socket) = sender_to_test_socket();
+        let clients = Arc::clone(&sender.clients);
+        let held = clients.lock_for_test();
+        overfill(&mut sender);
+        let objects: Vec<ObjectMeta> = (0..8).map(|i| object_at(i as f32 / 8.0)).collect();
+        // The first refused frame is held, in a list of its own.
+        sender.send_object_frame(0, 0, 0, &objects);
+        let first_held = sender.telemetry.held[0].is_some();
+
+        let ((), allocations) = renderer::backend_conformance::count_allocations(|| {
+            for i in 1..=100 {
+                sender.send_object_frame(i * 40, 0, 0, &objects);
+            }
+        });
+        let still_held = sender.telemetry.held[0].is_some();
+        drop(held);
+        assert!(first_held && still_held, "the queue was full");
+        assert_eq!(allocations, 0);
     }
 }

@@ -28,7 +28,7 @@ impl OscSender {
         coordinate_format: i32,
         objects: &[ObjectMeta],
     ) {
-        let mut list = self.telemetry.object_list();
+        let (mut list, held_full) = self.telemetry.object_list();
         objects.clone_into(&mut list);
         let frame = ObjectFrame {
             block: self.telemetry.block,
@@ -36,7 +36,7 @@ impl OscSender {
             ramp_duration,
             coordinate_format,
             generation: self.telemetry.generation,
-            force_full: self.telemetry.force_full,
+            force_full: self.telemetry.force_full || held_full,
             objects: list,
         };
         // Queued, or held until the ring has room: either way the flag goes
