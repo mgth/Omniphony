@@ -730,7 +730,7 @@ impl Engine {
         // Rounded up: the timestamps are rounded down, so a block's own start
         // comes back to exactly its position rather than a sample short of it.
         let pos = (i128::from(us.max(0)) * i128::from(rate) + 999_999) / 1_000_000;
-        if let Some(osc) = self.osc.as_ref() {
+        if let Some(osc) = self.osc.as_mut() {
             osc.send_heard(u64::try_from(pos).unwrap_or(u64::MAX), rate);
         }
     }
@@ -1240,7 +1240,7 @@ impl Engine {
         let sample_rate = frame.sampling_frequency.max(1);
         let sample_pos_at_start = self.decoded_samples;
         // Everything sent while rendering this frame describes it.
-        if let Some(osc) = self.osc.as_ref() {
+        if let Some(osc) = self.osc.as_mut() {
             osc.render_at(sample_pos_at_start);
         }
         render::follow_stream_rate(&mut self.renderer, frame.sampling_frequency)?;
@@ -1274,7 +1274,7 @@ impl Engine {
 
         // Dialogue normalisation (from major-sync frames), applied once.
         if self.stream.latch_dialnorm(frame, &self.renderer) && want_osc {
-            if let Some(osc) = self.osc.as_ref() {
+            if let Some(osc) = self.osc.as_mut() {
                 osc.send_loudness_state();
             }
         }
@@ -1296,14 +1296,14 @@ impl Engine {
                 if want_osc {
                     let coord_fmt = self.stream.osc_coordinate_format();
                     if let Some(osc) = self.osc.as_mut() {
-                        let _ = osc.send_object_frame(
+                        osc.send_object_frame(
                             meta.sample_pos,
                             meta.ramp_duration,
                             coord_fmt,
                             &objects,
                         );
                         let seconds = meta.sample_pos as f64 / sample_rate as f64;
-                        let _ = osc.send_timestamp(meta.sample_pos, seconds);
+                        osc.send_timestamp(meta.sample_pos, seconds);
                     }
                 }
                 if overlay_active {
@@ -1386,7 +1386,7 @@ impl Engine {
                 if !objects.is_empty() {
                     if want_osc {
                         if let Some(osc) = self.osc.as_mut() {
-                            let _ = osc.send_object_frame(sample_pos_at_start, 0, 0, &objects);
+                            osc.send_object_frame(sample_pos_at_start, 0, 0, &objects);
                         }
                     }
                     if overlay_active {
@@ -1444,7 +1444,7 @@ impl Engine {
         } else {
             &self.stream.bed_events
         };
-        let rendered = self.renderer.render_frame(
+        let mut rendered = self.renderer.render_frame(
             render_pcm,
             render_channels,
             events,
@@ -1527,33 +1527,18 @@ impl Engine {
                             .collect();
                         overlay::update_levels(&levels);
                     }
-                    if let Some(osc) = self.osc.as_ref().filter(|_| want_meter_osc) {
-                        // Latency/resample/adaptive args are output-stage specific
-                        // and absent in the embedded host → None.
-                        let _ = osc.send_meter_bundle(
-                            &snapshot,
-                            &rendered.object_gains,
-                            &rendered.object_band_gains,
-                            rendered.object_test_position,
-                            rendered.object_test_level,
-                            Some(decode_time_ms),
-                            Some(rendered.crossover_time_ms),
-                            Some(render_time_smoothed_ms),
-                            None,
-                            Some(frame_duration_ms),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(drc_gain),
-                        );
+                    if let Some(osc) = self.osc.as_mut().filter(|_| want_meter_osc) {
+                        // Latency/resample/adaptive figures are output-stage
+                        // specific and absent in the embedded host.
+                        let timings = crate::osc::MeterTimings {
+                            decode_time_ms: Some(decode_time_ms),
+                            crossover_time_ms: Some(rendered.crossover_time_ms),
+                            render_time_ms: Some(render_time_smoothed_ms),
+                            frame_duration_ms: Some(frame_duration_ms),
+                            drc_gain: Some(drc_gain),
+                            ..Default::default()
+                        };
+                        osc.send_meter_bundle(snapshot, &mut rendered, timings);
                     }
                 }
             }

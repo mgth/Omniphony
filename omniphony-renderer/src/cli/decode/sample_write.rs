@@ -7,6 +7,7 @@ use anyhow::Result;
 use audio_input::InputControl;
 use bridge_api::RChannelLabel;
 use bridge_api::RDecodedFrame;
+use orender_engine::osc::MeterTimings;
 use orender_engine::render_metering::{meter_render_input, meter_render_output};
 use orender_engine::virtual_bed::BedPlanKind;
 use std::time::Instant;
@@ -89,10 +90,8 @@ impl<'a> SampleWriteCoordinator<'a> {
                 let registry = ic.diag_registry();
                 let schema_json = registry.schema_json();
                 let values_json = registry.values_json();
-                if let Some(osc_sender) = &self.telemetry.osc_sender {
-                    if let Err(e) = osc_sender.send_diag_bundle(schema_json, values_json) {
-                        log::warn!("Failed to send diag OSC bundle: {}", e);
-                    }
+                if let Some(osc_sender) = self.telemetry.osc_sender.as_mut() {
+                    osc_sender.send_diag_bundle(schema_json, values_json);
                 }
                 if let Some(cadence) = self.telemetry.diag_cadence.as_mut() {
                     cadence.mark_sent(now);
@@ -419,10 +418,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                                 .session
                                 .decoded_samples
                                 .saturating_sub(sample_count as u64);
-                            if let Err(e) = osc_sender.send_object_frame(sample_pos, 0, 0, &objects)
-                            {
-                                log::warn!("Failed to send OSC virtual bed frame: {}", e);
-                            }
+                            osc_sender.send_object_frame(sample_pos, 0, 0, &objects);
                         }
                     }
                     return Ok(());
@@ -505,7 +501,7 @@ fn emit_rendered(
     telemetry: &mut TelemetryState,
     input_control: Option<&InputControl>,
     renderer: &mut renderer::spatial_renderer::SpatialRenderer,
-    rendered: renderer::spatial_renderer::RenderedFrame,
+    mut rendered: renderer::spatial_renderer::RenderedFrame,
     timings: FrameTimings,
     has_metering_clients: bool,
     figures: &OutputFigures,
@@ -536,40 +532,33 @@ fn emit_rendered(
     } else {
         None
     };
-    let sent_meter_bundle =
-        if let (Some(snapshot), Some(osc_sender)) = (meter_snapshot, &telemetry.osc_sender) {
-            if let Err(e) = osc_sender.send_meter_bundle(
-                &snapshot,
-                &rendered.object_gains,
-                &rendered.object_band_gains,
-                rendered.object_test_position,
-                rendered.object_test_level,
-                Some(timings.decode_ms),
-                Some(rendered.crossover_time_ms),
-                Some(render_time_ms),
-                None,
-                Some(timings.frame_ms),
-                latency.map(|l| l.final_latency_ms),
-                latency.and_then(|l| l.control_latency_ms),
-                latency.and_then(|l| l.smoothed_control_latency_ms),
-                latency.and_then(|l| l.target_control_latency_ms),
-                latency.and_then(|l| l.downstream_latency_ms),
-                latency.and_then(|l| l.avail_input_latency_ms),
-                latency.and_then(|l| l.output_fifo_latency_ms),
-                latency.and_then(|l| l.resampler_pending_latency_ms),
-                figures.resample_ratio,
-                figures.adaptive_band,
-                figures.adaptive_state,
-                Some(timings.drc_gain),
-            ) {
-                log::warn!("Failed to send meter OSC bundle: {}", e);
-                false
-            } else {
-                true
-            }
-        } else {
-            false
+    let sent_meter_bundle = if let (Some(snapshot), Some(osc_sender)) =
+        (meter_snapshot, telemetry.osc_sender.as_mut())
+    {
+        let meter_timings = MeterTimings {
+            decode_time_ms: Some(timings.decode_ms),
+            crossover_time_ms: Some(rendered.crossover_time_ms),
+            render_time_ms: Some(render_time_ms),
+            write_time_ms: None,
+            frame_duration_ms: Some(timings.frame_ms),
+            latency_instant_ms: latency.map(|l| l.final_latency_ms),
+            latency_control_ms: latency.and_then(|l| l.control_latency_ms),
+            latency_smoothed_ms: latency.and_then(|l| l.smoothed_control_latency_ms),
+            latency_target_ms: latency.and_then(|l| l.target_control_latency_ms),
+            latency_downstream_ms: latency.and_then(|l| l.downstream_latency_ms),
+            latency_avail_input_ms: latency.and_then(|l| l.avail_input_latency_ms),
+            latency_output_fifo_ms: latency.and_then(|l| l.output_fifo_latency_ms),
+            latency_resampler_pending_ms: latency.and_then(|l| l.resampler_pending_latency_ms),
+            resample_ratio: figures.resample_ratio,
+            adaptive_band: figures.adaptive_band,
+            adaptive_state: figures.adaptive_state,
+            drc_gain: Some(timings.drc_gain),
         };
+        osc_sender.send_meter_bundle(snapshot, &mut rendered, meter_timings);
+        true
+    } else {
+        false
+    };
 
     log::trace!(
         "Writing {} samples ({} channels) to streaming output",
@@ -591,10 +580,8 @@ fn emit_rendered(
         .write_pcm_samples(&samples_audio, rendered_channels)?;
     let write_time_ms = write_started_at.elapsed().as_secs_f32() * 1000.0;
     if sent_meter_bundle {
-        if let Some(osc_sender) = &telemetry.osc_sender {
-            if let Err(e) = osc_sender.send_timing_update(None, None, Some(write_time_ms)) {
-                log::warn!("Failed to send write timing OSC update: {}", e);
-            }
+        if let Some(osc_sender) = telemetry.osc_sender.as_mut() {
+            osc_sender.send_timing_update(None, None, Some(write_time_ms));
         }
     }
     output.render_buf = match samples_audio {
