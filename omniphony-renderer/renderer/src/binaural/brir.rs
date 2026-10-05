@@ -455,32 +455,34 @@ impl BrirSet {
         };
         let kernel =
             (file_rate != engine_rate).then(|| ResampleKernel::new(file_rate, engine_rate));
-        let pairs: Vec<BrirPair> = pairs
-            .into_par_iter()
-            .map_init(Vec::new, |buf, mut p| {
-                p.left.drain(..lead.min(p.left.len()));
-                p.right.drain(..lead.min(p.right.len()));
-                // The fade lies beyond the cut point, so what is faded is
-                // already below the floor; a length bound is a hard limit
-                // and may fade audible content instead.
-                let cut = tail_cut(&p.left, opts.tail_floor_db)
-                    .max(tail_cut(&p.right, opts.tail_floor_db));
-                let keep = (cut + fade).min(max_len).max(1);
-                p.left.resize(keep, 0.0);
-                p.right.resize(keep, 0.0);
-                fade_out(&mut p.left, fade);
-                fade_out(&mut p.right, fade);
-                if let Some(k) = &kernel {
-                    k.resample_into(&p.left, buf);
-                    p.left.clear();
-                    p.left.extend_from_slice(buf);
-                    k.resample_into(&p.right, buf);
-                    p.right.clear();
-                    p.right.extend_from_slice(buf);
-                }
-                p
-            })
-            .collect();
+        let pairs: Vec<BrirPair> = crate::background_pool::install(|| {
+            pairs
+                .into_par_iter()
+                .map_init(Vec::new, |buf, mut p| {
+                    p.left.drain(..lead.min(p.left.len()));
+                    p.right.drain(..lead.min(p.right.len()));
+                    // The fade lies beyond the cut point, so what is faded is
+                    // already below the floor; a length bound is a hard limit
+                    // and may fade audible content instead.
+                    let cut = tail_cut(&p.left, opts.tail_floor_db)
+                        .max(tail_cut(&p.right, opts.tail_floor_db));
+                    let keep = (cut + fade).min(max_len).max(1);
+                    p.left.resize(keep, 0.0);
+                    p.right.resize(keep, 0.0);
+                    fade_out(&mut p.left, fade);
+                    fade_out(&mut p.right, fade);
+                    if let Some(k) = &kernel {
+                        k.resample_into(&p.left, buf);
+                        p.left.clear();
+                        p.left.extend_from_slice(buf);
+                        k.resample_into(&p.right, buf);
+                        p.right.clear();
+                        p.right.extend_from_slice(buf);
+                    }
+                    p
+                })
+                .collect()
+        });
 
         // --- normalise: unit mean direct-sound energy (the HRIR scale)
         let window = (HRIR_SPAN_S * engine_rate as f32).ceil() as usize;

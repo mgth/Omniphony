@@ -283,15 +283,13 @@ impl<'a> WriterLifecycleCoordinator<'a> {
             let osc_sender = self
                 .telemetry
                 .osc_sender
-                .as_ref()
+                .as_mut()
                 .expect("osc_sender present");
             // The audio-state broadcast lives in host_audio's extend_snapshot;
             // re-emit the full live-state bundle to refresh it after the
             // output stream is (re)configured.
             let _ = (effective_rate, sample_format);
-            if let Err(e) = osc_sender.send_live_state_bundle() {
-                log::warn!("Failed to send OSC state bundle: {}", e);
-            }
+            osc_sender.send_live_state_bundle();
         }
     }
 
