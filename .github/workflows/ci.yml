@@ -2,8 +2,9 @@ name: CI
 
 # Integration gate for the `main` (integration) and `release` branches.
 # Linux validates formatting, tests, native Studio, the web frontend and the
-# Tauri host. macOS and Windows compile the renderer and native Studio; Windows
-# also checks the shared core on stable. Release archives are built by release.yml.
+# Tauri host. macOS and Windows compile the renderer and native Studio; macOS
+# also runs the large-datagram socket tests, Windows also checks the shared
+# core on stable. Release archives are built by release.yml.
 #
 # NOTE on scope: `clippy` is NOT gated yet — the workspace currently has ~70
 # clippy warnings plus a couple of deny-level lints, several inside hot audio
@@ -384,9 +385,10 @@ jobs:
   build-macos:
     # macOS arm64 compile gate. The renderer workspace pulls the CoreAudio
     # output backend (cpal) and the `sys` signal/IO layer, both of which carry
-    # macOS-specific code paths. Build-only (no PipeWire/Tauri) — this catches
-    # macOS portability regressions on PRs, before the tag-triggered release
-    # builds (liborender / Studio / mpv) ever run on macOS.
+    # macOS-specific code paths. Build-only (no PipeWire/Tauri) but for the
+    # socket tests at the end — this catches macOS portability regressions on
+    # PRs, before the tag-triggered release builds (liborender / Studio / mpv)
+    # ever run on macOS.
     runs-on: macos-14
     timeout-minutes: 60
     steps:
@@ -428,6 +430,26 @@ jobs:
       - name: Build native Studio (macOS arm64)
         working-directory: omniphony-studio-egui
         run: cargo build --workspace --locked
+
+      # The one thing this job runs rather than compiles. macOS refuses a UDP
+      # send larger than the socket's send buffer (EMSGSIZE), and that buffer
+      # starts at net.inet.udp.maxdgram: 9,216 bytes, far under a state bundle
+      # or a backend script. Linux and Windows have no such limit, so the
+      # Linux test run passes whether or not the sockets lift it, and a socket
+      # that stops doing so would only be noticed by a macOS user whose saves
+      # vanish. Filtered to the tests that send a large datagram or check the
+      # buffer (`maximum_size` / `send_buffer` / `deeply_nested` in their
+      # names); the sysctl values are printed so the log says what they ran
+      # against.
+      - name: Test large OSC datagrams from the engine (macOS arm64)
+        working-directory: omniphony-renderer
+        run: |
+          sysctl net.inet.udp.maxdgram net.inet.udp.recvspace
+          cargo test -p orender_engine --lib --locked -- maximum_size send_buffer deeply_nested
+
+      - name: Test large OSC datagrams from the native Studio (macOS arm64)
+        working-directory: omniphony-studio-egui
+        run: cargo test -p omniphony-studio-core --lib --locked -- maximum_size send_buffer
 
   build-windows:
     # Windows x64 compile gate. On Windows cpal always pulls its ASIO backend

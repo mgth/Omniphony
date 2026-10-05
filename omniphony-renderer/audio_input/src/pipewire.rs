@@ -916,18 +916,16 @@ where
             // until pacer_fifo is primed.
             if user_data.channels > 0 && user_data.rate_hz > 0 {
                 if let Some(pacer) = input_control_for_process.output_pacer() {
-                    if pacer.enabled {
-                        let in_subframes = byte_len as u64
-                            / (user_data.channels as u64 * user_data.bytes_per_sample as u64);
-                        let drain_samples = (in_subframes
-                            .saturating_mul(pacer.out_sample_rate as u64)
-                            .saturating_mul(pacer.out_channels as u64)
-                            / (user_data.rate_hz as u64).max(1))
-                            as usize;
-                        // Single writer here (PipeWire input thread), so the
-                        // diag read-modify-writes inside `drain` are race-free.
-                        pacer.drain(drain_samples);
-                    }
+                    let in_subframes = byte_len as u64
+                        / (user_data.channels as u64 * user_data.bytes_per_sample as u64);
+                    let drain_samples = (in_subframes
+                        .saturating_mul(pacer.out_sample_rate as u64)
+                        .saturating_mul(pacer.out_channels as u64)
+                        / (user_data.rate_hz as u64).max(1))
+                        as usize;
+                    // One drain at a time, enforced by the handle: the diag
+                    // read-modify-writes inside `drain` are race-free.
+                    pacer.drain(drain_samples);
                 }
             }
             user_data.bytes_since_log += byte_len;
