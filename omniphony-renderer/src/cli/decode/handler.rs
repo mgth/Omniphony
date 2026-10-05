@@ -165,6 +165,15 @@ impl DecodeHandler {
             .unwrap_or(false)
     }
 
+    /// Record the decoded stream in the applied input state, in pure pipe mode.
+    ///
+    /// In PipeWire mode the applied state is the capture's — the sink's node
+    /// and carrier, as the live-input manager published them — and a decoded
+    /// frame changes none of it, whichever producer it came from (the sink's
+    /// own bridge decoder, the input pipe, the speaker-test idle feed).
+    /// Recording the frame there turned the applied mode into `Bridge` with
+    /// the capture still up, and [`should_accept_source`](Self::should_accept_source)
+    /// then refused the sink's linear PCM until the next input apply.
     fn sync_input_runtime_state(
         &mut self,
         source: DecodedSource,
@@ -175,10 +184,7 @@ impl DecodeHandler {
         };
         let applied_before = input_control.applied_snapshot();
         if matches!(source, DecodedSource::Bridge)
-            && matches!(
-                applied_before.active_mode,
-                InputMode::Bridge | InputMode::Pipewire
-            )
+            && applied_before.active_mode == InputMode::Bridge
         {
             let channels = Some(frame.channel_count as u16);
             let sample_rate_hz = Some(frame.sampling_frequency);
