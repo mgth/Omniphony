@@ -44,11 +44,14 @@ impl StudioSpike {
                 if ui.button(t("config.import")).clicked() {
                     self.layout_transfer.import(&self.host, false);
                 }
-                if ui.button(t("config.export")).clicked() {
-                    self.layout_transfer.export(&self.host);
-                }
-                if ui.button(format!("+ {}", t("speaker.add"))).clicked() {
-                    self.add_speaker();
+                // Choosing a layout is essential; editing one is not.
+                if self.advanced {
+                    if ui.button(t("config.export")).clicked() {
+                        self.layout_transfer.export(&self.host);
+                    }
+                    if ui.button(format!("+ {}", t("speaker.add"))).clicked() {
+                        self.add_speaker();
+                    }
                 }
             });
         });

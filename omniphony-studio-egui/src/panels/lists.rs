@@ -81,7 +81,10 @@ impl StudioSpike {
             )
             .show(ui, |ui| {
                 self.metering_row(ui);
-                self.object_test_feature_row(ui);
+                // Injecting a test object is a tool, not listening.
+                if self.advanced {
+                    self.object_test_feature_row(ui);
+                }
                 if rows.is_empty() {
                     widgets::note(ui, t("objects.none"));
                 }

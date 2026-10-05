@@ -103,7 +103,7 @@ pub enum OutputMode {
 }
 
 impl OutputMode {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             OutputMode::Speaker => t("outputMode.speakers"),
             OutputMode::BinauralDirect => t("outputMode.headphones"),
@@ -282,7 +282,7 @@ impl StudioSpike {
         });
     }
 
-    fn output_mode_row(&mut self, ui: &mut Ui) {
+    pub(crate) fn output_mode_row(&mut self, ui: &mut Ui) {
         let (current, room) = {
             let live = self.host.read();
             let binaural = live.app.binaural.as_ref();
