@@ -38,3 +38,8 @@ sofa = ["renderer/sofa"]
 # Register the demonstration backend (`backend_id = "example"`), for contributors
 # trying the render-backend frontier end to end. Off in release builds.
 example-backend = ["dep:example_backend"]
+
+[dev-dependencies]
+# Not linked by the tests: depending on it makes `cargo test` build its cdylib,
+# the bridge the tests under tests/ load when no other one is given.
+reference_bridge.workspace = true

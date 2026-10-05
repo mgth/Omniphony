@@ -1644,6 +1644,7 @@ dependencies = [
  "log",
  "omniphony_geometry",
  "realfft",
+ "reference_bridge",
  "renderer",
  "rosc",
  "runtime_control",

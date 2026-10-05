@@ -1,58 +1,73 @@
-//! End-to-end functional harness: render a real TrueHD Atmos elementary stream
-//! through the engine using the real decoder bridge, and check the output is
-//! sane (correct channel count, frames produced, finite, non-silent).
+//! End-to-end functional harness: render a real stream through the engine and
+//! its bridge, and check the output is sane (channel layout, frames produced,
+//! finite, non-silent) and that the OSC wiring broadcasts it.
 //!
 //! This exercises the exact path the FFI uses (`Engine::from_paths` →
-//! `process_raw`). It is skipped unless both env vars are set, so the default
-//! `cargo test` (which has no bridge/sample) stays green:
+//! `process_raw`). It runs the reference bridge on the bundled demo unless
+//! another bridge and stream are given (see `common`). The object-stream checks
+//! need such a stream and are ignored otherwise:
 //!
 //! ```sh
 //! ORENDER_BRIDGE=../../harletty-bridge/target/release/libharletty_bridge.so \
 //! ORENDER_SAMPLE=../../reference-sources/libstarmine_ad/crates/libstarmine_ad/tests/data/truehd_atmos_prefix_32k.mlp \
-//! cargo test -p orender_engine --test parity -- --nocapture
+//! cargo test -p orender_engine --test parity -- --include-ignored --nocapture
 //! ```
 //!
-//! Bit-exact comparison against the `orender` CLI is a separate step that first
-//! needs a render-to-file output mode in the CLI.
+//! Not written yet: a bit-exact comparison of this path against the `orender`
+//! CLI's file output (`tests/file_render.rs` at the workspace root).
 
-use orender_engine::Engine;
-use std::path::Path;
+mod common;
+
+use orender_engine::{Engine, OscOptions};
+use std::net::UdpSocket;
+use std::time::Duration;
+
+/// A socket for the engine's OSC broadcasts, and the options pointing them at
+/// it: an ephemeral port, never a live instance's.
+fn osc_client() -> (UdpSocket, OscOptions) {
+    let client = UdpSocket::bind("127.0.0.1:0").expect("bind client socket");
+    client
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let options = OscOptions {
+        host: "127.0.0.1".to_string(),
+        port_out: client.local_addr().unwrap().port(),
+        port_in: 0,
+        metering: false,
+    };
+    (client, options)
+}
+
+/// Whether any datagram already queued on `client` mentions `address`.
+fn received(client: &UdpSocket, address: &str) -> bool {
+    let mut buf = [0u8; 16384];
+    while let Ok((n, _)) = client.recv_from(&mut buf) {
+        if buf[..n]
+            .windows(address.len())
+            .any(|w| w == address.as_bytes())
+        {
+            return true;
+        }
+    }
+    false
+}
 
 #[test]
-fn renders_real_truehd_atmos_stream() {
-    let (Ok(bridge), Ok(sample)) = (
-        std::env::var("ORENDER_BRIDGE"),
-        std::env::var("ORENDER_SAMPLE"),
-    ) else {
-        eprintln!(
-            "skipping renders_real_truehd_atmos_stream: set ORENDER_BRIDGE and ORENDER_SAMPLE"
-        );
-        return;
-    };
-
-    let data = std::fs::read(&sample).expect("read sample file");
-    let mut engine = Engine::from_paths(None, None, Some(Path::new(&bridge)), None, 48_000)
-        .expect("build engine");
-
-    // Smoke the OSC live-control wiring: the listener binds (ephemeral port) and
-    // attaches the renderer control without error. No client interaction here.
+fn renders_a_real_stream() {
+    let (mut engine, data) = common::real_engine();
+    let (_client, options) = osc_client();
     engine
-        .enable_osc(orender_engine::OscOptions {
-            host: "127.0.0.1".to_string(),
-            port_out: 9000,
-            port_in: 0,
-            metering: false,
-        })
+        .enable_osc(options)
         .expect("enable_osc should start the OSC listener");
 
     let channels = engine.channel_count();
-    let spatial_before = engine.has_objects();
 
     // Output channel-layout export: the 7.1.4 preset must map cleanly to labels
     // (no Unknown), one per speaker, in render order. This is what the FFI's
     // orender_channel_layout() hands mpv to build its chmap.
     use bridge_api::RChannelLabel::*;
     let layout = engine.channel_layout();
+    assert_eq!(channels, 12, "7.1.4 preset must yield 12 speakers");
     assert_eq!(layout.len(), channels as usize, "one label per speaker");
     assert_eq!(
         layout,
@@ -61,12 +76,10 @@ fn renders_real_truehd_atmos_stream() {
     );
 
     let mut total_frames = 0usize;
-    let mut total_samples = 0usize;
     let mut peak = 0.0f32;
-
-    for packet in data.chunks(4096) {
+    for packet in data.chunks(common::PACKET) {
         let chunks = engine.process_raw(packet).expect("process_raw");
-        for c in chunks {
+        for c in &chunks {
             assert_eq!(c.n_channels, channels, "channel count must stay stable");
             assert_eq!(
                 c.samples.len(),
@@ -78,33 +91,36 @@ fn renders_real_truehd_atmos_stream() {
                 peak = peak.max(s.abs());
             }
             total_frames += c.n_frames;
-            total_samples += c.samples.len();
         }
+        engine.recycle(chunks);
     }
 
-    eprintln!(
-        "parity harness: channels={channels} spatial_before={spatial_before} \
-         has_objects_after={} frames={total_frames} samples={total_samples} peak={peak:.6}",
-        engine.has_objects()
-    );
+    eprintln!("parity harness: channels={channels} frames={total_frames} peak={peak:.6}");
+    assert!(total_frames > 0, "expected at least one rendered frame");
+    // The stream must decode to sound: a silent fixture (e.g. a metadata-only
+    // prefix) would let a render that drops everything pass.
+    assert!(peak > 0.0, "the render is silent");
+}
 
+/// An object stream reports its objects and broadcasts their positions.
+#[test]
+#[ignore = "needs ORENDER_BRIDGE and ORENDER_SAMPLE naming an object stream (see the module doc)"]
+fn an_object_stream_reports_and_broadcasts_its_objects() {
     assert!(
-        spatial_before,
-        "Atmos stream must report has_objects() = true"
+        std::env::var_os("ORENDER_SAMPLE").is_some(),
+        "set ORENDER_BRIDGE and ORENDER_SAMPLE to an object stream"
     );
-    assert_eq!(channels, 12, "7.1.4 preset must yield 12 speakers");
-    // The engine only emits chunks for frames carrying spatial objects (the
-    // non-object path returns None), so frames > 0 proves the full Atmos object
-    // path ran: bridge decode -> metadata -> events -> VBAP render.
-    assert!(
-        total_frames > 0,
-        "expected at least one rendered object frame"
-    );
+    let (mut engine, data): (Engine, Vec<u8>) = common::real_engine();
+    let (client, options) = osc_client();
+    engine.enable_osc(options).expect("enable_osc");
 
-    // Presentation info surfaced for the host's track-info display (FFI:
-    // orender_object_count / orender_dialnorm_db). An Atmos stream that rendered
-    // object frames must report a positive object count; DialNorm is logged
-    // rather than asserted (its presence depends on the fixture's major sync).
+    assert!(engine.has_objects(), "the stream must report objects");
+    // Object frames are sent synchronously during process_raw to the permanent
+    // target (our client), so they're buffered by the time we read.
+    for packet in data.chunks(common::PACKET) {
+        let chunks = engine.process_raw(packet).expect("process_raw");
+        engine.recycle(chunks);
+    }
     eprintln!(
         "parity harness: object_count={} dialnorm_db={:?}",
         engine.object_count(),
@@ -112,71 +128,10 @@ fn renders_real_truehd_atmos_stream() {
     );
     assert!(
         engine.object_count() > 0,
-        "Atmos stream must report a positive object count"
+        "an object stream must report a positive object count"
     );
-
-    // NOTE: this fixture (`truehd_atmos_prefix_32k.mlp`) is a metadata prefix
-    // whose audio decodes to silence (verified: valid OAMD/bed metadata, zero
-    // PCM), so `peak` is expected to be 0.0 here. We therefore don't assert on
-    // it — verifying audible content needs a real (non-prefix) Atmos sample.
-    let _ = peak;
-}
-
-/// Outgoing OSC: with a client as the broadcast target, the engine should emit
-/// at least one object-position frame while decoding the Atmos stream.
-#[test]
-fn osc_broadcasts_object_frames() {
-    let (Ok(bridge), Ok(sample)) = (
-        std::env::var("ORENDER_BRIDGE"),
-        std::env::var("ORENDER_SAMPLE"),
-    ) else {
-        eprintln!("skipping osc_broadcasts_object_frames: set ORENDER_BRIDGE and ORENDER_SAMPLE");
-        return;
-    };
-
-    let data = std::fs::read(&sample).expect("read sample file");
-
-    // A client socket that will receive the engine's OSC broadcasts.
-    let client = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind client socket");
-    client
-        .set_read_timeout(Some(std::time::Duration::from_millis(500)))
-        .unwrap();
-    let port_out = client.local_addr().unwrap().port();
-
-    let mut engine = Engine::from_paths(None, None, Some(Path::new(&bridge)), None, 48_000)
-        .expect("build engine");
-    engine
-        .enable_osc(orender_engine::OscOptions {
-            host: "127.0.0.1".to_string(),
-            port_out,
-            port_in: 0,
-            metering: false,
-        })
-        .expect("enable_osc");
-
-    // Object frames are sent synchronously during process_raw to the permanent
-    // target (our client), so they're buffered by the time we read.
-    for packet in data.chunks(4096) {
-        let _ = engine.process_raw(packet).expect("process_raw");
-    }
-
-    let needle = b"/omniphony/spatial/frame";
-    let mut buf = [0u8; 16384];
-    let mut found = false;
-    for _ in 0..512 {
-        match client.recv_from(&mut buf) {
-            Ok((n, _)) => {
-                if buf[..n].windows(needle.len()).any(|w| w == needle) {
-                    found = true;
-                    break;
-                }
-            }
-            Err(_) => break, // timeout: no more datagrams
-        }
-    }
-
     assert!(
-        found,
-        "expected at least one /omniphony/spatial/frame OSC broadcast"
+        received(&client, runtime_control::osc_contract::SPATIAL_FRAME),
+        "expected at least one spatial frame OSC broadcast"
     );
 }
