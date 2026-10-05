@@ -13,6 +13,15 @@
 //! output PipewireWriter exist. Passing one struct keeps the wiring stable
 //! as fields evolve.
 //!
+//! The drain has two clocks, on two threads: the capture stream, and the
+//! token clock that stands in for it when no capture stream delivers. Which
+//! of the two drains at a given time is the input side's to say (it is the
+//! one that knows whether a capture stream is delivering): see
+//! `audio_input::pacer_drain`. This module only makes sure a drain is never
+//! joined by another one ([`PacerHandle::drain`]), and lets a clock check
+//! that the drain is still its own once nobody else can be in it
+//! ([`PacerHandle::drain_if`]).
+//!
 //! A handle exists only for an output built with pacing on
 //! (`AdaptiveResamplingConfig::use_output_pacing`). Pacing decides *which
 //! thread produces into the ring* — the drain when on, the renderer when off
@@ -46,11 +55,12 @@ pub struct PacerHandle {
     /// time.
     ///
     /// [`drain`](Self::drain) has two callers on two threads — the PipeWire
-    /// input callback, and the pipe-bridge drain thread — which are meant to
-    /// alternate with the input mode and are not kept apart by anything else.
-    /// So the ends are taken with `try_lock`: a drain that finds another one
-    /// in progress moves nothing and returns, and neither waits. Nothing
-    /// takes this lock blocking, and the device callback never touches it.
+    /// input callback, and the token-clock drain thread — which take turns
+    /// (`audio_input::pacer_drain` says whose turn it is). At a handover one
+    /// of them can still be in the middle of a transfer, so the ends are
+    /// taken with `try_lock`: a drain that finds another one in progress
+    /// moves nothing and returns, and neither waits. Nothing takes this lock
+    /// blocking, and the device callback never touches it.
     pub(crate) ends: Arc<Mutex<PacerDrainEnds>>,
     /// `false` until the pacer FIFO has accumulated at least
     /// `pre_roll_threshold_samples` — until then the input-thread drain
@@ -92,6 +102,26 @@ pub struct PacerHandle {
 }
 
 impl PacerHandle {
+    /// A pacer over `ends`, not primed yet, with counters of its own.
+    pub fn new(
+        ends: PacerDrainEnds,
+        pre_roll_threshold_samples: usize,
+        out_sample_rate: u32,
+        out_channels: u32,
+    ) -> Self {
+        Self {
+            ends: Arc::new(Mutex::new(ends)),
+            pre_roll_complete: Arc::new(AtomicBool::new(false)),
+            pre_roll_threshold_samples,
+            out_sample_rate,
+            out_channels,
+            diag_drain_total: Arc::new(AtomicU64::new(0)),
+            diag_underrun_total: Arc::new(AtomicU64::new(0)),
+            diag_fifo_level: Arc::new(AtomicU64::new(0)),
+            flush_requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Ask for the FIFO to be flushed and the pre-roll re-armed.
     ///
     /// Called on `recovery_reacquire_pending` consumption or codec switch from
@@ -116,18 +146,35 @@ impl PacerHandle {
     /// frames (i.e. a multiple of the output channel count) so the ring's
     /// channel interleaving stays aligned.
     ///
-    /// Both the PipeWire input RT callback (Pipewire mode) and the pure
-    /// pipe-bridge drain thread share this single drain implementation; the
-    /// difference is only how each computes `drain_samples` and what clock
-    /// drives the call.
+    /// Both the PipeWire input callback and the token-clock drain thread
+    /// share this single drain implementation; the difference is only how
+    /// each computes `drain_samples` and what clock drives the call.
     ///
     /// Returns `false`, having moved nothing, when another drain is in
     /// progress on another thread. It never waits: no lock is taken blocking,
     /// and the transfer is a few block copies whatever `drain_samples` is.
     pub fn drain(&self, drain_samples: usize) -> bool {
+        self.drain_if(drain_samples, || true)
+    }
+
+    /// [`drain`](Self::drain), for a clock that may have lost the drain to
+    /// the other one since it last looked.
+    ///
+    /// `still_mine` is asked once the drain's ends are taken, that is once no
+    /// other drain can be in progress: a clock that lost the drain before the
+    /// other one's transfer went through is refused here, however far it had
+    /// got before taking the ends. Returns `false`, having moved nothing and
+    /// counted nothing, when `still_mine` says no.
+    ///
+    /// `still_mine` runs with the ends held and must not wait: an atomic
+    /// load, not a lock.
+    pub fn drain_if(&self, drain_samples: usize, still_mine: impl FnOnce() -> bool) -> bool {
         let Some(mut ends) = self.ends.try_lock() else {
             return false;
         };
+        if !still_mine() {
+            return false;
+        }
         let PacerDrainEnds { fifo, ring } = &mut *ends;
         // Honour a deferred flush first, so no stale sample reaches the ring.
         // Done here because this is the FIFO's only consumer — see
@@ -199,20 +246,16 @@ mod tests {
     fn pacer_with_ring_capacity(pre_roll: usize, ring_capacity: usize) -> Pacer {
         let (fifo_writer, fifo_reader) = sample_ring(4096);
         let (ring_writer, ring_reader) = sample_ring(ring_capacity);
-        let handle = PacerHandle {
-            ends: Arc::new(Mutex::new(PacerDrainEnds {
+        let handle = PacerHandle::new(
+            PacerDrainEnds {
                 fifo: fifo_reader,
                 ring: ring_writer,
-            })),
-            pre_roll_complete: Arc::new(AtomicBool::new(true)),
-            pre_roll_threshold_samples: pre_roll,
-            out_sample_rate: 48_000,
-            out_channels: CHANNELS,
-            diag_drain_total: Arc::new(AtomicU64::new(0)),
-            diag_underrun_total: Arc::new(AtomicU64::new(0)),
-            diag_fifo_level: Arc::new(AtomicU64::new(0)),
-            flush_requested: Arc::new(AtomicBool::new(false)),
-        };
+            },
+            pre_roll,
+            48_000,
+            CHANNELS,
+        );
+        handle.pre_roll_complete.store(true, Ordering::Relaxed);
         Pacer {
             handle,
             fifo: fifo_writer,
@@ -369,5 +412,52 @@ mod tests {
         // It finishes: the next drain goes through.
         assert!(p.handle.drain(2));
         assert_eq!(drain_ring(&mut p), vec![1.0, 2.0]);
+    }
+
+    /// A clock that no longer has the drain moves nothing and counts nothing,
+    /// flush request included: all of it is the other clock's now.
+    #[test]
+    fn a_clock_that_lost_the_drain_moves_nothing() {
+        let mut p = pacer(0);
+        fill(&mut p, &[1.0, 2.0, 3.0, 4.0]);
+        p.handle.flush_requested.store(true, Ordering::Relaxed);
+
+        assert!(!p.handle.drain_if(2, || false));
+        assert_eq!(p.fifo.fill(), 4, "nothing moved, nothing flushed");
+        assert_eq!(drain_ring(&mut p), Vec::<f32>::new());
+        assert_eq!(diag(&p.handle.diag_drain_total), 0.0);
+        assert_eq!(diag(&p.handle.diag_underrun_total), 0.0);
+        assert!(p.handle.flush_requested.load(Ordering::Relaxed));
+
+        // The clock that has it drains as usual.
+        p.handle.flush_requested.store(false, Ordering::Relaxed);
+        assert!(p.handle.drain_if(2, || true));
+        assert_eq!(drain_ring(&mut p), vec![1.0, 2.0]);
+    }
+
+    /// The question is put with the ends held: whoever answers it knows that
+    /// no other drain is in progress, and none can start before this one is
+    /// done.
+    #[test]
+    fn the_clock_is_asked_once_no_other_drain_can_be_in_progress() {
+        let mut p = pacer(0);
+        fill(&mut p, &[1.0, 2.0]);
+        let other = p.handle.clone();
+        let mut asked = false;
+        assert!(p.handle.drain_if(2, || {
+            asked = true;
+            assert!(!other.drain(2), "the ends are held while it answers");
+            true
+        }));
+        assert!(asked);
+        assert_eq!(drain_ring(&mut p), vec![1.0, 2.0]);
+
+        // Not asked at all behind a drain in progress.
+        let in_progress = p.handle.ends.try_lock().unwrap();
+        assert!(
+            !other.drain_if(2, || panic!("asked without the ends")),
+            "refused before the question"
+        );
+        drop(in_progress);
     }
 }

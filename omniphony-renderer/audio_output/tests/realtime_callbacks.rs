@@ -66,6 +66,10 @@ const CALLEE_FUNCTIONS: &[(&str, &str)] = &[
         "pub fn drain(&self, drain_samples: usize) -> bool {",
     ),
     (
+        "src/pacer.rs",
+        "pub fn drain_if(&self, drain_samples: usize, still_mine: impl FnOnce() -> bool) -> bool {",
+    ),
+    (
         "src/pipewire.rs",
         "fn pipewire_rate_for_consume_adjust(consume_adjust: f64) -> f32 {",
     ),
