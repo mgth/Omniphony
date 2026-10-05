@@ -809,7 +809,7 @@ fn config_audio(host: &HostAudio, msg: &OscMessage) -> Option<ControlEffects> {
         audio.set_requested_adaptive_resampling_paused(paused);
     }
     let values = audio_patch_values(patch);
-    return Some(host.apply_patch(&values, "OSC: audio config staged"));
+    Some(host.apply_patch(&values, "OSC: audio config staged"))
 }
 
 fn config_input(host: &HostAudio, msg: &OscMessage) -> Option<ControlEffects> {
@@ -818,12 +818,12 @@ fn config_input(host: &HostAudio, msg: &OscMessage) -> Option<ControlEffects> {
         return Some(effects);
     };
     let values = input_patch_values(patch);
-    return Some(host.apply_patch(&values, "OSC: input config staged"));
+    Some(host.apply_patch(&values, "OSC: input config staged"))
 }
 
 /// ── The per-domain apply addresses: aliases of the group apply ──
 fn config_audio_apply(host: &HostAudio, _msg: &OscMessage) -> Option<ControlEffects> {
-    return host.apply_option_group(options::AUDIO_OUTPUT.key);
+    host.apply_option_group(options::AUDIO_OUTPUT.key)
 }
 
 /// ── Not options ──

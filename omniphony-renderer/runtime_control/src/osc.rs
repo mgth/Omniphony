@@ -790,7 +790,7 @@ fn hybrid(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffect
         effects.mark_dirty = true;
         effects.trigger_layout_recompute = true;
     }
-    return Some(effects);
+    Some(effects)
 }
 
 /// `object/<index>/mute`; any other tail passes on.
@@ -1197,11 +1197,12 @@ fn config_layout(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<Contro
 }
 
 fn config_layout_apply(_msg: &OscMessage, _ctx: &RuntimeControlContext) -> Option<ControlEffects> {
-    let mut effects = ControlEffects::default();
-    effects.mark_dirty = true;
-    effects.trigger_layout_recompute = true;
-    effects.log_message = Some("OSC: layout config apply".to_string());
-    Some(effects)
+    Some(ControlEffects {
+        mark_dirty: true,
+        trigger_layout_recompute: true,
+        log_message: Some("OSC: layout config apply".to_string()),
+        ..Default::default()
+    })
 }
 
 fn config_speakers(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
@@ -1757,11 +1758,13 @@ fn render_backend_restore(
     _msg: &OscMessage,
     _ctx: &RuntimeControlContext,
 ) -> Option<ControlEffects> {
-    let mut effects = ControlEffects::default();
-    effects.log_message = Some(
-        "OSC: render_backend/restore is no longer supported after removing from_file".to_string(),
-    );
-    Some(effects)
+    Some(ControlEffects {
+        log_message: Some(
+            "OSC: render_backend/restore is no longer supported after removing from_file"
+                .to_string(),
+        ),
+        ..Default::default()
+    })
 }
 
 /// Generic backend parameter set. Two forms:
@@ -1825,10 +1828,12 @@ fn render_evaluation_mode_from_file(
     _msg: &OscMessage,
     _ctx: &RuntimeControlContext,
 ) -> Option<ControlEffects> {
-    let mut effects = ControlEffects::default();
-    effects.log_message =
-        Some("OSC: render_evaluation_mode/from_file is no longer supported".to_string());
-    Some(effects)
+    Some(ControlEffects {
+        log_message: Some(
+            "OSC: render_evaluation_mode/from_file is no longer supported".to_string(),
+        ),
+        ..Default::default()
+    })
 }
 
 fn layout_radius_m(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {

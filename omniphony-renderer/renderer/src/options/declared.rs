@@ -47,7 +47,7 @@ pub trait DeclaredValue: Clone + Sized {
         self.clone()
     }
     /// A value read from the config, bounded like a client write.
-    fn from_config(self, _kind: OptionKind) -> Self {
+    fn bounded(self, _kind: OptionKind) -> Self {
         self
     }
 }
@@ -92,7 +92,7 @@ impl DeclaredValue for f32 {
     fn stored(&self) -> Self {
         round6(*self)
     }
-    fn from_config(self, kind: OptionKind) -> Self {
+    fn bounded(self, kind: OptionKind) -> Self {
         clamp_to(kind, self)
     }
 }
@@ -114,7 +114,7 @@ impl DeclaredValue for usize {
     fn to_json(&self) -> serde_json::Value {
         (*self).into()
     }
-    fn from_config(self, kind: OptionKind) -> Self {
+    fn bounded(self, kind: OptionKind) -> Self {
         match kind {
             OptionKind::Int { min, max } => (self as i64).clamp(min, max) as usize,
             _ => self,
@@ -431,7 +431,7 @@ macro_rules! declared_options {
                 }),
                 config_seed: given_or!($($seed)? ; |live: &mut LiveParams, render: &RenderConfig, _env: &OptionEnv| {
                     if let Some(value) = render.options.$name.clone() {
-                        live.options.$name = value.from_config($kind);
+                        live.options.$name = value.bounded($kind);
                     }
                 }),
             },
