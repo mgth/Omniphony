@@ -312,7 +312,9 @@ pub fn persist_ops(control: &RendererControl, ops: &[PersistOp]) {
 pub fn persist_render_fields_to_path(path: &Path, store: impl Fn(&mut RenderConfig)) {
     let written = renderer::config::Config::load_for_update(path).and_then(|mut config| {
         store(config.render.get_or_insert_with(Default::default));
-        config.save(path)
+        // No `.bak`: a view write must not rotate away the file as it was
+        // before the last Save, and it runs on the OSC thread.
+        config.save_without_backup(path)
     });
     if let Err(e) = written {
         log::warn!("failed to persist a live change to {}: {e}", path.display());
@@ -410,6 +412,32 @@ mod tests {
         control.set_config_status(Some(ConfigLoadStatus::Loaded.as_str().into()));
         save_live_config(&control, None).expect("save after reload");
         assert_ne!(std::fs::read_to_string(&path).unwrap(), fixed);
+    }
+
+    /// A targeted view write keeps the `.bak` the last Save left: it is the
+    /// file as it was before that Save, the one worth going back to.
+    #[test]
+    fn a_targeted_write_leaves_the_backup_alone() {
+        let path = temp_config_path("bak-kept");
+        let _ = std::fs::remove_file(renderer::config::backup_path(&path));
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        save_live_config(&control, None).expect("first save");
+        let before_save = std::fs::read(&path).unwrap();
+        control.set_meter_rate_hz(7.0);
+        save_live_config(&control, None).expect("second save");
+        assert_eq!(
+            std::fs::read(renderer::config::backup_path(&path)).unwrap(),
+            before_save
+        );
+
+        persist_render_fields_to_path(&path, |render| render.output_file = Some("x".into()));
+        let saved = renderer::config::Config::load(&path).unwrap();
+        assert_eq!(saved.render.unwrap().output_file.as_deref(), Some("x"));
+        assert_eq!(
+            std::fs::read(renderer::config::backup_path(&path)).unwrap(),
+            before_save
+        );
     }
 
     fn temp_config_path(tag: &str) -> PathBuf {

@@ -91,12 +91,14 @@ error says the file was left untouched. Fixing the file is not enough to save
 again: until a Reload (a restart on the CLI) or a profile switch reads it back
 into the live state, `config_status` stays `parse_error` and the Save is still
 refused, since the live state it would write is those defaults. A write that
-goes through replaces the file atomically (temp file, sync, rename) and keeps
-the previous one as `config.yaml.bak`; the handoff sidecar is written the same
-way, without the `.bak`. Where the rename would fail or change what the file
-is — a directory that is not writable, a file with other hard links or owned
-by another user or group — the file is rewritten in place instead, as before
-(not atomic; the `.bak` is then best-effort).
+goes through replaces the file atomically (temp file, sync, rename) and a Save
+or a profile operation keeps the previous one as `config.yaml.bak`. A targeted
+view write and the handoff sidecar are written the same way but without the
+`.bak` and without syncing the directory, so a view change never rotates away
+the file as it was before the last Save. Where the rename would fail or change
+what the file is — a directory that is not writable, a file with other hard
+links or owned by another user or group — the file is rewritten in place
+instead, as before (not atomic; the `.bak` is then best-effort).
 
 ### Studio (`omniphony-studio-egui`)
 

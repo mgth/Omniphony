@@ -799,8 +799,12 @@ impl Config {
         replace_file(path, self.to_yaml()?.as_bytes(), true, || Ok(()))
     }
 
-    /// [`Config::save`] without the `.bak`: for the transient live-handoff
-    /// sidecar, which is consumed once and must not leave a backup behind.
+    /// [`Config::save`] without the `.bak` and without syncing the directory:
+    /// still atomic, but cheap enough for the writes that are not a user's
+    /// deliberate save. The transient live-handoff sidecar is consumed once and
+    /// must not leave a backup behind; a targeted view write (meter rate,
+    /// head-tracker calibration) runs on the OSC thread and must not rotate
+    /// the `.bak` away from the file as it was before the last Save.
     pub fn save_without_backup(&self, path: &Path) -> anyhow::Result<()> {
         replace_file(path, self.to_yaml()?.as_bytes(), false, || Ok(()))
     }
@@ -1007,8 +1011,9 @@ pub fn backup_path(path: &Path) -> PathBuf {
 }
 
 /// Replace `path` with `contents` atomically: write a temp file in the same
-/// directory, sync it, copy the current file to [`backup_path`] when `backup`
-/// is set, then rename the temp file over `path`. A failure at any step
+/// directory, sync it, copy the current file to [`backup_path`] when
+/// `deliberate` is set, then rename the temp file over `path` (and, when
+/// `deliberate`, sync the directory so the rename itself survives a crash). A failure at any step
 /// leaves the current file as it was. A symlinked `path` is written through,
 /// so the link survives. `before_rename` is the test seam for a failure
 /// between the write and the rename.
@@ -1023,7 +1028,7 @@ pub fn backup_path(path: &Path) -> PathBuf {
 fn replace_file(
     path: &Path,
     contents: &[u8],
-    backup: bool,
+    deliberate: bool,
     before_rename: impl FnOnce() -> std::io::Result<()>,
 ) -> anyhow::Result<()> {
     use std::io::Write as _;
@@ -1046,7 +1051,7 @@ fn replace_file(
     let (tmp, mut file) = match create_temp_file(&dir, &name) {
         Ok(created) => created,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && current.is_some() => {
-            return write_in_place(&target, contents, backup);
+            return write_in_place(&target, contents, deliberate);
         }
         Err(e) => return Err(e.into()),
     };
@@ -1054,7 +1059,7 @@ fn replace_file(
         if !rename_keeps_identity(meta, &file.metadata()?) {
             drop(file);
             let _ = std::fs::remove_file(&tmp);
-            return write_in_place(&target, contents, backup);
+            return write_in_place(&target, contents, deliberate);
         }
     }
 
@@ -1066,7 +1071,7 @@ fn replace_file(
         }
         drop(file);
         before_rename()?;
-        if backup && current.is_some() {
+        if deliberate && current.is_some() {
             std::fs::copy(&target, backup_path(&target))?;
         }
         std::fs::rename(&tmp, &target)?;
@@ -1077,10 +1082,13 @@ fn replace_file(
         return result;
     }
     // Make the rename itself durable. Best-effort: not every platform can
-    // open a directory.
+    // open a directory. A light write skips it: the temp file was synced, so
+    // a crash leaves the old file or the new one, never a torn one.
     #[cfg(unix)]
-    if let Ok(dir) = std::fs::File::open(&dir) {
-        let _ = dir.sync_all();
+    if deliberate {
+        if let Ok(dir) = std::fs::File::open(&dir) {
+            let _ = dir.sync_all();
+        }
     }
     Ok(())
 }
@@ -1125,10 +1133,10 @@ fn rename_keeps_identity(_current: &std::fs::Metadata, _created: &std::fs::Metad
 /// itself, which keeps its inode, owner, links and attributes. The `.bak` is
 /// best-effort here: a directory that refused a temp file may refuse it too,
 /// and that must not block the write the old `fs::write` allowed.
-fn write_in_place(target: &Path, contents: &[u8], backup: bool) -> anyhow::Result<()> {
+fn write_in_place(target: &Path, contents: &[u8], deliberate: bool) -> anyhow::Result<()> {
     use std::io::Write as _;
 
-    if backup {
+    if deliberate {
         if let Err(e) = std::fs::copy(target, backup_path(target)) {
             log::warn!("no backup of {} kept: {e}", target.display());
         }
