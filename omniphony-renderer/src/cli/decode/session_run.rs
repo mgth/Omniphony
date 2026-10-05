@@ -201,6 +201,18 @@ fn maybe_save_effective_config(
         anyhow::anyhow!("Cannot determine config path; use --config to specify one")
     })?;
 
+    // `run.config` reads a file that fails to parse as defaults; writing over
+    // it would lose the user's layout and profiles.
+    renderer::config::Config::load_for_update(&path)?;
+    // Nor over a fixed file when this run restored the live state a previous
+    // instance handed over while it ran on that fallback.
+    if run.config.live_from_parse_error {
+        anyhow::bail!(
+            "the live state restored for {} is the built-in defaults a previous instance fell \
+             back to; reload the config before saving it",
+            path.display()
+        );
+    }
     let config = effective_to_config(&run.args, arg_sources, cli, Some(&run.config))?;
     config.save(&path)?;
     log::info!("Config written to: {}", path.display());
@@ -968,6 +980,11 @@ fn run_prepared_render(
     // output, so the build can hold the frame that asks for it.
     if offline && let Some(renderer) = handler.spatial_renderer.as_mut() {
         renderer.set_synchronous_stage_builds(true);
+    }
+    // The band engines (a gain table per crossover band) are built here,
+    // before the first frame, rather than by it.
+    if let Some(renderer) = handler.spatial_renderer.as_mut() {
+        renderer.prepare_speaker_stage()?;
     }
     // Taken whether the manager starts or not: when it does not, the decoder
     // thread is left the only producer, and the loop below ends once it has
