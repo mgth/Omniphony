@@ -759,6 +759,42 @@ fn a_band_build_that_fails_on_the_worker_is_reported_and_not_awaited() {
     );
 }
 
+/// A grid size past the evaluation table budget — typed into config.yaml or
+/// sent over OSC — is refused by the band build before anything is
+/// allocated: the reason reaches the clients, and the previous bands keep
+/// rendering.
+#[test]
+fn an_oversized_evaluation_grid_is_refused_and_reported() {
+    let mut r = build_table_renderer(true, false);
+    let control = r.renderer_control();
+    let pcm = vec![0.25f32; 40];
+    settle(&mut r, &pcm);
+    assert!(!r.speaker_stage_rebuild_failed());
+    let builds = r.speaker_stage_builds();
+    assert_eq!(control.take_band_build_error(), None);
+
+    control.live.write().evaluation.cartesian.x_size = 1_000_000_000;
+    control.bump_geometry_generation();
+    let plan = control.prepare_topology_rebuild().expect("plan");
+    let topology = plan
+        .build_topology_reusing(Some(&control.active_topology()))
+        .expect("the topology itself samples no table");
+    control.publish_topology(topology);
+    settle(&mut r, &pcm);
+
+    assert!(r.speaker_stage_rebuild_failed());
+    assert_eq!(
+        r.speaker_stage_builds(),
+        builds,
+        "the previous bands keep rendering"
+    );
+    let error = control.take_band_build_error().expect("reported");
+    assert!(error.contains("budget"), "{error}");
+    // The band gain table Studio subscribes to samples the same grid.
+    let err = control.build_band_gaintable_full().err().expect("refused");
+    assert!(err.to_string().contains("budget"), "{err}");
+}
+
 /// In cascaded binaural mode the virtual speakers stand where the installed
 /// bands place them. After a speaker move the bands of the previous layout
 /// render on until the worker's set lands, and for good if it cannot be built:

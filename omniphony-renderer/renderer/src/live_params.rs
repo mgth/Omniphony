@@ -2456,6 +2456,19 @@ impl RendererControl {
                 &live,
                 rebuild_params_allow_negative_z(rebuild_params),
             );
+            // The axes below are as long as the sizes asked for: refuse a
+            // grid past the table budget before allocating them.
+            let c = &config.cartesian;
+            crate::render_backend::check_table_budget(
+                "cartesian",
+                &[
+                    c.x_size.max(2),
+                    c.y_size.max(2),
+                    c.z_size.max(2).saturating_add(c.z_neg_size),
+                ],
+                speaker_count,
+                1,
+            )?;
             (
                 crate::render_backend::evenly_spaced_axis(
                     config.cartesian.x_size.max(2),
