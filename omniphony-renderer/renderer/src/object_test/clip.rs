@@ -64,7 +64,11 @@ pub fn load(path: &str, target_rate: u32) -> Result<ObjectTestClip, String> {
 /// short file expand to gigabytes first. The kernel's width of extra input
 /// keeps the last sample kept after resampling exact.
 fn cut_before_resampling(mut mono: Vec<f32>, source_rate: u32) -> (Vec<f32>, bool) {
-    let cap = (MAX_SECONDS * source_rate as usize).saturating_add(RESAMPLE_MARGIN);
+    // The rate is the file's own u32: on a 32-bit target 120 s of a header
+    // claiming tens of megahertz would wrap a plain multiplication.
+    let cap = MAX_SECONDS
+        .saturating_mul(source_rate as usize)
+        .saturating_add(RESAMPLE_MARGIN);
     let truncated = mono.len() > cap;
     mono.truncate(cap);
     (mono, truncated)
@@ -571,5 +575,9 @@ mod tests {
         );
         let (kept, truncated) = cut_before_resampling(vec![0.0; 10], 48_000);
         assert!(!truncated && kept.len() == 10, "a short clip is left whole");
+        // The largest rate a header can declare saturates the cap instead of
+        // wrapping it (it would wrap on a 32-bit target).
+        let (kept, truncated) = cut_before_resampling(vec![0.0; 10], u32::MAX);
+        assert!(!truncated && kept.len() == 10);
     }
 }
