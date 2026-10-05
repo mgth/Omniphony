@@ -4,7 +4,9 @@ use serde_json::json;
 
 use super::OscSender;
 use super::telemetry::{Event, MeterReport, MeterTimings};
+use renderer::live_params::RendererControl;
 use runtime_control::osc_contract;
+use std::sync::Arc;
 
 /// What the render path reports to clients besides the objects. Each call
 /// queues plain values for the telemetry thread ([`super::telemetry`]), which
@@ -24,11 +26,10 @@ impl OscSender {
         let Some(control) = self.control.as_ref() else {
             return;
         };
-        let (enabled, source) = {
-            let live = control.live.read();
-            (live.options.use_loudness, live.dialogue_level)
-        };
-        self.telemetry.push(Event::Loudness { enabled, source });
+        // Read when it is published, not here: see `loudness_state_message`.
+        self.telemetry.push(Event::Loudness {
+            control: Arc::clone(control),
+        });
     }
 
     /// Publish the diag schema and/or values bundle to subscribed clients.
@@ -98,7 +99,15 @@ impl OscSender {
     }
 }
 
-pub(super) fn encode_loudness_state(enabled: bool, source: Option<i8>) -> Option<Vec<u8>> {
+/// `/state/loudness`, read from `control` when it is published: on the
+/// telemetry thread, inside the publication lock (see
+/// [`super::transport::publish_state`]), so it is never older than a snapshot
+/// that went out before it.
+pub(super) fn loudness_state_message(control: &RendererControl) -> OscMessage {
+    let (enabled, source) = {
+        let live = control.live.read();
+        (live.options.use_loudness, live.dialogue_level)
+    };
     let gain_linear: f32 = match (enabled, source) {
         (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
         _ => 1.0,
@@ -109,7 +118,10 @@ pub(super) fn encode_loudness_state(enabled: bool, source: Option<i8>) -> Option
         "gain": gain_linear
     })
     .to_string();
-    super::telemetry::encode(osc_contract::STATE_LOUDNESS, vec![OscType::String(payload)])
+    OscMessage {
+        addr: osc_contract::STATE_LOUDNESS.to_string(),
+        args: vec![OscType::String(payload)],
+    }
 }
 
 pub(super) fn encode_diag_bundle(

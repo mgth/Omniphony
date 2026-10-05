@@ -97,6 +97,11 @@ pub struct ControlEffects {
     /// Save. The engine layer performs the I/O in
     /// `apply_control_effects`.
     pub persist: Vec<crate::persist::PersistOp>,
+    /// Why the message, or part of it, was refused: returned to its sender
+    /// (`/state/control_error`, `invalid_arguments`). The rest of the effects
+    /// still apply, so a grouped write reports the pairs it dropped and keeps
+    /// the ones it took.
+    pub rejected: Option<String>,
 }
 
 impl ControlEffects {
@@ -126,6 +131,14 @@ impl ControlEffects {
         Self {
             publish_only: true,
             notify,
+            ..Self::default()
+        }
+    }
+
+    /// A message refused whole, for `reason`: nothing changes.
+    pub fn rejected(reason: impl Into<String>) -> Self {
+        Self {
+            rejected: Some(reason.into()),
             ..Self::default()
         }
     }

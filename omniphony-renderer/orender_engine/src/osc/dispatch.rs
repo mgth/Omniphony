@@ -21,7 +21,7 @@ use runtime_control::osc::{
 use runtime_control::osc_contract;
 
 use super::client_registry::OscClientRegistry;
-use super::export::{build_live_state, export_current_layout, save_live_config};
+use super::export::{broadcast_live_state, export_current_layout, save_live_config};
 use super::gaintable::GaintableCache;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
@@ -29,6 +29,25 @@ use super::transport::{
     resolve_register_addr, send_diag_state, send_message_to_client, send_metering_state,
     send_update_to_client,
 };
+
+/// What became of a control message, for its sender
+/// ([`osc_contract::STATE_CONTROL_ERROR`]).
+#[derive(Debug, PartialEq)]
+pub(crate) enum ControlOutcome {
+    /// A handler took it. It may still have changed nothing (a value already
+    /// in force, a stale realtime sequence number).
+    Handled,
+    /// Its handler refused it, for this reason.
+    Invalid(String),
+    /// No handler took it.
+    Unhandled,
+}
+
+impl ControlOutcome {
+    fn invalid(reason: impl Into<String>) -> Self {
+        Self::Invalid(reason.into())
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct RealtimeSeqState {
@@ -49,7 +68,7 @@ pub(crate) struct Dispatch<'a> {
     gaintable_cache: &'a Arc<GaintableCache>,
 }
 
-type EngineHandler = fn(&mut Dispatch);
+type EngineHandler = fn(&mut Dispatch) -> ControlOutcome;
 
 /// The engine's control addresses (see `runtime_control::command_table`):
 /// the mpv overlay, the per-client subscriptions, the realtime gains, the
@@ -119,9 +138,9 @@ pub(crate) static ENGINE_COMMANDS: &[Command<EngineHandler>] = &[
 ];
 
 /// Named config profiles: switch / create / delete / rename
-/// (docs/config-profiles.md). Handled before the process commands so the
-/// profile addresses never fall through to the host.
-fn profile(d: &mut Dispatch) {
+/// (docs/config-profiles.md). In the engine's table, so the profile
+/// addresses never fall through to the host.
+fn profile(d: &mut Dispatch) -> ControlOutcome {
     super::profiles::handle_profile_message(
         d.msg,
         d.control,
@@ -130,6 +149,7 @@ fn profile(d: &mut Dispatch) {
         d.clients,
         d.gaintable_cache,
     );
+    ControlOutcome::Handled
 }
 
 pub(crate) fn handle_control_message(
@@ -141,7 +161,7 @@ pub(crate) fn handle_control_message(
     socket: &Arc<UdpSocket>,
     clients: &Arc<OscClientRegistry>,
     gaintable_cache: &Arc<GaintableCache>,
-) {
+) -> ControlOutcome {
     let addr = msg.addr.as_str();
     let runtime_ctx = RuntimeControlContext::new(Arc::clone(control));
 
@@ -153,12 +173,11 @@ pub(crate) fn handle_control_message(
         &runtime_ctx,
         host.map(|h| h.as_ref()),
     ) {
-        apply_control_effects(effects, control, host, socket, clients, gaintable_cache);
-        return;
+        return apply_control_effects(effects, control, host, socket, clients, gaintable_cache);
     }
 
     if let Some(run) = command_table::find(ENGINE_COMMANDS, addr) {
-        run(&mut Dispatch {
+        return run(&mut Dispatch {
             msg,
             src,
             control,
@@ -168,7 +187,6 @@ pub(crate) fn handle_control_message(
             clients,
             gaintable_cache,
         });
-        return;
     }
 
     if let Some(command) = parse_process_command(msg) {
@@ -253,19 +271,19 @@ pub(crate) fn handle_control_message(
                 );
             }
         }
-        return;
+        return ControlOutcome::Handled;
     }
 
     if let Some(effects) = apply_simple_osc_control(msg, &runtime_ctx) {
-        apply_control_effects(effects, control, host, socket, clients, gaintable_cache);
-        return;
+        return apply_control_effects(effects, control, host, socket, clients, gaintable_cache);
     }
 
     // Core didn't handle it — delegate to the host (audio output/input).
     if let Some(effects) = host.and_then(|h| h.handle(addr, msg)) {
-        apply_control_effects(effects, control, host, socket, clients, gaintable_cache);
-        return;
+        return apply_control_effects(effects, control, host, socket, clients, gaintable_cache);
     }
+
+    ControlOutcome::Unhandled
 }
 
 /// The one notification path for a control write that changed config-backed
@@ -297,7 +315,7 @@ fn publish_changed(
     notify: Notify,
 ) {
     match notify {
-        Notify::Snapshot => build_live_state(control, host).broadcast(socket, clients),
+        Notify::Snapshot => broadcast_live_state(control, host, socket, clients),
         // Picked up by the OSC loop's live-state generation poll.
         Notify::CoalescedSnapshot => control.bump_live_state(),
         Notify::DirtyOnly => {}
@@ -311,7 +329,7 @@ fn apply_control_effects(
     socket: &Arc<UdpSocket>,
     clients: &Arc<OscClientRegistry>,
     gaintable_cache: &Arc<GaintableCache>,
-) {
+) -> ControlOutcome {
     // Persist before notifying, so a client reacting to the notification by
     // reading the config finds the change already there.
     runtime_control::persist::persist_ops(control, &effects.persist);
@@ -345,6 +363,10 @@ fn apply_control_effects(
             control.bump_geometry_generation();
         }
         trigger_layout_recompute(control, socket, clients, gaintable_cache);
+    }
+    match effects.rejected {
+        Some(reason) => ControlOutcome::Invalid(reason),
+        None => ControlOutcome::Handled,
     }
 }
 
@@ -823,7 +845,12 @@ mod notify_tests {
         }
     }
 
-    fn send(wire: &Wire, control: &Arc<RendererControl>, addr: &str, args: Vec<OscType>) {
+    fn send(
+        wire: &Wire,
+        control: &Arc<RendererControl>,
+        addr: &str,
+        args: Vec<OscType>,
+    ) -> ControlOutcome {
         handle_control_message(
             &OscMessage {
                 addr: addr.to_string(),
@@ -836,7 +863,7 @@ mod notify_tests {
             &wire.engine,
             &wire.clients,
             &wire.gaintable_cache,
-        );
+        )
     }
 
     /// A maximum-size `backend/file/put`, sent through the control listener's
@@ -960,7 +987,7 @@ mod notify_tests {
         // … and the value is queued for the OSC loop's next live-state
         // bundle, which is what the loop broadcasts on a generation change.
         assert_ne!(control.live_state_generation(), generation);
-        build_live_state(&control, None).broadcast(&wire.engine, &wire.clients);
+        broadcast_live_state(&control, None, &wire.engine, &wire.clients);
         let renderer = state_json(&received(&wire.bystander), osc_contract::STATE_RENDERER)
             .expect("bundle carries /state/renderer");
         assert_eq!(
@@ -1104,6 +1131,350 @@ mod notify_tests {
 
         drop(sender);
     }
+
+    /// What a control came to, as its sender is told: taken, refused with a
+    /// reason, or taken by nobody.
+    #[test]
+    fn every_control_comes_back_with_an_outcome() {
+        let control = fixture_control();
+        let wire = wire();
+        assert_eq!(
+            send(&wire, &control, osc_contract::CONTROL_UNKNOWN, vec![]),
+            ControlOutcome::Unhandled
+        );
+        assert!(matches!(
+            send(
+                &wire,
+                &control,
+                osc_contract::CONTROL_OVERLAY_ENABLED,
+                vec![OscType::String("yes".into())],
+            ),
+            ControlOutcome::Invalid(_)
+        ));
+        let ControlOutcome::Invalid(reason) = send(
+            &wire,
+            &control,
+            osc_contract::CONTROL_OPTION,
+            vec![OscType::String("no_such_option".into()), OscType::Int(1)],
+        ) else {
+            panic!("an unknown option key is refused");
+        };
+        assert!(reason.contains("no_such_option"), "got: {reason}");
+        assert_eq!(
+            send(
+                &wire,
+                &control,
+                osc_contract::CONTROL_OVERLAY_ENABLED,
+                vec![OscType::Int(1)],
+            ),
+            ControlOutcome::Handled
+        );
+    }
+
+    /// A grouped option write applies the pairs it can and reports the ones
+    /// it dropped, rather than one silently masking the other.
+    #[test]
+    fn a_grouped_option_write_reports_the_pair_it_refused() {
+        let control = fixture_control();
+        let wire = wire();
+        let ControlOutcome::Invalid(reason) = send(
+            &wire,
+            &control,
+            osc_contract::CONTROL_OPTIONS,
+            vec![
+                OscType::String("ramp_mode".into()),
+                OscType::String("frame".into()),
+                OscType::String("ramp_mode".into()),
+                OscType::String("no_such_mode".into()),
+            ],
+        ) else {
+            panic!("the invalid pair is reported");
+        };
+        assert!(reason.contains("ramp_mode"), "got: {reason}");
+    }
+
+    /// Single state updates go out with the next generation, `full = 0`; a
+    /// broadcast snapshot closes on the one after, `full = 1`; a snapshot sent
+    /// to one client reports the current one and moves nothing.
+    #[test]
+    fn state_updates_and_snapshots_carry_the_generation_in_sequence() {
+        let control = fixture_control();
+        let wire = wire();
+        let generations = |messages: &[OscMessage]| -> Vec<(i32, i32, i32, i32)> {
+            messages
+                .iter()
+                .filter(|m| m.addr == osc_contract::STATE_GENERATION)
+                .map(|m| match m.args[..] {
+                    [
+                        OscType::Int(g),
+                        OscType::Int(full),
+                        OscType::Int(part),
+                        OscType::Int(parts),
+                    ] => (g, full, part, parts),
+                    _ => panic!("malformed generation: {:?}", m.args),
+                })
+                .collect()
+        };
+        let start = wire.clients.state_generation() as i32;
+        broadcast_int(
+            &wire.engine,
+            &wire.clients,
+            osc_contract::STATE_CONFIG_SAVED,
+            0,
+        );
+        broadcast_string(
+            &wire.engine,
+            &wire.clients,
+            osc_contract::STATE_LOG_LEVEL,
+            "info",
+        );
+        broadcast_live_state(&control, None, &wire.engine, &wire.clients);
+        assert_eq!(
+            generations(&received(&wire.bystander)),
+            [
+                (start + 1, 0, 0, 1),
+                (start + 2, 0, 0, 1),
+                (start + 3, 1, 0, 1)
+            ]
+        );
+
+        crate::osc::export::send_live_state_to(
+            &control,
+            None,
+            &wire.engine,
+            &wire.clients,
+            wire.bystander.local_addr().unwrap(),
+        );
+        let messages = received(&wire.bystander);
+        assert_eq!(generations(&messages), [(start + 3, 1, 0, 1)]);
+        assert_eq!(
+            messages.last().map(|m| m.addr.as_str()),
+            Some(osc_contract::STATE_SNAPSHOT_COMPLETE),
+            "the snapshot still ends on its marker"
+        );
+    }
+
+    /// Through the real listener: a refused control is answered to its sender
+    /// with the address and a code, the heartbeat ack carries the generation,
+    /// and a refresh brings the snapshot back.
+    #[test]
+    fn the_listener_answers_refusals_acks_with_the_generation_and_refreshes() {
+        use crate::osc::test_support::{SERIAL, listening_sender};
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let control = fixture_control();
+        let (sender, port) = listening_sender(&control);
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let send_to_engine = |addr: &str, args: Vec<OscType>| {
+            let bytes = rosc::encoder::encode(&rosc::OscPacket::Message(OscMessage {
+                addr: addr.to_string(),
+                args,
+            }))
+            .unwrap();
+            client.send_to(&bytes, ("127.0.0.1", port)).unwrap();
+        };
+        let error = |code: &str| {
+            let reply = awaited(&client, osc_contract::STATE_CONTROL_ERROR)
+                .expect("a refused control is answered");
+            assert_eq!(reply.args.get(1), Some(&OscType::String(code.to_string())));
+            assert_conforms(&reply);
+            reply
+        };
+
+        send_to_engine(osc_contract::CONTROL_UNKNOWN, vec![]);
+        let reply = error(osc_contract::CONTROL_ERROR_UNKNOWN_ADDRESS);
+        assert_eq!(
+            reply.args.first(),
+            Some(&OscType::String(osc_contract::CONTROL_UNKNOWN.into()))
+        );
+        send_to_engine(
+            osc_contract::CONTROL_OVERLAY_ENABLED,
+            vec![OscType::String("yes".into())],
+        );
+        error(osc_contract::CONTROL_ERROR_INVALID_ARGUMENTS);
+        // Catalogued, but only a host with audio output takes it.
+        send_to_engine(
+            osc_contract::CONTROL_AUDIO_OUTPUT_DEVICE,
+            vec![OscType::String("hw:0".into())],
+        );
+        error(osc_contract::CONTROL_ERROR_NOT_APPLIED);
+
+        let local_port = i32::from(client.local_addr().unwrap().port());
+        send_to_engine(osc_contract::REGISTER, vec![OscType::Int(local_port)]);
+        send_to_engine(osc_contract::HEARTBEAT, vec![OscType::Int(local_port)]);
+        let ack = awaited(&client, osc_contract::HEARTBEAT_ACK).expect("the heartbeat is acked");
+        assert!(
+            matches!(ack.args[..], [OscType::Int(_), OscType::Int(_)]),
+            "epoch and generation: {:?}",
+            ack.args
+        );
+
+        // Whatever the registration sent is read; the refresh is what follows.
+        let _ = received(&client);
+        send_to_engine(
+            osc_contract::CONTROL_STATE_REFRESH,
+            vec![OscType::Int(local_port)],
+        );
+        let messages = received(&client);
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.addr == osc_contract::STATE_SNAPSHOT_COMPLETE),
+            "the refresh brings the snapshot back"
+        );
+        assert!(
+            !messages.iter().any(|m| m.addr == osc_contract::LOG),
+            "and nothing else"
+        );
+
+        drop(sender);
+    }
+
+    /// `msg` carries the arguments the contract's shape table gives its
+    /// address: the types in order, and a JSON argument that parses.
+    fn assert_conforms(msg: &OscMessage) {
+        use osc_contract::shapes::Arg;
+        let shape = osc_contract::shapes::state(&msg.addr)
+            .unwrap_or_else(|| panic!("{} has no shape in the contract", msg.addr));
+        assert!(
+            msg.args.len() >= shape.len(),
+            "{}: {:?} is shorter than {shape:?}",
+            msg.addr,
+            msg.args
+        );
+        for (arg, kind) in msg.args.iter().zip(shape) {
+            let conforms = match (kind, arg) {
+                (Arg::Int, OscType::Int(_))
+                | (Arg::Float, OscType::Float(_))
+                | (Arg::String, OscType::String(_))
+                | (Arg::Blob, OscType::Blob(_)) => true,
+                (Arg::Json, OscType::String(json)) => {
+                    serde_json::from_str::<serde_json::Value>(json).is_ok()
+                }
+                _ => false,
+            };
+            assert!(conforms, "{}: {arg:?} is not {kind:?}", msg.addr);
+        }
+    }
+
+    /// What the engine sends is what the contract says it sends, so the
+    /// shapes Studio's conformance test feeds its parser are the real ones.
+    #[test]
+    fn the_snapshot_and_state_updates_match_the_contract_shapes() {
+        let control = fixture_control();
+        let wire = wire();
+        broadcast_live_state(&control, None, &wire.engine, &wire.clients);
+        broadcast_int(
+            &wire.engine,
+            &wire.clients,
+            osc_contract::STATE_CONFIG_SAVED,
+            1,
+        );
+        let messages = received(&wire.bystander);
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.addr == osc_contract::STATE_SNAPSHOT_COMPLETE)
+        );
+        for msg in &messages {
+            // Per-object mutes are a family, not a catalogued address.
+            if msg.addr.starts_with("/omniphony/state/object/") {
+                continue;
+            }
+            assert_conforms(msg);
+        }
+    }
+
+    /// The interleaving the publication lock is for: a snapshot asked for
+    /// while another publication is under way is captured when its turn
+    /// comes, not when it was asked for. Captured early, it would carry the
+    /// state from before a change made meanwhile under a count higher than
+    /// the change's own, and a client would take the older state for current.
+    #[test]
+    fn a_snapshot_captures_the_state_of_its_turn_under_the_lock() {
+        use std::sync::mpsc;
+        let control = fixture_control();
+        control.live.write().master_gain = 1.0;
+        let wire = wire();
+        let (entered_tx, entered) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            // A publication in progress, holding the lock.
+            let clients = &wire.clients;
+            let held = scope.spawn(move || {
+                clients.publish(|generation| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    generation.advance()
+                })
+            });
+            entered.recv().unwrap();
+            // A snapshot asked for now has to wait its turn …
+            let snapshot =
+                scope.spawn(|| broadcast_live_state(&control, None, &wire.engine, &wire.clients));
+            std::thread::sleep(Duration::from_millis(100));
+            // … so the change made while it waits is in it.
+            control.live.write().master_gain = 0.5;
+            release.send(()).unwrap();
+            let held_generation = held.join().unwrap();
+            snapshot.join().unwrap();
+            assert_eq!(wire.clients.state_generation(), held_generation + 1);
+        });
+        let messages = received(&wire.bystander);
+        let renderer = state_json(&messages, osc_contract::STATE_RENDERER).expect("a snapshot");
+        assert_eq!(renderer["masterGain"], 0.5);
+    }
+
+    /// Several values captured together go out one datagram each, numbered
+    /// in sequence: together, a recompute's renderer, layout and speakers
+    /// could outgrow a datagram.
+    #[test]
+    fn values_published_together_go_out_one_numbered_datagram_each() {
+        let wire = wire();
+        let start = wire.clients.state_generation() as i32;
+        crate::osc::transport::publish_state(&wire.engine, &wire.clients, || {
+            [osc_contract::STATE_RENDERER, osc_contract::STATE_LAYOUT]
+                .into_iter()
+                .map(|addr| OscMessage {
+                    addr: addr.to_string(),
+                    args: vec![OscType::String("{}".into())],
+                })
+                .collect()
+        });
+        let mut buf = vec![0u8; 70_000];
+        let mut numbered = Vec::new();
+        while let Ok(len) = wire.bystander.recv(&mut buf) {
+            let (_, rosc::OscPacket::Bundle(bundle)) =
+                rosc::decoder::decode_udp(&buf[..len]).unwrap()
+            else {
+                panic!("a state update is a bundle");
+            };
+            let [
+                rosc::OscPacket::Message(value),
+                rosc::OscPacket::Message(generation),
+            ] = &bundle.content[..]
+            else {
+                panic!("one value and its generation per datagram");
+            };
+            assert_conforms(generation);
+            numbered.push((value.addr.clone(), generation.args[0].clone()));
+            if numbered.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(
+            numbered,
+            [
+                (
+                    osc_contract::STATE_RENDERER.to_string(),
+                    OscType::Int(start + 1)
+                ),
+                (
+                    osc_contract::STATE_LAYOUT.to_string(),
+                    OscType::Int(start + 2)
+                ),
+            ]
+        );
+    }
 }
 
 /// mpv overlay configuration. The overlay itself is generated in-process by
@@ -1112,43 +1483,47 @@ mod notify_tests {
 /// (docs/persistence-policy.md): the enabled, labels and trails switches
 /// are written to `overlay-prefs.conf` as they change, the rest is
 /// transient, and none of them ever marks the config dirty.
-fn overlay_enabled(d: &mut Dispatch) {
+fn overlay_enabled(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let enabled = match parse_bool_arg(msg.args.first()) {
         Some(v) => v,
-        None => return,
+        None => return ControlOutcome::invalid("expected a boolean"),
     };
     crate::overlay::set_enabled(enabled);
+    ControlOutcome::Handled
 }
 
-fn overlay_labels(d: &mut Dispatch) {
+fn overlay_labels(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let enabled = match parse_bool_arg(msg.args.first()) {
         Some(v) => v,
-        None => return,
+        None => return ControlOutcome::invalid("expected a boolean"),
     };
     crate::overlay::set_labels_enabled(enabled);
+    ControlOutcome::Handled
 }
 
-fn overlay_objects(d: &mut Dispatch) {
+fn overlay_objects(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let visible = match parse_bool_arg(msg.args.first()) {
         Some(v) => v,
-        None => return,
+        None => return ControlOutcome::invalid("expected a boolean"),
     };
     crate::overlay::set_objects_visible(visible);
+    ControlOutcome::Handled
 }
 
-fn overlay_heatmap_enabled(d: &mut Dispatch) {
+fn overlay_heatmap_enabled(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let enabled = match parse_bool_arg(msg.args.first()) {
         Some(v) => v,
-        None => return,
+        None => return ControlOutcome::invalid("expected a boolean"),
     };
     crate::overlay::set_heatmap_enabled(enabled);
+    ControlOutcome::Handled
 }
 
-fn overlay_heatmap_custom_stops(d: &mut Dispatch) {
+fn overlay_heatmap_custom_stops(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     // Flat [pos, r, g, b, …] floats → grouped stops for the custom gradient.
     let flat: Vec<f32> = msg
@@ -1165,32 +1540,35 @@ fn overlay_heatmap_custom_stops(d: &mut Dispatch) {
         .map(|c| [c[0], c[1], c[2], c[3]])
         .collect();
     crate::overlay::set_heatmap_custom_stops(stops);
+    ControlOutcome::Handled
 }
 
-fn overlay_heatmap_bands(d: &mut Dispatch) {
+fn overlay_heatmap_bands(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let count = match parse_positive_u32_arg(msg.args.first()) {
         Some(v) => v as usize,
-        None => return,
+        None => return ControlOutcome::invalid("expected a positive integer"),
     };
     crate::overlay::set_heatmap_bands(count);
+    ControlOutcome::Handled
 }
 
-fn overlay_heatmap_colormap(d: &mut Dispatch) {
+fn overlay_heatmap_colormap(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let idx = match parse_nonnegative_u32_arg(msg.args.first()) {
         Some(v) => v as usize,
-        None => return,
+        None => return ControlOutcome::invalid("expected a non-negative integer"),
     };
     crate::overlay::set_heatmap_colormap(idx);
+    ControlOutcome::Handled
 }
 
-fn overlay_trails(d: &mut Dispatch) {
+fn overlay_trails(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     // Args mirror Studio's former wire fields: enabled, ttl_ms, mode, teleport.
     let enabled = match parse_bool_arg(msg.args.first()) {
         Some(v) => v,
-        None => return,
+        None => return ControlOutcome::invalid("expected a boolean"),
     };
     let ttl_ms = parse_nonnegative_u32_arg(msg.args.get(1)).unwrap_or(7000);
     let diffuse = matches!(
@@ -1199,9 +1577,10 @@ fn overlay_trails(d: &mut Dispatch) {
     );
     let teleport = parse_f32_arg(msg.args.get(3)).unwrap_or(0.0) as f64;
     crate::overlay::set_trail_config(enabled, ttl_ms, diffuse, teleport);
+    ControlOutcome::Handled
 }
 
-fn overlay_tag(d: &mut Dispatch) {
+fn overlay_tag(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     // [id, tag]: tag "A"/"B" sets an override colour, anything else clears it.
     let Some(id) = msg.args.first().and_then(|a| match a {
@@ -1210,7 +1589,7 @@ fn overlay_tag(d: &mut Dispatch) {
         OscType::String(s) => s.parse::<u32>().ok(),
         _ => None,
     }) else {
-        return;
+        return ControlOutcome::invalid("expected an object id");
     };
     let tag = match msg.args.get(1) {
         Some(OscType::String(s)) => s
@@ -1220,6 +1599,7 @@ fn overlay_tag(d: &mut Dispatch) {
         _ => None,
     };
     crate::overlay::set_tag(id, tag);
+    ControlOutcome::Handled
 }
 
 /// Speaker gain-table pub/sub. A client subscribes for one speaker (the heatmap
@@ -1227,7 +1607,7 @@ fn overlay_tag(d: &mut Dispatch) {
 /// speaker's per-band field only if the version differs, and keeps pushing on
 /// every topology rebuild while subscribed (see `recompute.rs`). Args:
 /// [Int have_version, Int speaker_index].
-fn debug_speaker_gaintable_subscribe(d: &mut Dispatch) {
+fn debug_speaker_gaintable_subscribe(d: &mut Dispatch) -> ControlOutcome {
     let runtime_ctx = RuntimeControlContext::new(Arc::clone(d.control));
     let msg = d.msg;
     let src = d.src;
@@ -1270,9 +1650,10 @@ fn debug_speaker_gaintable_subscribe(d: &mut Dispatch) {
         speaker,
         have_version,
     );
+    ControlOutcome::Handled
 }
 
-fn debug_speaker_gaintable_unsubscribe(d: &mut Dispatch) {
+fn debug_speaker_gaintable_unsubscribe(d: &mut Dispatch) -> ControlOutcome {
     let src = d.src;
     let clients = d.clients;
     let client = resolve_register_addr(src, &[]);
@@ -1280,9 +1661,10 @@ fn debug_speaker_gaintable_unsubscribe(d: &mut Dispatch) {
     // Drop the targets too: the next subscribe declares what it wants, and
     // keeping them would push fields nobody is displaying any more.
     clients.clear_gaintable_targets(client);
+    ControlOutcome::Handled
 }
 
-fn debug_speaker_gaintable_nack(d: &mut Dispatch) {
+fn debug_speaker_gaintable_nack(d: &mut Dispatch) -> ControlOutcome {
     let runtime_ctx = RuntimeControlContext::new(Arc::clone(d.control));
     let msg = d.msg;
     let src = d.src;
@@ -1312,48 +1694,52 @@ fn debug_speaker_gaintable_nack(d: &mut Dispatch) {
             }
         }
     }
+    ControlOutcome::Handled
 }
 
-fn metering(d: &mut Dispatch) {
+fn metering(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let src = d.src;
     let socket = d.socket;
     let clients = d.clients;
     let enabled = match parse_bool_arg(msg.args.first()) {
         Some(v) => v,
-        None => return,
+        None => return ControlOutcome::invalid("expected a boolean"),
     };
     let client = resolve_register_addr(src, &[]);
     if clients.set_metering(client, enabled) {
         send_metering_state(socket, client, enabled);
     }
+    ControlOutcome::Handled
 }
 
-fn diag_enabled(d: &mut Dispatch) {
+fn diag_enabled(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let src = d.src;
     let socket = d.socket;
     let clients = d.clients;
     let enabled = match parse_bool_arg(msg.args.first()) {
         Some(v) => v,
-        None => return,
+        None => return ControlOutcome::invalid("expected a boolean"),
     };
     let client = resolve_register_addr(src, &[]);
     if clients.set_diag(client, enabled) {
         send_diag_state(socket, client, enabled);
     }
+    ControlOutcome::Handled
 }
 
-fn input_refresh(d: &mut Dispatch) {
+fn input_refresh(d: &mut Dispatch) -> ControlOutcome {
     let control = d.control;
     let host = d.host;
     let socket = d.socket;
     let clients = d.clients;
-    build_live_state(control, host).broadcast(socket, clients);
+    broadcast_live_state(control, host, socket, clients);
     log::info!("OSC: input state refresh requested");
+    ControlOutcome::Handled
 }
 
-fn realtime_master_gain(d: &mut Dispatch) {
+fn realtime_master_gain(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let control = d.control;
     let host = d.host;
@@ -1365,20 +1751,20 @@ fn realtime_master_gain(d: &mut Dispatch) {
         OscType::Int(v) => Some(*v as f32),
         _ => None,
     }) else {
-        return;
+        return ControlOutcome::invalid("expected a gain");
     };
     let Some(seq) = msg.args.get(1).and_then(|arg| match arg {
         OscType::Int(v) => Some(*v),
         _ => None,
     }) else {
-        return;
+        return ControlOutcome::invalid("expected a sequence number");
     };
     if realtime_seq.master_gain.is_some_and(|last| seq < last) {
-        return;
+        return ControlOutcome::Handled;
     }
     // Same setter as `/control/gain`: one validation, one field.
     let Some(value) = runtime_control::osc::set_master_gain(control, value) else {
-        return;
+        return ControlOutcome::invalid("the gain must be finite and non-negative");
     };
     realtime_seq.master_gain = Some(seq);
     // The realtime echo below is for the sender's own sequencing; the
@@ -1391,9 +1777,10 @@ fn realtime_master_gain(d: &mut Dispatch) {
     })) {
         super::transport::send_raw(socket, clients, &bytes);
     }
+    ControlOutcome::Handled
 }
 
-fn realtime_speaker_gain(d: &mut Dispatch) {
+fn realtime_speaker_gain(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let control = d.control;
     let host = d.host;
@@ -1405,20 +1792,20 @@ fn realtime_speaker_gain(d: &mut Dispatch) {
         OscType::Float(v) if *v >= 0.0 => Some(*v as usize),
         _ => None,
     }) else {
-        return;
+        return ControlOutcome::invalid("expected a speaker index");
     };
     let Some(value) = msg.args.get(1).and_then(|arg| match arg {
         OscType::Float(v) => Some(*v),
         OscType::Int(v) => Some(*v as f32),
         _ => None,
     }) else {
-        return;
+        return ControlOutcome::invalid("expected a gain");
     };
     let Some(seq) = msg.args.get(2).and_then(|arg| match arg {
         OscType::Int(v) => Some(*v),
         _ => None,
     }) else {
-        return;
+        return ControlOutcome::invalid("expected a sequence number");
     };
     if realtime_seq
         .speaker_gain
@@ -1426,11 +1813,11 @@ fn realtime_speaker_gain(d: &mut Dispatch) {
         .copied()
         .is_some_and(|last| seq < last)
     {
-        return;
+        return ControlOutcome::Handled;
     }
     if !value.is_finite() || value < 0.0 {
         log::warn!("OSC speaker gain: rejected value {value}");
-        return;
+        return ControlOutcome::invalid("the gain must be finite and non-negative");
     }
     realtime_seq.speaker_gain.insert(idx, seq);
     control.live.write().speakers.entry(idx).or_default().gain = value;
@@ -1446,9 +1833,10 @@ fn realtime_speaker_gain(d: &mut Dispatch) {
     })) {
         super::transport::send_raw(socket, clients, &bytes);
     }
+    ControlOutcome::Handled
 }
 
-fn render_bridge_path(d: &mut Dispatch) {
+fn render_bridge_path(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let control = d.control;
     let host = d.host;
@@ -1456,7 +1844,7 @@ fn render_bridge_path(d: &mut Dispatch) {
     let clients = d.clients;
     let value = match msg.args.first() {
         Some(OscType::String(s)) => s.trim(),
-        _ => return,
+        _ => return ControlOutcome::invalid("expected a string"),
     };
     let next = if value.is_empty() {
         None
@@ -1483,9 +1871,10 @@ fn render_bridge_path(d: &mut Dispatch) {
                 .unwrap_or_else(|| "<auto>".to_string())
         );
     }
+    ControlOutcome::Handled
 }
 
-fn render_input_pipe(d: &mut Dispatch) {
+fn render_input_pipe(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let control = d.control;
     let host = d.host;
@@ -1493,7 +1882,7 @@ fn render_input_pipe(d: &mut Dispatch) {
     let clients = d.clients;
     let value = match msg.args.first() {
         Some(OscType::String(s)) => s.trim(),
-        _ => return,
+        _ => return ControlOutcome::invalid("expected a string"),
     };
     let next = if value.is_empty() {
         None
@@ -1514,28 +1903,31 @@ fn render_input_pipe(d: &mut Dispatch) {
             next.as_deref().unwrap_or("<default>")
         );
     }
+    ControlOutcome::Handled
 }
 
 /// Editable backend files (e.g. the scriptable backend's `.lua`). The content
 /// is owned by the renderer, so the editor reads/writes it here over OSC; these
 /// reply point-to-point to the requester (`src`) rather than broadcasting.
-fn backend_file_get(d: &mut Dispatch) {
+fn backend_file_get(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let src = d.src;
     let control = d.control;
     let socket = d.socket;
     handle_backend_file_get(msg, src, control, socket);
+    ControlOutcome::Handled
 }
 
-fn backend_file_list(d: &mut Dispatch) {
+fn backend_file_list(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let src = d.src;
     let control = d.control;
     let socket = d.socket;
     handle_backend_file_list(msg, src, control, socket);
+    ControlOutcome::Handled
 }
 
-fn backend_file_put(d: &mut Dispatch) {
+fn backend_file_put(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let src = d.src;
     let control = d.control;
@@ -1544,9 +1936,10 @@ fn backend_file_put(d: &mut Dispatch) {
     let clients = d.clients;
     let gaintable_cache = d.gaintable_cache;
     handle_backend_file_put(msg, src, control, host, socket, clients, gaintable_cache);
+    ControlOutcome::Handled
 }
 
-fn layout_export(d: &mut Dispatch) {
+fn layout_export(d: &mut Dispatch) -> ControlOutcome {
     let msg = d.msg;
     let control = d.control;
     let requested_name = match msg.args.first() {
@@ -1554,4 +1947,5 @@ fn layout_export(d: &mut Dispatch) {
         _ => None,
     };
     export_current_layout(control, requested_name);
+    ControlOutcome::Handled
 }

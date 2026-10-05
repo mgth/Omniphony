@@ -35,8 +35,10 @@ pub fn apply_live_control(
     // The dedicated per-option addresses: aliases of the generic setter.
     let spec = renderer::options::find_by_legacy_addr(addr)?;
     let Some(value) = msg.args.get(..spec.kind.arity()) else {
-        log::warn!("OSC option {}: missing value", spec.key);
-        return Some(ControlEffects::default());
+        return Some(ControlEffects::rejected(format!(
+            "option {}: missing value",
+            spec.key
+        )));
     };
     let target = core_target(spec, host);
     Some(apply_options(
@@ -113,10 +115,10 @@ fn options(
 ) -> ControlEffects {
     // `/control/option` takes one pair; anything after it is ignored.
     let single = msg.addr == osc_contract::CONTROL_OPTION;
-    let Some(pairs) = parse_option_pairs(&msg.args, single, host) else {
-        return ControlEffects::default();
-    };
-    apply_options(ctx, host, &pairs)
+    match parse_option_pairs(&msg.args, single, host) {
+        Ok(pairs) => apply_options(ctx, host, &pairs),
+        Err(reason) => ControlEffects::rejected(reason),
+    }
 }
 
 /// Monitoring cadences live on RendererControl (the source of truth): both
@@ -133,7 +135,7 @@ fn monitoring_rate(
     let addr = msg.addr.as_str();
     let control = &ctx.renderer;
     let Some(hz) = parse_f32_arg(msg.args.first()).filter(|hz| hz.is_finite()) else {
-        return ControlEffects::default();
+        return ControlEffects::rejected("expected a rate in Hz");
     };
     let (what, before, applied, persist) = if addr == osc_contract::CONTROL_METERING_RATE_HZ {
         let before = control.meter_rate_hz();
@@ -247,30 +249,29 @@ fn core_target(
 /// pair when `single`. A key is a core option or one the host declares.
 /// `None` — the whole message dropped — on an unknown key or a truncated
 /// value: past either, where the next key starts is unknowable.
+/// The `[key, value…]` pairs of an option write, or why the whole message is
+/// refused.
 fn parse_option_pairs<'a>(
     args: &'a [OscType],
     single: bool,
     host: Option<&dyn HostControlHandler>,
-) -> Option<Vec<OptionPair<'a>>> {
+) -> Result<Vec<OptionPair<'a>>, String> {
     let mut pairs = Vec::new();
     let mut rest = args;
     while let Some((key, tail)) = rest.split_first() {
         let OscType::String(key) = key else {
-            log::warn!("OSC options: expected a key, got {key:?}");
-            return None;
+            return Err(format!("options: expected a key, got {key:?}"));
         };
         let (kind, target) = if let Some(spec) = renderer::options::find(key) {
             (spec.kind, core_target(spec, host))
         } else if let Some(kind) = host.and_then(|host| host.option_kind(key)) {
             (kind, OptionTarget::Host)
         } else {
-            log::warn!("OSC option: unknown key '{}'", key);
-            return None;
+            return Err(format!("option: unknown key '{key}'"));
         };
         let arity = kind.arity();
         if tail.len() < arity {
-            log::warn!("OSC option {}: missing value", key);
-            return None;
+            return Err(format!("option {key}: missing value"));
         }
         let (value, next) = tail.split_at(arity);
         pairs.push(OptionPair {
@@ -285,10 +286,9 @@ fn parse_option_pairs<'a>(
         rest = next;
     }
     if pairs.is_empty() {
-        log::warn!("OSC options: no key");
-        return None;
+        return Err("options: no key".to_string());
     }
-    Some(pairs)
+    Ok(pairs)
 }
 
 /// A client value in the owned shape [`RawOptionValue`] borrows from: the
@@ -368,21 +368,29 @@ fn apply_options(
         .collect();
     let mut core_items = Vec::new();
     let mut host_items = Vec::new();
+    // What is refused, pair by pair: the others still apply.
+    let mut refused = Vec::new();
     for (pair, value) in pairs.iter().zip(&values) {
         let Some(raw) = value.raw() else {
-            log::warn!("OSC option {}: rejected value", pair.key);
+            refused.push(format!("{}: rejected value", pair.key));
             continue;
         };
         match pair.target {
             OptionTarget::Core(spec) => core_items.push((spec, raw)),
             OptionTarget::Host => host_items.push((pair.key, raw)),
             OptionTarget::NotOffered => {
-                log::warn!("OSC option {}: not offered by this host", pair.key)
+                refused.push(format!("{}: not offered by this host", pair.key))
             }
         }
     }
+    let refused_reason = |refused: Vec<String>| {
+        (!refused.is_empty()).then(|| format!("option {}", refused.join(", ")))
+    };
     if core_items.is_empty() && host_items.is_empty() {
-        return ControlEffects::default();
+        return ControlEffects {
+            rejected: refused_reason(refused),
+            ..ControlEffects::default()
+        };
     }
     let core = (!core_items.is_empty())
         .then(|| renderer::options::apply_batch(&ctx.renderer, &core_items));
@@ -400,7 +408,7 @@ fn apply_options(
                 applied.push(format!("{} set to '{}'", key, result.canonical));
             }
         }
-        None => log::warn!("OSC option {}: rejected value", key),
+        None => refused.push(format!("{key}: rejected value")),
     };
     if let Some(core) = &core {
         for ((spec, _), result) in core_items.iter().zip(&core.results) {
@@ -419,15 +427,23 @@ fn apply_options(
         ctx.renderer.mark_dirty();
     }
     let changed = core.as_ref().is_some_and(|core| core.changed) || host_changed;
+    let rejected = refused_reason(refused);
     if !changed {
         if !accepted {
-            return ControlEffects::default();
+            return ControlEffects {
+                rejected,
+                ..ControlEffects::default()
+            };
         }
         // Still published: a value clamped back onto the current one must
         // reach the client that typed it.
-        return ControlEffects::transient(Notify::Snapshot);
+        return ControlEffects {
+            rejected,
+            ..ControlEffects::transient(Notify::Snapshot)
+        };
     }
     let mut effects = ControlEffects::dirty(Notify::Snapshot);
+    effects.rejected = rejected;
     effects.log_message = Some(format!("OSC option {}", applied.join(", ")));
     match core.map(|core| core.rebuild).unwrap_or(Rebuild::None) {
         Rebuild::None => {}
@@ -446,8 +462,7 @@ fn apply_options(
 /// bundle.
 fn apply_option_group(msg: &OscMessage, host: Option<&dyn HostControlHandler>) -> ControlEffects {
     let Some(OscType::String(group)) = msg.args.first() else {
-        log::warn!("OSC options/apply: expected a group");
-        return ControlEffects::default();
+        return ControlEffects::rejected("options/apply: expected a group");
     };
     if let Some(effects) = host.and_then(|host| host.apply_option_group(group)) {
         return effects;
@@ -458,8 +473,7 @@ fn apply_option_group(msg: &OscMessage, host: Option<&dyn HostControlHandler>) -
     {
         return ControlEffects::transient(Notify::Snapshot);
     }
-    log::warn!("OSC options/apply: unknown group '{group}'");
-    ControlEffects::default()
+    ControlEffects::rejected(format!("options/apply: unknown group '{group}'"))
 }
 
 fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> ControlEffects {
@@ -467,7 +481,7 @@ fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> Contro
     let (Some(OscType::String(name)), Some(OscType::String(mode))) =
         (msg.args.first(), msg.args.get(1))
     else {
-        return ControlEffects::default();
+        return ControlEffects::rejected("placement mode: expected [family, mode]");
     };
     let mode = if mode.trim().eq_ignore_ascii_case("inherit") {
         None
@@ -475,8 +489,7 @@ fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> Contro
         match PlacementMode::parse(mode) {
             Some(mode) => Some(mode),
             None => {
-                log::warn!("OSC placement mode: unknown mode '{}'", mode);
-                return ControlEffects::default();
+                return ControlEffects::rejected(format!("placement mode: unknown mode '{mode}'"));
             }
         }
     };
@@ -485,8 +498,7 @@ fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> Contro
         // The family table is the loaded bridge's: a name it does not hold
         // (a client built for another bridge) is refused, not added.
         let Some(family) = live.placement.find(name) else {
-            log::warn!("OSC placement mode: unknown family '{}'", name);
-            return ControlEffects::default();
+            return ControlEffects::rejected(format!("placement mode: unknown family '{name}'"));
         };
         live.placement.family_mut(family).set_mode(mode)
     };
