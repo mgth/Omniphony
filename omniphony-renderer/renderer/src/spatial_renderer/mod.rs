@@ -235,8 +235,9 @@ pub struct SpatialRenderer {
     /// host has seeded the control from its config.
     speaker_stage: SpeakerRenderStage,
 
-    /// How many times the speaker stage built its band engines (gain tables,
-    /// crossover bank, unified table). Read by [`Self::speaker_stage_builds`].
+    /// How many band sets (gain tables, crossover bank, unified table) the
+    /// speaker stage installed, built on the render thread or by its worker.
+    /// Read by [`Self::speaker_stage_builds`].
     speaker_stage_builds: u32,
 
     /// Scratch snapshot of live per-object params, indexed by input channel.
@@ -409,8 +410,9 @@ impl SpatialRenderer {
 
     /// Build the speaker stage's band engines (per-band gain tables, crossover
     /// bank, unified table) for the active topology and the live options now,
-    /// instead of on the first [`Self::render_frame`]. A no-op when they are
-    /// already up to date.
+    /// instead of on the first [`Self::render_frame`], on the calling thread
+    /// even when the stage otherwise builds on its worker. A no-op when they
+    /// are already up to date.
     ///
     /// Construction does not build them: the hosts seed the backend, its
     /// params and the crossover engine from their config only after the
@@ -420,23 +422,33 @@ impl SpatialRenderer {
     /// is done; tests call it to inspect the stage.
     pub fn prepare_speaker_stage(&mut self) -> Result<()> {
         let topology = self.control.active_topology();
-        let identity = Arc::as_ptr(&topology) as usize;
-        if self.speaker_stage.refresh_for_topology(
-            &self.control,
-            identity,
-            &topology.speaker_layout,
-        )? {
+        // Here, unlike a frame, the build may hold the caller.
+        let synchronous = std::mem::replace(&mut self.speaker_stage.synchronous_builds, true);
+        let refreshed = self
+            .speaker_stage
+            .refresh_for_topology(&self.control, &topology);
+        self.speaker_stage.synchronous_builds = synchronous;
+        if refreshed? {
             self.speaker_stage_builds += 1;
         }
         Ok(())
     }
 
-    /// Number of times the speaker stage has built its band engines since the
-    /// renderer was constructed: one per start-up, one per topology or
-    /// crossover change after that. Diagnostics and tests (the start-up
+    /// Number of band sets the speaker stage has installed since the renderer
+    /// was constructed: one per start-up, one per topology or crossover change
+    /// after that, once its worker has built it. Diagnostics and tests (the start-up
     /// regression this guards built them twice).
     pub fn speaker_stage_builds(&self) -> u32 {
         self.speaker_stage_builds
+    }
+
+    /// `true` while a band set for a new topology or crossover setting has
+    /// been asked of the speaker stage's worker and not installed yet: frames
+    /// rendered meanwhile still use the previous bands. Like
+    /// [`Self::binaural_rebuild_pending`], for callers that need the change
+    /// in effect.
+    pub fn speaker_stage_rebuild_pending(&self) -> bool {
+        self.speaker_stage.rebuild_pending()
     }
 
     /// `true` while a requested binaural HRIR source change has been handed to
@@ -463,6 +475,7 @@ impl SpatialRenderer {
     /// nothing per frame either way. Set it before the first frame.
     pub fn set_synchronous_stage_builds(&mut self, on: bool) {
         self.synchronous_stage_builds = on;
+        self.speaker_stage.synchronous_builds = on;
         self.binaural.set_synchronous_builds(on);
         self.brir.set_synchronous_builds(on);
     }
@@ -696,11 +709,10 @@ impl SpatialRenderer {
         let topology_guard = self.control.active_topology();
         let topology = &*topology_guard;
         let topology_identity = std::sync::Arc::as_ptr(&topology_guard) as usize;
-        if self.speaker_stage.refresh_for_topology(
-            &self.control,
-            topology_identity,
-            &topology.speaker_layout,
-        )? {
+        if self
+            .speaker_stage
+            .refresh_for_topology(&self.control, &topology_guard)?
+        {
             self.speaker_stage_builds += 1;
         }
         // Cascaded binaural geometry: derived from the active topology, kept

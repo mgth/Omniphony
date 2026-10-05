@@ -21,7 +21,8 @@ use crate::crossover::{
 };
 use crate::delay_line::IntegerDelay;
 use crate::live_params::{
-    CrossoverType, MAX_SAMPLE_RAMP_STRIDE, ObjectLiveParams, RampMode, RendererControl,
+    CrossoverType, MAX_SAMPLE_RAMP_STRIDE, ObjectLiveParams, RampMode, RenderTopology,
+    RendererControl,
 };
 use crate::ramp_strategy::{RampContext, RampStrategy};
 use crate::render_backend::{CornerCache, MultiBandTable};
@@ -37,6 +38,49 @@ use super::components::{BandRenderer, ChannelState};
 use super::{GAIN_SLEW_SECS, SpatialRenderer};
 use crate::ramp_strategy::RampProgress;
 
+mod band_worker;
+use band_worker::BandWorker;
+
+/// What a band set is built for: the published topology and the crossover
+/// options that are live rather than part of it. Two sets with the same key
+/// are the same set.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct BandSetKey {
+    /// `Arc::as_ptr` of the topology. The set keeps that `Arc`, so the
+    /// address cannot be reused while the set is installed.
+    topology: usize,
+    crossover_type: CrossoverType,
+    /// The FIR transition ratio; 0 when the engine is not FIR, so a tuning
+    /// change of an inactive engine rebuilds nothing.
+    fir_ratio: f32,
+}
+
+impl BandSetKey {
+    fn wanted(control: &RendererControl, topology: &Arc<RenderTopology>) -> Self {
+        let live = control.live.read();
+        Self {
+            topology: Arc::as_ptr(topology) as usize,
+            crossover_type: live.crossover_type,
+            fir_ratio: if live.crossover_type == CrossoverType::Fir {
+                live.crossover_fir_transition_ratio
+            } else {
+                0.0
+            },
+        }
+    }
+}
+
+/// Everything the speaker stage builds for one [`BandSetKey`]: what
+/// [`SpeakerRenderStage::refresh_for_topology`] installs at once.
+pub(super) struct BandSet {
+    key: BandSetKey,
+    topology: Arc<RenderTopology>,
+    render_bands: Vec<BandRenderer>,
+    crossover_filter_bank: Option<CrossoverBank>,
+    unified_table: Option<MultiBandTable>,
+    speaker_freq_ranges: Vec<(Option<f32>, Option<f32>)>,
+}
+
 pub(super) struct SpeakerRenderStage {
     /// Output width of THIS stage's layout (total speakers, incl. LFE).
     pub(super) num_speakers: usize,
@@ -46,9 +90,19 @@ pub(super) struct SpeakerRenderStage {
     /// band when no crossover is configured); empty only before the first
     /// build (see [`Self::unbuilt`]). Each returns full-size `Gains`.
     pub(super) render_bands: Vec<BandRenderer>,
-    /// Topology identity used to build the current band engines; `None` until
-    /// the first build, which [`Self::refresh_for_topology`] then always runs.
-    pub(super) render_bands_topology_identity: Option<usize>,
+    /// What the installed band engines were built for; `None` until the
+    /// first build, which [`Self::refresh_for_topology`] then always runs.
+    built: Option<BandSetKey>,
+    /// The topology they were built for, kept so its address — the key —
+    /// stays unique while they are installed.
+    built_topology: Option<Arc<RenderTopology>>,
+    /// The set last asked of the worker and not installed yet.
+    requested: Option<BandSetKey>,
+    /// Builds band sets off the render thread, and frees the retired ones.
+    worker: BandWorker,
+    /// Build band sets on the render thread, on the frame that needs them —
+    /// see [`SpatialRenderer::set_synchronous_stage_builds`].
+    pub(super) synchronous_builds: bool,
     /// Merged multi-band cartesian table when all bands use cartesian
     /// evaluators (`None` → per-band path). `pub(super)`: tests force the
     /// per-band path by clearing it.
@@ -60,16 +114,9 @@ pub(super) struct SpeakerRenderStage {
     pub(super) table_caches: Vec<CornerCache>,
     /// `None` when `render_bands` has exactly 1 entry (no crossover active).
     /// The engine inside (LR4 IIR vs linear-phase FIR) follows the
-    /// `crossover_type` live option.
+    /// `crossover_type` live option, compared every frame through
+    /// [`BandSetKey`] so a flip rebuilds the bank without a topology change.
     pub(super) crossover_filter_bank: Option<CrossoverBank>,
-    /// The engine the current bank was built for, compared against the live
-    /// option every frame so a flip rebuilds the bank without a topology
-    /// change.
-    pub(super) crossover_built_type: CrossoverType,
-    /// The FIR transition ratio the current bank was built with, compared
-    /// against the live option every frame (only when the FIR engine is
-    /// active) so a tuning change rebuilds the bank live.
-    pub(super) crossover_built_fir_ratio: f32,
     /// Per-object filter states for the crossover bank, keyed by channel index.
     pub(super) crossover_filter_states: Vec<Option<CrossoverStates>>,
     /// Per-channel compensation delays for directly-routed (bed) channels,
@@ -1060,17 +1107,24 @@ impl SpeakerRenderStage {
     /// bands built here would be built from the defaults and thrown away by
     /// the first frame — on a hybrid layout with crossover, the band gain
     /// tables were sampled twice at every start-up.
-    pub(super) fn unbuilt(layout: &SpeakerLayout, num_speakers: usize, sample_rate: u32) -> Self {
+    pub(super) fn unbuilt(
+        control: &Arc<RendererControl>,
+        layout: &SpeakerLayout,
+        num_speakers: usize,
+        sample_rate: u32,
+    ) -> Self {
         Self {
             num_speakers,
             sample_rate,
             render_bands: Vec::new(),
-            render_bands_topology_identity: None,
+            built: None,
+            built_topology: None,
+            requested: None,
+            worker: BandWorker::spawn(Arc::clone(control), num_speakers, sample_rate),
+            synchronous_builds: false,
             unified_table: None,
             table_caches: Vec::new(),
             crossover_filter_bank: None,
-            crossover_built_type: CrossoverType::default(),
-            crossover_built_fir_ratio: 0.0,
             crossover_filter_states: Vec::new(),
             bed_delays: Vec::new(),
             test_noise: crate::speaker_test::PinkNoise::default(),
@@ -1105,13 +1159,15 @@ impl SpeakerRenderStage {
         }
     }
 
-    /// Build the band engines on first use, and rebuild them when the
-    /// published topology changed. Passes the current bands so an
-    /// evaluation-only recompute (unchanged geometry generation) reuses each
-    /// band's triangulated gain model and rebuilds only the evaluation
-    /// wrapper, instead of re-triangulating every band.
+    /// Keep the band engines in step with the published topology and the
+    /// live crossover options. Returns whether it installed a new set.
     ///
-    /// Returns whether it (re)built the bands.
+    /// The render thread builds a set itself only when it has none yet (the
+    /// first frame of a host that did not
+    /// [`prepare`](SpatialRenderer::prepare_speaker_stage) the stage) or in
+    /// synchronous mode (offline renders). Otherwise it asks the worker and
+    /// keeps rendering the installed set until the new one lands: building a
+    /// set samples a gain table per band, which must not stall the audio.
     ///
     /// Deliberately does NOT clear the delay lines: those keep their memory
     /// across topology refreshes (only the crossover filter states reset, as
@@ -1119,34 +1175,77 @@ impl SpeakerRenderStage {
     pub(super) fn refresh_for_topology(
         &mut self,
         control: &Arc<RendererControl>,
-        topology_identity: usize,
-        active_layout: &SpeakerLayout,
+        topology: &Arc<RenderTopology>,
     ) -> Result<bool> {
-        // A `crossover_type` flip — or a FIR transition-ratio change while
-        // that engine is active — rebuilds the bank too, even with the
-        // topology unchanged: those options are live, not part of the
-        // topology.
-        let (requested_type, requested_ratio) = {
-            let live = control.live.read();
-            (live.crossover_type, live.crossover_fir_transition_ratio)
-        };
-        if self.render_bands_topology_identity == Some(topology_identity)
-            && self.crossover_built_type == requested_type
-            && (requested_type != CrossoverType::Fir
-                || self.crossover_built_fir_ratio == requested_ratio)
-        {
-            return Ok(false);
+        let wanted = BandSetKey::wanted(control, topology);
+        let mut installed = false;
+        if let Some(set) = self.worker.take_finished() {
+            // A set the topology or the options moved on from is dropped; so
+            // is a duplicate of the installed one.
+            if self.requested == Some(set.key) {
+                // That request is answered, whether the set is still wanted
+                // or not.
+                self.requested = None;
+            }
+            if set.key == wanted && self.built != Some(wanted) {
+                self.install(set);
+                installed = true;
+            } else {
+                self.worker.retire(Box::new(set));
+            }
         }
-
-        let (render_bands, crossover_filter_bank, crossover_built_type, crossover_built_fir_ratio) =
-            Self::build_crossover(
+        if self.built == Some(wanted) {
+            // Back on the installed set: a pending request for another is
+            // stale, and must be asked again if the key returns to it.
+            self.requested = None;
+            return Ok(installed);
+        }
+        if self.built.is_none() || self.synchronous_builds {
+            let set = Self::build_band_set(
                 control,
-                active_layout,
+                Arc::clone(topology),
+                wanted,
                 self.num_speakers,
                 self.sample_rate,
                 &self.render_bands,
             )?;
-        self.unified_table = Self::build_unified_table(&render_bands, self.num_speakers);
+            self.worker.seed(set.render_bands.clone());
+            self.install(set);
+            self.requested = None;
+            return Ok(true);
+        }
+        if self.requested != Some(wanted) {
+            self.worker.request(Arc::clone(topology), wanted);
+            self.requested = Some(wanted);
+        }
+        Ok(installed)
+    }
+
+    /// Whether a band set has been asked of the worker and not installed yet.
+    pub(super) fn rebuild_pending(&self) -> bool {
+        self.requested.is_some()
+    }
+
+    /// Swap `set` in, reset the state tied to the bands it replaces, and
+    /// hand the replaced bands to the worker to free.
+    fn install(&mut self, set: BandSet) {
+        let BandSet {
+            key,
+            topology,
+            render_bands,
+            crossover_filter_bank,
+            unified_table,
+            speaker_freq_ranges,
+        } = set;
+        let replaced = (
+            self.built_topology.replace(topology),
+            std::mem::replace(&mut self.render_bands, render_bands),
+            std::mem::replace(&mut self.crossover_filter_bank, crossover_filter_bank),
+            std::mem::replace(&mut self.unified_table, unified_table),
+            std::mem::replace(&mut self.speaker_freq_ranges, speaker_freq_ranges),
+        );
+        self.worker.retire(Box::new(replaced));
+        self.built = Some(key);
         // Gains kept for the next block are those of the bands being replaced.
         self.drop_gain_carries();
         // The table identity already rules a stale cell out; emptying the
@@ -1154,23 +1253,49 @@ impl SpeakerRenderStage {
         self.table_caches
             .iter_mut()
             .for_each(CornerCache::invalidate);
-        self.render_bands = render_bands;
-        self.crossover_filter_bank = crossover_filter_bank;
-        self.crossover_built_type = crossover_built_type;
-        self.crossover_built_fir_ratio = crossover_built_fir_ratio;
         self.crossover_filter_states.clear();
         self.bed_delays.clear();
         self.test_filter_states = None;
-        self.speaker_freq_ranges = active_layout
+        self.test_direct_bank = None;
+        self.object_test_filter_states = None;
+        self.crossover_band_scratch.iter_mut().for_each(Vec::clear);
+    }
+
+    /// Build the band set `key` describes, on whichever thread calls it.
+    /// `prev` are bands whose gain models can be reused when the geometry
+    /// did not change.
+    fn build_band_set(
+        control: &Arc<RendererControl>,
+        topology: Arc<RenderTopology>,
+        key: BandSetKey,
+        num_speakers: usize,
+        sample_rate: u32,
+        prev: &[BandRenderer],
+    ) -> Result<BandSet> {
+        let layout = &topology.speaker_layout;
+        let (render_bands, crossover_filter_bank) = Self::build_crossover(
+            control,
+            layout,
+            num_speakers,
+            sample_rate,
+            prev,
+            key.crossover_type,
+            key.fir_ratio,
+        )?;
+        let unified_table = Self::build_unified_table(&render_bands, num_speakers);
+        let speaker_freq_ranges = layout
             .speakers
             .iter()
             .map(|s| (s.freq_low, s.freq_high))
             .collect();
-        self.test_direct_bank = None;
-        self.object_test_filter_states = None;
-        self.crossover_band_scratch.iter_mut().for_each(Vec::clear);
-        self.render_bands_topology_identity = Some(topology_identity);
-        Ok(true)
+        Ok(BandSet {
+            key,
+            topology,
+            render_bands,
+            crossover_filter_bank,
+            unified_table,
+            speaker_freq_ranges,
+        })
     }
 
     /// Longest a test may run without the client refreshing it. A client that
@@ -1606,19 +1731,20 @@ impl SpeakerRenderStage {
 
     /// Build crossover band engines from a speaker layout.
     ///
-    /// Returns `(render_bands, Some(filter_bank), built_type, built_fir_ratio)` when
-    /// the layout defines finite crossover edges on at least one speaker (producing
-    /// ≥ 2 bands), or `(single_band, None, built_type, built_fir_ratio)` when no
-    /// crossover is needed. `render_bands` always has at least one entry. The filter
-    /// engine and FIR transition ratio follow the live options; the values actually
-    /// built are returned so the caller can detect a later change.
+    /// Returns `(render_bands, Some(filter_bank))` when the layout defines
+    /// finite crossover edges on at least one speaker (producing ≥ 2 bands), or
+    /// `(single_band, None)` when no crossover is needed. `render_bands` always
+    /// has at least one entry. The filter engine and FIR transition ratio are
+    /// the ones the set is built for ([`BandSetKey`]).
     fn build_crossover(
         control: &Arc<RendererControl>,
         layout: &SpeakerLayout,
         num_speakers: usize,
         sample_rate: u32,
         prev_bands: &[BandRenderer],
-    ) -> Result<(Vec<BandRenderer>, Option<CrossoverBank>, CrossoverType, f32)> {
+        crossover_type: CrossoverType,
+        fir_transition_ratio: f32,
+    ) -> Result<(Vec<BandRenderer>, Option<CrossoverBank>)> {
         // For each new band, reuse the matching previous band (same speaker subset)
         // so an evaluation-only refresh can keep its triangulated gain model.
         let make_renderer = |b: &FreqBand| {
@@ -1628,10 +1754,6 @@ impl SpeakerRenderStage {
             BandRenderer::from_band(b, layout, num_speakers, control, prev)
         };
 
-        let (crossover_type, fir_transition_ratio) = {
-            let live = control.live.read();
-            (live.crossover_type, live.crossover_fir_transition_ratio)
-        };
         let bands = compute_bands(layout);
         if bands.len() <= 1 {
             let render_bands = bands
@@ -1646,7 +1768,7 @@ impl SpeakerRenderStage {
                 latency_samples: 0,
                 sample_rate,
             });
-            return Ok((render_bands, None, crossover_type, fir_transition_ratio));
+            return Ok((render_bands, None));
         }
 
         let cutoffs: Vec<f32> = bands
@@ -1691,12 +1813,7 @@ impl SpeakerRenderStage {
             sample_rate,
         });
 
-        Ok((
-            render_bands,
-            Some(filter_bank),
-            crossover_type,
-            fir_transition_ratio,
-        ))
+        Ok((render_bands, Some(filter_bank)))
     }
 
     /// Merge the per-band cartesian tables into a single multi-band table so a

@@ -257,6 +257,9 @@ impl Default for ChannelState {
 /// `position_interpolation`).  `compute_gains` always returns full-size `Gains`
 /// (`num_speakers` entries) with zeros for speakers outside this band, enabling
 /// uniform SIMD-friendly accumulation in the render loop.
+/// Cloning is cheap: the engine is shared, so a clone is a handle the band
+/// worker keeps to reuse the gain model.
+#[derive(Clone)]
 pub(super) struct BandRenderer {
     /// Global speaker indices for the speakers in this band.
     pub(super) speaker_indices: Vec<usize>,

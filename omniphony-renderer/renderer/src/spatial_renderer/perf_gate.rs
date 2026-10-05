@@ -136,3 +136,68 @@ fn block_time_steady_is_within_budget() {
 fn block_time_all_objects_moving_is_within_budget() {
     assert_within_budget("all-moving", block_times_us(1));
 }
+
+/// Topology changes gated: a speaker edit or a backend switch republishes the
+/// topology mid-stream.
+const TOPOLOGY_CHANGES: usize = 8;
+
+/// A topology change mid-stream (a speaker moved in Studio): the blocks from
+/// the publish until the new band set is installed keep the deadline, because
+/// the band tables are sampled by the stage's worker, not the render thread.
+///
+/// Gated on the median over the changes of each one's slowest block: a build
+/// back on the render thread blows every change, an OS hiccup only one.
+#[cfg(not(debug_assertions))]
+#[test]
+fn block_time_across_a_topology_change_is_within_budget() {
+    let (mut r, _) = prepared("7.1.4", N_OBJECTS, RampMode::Frame, true, false);
+    let control = r.renderer_control();
+    let pcm = make_pcm(N_OBJECTS);
+    let mut buf = Vec::new();
+    // A macro, not a closure: the fixture's renderer is another instance of
+    // this crate (the dev-dependency cycle), whose type cannot be named here.
+    macro_rules! render {
+        () => {{
+            let start = Instant::now();
+            let frame = r
+                .render_frame(&pcm, N_OBJECTS, &[], std::mem::take(&mut buf), false)
+                .expect("render_frame");
+            let us = start.elapsed().as_secs_f64() * 1e6;
+            buf = frame.samples;
+            buf.clear();
+            us
+        }};
+    }
+    let mut worst_per_change = Vec::with_capacity(TOPOLOGY_CHANGES);
+    for _ in 0..TOPOLOGY_CHANGES {
+        // The recompute thread's part, untimed: the topology it publishes.
+        control.bump_geometry_generation();
+        let plan = control.prepare_topology_rebuild().expect("plan");
+        let topology = plan
+            .build_topology_reusing(Some(&control.active_topology()))
+            .expect("topology");
+        let builds = r.speaker_stage_builds();
+        control.publish_topology(topology);
+
+        let mut worst = render!();
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        while r.speaker_stage_builds() == builds {
+            assert!(Instant::now() < deadline, "the band worker never delivered");
+            worst = worst.max(render!());
+        }
+        // The block after the install, which runs on the new bands.
+        worst_per_change.push(worst.max(render!()));
+    }
+    let median = percentile_us(worst_per_change.clone(), 0.5);
+    println!(
+        "[measure] block_time topology-change: worst block per change {worst_per_change:.1?} µs"
+    );
+    assert!(
+        median / BLOCK_PERIOD_US <= MAX_BLOCK_FRACTION,
+        "topology change: the slowest block around a change takes {:.1} % of the block period \
+         (median over {TOPOLOGY_CHANGES} changes, {median:.1} µs of {BLOCK_PERIOD_US:.1} µs), \
+         over the {:.0} % budget: is the band build back on the render thread?",
+        median / BLOCK_PERIOD_US * 100.0,
+        MAX_BLOCK_FRACTION * 100.0,
+    );
+}

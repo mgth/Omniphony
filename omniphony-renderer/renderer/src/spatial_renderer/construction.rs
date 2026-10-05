@@ -480,6 +480,7 @@ impl SpatialRenderer {
         // `prepare_speaker_stage`), after the host's config seed: see
         // `SpeakerRenderStage::unbuilt`.
         let speaker_stage = super::SpeakerRenderStage::unbuilt(
+            &control,
             &control.active_topology().speaker_layout,
             num_speakers,
             sample_rate,
@@ -591,6 +592,7 @@ impl SpatialRenderer {
         }
         // Rebuilt by the next frame, at the new rate.
         self.speaker_stage = super::SpeakerRenderStage::unbuilt(
+            &self.control,
             &self.control.active_topology().speaker_layout,
             self.num_speakers,
             sample_rate,

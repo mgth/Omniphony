@@ -586,8 +586,36 @@ fn the_published_topology_samples_no_gain_table() {
     assert_eq!(calls.load(Ordering::Relaxed) - before, smoke);
     assert!(!recomputed.backend.has_sampled_table());
     control.publish_topology(recomputed);
+    // The render thread samples nothing for it: it asks the band worker and
+    // keeps rendering the bands it has until the new ones land.
+    let sampled_here = crate::backend_registry::tables_sampled_on_this_thread();
+    let old_band = Arc::clone(r.speaker_stage.render_bands[0].engine().unwrap());
     r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
-    assert_eq!(r.speaker_stage_builds(), 2);
+    assert!(r.speaker_stage_rebuild_pending());
+    assert_eq!(r.speaker_stage_builds(), 1, "the old bands still render");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while r.speaker_stage_rebuild_pending() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never delivered"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
+    }
+    assert_eq!(
+        r.speaker_stage_builds(),
+        2,
+        "the worker's bands are installed"
+    );
+    assert!(!Arc::ptr_eq(
+        &old_band,
+        r.speaker_stage.render_bands[0].engine().unwrap()
+    ));
+    assert_eq!(
+        crate::backend_registry::tables_sampled_on_this_thread(),
+        sampled_here,
+        "no table sampled on the render thread"
+    );
     assert_eq!(calls.load(Ordering::Relaxed) - before, smoke + band_calls);
 
     // An evaluation-only recompute (grid size) reuses the published model.

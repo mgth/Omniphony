@@ -489,9 +489,9 @@ fn mix_is_bit_identical_to_the_sample_major_mix_with_the_fir_crossover() {
     let mut r = build_table_renderer(true, true);
     r.control.live.write().crossover_type = CrossoverType::Fir;
     let topology = r.control.active_topology();
-    let identity = Arc::as_ptr(&topology) as usize;
+    r.speaker_stage.synchronous_builds = true;
     r.speaker_stage
-        .refresh_for_topology(&r.control, identity, &topology.speaker_layout)
+        .refresh_for_topology(&r.control, &topology)
         .unwrap();
     assert!(
         r.speaker_stage
@@ -1044,4 +1044,71 @@ fn stride_stays_close_to_a_lookup_per_sample_on_moving_objects() {
             db(level)
         );
     }
+}
+
+/// A band set that lands after the stage moved back off its key is dropped,
+/// not installed, and asked again if the key returns to it.
+#[test]
+fn a_band_set_for_a_key_left_behind_is_dropped_and_asked_again() {
+    fn wait(stage: &SpeakerRenderStage) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !stage.worker.has_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never delivered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    let mut r = build_table_renderer(true, true);
+    let topology = r.control.active_topology();
+    let first = r.control.live.read().crossover_type;
+    let other = match first {
+        CrossoverType::Lr4 => CrossoverType::Fir,
+        CrossoverType::Fir => CrossoverType::Lr4,
+    };
+    let built = r.speaker_stage.built;
+
+    // Ask for the other engine, then go back before it lands.
+    r.control.live.write().crossover_type = other;
+    assert!(
+        !r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    assert!(r.speaker_stage.rebuild_pending());
+    r.control.live.write().crossover_type = first;
+    assert!(
+        !r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    assert!(!r.speaker_stage.rebuild_pending());
+
+    // It lands, and is dropped.
+    wait(&r.speaker_stage);
+    assert!(
+        !r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    assert_eq!(r.speaker_stage.built, built);
+    assert!(!r.speaker_stage.worker.has_finished());
+
+    // The other engine again: asked again, installed when it lands.
+    r.control.live.write().crossover_type = other;
+    assert!(
+        !r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    assert!(r.speaker_stage.rebuild_pending());
+    wait(&r.speaker_stage);
+    assert!(
+        r.speaker_stage
+            .refresh_for_topology(&r.control, &topology)
+            .unwrap()
+    );
+    assert!(!r.speaker_stage.rebuild_pending());
+    assert_eq!(r.speaker_stage.built.unwrap().crossover_type, other);
 }
