@@ -89,7 +89,10 @@ export function updateAboutRendererVersion() {
   const version = typeof app.renderVersion === 'string' ? app.renderVersion.trim() : '';
   // The liborender host also reports its C-ABI pair; the CLI reports none.
   const abi = typeof app.renderAbi === 'string' ? app.renderAbi.trim() : '';
-  const text = version && abi ? `${version} · ABI ${abi}` : version;
+  // And the bridge_api a decoder bridge must be built against to load in it.
+  const bridgeApi = typeof app.renderBridgeApi === 'string' ? app.renderBridgeApi.trim() : '';
+  let text = version && abi ? `${version} · ABI ${abi}` : version;
+  if (text && bridgeApi) text += ` · bridge_api ${bridgeApi}`;
   if (text) {
     el.textContent = text;
     el.title = withExecutablePath(text);

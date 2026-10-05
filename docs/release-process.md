@@ -10,13 +10,25 @@ amend this file whenever a release teaches something new.
 |---|---|---|---|
 | Omniphony Studio bundle (Tauri host) | `mgth/Omniphony` | `v*` (e.g. `v0.5.1`) | stack version |
 | Omniphony Studio, native host (egui/wgpu) | `mgth/Omniphony` | same `v*` tag, one archive per platform on the same release | stack version (`omniphony-studio-egui/Cargo.toml`, `[workspace.package]`) |
-| Standalone liborender | `mgth/Omniphony` | `liborender-v*` | `orender_ffi` crate version (kept in step with the stack since 0.5.0) |
+| Standalone liborender | `mgth/Omniphony` | same `v*` tag, `liborender-vX.Y.Z-<platform>.zip` assets (its own `liborender-v*` releases stopped at 0.4.3) | stack version |
 | mpv player bundle | assets on `mgth/Omniphony`, source in `mgth/mpv-omniphony` | `mpv-v*` | stack version |
 | mpv fork branches | `mgth/mpv` | `orender-v*` | stack version (plain `v*` collides with upstream mpv's ancient tags) |
 | harletty-bridge | `harletty/harletty-bridge` | `v*` | **its own line** (0.7.x) — never tag it with the stack number |
 
 A patch release usually only involves the first track. Cut the others only when
 their component actually changed.
+
+One number, the **release version**, is carried by both Studios, `orender`,
+`liborender` and every renderer crate except `bridge_api` (the plugin ABI
+contract), `spdif` (required by version from the bridge repository) and the
+OSC contract. Its source of truth is `omniphony-renderer/Cargo.toml`'s
+`[workspace.package] version`; `scripts/release_version.py` moves and checks
+every copy, and CI fails when one is left behind (#676).
+
+Which player and which bridges go with a release is stated in two places kept
+by the same script: the README's **compatibility table** (release, liborender
+ABI, player tag, `bridge_api` series) and the **manifest**
+`omniphony-vX.Y.Z-manifest.json` attached to every release.
 
 ## 1. Preconditions
 
@@ -32,38 +44,44 @@ their component actually changed.
 - CI is green on `main` (`ci.yml`: fmt, build, full test suite incl. doctests).
 - The changes shipping in this release have been validated (the user listens
   live; audio-path changes need that sign-off).
-- Check whether the release also needs `liborender-v*` or `mpv-v*` (see the
-  table above); those have their own steps below.
+- Decide whether the release also needs an `mpv-v*` player release (see the
+  table above; it has its own steps below): the bump names the player tag the
+  release ships with, so the choice is made before the bump, not after.
 
 ## 2. Version bump (PR to `main`)
 
-Never push to `main` directly — open a PR. Six files change (verified at
-0.5.0 `96bccc2` and 0.5.1):
+Never push to `main` directly — open a PR. One command moves every copy of the
+release version:
 
-1. `omniphony-studio/package.json` — `"version"`
-2. `omniphony-studio/package-lock.json` — regenerate with
-   `npm install --package-lock-only` (from `omniphony-studio/`)
-3. `omniphony-studio/src-tauri/Cargo.toml` — `version`
-4. `omniphony-studio/src-tauri/Cargo.lock` — regenerate with
-   `cargo update -p omniphony-studio --offline` (from `src-tauri/`)
-5. `omniphony-studio/src-tauri/tauri.conf.json` — `"version"`
-6. `omniphony-renderer/orender_ffi/Cargo.toml` — `version` (in step with the
-   stack since 0.5.0), then regenerate `omniphony-renderer/Cargo.lock` with
-   `cargo update -p orender_ffi --offline` (from `omniphony-renderer/`). The
-   lockfile is tracked since #481 and names the crate's version; CI builds
-   with `--locked` and rejects a stale entry within a minute (it did at 0.6.0)
-7. `omniphony-studio-egui/Cargo.toml` — `[workspace.package] version`, which
-   the three native Studio crates share (it is the About box's version and
-   what the update check compares against the release tags — a native Studio
-   left at an older number would offer its own release as an update)
-8. `omniphony-studio-egui/Cargo.lock` — regenerate with
-   `cargo update -w --offline` (from `omniphony-studio-egui/`; the three
-   workspace entries move, nothing else)
+```sh
+scripts/release_version.py set X.Y.Z --player mpv-vX.Y.Z
+```
 
-The renderer's root crate keeps its own number: it is not user-visible
-(`orender --version` prints the release tag or the commit).
+`--player` names the `mpv-v*` tag this release ships with: the new one when a
+player release follows (step 7), otherwise leave it out and the previous tag
+stays. The script rewrites, keeping their formatting:
 
-Merge the PR once CI is green.
+- `omniphony-renderer/Cargo.toml` — `[workspace.package] version` (every
+  renderer crate but `bridge_api`/`spdif` inherits it) and
+  `[workspace.metadata.release] player`;
+- `omniphony-renderer/omniphony_geometry/Cargo.toml` (spelled out: the Studios
+  build it from outside the workspace);
+- `omniphony-studio-egui/Cargo.toml` — `[workspace.package] version`, the
+  native Studio's About box and what its update check compares against tags;
+- `omniphony-studio/package.json`, `package-lock.json` (both of its fields),
+  `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`;
+- the entries of the repository's own crates in the three tracked lockfiles
+  (`omniphony-renderer/`, `omniphony-studio/src-tauri/` — which also records
+  the native Studio's core — and `omniphony-studio-egui/`). CI builds with
+  `--locked` and rejects a stale entry within a minute (it did at 0.6.0);
+- the README's compatibility table: a new first row for `vX.Y.Z`, read from the
+  tree (liborender ABI from `orender_ffi/src/lib.rs`, `bridge_api` series from
+  its crate).
+
+It ends with `check --tag vX.Y.Z`, the same check the release guard runs.
+Commit everything it touched, open the PR, merge once CI is green. `orender
+--version` prints the release tag or the commit, and a tarball build (AUR)
+now stamps the release version rather than a stale crate number.
 
 ## 3. Promote `main` → `release`
 
@@ -89,7 +107,12 @@ git push origin vX.Y.Z
 
 The tag push triggers `release.yml`:
 
-- **guard** — rejects tags whose SHA is not on `origin/release`.
+- **guard** — rejects tags whose SHA is not on `origin/release`, and runs
+  `scripts/release_version.py check --tag`: the tag must be `vX.Y.Z` (or a
+  `vX.Y.Z.N` polish tag) of the tree's release version, and the README's
+  compatibility table must open with this release's row. A polish tag on a
+  tree whose liborender ABI or `bridge_api` moved since the row was written
+  is refused: that is a new release number, not a polish build.
 - **build-studio** — Linux (`.deb`/`.rpm`/`.AppImage`), Windows
   (`.msi`/`.exe`), macOS arm64 (`.dmg`/`.app.tar.gz`, ad-hoc signed, not
   notarized). tauri-action creates a **draft** release named
@@ -100,10 +123,16 @@ The tag push triggers `release.yml`:
   `omniphony-studio-egui-vX.Y.Z-{linux-x86_64.tar.gz,windows-x86_64.zip,macos-arm64.zip}`
   to the draft with `gh release upload` — the Studio, the `orender` sidecar
   the Tauri build just prepared (same commit), `layouts/`, `assets/` and the
-  licence, in one directory. Three more assets, **ten** in all. The Studio
+  licence, in one directory. Three more assets. The Studio
   finds those files next to its executable (`core/src/host/bundle.rs`); no
   installer, no engine deploy for mpv (that stays the Tauri bundle's job, or
   the `orender` package's).
+- **standalone liborender**, same job: the engine library the sidecar step
+  built, with `orender.h`, as `liborender-vX.Y.Z-{linux-x86_64,windows-x86_64,macos-arm64}.zip`
+  (flat, like the old `liborender-v*` archives). Three more assets.
+- **manifest**, after the three builds: `omniphony-vX.Y.Z-manifest.json` —
+  the README row as JSON, plus the commit. One more asset, **fourteen** in
+  all.
 
 The draft's URL is `releases/tag/untagged-<hash>` until it is published —
 that is normal, not a broken tag association; it becomes `releases/tag/vX.Y.Z`
@@ -152,18 +181,18 @@ gh release edit vX.Y.Z --repo mgth/Omniphony --notes-file notes.md
 gh release edit vX.Y.Z --repo mgth/Omniphony --draft=false --latest
 ```
 
-Only the Studio bundle `v*` release is marked `--latest`; `liborender-v*` and
-`mpv-v*` are published not-latest.
+Only the Studio bundle `v*` release is marked `--latest`; `mpv-v*` is
+published not-latest.
 
 To verify the latest marker, use `gh api repos/mgth/Omniphony/releases/latest`
 — `gh release view --json` has no `isLatest` field.
 
-## 6. Optional: standalone liborender release
+## 6. Standalone liborender — no separate release any more
 
-Tag `liborender-v<orender_ffi crate version>` on `release`.
-`liborender-release.yml` has **two** guards: the tag must be on `release`
-**and** must equal the `orender_ffi` crate version. Builds a draft with the
-standalone `.so`/`.dll`/`.dylib`. Skipped at 0.5.0 and 0.5.1.
+Until 0.6.0 liborender had its own `liborender-v*` tags and workflow, only
+ever built when someone tagged it, and its line drifted from the Studio's
+(`liborender-v0.4.3` without a `v0.4.3`). Its archives are now assets of every
+`v*` release (step 4) under the release version; nothing to tag.
 
 ## 7. Optional: mpv-omniphony bundle release
 
@@ -247,7 +276,7 @@ truth: `packaging/arch/` in this repo, `packaging/` in mpv-omniphony).
 | `omniphony-studio-egui` | every `v*` release (from 0.6.0; template in `packaging/arch/omniphony-studio-egui`, depends on `orender` and links its layouts) |
 | `mpv-omniphony` | when an `mpv-v*` bundle was cut: `_tag`, `depends=('orender>=X.Y.Z')` (the release-train couple) |
 | `mpv-omniphony-fel` | with mpv-omniphony; `_tag` names the tag whose `patches-master/` apply to `_mpvcommit` — at 0.6.0 the FEL beta tag `v0.6.0-fel-beta.2` (the master-track rebase), with `pkgver=0.6.0` — and `_mpvcommit` the mpv master SHA those patches were rebased on and a build verified (`makepkg -fCd` itself, or `scripts/build-fel-local.sh`) |
-| `harletty-bridge` | on its own line only (0.7.x, 0.8.x…) — never the stack number. Its `_omniver` names the Omniphony source tag the bridge's path-deps (`bridge_api`/`spdif`/`sys`) are taken from: the current Studio `v*` tag, fetched as the `v<_omniver>` archive (directory `Omniphony-<_omniver>`) — the `liborender-v*` tag is optional and did not exist at 0.6.0, which the PKGBUILD used to fetch |
+| `harletty-bridge` | on its own line only (0.7.x, 0.8.x…) — never the stack number. Its `_omniver` names the Omniphony source tag the bridge's path-deps (`bridge_api`/`spdif`/`sys`) are taken from: the current Studio `v*` tag, fetched as the `v<_omniver>` archive (directory `Omniphony-<_omniver>`) — not a `liborender-v*` tag, which the PKGBUILD used to fetch and which no longer exists past 0.4.3 |
 
 The templates in `packaging/arch/` are kept in step with the AUR clones (the
 clones had drifted ahead — licence fix, engine resource — until 0.6.0 synced
