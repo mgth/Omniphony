@@ -1,6 +1,8 @@
 [package]
 name = "omniphony_geometry"
-version = "0.1.0"
+# The release version, spelled out rather than inherited (see below);
+# `scripts/release_version.py set` moves it with the workspace's.
+version = "0.6.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Canonical coordinate, angle and room-geometry math shared by the Omniphony renderer and Studio"
