@@ -2,8 +2,9 @@ name: Release
 
 # Triggered by a version tag (v*) or manually.
 # Creates a draft GitHub release with Linux (.deb, .AppImage), Windows (.msi,
-# .exe) and macOS arm64 (.dmg/.app) bundles of the Tauri Studio, plus one
-# archive per platform of the native (egui/wgpu) Studio.
+# .exe) and macOS arm64 (.dmg/.app) bundles of the Tauri Studio, one archive
+# per platform of the native (egui/wgpu) Studio and of the standalone
+# liborender, and the release's compatibility manifest (#676).
 on:
   push:
     tags: ['v*']
@@ -15,7 +16,7 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: Tag must be on the release branch
@@ -28,6 +29,14 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME ($GITHUB_SHA) is not on the 'release' branch. Cut release tags from 'release' (merge main->release, then tag)."
             exit 1
           fi
+      # One number names the Studios, orender and liborender (#676): the tag
+      # must be it (or a vX.Y.Z.N polish tag of it), every copy of it in the
+      # tree must agree, and the README's compatibility table must already
+      # carry this release's row — `scripts/release_version.py set` writes all
+      # of that in the version bump PR.
+      - name: Tag must name the release version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python3 scripts/release_version.py check --tag "$GITHUB_REF_NAME"
 
   build-studio:
     needs: guard
@@ -49,20 +58,18 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       # ── Toolchains ────────────────────────────────────────────────────────
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 20
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         # Caching is an optimization, not a correctness step: a crash of the
         # cache action (e.g. the Node-20 entrypoint forced onto Node 24 dying on
         # the Windows runner) must never fail the build.
@@ -155,7 +162,7 @@ jobs:
       # prepare-sidecar compiles orender (cargo build --release) and copies
       # the binary into src-tauri/binaries/ before Tauri packages the app.
       - name: Build and publish
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # "-" = ad-hoc codesign of the whole .app during bundling (before the
@@ -197,7 +204,7 @@ jobs:
       # pins a newer rustc than the renderer's, and rustup installs it when
       # cargo runs from inside the directory.
       - name: Cache the native Studio build
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         with:
           path: omniphony-studio-egui/target
@@ -238,8 +245,43 @@ jobs:
           esac
           echo "archive=staging/$archive" >> "$GITHUB_ENV"
 
+      # ── Standalone liborender ─────────────────────────────────────────────
+      # The engine library the sidecar step built from this commit, with its C
+      # header, for the player and any other host linking it outside Studio.
+      # It used to be a release of its own under liborender-v* tags, which
+      # drifted from the Studio line and only ever built when tagged by hand;
+      # it now ships with every release, under the release's number (#676).
+      - name: Stage the liborender archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)   platform=linux-x86_64;   lib=liborender.so ;;
+            Windows) platform=windows-x86_64; lib=orender.dll ;;
+            macOS)   platform=macos-arm64;    lib=liborender.dylib ;;
+            *) echo "unexpected runner OS: $RUNNER_OS" >&2; exit 1 ;;
+          esac
+          name="liborender-${GITHUB_REF_NAME}-${platform}"
+          mkdir -p "staging/$name"
+          cp "omniphony-renderer/target/release/$lib" \
+            omniphony-renderer/orender_ffi/include/orender.h "staging/$name/"
+          cd "staging/$name"
+          # Flat, as the liborender-v* archives were: the library and the
+          # header at the archive's root.
+          case "$RUNNER_OS" in
+            Windows) 7z a -tzip "../$name.zip" ./* > /dev/null ;;
+            *)       zip -q "../$name.zip" ./* ;;
+          esac
+          echo "liborender_archive=staging/$name.zip" >> "$GITHUB_ENV"
+
+      - name: Upload the liborender archive (workflow artifact)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: liborender-${{ runner.os }}
+          path: ${{ env.liborender_archive }}
+
       - name: Upload the native Studio archive (workflow artifact)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: studio-egui-${{ runner.os }}
           path: ${{ env.archive }}
@@ -248,9 +290,48 @@ jobs:
       # draft by its tag name (drafts have no ref yet, so the tag lookup alone
       # would miss it). A manual dispatch has no tag and no draft: the
       # workflow artifact above is its output.
-      - name: Attach the native Studio archive to the draft release
+      - name: Attach the native Studio and liborender archives to the draft release
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" "$archive" --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          gh release upload "$GITHUB_REF_NAME" "$archive" "$liborender_archive" \
+            --clobber --repo "$GITHUB_REPOSITORY"
+
+  # What this release goes with (#676): its version, the liborender ABI, the
+  # player tag and the bridge_api series a decoder bridge must be built
+  # against — the README's compatibility row, as JSON, for tools and for
+  # anyone holding only the downloaded files. After the builds, so it lands
+  # on the draft they created and only on a release that built everywhere.
+  manifest:
+    needs: build-studio
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Write the compatibility manifest
+        run: |
+          set -euo pipefail
+          manifest="omniphony-${GITHUB_REF_NAME}-manifest.json"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            python3 scripts/release_version.py manifest --tag "$GITHUB_REF_NAME" > "$manifest"
+          else
+            python3 scripts/release_version.py manifest > "$manifest"
+          fi
+          cat "$manifest"
+          echo "manifest=$manifest" >> "$GITHUB_ENV"
+
+      - name: Upload the manifest (workflow artifact)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: manifest
+          path: ${{ env.manifest }}
+
+      - name: Attach the manifest to the draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" "$manifest" --clobber --repo "$GITHUB_REPOSITORY"

@@ -37,7 +37,13 @@ impl GaintableCache {
         if let Some(cached) = self.inner.read().unwrap().clone() {
             return Some(cached);
         }
-        let full = ctx.renderer.build_band_gaintable_full().ok()?;
+        // Display data for the Studio. Built at background priority on a
+        // thread of its own, so it never takes a CPU from the render thread
+        // and the control thread keeps its priority.
+        let full = renderer::background_pool::run_in_background(|| {
+            ctx.renderer.build_band_gaintable_full()
+        })
+        .ok()?;
         let arc = Arc::new(full);
         *self.inner.write().unwrap() = Some(Arc::clone(&arc));
         Some(arc)

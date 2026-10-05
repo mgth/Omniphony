@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "omniphony_geometry"
-version = "0.1.0"
+version = "0.6.0"
 
 [[package]]
 name = "once_cell"
