@@ -248,6 +248,9 @@ fn fade_out(ir: &mut [f32], fade: usize) {
     }
 }
 
+/// Longest `Data.Delay` a set may declare, in seconds.
+const MAX_DATA_DELAY_S: f32 = 1.0;
+
 impl BrirSet {
     /// Build a set from raw SOFA arrays. Errors name the shape or geometry
     /// problem; a set that comes out silent is refused rather than rendered.
@@ -263,7 +266,12 @@ impl BrirSet {
         if m == 0 || e == 0 || n == 0 {
             anyhow::bail!("empty set (M = {m}, E = {e}, N = {n})");
         }
-        if raw.data_ir.len() != m * r * e * n {
+        // The dimensions come from the file: their product must not wrap.
+        let expected = m
+            .checked_mul(r)
+            .and_then(|v| v.checked_mul(e))
+            .and_then(|v| v.checked_mul(n));
+        if expected != Some(raw.data_ir.len()) {
             anyhow::bail!(
                 "Data.IR holds {} values for M×R×E×N = {}×{}×{}×{}",
                 raw.data_ir.len(),
@@ -273,12 +281,28 @@ impl BrirSet {
                 n
             );
         }
-        if !raw.sample_rate.is_finite() || raw.sample_rate <= 0.0 {
+        // A NaN would pass the silence guard (max skips it) and reach the
+        // convolver, which would then output nothing but NaN.
+        if let Some(i) = raw.data_ir.iter().position(|v| !v.is_finite()) {
+            anyhow::bail!("Data.IR value {i} is not finite ({})", raw.data_ir[i]);
+        }
+        if !raw.sample_rate.is_finite() || raw.sample_rate < 1.0 {
             anyhow::bail!("invalid sampling rate {}", raw.sample_rate);
         }
         let file_rate = raw.sample_rate.round() as u32;
         if engine_rate == 0 {
             anyhow::bail!("engine rate is zero");
+        }
+        // Data.Delay pads each response with that many samples; a direct-path
+        // delay is milliseconds. One past a second is a broken file, and
+        // honouring it would allocate the padding for every response.
+        let max_delay = file_rate as f32 * MAX_DATA_DELAY_S;
+        if let Some(d) = raw
+            .data_delay
+            .iter()
+            .find(|d| d.is_finite() && **d > max_delay)
+        {
+            anyhow::bail!("Data.Delay of {d} samples is implausible (over {MAX_DATA_DELAY_S} s)");
         }
 
         // --- geometry: (measurement, emitter slot) → (emitter, orientation)
@@ -1129,6 +1153,73 @@ mod tests {
         s.ir.pop();
         let err = BrirSet::from_raw(&s.raw(), 48000, &BrirLoadOptions::default()).unwrap_err();
         assert!(err.to_string().contains("Data.IR holds"), "{err}");
+    }
+
+    fn refusal(s: &Synth, engine_rate: u32) -> String {
+        match BrirSet::from_raw(&s.raw(), engine_rate, &BrirLoadOptions::default()) {
+            Ok(_) => panic!("the set was accepted"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    /// Each field a file can get wrong is refused with what is wrong, before
+    /// anything is allocated from it.
+    #[test]
+    fn a_malformed_set_is_refused_with_its_reason() {
+        let good = || multi_speaker(&[0.0, 30.0], &[0.0], 200, 48000.0, 0.0);
+        BrirSet::from_raw(&good().raw(), 48000, &BrirLoadOptions::default())
+            .expect("the control set is valid");
+
+        let mut s = good();
+        s.r = 1;
+        assert!(refusal(&s, 48000).contains("needs the two ears"));
+        for field in 0..3 {
+            let mut s = good();
+            match field {
+                0 => s.m = 0,
+                1 => s.e = 0,
+                _ => s.n = 0,
+            }
+            assert!(refusal(&s, 48000).contains("empty set"), "field {field}");
+        }
+        // Dimensions whose product wraps around: refused, not trusted.
+        let mut s = good();
+        s.m = usize::MAX / 2 + 1;
+        assert!(refusal(&s, 48000).contains("Data.IR holds"));
+
+        for rate in [0.0, 0.4, -48000.0, f32::NAN, f32::INFINITY] {
+            let mut s = good();
+            s.rate = rate;
+            assert!(
+                refusal(&s, 48000).contains("invalid sampling rate"),
+                "rate {rate}"
+            );
+        }
+        assert!(refusal(&good(), 0).contains("engine rate is zero"));
+
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut s = good();
+            s.ir[5] = bad;
+            assert!(refusal(&s, 48000).contains("not finite"), "{bad}");
+        }
+
+        // An emitter on the listener has no direction.
+        let mut s = good();
+        s.emitter[..3].fill(0.0);
+        assert!(refusal(&s, 48000).contains("sits on the listener"));
+    }
+
+    #[test]
+    fn an_implausible_data_delay_is_refused_before_it_is_allocated() {
+        let mut s = multi_speaker(&[0.0], &[0.0], 200, 48000.0, 0.0);
+        // [R]: a right ear "delayed" by ten billion samples (40 GB of padding).
+        s.delay = vec![0.0, 1e10];
+        assert!(refusal(&s, 48000).contains("Data.Delay"));
+        // Up to a second is honoured; negative and NaN delays read as none.
+        s.delay = vec![f32::NAN, 48000.0];
+        BrirSet::from_raw(&s.raw(), 48000, &BrirLoadOptions::default()).expect("one second");
+        s.delay = vec![-5.0, 0.0];
+        BrirSet::from_raw(&s.raw(), 48000, &BrirLoadOptions::default()).expect("negative");
     }
 
     /// End-to-end through the SOFA reader on files generated outside the
