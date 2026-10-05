@@ -493,6 +493,8 @@ impl<R: Resampler<f32>> OutputCallbackCore<R> {
         };
 
         if far.hold_low_recover {
+            // The ratio goes back to nominal, and so does the rate on display.
+            hold_servo_at_rest(shared);
             if !low_recover_was_active {
                 resampler.reset();
                 let _ = resampler.set_resample_ratio(*configured_ratio, false);
@@ -706,9 +708,7 @@ impl<R: Resampler<f32>> OutputCallbackCore<R> {
         let telemetry = &shared.telemetry;
 
         if far.hold_low_recover {
-            shared
-                .native_rate
-                .store(1.0f32.to_bits(), Ordering::Relaxed);
+            hold_servo_at_rest(shared);
         }
 
         if far.recovery_reacquire_pending {
@@ -852,12 +852,7 @@ fn acknowledge_reacquire(
     shared: &CallbackShared,
     pacer: Option<&PacerLink>,
 ) {
-    shared
-        .rate_adjust
-        .store(1.0f32.to_bits(), Ordering::Relaxed);
-    shared
-        .native_rate
-        .store(1.0f32.to_bits(), Ordering::Relaxed);
+    hold_servo_at_rest(shared);
     runtime.recovery_reacquire_pending = false;
     runtime.pre_bridge_offset_initialized = false;
     runtime.pre_bridge_offset_accum = 0;
@@ -866,6 +861,17 @@ fn acknowledge_reacquire(
         pacer.flush_requested.store(true, Ordering::Release);
         pacer.pre_roll_complete.store(false, Ordering::Relaxed);
     }
+}
+
+/// A low recover holds the stream at its nominal rate: publish that, so the
+/// display does not keep a correction no longer applied.
+fn hold_servo_at_rest(shared: &CallbackShared) {
+    shared
+        .rate_adjust
+        .store(1.0f32.to_bits(), Ordering::Relaxed);
+    shared
+        .native_rate
+        .store(1.0f32.to_bits(), Ordering::Relaxed);
 }
 
 fn count_discards(total: &mut u64, telemetry: &OutputTelemetry, dropped: usize) {
@@ -1147,6 +1153,38 @@ mod tests {
         rig.run_until_playing(TARGET - pacer_samples);
         assert!(flush_requested.load(Ordering::Relaxed));
         assert!(!pre_roll_complete.load(Ordering::Relaxed));
+    }
+
+    /// A low recover holds the ratio at nominal, so the rate it publishes is
+    /// nominal too: a correction left on display would be one no longer
+    /// applied.
+    #[test]
+    fn a_low_recover_publishes_the_servo_at_rest() {
+        for (resampled, width) in [(false, CHANNELS), (true, CHANNELS), (true, 6)] {
+            let config = AdaptiveResamplingConfig {
+                hard_recover_low_in_far_mode: true,
+                ..Default::default()
+            };
+            let mut rig = rig(resampled, width, config, None);
+            rig.run_until_playing(TARGET);
+            // A correction in force, as the servo leaves it.
+            rig.shared
+                .rate_adjust
+                .store(0.9999f32.to_bits(), Ordering::Relaxed);
+            if resampled {
+                rig.core.state.resampler.effective_ratio = 1.0001;
+            }
+            // The ring runs dry, through the low-recover entry.
+            for _ in 0..200 {
+                rig.callback();
+                if rig.shared.adaptive_runtime_state() == Some("low-recover") {
+                    break;
+                }
+            }
+            assert_eq!(rig.shared.adaptive_runtime_state(), Some("low-recover"));
+            assert_eq!(rig.shared.rate_adjust(), 1.0, "resampled={resampled}");
+            assert_eq!(rig.core.state.resampler.effective_ratio, 1.0);
+        }
     }
 
     #[test]
