@@ -21,8 +21,8 @@ use crate::crossover::{
 };
 use crate::delay_line::IntegerDelay;
 use crate::live_params::{
-    CrossoverType, MAX_SAMPLE_RAMP_STRIDE, ObjectLiveParams, RampMode, RenderTopology,
-    RendererControl,
+    CrossoverInfo, CrossoverType, MAX_SAMPLE_RAMP_STRIDE, ObjectLiveParams, RampMode,
+    RenderTopology, RendererControl,
 };
 use crate::ramp_strategy::{RampContext, RampStrategy};
 use crate::render_backend::{CornerCache, MultiBandTable};
@@ -39,7 +39,7 @@ use super::{GAIN_SLEW_SECS, SpatialRenderer};
 use crate::ramp_strategy::RampProgress;
 
 mod band_worker;
-use band_worker::BandWorker;
+use band_worker::{BandWorker, FailedBuild, Finished};
 
 /// What a band set is built for: the published topology and the crossover
 /// options that are live rather than part of it. Two sets with the same key
@@ -77,6 +77,9 @@ pub(super) struct BandSet {
     topology: Arc<RenderTopology>,
     render_bands: Vec<BandRenderer>,
     crossover_filter_bank: Option<CrossoverBank>,
+    /// The facts about that bank, published on the control when the set is
+    /// installed: a set that is dropped instead must not be advertised.
+    crossover_info: CrossoverInfo,
     unified_table: Option<MultiBandTable>,
     speaker_freq_ranges: Vec<(Option<f32>, Option<f32>)>,
 }
@@ -96,8 +99,11 @@ pub(super) struct SpeakerRenderStage {
     /// The topology they were built for, kept so its address — the key —
     /// stays unique while they are installed.
     built_topology: Option<Arc<RenderTopology>>,
-    /// The set last asked of the worker and not installed yet.
+    /// The set last asked of the worker and not answered yet.
     requested: Option<BandSetKey>,
+    /// The key the worker last failed to build a set for, while it is still
+    /// the one wanted: not asked again until the key has moved off it.
+    failed: Option<FailedBuild>,
     /// Builds band sets off the render thread, and frees the retired ones.
     worker: BandWorker,
     /// Build band sets on the render thread, on the frame that needs them —
@@ -1120,6 +1126,7 @@ impl SpeakerRenderStage {
             built: None,
             built_topology: None,
             requested: None,
+            failed: None,
             worker: BandWorker::spawn(Arc::clone(control), num_speakers, sample_rate),
             synchronous_builds: false,
             unified_table: None,
@@ -1167,7 +1174,9 @@ impl SpeakerRenderStage {
     /// [`prepare`](SpatialRenderer::prepare_speaker_stage) the stage) or in
     /// synchronous mode (offline renders). Otherwise it asks the worker and
     /// keeps rendering the installed set until the new one lands: building a
-    /// set samples a gain table per band, which must not stall the audio.
+    /// set samples a gain table per band, which must not stall the audio. A
+    /// set the worker could not build is not asked again while the key stays
+    /// on it; the installed one renders on.
     ///
     /// Deliberately does NOT clear the delay lines: those keep their memory
     /// across topology refreshes (only the crossover filter states reset, as
@@ -1179,20 +1188,40 @@ impl SpeakerRenderStage {
     ) -> Result<bool> {
         let wanted = BandSetKey::wanted(control, topology);
         let mut installed = false;
-        if let Some(set) = self.worker.take_finished() {
-            // A set the topology or the options moved on from is dropped; so
-            // is a duplicate of the installed one.
-            if self.requested == Some(set.key) {
-                // That request is answered, whether the set is still wanted
-                // or not.
-                self.requested = None;
+        match self.worker.take_finished() {
+            Some(Finished::Set(set)) => {
+                // A set the topology or the options moved on from is dropped;
+                // so is a duplicate of the installed one.
+                if self.requested == Some(set.key) {
+                    // That request is answered, whether the set is still
+                    // wanted or not.
+                    self.requested = None;
+                }
+                if set.key == wanted && self.built != Some(wanted) {
+                    self.install(control, set);
+                    installed = true;
+                } else {
+                    self.worker.retire(Box::new(set));
+                }
             }
-            if set.key == wanted && self.built != Some(wanted) {
-                self.install(set);
-                installed = true;
-            } else {
-                self.worker.retire(Box::new(set));
+            Some(Finished::Failed(failed)) => {
+                // Answered too: there will be no set for that key.
+                if self.requested == Some(failed.key) {
+                    self.requested = None;
+                }
+                self.forget_failure();
+                self.failed = Some(failed);
             }
+            None => {}
+        }
+        // A failure only holds while the key stays on it, and its set is
+        // still missing: the build is asked again if the key comes back.
+        if self
+            .failed
+            .as_ref()
+            .is_some_and(|f| f.key != wanted || self.built == Some(wanted))
+        {
+            self.forget_failure();
         }
         if self.built == Some(wanted) {
             // Back on the installed set: a pending request for another is
@@ -1210,33 +1239,67 @@ impl SpeakerRenderStage {
                 &self.render_bands,
             )?;
             self.worker.seed(set.render_bands.clone());
-            self.install(set);
+            self.install(control, set);
             self.requested = None;
             return Ok(true);
         }
-        if self.requested != Some(wanted) {
-            self.worker.request(Arc::clone(topology), wanted);
-            self.requested = Some(wanted);
+        if self.requested != Some(wanted) && self.failed.is_none() {
+            if self.worker.request(Arc::clone(topology), wanted) {
+                self.requested = Some(wanted);
+            } else {
+                // The worker is gone, which only a panic outside a build can
+                // do: nothing will answer, so this is a failed build too.
+                self.failed = Some(FailedBuild {
+                    key: wanted,
+                    topology: Arc::clone(topology),
+                });
+                control.report_band_build_error(
+                    "Speaker stage: the band worker is gone, band engines not rebuilt; \
+                     the previous ones keep rendering"
+                        .to_string(),
+                );
+            }
         }
         Ok(installed)
     }
 
-    /// Whether a band set has been asked of the worker and not installed yet.
+    /// Whether a band set has been asked of the worker and not answered yet:
+    /// neither installed nor failed.
     pub(super) fn rebuild_pending(&self) -> bool {
         self.requested.is_some()
     }
 
-    /// Swap `set` in, reset the state tied to the bands it replaces, and
-    /// hand the replaced bands to the worker to free.
-    fn install(&mut self, set: BandSet) {
+    /// Whether the worker failed to build the set the stage last wanted: the
+    /// previous bands keep rendering, and the reason is on the control
+    /// ([`RendererControl::take_band_build_error`]) and in the log.
+    pub(super) fn rebuild_failed(&self) -> bool {
+        self.failed.is_some()
+    }
+
+    /// Drop the remembered failure, its topology freed by the worker.
+    fn forget_failure(&mut self) {
+        if let Some(failed) = self.failed.take() {
+            self.worker.retire(Box::new(failed));
+        }
+    }
+
+    /// Swap `set` in, publish its crossover facts, reset the state tied to
+    /// the bands it replaces, and hand the replaced bands to the worker to
+    /// free.
+    fn install(&mut self, control: &RendererControl, set: BandSet) {
         let BandSet {
             key,
             topology,
             render_bands,
             crossover_filter_bank,
+            crossover_info,
             unified_table,
             speaker_freq_ranges,
         } = set;
+        // Here, not where the set is built: the control must name the bank
+        // that renders, and a set built for a key since left is never that.
+        control.set_crossover_info(crossover_info);
+        self.forget_failure();
         let replaced = (
             self.built_topology.replace(topology),
             std::mem::replace(&mut self.render_bands, render_bands),
@@ -1273,9 +1336,10 @@ impl SpeakerRenderStage {
         prev: &[BandRenderer],
     ) -> Result<BandSet> {
         let layout = &topology.speaker_layout;
-        let (render_bands, crossover_filter_bank) = Self::build_crossover(
+        let (render_bands, crossover_filter_bank, crossover_info) = Self::build_crossover(
             control,
             layout,
+            topology.geometry_generation,
             num_speakers,
             sample_rate,
             prev,
@@ -1293,6 +1357,7 @@ impl SpeakerRenderStage {
             topology,
             render_bands,
             crossover_filter_bank,
+            crossover_info,
             unified_table,
             speaker_freq_ranges,
         })
@@ -1731,27 +1796,32 @@ impl SpeakerRenderStage {
 
     /// Build crossover band engines from a speaker layout.
     ///
-    /// Returns `(render_bands, Some(filter_bank))` when the layout defines
-    /// finite crossover edges on at least one speaker (producing ≥ 2 bands), or
-    /// `(single_band, None)` when no crossover is needed. `render_bands` always
-    /// has at least one entry. The filter engine and FIR transition ratio are
-    /// the ones the set is built for ([`BandSetKey`]).
+    /// Returns `(render_bands, Some(filter_bank), info)` when the layout
+    /// defines finite crossover edges on at least one speaker (producing ≥ 2
+    /// bands), or `(single_band, None, info)` when no crossover is needed.
+    /// `render_bands` always has at least one entry. The filter engine and
+    /// FIR transition ratio are the ones the set is built for
+    /// ([`BandSetKey`]); `info` describes the result, for the control once
+    /// the set is installed. `geometry_generation` is the one of the topology
+    /// `layout` comes from, which the band gain models are built for.
+    #[allow(clippy::too_many_arguments)]
     fn build_crossover(
         control: &Arc<RendererControl>,
         layout: &SpeakerLayout,
+        geometry_generation: u64,
         num_speakers: usize,
         sample_rate: u32,
         prev_bands: &[BandRenderer],
         crossover_type: CrossoverType,
         fir_transition_ratio: f32,
-    ) -> Result<(Vec<BandRenderer>, Option<CrossoverBank>)> {
+    ) -> Result<(Vec<BandRenderer>, Option<CrossoverBank>, CrossoverInfo)> {
         // For each new band, reuse the matching previous band (same speaker subset)
         // so an evaluation-only refresh can keep its triangulated gain model.
         let make_renderer = |b: &FreqBand| {
             let prev = prev_bands
                 .iter()
                 .find(|p| p.speaker_indices == b.speaker_indices);
-            BandRenderer::from_band(b, layout, num_speakers, control, prev)
+            BandRenderer::from_band(b, layout, geometry_generation, num_speakers, control, prev)
         };
 
         let bands = compute_bands(layout);
@@ -1760,15 +1830,15 @@ impl SpeakerRenderStage {
                 .iter()
                 .map(make_renderer)
                 .collect::<Result<Vec<_>>>()?;
-            control.set_crossover_info(crate::live_params::CrossoverInfo {
+            let info = CrossoverInfo {
                 engine: crossover_type,
                 bands: 1,
                 cutoffs_hz: Vec::new(),
                 taps: None,
                 latency_samples: 0,
                 sample_rate,
-            });
-            return Ok((render_bands, None));
+            };
+            return Ok((render_bands, None, info));
         }
 
         let cutoffs: Vec<f32> = bands
@@ -1801,7 +1871,7 @@ impl SpeakerRenderStage {
             filter_bank.latency_samples(),
         );
 
-        control.set_crossover_info(crate::live_params::CrossoverInfo {
+        let info = CrossoverInfo {
             engine: crossover_type,
             bands: bands.len(),
             cutoffs_hz: cutoffs,
@@ -1811,9 +1881,9 @@ impl SpeakerRenderStage {
             },
             latency_samples: filter_bank.latency_samples(),
             sample_rate,
-        });
+        };
 
-        Ok((render_bands, Some(filter_bank)))
+        Ok((render_bands, Some(filter_bank), info))
     }
 
     /// Merge the per-band cartesian tables into a single multi-band table so a

@@ -1094,6 +1094,11 @@ fn a_band_set_for_a_key_left_behind_is_dropped_and_asked_again() {
     );
     assert_eq!(r.speaker_stage.built, built);
     assert!(!r.speaker_stage.worker.has_finished());
+    assert_eq!(
+        r.control.crossover_info().expect("crossover info").engine,
+        first,
+        "the control names the bank that renders, not the one dropped"
+    );
 
     // The other engine again: asked again, installed when it lands.
     r.control.live.write().crossover_type = other;
@@ -1111,4 +1116,8 @@ fn a_band_set_for_a_key_left_behind_is_dropped_and_asked_again() {
     );
     assert!(!r.speaker_stage.rebuild_pending());
     assert_eq!(r.speaker_stage.built.unwrap().crossover_type, other);
+    assert_eq!(
+        r.control.crossover_info().expect("crossover info").engine,
+        other
+    );
 }

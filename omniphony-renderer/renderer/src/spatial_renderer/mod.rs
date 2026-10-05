@@ -443,12 +443,21 @@ impl SpatialRenderer {
     }
 
     /// `true` while a band set for a new topology or crossover setting has
-    /// been asked of the speaker stage's worker and not installed yet: frames
+    /// been asked of the speaker stage's worker and not answered yet: frames
     /// rendered meanwhile still use the previous bands. Like
     /// [`Self::binaural_rebuild_pending`], for callers that need the change
-    /// in effect.
+    /// in effect; once it clears, [`Self::speaker_stage_rebuild_failed`]
+    /// tells whether the set was installed.
     pub fn speaker_stage_rebuild_pending(&self) -> bool {
         self.speaker_stage.rebuild_pending()
+    }
+
+    /// `true` when the speaker stage's worker could not build the band set
+    /// the current topology and crossover setting need: the previous bands
+    /// keep rendering, and the reason is in the log and broadcast to the
+    /// clients. Cleared when the setting moves on or a set is installed.
+    pub fn speaker_stage_rebuild_failed(&self) -> bool {
+        self.speaker_stage.rebuild_failed()
     }
 
     /// `true` while a requested binaural HRIR source change has been handed to

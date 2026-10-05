@@ -280,9 +280,14 @@ pub(super) struct BandRenderer {
 }
 
 impl BandRenderer {
+    /// The engine for `band` of `layout`. `geometry_generation` is the one of
+    /// the published topology `layout` comes from: the band's gain model is
+    /// recorded as built for that geometry, not for whatever generation the
+    /// control has reached by the time this runs.
     pub(super) fn from_band(
         band: &FreqBand,
         layout: &crate::speaker_layout::SpeakerLayout,
+        geometry_generation: u64,
         num_speakers: usize,
         control: &Arc<RendererControl>,
         prev: Option<&BandRenderer>,
@@ -326,9 +331,15 @@ impl BandRenderer {
                     .map(|&idx| layout.speakers[idx].clone())
                     .collect(),
             };
-            let plan = control
+            let mut plan = control
                 .prepare_topology_rebuild_for_layout(band_layout)
                 .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology rebuild"))?;
+            // The plan carries the control's generation as of now, which an
+            // edit made since `layout` was published has already moved on:
+            // a model of this layout recorded under it would be reused, at
+            // the same generation, for the layout of that edit. Bands are
+            // built on the stage's worker, so "since" can be a whole build.
+            plan.geometry_generation = geometry_generation;
             // Reuse the previous band's geometry when it covers the same speakers
             // and the geometry generation is unchanged: `build_topology_reusing`
             // then re-wraps the model (no re-triangulation).
