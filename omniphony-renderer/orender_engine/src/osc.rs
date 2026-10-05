@@ -831,7 +831,7 @@ impl OscSender {
             Ok(()) => {
                 // A fresh sidecar invalidates any overlay this process consumed
                 // earlier (destroy→create cycles of the FFI host re-read it).
-                renderer::config::clear_live_overlay_cache();
+                renderer::config::clear_live_overlay_cache(&path);
                 log::info!("live state handed off to {}", sidecar.display());
             }
             Err(e) => log::warn!("failed to write live-state sidecar: {e}"),

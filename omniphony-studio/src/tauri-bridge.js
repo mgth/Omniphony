@@ -458,6 +458,11 @@ export function setupTauriBridge() {
     updateAboutRendererVersion();
   });
 
+  listen('render:bridge_api', ({ payload }) => {
+    app.renderBridgeApi = String(payload?.value ?? '').trim() || null;
+    updateAboutRendererVersion();
+  });
+
   listen('state:object_test_clip', ({ payload }) => {
     // The renderer answers every clip request here, refusals included. Parsed
     // rather than displayed raw: a bad path should read as a message, not as
