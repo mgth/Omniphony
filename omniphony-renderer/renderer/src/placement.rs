@@ -36,7 +36,9 @@
 //! family, or one missing from the table, gets.
 
 use serde::{Deserialize, Serialize};
+use serde_yaml_ng::Mapping;
 
+use crate::config::unknown_values::{self, EnumKey, KeepsUnknownValues};
 use crate::speaker_layout::SpeakerLayout;
 
 /// How a family's fixed channels are placed. See the module docs.
@@ -104,7 +106,12 @@ pub struct FamilyInfo {
 /// One family's own settings: both optional, each inherited from the generic
 /// family when absent (see the module docs). This is also the config form of
 /// a family (`render.placement.<family>`).
+///
+/// `Deserialize` and `Serialize` wrap the derived ones (`remote = "Self"`): a
+/// mode this build does not know is kept rather than failing the file (see
+/// [`unknown_values`]).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct FamilyPlacement {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<PlacementMode>,
@@ -113,11 +120,49 @@ pub struct FamilyPlacement {
     /// and the config share one format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<SpeakerLayout>,
+    /// The family's keys this build does not know, and a mode it does not
+    /// know, kept so that a save writes them back.
+    #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
+    pub extra: Mapping,
 }
 
 impl FamilyPlacement {
     pub fn is_default(&self) -> bool {
-        self.mode.is_none() && self.layout.is_none()
+        self.mode.is_none() && self.layout.is_none() && self.extra.is_empty()
+    }
+}
+
+impl KeepsUnknownValues for FamilyPlacement {
+    const SECTION: &'static str = "render.placement.<family>";
+    const ENUM_KEYS: &'static [EnumKey<Self>] = &[EnumKey {
+        parent: None,
+        key: "mode",
+        understood: unknown_values::understood::<PlacementMode>,
+        // Absent inherits, which no mode spells.
+        chosen: |own| own.mode.is_some(),
+        clear: |own| own.mode = None,
+    }];
+
+    fn extra(&self, _parent: Option<&str>) -> Option<&Mapping> {
+        Some(&self.extra)
+    }
+
+    fn extra_mut(&mut self, _parent: Option<&str>) -> Option<&mut Mapping> {
+        Some(&mut self.extra)
+    }
+}
+
+impl<'de> Deserialize<'de> for FamilyPlacement {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        unknown_values::deserialize(deserializer, |value| FamilyPlacement::deserialize(value))
+    }
+}
+
+impl Serialize for FamilyPlacement {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        unknown_values::serialize(self, serializer, |own, serializer| {
+            FamilyPlacement::serialize(own, serializer)
+        })
     }
 }
 
@@ -280,6 +325,7 @@ impl PlacementState {
                         layout.radius_m = (layout.radius_m as f64 * 1e6).round() as f32 / 1e6;
                         layout
                     }),
+                    extra: entry.own.extra.clone(),
                 };
                 (entry.info.name.clone(), own)
             })
@@ -320,6 +366,7 @@ impl PlacementState {
         *self.family_mut(SourceFamily::GENERIC) = FamilyPlacement {
             mode: Some(PlacementMode::Manual),
             layout: Some(layout),
+            ..Default::default()
         };
     }
 }

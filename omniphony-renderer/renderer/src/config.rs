@@ -6,8 +6,18 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Mapping;
 
+pub(crate) mod unknown_values;
+
+use unknown_values::{EnumKey, KeepsUnknownValues};
+
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
+    /// The [`CONFIG_SCHEMA_VERSION`] of the build that last saved the file;
+    /// absent in a file saved before the key existed. A build meeting a
+    /// higher one reads what it can and refuses to write the file
+    /// ([`ConfigLoadStatus::NewerSchema`]). Every save writes this build's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global: Option<GlobalConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,6 +53,13 @@ pub struct Config {
 /// Name of the implicit profile a flat legacy config migrates into.
 pub const DEFAULT_PROFILE: &str = "default";
 
+/// The `schema_version` this build writes. Bump it when a build changes what
+/// an existing key means, or moves or retires one, so that an older build,
+/// which would read and save such a file on its own terms, refuses to write it
+/// instead. Adding a key or an enum value needs no bump: an older build keeps
+/// both through a save (`extra`, [`unknown_values`]).
+pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct GlobalConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,7 +71,11 @@ pub struct GlobalConfig {
     pub extra: Mapping,
 }
 
+/// `Deserialize` and `Serialize` are implemented below, around the derived
+/// ones (`remote = "Self"`): an enum value this build does not know is kept
+/// rather than failing the file (see [`unknown_values`]).
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(remote = "Self")]
 pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_mode: Option<InputModeConfig>,
@@ -386,7 +407,8 @@ pub struct RenderConfig {
     /// See `Config::extra` — preserve unknown keys through round-trips.
     /// This matters most for `render.*`: any field added by a future
     /// version of the CLI / a host that we haven't migrated into this
-    /// struct yet survives a save from another embedder.
+    /// struct yet survives a save from another embedder. An enum value this
+    /// build does not know is kept here too, under its own key.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,
 }
@@ -658,6 +680,168 @@ pub struct LiveInputConfig {
     pub map: Option<InputMapModeConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lfe_mode: Option<InputLfeModeConfig>,
+    /// See `Config::extra` — preserve unknown keys through round-trips, and
+    /// the enum values this build does not know (see [`unknown_values`]).
+    #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
+    pub extra: Mapping,
+}
+
+impl RenderConfig {
+    /// The input an absent `input_mode` stands for: the bridge pipe.
+    pub fn input_mode_or_default(&self) -> InputModeConfig {
+        self.input_mode.clone().unwrap_or(InputModeConfig::Bridge)
+    }
+}
+
+impl LiveInputConfig {
+    /// The map an absent `map` stands for.
+    pub const DEFAULT_MAP: InputMapModeConfig = InputMapModeConfig::SevenOneFixed;
+    /// The LFE handling an absent `lfe_mode` stands for.
+    pub const DEFAULT_LFE_MODE: InputLfeModeConfig = InputLfeModeConfig::Direct;
+
+    /// The clock an absent `clock_mode` stands for: upstream for the PipeWire
+    /// sink, the DAC otherwise.
+    pub fn default_clock_mode(input_mode: &InputModeConfig) -> InputClockModeConfig {
+        match input_mode {
+            InputModeConfig::Pipewire => InputClockModeConfig::Upstream,
+            InputModeConfig::Bridge => InputClockModeConfig::Dac,
+        }
+    }
+
+    pub fn clock_mode_or_default(&self, input_mode: &InputModeConfig) -> InputClockModeConfig {
+        self.clock_mode
+            .clone()
+            .unwrap_or_else(|| Self::default_clock_mode(input_mode))
+    }
+
+    pub fn map_or_default(&self) -> InputMapModeConfig {
+        self.map.clone().unwrap_or(Self::DEFAULT_MAP)
+    }
+
+    pub fn lfe_mode_or_default(&self) -> InputLfeModeConfig {
+        self.lfe_mode.clone().unwrap_or(Self::DEFAULT_LFE_MODE)
+    }
+}
+
+/// [`EnumKey`] for a field of `render` whose absent value is `default`.
+macro_rules! render_enum_key {
+    ($field:ident : $ty:ty = $default:expr) => {
+        EnumKey {
+            parent: None,
+            key: stringify!($field),
+            understood: unknown_values::understood::<$ty>,
+            chosen: |render| render.$field.as_ref().is_some_and(|v| *v != $default),
+            clear: |render| render.$field = None,
+        }
+    };
+}
+
+/// [`EnumKey`] for a field of `render.live_input`; `default` is what an
+/// absent value stands for, given the render section.
+macro_rules! live_input_enum_key {
+    ($field:ident : $ty:ty, understood = $understood:expr, default = $default:expr) => {
+        EnumKey {
+            parent: Some("live_input"),
+            key: stringify!($field),
+            understood: $understood,
+            chosen: |render: &RenderConfig| {
+                let default: fn(&RenderConfig) -> Option<$ty> = $default;
+                render.live_input.as_ref().is_some_and(|live_input| {
+                    live_input.$field.is_some() && live_input.$field != default(render)
+                })
+            },
+            clear: |render| {
+                if let Some(live_input) = render.live_input.as_mut() {
+                    live_input.$field = None;
+                }
+            },
+        }
+    };
+}
+
+impl KeepsUnknownValues for RenderConfig {
+    const SECTION: &'static str = "render";
+    const ENUM_KEYS: &'static [EnumKey<Self>] = &[
+        render_enum_key!(input_mode: InputModeConfig = InputModeConfig::Bridge),
+        render_enum_key!(
+            channel_render_mode: crate::live_params::ChannelRenderMode =
+                crate::config_fields::channel_render_mode::DEFAULT
+        ),
+        render_enum_key!(
+            surround_placement: crate::live_params::SurroundPlacement =
+                crate::config_fields::surround_placement::DEFAULT
+        ),
+        render_enum_key!(
+            output_channel_mapping: crate::live_params::OutputChannelMapping =
+                crate::config_fields::output_channel_mapping::DEFAULT
+        ),
+        render_enum_key!(
+            crossover_type: crate::live_params::CrossoverType =
+                crate::config_fields::crossover_type::DEFAULT
+        ),
+        render_enum_key!(
+            phantom_extract_mode: crate::live_params::PhantomExtractMode =
+                crate::config_fields::phantom_extract_mode::DEFAULT
+        ),
+        render_enum_key!(
+            size_to_spread_mode: crate::render_backend::SizeToSpreadMode =
+                crate::render_backend::SizeToSpreadMode::default()
+        ),
+        live_input_enum_key!(
+            backend: InputBackendConfig,
+            understood = |value| deserialize_live_input_backend(value.clone()).is_ok(),
+            // Absent is the platform default, which no value spells.
+            default = |_| None
+        ),
+        live_input_enum_key!(
+            clock_mode: InputClockModeConfig,
+            understood = unknown_values::understood::<InputClockModeConfig>,
+            default = |render| Some(LiveInputConfig::default_clock_mode(
+                &render.input_mode_or_default()
+            ))
+        ),
+        live_input_enum_key!(
+            map: InputMapModeConfig,
+            understood = unknown_values::understood::<InputMapModeConfig>,
+            default = |_| Some(LiveInputConfig::DEFAULT_MAP)
+        ),
+        live_input_enum_key!(
+            lfe_mode: InputLfeModeConfig,
+            understood = unknown_values::understood::<InputLfeModeConfig>,
+            default = |_| Some(LiveInputConfig::DEFAULT_LFE_MODE)
+        ),
+    ];
+
+    fn extra(&self, parent: Option<&str>) -> Option<&Mapping> {
+        match parent {
+            None => Some(&self.extra),
+            Some(_) => self.live_input.as_ref().map(|live_input| &live_input.extra),
+        }
+    }
+
+    fn extra_mut(&mut self, parent: Option<&str>) -> Option<&mut Mapping> {
+        match parent {
+            None => Some(&mut self.extra),
+            Some(_) => self
+                .live_input
+                .as_mut()
+                .map(|live_input| &mut live_input.extra),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RenderConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        unknown_values::deserialize(deserializer, |value| RenderConfig::deserialize(value))
+    }
+}
+
+impl Serialize for RenderConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        unknown_values::serialize(self, serializer, |render, serializer| {
+            RenderConfig::serialize(render, serializer)
+        })
+    }
 }
 
 impl RenderConfig {
@@ -720,6 +904,10 @@ pub enum ConfigLoadStatus {
     /// File present but failed to parse → renderer fell back to built-in
     /// defaults (the classic symptom of a stale host whose schema diverged).
     ParseError,
+    /// File parsed, but a newer build wrote it (a `schema_version` above
+    /// [`CONFIG_SCHEMA_VERSION`]): the renderer runs on what this build
+    /// understands of it, and refuses to write it.
+    NewerSchema,
 }
 
 impl ConfigLoadStatus {
@@ -728,6 +916,16 @@ impl ConfigLoadStatus {
             ConfigLoadStatus::Loaded => "loaded",
             ConfigLoadStatus::Missing => "missing",
             ConfigLoadStatus::ParseError => "parse_error",
+            ConfigLoadStatus::NewerSchema => "newer_schema",
+        }
+    }
+
+    /// The status of a file that parsed into `config`.
+    fn of_loaded(config: &Config) -> Self {
+        if config.is_from_newer_build() {
+            ConfigLoadStatus::NewerSchema
+        } else {
+            ConfigLoadStatus::Loaded
         }
     }
 }
@@ -764,7 +962,10 @@ impl Config {
     /// from a single read of the file.
     pub fn load_or_default_with_status(path: &Path) -> (Self, ConfigLoadStatus) {
         match Self::load_if_present(path) {
-            Ok(Some(cfg)) => (cfg, ConfigLoadStatus::Loaded),
+            Ok(Some(cfg)) => {
+                let status = ConfigLoadStatus::of_loaded(&cfg);
+                (cfg, status)
+            }
             Ok(None) => (Self::default(), ConfigLoadStatus::Missing),
             Err(e) => {
                 eprintln!(
@@ -781,16 +982,33 @@ impl Config {
     /// defaults, as [`Config::load_or_default`] does; a file that is present
     /// but fails to parse is an error instead, so the write that follows
     /// cannot replace the user's layout, profiles and unknown keys with
-    /// defaults. Every writer of the persistent config starts here.
+    /// defaults. A file a newer build wrote is an error too: this build would
+    /// save it on its own terms (see [`CONFIG_SCHEMA_VERSION`]). Every writer
+    /// of the persistent config starts here.
     pub fn load_for_update(path: &Path) -> anyhow::Result<Self> {
-        Self::load_if_present(path)
+        let config = Self::load_if_present(path)
             .map(Option::unwrap_or_default)
             .map_err(|e| {
                 anyhow::anyhow!(
                     "{} failed to parse, so it was left untouched; fix or remove it first ({e})",
                     path.display()
                 )
-            })
+            })?;
+        if config.is_from_newer_build() {
+            anyhow::bail!(
+                "{} was written by a newer Omniphony (config schema {}, this build knows up to \
+                 {CONFIG_SCHEMA_VERSION}), so it was left untouched; save it from that version",
+                path.display(),
+                config.schema_version.unwrap_or_default()
+            );
+        }
+        Ok(config)
+    }
+
+    /// Whether a build newer than this one saved the file this was read from.
+    pub fn is_from_newer_build(&self) -> bool {
+        self.schema_version
+            .is_some_and(|version| version > CONFIG_SCHEMA_VERSION)
     }
 
     /// Diagnose what `load_or_default` would actually do for `path`, without
@@ -801,7 +1019,7 @@ impl Config {
     /// surfaces this in About so the silent fallback becomes visible.
     pub fn load_status(path: &Path) -> ConfigLoadStatus {
         match Self::load_if_present(path) {
-            Ok(Some(_)) => ConfigLoadStatus::Loaded,
+            Ok(Some(cfg)) => ConfigLoadStatus::of_loaded(&cfg),
             Ok(None) => ConfigLoadStatus::Missing,
             Err(_) => ConfigLoadStatus::ParseError,
         }
@@ -832,6 +1050,7 @@ impl Config {
 
     fn to_yaml(&self) -> anyhow::Result<String> {
         let mut out = self.clone();
+        out.schema_version = Some(CONFIG_SCHEMA_VERSION);
         out.sync_active_profile();
         Ok(serde_yaml_ng::to_string(&out)?)
     }
@@ -904,6 +1123,12 @@ impl Config {
         };
         if let Some(outgoing) = self.render.as_ref() {
             incoming.input_mode = outgoing.input_mode.clone();
+            // An input mode only a newer build knows is kept in `extra`
+            // (`live_input` carries its own along).
+            match outgoing.extra.get("input_mode") {
+                Some(kept) => incoming.extra.insert("input_mode".into(), kept.clone()),
+                None => incoming.extra.shift_remove("input_mode"),
+            };
             incoming.input_pipe = outgoing.input_pipe.clone();
             incoming.live_input = outgoing.live_input.clone();
             incoming.bridge_path = outgoing.bridge_path.clone();
@@ -1527,6 +1752,218 @@ render:
         assert!(err.to_string().contains("coreaudio"), "{err}");
     }
 
+    /// A value in every enum-typed key that no build knows, between keys
+    /// this one does.
+    pub(super) const VALUES_FROM_A_NEWER_BUILD: &str = "\
+render:
+  input_mode: carrier_pigeon
+  bridge_path: /opt/bridge.so
+  channel_render_mode: hologram
+  surround_placement: ceiling
+  output_channel_mapping: by_mood
+  crossover_type: brickwall
+  phantom_extract_mode: neural
+  size_to_spread_mode: volume
+  master_gain: -3.5
+  live_input:
+    backend: jack
+    node: omniphony-in
+    clock_mode: ptp
+    map: nine-one-fixed
+    lfe_mode: bass_shaker
+    channels: 8
+  placement:
+    generic:
+      mode: hemisphere
+";
+
+    /// The value at `path` in a YAML document, as a string.
+    pub(super) fn yaml_at(yaml: &str, path: &[&str]) -> Option<String> {
+        let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).unwrap();
+        for key in path {
+            value = value.get(key)?.clone();
+        }
+        Some(
+            serde_yaml_ng::to_string(&value)
+                .unwrap()
+                .trim_end()
+                .to_owned(),
+        )
+    }
+
+    /// Every enum-typed key with its value in [`VALUES_FROM_A_NEWER_BUILD`].
+    pub(super) const UNKNOWN_VALUES: &[(&[&str], &str)] = &[
+        (&["input_mode"], "carrier_pigeon"),
+        (&["channel_render_mode"], "hologram"),
+        (&["surround_placement"], "ceiling"),
+        (&["output_channel_mapping"], "by_mood"),
+        (&["crossover_type"], "brickwall"),
+        (&["phantom_extract_mode"], "neural"),
+        (&["size_to_spread_mode"], "volume"),
+        (&["live_input", "backend"], "jack"),
+        (&["live_input", "clock_mode"], "ptp"),
+        (&["live_input", "map"], "nine-one-fixed"),
+        (&["live_input", "lfe_mode"], "bass_shaker"),
+        (&["placement", "generic", "mode"], "hemisphere"),
+    ];
+
+    #[test]
+    fn an_unknown_enum_value_falls_back_without_failing_the_file() {
+        let cfg: Config = serde_yaml_ng::from_str(VALUES_FROM_A_NEWER_BUILD)
+            .expect("values a newer build wrote must not fail the file");
+        let render = cfg.render.as_ref().unwrap();
+        // Every enum field is at its default...
+        assert_eq!(render.input_mode, None);
+        assert_eq!(render.channel_render_mode, None);
+        assert_eq!(render.surround_placement, None);
+        assert_eq!(render.output_channel_mapping, None);
+        assert_eq!(render.crossover_type, None);
+        assert_eq!(render.phantom_extract_mode, None);
+        assert_eq!(render.size_to_spread_mode, None);
+        let live_input = render.live_input.as_ref().unwrap();
+        assert_eq!(live_input.backend, None);
+        assert_eq!(live_input.clock_mode, None);
+        assert_eq!(live_input.map, None);
+        assert_eq!(live_input.lfe_mode, None);
+        let generic = render.placement.as_ref().unwrap().get("generic").unwrap();
+        assert_eq!(generic.mode, None);
+        // ...every other key is read as usual...
+        assert_eq!(render.bridge_path, Some(PathBuf::from("/opt/bridge.so")));
+        assert_eq!(render.master_gain, Some(-3.5));
+        assert_eq!(live_input.node.as_deref(), Some("omniphony-in"));
+        assert_eq!(live_input.channels, Some(8));
+        // ...and the values are kept under their own keys.
+        assert_eq!(render.extra.get("crossover_type").unwrap(), "brickwall");
+        assert_eq!(live_input.extra.get("clock_mode").unwrap(), "ptp");
+        assert_eq!(generic.extra.get("mode").unwrap(), "hemisphere");
+    }
+
+    #[test]
+    fn a_known_enum_value_is_still_read() {
+        let cfg: Config = serde_yaml_ng::from_str(
+            "render:\n  crossover_type: fir\n  input_mode: live\n  live_input:\n    clock_mode: \
+             pipewire\n",
+        )
+        .unwrap();
+        let render = cfg.render.as_ref().unwrap();
+        assert_eq!(
+            render.crossover_type,
+            Some(crate::live_params::CrossoverType::Fir)
+        );
+        assert_eq!(
+            render.input_mode,
+            Some(InputModeConfig::Pipewire),
+            "an alias"
+        );
+        assert_eq!(
+            render.live_input.as_ref().unwrap().clock_mode,
+            Some(InputClockModeConfig::Pipewire)
+        );
+        assert!(render.extra.is_empty(), "nothing kept: {:?}", render.extra);
+    }
+
+    #[test]
+    fn a_kept_enum_value_is_written_back_unchanged() {
+        let cfg: Config = serde_yaml_ng::from_str(VALUES_FROM_A_NEWER_BUILD).unwrap();
+        let out = serde_yaml_ng::to_string(&cfg).unwrap();
+        for (path, value) in UNKNOWN_VALUES {
+            let path = [&["render"], *path].concat();
+            assert_eq!(
+                yaml_at(&out, &path).as_deref(),
+                Some(*value),
+                "{path:?}:\n{out}"
+            );
+        }
+        // Once each: the field it shadows is not written next to it.
+        assert_eq!(out.matches("crossover_type").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn a_choice_of_this_build_replaces_a_kept_value_and_its_default_does_not() {
+        use crate::live_params::CrossoverType;
+        let mut cfg: Config = serde_yaml_ng::from_str(VALUES_FROM_A_NEWER_BUILD).unwrap();
+        let render = cfg.render.as_mut().unwrap();
+        // What a save writes for a setting nobody touched: the value the
+        // unknown one fell back to. This build reads the kept value back the
+        // same way, so the newer build's survives.
+        render.crossover_type = Some(CrossoverType::Lr4);
+        let live_input = render.live_input.as_mut().unwrap();
+        live_input.clock_mode = Some(InputClockModeConfig::Dac);
+        live_input.lfe_mode = Some(InputLfeModeConfig::Direct);
+        let out = serde_yaml_ng::to_string(&cfg).unwrap();
+        assert_eq!(
+            yaml_at(&out, &["render", "crossover_type"]).unwrap(),
+            "brickwall"
+        );
+        assert_eq!(
+            yaml_at(&out, &["render", "live_input", "clock_mode"]).unwrap(),
+            "ptp"
+        );
+        assert_eq!(
+            yaml_at(&out, &["render", "live_input", "lfe_mode"]).unwrap(),
+            "bass_shaker"
+        );
+
+        // A value of its own, set in this build: it wins, once.
+        let render = cfg.render.as_mut().unwrap();
+        render.crossover_type = Some(CrossoverType::Fir);
+        let live_input = render.live_input.as_mut().unwrap();
+        live_input.clock_mode = Some(InputClockModeConfig::Upstream);
+        live_input.backend = Some(InputBackendConfig::Pipewire);
+        let out = serde_yaml_ng::to_string(&cfg).unwrap();
+        assert_eq!(yaml_at(&out, &["render", "crossover_type"]).unwrap(), "fir");
+        assert_eq!(out.matches("crossover_type").count(), 1, "{out}");
+        assert_eq!(
+            yaml_at(&out, &["render", "live_input", "clock_mode"]).unwrap(),
+            "upstream"
+        );
+        assert_eq!(
+            yaml_at(&out, &["render", "live_input", "backend"]).unwrap(),
+            "pipewire"
+        );
+        assert_eq!(out.matches("backend").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn the_clock_an_absent_key_stands_for_follows_the_input_mode() {
+        let cfg: Config = serde_yaml_ng::from_str(
+            "render:\n  input_mode: pipewire\n  live_input:\n    clock_mode: ptp\n",
+        )
+        .unwrap();
+        let mut cfg = cfg;
+        let live_input = cfg.render.as_mut().unwrap().live_input.as_mut().unwrap();
+        // For the PipeWire sink, an absent clock is upstream: the DAC is a
+        // choice of this build's, and replaces the kept value.
+        live_input.clock_mode = Some(InputClockModeConfig::Dac);
+        let out = serde_yaml_ng::to_string(&cfg).unwrap();
+        assert_eq!(
+            yaml_at(&out, &["render", "live_input", "clock_mode"]).unwrap(),
+            "dac"
+        );
+        let live_input = cfg.render.as_mut().unwrap().live_input.as_mut().unwrap();
+        live_input.clock_mode = Some(InputClockModeConfig::Upstream);
+        let out = serde_yaml_ng::to_string(&cfg).unwrap();
+        assert_eq!(
+            yaml_at(&out, &["render", "live_input", "clock_mode"]).unwrap(),
+            "ptp"
+        );
+    }
+
+    #[test]
+    fn a_profile_switch_carries_a_kept_input_mode() {
+        let mut cfg: Config = serde_yaml_ng::from_str(
+            "render:\n  input_mode: carrier_pigeon\nprofiles:\n  other:\n    master_gain: -1\n",
+        )
+        .unwrap();
+        cfg.switch_profile("other").unwrap();
+        let out = serde_yaml_ng::to_string(&cfg).unwrap();
+        assert_eq!(
+            yaml_at(&out, &["render", "input_mode"]).unwrap(),
+            "carrier_pigeon"
+        );
+        assert_eq!(yaml_at(&out, &["render", "master_gain"]).unwrap(), "-1.0");
+    }
+
     #[test]
     fn unknown_fields_survive_round_trip_at_top_level() {
         let yaml = "\
@@ -1934,6 +2371,90 @@ mod save_tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn a_save_carries_the_schema_version() {
+        let dir = dir("schema");
+        let path = dir.join("config.yaml");
+        with_layout("x").save(&path).unwrap();
+        let yaml = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            super::tests::yaml_at(&yaml, &["schema_version"]),
+            Some(CONFIG_SCHEMA_VERSION.to_string())
+        );
+        assert_eq!(Config::load_status(&path), ConfigLoadStatus::Loaded);
+        // So does a save of a file from before the key.
+        std::fs::write(&path, "render:\n  output_file: old\n").unwrap();
+        let config = Config::load_for_update(&path).unwrap();
+        assert_eq!(config.schema_version, None);
+        config.save(&path).unwrap();
+        assert_eq!(
+            Config::load(&path).unwrap().schema_version,
+            Some(CONFIG_SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn a_file_from_a_newer_schema_loads_but_is_refused_for_update() {
+        let dir = dir("newer");
+        let path = dir.join("config.yaml");
+        let newer = format!(
+            "schema_version: {}\nrender:\n  output_file: kept\n  a_key_from_the_future: 1\n",
+            CONFIG_SCHEMA_VERSION + 1
+        );
+        std::fs::write(&path, &newer).unwrap();
+        // Read as far as this build understands it...
+        let (config, status) = Config::load_or_default_with_status(&path);
+        assert_eq!(status, ConfigLoadStatus::NewerSchema);
+        assert_eq!(status.as_str(), "newer_schema");
+        assert_eq!(Config::load_status(&path), ConfigLoadStatus::NewerSchema);
+        let render = config.render.as_ref().unwrap();
+        assert_eq!(render.output_file.as_deref(), Some("kept"));
+        assert!(config.is_from_newer_build());
+        // ...but never written: every writer starts at `load_for_update`.
+        let err = Config::load_for_update(&path).unwrap_err().to_string();
+        assert!(err.contains("newer Omniphony"), "{err}");
+        assert!(err.contains("left untouched"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+        // The version this build writes is not "newer".
+        std::fs::write(
+            &path,
+            format!("schema_version: {CONFIG_SCHEMA_VERSION}\nrender: {{}}\n"),
+        )
+        .unwrap();
+        assert_eq!(Config::load_status(&path), ConfigLoadStatus::Loaded);
+        assert!(Config::load_for_update(&path).is_ok());
+    }
+
+    #[test]
+    fn a_load_then_save_writes_unknown_enum_values_back_unchanged() {
+        let dir = dir("unknown-enum");
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, super::tests::VALUES_FROM_A_NEWER_BUILD).unwrap();
+        let (config, status) = Config::load_or_default_with_status(&path);
+        assert_eq!(status, ConfigLoadStatus::Loaded, "the file loads");
+        Config::load_for_update(&path).unwrap().save(&path).unwrap();
+        let yaml = std::fs::read_to_string(&path).unwrap();
+        // The active profile's mirror carries them too.
+        for section in [&["render"][..], &["profiles", DEFAULT_PROFILE]] {
+            for (key, value) in super::tests::UNKNOWN_VALUES {
+                let at = [section, *key].concat();
+                assert_eq!(
+                    super::tests::yaml_at(&yaml, &at).as_deref(),
+                    Some(*value),
+                    "{at:?}:\n{yaml}"
+                );
+            }
+        }
+        // And the keys this build knows are as they were.
+        let saved = Config::load(&path).unwrap();
+        let (before, after) = (config.render.unwrap(), saved.render.unwrap());
+        assert_eq!(after.bridge_path, before.bridge_path);
+        assert_eq!(after.master_gain, before.master_gain);
+        let live_input = after.live_input.unwrap();
+        assert_eq!(live_input.node.as_deref(), Some("omniphony-in"));
+        assert_eq!(live_input.channels, Some(8));
     }
 
     #[test]

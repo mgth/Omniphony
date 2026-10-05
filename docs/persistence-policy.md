@@ -95,6 +95,21 @@ handed over to the next instance (a restart keeping it, mpv taking over)
 carries that origin in the sidecar (`live_from_parse_error`), so the next
 instance keeps `parse_error` too, whatever the file now holds.
 
+Every save writes `schema_version` at the top of the file
+(`CONFIG_SCHEMA_VERSION` in `renderer/src/config.rs`). A build that reads a
+higher one than it knows runs on what it understands of the file, publishes
+`config_status = newer_schema` and refuses every write to it, as for a
+parse error. The version is bumped only when a build changes what an existing
+key means, or moves or retires one. New keys and new enum values need no bump:
+an older build keeps both through a save. A key it does not model lives in the
+section's `extra`. An enum value it does not know does not fail the file: the
+field falls back to its default with a warning, and the value is kept in
+`extra` under its own key. A save then writes it back unless the field holds a
+choice of this build's: a value other than the one the absent key stands for.
+Files from builds older than the key carry no `schema_version`, and those
+builds save their content under the newer number, so the key only protects
+from the build that introduced it onwards.
+
 A write that goes through replaces the file atomically (temp file, sync,
 rename) and a Save or a profile operation keeps the previous one as
 `config.yaml.bak`. A targeted view write and the handoff sidecar are written

@@ -418,6 +418,75 @@ mod tests {
         assert_ne!(std::fs::read_to_string(&path).unwrap(), fixed);
     }
 
+    /// A newer build saved enum values this one does not know. The engine
+    /// runs on their defaults, and a Save of a state the user did not touch
+    /// writes the newer build's values back, not those defaults.
+    #[test]
+    fn a_save_keeps_the_enum_values_a_newer_build_wrote() {
+        let path = temp_config_path("unknown-enum");
+        std::fs::write(
+            &path,
+            "render:\n  crossover_type: brickwall\n  surround_placement: ceiling\n  \
+             channel_render_mode: hologram\n  placement:\n    generic:\n      mode: hemisphere\n",
+        )
+        .unwrap();
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        let (config, status) = renderer::config::Config::load_or_default_with_status(&path);
+        assert_eq!(status, ConfigLoadStatus::Loaded);
+        renderer::options::seed_live_from_config(
+            &mut control.live.write(),
+            config.render.as_ref().unwrap(),
+            &renderer::options::OptionEnv::of(&control),
+        );
+
+        save_live_config(&control, None).expect("save");
+        let yaml = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        let render = &saved["render"];
+        assert_eq!(render["crossover_type"], "brickwall", "{yaml}");
+        assert_eq!(render["surround_placement"], "ceiling", "{yaml}");
+        assert_eq!(render["channel_render_mode"], "hologram", "{yaml}");
+        assert_eq!(
+            render["placement"]["generic"]["mode"], "hemisphere",
+            "{yaml}"
+        );
+
+        // A setting changed in this build is its own choice, and is saved.
+        control.live.write().crossover_type = renderer::live_params::CrossoverType::Fir;
+        save_live_config(&control, None).expect("save");
+        let saved = renderer::config::Config::load(&path).unwrap();
+        let render = saved.render.unwrap();
+        assert_eq!(
+            render.crossover_type,
+            Some(renderer::live_params::CrossoverType::Fir)
+        );
+        assert!(!render.extra.contains_key("crossover_type"));
+        assert!(render.extra.contains_key("surround_placement"));
+    }
+
+    /// A file a newer build saved is read, but no Save, view write or
+    /// handoff base write touches it.
+    #[test]
+    fn a_file_from_a_newer_build_is_never_written() {
+        let path = temp_config_path("newer-schema");
+        let newer = format!(
+            "schema_version: {}\nrender:\n  output_file: kept\n",
+            renderer::config::CONFIG_SCHEMA_VERSION + 1
+        );
+        std::fs::write(&path, &newer).unwrap();
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        control.set_config_status(Some(ConfigLoadStatus::NewerSchema.as_str().into()));
+
+        let err = save_live_config(&control, None)
+            .err()
+            .expect("save refused");
+        assert!(err.to_string().contains("newer Omniphony"), "{err}");
+        persist_render_fields_to_path(&path, |render| render.output_file = Some("x".into()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+    }
+
     /// A targeted view write keeps the `.bak` the last Save left: it is the
     /// file as it was before that Save, the one worth going back to.
     #[test]

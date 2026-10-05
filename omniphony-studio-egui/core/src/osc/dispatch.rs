@@ -1358,6 +1358,31 @@ mod panel_event_tests {
         Live::new(AppState::new(Vec::new()))
     }
 
+    /// The renderer refuses to write a file it could not parse or a newer
+    /// build wrote; a Reload of the fixed file publishes `loaded` and lifts
+    /// the refusal (and the Studio banner that shows it).
+    #[test]
+    fn the_config_refusal_follows_the_published_status() {
+        use crate::model::app_state::ConfigRefusal;
+        let mut l = live();
+        let status = |value: &str| OscEvent::StateRenderConfigStatus {
+            value: value.to_owned(),
+        };
+        assert_eq!(l.app.config_refusal(), None);
+        apply_event(&mut l, status("parse_error"));
+        assert_eq!(l.app.config_refusal(), Some(ConfigRefusal::ParseError));
+        apply_event(&mut l, status("loaded"));
+        assert_eq!(l.app.config_refusal(), None);
+        apply_event(&mut l, status("newer_schema"));
+        assert_eq!(l.app.config_refusal(), Some(ConfigRefusal::NewerSchema));
+        // A missing file runs on defaults too, but there is nothing to refuse:
+        // the first Save creates it.
+        apply_event(&mut l, status("missing"));
+        assert_eq!(l.app.config_refusal(), None);
+        apply_event(&mut l, status(""));
+        assert_eq!(l.app.config_refusal(), None);
+    }
+
     #[test]
     fn evaluation_sizes_treat_zero_as_unset_except_the_negative_z_one() {
         let mut l = live();
