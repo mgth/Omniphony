@@ -1196,10 +1196,10 @@ unsafe extern "C" fn pipewire_bridge_client_node_set_param(
     match id {
         x if x == spa::sys::SPA_PARAM_Format || x == spa::sys::SPA_PARAM_PortConfig => {
             if x == spa::sys::SPA_PARAM_Format {
-                if let Some(bytes) = clone_spa_pod_bytes(param) {
+                if let Some(bytes) = unsafe { clone_spa_pod_bytes(param) } {
                     state.format_bytes = bytes;
                 }
-            } else if let Some(bytes) = clone_spa_pod_bytes(param) {
+            } else if let Some(bytes) = unsafe { clone_spa_pod_bytes(param) } {
                 state.port_config_bytes = bytes;
             }
             state.format_configured = true;
@@ -1342,7 +1342,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_port_set_param(
     if id != spa::sys::SPA_PARAM_Format {
         return 0;
     }
-    if let Some(bytes) = clone_spa_pod_bytes(param) {
+    if let Some(bytes) = unsafe { clone_spa_pod_bytes(param) } {
         state.format_bytes = bytes;
     }
     state.format_configured = true;
