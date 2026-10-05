@@ -899,6 +899,7 @@ impl StudioSpike {
                 });
         });
         self.log_overlay(ctx, &layout);
+        self.config_banner(ctx, &layout);
         self.scene_fx_bar(ctx);
         self.save_footer(ctx);
         self.band_cursor(ctx, &layout);

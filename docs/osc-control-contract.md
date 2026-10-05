@@ -24,10 +24,33 @@ address is missing from it. Keep this document and that crate in sync.
   engine coerces. Most togglish controls take a single int `0`/`1`.
 - **Enums** are lowercase strings; an unrecognised value is ignored (the engine
   validates and drops bad input rather than erroring).
+- **Nesting** is bounded: bundles may nest 8 deep, and so may arrays within a
+  message's arguments. The engine and the Studio each drop a datagram that
+  goes deeper, whole and before decoding it (logged as undecodable); the limit
+  and the check are the contract crate's (`osc-contract`, module `nesting`),
+  for any other listener to use. The engine's own bundles are one level deep
+  and it sends no array.
 - **Realtime gain** controls (`/control/realtime/*`) carry a trailing monotonic
   **sequence int** so the engine can drop stale updates that arrive out of order.
 - Larger structured payloads (layout / speakers / audio / input config) are sent
   as a single **JSON string** argument.
+
+## Datagram size
+
+Every OSC packet travels as one UDP datagram, and some are large: a snapshot
+bundle runs up to 65 000 bytes, and `/control/backend/file/put` and its
+`/state/backend/file/content` reply carry a file of up to 60 000 bytes. A
+client therefore needs to:
+
+- **receive** into a buffer that fits any UDP payload (65 536 bytes): a shorter
+  one truncates or loses the datagram;
+- **raise its socket's send buffer** (`SO_SNDBUF`) to 65 536 bytes when it is
+  lower, before sending a large message. macOS and the BSDs refuse a UDP send
+  larger than that buffer (`EMSGSIZE`, "Message too long"), and it starts at
+  `net.inet.udp.maxdgram`: 9 216 bytes. Only ever raise it: Linux starts
+  higher, and setting it there would shrink it.
+
+The engine and Studio do both on their own sockets.
 
 ## Notification
 
@@ -495,7 +518,10 @@ exhaustive machine-readable list.
   marker, never on the bundle boundary.
 - **Render** — `render/version`, `render/executable` (path of the process
   serving the engine), `render/abi` (C-ABI `major.minor` of the liborender
-  shim, `""` for the CLI), `render/config_path`, `render/config_status`,
+  shim, `""` for the CLI), `render/config_path`, `render/config_status`
+  (`loaded`, `missing`, `parse_error` — running on built-in defaults — or
+  `newer_schema` — written by a newer build, read as far as this one
+  understands it and never written; `""` without a config path),
   `render/bridge_path`, `render/bridge_error` (bounded to 2 KB: the first
   line and the distinct verdicts of a plugin load failure, the full report
   stays in the renderer log), `vbap/allow_negative_z`,

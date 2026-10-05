@@ -8,9 +8,11 @@
 //! declaration has to be read with the packet, and when the DRC mode the user
 //! asked for has to be pushed to the bridge.
 
+use crate::bridge_loader::configure_log_level;
 use bridge_api::{
     FormatBridgeBox, RChannelLabel, RChannelPose, RDecodedFrame, RInputTransport, RPushResult,
 };
+use log::LevelFilter;
 use std::time::Instant;
 
 /// What a bridge declares about the current presentation beyond its labels:
@@ -186,10 +188,10 @@ pub fn decode_packet(
 }
 
 /// The DRC mode last pushed to a bridge, so a host pushes the one the user
-/// asked for only when it changes. The requested mode lives behind a lock the
-/// control thread writes; [`update`](Self::update) compares it where it
-/// stands, under the host's read lock, and copies it only on a change, so a
-/// steady stream neither allocates nor calls into the bridge.
+/// asked for only when it changes. The requested mode lives in the live
+/// params the control thread writes; [`update`](Self::update) compares it
+/// where it stands, in the host's read of them, and copies it only on a
+/// change, so a steady stream neither allocates nor calls into the bridge.
 ///
 /// The first update always reports a change: a bridge starts on its own
 /// default, which is not necessarily the one requested.
@@ -225,6 +227,64 @@ impl DrcModeSync {
     pub fn apply(&mut self, requested: &str, bridge: &mut FormatBridgeBox) {
         if self.update(requested) {
             bridge.set_drc_mode(self.mode.as_str().into());
+        }
+    }
+}
+
+/// The host's log level last pushed to a bridge (`log_level`, see
+/// [`configure_log_level`]), so the bridge follows a level changed at runtime
+/// (`log_level` over OSC) while a host pushes it only when it changes: one
+/// atomic load and a compare per packet, no call into the bridge.
+///
+/// One per bridge instance, from [`open`](Self::open) when the bridge is
+/// opened (`bridge_loader::open_bridge`), so the host does not send the level
+/// the bridge was opened with again. A bridge that refuses the key predates
+/// it and is not asked again. [`new`](Self::new) knows of no push: its first
+/// update always reports a change.
+#[derive(Debug, Default)]
+pub struct LogLevelSync {
+    level: Option<LevelFilter>,
+    unsupported: bool,
+}
+
+impl LogLevelSync {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Push `level` to a bridge that has just been opened, and remember it
+    /// and whether the bridge took it.
+    pub fn open(level: LevelFilter, bridge: &mut FormatBridgeBox) -> Self {
+        let mut sync = Self::new();
+        sync.apply(level, bridge);
+        sync
+    }
+
+    /// Whether `level` has to be pushed: it differs from the level last
+    /// recorded here (always true the first time) and the bridge has not
+    /// refused the key. When it does, it is recorded.
+    pub fn update(&mut self, level: LevelFilter) -> bool {
+        if self.unsupported || self.level == Some(level) {
+            return false;
+        }
+        self.level = Some(level);
+        true
+    }
+
+    /// Push the level last recorded by [`update`](Self::update) to `bridge`.
+    pub fn push(&mut self, bridge: &mut FormatBridgeBox) {
+        if let Some(level) = self.level
+            && !configure_log_level(bridge, level)
+        {
+            self.unsupported = true;
+        }
+    }
+
+    /// Bring `bridge` in line with `level` (the host's,
+    /// `live_log::current_runtime_level()`): push it when it changed.
+    pub fn apply(&mut self, level: LevelFilter, bridge: &mut FormatBridgeBox) {
+        if self.update(level) {
+            self.push(bridge);
         }
     }
 }
@@ -326,5 +386,137 @@ mod tests {
         let mut silent = frame(&[], false);
         silent.sampling_frequency = 0;
         assert_eq!(frame_duration_secs(&silent), 0.0);
+    }
+
+    /// A bridge that records each `configure` call, and refuses `log_level`
+    /// like a bridge that predates it when `knows_log_level` is false.
+    struct ConfigureRecorder {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        knows_log_level: bool,
+    }
+
+    impl bridge_api::FormatBridge for ConfigureRecorder {
+        fn push_packet(
+            &mut self,
+            _: abi_stable::std_types::RSlice<'_, u8>,
+            _: RInputTransport,
+            _: u8,
+        ) -> RPushResult {
+            push(Vec::new(), false)
+        }
+        fn reset(&mut self) {}
+        fn is_ready(&self) -> bool {
+            true
+        }
+        fn has_objects(&self) -> bool {
+            false
+        }
+        fn configure(
+            &mut self,
+            key: abi_stable::std_types::RStr<'_>,
+            value: abi_stable::std_types::RStr<'_>,
+        ) -> bool {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((key.as_str().to_owned(), value.as_str().to_owned()));
+            self.knows_log_level || key.as_str() != "log_level"
+        }
+        fn coordinate_format(&self) -> bridge_api::RCoordinateFormat {
+            bridge_api::RCoordinateFormat::Cartesian
+        }
+        fn vbap_cartesian_defaults(&self) -> bridge_api::RVbapCartesianDefaults {
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 3,
+                y_size: 3,
+                z_size: 3,
+                allow_negative_z: false,
+            }
+        }
+        fn preferred_vbap_table_mode(&self) -> bridge_api::RVbapTableMode {
+            bridge_api::RVbapTableMode::Cartesian
+        }
+        fn supported_drc_modes(&self) -> RVec<RString> {
+            RVec::new()
+        }
+        fn set_drc_mode(&mut self, _: abi_stable::std_types::RStr<'_>) -> bool {
+            false
+        }
+        fn fixed_channel_poses(&self) -> RVec<RChannelPose> {
+            RVec::new()
+        }
+    }
+
+    fn recorder(
+        knows_log_level: bool,
+    ) -> (
+        FormatBridgeBox,
+        std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    ) {
+        let calls = std::sync::Arc::default();
+        let bridge = bridge_api::FormatBridge_TO::from_value(
+            ConfigureRecorder {
+                calls: std::sync::Arc::clone(&calls),
+                knows_log_level,
+            },
+            abi_stable::sabi_trait::TD_Opaque,
+        );
+        (bridge, calls)
+    }
+
+    #[test]
+    fn the_log_level_is_pushed_first_and_then_on_changes_only() {
+        let (mut bridge, calls) = recorder(true);
+        let mut sync = LogLevelSync::new();
+        for level in [
+            LevelFilter::Info,
+            LevelFilter::Info,
+            LevelFilter::Debug,
+            LevelFilter::Debug,
+            LevelFilter::Off,
+            LevelFilter::Trace,
+        ] {
+            sync.apply(level, &mut bridge);
+        }
+        let pushed: Vec<_> = calls.lock().unwrap().clone();
+        let expected: Vec<_> = ["info", "debug", "off", "trace"]
+            .into_iter()
+            .map(|level| ("log_level".to_owned(), level.to_owned()))
+            .collect();
+        assert_eq!(pushed, expected);
+    }
+
+    #[test]
+    fn a_bridge_without_the_log_level_key_is_asked_once() {
+        let (mut bridge, calls) = recorder(false);
+        let mut sync = LogLevelSync::new();
+        for level in [LevelFilter::Info, LevelFilter::Debug, LevelFilter::Warn] {
+            sync.apply(level, &mut bridge);
+        }
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [("log_level".to_owned(), "info".to_owned())]
+        );
+    }
+
+    /// The level a bridge was opened with is not sent again before its first
+    /// packet, nor, when the bridge refused it, ever again.
+    #[test]
+    fn the_sync_from_opening_knows_what_the_bridge_was_sent() {
+        for (knows_log_level, expected) in [(true, &["info", "debug"][..]), (false, &["info"][..])]
+        {
+            let (mut bridge, calls) = recorder(knows_log_level);
+            let mut sync = LogLevelSync::open(LevelFilter::Info, &mut bridge);
+            for level in [LevelFilter::Info, LevelFilter::Debug, LevelFilter::Debug] {
+                sync.apply(level, &mut bridge);
+            }
+            let sent: Vec<_> = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, v)| v.clone())
+                .collect();
+            assert_eq!(sent, expected, "bridge knows log_level: {knows_log_level}");
+        }
     }
 }

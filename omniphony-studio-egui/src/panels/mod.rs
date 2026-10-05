@@ -9,6 +9,7 @@ pub mod audio_output;
 pub mod auto_tune;
 pub mod binaural;
 pub mod channel_editor;
+pub mod config_banner;
 pub mod connection;
 pub mod diag_plot;
 pub mod display;

@@ -255,8 +255,11 @@ fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecod
     log::info!("Loading format bridge: {}", bridge_path.display());
     // Only the load is "bridge unavailable"; a bridge that loads but
     // refuses the presentation is a configuration error, not a reason to idle.
-    let LoadedBridge { lib, mut bridge } =
-        LoadedBridge::load_with_params(&bridge_path).context(BridgeUnavailable)?;
+    let LoadedBridge {
+        lib,
+        mut bridge,
+        log_level,
+    } = LoadedBridge::load_with_params(&bridge_path).context(BridgeUnavailable)?;
     orender_engine::bridge_loader::configure_presentation(&mut bridge, &args.presentation)?;
     let is_spatial_presentation = bridge.has_objects();
     let coordinate_format = bridge.coordinate_format();
@@ -319,6 +322,7 @@ fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecod
         drain_tx: Some(drain_tx.clone()),
         pipe_input_diag: Some(pipe_input_diag.clone()),
         bridge,
+        log_level,
         shutdown_signal,
     });
 
@@ -1523,8 +1527,10 @@ mod tests {
 
     impl PacedOutput {
         fn new() -> Self {
-            let (fifo, fifo_reader) = audio_output::ring_buffer_io::sample_ring(1 << 16);
-            let (ring_writer, ring) = audio_output::ring_buffer_io::sample_ring(1 << 16);
+            let (fifo, fifo_reader) =
+                audio_output::ring_buffer_io::sample_ring(1 << 15, PACER_CHANNELS as usize);
+            let (ring_writer, ring) =
+                audio_output::ring_buffer_io::sample_ring(1 << 15, PACER_CHANNELS as usize);
             let pacer = audio_output::PacerHandle::new(
                 audio_output::pacer::PacerDrainEnds {
                     fifo: fifo_reader,

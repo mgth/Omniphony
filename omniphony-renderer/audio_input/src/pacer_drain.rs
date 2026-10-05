@@ -385,8 +385,8 @@ mod tests {
     }
 
     fn output() -> Output {
-        let (fifo, fifo_reader) = sample_ring(1 << 14);
-        let (ring_writer, ring) = sample_ring(1 << 14);
+        let (fifo, fifo_reader) = sample_ring(1 << 13, CHANNELS as usize);
+        let (ring_writer, ring) = sample_ring(1 << 13, CHANNELS as usize);
         let pacer = PacerHandle::new(
             PacerDrainEnds {
                 fifo: fifo_reader,

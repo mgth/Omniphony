@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, decoder, encoder};
+use rosc::{OscBundle, OscError, OscMessage, OscPacket, OscTime, OscType, decoder, encoder};
 
 use crate::host::runtime::{StopToken, Worker};
 use dispatch::{Change, Live, apply_event};
@@ -46,6 +46,9 @@ const PLAYOUT_TICK: Duration = Duration::from_millis(4);
 /// While `osc_snapshot_ready` is false, re-register this often (host value).
 const SNAPSHOT_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_BUF: usize = 65_536;
+/// Send buffer both sending sockets must have: larger than any UDP payload,
+/// like [`RECV_BUF`].
+const SEND_BUF: usize = 65_536;
 
 pub type SharedLive = Arc<Mutex<Live>>;
 
@@ -179,6 +182,27 @@ pub fn resolve(target: &str) -> Option<SocketAddr> {
         .find(std::net::SocketAddr::is_ipv4)
 }
 
+/// Make sure `socket` can send the largest datagram the protocol carries.
+///
+/// macOS and the BSDs refuse a UDP send larger than the socket's send buffer
+/// (`EMSGSIZE`), and that buffer starts at `net.inet.udp.maxdgram`: 9,216
+/// bytes, where a backend script runs to 60,000. The buffer is only ever
+/// raised: Linux starts well above this, and setting it there would shrink it.
+///
+/// A failure is logged and the socket kept, since everything under the old
+/// limit still goes through.
+fn ensure_send_buffer(socket: &UdpSocket) {
+    let socket = socket2::SockRef::from(socket);
+    if socket.send_buffer_size().is_ok_and(|size| size >= SEND_BUF) {
+        return;
+    }
+    if let Err(e) = socket.set_send_buffer_size(SEND_BUF) {
+        log::warn!(
+            "[osc] could not raise the send buffer to {SEND_BUF} bytes, larger messages may be refused: {e}"
+        );
+    }
+}
+
 /// Bind the socket and start the listener thread. Returns the bound port so a
 /// `0` request can be reported (and fed by the synthetic generator).
 pub fn spawn_listener(
@@ -188,6 +212,8 @@ pub fn spawn_listener(
     cfg: ListenerConfig,
 ) -> std::io::Result<(u16, ControlTx, Worker)> {
     let socket = UdpSocket::bind(("0.0.0.0", cfg.listen_port))?;
+    // Every control message leaves through this socket, backend files included.
+    ensure_send_buffer(&socket);
     let port = socket.local_addr()?.port();
     socket.set_read_timeout(Some(READ_TIMEOUT))?;
     stats.listen_port.store(u64::from(port), Ordering::Relaxed);
@@ -251,8 +277,8 @@ fn listener_loop(
                 stats
                     .last_packet_ms
                     .store(stats.start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                match decoder::decode_udp(&buf[..n]) {
-                    Ok((_, packet)) => {
+                match decode_datagram(&buf[..n]) {
+                    Ok(packet) => {
                         let mut outcome = PacketOutcome::default();
                         {
                             let mut model = live.lock().unwrap();
@@ -459,6 +485,19 @@ fn accepts_sender(target: Option<SocketAddr>, sender: SocketAddr) -> bool {
     target.is_none_or(|target| target.ip() == sender.ip())
 }
 
+/// Decode a datagram the listener accepted: `rosc`'s decoder, refusing first
+/// what nests deeper than the contract allows.
+///
+/// `rosc` decodes nested bundles by recursion and frees nested arrays by
+/// recursion, and [`RECV_BUF`] holds thousands of levels of either. Decoded,
+/// one such datagram overflows the listener thread's stack, which aborts the
+/// whole Studio. The contract's walk reads the nesting off the raw bytes
+/// instead, without recursing, as the engine's listener has it do.
+fn decode_datagram(datagram: &[u8]) -> Result<OscPacket, OscError> {
+    crate::osc_contract::nesting::check(datagram).map_err(OscError::BadPacket)?;
+    decoder::decode_udp(datagram).map(|(_, packet)| packet)
+}
+
 fn apply_connection_reset(model: &mut Live, request: u64) {
     reset_connection_model(model);
     if model.queued_connection_request == Some(request) {
@@ -525,6 +564,8 @@ impl Default for Change {
     }
 }
 
+/// Recurses into bundles, which [`decode_datagram`] lets through no deeper
+/// than the contract's `MAX_NESTING`.
 fn handle_packet(
     packet: &OscPacket,
     live: &mut Live,
@@ -684,6 +725,9 @@ pub fn spawn_synthetic(
     stop_after: Option<Duration>,
 ) -> std::io::Result<Worker> {
     let socket = UdpSocket::bind(("127.0.0.1", 0))?;
+    // One bundle per tick: past some fifty objects it outgrows the default
+    // send buffer of macOS.
+    ensure_send_buffer(&socket);
     socket.connect(("127.0.0.1", target_port))?;
     let period = Duration::from_secs_f32(1.0 / rate_hz.max(1.0));
     Worker::spawn("osc-synthetic", move |stop| {
@@ -779,6 +823,89 @@ pub fn spawn_synthetic(
             }
         }
     })
+}
+
+/// The contract's bound on nesting, where the Studio's datagrams arrive.
+#[cfg(test)]
+mod nesting_tests {
+    use super::*;
+    use crate::osc_contract::nesting::{MAX_NESTING, nested_arrays, nested_bundles};
+
+    #[test]
+    fn the_decoder_refuses_what_nests_past_the_contracts_limit() {
+        for nested in [nested_bundles, nested_arrays] {
+            assert!(decode_datagram(&nested(MAX_NESTING)).is_ok());
+            let refused = decode_datagram(&nested(MAX_NESTING + 1)).unwrap_err();
+            assert!(refused.to_string().contains("nested too deep"), "{refused}");
+        }
+    }
+
+    /// Datagrams nested thousands of levels deep, in bundles and in arrays,
+    /// are dropped and the listener goes on listening. Decoded, either one
+    /// overflows the listener thread's stack, which aborts the whole process.
+    /// A datagram one level past the limit is dropped the same way; one at
+    /// the limit is decoded and its message handled.
+    #[test]
+    fn a_deeply_nested_datagram_does_not_take_the_listener_down() {
+        let renderer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let stats = OscStats::new();
+        let (port, _control, mut worker) = spawn_listener(
+            Arc::new(Mutex::new(Live::new(
+                crate::model::app_state::AppState::new(Vec::new()),
+            ))),
+            Arc::new(|| {}),
+            stats.clone(),
+            ListenerConfig {
+                listen_port: 0,
+                register: Some(renderer.local_addr().unwrap()),
+                metering: false,
+                playout_sync: false,
+            },
+        )
+        .unwrap();
+
+        // Any socket at the renderer's address is listened to.
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // The two large datagrams have the same send limit to get past as
+        // the Studio's own.
+        ensure_send_buffer(&sender);
+        let awaited = |what: &str, counter: &AtomicU64, count: u64| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while counter.load(Ordering::Relaxed) != count {
+                assert!(Instant::now() < deadline, "{what}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        // One at a time, so that none waits in the socket's buffer behind
+        // another and all of them reach the decoder.
+        let mut sent = 0;
+        let mut send = |datagram: &[u8]| {
+            sender.send_to(datagram, ("127.0.0.1", port)).unwrap();
+            sent += 1;
+            awaited("the listener receives the datagram", &stats.packets, sent);
+        };
+
+        for nested in [nested_bundles(3_000), nested_arrays(30_000)] {
+            assert_eq!(nested.len(), 60_008);
+            send(&nested);
+        }
+        send(&nested_bundles(MAX_NESTING + 1));
+        send(&nested_arrays(MAX_NESTING + 1));
+        send(&nested_bundles(MAX_NESTING));
+        send(&nested_arrays(MAX_NESTING));
+        let ack = encoder::encode(&OscPacket::Message(OscMessage {
+            addr: crate::osc_contract::HEARTBEAT_ACK.into(),
+            args: vec![],
+        }))
+        .unwrap();
+        send(&ack);
+
+        awaited("the ack is handled", &stats.heartbeat_acks, 1);
+        // The one message of each datagram at the limit, and the ack: nothing
+        // of the four refused ones was handled.
+        assert_eq!(stats.messages.load(Ordering::Relaxed), 3);
+        worker.shutdown();
+    }
 }
 
 #[cfg(test)]
@@ -1062,5 +1189,132 @@ mod connection_tests {
             ));
             assert!(app::take_backend_file_error(&state, "script", "file").is_none());
         }
+    }
+}
+
+/// What the two sending sockets must get past the operating system. macOS and
+/// the BSDs refuse a UDP send larger than the socket's send buffer, which
+/// starts at 9,216 bytes there, so these only pass on them when the socket has
+/// had it raised.
+#[cfg(test)]
+mod send_size_tests {
+    use super::*;
+
+    /// The largest file the renderer accepts in a `backend/file/put` (its
+    /// `BACKEND_FILE_MAX_BYTES`).
+    const LARGEST_BACKEND_FILE: usize = 60_000;
+    /// `net.inet.udp.maxdgram` as macOS ships it.
+    const MACOS_DEFAULT_SEND_BUFFER: usize = 9_216;
+
+    fn send_buffer(socket: &UdpSocket) -> usize {
+        socket2::SockRef::from(socket).send_buffer_size().unwrap()
+    }
+
+    fn socket_with_send_buffer(size: usize) -> UdpSocket {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket2::SockRef::from(&socket)
+            .set_send_buffer_size(size)
+            .unwrap();
+        socket
+    }
+
+    /// "At least", since Linux reports twice what it was asked for.
+    #[test]
+    fn a_small_send_buffer_is_raised() {
+        let socket = socket_with_send_buffer(8_192);
+        assert!(send_buffer(&socket) < SEND_BUF);
+        ensure_send_buffer(&socket);
+        assert!(send_buffer(&socket) >= SEND_BUF);
+    }
+
+    /// Asking for the minimum on a socket already past it would shrink it,
+    /// which is what a plain `set` does to the Linux default.
+    #[test]
+    fn a_large_send_buffer_is_left_alone() {
+        let socket = socket_with_send_buffer(2 * SEND_BUF);
+        let before = send_buffer(&socket);
+        assert!(before > SEND_BUF);
+        ensure_send_buffer(&socket);
+        assert_eq!(send_buffer(&socket), before);
+    }
+
+    #[test]
+    fn a_maximum_size_backend_file_put_leaves_the_listener_socket() {
+        let renderer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        renderer
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let live = Arc::new(Mutex::new(Live::new(
+            crate::model::app_state::AppState::new(Vec::new()),
+        )));
+        let (_, tx, mut worker) = spawn_listener(
+            live,
+            Arc::new(|| {}),
+            OscStats::new(),
+            ListenerConfig {
+                listen_port: 0,
+                register: Some(renderer.local_addr().unwrap()),
+                metering: false,
+                playout_sync: true,
+            },
+        )
+        .unwrap();
+        let content = "x".repeat(LARGEST_BACKEND_FILE);
+        tx.send(Control::Send {
+            address: crate::osc_contract::CONTROL_BACKEND_FILE_PUT.into(),
+            args: vec![
+                OscType::String("script".into()),
+                OscType::String("file".into()),
+                OscType::String("big.lua".into()),
+                OscType::String(content.clone()),
+                OscType::String("request".into()),
+            ],
+        })
+        .unwrap();
+        // Shutting down sends what is still queued.
+        worker.shutdown();
+
+        let mut buf = vec![0u8; RECV_BUF];
+        let mut sent = None;
+        // The registration messages come first.
+        while let Ok(len) = renderer.recv(&mut buf) {
+            if let Ok((_, OscPacket::Message(message))) = decoder::decode_udp(&buf[..len])
+                && message.addr == crate::osc_contract::CONTROL_BACKEND_FILE_PUT
+            {
+                sent = Some(message);
+                break;
+            }
+        }
+        let sent = sent.expect("the put reaches the renderer");
+        assert_eq!(sent.args.get(3), Some(&OscType::String(content)));
+    }
+
+    #[test]
+    fn a_synthetic_bundle_over_the_default_send_buffer_leaves_the_feed_socket() {
+        // Every tick's bundle is then several times that default, and still
+        // one datagram.
+        const OBJECTS: u32 = 256;
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut worker = spawn_synthetic(OBJECTS, 50.0, port, None).unwrap();
+
+        let mut buf = vec![0u8; RECV_BUF];
+        let received = listener.recv(&mut buf);
+        worker.shutdown();
+
+        let len = received.expect("a bundle reaches the listener");
+        let Ok((_, OscPacket::Bundle(bundle))) = decoder::decode_udp(&buf[..len]) else {
+            panic!("the feed sends bundles");
+        };
+        let positions = bundle
+            .content
+            .iter()
+            .filter(|packet| matches!(packet, OscPacket::Message(m) if m.addr.ends_with("/xyz")))
+            .count();
+        assert_eq!(positions, OBJECTS as usize);
+        assert!(len > 2 * MACOS_DEFAULT_SEND_BUFFER, "only {len} bytes");
     }
 }
