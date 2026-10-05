@@ -158,18 +158,24 @@ def copies() -> list[tuple[str, str]]:
         versions = {p["name"]: p["version"] for p in load_toml(lockfile)["package"]
                     if "source" not in p}
         for name in names:
-            if name not in versions:
-                raise Mismatch(f"{rel(lockfile)}: no entry for {name}")
             found.append((f"{rel(lockfile)} {name}", versions[name]))
     return found
 
 
 def lockfiles() -> list[tuple[Path, list[str]]]:
-    return [
-        (RENDERER / "Cargo.lock", renderer_followers()),
-        (STUDIO / "src-tauri" / "Cargo.lock", ["omniphony-studio", "omniphony_geometry"]),
-        (STUDIO_EGUI / "Cargo.lock", egui_packages() + ["omniphony_geometry"]),
-    ]
+    """Each lockfile with the release-version packages it records: whichever
+    of the repository's own crates it reaches by path (the Tauri Studio, for
+    one, links the native Studio's core). Read from the lockfile rather than
+    listed, so a new path dependency is moved and checked without a change
+    here."""
+    own = set(renderer_followers()) | set(egui_packages()) | {"omniphony-studio"}
+    found = []
+    for lockfile in (RENDERER / "Cargo.lock", STUDIO / "src-tauri" / "Cargo.lock",
+                     STUDIO_EGUI / "Cargo.lock"):
+        names = [p["name"] for p in load_toml(lockfile)["package"]
+                 if "source" not in p and p["name"] in own]
+        found.append((lockfile, names))
+    return found
 
 
 # ── The README's compatibility table ────────────────────────────────────────

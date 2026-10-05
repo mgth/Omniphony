@@ -375,6 +375,22 @@ jobs:
           TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":null}}'
         run: cargo check --locked
 
+      # `check` only sees the tree at its current version; a copy the bump
+      # forgets to move shows up at the next release, when the release build
+      # refuses its lockfile (#712 review: the Tauri lock's studio-core
+      # entry). So bump for real, resolve the three workspaces `--locked` as
+      # the builds will, then put the tree back. Offline: the steps above
+      # already fetched every dependency.
+      - name: Bump the release version and resolve every lockfile
+        run: |
+          set -euo pipefail
+          trap 'git checkout -- .' EXIT
+          python3 scripts/release_version.py set 99.0.0 --player mpv-v99.0.0
+          for workspace in omniphony-renderer omniphony-studio/src-tauri omniphony-studio-egui; do
+            (cd "$workspace" && cargo metadata --locked --offline --format-version 1 > /dev/null)
+            echo "$workspace: lockfile valid at 99.0.0"
+          done
+
       # Drift pins for the renderer<->Studio mirrors (channel-spelling
       # normalisation, geometry golden vectors) — hard gates, like knip below.
       - name: Channel-alias parity tests
