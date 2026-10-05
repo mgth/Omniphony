@@ -377,6 +377,45 @@ reads ratios back through `room::resolve`, the single reading shared by the
 renderer build, the live seed and the profile switch — so the dependent
 default (an absent rear follows the length) lives in one place.
 
+### Outside the registry: the command tables
+
+Not every control address is an option. The rest are declared in one table
+per layer (`runtime_control::command_table`: an address, or several handled
+alike, or a prefix, and its handler), instead of a chain of address
+comparisons:
+
+| Table | Layer | What it holds |
+|---|---|---|
+| `LIVE_CONTROL_COMMANDS` | `runtime_control::live_control` | the generic setters and the group apply; the metering and diag cadences; the generator and phantom parameters; the placement |
+| `SIMPLE_CONTROL_COMMANDS` | `runtime_control::osc` | layout and speaker patches; the test signals; ear gain and mute; the manual head pose, recenter and calibration; the SOFA upload; backend parameters and the spread aliases; the layout radius; the hybrid curve; object mutes |
+| `ENGINE_COMMANDS` | `orender_engine::osc::dispatch` | the mpv overlay; metering, diag and gain-table subscriptions; the realtime gains; the bridge and input paths; the profiles; the backend files; the layout export |
+| `HOST_COMMANDS` | `host_audio` | the audio and input JSON patches and group applies; the device refresh; the input layout import; the resampling hold and reset |
+
+The process commands (save, reload, restart, quit, yield, resume, log
+level) stay one `match` (`runtime_control::command::PROCESS_COMMANDS`). Each
+table is checked by a test: every address is in `osc_contract::ALL_CONTROL`,
+none is claimed twice or by another layer, and none is a registry option's
+alias (an option is reached through the registry only).
+
+Why these are not options:
+
+- **Commands**: save, apply, refresh, upload, recenter, calibrate, a profile
+  switch, a file get/put, an export. They do something; they hold no value.
+- **Transient state**: the test signals, speaker / ear / object mutes, the
+  manual head pose, the resampling hold. A listening gesture, published and
+  never saved (`docs/persistence-policy.md`).
+- **Per-client subscriptions**: metering, diag, gain tables. They belong to
+  the client that asked, not to the renderer.
+- **View state**: the overlay switches and the monitoring cadences. Saved as
+  they change, never behind the Save button, which is the only way an option
+  reaches the file.
+- **Values of another shape**: a gain per speaker (`realtime/speaker_gain`,
+  the speaker patch's delay), a mode or a layout per family (placement), a
+  point list (the hybrid curve), a dynamic key/value bag (backend, generator
+  and phantom parameters), a value on the engine rather than the live params
+  (bridge and input paths, layout radius). Each would need an indexed,
+  variable-length or engine-side option kind; none is planned.
+
 ## Adding a live option today
 
 1. Add ONE row to `declared_options!` in `renderer/src/options/declared.rs`

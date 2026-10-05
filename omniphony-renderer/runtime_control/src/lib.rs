@@ -3,6 +3,7 @@
 #![recursion_limit = "256"]
 
 pub mod command;
+pub mod command_table;
 pub mod context;
 pub mod host_control;
 pub mod live_control;
