@@ -172,6 +172,7 @@ fn config_line(path: &str, status: &str, connected: bool) -> (String, egui::Colo
     let failure = match status {
         "missing" => Some(t("about.configMissing")),
         "parse_error" => Some(t("about.configParseError")),
+        "newer_schema" => Some(t("about.configNewerSchema")),
         _ => None,
     };
     if !path.is_empty() {
@@ -226,6 +227,9 @@ mod tests {
         assert_eq!(colour, CONFIG_ERROR);
         let (text, _, _) = config_line("/x.yaml", "parse_error", true);
         assert!(text.ends_with(t("about.configParseError")));
+        let (text, colour, _) = config_line("/x.yaml", "newer_schema", true);
+        assert!(text.ends_with(t("about.configNewerSchema")));
+        assert_eq!(colour, CONFIG_ERROR);
         // Connected with no path at all: running on built-in defaults, which
         // is worth an amber warning.
         let (text, colour, _) = config_line("", "", true);

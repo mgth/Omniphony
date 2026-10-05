@@ -505,12 +505,18 @@ impl Engine {
             // restored sidecar that was the previous instance's fallback
             // keeps parse_error, whatever the file now holds.
             let status = renderer::config::boot_load_status(path);
-            if status != renderer::config::ConfigLoadStatus::Loaded {
-                log::warn!(
+            match status {
+                renderer::config::ConfigLoadStatus::Loaded => {}
+                renderer::config::ConfigLoadStatus::NewerSchema => log::warn!(
+                    "config '{}' was written by a newer Omniphony; running on what this build \
+                     understands of it, and leaving the file untouched",
+                    path.display()
+                ),
+                _ => log::warn!(
                     "config '{}' not loaded ({}); running on built-in defaults",
                     path.display(),
                     status.as_str()
-                );
+                ),
             }
             control.set_config_status(Some(status.as_str().to_string()));
         }

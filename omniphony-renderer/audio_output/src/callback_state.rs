@@ -1,18 +1,12 @@
 //! What the output callback carries from one invocation to the next.
 //!
-//! The PipeWire process callback is a closure that captures around fifty
-//! things, but only these ten are *state*: everything else is context — an
-//! `Arc` it publishes through, or a scalar describing the negotiated format,
-//! fixed for the life of the stream.
-//!
-//! Separating the two is what makes the callback divisible. A step lifted out
-//! of it needs the state and little else, so it can take `&mut CallbackState`
-//! instead of a dozen parameters — which is what the far-mode step and the
-//! latency publication had to do the hard way before this existed.
+//! [`crate::callback_core::OutputCallbackCore`] keeps this apart from its
+//! context: everything else it holds is an `Arc` it publishes through, or a
+//! scalar describing the negotiated format, fixed for the life of the stream.
 //!
 //! Nothing here is shared across threads: the callback owns it outright, and
 //! that is why none of it is atomic. The atomics live in
-//! [`crate::output_telemetry::OutputTelemetry`], which is the other half of the
+//! [`crate::callback_core::CallbackShared`], which is the other half of the
 //! picture — what the callback *publishes*, as opposed to what it *remembers*.
 
 use std::time::Instant;
@@ -46,13 +40,6 @@ pub struct CallbackState<R> {
     /// Monotonic count of ring samples dropped by any recovery path. Published
     /// as a counter, so it only ever grows.
     pub recovery_discard_total: u64,
-    /// Fractional accumulator for the Bresenham input-trigger schedule: the
-    /// output callback drives the input stream at a rate that is not a whole
-    /// multiple of its own, so the remainder is carried here.
-    pub bresenham_acc: i64,
-    /// Last target the loop logged, so a steady target is not re-logged every
-    /// callback.
-    pub logged_runtime_target: usize,
     /// How many callbacks between servo runs, refreshed from the live config.
     pub adaptive_update_interval: u64,
     /// The live config as this callback sees it.
@@ -70,7 +57,6 @@ impl<R> CallbackState<R> {
         engine: Option<R>,
         channel_count: usize,
         configured_ratio: f64,
-        target_buffer_fill: usize,
         adaptive_config: AdaptiveResamplingConfig,
     ) -> Self {
         let mut runtime = AdaptiveRuntimeState::new(configured_ratio);
@@ -85,8 +71,6 @@ impl<R> CallbackState<R> {
             runtime,
             last_callback_at: None,
             recovery_discard_total: 0,
-            bresenham_acc: 0,
-            logged_runtime_target: target_buffer_fill,
             adaptive_update_interval: adaptive_config.update_interval_callbacks.max(1) as u64,
             adaptive_config,
         }

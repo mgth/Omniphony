@@ -37,6 +37,13 @@
 //!   resolution,elevation_resolution,distance_res,distance_max}`.
 //!
 //! See `docs/osc-control-contract.md` for the full list of those.
+//!
+//! ## Framing
+//!
+//! What both ends accept besides addresses is here too: how deep a datagram may
+//! nest, and the check a listener runs before decoding one ([`nesting`]).
+
+pub mod nesting;
 
 // ── Control: client → engine ────────────────────────────────────────────────
 
