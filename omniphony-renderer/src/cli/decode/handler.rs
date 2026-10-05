@@ -350,38 +350,19 @@ impl DecodeHandler {
         self.spatial.au_index += 1;
 
         self.sync_input_runtime_state(source, &frame)?;
-        if let Some(renderer) = self.spatial_renderer.as_mut() {
-            orender_engine::render::follow_stream_rate(renderer, sample_rate)?;
-        }
 
-        // Apply dialogue normalisation from bridge (updated on major sync frames).
-        // The level is always stored so OSC clients receive loudness/source
-        // and loudness/gain regardless of whether --use-loudness is set.
-        if let Some(renderer) = self.spatial_renderer.as_ref() {
-            if self.spatial.stream.latch_dialnorm(&frame, renderer) {
-                if let Some(osc_sender) = self
-                    .telemetry
-                    .osc_sender
-                    .as_ref()
-                    .filter(|sender| sender.has_osc_clients())
-                {
-                    osc_sender.send_loudness_state();
-                }
-            }
-        }
-
-        // Everything sent about this frame describes the block starting here.
+        // What the frame says about the stream — its rate, its dialogue
+        // normalisation, its metadata — taken as the embedded engine takes
+        // it. Everything sent about this frame describes the block starting
+        // here.
         let block_start = self.session.decoded_samples;
-        if let Some(osc_sender) = self.telemetry.osc_sender.as_ref() {
-            osc_sender.render_at(block_start);
-        }
-
-        SpatialMetadataCoordinator::new(
-            &mut self.spatial,
-            self.spatial_renderer.as_ref(),
+        self.spatial.pipeline.prepare(
+            &frame,
+            block_start,
+            self.spatial_renderer.as_mut(),
             self.telemetry.osc_sender.as_mut(),
-        )
-        .handle_spatial_metadata(&frame, frame.sampling_frequency)?;
+        )?;
+        self.spatial.note_export_bed_ids(&frame);
 
         self.session.decoded_samples += sample_count as u64;
 
@@ -724,7 +705,7 @@ impl DecodeHandler {
         let audio_meter = self.telemetry.audio_meter.take();
         let runtime = self.runtime.clone();
         // A property of the bridge, which outlives the stream too.
-        let coordinate_format = self.spatial.stream.coordinate_format;
+        let coordinate_format = self.spatial.pipeline.stream.coordinate_format;
         let file_capture = self
             .output
             .audio_writer
@@ -739,7 +720,7 @@ impl DecodeHandler {
 
         *self = DecodeHandler::default();
 
-        self.spatial.stream.coordinate_format = coordinate_format;
+        self.spatial.pipeline.stream.coordinate_format = coordinate_format;
 
         self.spatial_renderer = spatial_renderer;
         self.audio_control = audio_control;
@@ -878,7 +859,7 @@ pub(super) mod tests {
             (6, OutputSource::Decoded)
         );
         // An object stream is always rendered, whatever the channel mode.
-        handler.spatial.stream.has_objects = true;
+        handler.spatial.pipeline.stream.has_objects = true;
         assert_eq!(
             handler.output_shape(&bed_frame(), DecodedSource::Bridge, false),
             (speakers, OutputSource::Rendered)
@@ -899,10 +880,11 @@ pub(super) mod tests {
             ..DecodeHandler::default()
         };
         handler.telemetry.osc_sender = Some(osc);
-        handler.spatial.stream.dialnorm = Some(-27);
-        handler.spatial.stream.has_objects = true;
+        handler.spatial.pipeline.stream.dialnorm = Some(-27);
+        handler.spatial.pipeline.stream.has_objects = true;
         handler
             .spatial
+            .pipeline
             .stream
             .object_names
             .insert(3, "Dialog".to_string());
@@ -913,9 +895,9 @@ pub(super) mod tests {
 
         let osc = handler.telemetry.osc_sender.as_ref().unwrap();
         assert_eq!(osc.content_generation(), generation + 1);
-        assert_eq!(handler.spatial.stream.dialnorm, None);
-        assert!(!handler.spatial.stream.has_objects);
-        assert!(handler.spatial.stream.object_names.is_empty());
+        assert_eq!(handler.spatial.pipeline.stream.dialnorm, None);
+        assert!(!handler.spatial.pipeline.stream.has_objects);
+        assert!(handler.spatial.pipeline.stream.object_names.is_empty());
     }
 
     /// A file sink survives a segment start: rebuilding it reopens — and
