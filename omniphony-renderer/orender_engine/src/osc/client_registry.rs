@@ -40,6 +40,17 @@ const MAX_GAINTABLE_TARGETS: usize = 6;
 pub(crate) struct OscClientRegistry {
     clients: Mutex<HashMap<SocketAddr, OscClientState>>,
     timeout: Duration,
+    /// The control-plane state count every client is held to
+    /// (`osc_contract::STATE_GENERATION`), and the lock every state
+    /// publication holds from the capture of what it says to its send. Here
+    /// because every state broadcast already goes through the registry, and
+    /// every client hears the same ones.
+    ///
+    /// Held across the capture, not only the send: a state read on one
+    /// thread and sent after another thread published a newer one would go
+    /// out under the higher count and pass for current. Taken before the
+    /// clients lock, never inside it.
+    publication: Mutex<StateGeneration>,
     /// Whether any client is live, any subscribes to the meters, any to the
     /// diag traces: what the render path asks every block, so it reads these
     /// rather than take the lock (#670). Published on every change and on
@@ -49,15 +60,48 @@ pub(crate) struct OscClientRegistry {
     any_diag_live: AtomicBool,
 }
 
+/// The state count, as a publication holding the lock sees it.
+pub(crate) struct StateGeneration(u32);
+
+impl StateGeneration {
+    pub(crate) fn current(&self) -> u32 {
+        self.0
+    }
+
+    /// The count of the next datagram of state to go out.
+    pub(crate) fn advance(&mut self) -> u32 {
+        self.0 = self.0.wrapping_add(1);
+        self.0
+    }
+}
+
 impl OscClientRegistry {
     pub(crate) fn new(timeout: Duration) -> Self {
         Self {
             clients: Mutex::new(HashMap::new()),
             timeout,
+            publication: Mutex::new(StateGeneration(0)),
             any_live: AtomicBool::new(false),
             any_metering_live: AtomicBool::new(false),
             any_diag_live: AtomicBool::new(false),
         }
+    }
+
+    /// Where the state the clients were sent stands. Waits for a publication
+    /// in progress, so a heartbeat ack never reports a count whose state is
+    /// still on its way.
+    pub(crate) fn state_generation(&self) -> u32 {
+        self.publication.lock().unwrap().current()
+    }
+
+    /// Run one state publication — capture, encode, send — under the
+    /// publication lock, given the count to number it with. A broadcast
+    /// advances it once per datagram it numbers (the count wraps); a snapshot
+    /// sent to one client reads it, which tells that client where it stands.
+    /// Must not publish again from inside `publish`.
+    pub(crate) fn publish<R>(&self, publish: impl FnOnce(&mut StateGeneration) -> R) -> R {
+        let mut generation = self.publication.lock().unwrap();
+        publish(&mut generation)
     }
 
     /// Publish who is live in `clients` for the lock-free queries.
