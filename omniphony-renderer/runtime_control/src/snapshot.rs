@@ -213,11 +213,14 @@ pub fn build_renderer_state_json(
         // the legacy spellings, kept while clients migrate to this block.
         "options": renderer::options::options_json(live),
         // Per-family placement of fixed channels (`renderer::placement`):
-        // each family's own settings and what they resolve to.
+        // each family's own settings and what they resolve to, keyed by
+        // name; `placementFamilies` lists the families a client offers, in
+        // order (the renderer's own and the loaded bridge's).
         "placement": placement_json(&live.placement),
+        "placementFamilies": placement_families_json(&live.placement),
         // Legacy mirror of the generic family's own entries (null = none),
         // for clients that predate `placement`.
-        "virtualBed": live.placement.family(renderer::placement::SourceFamily::Generic)
+        "virtualBed": live.placement.family(renderer::placement::SourceFamily::GENERIC)
             .layout.as_ref()
             .map(|bed| serde_json::to_value(bed).unwrap_or(serde_json::Value::Null)),
         "distanceModel": live.distance_model.to_string(),
@@ -847,25 +850,32 @@ pub fn build_live_state_bundle_with_host(
     all_messages
 }
 
-/// The `placement` block of the renderer snapshot: per family, its own
-/// `mode`/`layout` (null when unset, i.e. inherited) and the effective
-/// result — `effectiveMode`, and `layoutSource` saying whose entries apply
-/// (`own`, `generic` or `none`).
+/// The `placement` block of the renderer snapshot: per family of the table,
+/// its `label`, whether it is `declared` (by the renderer or the loaded
+/// bridge, else known only from the config), its `defaultMode` (the mode
+/// when neither it nor the generic family sets one), its own `mode`/`layout` (null
+/// when unset, i.e. inherited) and the effective result — `effectiveMode`,
+/// and `layoutSource` saying whose entries apply (`own`, `generic` or
+/// `none`).
 fn placement_json(state: &renderer::placement::PlacementState) -> serde_json::Value {
     use renderer::placement::SourceFamily;
+    let generic_has_layout = state.family(SourceFamily::GENERIC).layout.is_some();
     let mut families = serde_json::Map::new();
-    for family in SourceFamily::ALL {
+    for (family, info) in state.families() {
         let own = state.family(family);
         let layout_source = if own.layout.is_some() {
             "own"
-        } else if state.family(SourceFamily::Generic).layout.is_some() {
+        } else if generic_has_layout {
             "generic"
         } else {
             "none"
         };
         families.insert(
-            family.as_str().to_string(),
+            info.name.clone(),
             json!({
+                "label": info.label,
+                "declared": info.declared,
+                "defaultMode": info.default_mode.as_str(),
                 "mode": own.mode.map(|m| m.as_str()),
                 "layout": own.layout.as_ref()
                     .map(|bed| serde_json::to_value(bed).unwrap_or(serde_json::Value::Null)),
@@ -875,6 +885,25 @@ fn placement_json(state: &renderer::placement::PlacementState) -> serde_json::Va
         );
     }
     serde_json::Value::Object(families)
+}
+
+/// The families a client offers, by name, in order: the generic family, the
+/// loaded bridge's in its catalogue order, then the renderer's PCM input.
+/// A family known only from the config is left out — no stream can have it.
+fn placement_families_json(state: &renderer::placement::PlacementState) -> serde_json::Value {
+    use renderer::placement::SourceFamily;
+    let name = |family| state.info(family).name.as_str();
+    let bridge = state
+        .families()
+        .filter(|(family, info)| {
+            info.declared && *family != SourceFamily::GENERIC && *family != SourceFamily::PCM
+        })
+        .map(|(_, info)| info.name.as_str());
+    let names: Vec<&str> = std::iter::once(name(SourceFamily::GENERIC))
+        .chain(bridge)
+        .chain(std::iter::once(name(SourceFamily::PCM)))
+        .collect();
+    json!(names)
 }
 
 #[cfg(test)]

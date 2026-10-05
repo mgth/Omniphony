@@ -109,17 +109,23 @@ The core engine (executable: `orender`) and its supporting crates:
 
 Start with [`omniphony-renderer/QUICKSTART.md`](omniphony-renderer/QUICKSTART.md).
 
-### `omniphony-studio` — supervision & control
+### `omniphony-studio-egui` — supervision & control
 
-A desktop app that does **not** render audio itself; it connects to the engine
-over OSC to visualize objects in a 3D scene, monitor runtime state, and control
-selected live parameters. It accepts several OSC input conventions (cartesian,
-identifier-in-address, spherical `azimuth/elevation/distance`, explicit removal).
+A native (egui/wgpu) desktop app that does **not** render audio itself; it
+connects to the engine over OSC to visualize objects in a 3D scene, monitor
+runtime state, and control selected live parameters.
+
+### `omniphony-studio` — the Tauri Studio (deprecated)
+
+The previous, web-based Studio. Deprecated in favour of
+`omniphony-studio-egui`: it still ships, but gets no new features. Its
+`src/i18n/` catalogues are shared with the native Studio.
 
 ## Repository layout
 
 - `omniphony-renderer/` — engine, CLI, crates, reference bridge
-- `omniphony-studio/` — supervision / visualization app
+- `omniphony-studio-egui/` — supervision / visualization app (native)
+- `omniphony-studio/` — the deprecated Tauri Studio
 - `docs/` — frontend usage guides (e.g. [mpv-omniphony](docs/mpv-omniphony.md))
 - `assets/` — demo clip, logo, captures
 - `scripts/` — helpers

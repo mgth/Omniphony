@@ -700,6 +700,39 @@ pub fn tab_bar<T: PartialEq + Clone>(ui: &mut Ui, current: &T, options: &[(T, &s
     picked
 }
 
+/// Tabs for a list the renderer supplies, of any length: each tab as wide as
+/// its label, wrapping between tabs rather than inside a label. `marked`
+/// tabs carry a trailing dot (the one playing); every tab keeps the dot's
+/// room, invisible when unmarked, so a mark moving never shifts the row.
+pub fn wrapping_tab_bar<T: PartialEq + Clone>(
+    ui: &mut Ui,
+    current: &T,
+    options: &[(T, &str, bool)],
+) -> Option<T> {
+    let mut picked = None;
+    ui.horizontal_wrapped(|ui| {
+        for (value, label, marked) in options {
+            let active = value == current;
+            let color = if active {
+                ui.visuals().text_color()
+            } else {
+                theme::TEXT_MUTED
+            };
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let mut job = egui::text::LayoutJob::default();
+            job.append(label, 0.0, egui::TextFormat::simple(font.clone(), color));
+            let dot = if *marked { color } else { Color32::TRANSPARENT };
+            job.append(" \u{25CF}", 0.0, egui::TextFormat::simple(font, dot));
+            job.wrap.max_width = f32::INFINITY;
+            let response = ui.add(egui::Button::selectable(active, job));
+            if response.clicked() && !active {
+                picked = Some(value.clone());
+            }
+        }
+    });
+    picked
+}
+
 #[cfg(test)]
 mod accessibility_tests {
     use super::*;

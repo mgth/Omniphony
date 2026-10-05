@@ -30,9 +30,21 @@ Each plugin must export the `format_bridge` root module expected by
 #[derive(StableAbi)]
 #[sabi(kind(Prefix(prefix_ref = BridgeLibRef)))]
 pub struct BridgeLib {
+    #[sabi(last_prefix_field)]
     pub new_bridge: extern "C" fn(strict: bool) -> FormatBridgeBox,
+    pub set_host_log_sink: extern "C" fn(usize),
+    pub source_families: extern "C" fn() -> RVec<RSourceFamily>,
 }
 ```
+
+`source_families` is the plugin's catalogue of source families: every name
+`FormatBridge::source_family` can return, with a label for user interfaces
+and a default placement mode (`room` or `sphere`). The renderer knows no
+format by name — its own families are only `generic` and `pcm` — so a
+family the catalogue does not list renders as `generic` and cannot be set
+apart in Studio. The host reads it once at load (see
+[`docs/placement.md`](../docs/placement.md)). A plugin with nothing of its
+own to declare returns an empty list.
 
 Fixed names:
 - `BASE_NAME = "format_bridge"`

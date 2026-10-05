@@ -417,7 +417,8 @@ mod tests {
     #[test]
     fn the_sinks_pcm_does_not_inherit_the_bitstreams_declaration() {
         use super::super::state::SpatialState;
-        use renderer::placement::SourceFamily;
+        use orender_engine::stream_state::StreamDeclaration;
+        use renderer::placement::{PlacementMode, PlacementState, SourceFamily};
 
         let (bitstream, _) = run_frames(&[1, 1, 1], 8, None);
         assert_eq!(
@@ -434,6 +435,8 @@ mod tests {
         };
         let mut bitstream = bitstream.into_iter();
         let mut spatial = SpatialState::default();
+        let mut table = PlacementState::default();
+        table.declare("dts", "DTS", PlacementMode::Room);
         let mut seen = Vec::new();
         for data in [
             bitstream.next().unwrap(),
@@ -442,7 +445,10 @@ mod tests {
             live_pcm(),
             bitstream.next().unwrap(),
         ] {
-            spatial.take_declaration(data.source, data.declaration);
+            let declaration = data
+                .declaration
+                .map(|declaration| StreamDeclaration::new(declaration, &table));
+            spatial.take_declaration(data.source, declaration);
             let declared = &spatial.stream.declaration;
             seen.push((
                 declared.family,
@@ -450,8 +456,12 @@ mod tests {
                 declared.label.clone(),
             ));
         }
-        let dts = (SourceFamily::Dts, 6, "6 channels".to_owned());
-        let pcm = (SourceFamily::Pcm, 0, "PCM".to_owned());
+        let dts = (
+            table.find("dts").expect("declared"),
+            6,
+            "6 channels".to_owned(),
+        );
+        let pcm = (SourceFamily::PCM, 0, "PCM".to_owned());
         assert_eq!(seen, [dts.clone(), dts.clone(), pcm.clone(), pcm, dts]);
     }
 

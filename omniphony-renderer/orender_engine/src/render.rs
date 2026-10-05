@@ -141,7 +141,7 @@ mod rate_tests {
             planner.plan(
                 renderer,
                 &labels,
-                renderer::placement::SourceFamily::Generic,
+                renderer::placement::SourceFamily::GENERIC,
                 &[],
             );
             planner.events().to_vec()

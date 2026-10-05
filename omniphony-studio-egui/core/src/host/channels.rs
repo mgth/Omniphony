@@ -63,60 +63,101 @@ const FALLBACK_BED: &[(&str, f64, f64, f64, bool, (f64, f64))] = &[
 // Families and modes
 // ---------------------------------------------------------------------------
 
-/// A source family, as the renderer's placement policy knows it
-/// (`renderer::placement::SourceFamily`): the format a stream comes from.
-/// `Generic` is the base the others inherit from, and what an undeclared
-/// format gets.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
-pub enum Family {
-    #[default]
-    Generic,
-    Dolby,
-    Dts,
-    Auro,
-    Pcm,
+/// A source family, by the name the renderer publishes
+/// (`placementFamilies`). Studio knows no format by name: the renderer's
+/// table holds its own families and the loaded bridge's, and this only
+/// carries one of those names — plus the generic family, the base the others
+/// inherit from, which every renderer has.
+///
+/// Names are interned (a handful per process, kept for its life), so a
+/// family stays `Copy` and comparing two is cheap.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub struct Family(&'static str);
+
+impl Default for Family {
+    fn default() -> Self {
+        Self::GENERIC
+    }
 }
 
 impl Family {
-    pub const ALL: [Family; 5] = [Self::Generic, Self::Dolby, Self::Dts, Self::Auro, Self::Pcm];
+    pub const GENERIC: Family = Family("generic");
+
+    /// The family of that name, case-insensitive.
+    pub fn named(name: &str) -> Self {
+        static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+        let name = name.trim();
+        if name.eq_ignore_ascii_case(Self::GENERIC.0) {
+            return Self::GENERIC;
+        }
+        let mut names = NAMES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(known) = names.iter().find(|known| known.eq_ignore_ascii_case(name)) {
+            return Self(known);
+        }
+        let interned: &'static str = Box::leak(name.to_ascii_lowercase().into_boxed_str());
+        names.push(interned);
+        Self(interned)
+    }
 
     /// The wire name, as the renderer's controls and snapshot spell it.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Generic => "generic",
-            Self::Dolby => "dolby",
-            Self::Dts => "dts",
-            Self::Auro => "auro",
-            Self::Pcm => "pcm",
-        }
+        self.0
     }
 
-    pub fn parse(s: &str) -> Option<Self> {
-        let s = s.trim();
-        Self::ALL
-            .into_iter()
-            .find(|f| f.as_str().eq_ignore_ascii_case(s))
+    pub fn is_generic(self) -> bool {
+        self == Self::GENERIC
     }
+}
 
-    /// The Studio string naming the family.
-    pub fn i18n_key(self) -> &'static str {
-        match self {
-            Self::Generic => "placement.family.generic",
-            Self::Dolby => "placement.family.dolby",
-            Self::Dts => "placement.family.dts",
-            Self::Auro => "placement.family.auro",
-            Self::Pcm => "placement.family.pcm",
-        }
+/// The families to offer, in the renderer's order: its `placementFamilies`,
+/// else (a renderer from before the list) the families its `placement`
+/// block reports, generic first; offline, the generic family alone.
+pub fn families(app: &AppState) -> Vec<Family> {
+    if let Some(names) = app.live_options.placement_families.as_ref() {
+        return names.iter().map(|name| Family::named(name)).collect();
     }
+    let mut families = vec![Family::GENERIC];
+    if let Some(blocks) = app
+        .live_options
+        .placement
+        .as_ref()
+        .and_then(|p| p.as_object())
+    {
+        families.extend(
+            blocks
+                .keys()
+                .map(|name| Family::named(name))
+                .filter(|family| !family.is_generic()),
+        );
+    }
+    families
+}
 
-    /// The renderer's built-in default when neither the family nor the
-    /// generic one sets a mode: Auro-3D is a sphere, the rest a room.
-    fn builtin_mode(self) -> PlacementMode {
-        match self {
-            Self::Auro => PlacementMode::Sphere,
-            _ => PlacementMode::Room,
-        }
+/// What to call a family: the renderer's label for it (the bridge's, for
+/// a bridge family), the name when it states none. The generic family is
+/// Studio's own word, translated.
+pub fn family_label(app: &AppState, family: Family) -> String {
+    if family.is_generic() {
+        return crate::i18n::t("placement.family.generic").to_owned();
     }
+    placement_block(app, family)
+        .and_then(|block| block.get("label"))
+        .and_then(|label| label.as_str())
+        .filter(|label| !label.trim().is_empty())
+        .unwrap_or(family.as_str())
+        .to_owned()
+}
+
+/// The mode a family runs in when neither it nor the generic family sets
+/// one, as the renderer reports it (`defaultMode`): room when it says nothing.
+fn default_mode(app: &AppState, family: Family) -> PlacementMode {
+    placement_block(app, family)
+        .and_then(|block| block.get("defaultMode"))
+        .and_then(|mode| mode.as_str())
+        .and_then(PlacementMode::parse)
+        .unwrap_or(PlacementMode::Room)
 }
 
 /// How a family's fixed channels are placed (`renderer::placement::PlacementMode`).
@@ -201,11 +242,11 @@ fn own_speakers(app: &AppState, family: Family) -> Option<&Vec<serde_json::Value
 pub fn family_placement(app: &AppState, family: Family) -> FamilyPlacement {
     let own = own_mode(app, family);
     let effective_mode = own
-        .or_else(|| own_mode(app, Family::Generic))
-        .unwrap_or_else(|| family.builtin_mode());
+        .or_else(|| own_mode(app, Family::GENERIC))
+        .unwrap_or_else(|| default_mode(app, family));
     let layout_source = if own_speakers(app, family).is_some() {
         LayoutSource::Own
-    } else if own_speakers(app, Family::Generic).is_some() || legacy_bed_speakers(app).is_some() {
+    } else if own_speakers(app, Family::GENERIC).is_some() || legacy_bed_speakers(app).is_some() {
         LayoutSource::Generic
     } else {
         LayoutSource::None
@@ -221,7 +262,7 @@ pub fn family_placement(app: &AppState, family: Family) -> FamilyPlacement {
 /// legacy single bed a renderer from before placement reports.
 pub fn family_speakers(app: &AppState, family: Family) -> Option<&Vec<serde_json::Value>> {
     own_speakers(app, family)
-        .or_else(|| own_speakers(app, Family::Generic))
+        .or_else(|| own_speakers(app, Family::GENERIC))
         .or_else(|| legacy_bed_speakers(app))
 }
 
@@ -244,7 +285,7 @@ pub fn playing_family(app: &AppState) -> Option<Family> {
     processing
         .get("family")
         .and_then(|f| f.as_str())
-        .and_then(Family::parse)
+        .map(Family::named)
 }
 
 /// Normalise a channel name exactly like `bridge_api::labels`: drop whitespace,
@@ -310,9 +351,9 @@ impl ChannelCatalog {
             .flatten()
             .filter_map(|v| v.as_str())
             .chain(
-                Family::ALL
-                    .iter()
-                    .flat_map(|&family| own_speakers(app, family).into_iter().flatten())
+                families(app)
+                    .into_iter()
+                    .flat_map(|family| own_speakers(app, family).into_iter().flatten())
                     .chain(legacy_bed_speakers(app).into_iter().flatten())
                     .filter_map(|s| s.get("name").and_then(|v| v.as_str())),
             )
@@ -946,17 +987,17 @@ mod tests {
             },
             "auro": { "mode": "sphere" }
         }));
-        let dts = family_placement(&app, Family::Dts);
+        let dts = family_placement(&app, Family::named("dts"));
         assert_eq!(dts.own_mode, None);
         assert_eq!(dts.effective_mode, PlacementMode::Manual);
         assert_eq!(dts.layout_source, LayoutSource::Generic);
-        let auro = family_placement(&app, Family::Auro);
+        let auro = family_placement(&app, Family::named("auro"));
         assert_eq!(auro.own_mode, Some(PlacementMode::Sphere));
         assert_eq!(auro.effective_mode, PlacementMode::Sphere);
 
         let mut catalog = ChannelCatalog::default();
         catalog.refresh(&app);
-        let ls = effective_channels_for(&catalog, &app, Family::Dts)
+        let ls = effective_channels_for(&catalog, &app, Family::named("dts"))
             .into_iter()
             .find(|c| c.name == "Ls")
             .expect("Ls");
@@ -975,10 +1016,10 @@ mod tests {
         let mut catalog = ChannelCatalog::default();
         catalog.refresh(&app);
         assert_eq!(
-            family_placement(&app, Family::Dolby).effective_mode,
+            family_placement(&app, Family::named("dolby")).effective_mode,
             PlacementMode::Room
         );
-        let channels = effective_channels_for(&catalog, &app, Family::Dolby);
+        let channels = effective_channels_for(&catalog, &app, Family::named("dolby"));
         let ls = channels.iter().find(|c| c.name == "Ls").expect("Ls");
         assert_eq!(ls.coord_mode, CoordMode::Cartesian);
         assert_eq!(
@@ -995,7 +1036,7 @@ mod tests {
             "generic": { "layout": entries },
             "dolby": { "mode": "sphere" }
         }));
-        let channels = effective_channels_for(&catalog, &app, Family::Dolby);
+        let channels = effective_channels_for(&catalog, &app, Family::named("dolby"));
         let ls = channels.iter().find(|c| c.name == "Ls").expect("Ls");
         assert_eq!(ls.coord_mode, CoordMode::Polar);
         assert_eq!((ls.azimuth, ls.elevation), (-110.0, 0.0));
@@ -1006,7 +1047,7 @@ mod tests {
             ls.y
         );
         assert_eq!(
-            family_placement(&app, Family::Dolby).layout_source,
+            family_placement(&app, Family::named("dolby")).layout_source,
             LayoutSource::Generic
         );
     }
@@ -1017,13 +1058,15 @@ mod tests {
         assert_eq!(playing_family(&app), None);
         app.live_options.fixed_channel_processing =
             Some(serde_json::json!({ "stream": "fixed", "family": "auro" }));
-        assert_eq!(playing_family(&app), Some(Family::Auro));
+        assert_eq!(playing_family(&app), Some(Family::named("auro")));
         app.live_options.fixed_channel_processing =
             Some(serde_json::json!({ "stream": "idle", "family": "auro" }));
         assert_eq!(playing_family(&app), None);
+        // A stream whose family the renderer's table lacks is reported as
+        // the generic family it is rendered with.
         app.live_options.fixed_channel_processing =
-            Some(serde_json::json!({ "stream": "fixed", "family": "mpeg-h" }));
-        assert_eq!(playing_family(&app), None, "an unknown family is not one");
+            Some(serde_json::json!({ "stream": "fixed", "family": "generic" }));
+        assert_eq!(playing_family(&app), Some(Family::GENERIC));
     }
 
     #[test]
@@ -1033,12 +1076,12 @@ mod tests {
             { "name": "LFE", "coord_mode": "cartesian", "x": 0.0, "y": 1.0, "z": 0.0, "spatialize": false, "gain_db": -6.0 }
         ] }));
         assert_eq!(
-            family_placement(&app, Family::Dts).layout_source,
+            family_placement(&app, Family::named("dts")).layout_source,
             LayoutSource::Generic
         );
         let mut catalog = ChannelCatalog::default();
         catalog.refresh(&app);
-        let lfe = effective_channels_for(&catalog, &app, Family::Dts)
+        let lfe = effective_channels_for(&catalog, &app, Family::named("dts"))
             .into_iter()
             .find(|c| c.name == "LFE")
             .expect("LFE");

@@ -137,6 +137,10 @@ extern "C" fn new_bridge(_: bool) -> FormatBridgeBox {
 }
 extern "C" fn log_sink(_: usize) {}
 
+extern "C" fn source_families() -> RVec<bridge_api::RSourceFamily> {
+    RVec::new()
+}
+
 /// An engine on a [`ScriptedBridge`] with the decode thread on, and the log of
 /// the bridge's declaration reads.
 fn engine() -> (Engine, Arc<Mutex<Vec<String>>>) {
@@ -169,6 +173,7 @@ fn engine_with_control() -> (Engine, Arc<Mutex<Vec<String>>>, Arc<RendererContro
     let lib = BridgeLib {
         new_bridge,
         set_host_log_sink: log_sink,
+        source_families,
     }
     .leak_into_prefix();
     let engine = Engine::new(LoadedBridge { lib, bridge }, renderer, 48_000);

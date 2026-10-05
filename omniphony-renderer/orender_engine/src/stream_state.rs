@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use bridge_api::{RChannelLabel, RChannelPose, RCoordinateFormat, RDecodedFrame, RMetadataFrame};
 use renderer::live_params::RendererControl;
-use renderer::placement::SourceFamily;
+use renderer::placement::{PlacementState, SourceFamily};
 use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
 use renderer::speaker_layout::SpeakerLayout;
 
@@ -53,7 +53,7 @@ impl Default for StreamDeclaration {
     /// A stream whose bridge has declared nothing yet.
     fn default() -> Self {
         Self {
-            family: SourceFamily::Generic,
+            family: SourceFamily::GENERIC,
             poses: Vec::new(),
             label: String::new(),
             tags: Vec::new(),
@@ -62,8 +62,11 @@ impl Default for StreamDeclaration {
     }
 }
 
-impl From<Declaration> for StreamDeclaration {
-    fn from(declaration: Declaration) -> Self {
+impl StreamDeclaration {
+    /// The bridge's declaration as the stream applies it, its family name
+    /// resolved against the renderer's family table (once per declaration,
+    /// so planning a frame compares no strings).
+    pub fn new(declaration: Declaration, placement: &PlacementState) -> Self {
         let mut dialogue_channels: Vec<usize> = declaration
             .tags
             .iter()
@@ -73,7 +76,7 @@ impl From<Declaration> for StreamDeclaration {
         dialogue_channels.sort_unstable();
         dialogue_channels.dedup();
         Self {
-            family: SourceFamily::from_declared(&declaration.family),
+            family: placement.resolve(&declaration.family),
             poses: declaration.poses,
             label: declaration.label,
             tags: declaration.tags,
@@ -338,8 +341,13 @@ impl StreamState {
     }
 
     /// Take on the bridge's declaration for this frame and the ones after it.
-    pub fn apply_declaration(&mut self, declaration: Declaration) {
-        self.declaration = declaration.into();
+    pub fn apply_declaration(&mut self, declaration: Declaration, placement: &PlacementState) {
+        self.declaration = StreamDeclaration::new(declaration, placement);
+    }
+
+    /// Take on a declaration already resolved against the family table.
+    pub fn set_declaration(&mut self, declaration: StreamDeclaration) {
+        self.declaration = declaration;
     }
 
     /// A segment starts (the bridge's `is_new_segment`, or it reset itself):
@@ -640,12 +648,18 @@ mod tests {
     #[test]
     fn a_segment_reset_keeps_the_declaration_and_the_drc_ramp() {
         let mut stream = StreamState::default();
-        stream.apply_declaration(Declaration {
-            poses: Vec::new(),
-            family: "dts".to_owned(),
-            label: "DTS".to_owned(),
-            tags: Vec::new(),
-        });
+        let mut placement = PlacementState::default();
+        placement.declare("dts", "DTS", renderer::placement::PlacementMode::Room);
+        let dts = placement.find("dts").expect("declared");
+        stream.apply_declaration(
+            Declaration {
+                poses: Vec::new(),
+                family: "dts".to_owned(),
+                label: "DTS".to_owned(),
+                tags: Vec::new(),
+            },
+            &placement,
+        );
         stream.note_object_metadata(&meta(&[(1, 0)], &[(1, "A")]));
         stream.dialnorm = Some(-27);
         stream.drc.gain = 0.5;
@@ -654,17 +668,19 @@ mod tests {
         assert!(stream.object_channels.is_empty());
         assert!(stream.object_names.is_empty());
         assert_eq!(stream.dialnorm, None);
-        assert_eq!(stream.declaration.family, SourceFamily::Dts);
+        assert_eq!(stream.declaration.family, dts);
         assert_eq!(stream.declaration.label, "DTS");
         assert_eq!(stream.drc.gain, 0.5);
     }
 
     fn tagged(tags: Vec<ChannelTag>) -> StreamDeclaration {
-        Declaration {
-            tags,
-            ..Declaration::default()
-        }
-        .into()
+        StreamDeclaration::new(
+            Declaration {
+                tags,
+                ..Declaration::default()
+            },
+            &PlacementState::default(),
+        )
     }
 
     fn tag(kind: &str, channels: &[usize]) -> ChannelTag {
