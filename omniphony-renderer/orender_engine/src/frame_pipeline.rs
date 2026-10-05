@@ -416,6 +416,16 @@ mod tests {
 
     const SAMPLES: usize = 256;
 
+    /// The pipeline writes the process-global overlay (object positions,
+    /// levels) whenever an overlay session is active, which one of the
+    /// overlay's own tests may have just armed: hold the overlay's test lock,
+    /// or those tests read positions this one wrote.
+    fn overlay_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::overlay::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     fn renderer() -> SpatialRenderer {
         build_spatial_renderer(
             &SpatialRendererParams::from_render_config(None),
@@ -486,6 +496,7 @@ mod tests {
     /// takes the channel path whatever `has_objects` says.
     #[test]
     fn an_object_frame_is_planned_then_rendered_where_it_says() {
+        let _overlay = overlay_lock();
         use RChannelLabel::{L, Object, R};
         let mut renderer = renderer();
         let mut pipeline = FramePipeline::new(RCoordinateFormat::Cartesian);
@@ -545,6 +556,7 @@ mod tests {
     /// are the host's, and its buffer comes back untouched.
     #[test]
     fn the_host_channel_mode_hands_the_channels_back() {
+        let _overlay = overlay_lock();
         use RChannelLabel::{L, R};
         let mut renderer = renderer();
         renderer.renderer_control().live.write().channel_render_mode = ChannelRenderMode::Host;
