@@ -532,6 +532,28 @@ impl DecodeHandler {
             self.output.reset_realtime_output_tracking();
         }
 
+        // Nor can a file capture carried over a stream end take a stream at
+        // another rate: the sink writes samples as they come, so they would
+        // sit under a CAF header describing the streams before them and play
+        // at the wrong speed. That stream starts the file over, as every
+        // stream did before captures were carried over.
+        if let Some(capture_rate) = self
+            .output
+            .carried_capture_rate
+            .take()
+            .filter(|&rate| rate != sample_rate)
+        {
+            log::warn!(
+                "Stream at {} Hz cannot continue the {} Hz capture in '{}': starting the file over",
+                sample_rate,
+                capture_rate,
+                self.runtime.output_file,
+            );
+            if let Some(mut writer) = self.output.invalidate_writer(self.input_control.as_deref()) {
+                let _ = writer.flush();
+            }
+        }
+
         OutputRuntimeCoordinator::new(
             &mut self.output,
             &mut self.runtime,
@@ -680,6 +702,11 @@ impl DecodeHandler {
     /// then only ever held what followed the last stream end, where the same
     /// run to stdout holds everything. Any other writer is dropped, as it
     /// always was — which is what tells a FIFO's reader the stream is over.
+    ///
+    /// The capture is one format. Only a stream of the same width and rate
+    /// continues it; the next frame checks both
+    /// ([`handle_decoded_frame`](Self::handle_decoded_frame)), and another
+    /// format starts the file over.
     pub fn reset_for_next_stream(&mut self) {
         let spatial_renderer = self.spatial_renderer.take();
         let audio_control = self.audio_control.take();
@@ -697,6 +724,12 @@ impl DecodeHandler {
             .audio_writer
             .take_if(|writer| writer.is_regular_file_sink());
         let file_capture_channels = self.output.audio_writer_channels;
+        // What the capture holds is at the rate of the stream that ended; one
+        // that brought no frame leaves the rate carried over before it.
+        let file_capture_rate = self
+            .output
+            .carried_capture_rate
+            .unwrap_or(self.session.final_sample_rate);
 
         *self = DecodeHandler::default();
 
@@ -712,6 +745,7 @@ impl DecodeHandler {
         if file_capture.is_some() {
             self.output.audio_writer = file_capture;
             self.output.audio_writer_channels = file_capture_channels;
+            self.output.carried_capture_rate = Some(file_capture_rate);
         }
         if let Some(ref mut osc_sender) = self.telemetry.osc_sender {
             osc_sender.bump_content_generation();
@@ -761,13 +795,18 @@ mod tests {
 
     /// A 5.1 bed frame, as the decoder thread hands it over.
     fn bed_frame() -> RDecodedFrame {
+        bed_frame_of(480, 48_000)
+    }
+
+    /// A 5.1 bed frame of `sample_count` samples at `sampling_frequency`.
+    fn bed_frame_of(sample_count: u32, sampling_frequency: u32) -> RDecodedFrame {
         use RChannelLabel::*;
         let labels = vec![L, R, C, LFE, Ls, Rs];
         RDecodedFrame {
-            sampling_frequency: 48_000,
-            sample_count: 480,
+            sampling_frequency,
+            sample_count,
             channel_count: labels.len() as u32,
-            pcm: vec![0i32; 480 * labels.len()].into(),
+            pcm: vec![0i32; sample_count as usize * labels.len()].into(),
             channel_labels: labels.into(),
             metadata: abi_stable::std_types::RVec::new(),
             drc_gain: 1.0,
@@ -934,14 +973,14 @@ mod tests {
     }
 
     /// One frame through the handler, as the decoder thread hands it over.
-    fn feed_bed_frame(handler: &mut DecodeHandler) {
+    fn feed(handler: &mut DecodeHandler, frame: RDecodedFrame) {
         let ctx = FrameHandlerContext {
             bed_conform: false,
             decode_time_ms: 0.0,
             queue_delay_ms: 0.0,
         };
         handler
-            .handle_decoded_frame(DecodedSource::Bridge, bed_frame(), &ctx)
+            .handle_decoded_frame(DecodedSource::Bridge, frame, &ctx)
             .expect("frame");
     }
 
@@ -955,10 +994,10 @@ mod tests {
             std::env::temp_dir().join(format!("orender-stream-end-{}.f32", std::process::id()));
         let mut handler = file_output_handler(&path);
 
-        feed_bed_frame(&mut handler);
+        feed(&mut handler, bed_frame());
         handler.finalize().expect("finalize");
         handler.reset_for_next_stream();
-        feed_bed_frame(&mut handler);
+        feed(&mut handler, bed_frame());
         handler.finalize().expect("finalize");
         drop(handler);
 
@@ -971,6 +1010,54 @@ mod tests {
         );
     }
 
+    /// The sample rate a CAF header declares, and the bytes of audio after it.
+    /// The header has no `chan` chunk: no renderer, no speakers to describe.
+    fn caf_rate_and_payload(caf: &[u8]) -> (f64, usize) {
+        const HEADER_BYTES: usize = 68;
+        assert_eq!(&caf[..4], b"caff");
+        assert_eq!(&caf[8..12], b"desc");
+        assert_eq!(&caf[52..56], b"data");
+        let rate = f64::from_be_bytes(caf[20..28].try_into().unwrap());
+        (rate, caf.len() - HEADER_BYTES)
+    }
+
+    /// A capture is at one rate: the sink writes samples as they come, under
+    /// a CAF header that describes them once. Streams at that rate follow one
+    /// another in it; a stream at another rate starts the file over with a
+    /// header of its own, where it would otherwise play at the wrong speed.
+    #[test]
+    fn a_stream_at_another_rate_starts_the_capture_over() {
+        let path = std::env::temp_dir().join(format!(
+            "orender-stream-end-rate-{}.caf",
+            std::process::id()
+        ));
+        let mut handler = file_output_handler(&path);
+        handler.runtime.output_file_format = crate::cli::command::OutputFileFormatArg::Caf;
+        let capture = || caf_rate_and_payload(&std::fs::read(&path).expect("capture"));
+        let stream = |handler: &mut DecodeHandler, rate: u32| {
+            feed(handler, bed_frame_of(480, rate));
+            handler.finalize().expect("finalize");
+            handler.reset_for_next_stream();
+        };
+
+        stream(&mut handler, 48_000);
+        stream(&mut handler, 48_000);
+        let same_rate = capture();
+        stream(&mut handler, 96_000);
+        let other_rate = capture();
+        // A stream that brings no frame does not make the capture forget its
+        // rate.
+        handler.reset_for_next_stream();
+        stream(&mut handler, 48_000);
+        let after_an_empty_stream = capture();
+        drop(handler);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(same_rate, (48_000.0, 2 * BED_FRAME_BYTES));
+        assert_eq!(other_rate, (96_000.0, BED_FRAME_BYTES));
+        assert_eq!(after_an_empty_stream, (48_000.0, BED_FRAME_BYTES));
+    }
+
     /// A FIFO sink is still closed by a stream end, which is how its reader
     /// learns the stream is over, and opened again by the next stream.
     #[cfg(unix)]
@@ -979,6 +1066,15 @@ mod tests {
         use std::io::Read;
         use std::os::unix::ffi::OsStrExt;
         use std::os::unix::fs::OpenOptionsExt;
+
+        // This thread writes a stream into the FIFO and only then reads it
+        // back, so a stream must fit whatever the pipe holds or its flush
+        // never returns. That is as little as a page or two for a user over
+        // the pipe budget (`pipe-user-pages-soft`); `_POSIX_PIPE_BUF`, 512
+        // bytes, always fits.
+        const SAMPLES: u32 = 8;
+        const STREAM_BYTES: usize = SAMPLES as usize * 6 * 4;
+        const { assert!(STREAM_BYTES <= 512) };
 
         let path =
             std::env::temp_dir().join(format!("orender-stream-end-{}.fifo", std::process::id()));
@@ -992,10 +1088,10 @@ mod tests {
             .custom_flags(libc::O_NONBLOCK)
             .open(&path)
             .expect("fifo reader");
-        let mut stream = vec![0u8; BED_FRAME_BYTES];
+        let mut stream = [0u8; STREAM_BYTES];
         let mut handler = file_output_handler(&path);
 
-        feed_bed_frame(&mut handler);
+        feed(&mut handler, bed_frame_of(SAMPLES, 48_000));
         handler.finalize().expect("finalize");
         reader.read_exact(&mut stream).expect("first stream");
         let pending = reader
@@ -1007,7 +1103,7 @@ mod tests {
         assert!(handler.output.audio_writer.is_none());
         assert_eq!(reader.read(&mut stream).expect("end of stream"), 0);
 
-        feed_bed_frame(&mut handler);
+        feed(&mut handler, bed_frame_of(SAMPLES, 48_000));
         handler.finalize().expect("finalize");
         reader.read_exact(&mut stream).expect("second stream");
         drop(handler);

@@ -225,6 +225,11 @@ pub struct OutputState {
     /// speaker array for a stereo pair). Remembering what was built is what lets
     /// the caller notice the two have parted company and rebuild.
     pub audio_writer_channels: Option<usize>,
+    /// Stream rate of the file capture carried over a stream end
+    /// (`DecodeHandler::reset_for_next_stream`), until the next frame is
+    /// checked against it: the sink writes samples as they come, so a stream
+    /// at another rate cannot continue the capture.
+    pub carried_capture_rate: Option<u32>,
     pub bootstrap_frames_seen: u32,
     pub bootstrap_started_at: Option<Instant>,
     pub render_buf: Vec<f32>,
@@ -249,6 +254,7 @@ impl Default for OutputState {
         Self {
             audio_writer: None,
             audio_writer_channels: None,
+            carried_capture_rate: None,
             bootstrap_frames_seen: 0,
             bootstrap_started_at: None,
             render_buf: Vec::new(),
@@ -280,6 +286,7 @@ impl OutputState {
     ) -> Option<AudioWriter> {
         self.output_init_failed = false;
         self.audio_writer_channels = None;
+        self.carried_capture_rate = None;
         if let Some(control) = input_control {
             control.clear_output_pacer();
         }
