@@ -1378,10 +1378,14 @@ mod notify_tests {
         drop(sender);
     }
 
-    /// Argument lists a sender may get wrong: none at all, too few, the wrong
-    /// type, a non-finite number, out of range, and many.
-    fn malformed_argument_lists() -> Vec<Vec<OscType>> {
+    /// Argument lists: a few a control plausibly accepts, so that changes are
+    /// applied, and the ways a sender gets them wrong — none at all, too few,
+    /// the wrong type, a non-finite number, out of range, and many.
+    fn argument_lists() -> Vec<Vec<OscType>> {
         vec![
+            vec![OscType::Int(0)],
+            vec![OscType::Float(0.5)],
+            vec![OscType::String("1".into())],
             vec![],
             vec![OscType::Int(1)],
             vec![OscType::Int(-1)],
@@ -1448,7 +1452,7 @@ mod notify_tests {
 
         let mut sent = 0;
         for address in &addresses {
-            for args in malformed_argument_lists() {
+            for args in argument_lists() {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     send(&wire, &control, address, args.clone())
                 }));
@@ -1460,6 +1464,79 @@ mod notify_tests {
             }
         }
         assert!(sent > 1000, "too few cases to mean anything: {sent}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What may write `config.yaml` without the Save button
+    /// (docs/persistence-policy.md): the Save itself, the profile operations,
+    /// and the view-state exceptions — head-tracker recenter and calibration,
+    /// and the monitoring cadences.
+    const WRITES_CONFIG: &[&str] = &[
+        osc_contract::CONTROL_SAVE_CONFIG,
+        osc_contract::CONTROL_PROFILE_SWITCH,
+        osc_contract::CONTROL_PROFILE_CREATE,
+        osc_contract::CONTROL_PROFILE_DELETE,
+        osc_contract::CONTROL_PROFILE_RENAME,
+        osc_contract::CONTROL_HEAD_RECENTER,
+        osc_contract::CONTROL_HEAD_CALIBRATE,
+        osc_contract::CONTROL_METERING_RATE_HZ,
+        osc_contract::CONTROL_DIAG_RATE_HZ,
+    ];
+
+    /// The persistence policy, checked where it is enforced: no control
+    /// message but the ones it names changes `config.yaml`, whatever its
+    /// arguments. A render or engine change marks the config dirty and waits
+    /// for the Save. The source tripwire (runtime_control's
+    /// persistence_policy.rs) lists the writers; this watches the file.
+    #[test]
+    fn only_save_profiles_and_view_state_change_the_config_file() {
+        let _overlay = crate::overlay::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::osc::test_support::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile_dir("persistence-net");
+        let config = dir.join("config.yaml");
+        let original = "render:\n  ramp_mode: sample\n";
+        std::fs::write(&config, original).unwrap();
+        let control = fixture_control();
+        control.set_config_path(config.clone());
+        let wire = wire();
+
+        let mut writers_seen = Vec::new();
+        let mut violations = Vec::new();
+        for &address in osc_contract::ALL_CONTROL {
+            if PROCESS_COMMANDS.contains(&address) {
+                continue;
+            }
+            for args in argument_lists() {
+                send(&wire, &control, address, args.clone());
+                let now = std::fs::read_to_string(&config).unwrap_or_default();
+                if now != original {
+                    if WRITES_CONFIG.contains(&address) {
+                        writers_seen.push(address);
+                    } else {
+                        violations.push(format!("{address} {args:?}"));
+                    }
+                    std::fs::write(&config, original).unwrap();
+                }
+                // A profile operation may move the control to another file.
+                control.set_config_path(config.clone());
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "these controls wrote config.yaml without the Save button; mark the config \
+             dirty instead, or name the write in docs/persistence-policy.md's \
+             exceptions with its reason:\n{}",
+            violations.join("\n")
+        );
+        // The net must see a write when one happens, or it proves nothing.
+        assert!(
+            writers_seen.contains(&osc_contract::CONTROL_SAVE_CONFIG),
+            "Save never changed the file: the check is not watching the right file"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
