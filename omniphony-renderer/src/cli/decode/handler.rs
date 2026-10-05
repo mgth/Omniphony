@@ -270,9 +270,9 @@ impl DecodeHandler {
             let osc_sender = self
                 .telemetry
                 .osc_sender
-                .as_ref()
+                .as_mut()
                 .expect("osc_sender present");
-            osc_sender.send_live_state_bundle()?;
+            osc_sender.send_live_state_bundle();
         }
         Ok(())
     }
@@ -376,7 +376,7 @@ impl DecodeHandler {
         // writer measures, and the render's own delay (a linear-phase
         // crossover). Lets a client show each block when it is heard.
         if let (Some(latency), Some(osc_sender)) =
-            (latency_snapshot, self.telemetry.osc_sender.as_ref())
+            (latency_snapshot, self.telemetry.osc_sender.as_mut())
         {
             let rate = sample_rate.max(1);
             let in_flight = (f64::from(latency.final_latency_ms.max(0.0)) * f64::from(rate)

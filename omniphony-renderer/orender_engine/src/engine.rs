@@ -9,7 +9,7 @@ use crate::bridge_loader::{LoadedBridge, configure_presentation, resolve_bridge}
 use crate::decode_step::{
     Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
 };
-use crate::frame_pipeline::{FrameOutput, FramePipeline, OutputStageFigures};
+use crate::frame_pipeline::{FrameOutput, FramePipeline};
 use crate::object_gen;
 use crate::osc::OscSender;
 use crate::overlay;
@@ -727,7 +727,7 @@ impl Engine {
         // Rounded up: the timestamps are rounded down, so a block's own start
         // comes back to exactly its position rather than a sample short of it.
         let pos = (i128::from(us.max(0)) * i128::from(rate) + 999_999) / 1_000_000;
-        if let Some(osc) = self.osc.as_ref() {
+        if let Some(osc) = self.osc.as_mut() {
             osc.send_heard(u64::try_from(pos).unwrap_or(u64::MAX), rate);
         }
     }
@@ -1278,7 +1278,7 @@ impl Engine {
             &mut self.audio_meter,
             donated,
             decode_time_ms,
-            &OutputStageFigures::default(),
+            crate::osc::MeterTimings::default(),
         )?;
         let (samples, n_channels) = match render.output {
             FrameOutput::Rendered { samples, channels } => (samples, channels as u32),

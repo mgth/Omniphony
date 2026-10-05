@@ -5,7 +5,8 @@ use super::state::{DecodeSessionState, OutputState, SpatialState, TelemetryState
 use anyhow::Result;
 use audio_input::InputControl;
 use bridge_api::RDecodedFrame;
-use orender_engine::frame_pipeline::{FrameOutput, OutputStageFigures};
+use orender_engine::frame_pipeline::FrameOutput;
+use orender_engine::osc::MeterTimings;
 use std::time::Instant;
 
 pub struct SampleWriteCoordinator<'a> {
@@ -84,10 +85,8 @@ impl<'a> SampleWriteCoordinator<'a> {
                 let registry = ic.diag_registry();
                 let schema_json = registry.schema_json();
                 let values_json = registry.values_json();
-                if let Some(osc_sender) = &self.telemetry.osc_sender {
-                    if let Err(e) = osc_sender.send_diag_bundle(schema_json, values_json) {
-                        log::warn!("Failed to send diag OSC bundle: {}", e);
-                    }
+                if let Some(osc_sender) = self.telemetry.osc_sender.as_mut() {
+                    osc_sender.send_diag_bundle(schema_json, values_json);
                 }
                 if let Some(cadence) = self.telemetry.diag_cadence.as_mut() {
                     cadence.mark_sent(now);
@@ -109,7 +108,9 @@ impl<'a> SampleWriteCoordinator<'a> {
             .audio_writer
             .as_ref()
             .and_then(|w| w.adaptive_runtime_state());
-        let output_figures = OutputStageFigures {
+        // The output stage's figures for the meter bundle; the pipeline adds
+        // the frame's own timings.
+        let output_stage = MeterTimings {
             latency_instant_ms: latency_snapshot.map(|l| l.final_latency_ms),
             latency_control_ms: current_latency_control_ms,
             latency_smoothed_ms: latency_snapshot.and_then(|l| l.smoothed_control_latency_ms),
@@ -122,6 +123,7 @@ impl<'a> SampleWriteCoordinator<'a> {
             resample_ratio: current_resample_ratio,
             adaptive_band: current_adaptive_band,
             adaptive_state: current_adaptive_state,
+            ..Default::default()
         };
 
         // DIAG output: wire the backend's pre-allocated diag atomics into
@@ -236,7 +238,7 @@ impl<'a> SampleWriteCoordinator<'a> {
             &mut self.telemetry.audio_meter,
             donated,
             decode_time_ms,
-            &output_figures,
+            output_stage,
         )?;
         match render.output {
             FrameOutput::Passthrough { unused } => {
@@ -267,10 +269,9 @@ impl<'a> SampleWriteCoordinator<'a> {
                 }
                 let write_time_ms = write_rendered(self.output, samples, channels)?;
                 if render.meter_bundle_sent
-                    && let Some(osc_sender) = &self.telemetry.osc_sender
-                    && let Err(e) = osc_sender.send_timing_update(None, None, Some(write_time_ms))
+                    && let Some(osc_sender) = self.telemetry.osc_sender.as_mut()
                 {
-                    log::warn!("Failed to send write timing OSC update: {}", e);
+                    osc_sender.send_timing_update(None, None, Some(write_time_ms));
                 }
                 Ok(())
             }

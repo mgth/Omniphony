@@ -32,29 +32,11 @@ use renderer::spatial_renderer::SpatialRenderer;
 
 use crate::channel_objects::StageCounts;
 use crate::events::Configuration;
-use crate::osc::{ObjectMeta, OscSender};
+use crate::osc::{MeterTimings, ObjectMeta, OscSender};
 use crate::render_metering::{meter_render_input, meter_render_output};
 use crate::stream_state::StreamState;
 use crate::virtual_bed::BedPlanKind;
 use crate::{overlay, render};
-
-/// The output stage's figures for the meter bundle, read by the host before
-/// the render. The embedded host has no output stage: it sends none
-/// ([`Default`]).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct OutputStageFigures {
-    pub latency_instant_ms: Option<f32>,
-    pub latency_control_ms: Option<f32>,
-    pub latency_smoothed_ms: Option<f32>,
-    pub latency_target_ms: Option<f32>,
-    pub latency_downstream_ms: Option<f32>,
-    pub latency_avail_input_ms: Option<f32>,
-    pub latency_output_fifo_ms: Option<f32>,
-    pub latency_resampler_pending_ms: Option<f32>,
-    pub resample_ratio: Option<f32>,
-    pub adaptive_band: Option<&'static str>,
-    pub adaptive_state: Option<&'static str>,
-}
 
 /// What a frame's render produced.
 pub enum FrameOutput {
@@ -129,7 +111,7 @@ impl FramePipeline {
         mut renderer: Option<&mut SpatialRenderer>,
         mut osc: Option<&mut OscSender>,
     ) -> Result<()> {
-        if let Some(osc) = osc.as_deref() {
+        if let Some(osc) = osc.as_deref_mut() {
             osc.render_at(sample_pos);
         }
         if let Some(renderer) = renderer.as_deref_mut() {
@@ -141,7 +123,7 @@ impl FramePipeline {
         if let Some(renderer) = renderer
             && self.stream.latch_dialnorm(frame, renderer)
             && want_osc
-            && let Some(osc) = osc.as_deref()
+            && let Some(osc) = osc.as_deref_mut()
         {
             osc.send_loudness_state();
         }
@@ -170,18 +152,14 @@ impl FramePipeline {
             if want_osc && let Some(osc) = osc.as_deref_mut() {
                 // Object frames and timestamps carry the bridge's own sample
                 // position, unchanged.
-                if let Err(e) = osc.send_object_frame(
+                osc.send_object_frame(
                     meta.sample_pos,
                     meta.ramp_duration,
                     self.stream.osc_coordinate_format(),
                     &objects,
-                ) {
-                    log::warn!("Failed to send OSC metadata: {e}");
-                }
+                );
                 let seconds = meta.sample_pos as f64 / sample_rate as f64;
-                if let Err(e) = osc.send_timestamp(meta.sample_pos, seconds) {
-                    log::warn!("Failed to send OSC timestamp: {e}");
-                }
+                osc.send_timestamp(meta.sample_pos, seconds);
             }
             if overlay_active {
                 overlay::update_positions(overlay_positions(&objects));
@@ -201,8 +179,10 @@ impl FramePipeline {
     ///
     /// The output is written into `donated` (a buffer of the host's, handed
     /// back in the [`FrameOutput`]). `meter` is metered when an OSC client
-    /// or the overlay wants levels, and created if it does not exist yet;
-    /// `decode_ms` and `figures` go into the meter bundle.
+    /// or the overlay wants levels, and created if it does not exist yet.
+    /// The meter bundle carries `output_stage` — the host's output-stage
+    /// figures, all `None` in the embedded host — with this frame's timings
+    /// (`decode_ms`, the render's) filled in here.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -214,7 +194,7 @@ impl FramePipeline {
         meter: &mut Option<AudioMeter>,
         mut donated: Vec<f32>,
         decode_ms: f32,
-        figures: &OutputStageFigures,
+        output_stage: MeterTimings,
     ) -> Result<FrameRender> {
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
@@ -289,11 +269,8 @@ impl FramePipeline {
             if want_osc || overlay_active {
                 let shown = self.stream.bed_frame_metas(&control, labels, output_layout);
                 if !shown.is_empty() {
-                    if want_osc
-                        && let Some(osc) = osc.as_deref_mut()
-                        && let Err(e) = osc.send_object_frame(sample_pos, 0, 0, &shown)
-                    {
-                        log::warn!("Failed to send OSC virtual bed frame: {e}");
+                    if want_osc && let Some(osc) = osc.as_deref_mut() {
+                        osc.send_object_frame(sample_pos, 0, 0, &shown);
                     }
                     if overlay_active {
                         overlay::update_positions(overlay_positions(&shown));
@@ -343,7 +320,7 @@ impl FramePipeline {
             &self.stream.bed_events
         };
         let render_started = std::time::Instant::now();
-        let rendered =
+        let mut rendered =
             renderer.render_frame(render_pcm, render_channels, events, donated, want_metering)?;
         let render_ms = render_started.elapsed().as_secs_f32() * 1000.0;
         // Emptied, so the next object frame's events land in the same
@@ -374,34 +351,17 @@ impl FramePipeline {
                     .collect();
                 overlay::update_levels(&levels);
             }
-            if want_meter_osc && let Some(osc) = osc.as_deref() {
-                match osc.send_meter_bundle(
-                    &snapshot,
-                    &rendered.object_gains,
-                    &rendered.object_band_gains,
-                    rendered.object_test_position,
-                    rendered.object_test_level,
-                    Some(decode_ms),
-                    Some(rendered.crossover_time_ms),
-                    Some(render_smoothed_ms),
-                    None,
-                    Some(frame_ms),
-                    figures.latency_instant_ms,
-                    figures.latency_control_ms,
-                    figures.latency_smoothed_ms,
-                    figures.latency_target_ms,
-                    figures.latency_downstream_ms,
-                    figures.latency_avail_input_ms,
-                    figures.latency_output_fifo_ms,
-                    figures.latency_resampler_pending_ms,
-                    figures.resample_ratio,
-                    figures.adaptive_band,
-                    figures.adaptive_state,
-                    Some(self.stream.drc.gain),
-                ) {
-                    Ok(()) => meter_bundle_sent = true,
-                    Err(e) => log::warn!("Failed to send meter OSC bundle: {e}"),
-                }
+            if want_meter_osc && let Some(osc) = osc.as_deref_mut() {
+                let timings = MeterTimings {
+                    decode_time_ms: Some(decode_ms),
+                    crossover_time_ms: Some(rendered.crossover_time_ms),
+                    render_time_ms: Some(render_smoothed_ms),
+                    frame_duration_ms: Some(frame_ms),
+                    drc_gain: Some(self.stream.drc.gain),
+                    ..output_stage
+                };
+                osc.send_meter_bundle(snapshot, &mut rendered, timings);
+                meter_bundle_sent = true;
             }
         }
 
@@ -515,7 +475,7 @@ mod tests {
                 &mut None,
                 Vec::new(),
                 0.0,
-                &OutputStageFigures::default(),
+                MeterTimings::default(),
             )
             .expect("render")
     }
@@ -601,7 +561,7 @@ mod tests {
                 &mut None,
                 donated,
                 0.0,
-                &OutputStageFigures::default(),
+                MeterTimings::default(),
             )
             .expect("render");
         let FrameOutput::Passthrough { unused } = out.output else {
