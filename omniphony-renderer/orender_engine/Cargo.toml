@@ -27,6 +27,9 @@ abi_stable.workspace = true
 anyhow.workspace = true
 log.workspace = true
 rosc.workspace = true
+# The wait-free queue the render path hands its OSC telemetry over (#670).
+# Pure Rust, no system library: safe for the liborender cdylib.
+rtrb = "0.4"
 serde_json.workspace = true
 # The OSC sockets' send buffer, which std cannot set (see osc::transport).
 # Pure Rust over libc / windows-sys, no system library: safe for the

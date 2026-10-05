@@ -555,6 +555,23 @@ exhaustive machine-readable list.
 - **Gain-table stream** — `debug/speaker_gaintable/{meta,chunk,uptodate,
   unavailable}`.
 
+### The stream's rate
+
+The stream messages (`spatial/frame` and the `object/*` messages it
+precedes, `timestamp`, the meter and timing bundles, `playout/*`, `loudness`)
+leave from a thread of their own, every 10 ms, in the order the engine
+produced them. Of the object frames and the timestamps, which the engine
+produces for every block it renders, only the latest of each 480-sample
+window of the timeline goes out: at most 100 per second of audio each at
+48 kHz. The window is one of audio, not of wall-clock time, so a host that
+renders ahead of playback in bursts still sends a pose for every window of
+what will be heard. Nothing a client holds goes stale for it: the object
+messages are sent for what changed since the last frame *sent*, and a frame
+that forces a full resend (a new content generation, a seek, a client
+registering) passes that on to the frame that supersedes it. The meter and
+diag bundles keep the rates set by `/control/metering/rate_hz` and
+`/control/diag/rate_hz`.
+
 ---
 
 ## Adding or changing an address
