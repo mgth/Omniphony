@@ -3,9 +3,9 @@
 //! # Design
 //!
 //! `RendererControl` is wrapped in an `Arc` and held by both the `SpatialRenderer`
-//! (reads) and the `OscSender` listener thread (writes).  The render thread takes a
-//! snapshot at the beginning of each frame so that the `RwLock` on `LiveParams` is
-//! held for the shortest possible time.
+//! (reads) and the `OscSender` listener thread (writes). `LiveParams` sits in a
+//! [`LiveCell`]: the render thread loads it without a lock, so no control write
+//! can make it wait.
 //!
 //! Speaker position updates (via `/omniphony/control/speaker/{idx}/{az|el|distance}` +
 //! `/omniphony/control/speakers/apply`) trigger a background recompute of the VBAP
@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::backend_registry::{BackendRegistry, TopologyBuildPlan, prepare_topology_build_plan};
+pub use crate::live_cell::LiveCell;
 use crate::render_backend::{EvaluationBuildConfig, PreparedRenderEngine, RenderRequest};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
@@ -1158,8 +1159,10 @@ impl Default for HybridLiveParams {
 
 /// Live-tunable rendering parameters.
 ///
-/// Written (exclusively) by the OSC listener thread, read via snapshot by the
-/// render thread.
+/// Written by the control threads (OSC listener, config seeding), read
+/// lock-free by the render thread through [`LiveCell`]. `Clone` because a
+/// write edits a copy and publishes it.
+#[derive(Clone)]
 pub struct LiveParams {
     /// Master output gain, linear scale (1.0 = unity, 0.5 ≈ −6 dB).
     pub master_gain: f32,
@@ -1586,13 +1589,14 @@ impl RenderTopology {
 
 /// Shared control object held by both `SpatialRenderer` and `OscSender`.
 ///
-/// The renderer reads `live` via a snapshot and loads the current immutable
-/// `RenderTopology` lock-free at the start of each frame. The OSC listener writes
+/// The renderer loads `live` and the current immutable `RenderTopology`
+/// lock-free. The OSC listener writes
 /// `live`, edits the staging layout, rebuilds a new `RenderTopology` in the
 /// background, then publishes it atomically.
 pub struct RendererControl {
-    /// Live-tunable parameters (protected by a readers-writer lock).
-    pub live: RwLock<LiveParams>,
+    /// Live-tunable parameters: read lock-free, written under a mutex that
+    /// only writers take (see [`LiveCell`]).
+    pub live: LiveCell<LiveParams>,
 
     /// Current render topology, shared between render thread (reads) and OSC
     /// listener (writes on recompute).  Lock-free: the render thread loads an
@@ -1811,7 +1815,7 @@ impl RendererControl {
         backend_rebuild_params: Option<BackendRebuildParams>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            live: RwLock::new(live),
+            live: LiveCell::new(live),
             topology: ArcSwap::new(Arc::new(initial_topology)),
             editable_layout: Mutex::new(editable_layout),
             backend_rebuild_params: RwLock::new(backend_rebuild_params),

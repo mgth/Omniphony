@@ -262,7 +262,7 @@ impl ChannelObjectStages {
         }
     }
 
-    /// Read the stage selection off the live params (one read lock, nothing
+    /// Read the stage selection off the live params (one lock-free read, nothing
     /// cloned), (re)plan both stages and hand them their parameters when those
     /// changed or the generator was rebuilt — what both hosts do on every
     /// channel frame. In steady state that is one atomic load: the plugin
