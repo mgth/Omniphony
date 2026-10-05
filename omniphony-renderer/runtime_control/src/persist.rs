@@ -34,7 +34,7 @@ pub fn save_live_config(
             .ok_or_else(|| anyhow!("no config path available"))?
     };
 
-    let mut config = renderer::config::Config::load_or_default(&path);
+    let mut config = renderer::config::Config::load_for_update(&path)?;
     store_live_into_config(control, host, &mut config);
     // A deliberate save supersedes any pending live-handoff overlay.
     commit_config(&path, &config)?;
@@ -48,9 +48,11 @@ pub fn save_live_config(
 
 /// Serialize the current live state into a complete config file at `out_path`,
 /// amending a base config loaded from `base_path`. Does NOT mark the live
-/// state clean and does NOT notify clients — used by [`save_live_config`]
-/// (with `out_path == base_path`) and by the shutdown handoff, which writes
-/// the live-state sidecar next to the persistent config.
+/// state clean, does NOT notify clients and keeps no `.bak` — used by the
+/// shutdown handoff, which writes the live-state sidecar next to the
+/// persistent config. A base that fails to parse is read as defaults here:
+/// the sidecar then carries what the engine is actually running on, and
+/// `out_path` is never the base itself.
 pub fn save_live_config_to_path(
     control: &Arc<RendererControl>,
     host: Option<&dyn HostControlHandler>,
@@ -59,7 +61,7 @@ pub fn save_live_config_to_path(
 ) -> Result<()> {
     let mut config = renderer::config::Config::load_or_default(base_path);
     store_live_into_config(control, host, &mut config);
-    config.save(out_path)?;
+    config.save_without_backup(out_path)?;
 
     Ok(())
 }
@@ -279,7 +281,8 @@ pub fn persist_ops(control: &RendererControl, ops: &[PersistOp]) {
 
 /// Targeted config write: load the existing config, let `store` set *only*
 /// its fields (every other key survives, unknown ones included via the
-/// config's flattened `extra`) and save it. Best-effort; logs on error.
+/// config's flattened `extra`) and save it. Best-effort; logs on error, and
+/// leaves a file that fails to parse untouched.
 ///
 /// The same fields are written into a pending live-handoff overlay, if there
 /// is one, rather than discarding it: the overlay holds the *other* edits the
@@ -287,9 +290,11 @@ pub fn persist_ops(control: &RendererControl, ops: &[PersistOp]) {
 /// throw away, and amending it keeps its stale copy of this field from
 /// reverting the write on the next boot.
 pub fn persist_render_fields_to_path(path: &Path, store: impl Fn(&mut RenderConfig)) {
-    let mut config = renderer::config::Config::load_or_default(path);
-    store(config.render.get_or_insert_with(Default::default));
-    if let Err(e) = config.save(path) {
+    let written = renderer::config::Config::load_for_update(path).and_then(|mut config| {
+        store(config.render.get_or_insert_with(Default::default));
+        config.save(path)
+    });
+    if let Err(e) = written {
         log::warn!("failed to persist a live change to {}: {e}", path.display());
     }
     renderer::config::amend_live_overlay(path, |overlay| {
@@ -339,6 +344,27 @@ mod tests {
         assert!((seeded[&2].gain - 0.501).abs() < 1e-3);
         assert_eq!(seeded[&3].gain, 0.0);
         assert!(!seeded.contains_key(&0), "unity speakers need no entry");
+    }
+
+    /// A config.yaml that fails to parse runs the engine on defaults; neither
+    /// the Save nor a targeted write may then replace it with them.
+    #[test]
+    fn a_file_that_fails_to_parse_survives_save_and_targeted_writes() {
+        let path = temp_config_path("parse-error");
+        let corrupt = "render:\n  current_layout: [ unterminated\n";
+        std::fs::write(&path, corrupt).unwrap();
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+
+        let err = save_live_config(&control, None)
+            .err()
+            .expect("save refused");
+        assert!(err.to_string().contains("left untouched"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
+
+        persist_render_fields_to_path(&path, |render| render.output_file = Some("x".into()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
+        assert!(!renderer::config::backup_path(&path).exists());
     }
 
     fn temp_config_path(tag: &str) -> PathBuf {

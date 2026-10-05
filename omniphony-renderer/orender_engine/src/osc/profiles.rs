@@ -66,7 +66,26 @@ pub(crate) fn handle_profile_message(
         return true;
     };
 
-    let mut config = renderer::config::Config::load_or_default(&path);
+    // A file that fails to parse is refused outright: every operation below
+    // ends in a write, which would replace it with defaults.
+    let refuse = |e: anyhow::Error| {
+        let message = format!("profile operation '{name}' refused: {e}");
+        log::warn!("OSC {addr}: {message}");
+        broadcast_string(
+            socket,
+            clients,
+            osc_contract::STATE_CONFIG_SAVE_ERROR,
+            &message,
+        );
+        broadcast_profiles_state(control, socket, clients);
+    };
+    let mut config = match renderer::config::Config::load_for_update(&path) {
+        Ok(config) => config,
+        Err(e) => {
+            refuse(e);
+            return true;
+        }
+    };
 
     if is_switch {
         // Switching to the already-active profile must be a true no-op: the
@@ -117,7 +136,13 @@ pub(crate) fn handle_profile_message(
             broadcast_profiles_state(control, socket, clients);
             return true;
         }
-        config = renderer::config::Config::load_or_default(&path);
+        config = match renderer::config::Config::load_for_update(&path) {
+            Ok(config) => config,
+            Err(e) => {
+                refuse(e);
+                return true;
+            }
+        };
     }
     let created_from_live = (addr == osc_contract::CONTROL_PROFILE_CREATE).then(|| {
         let mut live = config.clone();
@@ -516,6 +541,24 @@ mod tests {
             &clients,
             &Arc::new(GaintableCache::new()),
         ));
+    }
+
+    /// Every profile operation ends in a write, so on a file that fails to
+    /// parse each one is refused and the file left byte-identical.
+    #[test]
+    fn profile_operations_leave_a_file_that_fails_to_parse_untouched() {
+        let (path, control) = two_profiles_with_an_unsaved_edit("parse-error");
+        let corrupt = "profiles: [ unterminated\n";
+        std::fs::write(&path, corrupt).unwrap();
+        for (addr, args) in [
+            (osc_contract::CONTROL_PROFILE_CREATE, &["c"][..]),
+            (osc_contract::CONTROL_PROFILE_SWITCH, &["b", "save"][..]),
+            (osc_contract::CONTROL_PROFILE_RENAME, &["a", "z"][..]),
+            (osc_contract::CONTROL_PROFILE_DELETE, &["b"][..]),
+        ] {
+            run(&control, addr, args);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt, "{addr}");
+        }
     }
 
     /// Whether profile `name`, as the file says, sets surround placement to

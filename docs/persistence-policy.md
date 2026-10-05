@@ -83,6 +83,15 @@ Nothing writes the whole live state to `config.yaml` except the explicit Save.
 A change only a restart can apply (a new bridge) uses `/control/restart`, which
 carries the unsaved state over in the sidecar instead of saving it.
 
+Every write starts from the file on disk (`Config::load_for_update`). A
+`config.yaml` that fails to parse — the engine then runs on defaults and
+publishes `config_status = parse_error` — is never written: the Save, a
+profile operation and a targeted view write are all refused, and the Save
+error says the file was left untouched. A write that goes through replaces the
+file atomically (temp file, sync, rename) and keeps the previous one as
+`config.yaml.bak`; the handoff sidecar is written the same way, without the
+`.bak`.
+
 ### Studio (`omniphony-studio-egui`)
 
 - **View** state lives in `crate::prefs::Prefs` and is written through the

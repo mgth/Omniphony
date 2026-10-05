@@ -201,6 +201,9 @@ fn maybe_save_effective_config(
         anyhow::anyhow!("Cannot determine config path; use --config to specify one")
     })?;
 
+    // `run.config` reads a file that fails to parse as defaults; writing over
+    // it would lose the user's layout and profiles.
+    renderer::config::Config::load_for_update(&path)?;
     let config = effective_to_config(&run.args, arg_sources, cli, Some(&run.config))?;
     config.save(&path)?;
     log::info!("Config written to: {}", path.display());
