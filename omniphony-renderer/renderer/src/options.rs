@@ -43,6 +43,7 @@ use crate::live_params::{HrirUpdateLattice, LiveParams, PhantomExtractMode};
 use omniphony_osc_contract as osc_contract;
 
 mod declared;
+pub mod doc_table;
 pub(crate) use declared::DECLARED_ENUM_KEYS;
 pub use declared::{
     DeclaredEnum, DeclaredOptions, DeclaredOptionsConfig, DeclaredValue, defaults, store,
