@@ -698,11 +698,11 @@ impl DecodeHandler {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use bridge_api::RChannelLabel;
 
-    fn test_renderer() -> renderer::spatial_renderer::SpatialRenderer {
+    pub(in crate::cli::decode) fn test_renderer() -> renderer::spatial_renderer::SpatialRenderer {
         orender_engine::renderer_build::build_spatial_renderer(
             &orender_engine::renderer_build::SpatialRendererParams::from_render_config(None),
             renderer::speaker_layout::SpeakerLayout::preset("7.1.4").expect("preset"),

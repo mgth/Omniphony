@@ -500,9 +500,21 @@ fn handle_audio_message(
     let frame = decoded.frame;
     let declaration =
         super::state::resolve_declaration(handler.spatial_renderer.as_ref(), decoded.declaration);
-    handler
-        .spatial
-        .take_declaration(decoded.source, declaration);
+    let loudness_changed = handler.spatial.take_input(
+        decoded.source,
+        declaration,
+        handler.spatial_renderer.as_ref(),
+    );
+    if loudness_changed {
+        if let Some(osc_sender) = handler
+            .telemetry
+            .osc_sender
+            .as_ref()
+            .filter(|sender| sender.has_osc_clients())
+        {
+            osc_sender.send_loudness_state();
+        }
+    }
     if frame.is_new_segment {
         // Use the live-active backend (not the launch one) so a segment
         // restart preserves a Studio-requested switch (e.g. to `file`).
@@ -1156,19 +1168,24 @@ mod tests {
 
     const BLOCK_FRAMES: usize = 480;
 
-    /// One 7.1 block at 48 kHz with every sample at `level` of full scale,
-    /// as either producer hands it over.
-    fn seven_one_block(source: DecodedSource, level: f32) -> DecodedAudioData {
+    /// One 7.1 block at 48 kHz, as either producer hands it over: `sample(i)`
+    /// of full scale on every channel of frame `i`.
+    fn seven_one(source: DecodedSource, sample: impl Fn(usize) -> f32) -> DecodedAudioData {
         use bridge_api::RChannelLabel::*;
         let labels = vec![L, R, C, LFE, Ls, Rs, Lb, Rb];
-        let sample = (level * bridge_api::I32_PCM_FULL_SCALE as f32) as i32;
+        let pcm: Vec<i32> = (0..BLOCK_FRAMES)
+            .flat_map(|frame| {
+                let value = (sample(frame) * bridge_api::I32_PCM_FULL_SCALE as f32) as i32;
+                std::iter::repeat_n(value, labels.len())
+            })
+            .collect();
         DecodedAudioData {
             source,
             frame: bridge_api::RDecodedFrame {
                 sampling_frequency: 48_000,
                 sample_count: BLOCK_FRAMES as u32,
                 channel_count: labels.len() as u32,
-                pcm: vec![sample; BLOCK_FRAMES * labels.len()].into(),
+                pcm: pcm.into(),
                 channel_labels: labels.into(),
                 metadata: abi_stable::std_types::RVec::new(),
                 drc_gain: 1.0,
@@ -1182,41 +1199,149 @@ mod tests {
         }
     }
 
-    /// Feed `blocks` through `handle_audio_message`, the way the render loop
-    /// does, into a raw-f32 file sink; returns the level of each block that
-    /// reached it, in order.
+    /// A block with every sample at `level` of full scale.
+    fn seven_one_block(source: DecodedSource, level: f32) -> DecodedAudioData {
+        seven_one(source, |_| level)
+    }
+
+    /// A block of a 1 kHz tone (whole periods), carrying `dialogue_level`
+    /// when given one.
+    fn seven_one_tone(source: DecodedSource, dialogue_level: Option<i8>) -> DecodedAudioData {
+        let mut block = seven_one(source, |frame| {
+            0.25 * (std::f32::consts::TAU * 1_000.0 * frame as f32 / 48_000.0).sin()
+        });
+        block.frame.dialogue_level = dialogue_level.into();
+        block
+    }
+
+    /// A handler fed the way the render loop feeds it (`handle_audio_message`),
+    /// writing to a raw-f32 file sink.
+    struct FileSinkRun {
+        handler: DecodeHandler,
+        args: RenderArgs,
+        path: std::path::PathBuf,
+    }
+
+    impl FileSinkRun {
+        fn new(
+            tag: &str,
+            input_control: &Arc<audio_input::InputControl>,
+            spatial_renderer: Option<renderer::spatial_renderer::SpatialRenderer>,
+        ) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "orender-input-sources-{tag}-{}.f32",
+                std::process::id()
+            ));
+            let mut handler = DecodeHandler {
+                input_control: Some(Arc::clone(input_control)),
+                spatial_renderer,
+                ..DecodeHandler::default()
+            };
+            handler.runtime.active_output_backend = OutputBackend::File;
+            handler.runtime.output_file = path.to_str().expect("utf-8 path").to_string();
+            Self {
+                handler,
+                args: render_args(&["in.thd"]),
+                path,
+            }
+        }
+
+        fn feed(&mut self, block: DecodedAudioData) {
+            let ctx = DecodeRunContext { args: &self.args };
+            handle_audio_message(&mut self.handler, block, &ctx).expect("frame handled");
+        }
+
+        /// What reached the sink, a block of `channels` channels at a time.
+        fn finish(mut self, channels: usize) -> Vec<Vec<f32>> {
+            self.handler.finalize().expect("finalize");
+            drop(self.handler);
+            let bytes = std::fs::read(&self.path).unwrap_or_default();
+            let _ = std::fs::remove_file(&self.path);
+            let block_bytes = BLOCK_FRAMES * channels * std::mem::size_of::<f32>();
+            assert_eq!(bytes.len() % block_bytes, 0, "a partial block was written");
+            bytes
+                .chunks_exact(block_bytes)
+                .map(|block| {
+                    block
+                        .chunks_exact(4)
+                        .map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+                        .collect()
+                })
+                .collect()
+        }
+    }
+
+    /// Feed `blocks` into a file sink with no renderer (the decoded channels
+    /// are written as they are); returns the level of each block that reached
+    /// it, in order.
     fn levels_written(
         input_control: &Arc<audio_input::InputControl>,
         blocks: Vec<DecodedAudioData>,
         tag: &str,
     ) -> Vec<f32> {
-        let path = std::env::temp_dir().join(format!(
-            "orender-input-sources-{tag}-{}.f32",
-            std::process::id()
-        ));
-        let args = render_args(&["in.thd"]);
-        let ctx = DecodeRunContext { args: &args };
-        let mut handler = DecodeHandler {
-            input_control: Some(Arc::clone(input_control)),
-            ..DecodeHandler::default()
-        };
-        handler.runtime.active_output_backend = OutputBackend::File;
-        handler.runtime.output_file = path.to_str().expect("utf-8 path").to_string();
-
+        let mut run = FileSinkRun::new(tag, input_control, None);
         for block in blocks {
-            handle_audio_message(&mut handler, block, &ctx).expect("frame handled");
+            run.feed(block);
         }
-        handler.finalize().expect("finalize");
-        drop(handler);
+        run.finish(8).iter().map(|block| block[0]).collect()
+    }
 
-        let bytes = std::fs::read(&path).unwrap_or_default();
-        let _ = std::fs::remove_file(&path);
-        let block_bytes = BLOCK_FRAMES * 8 * std::mem::size_of::<f32>();
-        assert_eq!(bytes.len() % block_bytes, 0, "a partial block was written");
-        bytes
-            .chunks_exact(block_bytes)
-            .map(|block| f32::from_le_bytes([block[0], block[1], block[2], block[3]]))
+    /// With the loudness correction on and a real renderer: `RUN_BLOCKS` tone
+    /// blocks from each `(source, dialogue level)` in turn, the level carried
+    /// by the first block of its run only, as a bridge sends it at a major
+    /// sync. Returns the RMS of the last rendered block of each run.
+    fn rendered_run_levels(tag: &str, runs: &[(DecodedSource, Option<i8>)]) -> Vec<f32> {
+        const RUN_BLOCKS: usize = 30;
+        let renderer = super::super::handler::tests::test_renderer();
+        renderer.renderer_control().live.write().use_loudness = true;
+        let channels = renderer.output_channel_count();
+        let mut run = FileSinkRun::new(tag, &pipewire_mode_input_control(), Some(renderer));
+        for &(source, dialogue_level) in runs {
+            for block in 0..RUN_BLOCKS {
+                run.feed(seven_one_tone(
+                    source,
+                    dialogue_level.filter(|_| block == 0),
+                ));
+            }
+        }
+        let written = run.finish(channels);
+        assert_eq!(written.len(), runs.len() * RUN_BLOCKS);
+        written
+            .chunks_exact(RUN_BLOCKS)
+            .map(|run| {
+                let last = &run[RUN_BLOCKS - 1];
+                (last.iter().map(|s| s * s).sum::<f32>() / last.len() as f32).sqrt()
+            })
             .collect()
+    }
+
+    /// A bitstream's dialogue level is its own: the sink's PCM, which carries
+    /// none, plays at its own level before and after it, and the bitstream
+    /// gets its level back when it returns, without its bridge repeating it.
+    #[test]
+    fn a_bitstreams_dialogue_level_does_not_reach_the_sinks_pcm() {
+        use DecodedSource::{Bridge, Live};
+        let unity = rendered_run_levels("loudness-unity", &[(Bridge, None), (Live, None)]);
+        let (bridge_unity, pcm_unity) = (unity[0], unity[1]);
+        assert!(bridge_unity > 0.0 && pcm_unity > 0.0, "{unity:?}");
+
+        // -11 dBFS against the -31 dBFS reference: -20 dB.
+        let levels = rendered_run_levels(
+            "loudness",
+            &[
+                (Live, None),
+                (Bridge, Some(-11)),
+                (Live, None),
+                (Bridge, None),
+            ],
+        );
+        let expected = [pcm_unity, 0.1 * bridge_unity, pcm_unity, 0.1 * bridge_unity];
+        for (run, (level, expected)) in levels.iter().zip(expected).enumerate() {
+            assert!(
+                (level / expected - 1.0).abs() < 1e-3,
+                "run {run}: {level} instead of {expected} ({levels:?})"
+            );
+        }
     }
 
     /// The PipeWire sink carries a bitstream or linear PCM, whichever its
