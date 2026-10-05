@@ -7,7 +7,7 @@
 # and commit this file with the change.
 #
 # toolchain: 1.99.0
-# total: 288
+# total: 278
 #
 # crate lint count
 audio_input clippy::doc_lazy_continuation 6
@@ -25,14 +25,14 @@ dsp_fixtures clippy::chunks_exact_to_as_chunks 2
 dsp_fixtures clippy::identity_op 2
 omniphony-renderer clippy::chunks_exact_to_as_chunks 3
 omniphony-renderer clippy::clone_on_copy 1
-omniphony-renderer clippy::collapsible_if 29
-omniphony-renderer clippy::derivable_impls 6
+omniphony-renderer clippy::collapsible_if 24
+omniphony-renderer clippy::derivable_impls 5
 omniphony-renderer clippy::large_enum_variant 3
 omniphony-renderer clippy::single_match 1
 omniphony-renderer clippy::too_many_arguments 3
 orender_engine clippy::assign_op_pattern 1
 orender_engine clippy::chunks_exact_to_as_chunks 5
-orender_engine clippy::collapsible_if 34
+orender_engine clippy::collapsible_if 30
 orender_engine clippy::collapsible_match 1
 orender_engine clippy::field_reassign_with_default 1
 orender_engine clippy::manual_contains 1
