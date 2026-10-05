@@ -7,7 +7,7 @@ use crate::pipewire_pods::{
     build_pipewire_bridge_raw_buffers_pod, build_pipewire_bridge_raw_format_pod,
     build_pipewire_bridge_stream_properties,
 };
-use crate::{InputClockMode, InputControl};
+use crate::{CaptureDrainClock, InputClockMode, InputControl};
 use anyhow::{Result, anyhow};
 use audio_output::pipewire_registry::{MainLoopConnection, connect_main_loop};
 use pipewire as pw;
@@ -111,6 +111,11 @@ struct BridgeCaptureUserData {
     diag_iec958_decode_dt_us: Arc<std::sync::atomic::AtomicU64>,
     /// Published mirror of `input_clock_us_cumulative` (f64::to_bits).
     diag_input_clock_us: Arc<std::sync::atomic::AtomicU64>,
+    /// This stream's hold on the output pacer drain: taken with the first
+    /// chunk of a streaming period, given back when the stream stops
+    /// streaming, and dropped with the listener that owns this struct. The
+    /// only way this stream drains.
+    pacer_drain: CaptureDrainClock,
 }
 
 #[derive(Default)]
@@ -526,9 +531,16 @@ where
                 );
                 shared
             },
+            pacer_drain: input_control.capture_drain_clock(),
         })
-        .state_changed(move |_stream, _user_data, old, new| {
+        .state_changed(move |_stream, user_data, old, new| {
             log::info!("{} state changed: {:?} -> {:?}", log_prefix, old, new);
+            // A stream that is not streaming has no chunk to clock the output
+            // pacer with: the client paused or left, and what plays meanwhile
+            // (the input pipe, a speaker test) drains on its own tokens.
+            user_data
+                .pacer_drain
+                .set_streaming(new == pw::stream::StreamState::Streaming);
             if new == pw::stream::StreamState::Streaming {
                 if use_driver {
                     log::info!("{} is now STREAMING — triggering initial driver cycle", log_prefix);
@@ -907,26 +919,16 @@ where
                     .diag_input_clock_us
                     .store(user_data.input_clock_us_cumulative.to_bits(), Ordering::Relaxed);
             }
-            // Pacer drain: for each IEC958 chunk that just arrived, drain a
-            // proportional duration of rendered audio from pacer_fifo into
-            // the ring buffer. Strict 1:1 between input-chunk duration and
-            // ring-write duration → the ring sees a smooth stream regardless
-            // of the decoder's burst pattern. Underrun → zero-fill the ring
-            // (counted via the diag atomic). During pre-roll → also zero-fill
-            // until pacer_fifo is primed.
+            // Pacer drain: for each chunk that just arrived, drain a
+            // proportional duration of rendered audio from the pacer FIFO
+            // into the ring buffer. A chunk arriving is also what makes this
+            // stream the pacer's drain clock, in place of the token clock.
             if user_data.channels > 0 && user_data.rate_hz > 0 {
-                if let Some(pacer) = input_control_for_process.output_pacer() {
-                    let in_subframes = byte_len as u64
-                        / (user_data.channels as u64 * user_data.bytes_per_sample as u64);
-                    let drain_samples = (in_subframes
-                        .saturating_mul(pacer.out_sample_rate as u64)
-                        .saturating_mul(pacer.out_channels as u64)
-                        / (user_data.rate_hz as u64).max(1))
-                        as usize;
-                    // One drain at a time, enforced by the handle: the diag
-                    // read-modify-writes inside `drain` are race-free.
-                    pacer.drain(drain_samples);
-                }
+                let in_subframes = byte_len as u64
+                    / (user_data.channels as u64 * user_data.bytes_per_sample as u64);
+                user_data
+                    .pacer_drain
+                    .chunk_arrived(in_subframes, user_data.rate_hz);
             }
             user_data.bytes_since_log += byte_len;
             user_data.buffers_since_log += 1;

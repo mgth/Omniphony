@@ -39,12 +39,13 @@ struct PreparedDecodeRun {
     drc_mode: Arc<RwLock<String>>,
     decode_thread: std::thread::JoinHandle<Result<()>>,
     /// Receives per-packet emitted audio duration (microseconds) from the
-    /// decoder thread; consumed by the pure pipe-bridge pacer drain thread.
+    /// decoder thread; consumed by the token-clock pacer drain thread.
     drain_rx: Option<mpsc::Receiver<u64>>,
-    /// Sender side of the pacer drain clock, kept so the speaker-test idle
-    /// feed can post tokens for its fabricated frames — in pure pipe-bridge
-    /// mode nothing else drains the output FIFO, so silence fed without a
-    /// matching token would fill the pacer and never reach the device.
+    /// Sender side of the pacer drain's token clock, kept so the speaker-test
+    /// idle feed can post tokens for its fabricated frames — with no capture
+    /// stream delivering nothing else drains the output FIFO, so silence fed
+    /// without a matching token would fill the pacer and never reach the
+    /// device.
     drain_tx: mpsc::Sender<u64>,
     pipe_input_diag: PipeInputDiag,
     pacer_bridge_diag: PacerBridgeDiag,
@@ -638,8 +639,9 @@ fn pump_idle_feed(
         is_new_segment: false,
     };
     // Post the pacer drain token first, exactly like the decoder thread does
-    // for a real packet. Ignored (by the drain thread) outside pure
-    // pipe-bridge mode; a closed channel just means the run is winding down.
+    // for a real packet. Dropped (by the drain thread) while a capture stream
+    // delivers and drains on its own clock; a closed channel just means the
+    // run is winding down.
     let emitted_us = chunk.sample_count as u64 * 1_000_000 / chunk.sample_rate.max(1) as u64;
     let _ = drain_tx.send(emitted_us);
     handle_audio_message(
@@ -804,18 +806,86 @@ fn finalize_render_run(prepared: PreparedDecodeRun, handler: &mut DecodeHandler)
     complete_render_run(prepared, handler, is_shutdown)
 }
 
-/// Drains the post-rendering output pacer FIFO into the ring for pure
-/// pipe-bridge mode, where no PipeWire input RT callback exists to do it.
+/// The token clock of the output pacer drain: one token is the duration of
+/// what a producer just emitted, and is drained as that much output.
 ///
-/// The clock is the decoder's source clock, conveyed as per-packet emitted
+/// Tokens are posted by the input-pipe decoder thread, a packet at a time,
+/// and by the speaker-test idle feed. The clock is the source's, so the ring
+/// follows the source rather than the decoder's bursts.
+struct PacerTokenClock {
+    /// The sub-frame remainder, carried across tokens so per-token rounding
+    /// can't accumulate into audible drift over a long stream.
+    frac_frames: f64,
+    last_drain_at: Option<std::time::Instant>,
+    diag: PacerBridgeDiag,
+}
+
+impl PacerTokenClock {
+    fn new(diag: PacerBridgeDiag) -> Self {
+        Self {
+            frac_frames: 0.0,
+            last_drain_at: None,
+            diag,
+        }
+    }
+
+    /// Drain `emitted_us` of output, if the drain is this clock's.
+    ///
+    /// It is not while a capture stream delivers: the capture clock drains
+    /// then, and the token is dropped (`audio_input::pacer_drain`). Neither
+    /// the requested input mode nor the applied one is consulted: both can
+    /// read "pipe bridge" with a capture stream running.
+    fn on_token(&mut self, input_control: &audio_input::InputControl, emitted_us: u64) {
+        let Some(pacer) = input_control.token_drain_pacer() else {
+            self.frac_frames = 0.0;
+            return;
+        };
+        let now = std::time::Instant::now();
+        let drain_dt_us = self
+            .last_drain_at
+            .map(|prev| now.saturating_duration_since(prev).as_micros() as u64)
+            .unwrap_or(0);
+        self.last_drain_at = Some(now);
+        let exact_frames =
+            emitted_us as f64 * pacer.out_sample_rate() as f64 / 1_000_000.0 + self.frac_frames;
+        let drain_frames = exact_frames.floor();
+        self.frac_frames = exact_frames - drain_frames;
+        let drain_samples = drain_frames as usize * pacer.out_channels() as usize;
+        self.diag.emitted_us.store(
+            (emitted_us as f64).to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.diag.drain_samples.store(
+            (drain_samples as f64).to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.diag.frac_frames.store(
+            self.frac_frames.to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.diag.drain_dt_us.store(
+            (drain_dt_us as f64).to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if drain_samples > 0 {
+            pacer.drain(drain_samples);
+        }
+    }
+}
+
+/// Drains the post-rendering output pacer FIFO into the ring on the token
+/// clock, for everything that is not clocked by a capture stream: the input
+/// pipe, and the speaker-test idle feed.
+///
+/// The clock is the producer's source clock, conveyed as per-packet emitted
 /// audio durations over `drain_rx`. Running on its own thread (independent of
 /// the decoder→handler fill chain) is what makes the drain deadlock-free: it
 /// keeps relieving the FIFO even while the decoder is blocked sending and the
 /// handler is blocked in `write_samples`.
 ///
-/// Only one component may own the FIFO drain at a time, so this thread acts
-/// only when pacing is enabled AND the active input mode is `Bridge`; in
-/// `Pipewire` the input RT callback owns it and tokens are dropped.
+/// Only one clock may drain the FIFO at a time, so this thread stands down
+/// while a capture stream delivers chunks and its tokens are dropped: see
+/// [`PacerTokenClock::on_token`].
 fn spawn_pacer_drain_thread(
     input_control: std::sync::Arc<audio_input::InputControl>,
     drain_rx: mpsc::Receiver<u64>,
@@ -824,10 +894,7 @@ fn spawn_pacer_drain_thread(
     std::thread::Builder::new()
         .name("pacer-bridge-drain".to_string())
         .spawn(move || {
-            // Carry the sub-frame remainder across packets so per-packet
-            // rounding can't accumulate into audible drift over a long stream.
-            let mut frac_frames: f64 = 0.0;
-            let mut last_drain_at = None;
+            let mut clock = PacerTokenClock::new(diag);
             loop {
                 if sys::ShutdownHandle::is_requested()
                     || sys::ShutdownHandle::is_restart_from_config_requested()
@@ -839,41 +906,7 @@ fn spawn_pacer_drain_thread(
                     Err(mpsc::RecvTimeoutError::Timeout) => continue,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
-                let Some(pacer) = input_control.output_pacer() else {
-                    frac_frames = 0.0;
-                    continue;
-                };
-                if input_control.applied_snapshot().active_mode != audio_input::InputMode::Bridge {
-                    frac_frames = 0.0;
-                    continue;
-                }
-                let now = std::time::Instant::now();
-                let drain_dt_us = last_drain_at
-                    .map(|prev| now.saturating_duration_since(prev).as_micros() as u64)
-                    .unwrap_or(0);
-                last_drain_at = Some(now);
-                let exact_frames =
-                    emitted_us as f64 * pacer.out_sample_rate as f64 / 1_000_000.0 + frac_frames;
-                let drain_frames = exact_frames.floor();
-                frac_frames = exact_frames - drain_frames;
-                let drain_samples = drain_frames as usize * pacer.out_channels as usize;
-                diag.emitted_us.store(
-                    (emitted_us as f64).to_bits(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                diag.drain_samples.store(
-                    (drain_samples as f64).to_bits(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                diag.frac_frames
-                    .store(frac_frames.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                diag.drain_dt_us.store(
-                    (drain_dt_us as f64).to_bits(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                if drain_samples > 0 {
-                    pacer.drain(drain_samples);
-                }
+                clock.on_token(&input_control, emitted_us);
             }
         })
         .expect("failed to spawn pacer drain thread")
@@ -1007,7 +1040,7 @@ fn run_prepared_render(
             )
         });
 
-    // Drain thread for the post-rendering pacer in pure pipe-bridge mode.
+    // Token-clock drain thread for the post-rendering pacer.
     // Detached: it self-terminates when the decoder drops its sender
     // (Disconnected) or on shutdown/restart, so there is no join-on-error
     // hang to worry about.
@@ -1302,5 +1335,276 @@ mod tests {
             "the hosts' no-bridge states differ at {differing:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const PACER_RATE: u32 = 48_000;
+    const PACER_CHANNELS: u32 = 2;
+    /// 10 ms: a token's duration in microseconds, as capture frames at
+    /// `PACER_RATE`, and as output samples across channels.
+    const TOKEN_US: u64 = 10_000;
+    const CHUNK_FRAMES: u64 = PACER_RATE as u64 / 100;
+    const QUANTUM: usize = (PACER_RATE as usize / 100) * PACER_CHANNELS as usize;
+
+    /// An output built with pacing on, reduced to its pacer: the renderer's
+    /// end of the FIFO, the device's end of the ring, and the input control
+    /// the writer lifecycle installed the handle on.
+    struct PacedOutput {
+        input: Arc<audio_input::InputControl>,
+        pacer: audio_output::PacerHandle,
+        fifo: audio_output::ring_buffer_io::RingWriter,
+        ring: audio_output::ring_buffer_io::RingReader,
+    }
+
+    impl PacedOutput {
+        fn new() -> Self {
+            let (fifo, fifo_reader) = audio_output::ring_buffer_io::sample_ring(1 << 16);
+            let (ring_writer, ring) = audio_output::ring_buffer_io::sample_ring(1 << 16);
+            let pacer = audio_output::PacerHandle::new(
+                audio_output::pacer::PacerDrainEnds {
+                    fifo: fifo_reader,
+                    ring: ring_writer,
+                },
+                0,
+                PACER_RATE,
+                PACER_CHANNELS,
+            );
+            pacer
+                .pre_roll_complete
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let input = Arc::new(audio_input::InputControl::default());
+            input.install_output_pacer(pacer.clone());
+            Self {
+                input,
+                pacer,
+                fifo,
+                ring,
+            }
+        }
+
+        /// The renderer writes 10 ms.
+        fn render_quantum(&mut self) {
+            assert_eq!(self.fifo.push_slice(&[0.25; QUANTUM]), QUANTUM);
+        }
+
+        /// What reached the ring since the last call: samples, and how many
+        /// of them are the drain's zero-fill.
+        fn played(&mut self) -> (usize, usize) {
+            let mut out = vec![0.0f32; self.ring.available()];
+            let count = self.ring.pop_slice(&mut out);
+            let silence = out[..count].iter().filter(|s| **s == 0.0).count();
+            (count, silence)
+        }
+
+        fn drained(&self) -> f64 {
+            f64::from_bits(
+                self.pacer
+                    .diag_drain_total
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
+        }
+
+        fn underrun(&self) -> f64 {
+            f64::from_bits(
+                self.pacer
+                    .diag_underrun_total
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
+        }
+
+        /// The applied input state as `sync_input_runtime_state` writes it
+        /// on a bridge-decoded frame, in PipeWire mode included.
+        fn apply_bridge_decoded_state(&self) {
+            self.input.set_input_state(
+                audio_input::InputMode::Bridge,
+                None,
+                Some(8),
+                Some(PACER_RATE),
+                None,
+                None,
+                Some("bridge-decoded".to_string()),
+            );
+        }
+
+        /// The applied input state as `reconcile_live_input` writes it once
+        /// the capture is spawned.
+        fn apply_pipewire_state(&self) {
+            self.input.set_input_state(
+                audio_input::InputMode::Pipewire,
+                Some(audio_input::InputBackend::Pipewire),
+                Some(2),
+                Some(192_000),
+                Some("omniphony".to_string()),
+                Some("Omniphony Bridge Input".to_string()),
+                Some("pipewire-iec61937".to_string()),
+            );
+        }
+    }
+
+    fn pacer_bridge_diag() -> PacerBridgeDiag {
+        PacerBridgeDiag {
+            emitted_us: Arc::new(AtomicU64::new(0)),
+            drain_samples: Arc::new(AtomicU64::new(0)),
+            frac_frames: Arc::new(AtomicU64::new(0)),
+            drain_dt_us: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn pacer_token_clock() -> PacerTokenClock {
+        PacerTokenClock::new(pacer_bridge_diag())
+    }
+
+    /// Run the `pacer-bridge-drain` thread over `tokens` tokens of 10 ms and
+    /// wait for it to have gone through all of them.
+    fn run_drain_thread_over(output: &PacedOutput, tokens: usize) {
+        let (drain_tx, drain_rx) = mpsc::channel::<u64>();
+        let thread =
+            spawn_pacer_drain_thread(Arc::clone(&output.input), drain_rx, pacer_bridge_diag());
+        for _ in 0..tokens {
+            drain_tx.send(TOKEN_US).unwrap();
+        }
+        // The thread takes what is queued before it sees the channel closed.
+        drop(drain_tx);
+        thread.join().unwrap();
+    }
+
+    /// Both directions on the thread itself: with a capture stream delivering
+    /// it drains nothing, with none it drains every token.
+    #[test]
+    fn the_drain_thread_drains_only_while_no_capture_stream_delivers() {
+        let mut output = PacedOutput::new();
+        output.apply_pipewire_state();
+        let mut capture = output.input.capture_drain_clock();
+        capture.set_streaming(true);
+        output.render_quantum();
+        assert!(capture.chunk_arrived(CHUNK_FRAMES, PACER_RATE));
+        // What the handler writes on the first bitstream frame.
+        output.apply_bridge_decoded_state();
+        assert_eq!(output.played(), (QUANTUM, 0));
+
+        for _ in 0..20 {
+            output.render_quantum();
+        }
+        run_drain_thread_over(&output, 20);
+        assert_eq!(output.played(), (0, 0), "capture live: no token drained");
+        assert_eq!(output.drained(), QUANTUM as f64);
+
+        // The client pauses, then the stream goes away.
+        capture.set_streaming(false);
+        run_drain_thread_over(&output, 10);
+        assert_eq!(output.played(), (10 * QUANTUM, 0), "capture paused");
+        drop(capture);
+        run_drain_thread_over(&output, 10);
+        assert_eq!(output.played(), (10 * QUANTUM, 0), "no capture");
+        assert_eq!(output.underrun(), 0.0);
+    }
+
+    /// No capture stream delivers: the drain thread's clock drains each
+    /// token, in either input mode (the input pipe and the speaker-test idle
+    /// feed play in both).
+    #[test]
+    fn the_token_clock_drains_while_no_capture_stream_delivers() {
+        for pipewire_mode in [false, true] {
+            let mut output = PacedOutput::new();
+            // A capture stream waiting for a client is not delivering.
+            let _idle_capture = pipewire_mode.then(|| {
+                output.apply_pipewire_state();
+                output.input.capture_drain_clock()
+            });
+            let mut tokens = pacer_token_clock();
+            for _ in 0..20 {
+                output.render_quantum();
+                tokens.on_token(&output.input, TOKEN_US);
+            }
+            assert_eq!(output.played(), (20 * QUANTUM, 0), "{pipewire_mode}");
+            assert_eq!(output.underrun(), 0.0);
+        }
+    }
+
+    /// A capture stream delivers: the drain thread's clock leaves the pacer
+    /// alone, whatever the applied input mode reads. It reads `Bridge` in
+    /// PipeWire mode from the first bitstream frame on, and the drain thread
+    /// used to go by it.
+    #[test]
+    fn the_token_clock_does_not_drain_while_a_capture_stream_delivers() {
+        for bridge_decoded in [false, true] {
+            let mut output = PacedOutput::new();
+            output.apply_pipewire_state();
+            let mut capture = output.input.capture_drain_clock();
+            capture.set_streaming(true);
+            output.render_quantum();
+            assert!(capture.chunk_arrived(CHUNK_FRAMES, PACER_RATE));
+            if bridge_decoded {
+                output.apply_bridge_decoded_state();
+            }
+            assert_eq!(output.played(), (QUANTUM, 0));
+
+            let mut tokens = pacer_token_clock();
+            output.render_quantum();
+            for _ in 0..20 {
+                tokens.on_token(&output.input, TOKEN_US);
+            }
+            assert_eq!(output.drained(), QUANTUM as f64, "{bridge_decoded}");
+            assert_eq!(output.played(), (0, 0), "nothing moved on a token");
+            assert_eq!(output.fifo.fill(), QUANTUM, "kept for the capture clock");
+        }
+    }
+
+    /// The reported case, then its way out. PipeWire input, a bitstream
+    /// played into the sink, and a speaker test whose idle feed takes over
+    /// from the programme (one producer at a time) while the client keeps the
+    /// stream delivering: tokens and chunks both arrive, and the pacer is
+    /// drawn once per 10 ms rendered, not twice. Then the client pauses the
+    /// stream, and the tokens are what drains.
+    #[test]
+    fn one_clock_drains_with_tokens_and_capture_chunks_both_arriving() {
+        let mut output = PacedOutput::new();
+        output.apply_pipewire_state();
+        let mut capture = output.input.capture_drain_clock();
+        capture.set_streaming(true);
+        let mut tokens = pacer_token_clock();
+        capture.chunk_arrived(CHUNK_FRAMES, PACER_RATE);
+        output.apply_bridge_decoded_state();
+        let (primed, _) = output.played();
+
+        for _ in 0..20 {
+            output.render_quantum();
+            tokens.on_token(&output.input, TOKEN_US);
+            capture.chunk_arrived(CHUNK_FRAMES, PACER_RATE);
+        }
+        assert_eq!(output.played(), (20 * QUANTUM, 0));
+        assert_eq!(output.drained(), (primed + 20 * QUANTUM) as f64);
+        let underrun_while_delivering = output.underrun();
+        assert_eq!(underrun_while_delivering, primed as f64);
+
+        capture.set_streaming(false);
+        for _ in 0..20 {
+            output.render_quantum();
+            tokens.on_token(&output.input, TOKEN_US);
+        }
+        assert_eq!(output.played(), (20 * QUANTUM, 0));
+        assert_eq!(output.underrun(), underrun_while_delivering);
+    }
+
+    /// The token clock keeps the fraction of a frame a token leaves over, and
+    /// forgets it when it has to stand down: 25 tokens of 10.01 ms are
+    /// 12 012 frames, not 25 times 480.
+    #[test]
+    fn the_token_clock_carries_the_sub_frame_remainder() {
+        let mut output = PacedOutput::new();
+        let mut tokens = pacer_token_clock();
+        for _ in 0..25 {
+            tokens.on_token(&output.input, 10_010);
+        }
+        assert_eq!(output.drained(), (12_012 * PACER_CHANNELS) as f64);
+        let (played, _) = output.played();
+        assert_eq!(played, 12_012 * PACER_CHANNELS as usize);
+
+        tokens.on_token(&output.input, 10_010);
+        assert!(tokens.frac_frames > 0.0);
+        let mut capture = output.input.capture_drain_clock();
+        capture.set_streaming(true);
+        capture.chunk_arrived(CHUNK_FRAMES, PACER_RATE);
+        tokens.on_token(&output.input, 10_010);
+        assert_eq!(tokens.frac_frames, 0.0);
     }
 }

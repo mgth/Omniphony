@@ -1,6 +1,7 @@
 #[cfg(target_os = "linux")]
 pub mod bridge;
 pub mod control;
+pub mod pacer_drain;
 #[cfg(target_os = "linux")]
 pub mod pipewire;
 #[cfg(target_os = "linux")]
@@ -14,3 +15,4 @@ pub use control::{
     AppliedAudioInputState, InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode,
     InputMode, RequestedAudioInputConfig,
 };
+pub use pacer_drain::{CaptureDrainClock, TokenDrainPacer};
