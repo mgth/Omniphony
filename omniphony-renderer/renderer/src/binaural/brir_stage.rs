@@ -300,6 +300,7 @@ impl BrirStage {
             std::thread::Builder::new()
                 .name("binaural-brir-worker".into())
                 .spawn(move || {
+                    crate::background_pool::enter_background();
                     Self::worker(request_rx, plan, sample_rate, sink, set_slot, bank_slot)
                 })
                 .expect("spawn BRIR worker");
