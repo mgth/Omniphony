@@ -1119,11 +1119,23 @@ mod tests {
         );
         assert!(!topology.backend.has_sampled_table());
 
-        // A live crossover flip (Studio) still rebuilds, on the next frame.
+        // A live crossover flip (Studio) still rebuilds: the band worker
+        // builds the new set while the old one renders on.
         control.live.write().crossover_type = CrossoverType::Lr4;
         renderer
             .render_frame(&silence, 2, &[], Vec::new(), false)
             .expect("render");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while renderer.speaker_stage_rebuild_pending() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never delivered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            renderer
+                .render_frame(&silence, 2, &[], Vec::new(), false)
+                .expect("render");
+        }
         assert_eq!(renderer.speaker_stage_builds(), 2);
         assert_eq!(
             control.crossover_info().expect("crossover info").engine,
