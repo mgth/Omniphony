@@ -445,7 +445,7 @@ fn run_pipewire_bridge_capture_loop(
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
     let (raw_tx, raw_rx) = mpsc::sync_channel::<(u8, Vec<u8>)>(256);
-    let bridge = instantiate_live_bridge(&config.runtime)?;
+    let (bridge, log_level) = instantiate_live_bridge(&config.runtime)?;
     // DIAG iec958-chain: capture bridge plugin output cadence. Registry-handed
     // diag metrics — updated each time the harletty plugin emits a decoded
     // PCM frame, so the Studio plot can see whether the plugin batches
@@ -453,6 +453,7 @@ fn run_pipewire_bridge_capture_loop(
     let diag = input_control.diag_registry();
     spawn_live_bridge_decoder(
         bridge,
+        log_level,
         raw_rx,
         Some(config.runtime.requested_drc_mode.clone()),
         Some(LiveBridgeDiag {
@@ -567,10 +568,12 @@ fn run_pipewire_bridge_pw_stream_backend(
 // Bridge decode/runtime helpers.
 
 #[cfg(target_os = "linux")]
-fn instantiate_live_bridge(runtime: &LiveBridgeRuntimeConfig) -> Result<FormatBridgeBox> {
-    let mut bridge = open_bridge(&runtime.lib);
+fn instantiate_live_bridge(
+    runtime: &LiveBridgeRuntimeConfig,
+) -> Result<(FormatBridgeBox, orender_engine::decode_step::LogLevelSync)> {
+    let (mut bridge, log_level) = open_bridge(&runtime.lib);
     configure_presentation(&mut bridge, &runtime.presentation)?;
-    Ok(bridge)
+    Ok((bridge, log_level))
 }
 
 #[cfg(target_os = "linux")]

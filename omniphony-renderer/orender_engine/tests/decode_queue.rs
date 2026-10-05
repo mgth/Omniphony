@@ -10,6 +10,7 @@ use abi_stable::std_types::{ROption, RSlice, RStr, RString, RVec};
 use abi_stable::{prefix_type::PrefixTypeTrait, sabi_trait::prelude::TD_Opaque};
 use bridge_api::*;
 use orender_engine::bridge_loader::LoadedBridge;
+use orender_engine::decode_step::LogLevelSync;
 use orender_engine::renderer_build::{SpatialRendererParams, build_spatial_renderer};
 use orender_engine::{DecodeThreadMode, Engine, RenderedAudio};
 use renderer::live_params::RendererControl;
@@ -176,7 +177,15 @@ fn engine_with_control() -> (Engine, Arc<Mutex<Vec<String>>>, Arc<RendererContro
         source_families,
     }
     .leak_into_prefix();
-    let engine = Engine::new(LoadedBridge { lib, bridge }, renderer, 48_000);
+    let engine = Engine::new(
+        LoadedBridge {
+            lib,
+            bridge,
+            log_level: LogLevelSync::new(),
+        },
+        renderer,
+        48_000,
+    );
     (engine, declaration_reads, control)
 }
 
