@@ -518,7 +518,10 @@ exhaustive machine-readable list.
   marker, never on the bundle boundary.
 - **Render** — `render/version`, `render/executable` (path of the process
   serving the engine), `render/abi` (C-ABI `major.minor` of the liborender
-  shim, `""` for the CLI), `render/config_path`, `render/config_status`,
+  shim, `""` for the CLI), `render/config_path`, `render/config_status`
+  (`loaded`, `missing`, `parse_error` — running on built-in defaults — or
+  `newer_schema` — written by a newer build, read as far as this one
+  understands it and never written; `""` without a config path),
   `render/bridge_path`, `render/bridge_error` (bounded to 2 KB: the first
   line and the distinct verdicts of a plugin load failure, the full report
   stays in the renderer log), `vbap/allow_negative_z`,
