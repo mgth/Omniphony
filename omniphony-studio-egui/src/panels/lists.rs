@@ -134,9 +134,9 @@ impl StudioSpike {
         let rows = self.ear_rows();
         ui.add_space(theme::PANEL_GAP);
         ui.separator();
-        // Hardcoded English in the web too: this header has no i18n key.
+        // The output mode's own word: the web hard-codes "Headphones" here.
         ui.label(
-            RichText::new("Headphones")
+            RichText::new(t("outputMode.headphones"))
                 .size(theme::FONT_SIZE_SECTION)
                 .color(theme::TEXT_STRONG),
         );
