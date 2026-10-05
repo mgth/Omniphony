@@ -1471,6 +1471,15 @@ pub unsafe extern "C" fn orender_set_option(
     .unwrap_or(-3)
 }
 
+/// Held by every test that creates a session or waits on the degraded
+/// reporter: a session that starts stops the process-wide reporter, which a
+/// concurrent test may be waiting on.
+#[cfg(test)]
+static SESSION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod live_handle_tests;
+
 #[cfg(test)]
 mod source_label_tests {
     use super::*;
@@ -1524,6 +1533,7 @@ mod degraded_reporter_tests {
     /// answering a registration over OSC. A real engine start tears it down.
     #[test]
     fn an_unloadable_bridge_returns_null_and_keeps_the_degraded_reporter() {
+        let _session = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("orender-ffi-degraded-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let config_path = dir.join("config.yaml");

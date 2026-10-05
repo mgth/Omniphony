@@ -1392,7 +1392,9 @@ fn parse_meter(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
         match kind {
             "object" => {
                 // Any args past (peak, rms) are per-crossover-band RMS values.
-                let band_rms_dbfs = args[2..]
+                let band_rms_dbfs = args
+                    .get(2..)
+                    .unwrap_or_default()
                     .iter()
                     .map(|&v| clamp(to_number(v).unwrap_or(-100.0), -100.0, 0.0))
                     .collect();
@@ -1792,6 +1794,106 @@ mod request_id_tests {
             };
             assert_eq!(request_id.as_deref(), tag);
         }
+    }
+}
+
+/// Datagrams are untrusted: whatever arrives, the parser answers `Some` or
+/// `None` and never panics, which would end the listener thread for good.
+#[cfg(test)]
+mod untrusted_input_tests {
+    use super::{CoordinateFormat, parse_osc_message};
+    use crate::osc_contract::{ALL_CONTROL, ALL_SESSION, ALL_STATE};
+    use rosc::OscType;
+
+    /// Addresses with an id or a field in them, which the contract lists only
+    /// as prefixes: one instance of each shape the parser matches.
+    const TEMPLATED: &[&str] = &[
+        "/omniphony/object/1/xyz",
+        "/omniphony/object/1/aed",
+        "/omniphony/object/1/size",
+        "/omniphony/object/1/meta",
+        "/omniphony/spatial/frame",
+        "/omniphony/log",
+        "/omniphony/state/object/1/mute",
+        "/omniphony/state/object/1/source_tag",
+        "/omniphony/state/speaker/1/gain",
+        "/omniphony/state/speaker/1/delay",
+        "/omniphony/state/speaker/1/mute",
+        "/omniphony/state/speaker/1/spatialize",
+        "/omniphony/state/speaker/1/name",
+        "/omniphony/state/speaker/1/freq_low",
+        "/omniphony/state/speaker/1/freq_high",
+        "/omniphony/meter/object/1",
+        "/omniphony/meter/object/1/gains",
+        "/omniphony/meter/object/1/band/0/gains",
+        "/omniphony/meter/speaker/1",
+        "/omniphony/meter/ear/left",
+        "/omniphony/meter/master",
+    ];
+
+    /// Argument lists a sender may get wrong: none at all, too few, the wrong
+    /// type, a non-finite number, and many.
+    fn argument_lists() -> Vec<Vec<OscType>> {
+        vec![
+            vec![],
+            vec![OscType::Int(1)],
+            vec![OscType::Float(1.0), OscType::Float(2.0)],
+            vec![OscType::String("x".into())],
+            vec![OscType::Float(f32::NAN)],
+            vec![OscType::Nil],
+            (0..32).map(OscType::Int).collect(),
+            (0..32).map(|i| OscType::String(i.to_string())).collect(),
+        ]
+    }
+
+    #[test]
+    fn no_address_panics_on_missing_or_malformed_arguments() {
+        let addresses = ALL_CONTROL
+            .iter()
+            .chain(ALL_STATE)
+            .chain(ALL_SESSION)
+            .chain(TEMPLATED)
+            .copied();
+        let mut checked = 0;
+        for address in addresses {
+            for args in argument_lists() {
+                for format in [CoordinateFormat::Cartesian, CoordinateFormat::Polar] {
+                    let outcome = std::panic::catch_unwind(|| {
+                        let _ = parse_osc_message(address, &args, format);
+                    });
+                    assert!(
+                        outcome.is_ok(),
+                        "{address} with {args:?} panicked the parser"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000, "too few cases to mean anything: {checked}");
+    }
+
+    #[test]
+    fn a_state_message_without_its_value_is_ignored() {
+        let parsed =
+            parse_osc_message("/omniphony/state/latency", &[], CoordinateFormat::Cartesian);
+        assert!(parsed.is_none(), "{parsed:?}");
+    }
+
+    #[test]
+    fn a_meter_without_its_levels_reads_as_silence() {
+        let parsed = parse_osc_message(
+            "/omniphony/meter/speaker/1",
+            &[],
+            CoordinateFormat::Cartesian,
+        );
+        assert!(
+            matches!(
+                parsed,
+                Some(super::OscEvent::MeterSpeaker { peak_dbfs, rms_dbfs, .. })
+                    if peak_dbfs == -100.0 && rms_dbfs == -100.0
+            ),
+            "{parsed:?}"
+        );
     }
 }
 
