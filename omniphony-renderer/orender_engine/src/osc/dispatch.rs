@@ -1377,4 +1377,96 @@ mod notify_tests {
 
         drop(sender);
     }
+
+    /// Argument lists a sender may get wrong: none at all, too few, the wrong
+    /// type, a non-finite number, out of range, and many.
+    fn malformed_argument_lists() -> Vec<Vec<OscType>> {
+        vec![
+            vec![],
+            vec![OscType::Int(1)],
+            vec![OscType::Int(-1)],
+            vec![OscType::Int(i32::MAX)],
+            vec![OscType::Float(f32::NAN)],
+            vec![OscType::Float(f32::INFINITY)],
+            vec![OscType::Double(-1e300)],
+            vec![OscType::String(String::new())],
+            vec![OscType::String("x".into())],
+            vec![OscType::Nil],
+            vec![OscType::Blob(vec![0; 3])],
+            (0..32).map(OscType::Int).collect(),
+            (0..32).map(|i| OscType::String(i.to_string())).collect(),
+        ]
+    }
+
+    /// Process lifecycle commands act on the whole test process (shutdown,
+    /// restart and standby flags) and read no argument but the log level's.
+    const PROCESS_COMMANDS: &[&str] = &[
+        osc_contract::CONTROL_RELOAD_CONFIG,
+        osc_contract::CONTROL_RESTART,
+        osc_contract::CONTROL_QUIT,
+        osc_contract::CONTROL_YIELD_PORT,
+        osc_contract::CONTROL_RESUME,
+    ];
+
+    /// A control datagram is untrusted: whatever its arguments, the handler
+    /// ignores or applies it and never panics, which would end the control
+    /// listener thread and leave the engine deaf to every client.
+    #[test]
+    fn no_control_address_panics_on_malformed_arguments() {
+        // The sweep drives the process-global overlay and port registry too.
+        let _overlay = crate::overlay::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::osc::test_support::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile_dir("control-sweep");
+        let control = fixture_control();
+        // Save, profiles and backend files write beside the config: here.
+        control.set_config_path(dir.join("config.yaml"));
+        let wire = wire();
+
+        let mut addresses: Vec<String> = Vec::new();
+        for &address in osc_contract::ALL_CONTROL {
+            if PROCESS_COMMANDS.contains(&address) {
+                continue;
+            }
+            addresses.push(address.to_string());
+        }
+        // The families the contract names by prefix, one instance each.
+        for prefix in [
+            osc_contract::CONTROL_OBJECT_PREFIX,
+            osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            osc_contract::CONTROL_HYBRID_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+        ] {
+            for suffix in ["", "1", "1/mute", "x", "x/y/z"] {
+                addresses.push(format!("{prefix}{suffix}"));
+            }
+        }
+
+        let mut sent = 0;
+        for address in &addresses {
+            for args in malformed_argument_lists() {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    send(&wire, &control, address, args.clone())
+                }));
+                assert!(
+                    outcome.is_ok(),
+                    "{address} with {args:?} panicked the control handler"
+                );
+                sent += 1;
+            }
+        }
+        assert!(sent > 1000, "too few cases to mean anything: {sent}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tempfile_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("orender-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 }
