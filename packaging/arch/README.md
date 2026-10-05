@@ -54,10 +54,10 @@ mpv --ad=orender \
 
 These fetch pinned release tarballs — no checkout layout needed:
 
-- `orender` 0.4.1 ← Omniphony `v0.4.1` (same commit as `liborender-v0.4.1`).
+- `orender` 0.4.1 ← Omniphony `v0.4.1`.
 - `omniphony-studio` 0.4.1 ← Omniphony `v0.4.1`.
 - `harletty-bridge` 0.7.1 ← harletty-bridge `v0.7.1`, plus the matching
-  Omniphony `liborender-v0.4.1` source for its workspace path-deps
+  Omniphony `v0.4.1` source for its workspace path-deps
   (`bridge_api`/`spdif`/`sys`).
 
 No cross-package build order is required (nothing hard-depends on the bridge;
