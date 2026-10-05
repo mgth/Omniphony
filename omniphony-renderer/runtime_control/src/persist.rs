@@ -81,6 +81,10 @@ pub fn save_live_config_to_path(
 ) -> Result<()> {
     let mut config = renderer::config::Config::load_or_default(base_path);
     store_live_into_config(control, host, &mut config);
+    // The next instance reads `config_status` from the file, which the user
+    // may have fixed meanwhile: tell it this state is still the fallback.
+    config.live_from_parse_error =
+        control.config_status().as_deref() == Some(ConfigLoadStatus::ParseError.as_str());
     config.save_without_backup(out_path)?;
 
     Ok(())
@@ -438,6 +442,44 @@ mod tests {
             std::fs::read(renderer::config::backup_path(&path)).unwrap(),
             before_save
         );
+    }
+
+    /// The engine came up on the parse-error defaults, the user fixed the
+    /// file, then the engine handed its live state over (a restart keeping it,
+    /// mpv taking over). The next instance runs on that handed-over fallback,
+    /// so although the file now parses it must keep refusing the Save, which
+    /// would write the fallback over the fixed file. A handoff from a state
+    /// that did load carries no such mark.
+    #[test]
+    fn a_handoff_keeps_the_parse_error_refusal_across_instances() {
+        use renderer::config::{Config, boot_load_status, live_sidecar_path};
+        let path = temp_config_path("handoff-parse-error");
+        let fixed = "render:\n  output_file: fixed\n";
+        let sidecar = live_sidecar_path(&path);
+
+        let before = crate::test_support::fixture_control();
+        *before.config_path.lock() = Some(path.clone());
+        before.set_config_status(Some(ConfigLoadStatus::ParseError.as_str().into()));
+        std::fs::write(&path, fixed).unwrap();
+        save_live_config_to_path(&before, None, &path, &sidecar).unwrap();
+
+        let (_, restored) = Config::load_or_default_with_live(&path);
+        assert!(restored);
+        // Read once: other tests clear the process-wide overlay cache.
+        let status = boot_load_status(&path);
+        assert_eq!(status, ConfigLoadStatus::ParseError);
+        let after = crate::test_support::fixture_control();
+        *after.config_path.lock() = Some(path.clone());
+        after.set_config_status(Some(status.as_str().into()));
+        assert!(save_live_config(&after, None).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), fixed);
+
+        renderer::config::discard_live_sidecar(&path);
+        before.set_config_status(Some(ConfigLoadStatus::Loaded.as_str().into()));
+        save_live_config_to_path(&before, None, &path, &sidecar).unwrap();
+        let (handed_over, _) = Config::load_or_default_with_live(&path);
+        assert!(!handed_over.live_from_parse_error);
+        renderer::config::discard_live_sidecar(&path);
     }
 
     fn temp_config_path(tag: &str) -> PathBuf {

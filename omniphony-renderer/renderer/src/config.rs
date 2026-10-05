@@ -22,6 +22,15 @@ pub struct Config {
     /// realigned by [`Config::save`]; the others are the switch targets.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profiles: BTreeMap<String, RenderConfig>,
+    /// Set only in a live-handoff sidecar written while the engine was
+    /// running on the defaults it fell back to because `config.yaml` failed
+    /// to parse. The state it carries is still those defaults, whatever the
+    /// file holds by the time the next instance restores it, so that instance
+    /// keeps `config_status = parse_error` (see [`boot_load_status`]) and
+    /// refuses to Save until a reload. A Save starts from `config.yaml`, never
+    /// from a sidecar, so this never reaches the persistent file.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live_from_parse_error: bool,
     /// Captures any top-level key not modelled above so a load → mutate
     /// → save round-trip preserves it verbatim. Without this, every
     /// embedder of the engine that triggers `persist::save_live_config`
@@ -1046,10 +1055,7 @@ fn replace_file(
 ) -> anyhow::Result<()> {
     use std::io::Write as _;
 
-    let target = match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(path)?,
-        _ => path.to_path_buf(),
-    };
+    let target = resolve_symlinks(path)?;
     let dir = match target.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
         _ => PathBuf::from("."),
@@ -1060,6 +1066,13 @@ fn replace_file(
         .ok_or_else(|| anyhow::anyhow!("{} has no file name", target.display()))?
         .to_string_lossy();
     let current = std::fs::metadata(&target).ok();
+    // The rename only needs the directory, so it would replace a file the
+    // old in-place `fs::write` was refused (`chmod a-w`, an ACL): ask for
+    // write access to the file itself first. Opening without truncating
+    // changes nothing.
+    if current.is_some() {
+        std::fs::OpenOptions::new().write(true).open(&target)?;
+    }
 
     let (tmp, mut file) = match create_temp_file(&dir, &name) {
         Ok(created) => created,
@@ -1104,6 +1117,32 @@ fn replace_file(
         }
     }
     Ok(())
+}
+
+/// Follow `path` through any chain of symlinks to the file a write lands on.
+/// Unlike `canonicalize`, the final file need not exist: a link to a config
+/// not created yet is written through, creating it, as `fs::write` did. A
+/// relative link resolves against the directory of the link itself.
+fn resolve_symlinks(path: &Path) -> std::io::Result<PathBuf> {
+    // The usual kernel limit (ELOOP).
+    const MAX_LINKS: usize = 40;
+    let mut target = path.to_path_buf();
+    for _ in 0..MAX_LINKS {
+        match std::fs::symlink_metadata(&target) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let link = std::fs::read_link(&target)?;
+                target = match target.parent() {
+                    Some(parent) => parent.join(link),
+                    None => link,
+                };
+            }
+            _ => return Ok(target),
+        }
+    }
+    Err(std::io::Error::other(format!(
+        "{}: too many levels of symbolic links",
+        path.display()
+    )))
 }
 
 /// Create a fresh temp file next to `name` in `dir`. The pid keeps two
@@ -1196,6 +1235,24 @@ static LIVE_OVERLAY: Mutex<BTreeMap<PathBuf, Config>> = Mutex::new(BTreeMap::new
 /// no disk access). Hosts use this to mark the restored state as unsaved.
 pub fn live_overlay_active(config_path: &Path) -> bool {
     LIVE_OVERLAY.lock().unwrap().contains_key(config_path)
+}
+
+/// The `config_status` a host booting on `config_path` publishes: the file's
+/// own [`Config::load_status`], unless the live state it restored from a
+/// handoff sidecar was the parse-error fallback of the previous instance
+/// ([`Config::live_from_parse_error`]). Call it after the sidecar was consumed
+/// ([`Config::load_or_default_with_live`]).
+pub fn boot_load_status(config_path: &Path) -> ConfigLoadStatus {
+    let from_fallback = LIVE_OVERLAY
+        .lock()
+        .unwrap()
+        .get(config_path)
+        .is_some_and(|overlay| overlay.live_from_parse_error);
+    if from_fallback {
+        ConfigLoadStatus::ParseError
+    } else {
+        Config::load_status(config_path)
+    }
 }
 
 /// Forget any consumed sidecar. Called after writing a *new* sidecar (so a
@@ -1966,6 +2023,46 @@ mod save_tests {
         assert_eq!(back.render.unwrap().output_file.as_deref(), Some("new"));
         assert_eq!(std::fs::read(backup_path(&path)).unwrap(), old);
         assert_eq!(entries(&dir), ["config.yaml", "config.yaml.bak"]);
+    }
+
+    /// A read-only config stays read-only: the save is refused, as the old
+    /// `fs::write` was, although the directory would allow the rename.
+    #[cfg(unix)]
+    #[test]
+    fn save_refuses_a_read_only_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = dir("ro-file");
+        let path = dir.join("config.yaml");
+        with_layout("old").save(&path).unwrap();
+        let old = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        // Root ignores the file mode; there is nothing to check then.
+        if std::fs::OpenOptions::new().write(true).open(&path).is_ok() {
+            return;
+        }
+        assert!(with_layout("new").save(&path).is_err());
+        assert!(with_layout("new").save_without_backup(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+        assert_eq!(entries(&dir), ["config.yaml"]);
+    }
+
+    /// A link to a config not created yet is written through, creating it.
+    #[cfg(unix)]
+    #[test]
+    fn save_creates_the_missing_target_of_a_symlink() {
+        let dir = dir("dangling");
+        let link = dir.join("config.yaml");
+        std::os::unix::fs::symlink("absent.yaml", &link).unwrap();
+        assert!(Config::load_for_update(&link).is_ok(), "a missing config");
+        with_layout("new").save(&link).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let back = Config::load(&dir.join("absent.yaml")).unwrap();
+        assert_eq!(back.render.unwrap().output_file.as_deref(), Some("new"));
     }
 
     /// A hard-linked config stays one file under both names.
