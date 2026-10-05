@@ -454,7 +454,11 @@ impl<'a> OptionEnv<'a> {
 
     /// Whether a backend with this id is registered.
     pub fn has_backend(&self, id: &str) -> bool {
-        self.control.is_some_and(|control| control.has_backend(id))
+        match self.control {
+            Some(control) => control.has_backend(id),
+            // Detached: the built-in backends only.
+            None => crate::render_backend::canonical_builtin_backend_id(id).is_some(),
+        }
     }
 
     /// What the running renderer was built with (preferred evaluation mode,
@@ -700,11 +704,12 @@ fn cartesian_in_force(live: &LiveParams, env: &OptionEnv) -> bool {
     match live.requested_evaluation_mode() {
         LiveEvaluationMode::PrecomputedCartesian => true,
         LiveEvaluationMode::PrecomputedPolar | LiveEvaluationMode::Realtime => false,
-        LiveEvaluationMode::Auto => matches!(
-            env.build_facts()
-                .map(|facts| facts.preferred_evaluation_mode),
-            Some(PreferredEvaluationMode::PrecomputedCartesian)
-        ),
+        // No renderer to ask (a config edited on its own, such as the
+        // command line's): a size given is kept, as the build may well be
+        // cartesian.
+        LiveEvaluationMode::Auto => env.build_facts().is_none_or(|facts| {
+            facts.preferred_evaluation_mode == PreferredEvaluationMode::PrecomputedCartesian
+        }),
     }
 }
 
@@ -2906,6 +2911,49 @@ pub fn seed_rebuilding_rows_from_config(
         }
     }
     rebuild
+}
+
+/// Write client values into a config as a save of a live change would: each
+/// value through its row's `set` (validated and bounded exactly as an OSC
+/// write), then its row's `config_store`. Rows not named keep what the config
+/// says. For a config edited without a renderer (the command line): the rows
+/// work on a scratch [`LiveParams`] seeded from `render`. Returns the keys
+/// that are unknown, not offered on this host, or whose value was refused.
+pub fn store_client_values(
+    render: &mut RenderConfig,
+    values: &[(&str, RawOptionValue)],
+    env: &OptionEnv,
+) -> Vec<String> {
+    let mut live = LiveParams::default();
+    reset_live_to_defaults(&mut live, env);
+    seed_live_from_config(&mut live, render, env);
+    let mut refused = Vec::new();
+    let mut applied = Vec::new();
+    for (key, raw) in values {
+        match find(key).filter(|spec| env.offers(spec)) {
+            Some(spec) if (spec.set)(&mut live, raw, env).is_some() => applied.push(spec),
+            _ => refused.push((*key).to_string()),
+        }
+    }
+    // The room is stored as one set of metres (`config_fields::room`), read
+    // only whole: a member given alone stores every member, the others as
+    // the config had them.
+    if applied
+        .iter()
+        .any(|spec| spec.group.is_some_and(|g| g.key == ROOM.key))
+    {
+        for spec in LIVE_OPTIONS {
+            if spec.group.is_some_and(|g| g.key == ROOM.key)
+                && !applied.iter().any(|a| a.key == spec.key)
+            {
+                applied.push(spec);
+            }
+        }
+    }
+    for spec in applied {
+        (spec.config_store)(render, &live, env);
+    }
+    refused
 }
 
 /// Write every declared live option — plus the placement — into a config

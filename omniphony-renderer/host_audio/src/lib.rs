@@ -17,7 +17,7 @@
 
 #[cfg(test)]
 mod doc_tables;
-mod options;
+pub mod options;
 
 use std::sync::Arc;
 
@@ -219,12 +219,38 @@ fn build_audio_state_json(audio: &AudioControl) -> String {
 
 pub struct HostAudio {
     pub renderer: Arc<RendererControl>,
-    pub audio: Arc<AudioControl>,
-    pub input: Arc<InputControl>,
+    /// The output and input the option rows reach (`HostAudio` derefs to
+    /// it, so `host.audio` / `host.input` read through).
+    io: HostIo,
     /// Whether the live input holds staged values not applied yet: set by a
     /// write that changes one, cleared by the apply. The `pending` flag of
     /// the `live_input` group in `/state/host_options`.
     input_staged: std::sync::atomic::AtomicBool,
+}
+
+/// The audio output and live input a host drives: all its option rows
+/// (`options::HOST_OPTIONS`) reach. Apart from the renderer, so that the
+/// command line can fold option values into a config before any renderer
+/// exists ([`store_host_values`]).
+pub struct HostIo {
+    pub audio: Arc<AudioControl>,
+    pub input: Arc<InputControl>,
+}
+
+impl Default for HostIo {
+    fn default() -> Self {
+        Self {
+            audio: Arc::new(AudioControl::default()),
+            input: Arc::new(InputControl::default()),
+        }
+    }
+}
+
+impl std::ops::Deref for HostAudio {
+    type Target = HostIo;
+    fn deref(&self) -> &HostIo {
+        &self.io
+    }
 }
 
 impl HostAudio {
@@ -235,11 +261,33 @@ impl HostAudio {
     ) -> Self {
         Self {
             renderer,
-            audio,
-            input,
+            io: HostIo { audio, input },
             input_staged: std::sync::atomic::AtomicBool::new(false),
         }
     }
+}
+
+/// Write client values for this host's options (the command line's) into a
+/// config as a save would: each through its row's `set`, on a blank
+/// [`HostIo`], then its row's `config_store`. Returns the keys that are
+/// unknown or whose value was refused.
+pub fn store_host_values(
+    render: &mut renderer::config::RenderConfig,
+    values: &[(&str, RawOptionValue)],
+) -> Vec<String> {
+    let io = HostIo::default();
+    let mut refused = Vec::new();
+    let mut applied = Vec::new();
+    for (key, raw) in values {
+        match renderer::options::find_host(options::HOST_OPTIONS, key) {
+            Some(spec) if (spec.set)(&io, raw).is_some() => applied.push(spec),
+            _ => refused.push((*key).to_string()),
+        }
+    }
+    for spec in applied {
+        (spec.config_store)(render, &io);
+    }
+    refused
 }
 
 /// The schema of this host's declared options, as a JSON array (what the
@@ -682,7 +730,7 @@ impl HostControlHandler for HostAudio {
     }
 
     fn apply_options(&self, items: &[(&str, RawOptionValue)]) -> HostBatchApplied {
-        let batch = renderer::options::host_apply_batch(self, options::HOST_OPTIONS, items);
+        let batch = renderer::options::host_apply_batch(&self.io, options::HOST_OPTIONS, items);
         let staged = items.iter().zip(&batch.results).any(|((key, _), result)| {
             result.as_ref().is_some_and(|applied| applied.changed)
                 && renderer::options::find_host(options::HOST_OPTIONS, key)
@@ -719,11 +767,11 @@ impl HostControlHandler for HostAudio {
     }
 
     fn options_json(&self) -> serde_json::Map<String, serde_json::Value> {
-        renderer::options::host_options_json(self, options::HOST_OPTIONS)
+        renderer::options::host_options_json(&self.io, options::HOST_OPTIONS)
     }
 
     fn options_applied_json(&self) -> serde_json::Map<String, serde_json::Value> {
-        renderer::options::host_applied_json(self, options::HOST_OPTIONS)
+        renderer::options::host_applied_json(&self.io, options::HOST_OPTIONS)
     }
 
     fn option_groups_pending(&self) -> Vec<(&'static str, bool)> {
@@ -737,7 +785,7 @@ impl HostControlHandler for HostAudio {
         // Every declared option (audio output, adaptive resampling, live
         // input), then the imported live-input layout, which is structured
         // data rather than an option.
-        renderer::options::host_store_to_config(render, self, options::HOST_OPTIONS);
+        renderer::options::host_store_to_config(render, &self.io, options::HOST_OPTIONS);
         render
             .live_input
             .get_or_insert_with(Default::default)
@@ -1274,8 +1322,8 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            renderer::options::host_options_json(&by_patch, options::HOST_OPTIONS),
-            renderer::options::host_options_json(&by_rows, options::HOST_OPTIONS)
+            renderer::options::host_options_json(&by_patch.io, options::HOST_OPTIONS),
+            renderer::options::host_options_json(&by_rows.io, options::HOST_OPTIONS)
         );
 
         // The same patch again changes nothing: published, not dirty.
