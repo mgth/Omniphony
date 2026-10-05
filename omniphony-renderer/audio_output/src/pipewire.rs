@@ -1060,7 +1060,7 @@ fn run_pipewire_loop(
 
     // The callback reports through this queue; the drain thread logs. Declared
     // before the listener, so it outlives the callback and logs its last events.
-    let callback_log = CallbackLog::new("audio_output::pipewire");
+    let callback_log = CallbackLog::new(module_path!());
     let _callback_log_drain = CallbackLogDrain::spawn(Arc::clone(&callback_log));
 
     let _listener = stream
@@ -1147,7 +1147,6 @@ fn run_pipewire_loop(
                         capacity_frames
                     };
                     let max_samples = max_frames * ch;
-                    let frame_aligned_max = max_samples;
                     callback_output_frames = max_frames;
                     // When the pacer is active, it adds its (fixed) capacity
                     // to the total end-to-end latency. To keep the user's
@@ -1173,20 +1172,9 @@ fn run_pipewire_loop(
                             samples = max_samples,
                             channels = ch,
                             frames = max_frames,
-                            remainder = max_samples % ch,
                             requested_frames = requested_frames_this_cycle,
                             chunk_size_bytes = chunk_size_bytes
                         );
-                        if max_samples != frame_aligned_max {
-                            callback_event!(
-                                callback_log,
-                                Warn,
-                                "PipeWire buffer not frame-aligned: the sink may have another channel count",
-                                samples = max_samples,
-                                channels = ch,
-                                remainder = max_samples % ch
-                            );
-                        }
                     }
                     if runtime_target_buffer_fill != state.logged_runtime_target {
                         callback_event!(
@@ -1194,7 +1182,7 @@ fn run_pipewire_loop(
                             Debug,
                             "PipeWire runtime target fill adjusted for the observed callback size",
                             target = runtime_target_buffer_fill,
-                            callback_samples = frame_aligned_max
+                            callback_samples = max_samples
                         );
                         state.logged_runtime_target = runtime_target_buffer_fill;
                     }
@@ -1245,9 +1233,9 @@ fn run_pipewire_loop(
                     );
                     // Callback consumption (input-domain samples).
                     let callback_input_domain_samples = if state.resampler.effective_ratio > 0.0 {
-                        ((frame_aligned_max as f64) / state.resampler.effective_ratio).round() as usize
+                        ((max_samples as f64) / state.resampler.effective_ratio).round() as usize
                     } else {
-                        frame_aligned_max
+                        max_samples
                     };
                     // Increment cumulative-drained BEFORE we read the running
                     // difference for control_available. callback_input_domain
@@ -1995,13 +1983,13 @@ fn run_pipewire_loop(
                                 &mut state.runtime,
                             );
 
-                            if samples_to_read < frame_aligned_max {
+                            if samples_to_read < max_samples {
                                 note_refill_or_underrun(
                                     &mut state.runtime,
                                     &callback_log,
                                     "buffer underrun: zero-padding the remainder",
                                     samples_to_read,
-                                    frame_aligned_max,
+                                    max_samples,
                                 );
                             }
 

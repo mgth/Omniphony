@@ -425,7 +425,7 @@ impl CpalWriter {
         // stands until the next one), as the PipeWire callback does.
         let mut callback_cfg = initial_cfg.clone();
         // The callback reports through this queue; the drain thread logs.
-        let callback_log = CallbackLog::new("audio_output::cpal");
+        let callback_log = CallbackLog::new(module_path!());
         let callback_log_drain = CallbackLogDrain::spawn(Arc::clone(&callback_log));
 
         // The whole output callback, on an f32 device buffer. Devices whose
@@ -488,7 +488,6 @@ impl CpalWriter {
                 0.0
             };
             pipeline_latency_ms_bits_clone.store(callback_midpoint_ms.to_bits(), Ordering::Relaxed);
-            let current_asio_cfg = &callback_cfg;
             // The device callback dt comes from the nominal frame size of
             // the active buffer. We don't have an atomic-published dt
             // here as on the PipeWire path; the configured value is
@@ -508,8 +507,8 @@ impl CpalWriter {
                 channel_count as usize,
                 input_sample_rate,
                 callback_midpoint_ms,
-                current_asio_cfg.control_smoothing_cutoff_hz,
-                current_asio_cfg.control_smoothing_order,
+                callback_cfg.control_smoothing_cutoff_hz,
+                callback_cfg.control_smoothing_order,
                 callback_dt_s,
                 LatencyMetricTargets {
                     measured_latency_ms_bits: &measured_latency_ms_bits_clone,
@@ -534,7 +533,7 @@ impl CpalWriter {
                 );
             }
             let fallback_band = far_mode_band_from_latency(
-                &current_asio_cfg,
+                &callback_cfg,
                 metrics.control_available,
                 target_buffer_fill,
                 samples_per_ms,
@@ -552,18 +551,18 @@ impl CpalWriter {
                 // Only adjust rate if we have started playback and have enough data
                 if should_run_adaptive_servo(
                     callback_count,
-                    current_asio_cfg.update_interval_callbacks,
+                    callback_cfg.update_interval_callbacks,
                     metrics.total_available_input_domain,
                     channel_count as usize,
                 ) {
                     let mut decision = run_adaptive_servo(
                         &mut runtime_state,
-                        &current_asio_cfg,
+                        &callback_cfg,
                         metrics,
                         target_buffer_fill,
                         resample_ratio,
                         100,
-                        current_asio_cfg.max_adjust.max(0.000_001),
+                        callback_cfg.max_adjust.max(0.000_001),
                         samples_per_ms,
                         samples_per_ms_f64,
                     );
@@ -601,9 +600,9 @@ impl CpalWriter {
                             base = resample_ratio,
                             p = decision.step.p_term,
                             i = decision.step.i_term,
-                            kp = current_asio_cfg.kp_near,
-                            ki = current_asio_cfg.ki,
-                            max_adjust = current_asio_cfg.max_adjust
+                            kp = callback_cfg.kp_near,
+                            ki = callback_cfg.ki,
+                            max_adjust = callback_cfg.max_adjust
                         );
                     }
                 }
@@ -621,13 +620,12 @@ impl CpalWriter {
             // output_fifo contains frames * channel_count
             let output_frames_needed = data.len() / device_channel_count_for_callback as usize;
             let audio_samples_needed = output_frames_needed * channel_count as usize;
-            let far_mode_cfg = &callback_cfg;
             let startup_low_recover_was_active = runtime_state.startup_low_recover_active;
             let low_recover_was_active =
                 runtime_state.low_recover_phase != LowRecoverPhase::Inactive;
             let far_decision: FarModeDecision = update_far_mode_state(
                 &mut runtime_state,
-                &far_mode_cfg,
+                &callback_cfg,
                 recovery_band == crate::ADAPTIVE_BAND_FAR,
                 metrics.control_available,
                 metrics.smoothed_control_available,
