@@ -655,10 +655,13 @@ fn heard_us_publishes_the_listener_and_marks_each_block() {
     assert_eq!(heard[0].args.get(1), Some(&rosc::OscType::Int(48_000)));
 
     // Every meter bundle is preceded by the marker of its block, and the
-    // markers name 1536-sample blocks, in order, each once.
+    // markers name 1536-sample blocks, in order, each once. From the heard
+    // message on: the telemetry thread sends what the render path queued in
+    // order, so a meter of a block rendered before the report, late past
+    // the listening window above on a slow runner, comes first, unmarked.
     let mut last_block = None;
     let mut blocks = Vec::new();
-    for m in &after {
+    for m in after.iter().skip_while(|m| m.addr != PLAYOUT_HEARD) {
         if m.addr == PLAYOUT_BLOCK {
             let pos = long_arg(m, 0).unwrap();
             assert_eq!(pos % 1536, 0, "{pos}");

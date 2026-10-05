@@ -1272,6 +1272,13 @@ fn replace_file(
 ) -> anyhow::Result<()> {
     use std::io::Write as _;
 
+    // One save at a time in this process. Two saves of one file both copy
+    // it to the same `.bak` and rename over the same target: on Windows the
+    // second is refused (a sharing violation), elsewhere the `.bak` can come
+    // out torn. Saves are rare and never on the audio path.
+    static SAVING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+
     let target = resolve_symlinks(path)?;
     let dir = match target.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
@@ -2543,8 +2550,8 @@ mod save_tests {
         assert_eq!(entries(&dir), ["config.yaml"], "temp file cleaned up");
     }
 
-    /// Saves of one file from several threads of one process each get their
-    /// own temp file: none fails, and none is left behind.
+    /// Saves of one file from several threads of one process: none fails,
+    /// and no temp file is left behind.
     #[test]
     fn concurrent_saves_in_one_process_do_not_share_a_temp_file() {
         let dir = dir("concurrent");
@@ -2562,6 +2569,25 @@ mod save_tests {
         });
         assert!(Config::load(&path).is_ok());
         assert_eq!(entries(&dir), ["config.yaml", "config.yaml.bak"]);
+        // Both files are, byte for byte, one of the configs saved: a torn
+        // write can still parse, so loading alone would not show one. The
+        // `.bak` is the file as the last save found it, so it is a different
+        // one of them.
+        let saved: Vec<Vec<u8>> = std::iter::once("start".to_string())
+            .chain((0..4).flat_map(|t| (0..25).map(move |i| format!("t{t}-{i}"))))
+            .map(|name| with_layout(&name).to_yaml().unwrap().into_bytes())
+            .collect();
+        let current = std::fs::read(&path).unwrap();
+        let backup = std::fs::read(backup_path(&path)).unwrap();
+        assert!(
+            saved.contains(&current),
+            "config.yaml is not a saved config"
+        );
+        assert!(
+            saved.contains(&backup),
+            "config.yaml.bak is not a saved config"
+        );
+        assert_ne!(backup, current);
     }
 
     /// A config whose directory is not writable (only the file is) is still
