@@ -26,6 +26,27 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+/// Frames the pacer FIFO holds, and must hold before the drain moves real
+/// audio: 64 ms at the output rate. Covers more than one AU for both
+/// supported input codecs (~32 ms per AU) with margin. The FIFO's capacity
+/// too: the renderer's writes are held at this level.
+pub fn pre_roll_frames(sample_rate: u32) -> usize {
+    (sample_rate as usize * 64 / 1000).max(1)
+}
+
+/// Frames of the output ring when the pacer drain writes it: what the
+/// latency allows, plus one full FIFO.
+///
+/// The drain is clocked by the input and does not wait for the ring, and one
+/// drain moves up to everything the FIFO holds (a 32 ms packet is 1,536
+/// frames at 48 kHz). A ring of `max_latency_frames` alone is smaller than
+/// that at a low latency target, and would drop part of every packet even
+/// when empty. With the FIFO on top, a drain into a ring at or below its
+/// latency ceiling never drops audio.
+pub fn paced_ring_frames(max_latency_frames: usize, sample_rate: u32) -> usize {
+    max_latency_frames + pre_roll_frames(sample_rate)
+}
+
 /// The drain's ends of the two rings it moves samples between. Both rings are
 /// single-producer single-consumer, so these are the only reading end of the
 /// FIFO and the only writing end of the ring.
@@ -112,9 +133,9 @@ impl PacerHandle {
 
     /// Move `drain_samples` (across all channels) from the pacer FIFO into the
     /// ring. Honours pre-roll (pushes silence until the FIFO is primed) and
-    /// zero-fills on underrun. `drain_samples` should be a whole number of
-    /// frames (i.e. a multiple of the output channel count) so the ring's
-    /// channel interleaving stays aligned.
+    /// zero-fills on underrun. Both rings move whole frames only, so the
+    /// quantum is rounded down to one, and what a full ring refuses is
+    /// dropped from a frame boundary: the ring's channels never shift.
     ///
     /// Both the PipeWire input RT callback (Pipewire mode) and the pure
     /// pipe-bridge drain thread share this single drain implementation; the
@@ -129,6 +150,7 @@ impl PacerHandle {
             return false;
         };
         let PacerDrainEnds { fifo, ring } = &mut *ends;
+        let drain_samples = drain_samples - drain_samples % ring.frame_len();
         // Honour a deferred flush first, so no stale sample reaches the ring.
         // Done here because this is the FIFO's only consumer — see
         // [`request_flush_and_rearm`](Self::request_flush_and_rearm).
@@ -150,13 +172,12 @@ impl PacerHandle {
             0
         };
         // The FIFO is drawn down by the clock whatever the ring takes: what a
-        // full ring refuses is dropped, from the first sample it refuses on.
-        let mut ring_full = false;
-        fifo.pop_with(from_fifo, |block| {
-            if !ring_full {
-                ring_full = ring.push_slice(block) < block.len();
-            }
-        });
+        // full ring refuses is dropped, from the first frame it refuses.
+        let moved = ring.transfer_from(fifo, from_fifo);
+        let ring_full = moved < from_fifo;
+        if ring_full {
+            fifo.discard(from_fifo - moved);
+        }
         let underruns = drain_samples - from_fifo;
         if underruns > 0 && !ring_full {
             ring.push_silence(underruns);
@@ -196,9 +217,16 @@ mod tests {
         pacer_with_ring_capacity(pre_roll, 4096)
     }
 
+    /// `ring_capacity` in samples, a whole number of frames.
     fn pacer_with_ring_capacity(pre_roll: usize, ring_capacity: usize) -> Pacer {
-        let (fifo_writer, fifo_reader) = sample_ring(4096);
-        let (ring_writer, ring_reader) = sample_ring(ring_capacity);
+        let channels = CHANNELS as usize;
+        pacer_with_frames(pre_roll, 4096 / channels, ring_capacity / channels)
+    }
+
+    fn pacer_with_frames(pre_roll: usize, fifo_frames: usize, ring_frames: usize) -> Pacer {
+        let channels = CHANNELS as usize;
+        let (fifo_writer, fifo_reader) = sample_ring(fifo_frames, channels);
+        let (ring_writer, ring_reader) = sample_ring(ring_frames, channels);
         let handle = PacerHandle {
             ends: Arc::new(Mutex::new(PacerDrainEnds {
                 fifo: fifo_reader,
@@ -369,5 +397,72 @@ mod tests {
         // It finishes: the next drain goes through.
         assert!(p.handle.drain(2));
         assert_eq!(drain_ring(&mut p), vec![1.0, 2.0]);
+    }
+
+    /// A quantum that falls inside a frame is rounded down to one: half a
+    /// frame would leave every later sample a channel off.
+    #[test]
+    fn a_quantum_inside_a_frame_moves_whole_frames() {
+        let mut p = pacer(0);
+        fill(&mut p, &[1.0, 2.0, 3.0, 4.0]);
+        p.handle.drain(3);
+        assert_eq!(drain_ring(&mut p), vec![1.0, 2.0]);
+        assert_eq!(diag(&p.handle.diag_drain_total), 2.0);
+        p.handle.drain(2);
+        assert_eq!(drain_ring(&mut p), vec![3.0, 4.0]);
+    }
+
+    /// What a full ring refuses goes from a frame boundary, and the next
+    /// drain starts on the first channel.
+    #[test]
+    fn a_full_ring_keeps_the_channels_aligned() {
+        let mut p = pacer_with_ring_capacity(0, 6);
+        // Left and right tagged 1 and 2, frame by frame.
+        let frames = |n: usize| -> Vec<f32> { (0..n).flat_map(|_| [1.0, 2.0]).collect() };
+        fill(&mut p, &frames(2));
+        p.handle.drain(4);
+        fill(&mut p, &frames(3));
+        p.handle.drain(6);
+        assert_eq!(p.fifo.fill(), 0, "the refused frames left the FIFO");
+        assert_eq!(drain_ring(&mut p), frames(3), "one frame of room");
+        fill(&mut p, &frames(2));
+        p.handle.drain(4);
+        assert_eq!(drain_ring(&mut p), frames(2));
+    }
+
+    /// A low latency target with pacing on: 10 ms, so a 20 ms ceiling, and a
+    /// 32 ms packet per drain. A ring of the ceiling alone (960 frames)
+    /// dropped 576 of every 1,536 frames, even emptied between drains.
+    #[test]
+    fn a_low_latency_ring_takes_a_whole_packet() {
+        const RATE: u32 = 48_000;
+        const PACKET: usize = 1_536 * CHANNELS as usize;
+        let ceiling = 20 * RATE as usize / 1000;
+        let fifo_frames = pre_roll_frames(RATE);
+        let packet: Vec<f32> = (0..PACKET).map(|i| i as f32).collect();
+
+        let mut p = pacer_with_frames(0, fifo_frames, paced_ring_frames(ceiling, RATE));
+        for round in 0..4 {
+            fill(&mut p, &packet);
+            assert!(p.handle.drain(PACKET));
+            assert_eq!(drain_ring(&mut p), packet, "round {round}");
+        }
+
+        // Filled to its ceiling first, the ring still takes the packet.
+        let mut p = pacer_with_frames(0, fifo_frames, paced_ring_frames(ceiling, RATE));
+        let ceiling_samples = ceiling * CHANNELS as usize;
+        fill(&mut p, &vec![0.0; ceiling_samples]);
+        p.handle.drain(ceiling_samples);
+        fill(&mut p, &packet);
+        p.handle.drain(PACKET);
+        let out = drain_ring(&mut p);
+        assert_eq!(out.len(), ceiling_samples + PACKET);
+        assert_eq!(out[ceiling_samples..], packet[..]);
+
+        // The ceiling alone, as it was: part of the packet is dropped.
+        let mut p = pacer_with_frames(0, fifo_frames, ceiling);
+        fill(&mut p, &packet);
+        p.handle.drain(PACKET);
+        assert_eq!(drain_ring(&mut p).len(), ceiling_samples);
     }
 }

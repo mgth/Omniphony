@@ -265,7 +265,7 @@ mod tests {
     fn resamples_a_chunk_into_the_fifo() {
         let mut engine = ResamplerFifoEngine::new(CHANNELS);
         let mut rs = resampler(1.0);
-        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2);
+        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2, 1);
         feed_one_chunk(&mut writer);
 
         engine
@@ -291,7 +291,7 @@ mod tests {
         // An odd capacity, and a read position three samples short of the
         // end: one frame, then the first half of the next.
         let capacity = RESAMPLER_CHUNK_SIZE * CHANNELS * 2 + 1;
-        let (mut writer, mut reader) = sample_ring(capacity);
+        let (mut writer, mut reader) = sample_ring(capacity, 1);
         writer.push_silence(capacity - 3);
         reader.discard(capacity - 3);
         feed_one_chunk(&mut writer);
@@ -319,7 +319,7 @@ mod tests {
     fn a_partial_chunk_waits_for_the_rest() {
         let mut engine = ResamplerFifoEngine::new(CHANNELS);
         let mut rs = resampler(1.0);
-        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2);
+        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2, 1);
         writer.push_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
 
         engine
@@ -353,7 +353,7 @@ mod tests {
     fn a_second_chunk_reuses_the_output_buffer() {
         let mut engine = ResamplerFifoEngine::new(CHANNELS);
         let mut rs = resampler(1.0);
-        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 4);
+        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 4, 1);
 
         feed_one_chunk(&mut writer);
         engine
@@ -385,7 +385,7 @@ mod tests {
     fn draining_takes_the_oldest_samples_in_order() {
         let mut engine = ResamplerFifoEngine::new(CHANNELS);
         let mut rs = resampler(1.0);
-        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2);
+        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2, 1);
         feed_one_chunk(&mut writer);
         engine
             .ensure_output_samples(&mut reader, &mut rs, RESAMPLER_CHUNK_SIZE)
@@ -395,7 +395,7 @@ mod tests {
         let all = {
             let mut engine = ResamplerFifoEngine::new(CHANNELS);
             let mut rs = resampler(1.0);
-            let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2);
+            let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2, 1);
             feed_one_chunk(&mut writer);
             engine
                 .ensure_output_samples(&mut reader, &mut rs, RESAMPLER_CHUNK_SIZE)

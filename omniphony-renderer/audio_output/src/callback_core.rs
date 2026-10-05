@@ -966,7 +966,7 @@ mod tests {
         config: AdaptiveResamplingConfig,
         pacer: Option<PacerLink>,
     ) -> Rig {
-        let (ring, reader) = sample_ring(1 << 20);
+        let (ring, reader) = sample_ring((1 << 20) / CHANNELS, CHANNELS);
         let shared = CallbackShared::new(config.clone());
         let resampler = resampled.then(|| new_output_resampler(1.0, CHANNELS).unwrap());
         let (core, _log) = Core::new(

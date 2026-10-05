@@ -121,7 +121,9 @@ Host lifecycle:
 7. call `reset()` on seek/discontinuity/end-of-stream reset
 
 Important expectations:
-- `configure(...)` happens before the first `push_packet(...)`
+- `configure(...)` happens before the first `push_packet(...)`, except
+  `log_level`, which the host sends again between packets when its own level
+  changes (see "Configuration Keys")
 - `has_objects()` is meaningful after configuration
 - `coordinate_format()` should stay stable for the instance lifetime
 
@@ -296,6 +298,13 @@ These are host hints, not host commands.
 - `presentation`
   - used to select the presentation / substream / best presentation according
     to bridge-specific semantics
+- `log_level` (`off`, `error`, `warn`, `info`, `debug`, `trace`)
+  - the host's log level: the most verbose diagnostic worth formatting and
+    handing to the host log sink, since the host drops the rest. Sent when the
+    bridge is created and again before the next packet whenever the host's
+    level changes (`log_level` over OSC). A bridge may apply it process-wide.
+    A bridge that returns `false` (one that predates the key) keeps its own
+    level, and the host stops sending it changes
 
 Return value:
 - `true`
