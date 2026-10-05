@@ -132,6 +132,25 @@ The previous, web-based Studio. Deprecated in favour of
 - `assets/` — demo clip, logo, captures
 - `scripts/` — helpers
 
+## Supported platforms
+
+"Tested" means the CI gate on every pull request to `main` builds the code and
+runs its test suite on that platform; "packaged" means a release ships a
+prebuilt download for it.
+
+| Platform | Engine (`orender`, `liborender`) | Native Studio | Packaged |
+| --- | --- | --- | --- |
+| Linux x86_64 | tested | tested | yes — Studio bundle, `liborender`, AUR (from source) |
+| Windows x86_64 | tested | tested | yes — Studio bundle, `liborender` |
+| macOS arm64 (Apple Silicon) | tested | tested | yes — Studio bundle, `liborender` |
+| Linux arm64 (aarch64) | tested | not built | no — build from source |
+
+The Tauri Studio is built on Linux only. Tests that need a sound device or a
+running PipeWire session are skipped by CI on every platform, so the audio
+backends themselves (PipeWire, ASIO, CoreAudio) are compiled but not exercised
+there. Anything not listed — macOS on Intel, 32-bit targets — is not built by
+CI.
+
 ## License
 
 GPL-3.0-or-later — see [`LICENSE`](LICENSE). Decoder bridges are loaded at runtime
