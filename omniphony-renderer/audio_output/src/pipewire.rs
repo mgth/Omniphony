@@ -1,7 +1,6 @@
 #![cfg(target_os = "linux")]
 
 use anyhow::{Result, anyhow};
-use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
 use pipewire as pw;
 use rubato::{Resampler, SincFixedIn};
@@ -27,17 +26,18 @@ use crate::{
     adaptive_runtime::{
         FarModeStepCtx, FarModeStepInputs, LatencyMetricTargets, LowRecoverPhase,
         MAX_INTEGRAL_TERM, PRE_BRIDGE_CALIBRATION_CALLBACKS, compute_hard_recover_high_plan,
-        discard_ring_samples, far_mode_band_from_latency, far_mode_step, note_refill_or_underrun,
+        far_mode_band_from_latency, far_mode_step, note_refill_or_underrun,
         output_to_input_domain_samples, paused_rate_adjust, postprocess_interleaved_output,
         reset_adaptive_runtime, run_adaptive_servo, should_run_adaptive_servo,
         update_latency_metrics, zero_pad_tail,
     },
     adaptive_runtime_state_name_from_code, clamp_ratio_for_local_resampler,
     local_resampler_ratio_bounds,
+    pacer::{PacerDrainEnds, PacerHandle},
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, output_resampler_params},
     ring_buffer_io::{
-        OUTPUT_RING_CAPACITY, flush_ring_buffer, push_samples_drop_overflow,
-        push_samples_with_backpressure,
+        OUTPUT_RING_CAPACITY, RingMonitor, RingReader, RingWriter, flush_ring_buffer,
+        push_samples_drop_overflow, push_samples_with_backpressure, sample_ring,
     },
 };
 
@@ -241,21 +241,26 @@ fn wallclock_millis() -> u64 {
 }
 
 pub struct PipewireWriter {
-    sample_buffer: Arc<ArrayQueue<f32>>,
-    /// Post-rendering pacer FIFO. When `pacer_enabled` is true,
-    /// `write_samples` pushes here instead of directly to `sample_buffer`;
-    /// the PipeWire INPUT thread drains this FIFO into `sample_buffer` at
-    /// a cadence that mirrors the IEC958 chunk arrival rate, so the ring
-    /// buffer the DAC consumes sees a smooth flow regardless of the
-    /// decoder's burst pattern.
-    pacer_fifo: Arc<ArrayQueue<f32>>,
-    pacer_enabled: bool,
+    /// The ring the DAC callback reads, seen from here: its level, and the
+    /// request to drop what a flush gave up on. Neither of its ends — the
+    /// callback holds the reading one, and the writing one is `write_target`
+    /// without the pacer, the pacer drain's with it.
+    ring: RingMonitor,
+    /// Where `write_samples` pushes: the ring itself, or, when the
+    /// post-rendering pacer is on, the pacer FIFO. The PipeWire INPUT thread
+    /// then drains that FIFO into the ring at a cadence that mirrors the
+    /// IEC958 chunk arrival rate, so the ring buffer the DAC consumes sees a
+    /// smooth flow regardless of the decoder's burst pattern.
+    ///
+    /// Which of the two is settled when the writer is built: each ring has
+    /// one producer, so the renderer cannot take turns with the drain.
+    write_target: RingWriter,
+    /// The drain's handle on the pacer; `None` when pacing is off.
+    pacer: Option<PacerHandle>,
     /// When true, `write_samples` pushes without ever blocking and drops the
     /// overflow above the back-pressure threshold instead of waiting for the
     /// DAC to drain. Decouples the producer from the consumer clock.
     backpressure_disabled: Arc<AtomicBool>,
-    pacer_pre_roll_complete: Arc<AtomicBool>,
-    pacer_flush_requested: Arc<AtomicBool>,
     pacer_pre_roll_threshold_samples: usize,
     sample_rate: u32,
     channel_count: u32,
@@ -345,12 +350,8 @@ impl PipewireWriter {
             buffer_config.max_latency_ms = corrected;
         }
 
-        let sample_buffer = Arc::new(ArrayQueue::new(OUTPUT_RING_CAPACITY));
-        let buffer_clone = sample_buffer.clone();
-        // Pacer FIFO: capacity matches the ring so worst-case can buffer
-        // the same amount of audio. It only fills meaningfully when the
-        // input-thread drain lags or is paused (eg. during pre-roll).
-        let pacer_fifo = Arc::new(ArrayQueue::new(OUTPUT_RING_CAPACITY));
+        let (ring_writer, ring_reader) = sample_ring(OUTPUT_RING_CAPACITY);
+        let ring = ring_writer.monitor();
         let pacer_enabled = adaptive_config.use_output_pacing;
         let backpressure_disabled = Arc::new(AtomicBool::new(adaptive_config.disable_backpressure));
         let pacer_pre_roll_complete = Arc::new(AtomicBool::new(false));
@@ -363,6 +364,31 @@ impl PipewireWriter {
         // cloned one by one.
         let telemetry = OutputTelemetry::new();
         let telemetry_for_thread = telemetry.clone();
+        // The ring's writing end goes to the renderer, or to the pacer drain
+        // with the renderer writing to the pacer FIFO instead.
+        let (write_target, pacer) = if pacer_enabled {
+            // Pacer FIFO: capacity matches the ring so worst-case can buffer
+            // the same amount of audio. It only fills meaningfully when the
+            // input-thread drain lags or is paused (eg. during pre-roll).
+            let (fifo_writer, fifo_reader) = sample_ring(OUTPUT_RING_CAPACITY);
+            let handle = PacerHandle {
+                ends: Arc::new(Mutex::new(PacerDrainEnds {
+                    fifo: fifo_reader,
+                    ring: ring_writer,
+                })),
+                pre_roll_complete: Arc::clone(&pacer_pre_roll_complete),
+                flush_requested: Arc::clone(&pacer_flush_requested),
+                pre_roll_threshold_samples: pacer_pre_roll_threshold_samples,
+                out_sample_rate: sample_rate,
+                out_channels: channel_count,
+                diag_drain_total: Arc::clone(&telemetry.pacer_drain_total),
+                diag_underrun_total: Arc::clone(&telemetry.pacer_underrun_total),
+                diag_fifo_level: Arc::clone(&telemetry.pacer_fifo_level),
+            };
+            (fifo_writer, Some(handle))
+        } else {
+            (ring_writer, None)
+        };
         let stream_ready = Arc::new(AtomicBool::new(false));
         let ready_clone = stream_ready.clone();
         let ready_for_thread_cleanup = stream_ready.clone();
@@ -384,10 +410,10 @@ impl PipewireWriter {
         let input_trigger_rate_for_thread = Arc::clone(&input_trigger_rate_hz);
         let input_trigger_quantum_frames = Arc::new(AtomicU32::new(0));
         let input_trigger_quantum_for_thread = Arc::clone(&input_trigger_quantum_frames);
-        // Pacer atomics cloned into the PipeWire thread so the DAC callback
+        // Pacer atomics moved into the PipeWire thread so the DAC callback
         // can flush the FIFO and re-arm pre-roll on recovery_reacquire.
-        let pacer_pre_roll_complete_for_thread = Arc::clone(&pacer_pre_roll_complete);
-        let pacer_flush_requested_for_thread = Arc::clone(&pacer_flush_requested);
+        let pacer_pre_roll_complete_for_thread = pacer_pre_roll_complete;
+        let pacer_flush_requested_for_thread = pacer_flush_requested;
         let pacer_enabled_for_thread = pacer_enabled;
         let pacer_pre_roll_threshold_for_thread = pacer_pre_roll_threshold_samples;
 
@@ -402,7 +428,7 @@ impl PipewireWriter {
         let pw_thread = thread::spawn(move || {
             log::debug!("PipeWire thread started");
             if let Err(e) = run_pipewire_loop(
-                buffer_clone,
+                ring_reader,
                 sample_rate,
                 channel_count,
                 ready_clone,
@@ -461,12 +487,10 @@ impl PipewireWriter {
             (max_latency_ms as usize * sample_rate as usize / 1000) * channel_count as usize;
 
         Ok(Self {
-            sample_buffer,
-            pacer_fifo,
-            pacer_enabled,
+            ring,
+            write_target,
+            pacer,
             backpressure_disabled,
-            pacer_pre_roll_complete,
-            pacer_flush_requested,
             pacer_pre_roll_threshold_samples,
             sample_rate,
             channel_count,
@@ -515,18 +539,18 @@ impl PipewireWriter {
         // backpressure on the renderer push: this guarantees the pacer
         // contributes a *fixed* latency (= pre_roll_threshold) instead of
         // drifting up to seconds of buffered audio.
-        let pacer_active = self.pacer_enabled;
-        let target_buffer: &Arc<ArrayQueue<f32>> = if pacer_active {
-            &self.pacer_fifo
-        } else {
-            &self.sample_buffer
-        };
+        let pacer_active = self.pacer.is_some();
+        let target_buffer = &mut self.write_target;
         let max_buffer_fill = if pacer_active {
             self.pacer_pre_roll_threshold_samples
         } else {
             self.max_buffer_samples
         };
-        let buffer_before = self.sample_buffer.len();
+        // The ring's level frames the first few writes in the log; it is not
+        // read after that, so that the renderer does not pull the callback's
+        // counters into its cache on every write.
+        let bootstrap = self.bootstrap_write_calls < 5;
+        let buffer_before = if bootstrap { self.ring.fill() } else { 0 };
         // Back-pressure disabled (diagnostic): never block the renderer; push
         // what fits below the threshold and drop the overflow. This unhooks the
         // producer from the DAC drain clock so the source (mpv) free-runs.
@@ -562,14 +586,14 @@ impl PipewireWriter {
                 .last_write_ms
                 .store(wallclock_millis(), Ordering::Relaxed);
         }
-        if self.bootstrap_write_calls <= 5 {
+        if bootstrap {
             log::debug!(
                 "PipeWire bootstrap write #{}: pushed {} / {} samples, ring {} -> {}, elapsed {:.0} ms",
                 self.bootstrap_write_calls,
                 report.pushed_samples,
                 samples.len(),
                 buffer_before,
-                self.sample_buffer.len(),
+                self.ring.fill(),
                 self.bootstrap_started_at.elapsed().as_secs_f64() * 1000.0
             );
         }
@@ -579,7 +603,7 @@ impl PipewireWriter {
 
     pub fn flush(&mut self) -> Result<()> {
         let report = flush_ring_buffer(
-            &self.sample_buffer,
+            &self.ring,
             Duration::from_secs(5),
             Duration::from_millis(10),
             Some(Duration::from_millis(500)),
@@ -591,7 +615,7 @@ impl PipewireWriter {
             );
         } else if report.stalled {
             log::debug!(
-                "Flush: buffer stalled at {} samples, draining",
+                "Flush: buffer stalled at {} samples, left for the callback to drop",
                 report.remaining_samples
             );
         }
@@ -609,7 +633,7 @@ impl PipewireWriter {
     }
 
     pub fn buffer_fill_level(&self) -> usize {
-        self.sample_buffer.len()
+        self.ring.fill()
     }
 
     /// Estimated current end-to-end audio latency in milliseconds.
@@ -618,7 +642,7 @@ impl PipewireWriter {
     /// - Ring buffer latency: current fill (in frames) / sample_rate
     /// - PipeWire quantum latency: quantum_frames / output_sample_rate
     pub fn latency_ms(&self) -> f32 {
-        let fill_frames = self.sample_buffer.len() / self.channel_count as usize;
+        let fill_frames = self.ring.fill() / self.channel_count as usize;
         let ring_ms = fill_frames as f32 / self.sample_rate as f32 * 1000.0;
         ring_ms + self.quantum_ms
     }
@@ -659,20 +683,11 @@ impl PipewireWriter {
     /// input layer (via `InputControl::install_output_pacer`). The input
     /// PwStream callback uses this to drain the FIFO into the ring buffer
     /// in lockstep with IEC958 chunk arrival.
-    pub fn pacer_handle(&self) -> crate::pacer::PacerHandle {
-        crate::pacer::PacerHandle {
-            pacer_fifo: Arc::clone(&self.pacer_fifo),
-            ring: Arc::clone(&self.sample_buffer),
-            pre_roll_complete: Arc::clone(&self.pacer_pre_roll_complete),
-            flush_requested: Arc::clone(&self.pacer_flush_requested),
-            pre_roll_threshold_samples: self.pacer_pre_roll_threshold_samples,
-            out_sample_rate: self.sample_rate,
-            out_channels: self.channel_count,
-            enabled: self.pacer_enabled,
-            diag_drain_total: Arc::clone(&self.telemetry.pacer_drain_total),
-            diag_underrun_total: Arc::clone(&self.telemetry.pacer_underrun_total),
-            diag_fifo_level: Arc::clone(&self.telemetry.pacer_fifo_level),
-        }
+    ///
+    /// `None` when this output was built with pacing off: there is then no
+    /// FIFO to drain, and the ring's writing end is the renderer's.
+    pub fn pacer_handle(&self) -> Option<PacerHandle> {
+        self.pacer.clone()
     }
 
     /// Hot-swap the back-pressure disable flag. Called when
@@ -775,10 +790,11 @@ impl PipewireWriter {
         // into the ring, and swapping producers under a running stream is what
         // the single-producer invariant forbids. Say so rather than silently
         // ignoring the request.
-        if config.use_output_pacing != self.pacer_enabled {
+        let pacer_enabled = self.pacer.is_some();
+        if config.use_output_pacing != pacer_enabled {
             log::warn!(
                 "Output pacing is fixed for the lifetime of the audio output                  (running with {}, requested {}); the change takes effect at the                  next output start.",
-                self.pacer_enabled,
+                pacer_enabled,
                 config.use_output_pacing
             );
         }
@@ -797,11 +813,13 @@ impl PipewireWriter {
 impl Drop for PipewireWriter {
     fn drop(&mut self) {
         log::debug!("Dropping PipeWire writer");
+        // The callback returns at its top from here on, so what is left in the
+        // ring is never played and goes with the ring. It is not popped from
+        // this thread: the ring has one consumer, the callback. And it is not
+        // flushed again either — flush() was already called by finalize(), and
+        // a second one would block for another 500ms–5s if the callback is in
+        // recovery mode.
         self.shutdown_requested.store(true, Ordering::Relaxed);
-        // Discard any remaining samples — flush() was already called by finalize().
-        // Calling flush() again here would block for another 500ms–5s if the callback
-        // is in recovery mode.  A quick drain + brief pause is sufficient for Drop.
-        while self.sample_buffer.pop().is_some() {}
         if let Some(handle) = self.pw_thread.take() {
             let _ = handle.join();
         }
@@ -809,7 +827,7 @@ impl Drop for PipewireWriter {
 }
 
 fn run_pipewire_loop(
-    buffer: Arc<ArrayQueue<f32>>,
+    buffer: RingReader,
     sample_rate: u32, // Native sample rate (48000 Hz)
     channel_count: u32,
     stream_ready: Arc<AtomicBool>,
@@ -903,7 +921,7 @@ fn run_pipewire_loop(
     // not an abstract graph latency. Requesting the ring target (e.g. 500 ms)
     // here forced PipeWire into ~256 ms callbacks: the control loop then ran
     // once per 256 ms and the `callback/2` midpoint correction became a fixed
-    // ~128 ms offset. The target latency must live in the `sample_buffer` ring
+    // ~128 ms offset. The target latency must live in the sample ring
     // (target_buffer_fill), so request only the processing quantum here.
     let requested_latency_frames = buffer_config.quantum_frames;
     let requested_latency_str = format!("{}/{}", requested_latency_frames, actual_output_rate);
@@ -983,7 +1001,8 @@ fn run_pipewire_loop(
     };
 
     // Setup process callback
-    let buffer_for_callback = buffer.clone();
+    // The ring's reading end: the callback's alone from here on.
+    let mut buffer_for_callback = buffer;
     let desired_rate_for_callback = desired_rate.clone();
     let rate_adjust_for_callback = current_rate_adjust.clone();
     let shutdown_requested_for_callback = shutdown_requested.clone();
@@ -1012,8 +1031,8 @@ fn run_pipewire_loop(
     let input_trigger_rate_for_callback = Arc::clone(&input_trigger_rate_hz);
     let input_trigger_quantum_for_callback = Arc::clone(&input_trigger_quantum_frames);
     // Compute channel-aware buffer thresholds for the callback (ms → frames → samples).
-    // IMPORTANT: these thresholds are compared against `buffer_for_callback.len()`, which
-    // stores INPUT-domain samples (writer pushes at `sample_rate` before local resampling).
+    // IMPORTANT: these thresholds are compared against `buffer_for_callback.available()`,
+    // which counts INPUT-domain samples (writer pushes at `sample_rate` before local resampling).
     // Therefore the conversion must use the input sample rate, not `actual_output_rate`.
     // Using output rate here underestimates latency when downsampling (e.g. 96k -> 48k),
     // causing too-low target fill, long-term A/V drift, and instability.
@@ -1080,7 +1099,9 @@ fn run_pipewire_loop(
             state.last_callback_at = Some(now_cb);
             output_callback_dt_us_for_callback
                 .store((dt_cb_us as f64).to_bits(), Ordering::Relaxed);
-            let ring_input_samples_at_entry = buffer_for_callback.len();
+            // A flush that gave up leaves the rest for this end to drop.
+            buffer_for_callback.apply_requested_discard();
+            let ring_input_samples_at_entry = buffer_for_callback.available();
             output_ring_input_samples_for_callback
                 .store((ring_input_samples_at_entry as f64).to_bits(), Ordering::Relaxed);
             let callback_count = state.runtime.advance_callback();
@@ -1211,7 +1232,7 @@ fn run_pipewire_loop(
                     }
 
                     // Check if we have enough samples to prevent stuttering
-                    let available = buffer_for_callback.len();
+                    let available = buffer_for_callback.available();
                     // Raw FIFO level (oscillates with the chunk cycle) — kept
                     // for the components plot so the chunk dynamics remain
                     // observable.
@@ -1285,7 +1306,7 @@ fn run_pipewire_loop(
                     // Pacer's contribution to the user-visible latency:
                     // the configured pre-roll capacity, used as a FIXED
                     // amount. Backpressure in `write_samples` clamps the
-                    // pacer to this capacity, so the live `pacer_fifo.len()`
+                    // pacer to this capacity, so the live pacer FIFO level
                     // never significantly exceeds it. Combined with the
                     // `runtime_target_buffer_fill` adjustment above, this
                     // keeps the total end-to-end latency at the user's
@@ -1571,7 +1592,7 @@ fn run_pipewire_loop(
                             pacer_pre_roll_complete.store(false, Ordering::Relaxed);
                             if far_decision.mute_far_output {
                                 if let Err(e) = state.resampler.fifo.ensure_output_samples(
-                                    &buffer_for_callback,
+                                    &mut buffer_for_callback,
                                     resampler,
                                     audio_samples_needed,
                                 ) {
@@ -1582,7 +1603,7 @@ fn run_pipewire_loop(
                                 dest[..max_samples].fill(0.0);
                                 max_samples
                             } else if let Err(e) = state.resampler.fifo.ensure_output_samples(
-                                &buffer_for_callback,
+                                &mut buffer_for_callback,
                                 resampler,
                                 audio_samples_needed,
                             ) {
@@ -1637,7 +1658,7 @@ fn run_pipewire_loop(
                                 };
                                 if prepared_samples > 0 {
                                     if let Err(e) = state.resampler.fifo.ensure_output_samples(
-                                        &buffer_for_callback,
+                                        &mut buffer_for_callback,
                                         resampler,
                                         prepared_samples,
                                     ) {
@@ -1657,7 +1678,7 @@ fn run_pipewire_loop(
                                     dest[..max_samples].fill(0.0);
                                 }
                             } else if let Err(e) = state.resampler.fifo.ensure_output_samples(
-                                &buffer_for_callback,
+                                &mut buffer_for_callback,
                                 resampler,
                                 audio_samples_needed,
                             ) {
@@ -1672,7 +1693,7 @@ fn run_pipewire_loop(
                                     channel_count as usize,
                                 );
                                 if let Err(e) = state.resampler.fifo.ensure_output_samples(
-                                    &buffer_for_callback,
+                                    &mut buffer_for_callback,
                                     resampler,
                                     plan.desired_consume_output_samples,
                                 ) {
@@ -1855,8 +1876,7 @@ fn run_pipewire_loop(
                             pacer_flush_requested.store(true, Ordering::Release);
                             pacer_pre_roll_complete.store(false, Ordering::Relaxed);
                             if far_decision.mute_far_output {
-                                let dropped =
-                                    discard_ring_samples(&buffer_for_callback, samples_to_read);
+                                let dropped = buffer_for_callback.discard(samples_to_read);
                                 state.recovery_discard_total =
                                     state.recovery_discard_total.saturating_add(dropped as u64);
                                 recovery_discard_count_for_callback.store(
@@ -1869,20 +1889,9 @@ fn run_pipewire_loop(
                                 dest[..max_samples].fill(0.0);
                                 max_samples
                             } else {
-                                let mut count = 0;
-                                while count < samples_to_read {
-                                    if let Some(sample_f32) = buffer_for_callback.pop() {
-                                        dest[count] = sample_f32;
-                                        count += 1;
-                                    } else {
-                                        break;
-                                    }
-                                }
-
-                                while count < max_samples {
-                                    dest[count] = 0.0;
-                                    count += 1;
-                                }
+                                let count =
+                                    buffer_for_callback.pop_slice(&mut dest[..samples_to_read]);
+                                zero_pad_tail(&mut dest[..max_samples], count);
                                 postprocess_interleaved_output(
                                     dest,
                                     ch,
@@ -1900,7 +1909,7 @@ fn run_pipewire_loop(
                                 channel_count as usize,
                             );
                             let dropped =
-                                discard_ring_samples(&buffer_for_callback, plan.desired_consume_input_samples);
+                                buffer_for_callback.discard(plan.desired_consume_input_samples);
                             state.recovery_discard_total =
                                 state.recovery_discard_total.saturating_add(dropped as u64);
                             recovery_discard_count_for_callback.store(
@@ -1923,8 +1932,7 @@ fn run_pipewire_loop(
                             let samples_to_discard = muted_samples_to_consume
                                 .saturating_add(far_decision.low_recover_trim_input_samples);
                             if samples_to_discard > 0 {
-                                let dropped =
-                                    discard_ring_samples(&buffer_for_callback, samples_to_discard);
+                                let dropped = buffer_for_callback.discard(samples_to_discard);
                                 state.recovery_discard_total =
                                     state.recovery_discard_total.saturating_add(dropped as u64);
                                 recovery_discard_count_for_callback.store(
@@ -1939,20 +1947,9 @@ fn run_pipewire_loop(
                                 dest[..max_samples].fill(0.0);
                                 max_samples
                             } else {
-                                let mut count = 0;
-                                while count < samples_to_read {
-                                    if let Some(sample_f32) = buffer_for_callback.pop() {
-                                        dest[count] = sample_f32;
-                                        count += 1;
-                                    } else {
-                                        break;
-                                    }
-                                }
-
-                                while count < max_samples {
-                                    dest[count] = 0.0;
-                                    count += 1;
-                                }
+                                let count =
+                                    buffer_for_callback.pop_slice(&mut dest[..samples_to_read]);
+                                zero_pad_tail(&mut dest[..max_samples], count);
                                 postprocess_interleaved_output(
                                     dest,
                                     ch,
@@ -1962,20 +1959,9 @@ fn run_pipewire_loop(
                                 max_samples
                             }
                         } else {
-                            let mut count = 0;
-                            while count < samples_to_read {
-                                if let Some(sample_f32) = buffer_for_callback.pop() {
-                                    dest[count] = sample_f32;
-                                    count += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-
-                            while count < max_samples {
-                                dest[count] = 0.0;
-                                count += 1;
-                            }
+                            let count =
+                                buffer_for_callback.pop_slice(&mut dest[..samples_to_read]);
+                            zero_pad_tail(&mut dest[..max_samples], count);
                             postprocess_interleaved_output(
                                 dest,
                                 ch,

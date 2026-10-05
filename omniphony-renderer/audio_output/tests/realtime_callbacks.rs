@@ -14,6 +14,11 @@
 //! the line. Move the work out of the callback (a `callback_event!` for a log
 //! line, a `try_lock` with a kept copy for shared state) rather than narrowing
 //! what is scanned here.
+//!
+//! The samples themselves reach the callbacks through a ring whose two ends
+//! never wait for each other (`audio_output::ring_buffer_io`, on `rtrb`). A
+//! general-purpose queue in its place brings the wait back without a single
+//! `.lock()` to give it away, so the crate is held to not having one at all.
 
 use std::path::{Path, PathBuf};
 
@@ -52,8 +57,14 @@ const CALLBACKS: &[(&str, &str)] = &[
 
 /// Functions the callbacks call that share their module with code for normal
 /// threads (the PipeWire setup, the drain side of the callback log), named the
-/// same way as the callbacks.
+/// same way as the callbacks. The pacer drain is here too: it is not called by
+/// a device callback but by the capture stream's, which is just as realtime,
+/// and it holds the writing end of the ring the device callback reads.
 const CALLEE_FUNCTIONS: &[(&str, &str)] = &[
+    (
+        "src/pacer.rs",
+        "pub fn drain(&self, drain_samples: usize) -> bool {",
+    ),
     (
         "src/pipewire.rs",
         "fn pipewire_rate_for_consume_adjust(consume_adjust: f64) -> f32 {",
@@ -289,6 +300,40 @@ fn the_device_callbacks_neither_lock_nor_log() {
         let text = source(file);
         let code = text.split("#[cfg(test)]").next().unwrap_or(&text);
         found.extend(offences(code, 1, file));
+    }
+    assert!(found.is_empty(), "\n{}\n", found.join("\n"));
+}
+
+/// `crossbeam`'s `ArrayQueue` was the sample ring: its `pop` spins while a
+/// `push` is in progress on the slot at its head, and its `push` while a `pop`
+/// is, so each end could wait for the other thread to be scheduled again. No
+/// source file of the crate may name the crate it came from, and the manifest
+/// may not depend on it.
+#[test]
+fn no_general_purpose_queue_stands_in_for_the_sample_ring() {
+    let mut found = Vec::new();
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&src)
+        .unwrap_or_else(|e| panic!("{}: {e}", src.display()))
+        .map(|entry| entry.expect("directory entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no sources under {}", src.display());
+    for path in files {
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        for (i, (code, line)) in code_only(&text).lines().zip(text.lines()).enumerate() {
+            if code.contains("crossbeam") || code.contains("ArrayQueue") {
+                found.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    for (i, line) in source("Cargo.toml").lines().enumerate() {
+        let line = line.trim();
+        if !line.starts_with('#') && line.contains("crossbeam") {
+            found.push(format!("Cargo.toml:{}: {line}", i + 1));
+        }
     }
     assert!(found.is_empty(), "\n{}\n", found.join("\n"));
 }

@@ -6,6 +6,35 @@ use runtime_control::osc::{BroadcastUpdate, BroadcastValue};
 use super::client_registry::OscClientRegistry;
 use runtime_control::osc_contract;
 
+/// Send buffer every socket that sends state or replies must have: larger
+/// than any UDP payload, like the listener's receive buffer.
+pub(crate) const TX_DATAGRAM_MAX: usize = 65_536;
+
+/// Make sure `socket` can send the largest datagram the protocol carries.
+///
+/// macOS and the BSDs refuse a UDP send larger than the socket's send buffer
+/// (`EMSGSIZE`), and that buffer starts at `net.inet.udp.maxdgram`: 9,216
+/// bytes, where a state bundle runs to 65,000 and a backend file to 60,000.
+/// The buffer is only ever raised: Linux starts well above this, and setting
+/// it there would shrink it.
+///
+/// A failure is logged and the socket kept, since everything under the old
+/// limit still goes through.
+pub(crate) fn ensure_send_buffer(socket: &UdpSocket) {
+    let socket = socket2::SockRef::from(socket);
+    if socket
+        .send_buffer_size()
+        .is_ok_and(|size| size >= TX_DATAGRAM_MAX)
+    {
+        return;
+    }
+    if let Err(e) = socket.set_send_buffer_size(TX_DATAGRAM_MAX) {
+        log::warn!(
+            "OSC: could not raise the send buffer to {TX_DATAGRAM_MAX} bytes, larger datagrams may be refused: {e}"
+        );
+    }
+}
+
 pub(crate) fn broadcast_float(
     socket: &UdpSocket,
     clients: &OscClientRegistry,
@@ -252,4 +281,41 @@ pub(crate) fn resolve_register_addr(src: SocketAddr, args: &[OscType]) -> Socket
         }
     }
     src
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn send_buffer(socket: &UdpSocket) -> usize {
+        socket2::SockRef::from(socket).send_buffer_size().unwrap()
+    }
+
+    fn socket_with_send_buffer(size: usize) -> UdpSocket {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket2::SockRef::from(&socket)
+            .set_send_buffer_size(size)
+            .unwrap();
+        socket
+    }
+
+    /// "At least", since Linux reports twice what it was asked for.
+    #[test]
+    fn a_small_send_buffer_is_raised() {
+        let socket = socket_with_send_buffer(8_192);
+        assert!(send_buffer(&socket) < TX_DATAGRAM_MAX);
+        ensure_send_buffer(&socket);
+        assert!(send_buffer(&socket) >= TX_DATAGRAM_MAX);
+    }
+
+    /// Asking for the minimum on a socket already past it would shrink it,
+    /// which is what a plain `set` does to the Linux default.
+    #[test]
+    fn a_large_send_buffer_is_left_alone() {
+        let socket = socket_with_send_buffer(2 * TX_DATAGRAM_MAX);
+        let before = send_buffer(&socket);
+        assert!(before > TX_DATAGRAM_MAX);
+        ensure_send_buffer(&socket);
+        assert_eq!(send_buffer(&socket), before);
+    }
 }

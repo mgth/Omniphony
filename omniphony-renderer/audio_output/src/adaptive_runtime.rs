@@ -1,4 +1,3 @@
-use crossbeam::queue::ArrayQueue;
 use std::sync::{
     Arc,
     atomic::{AtomicU32, Ordering},
@@ -351,18 +350,6 @@ pub fn far_mode_band_from_latency(
     } else {
         ADAPTIVE_BAND_NEAR
     }
-}
-
-pub fn discard_ring_samples(buffer: &ArrayQueue<f32>, samples_to_discard: usize) -> usize {
-    let mut dropped = 0usize;
-    while dropped < samples_to_discard {
-        if buffer.pop().is_some() {
-            dropped += 1;
-        } else {
-            break;
-        }
-    }
-    dropped
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1116,30 +1103,7 @@ mod tests {
         );
     }
 
-    // ── ring / buffer helpers ──────────────────────────────────────────────
-
-    #[test]
-    fn discard_ring_caps_at_available() {
-        let q = ArrayQueue::new(8);
-        for i in 0..5 {
-            q.push(i as f32).unwrap();
-        }
-        // Requesting more than present drains everything and reports the real count.
-        assert_eq!(discard_ring_samples(&q, 100), 5);
-        assert!(q.is_empty());
-    }
-
-    #[test]
-    fn discard_ring_drops_oldest_first() {
-        let q = ArrayQueue::new(8);
-        for i in 0..5 {
-            q.push(i as f32).unwrap();
-        }
-        assert_eq!(discard_ring_samples(&q, 3), 3);
-        assert_eq!(q.len(), 2);
-        // FIFO: the three oldest (0,1,2) are gone, 3.0 is now at the front.
-        assert_eq!(q.pop(), Some(3.0));
-    }
+    // ── buffer helpers ─────────────────────────────────────────────────────
 
     #[test]
     fn zero_pad_tail_zeros_after_written() {

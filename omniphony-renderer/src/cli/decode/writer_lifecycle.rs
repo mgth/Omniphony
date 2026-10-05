@@ -396,9 +396,13 @@ impl<'a> WriterLifecycleCoordinator<'a> {
         // FIFO on its next tick. Done here rather than by the callers so every
         // path that builds a writer (first frame, live switch, stream restart)
         // installs the handle of the writer it is about to play through, and
-        // none leaves the input thread draining the one just retired.
-        if let (Some(control), Some(handle)) = (self.input_control, writer.pacer_handle()) {
-            control.install_output_pacer(handle);
+        // none leaves the input thread draining the one just retired — a
+        // writer without a pacer (pacing off, or another backend) included.
+        if let Some(control) = self.input_control {
+            match writer.pacer_handle() {
+                Some(handle) => control.install_output_pacer(handle),
+                None => control.clear_output_pacer(),
+            }
         }
         Ok(writer)
     }
