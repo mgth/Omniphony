@@ -1582,6 +1582,8 @@ dependencies = [
  "renderer",
  "rosc",
  "runtime_control",
+ "serde_json",
+ "serde_yaml_ng",
  "spdif",
  "sys",
  "vergen-gitcl",
