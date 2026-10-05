@@ -1347,8 +1347,8 @@ mod notify_tests {
     /// only the larger receive buffer lets a datagram hold that many levels.
     #[test]
     fn a_deeply_nested_datagram_does_not_take_the_listener_down() {
-        use crate::osc::decode::{nested_arrays, nested_bundles};
         use crate::osc::test_support::{SERIAL, listening_sender};
+        use osc_contract::nesting::{nested_arrays, nested_bundles};
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let control = fixture_control();
         let (sender, port) = listening_sender(&control);
