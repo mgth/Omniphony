@@ -1455,3 +1455,31 @@ mod yield_tests {
         t.join().unwrap();
     }
 }
+
+#[cfg(test)]
+mod send_size_tests {
+    use super::export::MAX_STATE_DATAGRAM;
+    use super::*;
+
+    /// A datagram of the largest size the live state is split into leaves the
+    /// sender's own socket and arrives whole. macOS and the BSDs refuse a UDP
+    /// send larger than the socket's send buffer, which starts at 9,216 bytes
+    /// there, so this only passes on them when the sender has raised it.
+    #[test]
+    fn a_maximum_size_state_datagram_leaves_the_sender_socket() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let SocketAddr::V4(target) = receiver.local_addr().unwrap() else {
+            unreachable!("bound to an IPv4 address");
+        };
+        let sender = OscSender::new(target).unwrap();
+
+        sender.send_raw_to_all(&vec![0x5a; MAX_STATE_DATAGRAM]);
+
+        let mut buf = vec![0u8; 70_000];
+        let len = receiver.recv(&mut buf).expect("the datagram arrives");
+        assert_eq!(len, MAX_STATE_DATAGRAM);
+    }
+}

@@ -1112,10 +1112,6 @@ mod notify_tests {
     /// real UDP socket, is received whole, written and acknowledged: the
     /// datagram is well over the 4 KiB the listener used to read.
     #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "macOS refuses to send a datagram over net.inet.udp.maxdgram (9216 bytes by default)"
-    )]
     fn a_maximum_size_backend_file_put_crosses_the_socket() {
         use crate::osc::test_support::{SERIAL, listening_sender};
         // The listener registers in the process-wide port registry and its

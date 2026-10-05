@@ -1064,3 +1064,98 @@ mod connection_tests {
         }
     }
 }
+
+/// What the two sending sockets must get past the operating system. macOS and
+/// the BSDs refuse a UDP send larger than the socket's send buffer, which
+/// starts at 9,216 bytes there, so these only pass on them when the socket has
+/// had it raised.
+#[cfg(test)]
+mod send_size_tests {
+    use super::*;
+
+    /// The largest file the renderer accepts in a `backend/file/put` (its
+    /// `BACKEND_FILE_MAX_BYTES`).
+    const LARGEST_BACKEND_FILE: usize = 60_000;
+    /// `net.inet.udp.maxdgram` as macOS ships it.
+    const MACOS_DEFAULT_SEND_BUFFER: usize = 9_216;
+
+    #[test]
+    fn a_maximum_size_backend_file_put_leaves_the_listener_socket() {
+        let renderer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        renderer
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let live = Arc::new(Mutex::new(Live::new(
+            crate::model::app_state::AppState::new(Vec::new()),
+        )));
+        let (_, tx, mut worker) = spawn_listener(
+            live,
+            Arc::new(|| {}),
+            OscStats::new(),
+            ListenerConfig {
+                listen_port: 0,
+                register: Some(renderer.local_addr().unwrap()),
+                metering: false,
+                playout_sync: true,
+            },
+        )
+        .unwrap();
+        let content = "x".repeat(LARGEST_BACKEND_FILE);
+        tx.send(Control::Send {
+            address: crate::osc_contract::CONTROL_BACKEND_FILE_PUT.into(),
+            args: vec![
+                OscType::String("script".into()),
+                OscType::String("file".into()),
+                OscType::String("big.lua".into()),
+                OscType::String(content.clone()),
+                OscType::String("request".into()),
+            ],
+        })
+        .unwrap();
+        // Shutting down sends what is still queued.
+        worker.shutdown();
+
+        let mut buf = vec![0u8; RECV_BUF];
+        let mut sent = None;
+        // The registration messages come first.
+        while let Ok(len) = renderer.recv(&mut buf) {
+            if let Ok((_, OscPacket::Message(message))) = decoder::decode_udp(&buf[..len])
+                && message.addr == crate::osc_contract::CONTROL_BACKEND_FILE_PUT
+            {
+                sent = Some(message);
+                break;
+            }
+        }
+        let sent = sent.expect("the put reaches the renderer");
+        assert_eq!(sent.args.get(3), Some(&OscType::String(content)));
+    }
+
+    #[test]
+    fn a_synthetic_bundle_over_the_default_send_buffer_leaves_the_feed_socket() {
+        // Every tick's bundle is then several times that default, and still
+        // one datagram.
+        const OBJECTS: u32 = 256;
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut worker = spawn_synthetic(OBJECTS, 50.0, port, None).unwrap();
+
+        let mut buf = vec![0u8; RECV_BUF];
+        let received = listener.recv(&mut buf);
+        worker.shutdown();
+
+        let len = received.expect("a bundle reaches the listener");
+        let Ok((_, OscPacket::Bundle(bundle))) = decoder::decode_udp(&buf[..len]) else {
+            panic!("the feed sends bundles");
+        };
+        let positions = bundle
+            .content
+            .iter()
+            .filter(|packet| matches!(packet, OscPacket::Message(m) if m.addr.ends_with("/xyz")))
+            .count();
+        assert_eq!(positions, OBJECTS as usize);
+        assert!(len > 2 * MACOS_DEFAULT_SEND_BUFFER, "only {len} bytes");
+    }
+}
