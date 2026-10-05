@@ -808,6 +808,13 @@ pub fn build_live_state_bundle_with_host(
             )],
         }),
         OscPacket::Message(OscMessage {
+            // The bridge_api this engine loads bridges of (same minor only).
+            // Studio shows it in About next to the ABI, so "installed and no
+            // sound" can be matched against the bridge's own version (#676).
+            addr: crate::osc_contract::STATE_RENDER_BRIDGE_API.to_string(),
+            args: vec![OscType::String(bridge_api::VERSION.to_string())],
+        }),
+        OscPacket::Message(OscMessage {
             // Non-empty when this renderer came up in the degraded "no decoder"
             // state because the bridge couldn't be resolved/loaded. The embedded
             // (mpv) host returns NULL from orender_create in that case (so mpv

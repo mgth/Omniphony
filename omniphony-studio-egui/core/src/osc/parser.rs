@@ -513,6 +513,10 @@ pub enum OscEvent {
     StateRenderAbi {
         value: String,
     },
+    #[serde(rename = "state:render:bridge_api")]
+    StateRenderBridgeApi {
+        value: String,
+    },
     #[serde(rename = "state:render:bridge_error")]
     StateRenderBridgeError {
         value: String,
@@ -1265,6 +1269,11 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         // C-ABI version of the liborender shim hosting the engine
         // ("major.minor"); empty when the engine is linked as a Rust crate.
         (4, "render") if parts[3] == "abi" => Some(OscEvent::StateRenderAbi {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
+        // The bridge_api version the engine was built against: a decoder
+        // bridge loads only if it was built against the same minor.
+        (4, "render") if parts[3] == "bridge_api" => Some(OscEvent::StateRenderBridgeApi {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (4, "render") if parts[3] == "bridge_error" => Some(OscEvent::StateRenderBridgeError {

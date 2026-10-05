@@ -88,6 +88,7 @@ pub const STATE: &[(&str, &[Arg])] = &[
     // speaker, value, sequence.
     (STATE_REALTIME_SPEAKER_GAIN, &[Int, Float, Int]),
     (STATE_RENDER_ABI, &[String]),
+    (STATE_RENDER_BRIDGE_API, &[String]),
     (STATE_RENDER_BRIDGE_ERROR, &[String]),
     (STATE_RENDER_BRIDGE_PATH, &[String]),
     (STATE_RENDER_CONFIG_PATH, &[String]),

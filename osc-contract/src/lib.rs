@@ -574,6 +574,9 @@ pub const STATE_OSC_METERING: &str = "/omniphony/state/osc/metering";
 pub const STATE_REALTIME_MASTER_GAIN: &str = "/omniphony/state/realtime/master_gain";
 pub const STATE_REALTIME_SPEAKER_GAIN: &str = "/omniphony/state/realtime/speaker_gain";
 pub const STATE_RENDER_ABI: &str = "/omniphony/state/render/abi";
+/// The `bridge_api` version this engine was built against (`"0.5.0"`): a
+/// decoder bridge loads only if it was built against the same minor.
+pub const STATE_RENDER_BRIDGE_API: &str = "/omniphony/state/render/bridge_api";
 pub const STATE_RENDER_BRIDGE_ERROR: &str = "/omniphony/state/render/bridge_error";
 pub const STATE_RENDER_BRIDGE_PATH: &str = "/omniphony/state/render/bridge_path";
 pub const STATE_RENDER_CONFIG_PATH: &str = "/omniphony/state/render/config_path";
@@ -891,6 +894,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_REALTIME_MASTER_GAIN,
     STATE_REALTIME_SPEAKER_GAIN,
     STATE_RENDER_ABI,
+    STATE_RENDER_BRIDGE_API,
     STATE_RENDER_BRIDGE_ERROR,
     STATE_RENDER_BRIDGE_PATH,
     STATE_RENDER_CONFIG_PATH,
@@ -1130,7 +1134,7 @@ mod tests {
     /// `(revision, fingerprint)`. Change both together, and only together with
     /// a bump: a new fingerprint under the old revision tells clients nothing
     /// changed when it did.
-    const PINNED_ADDRESS_SET: (u32, u64) = (1, 0xc8f2_483d_c148_e531);
+    const PINNED_ADDRESS_SET: (u32, u64) = (1, 0x6ef3_1994_e50f_d48d);
 
     /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
     /// and not the order the lists happen to be written in.

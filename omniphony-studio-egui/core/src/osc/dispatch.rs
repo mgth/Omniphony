@@ -1174,6 +1174,10 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             live.app.render_abi = non_empty(value);
             Change::None
         }
+        OscEvent::StateRenderBridgeApi { value } => {
+            live.app.render_bridge_api = non_empty(value);
+            Change::None
+        }
         OscEvent::StateRenderBridgeError { value } => {
             live.app.render_bridge_error = non_empty(value);
             Change::None
