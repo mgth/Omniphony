@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
+use crate::callback_log::{CallbackEvent, CallbackLog};
 use crate::output_telemetry::{interleaved_samples_to_ms, samples_to_ms};
 use crate::{ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_NEAR, ADAPTIVE_BAND_NONE};
 use crate::{
@@ -687,32 +688,28 @@ pub fn zero_pad_tail(samples: &mut [f32], written: usize) {
     }
 }
 
+/// Count a callback that found fewer samples than it needs, and report the
+/// first of a streak through `log` (the callback's queue: never logged here).
 pub fn note_refill_or_underrun(
     state: &mut AdaptiveRuntimeState,
-    info_label: &str,
-    debug_label: &str,
+    log: &mut CallbackLog,
+    what: &'static str,
     available: usize,
     needed: usize,
 ) {
     state.refill_streak = state.refill_streak.saturating_add(1);
     if !state.underrun_warned {
-        if state.refill_streak >= 2 {
-            log::info!(
-                "{}: {} of {} samples available; zero-padding remainder (streak={})",
-                info_label,
-                available,
-                needed,
-                state.refill_streak
-            );
+        let level = if state.refill_streak >= 2 {
+            log::Level::Info
         } else {
-            log::debug!(
-                "{}: {} of {} samples available; zero-padding remainder (streak={})",
-                debug_label,
-                available,
-                needed,
-                state.refill_streak
-            );
-        }
+            log::Level::Debug
+        };
+        log.push(
+            CallbackEvent::new(level, what)
+                .with("available", available as f64)
+                .with("needed", needed as f64)
+                .with("streak", state.refill_streak as f64),
+        );
         state.underrun_warned = true;
     }
 }
@@ -1186,10 +1183,11 @@ mod tests {
     #[test]
     fn refill_streak_increments_and_warns_once() {
         let mut s = AdaptiveRuntimeState::new(1.0);
-        note_refill_or_underrun(&mut s, "i", "d", 10, 40);
+        let (mut log, _reader) = CallbackLog::new("test");
+        note_refill_or_underrun(&mut s, &mut log, "u", 10, 40);
         assert_eq!(s.refill_streak, 1);
         assert!(s.underrun_warned);
-        note_refill_or_underrun(&mut s, "i", "d", 10, 40);
+        note_refill_or_underrun(&mut s, &mut log, "u", 10, 40);
         assert_eq!(s.refill_streak, 2);
         assert!(s.underrun_warned); // stays latched
     }

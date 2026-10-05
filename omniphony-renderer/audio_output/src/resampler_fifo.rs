@@ -11,7 +11,6 @@
 //! at 0.30 vs 0.52 us per callback for a 2048-sample push and a 1024-sample
 //! drain; revisit if the FIFO ever grows by an order of magnitude.
 
-use anyhow::Result;
 use crossbeam::queue::ArrayQueue;
 use rubato::Resampler;
 
@@ -71,12 +70,17 @@ impl ResamplerFifoEngine {
         }
     }
 
+    /// Resample from `input_buffer` until the FIFO holds `needed_samples`, or
+    /// the input runs out. The error is rubato's own, which is plain data:
+    /// wrapping it (an `anyhow::Error` is a heap allocation, and a backtrace
+    /// when those are enabled) would cost the realtime thread exactly when the
+    /// resampler is already failing.
     pub fn ensure_output_samples<R: Resampler<f32>>(
         &mut self,
         input_buffer: &ArrayQueue<f32>,
         resampler: &mut R,
         needed_samples: usize,
-    ) -> Result<()> {
+    ) -> Result<(), rubato::ResampleError> {
         while self.output_fifo.len() < needed_samples {
             while self.input_frames_collected < RESAMPLER_CHUNK_SIZE {
                 let mut frame_complete = true;
@@ -115,9 +119,11 @@ impl ResamplerFifoEngine {
                     }
                 }
 
-                let (_, output_frames) = resampler
-                    .process_into_buffer(&self.resampler_input, &mut self.resampler_output, None)
-                    .map_err(anyhow::Error::from)?;
+                let (_, output_frames) = resampler.process_into_buffer(
+                    &self.resampler_input,
+                    &mut self.resampler_output,
+                    None,
+                )?;
                 for i in 0..output_frames {
                     for ch in 0..self.channel_count {
                         self.output_fifo.push(self.resampler_output[ch][i]);
