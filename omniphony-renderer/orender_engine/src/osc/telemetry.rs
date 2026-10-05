@@ -50,7 +50,7 @@ use runtime_control::HostControlHandler;
 use runtime_control::osc_contract;
 
 use super::client_registry::{OscClientRegistry, OscClientState};
-use super::export::build_live_state;
+use super::export::broadcast_live_state;
 use super::metadata_emit::ObjectDeltas;
 use super::{ObjectMeta, WarnLimiter};
 
@@ -174,9 +174,10 @@ pub(super) enum Event {
         schema: Option<String>,
         values: Option<String>,
     },
+    /// The loudness is read when it is published, under the publication
+    /// lock, not when it is queued.
     Loudness {
-        enabled: bool,
-        source: Option<i8>,
+        control: Arc<RendererControl>,
     },
     LiveState {
         control: Arc<RendererControl>,
@@ -634,15 +635,13 @@ impl Worker {
                     self.out.send_diag(&bytes);
                 }
             }
-            Event::Loudness { enabled, source } => {
-                let bytes = super::state_emit::encode_loudness_state(enabled, source);
-                if let Some(bytes) = bytes {
-                    self.out.send_all(&bytes);
-                }
+            Event::Loudness { control } => {
+                super::transport::publish_state(&self.out.socket, &self.out.clients, || {
+                    vec![super::state_emit::loudness_state_message(&control)]
+                });
             }
             Event::LiveState { control, host } => {
-                build_live_state(&control, host.as_ref())
-                    .broadcast(&self.out.socket, &self.out.clients);
+                broadcast_live_state(&control, host.as_ref(), &self.out.socket, &self.out.clients);
             }
         }
     }

@@ -13,11 +13,14 @@ links the engine as a Rust crate.
 |---|---|---|
 | ABI major (`ORENDER_ABI_MAJOR`) | `orender_ffi/src/lib.rs`, `#define` in header, `orender_version_major()` | Breaking-change counter. Linux soname `liborender.so.<major>` derives from it (build.rs). |
 | ABI minor (`ORENDER_ABI_MINOR`) | same | Additive-change counter. Logging/diagnostics only. |
-| Crate version (`orender_ffi/Cargo.toml`) | crate, `orender_build_id()`, `liborender-v*` release tags, Arch `pkgver` | Package/release identity. Moves faster than the ABI pair. |
+| Crate version (the release version, `[workspace.package]`) | crate, `orender_build_id()`, the `vX.Y.Z` release and its `liborender-vX.Y.Z-<platform>.zip` assets, Arch `pkgver` | Package/release identity, shared with Studio and `orender` (#676). Moves faster than the ABI pair. |
 | Build fingerprint | `orender_build_id()`, `/omniphony/state/render/version` | git-describe + build time; identifies the exact build. |
 
 The ABI pair and the crate version have different lifecycles on purpose: a
-release with no header change bumps the crate version only.
+release with no header change bumps the crate version only. Until 0.6.0 the
+library had its own `liborender-v*` releases; it now ships as assets of every
+`v*` release, and the README's compatibility table (and the release's
+`omniphony-<tag>-manifest.json`) names the ABI pair each release carries.
 
 ## Change policy
 
