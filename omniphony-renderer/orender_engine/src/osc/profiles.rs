@@ -339,8 +339,7 @@ pub(crate) fn reload_config_in_place(
         return;
     };
     renderer::config::discard_live_sidecar(&path);
-    let status = renderer::config::Config::load_status(&path);
-    let config = renderer::config::Config::load_or_default(&path);
+    let (config, status) = renderer::config::Config::load_or_default_with_status(&path);
     control.set_profiles_info(config.profiles_info());
     apply_switched_profile(&config, control, socket, clients, gaintable_cache);
     // The live state now is the file: nothing left to save. A file the user
@@ -533,9 +532,13 @@ mod tests {
         (path, control)
     }
 
-    fn run(control: &Arc<RendererControl>, addr: &str, args: &[&str]) {
+    /// Handle one profile message and return the `save_error` strings a
+    /// connected client received for it.
+    fn run(control: &Arc<RendererControl>, addr: &str, args: &[&str]) -> Vec<String> {
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
         let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        clients.insert_permanent(client.local_addr().unwrap());
         let msg = OscMessage {
             addr: addr.to_string(),
             args: args
@@ -551,6 +554,36 @@ mod tests {
             &clients,
             &Arc::new(GaintableCache::new()),
         ));
+        save_errors(&client)
+    }
+
+    /// The `save_error` strings queued on `client`: everything was sent
+    /// before the handler returned, so draining without waiting is enough.
+    fn save_errors(client: &UdpSocket) -> Vec<String> {
+        fn collect(packet: rosc::OscPacket, out: &mut Vec<String>) {
+            match packet {
+                rosc::OscPacket::Message(msg) => {
+                    if msg.addr == osc_contract::STATE_CONFIG_SAVE_ERROR {
+                        if let Some(OscType::String(text)) = msg.args.into_iter().next() {
+                            out.push(text);
+                        }
+                    }
+                }
+                rosc::OscPacket::Bundle(bundle) => {
+                    for inner in bundle.content {
+                        collect(inner, out);
+                    }
+                }
+            }
+        }
+        client.set_nonblocking(true).unwrap();
+        let mut out = Vec::new();
+        let mut buf = vec![0u8; 70_000];
+        while let Ok(len) = client.recv(&mut buf) {
+            let (_, packet) = rosc::decoder::decode_udp(&buf[..len]).expect("valid OSC");
+            collect(packet, &mut out);
+        }
+        out
     }
 
     /// Every profile operation ends in a write, so on a file that fails to
@@ -566,8 +599,13 @@ mod tests {
             (osc_contract::CONTROL_PROFILE_RENAME, &["a", "z"][..]),
             (osc_contract::CONTROL_PROFILE_DELETE, &["b"][..]),
         ] {
-            run(&control, addr, args);
+            let errors = run(&control, addr, args);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt, "{addr}");
+            // The refusal is the only thing the user sees: it must reach them.
+            assert!(
+                errors.iter().any(|e| e.contains("left untouched")),
+                "{addr}: {errors:?}"
+            );
         }
     }
 
@@ -581,12 +619,16 @@ mod tests {
         control.set_config_status(Some("parse_error".into()));
         let before = std::fs::read_to_string(&path).unwrap();
 
-        run(
+        let errors = run(
             &control,
             osc_contract::CONTROL_PROFILE_SWITCH,
             &["b", "save"],
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(
+            errors.iter().any(|e| e.contains("press Reload")),
+            "{errors:?}"
+        );
         assert_eq!(Config::load_or_default(&path).active_profile_name(), "a");
 
         run(&control, osc_contract::CONTROL_PROFILE_SWITCH, &["b"]);

@@ -733,22 +733,37 @@ impl Config {
         Ok(config)
     }
 
+    /// Read `path` once: `Ok(None)` when there is no file, an error when it is
+    /// present but fails to read or parse. The one place that tells a missing
+    /// file from a broken one; every loader below goes through it, so the
+    /// published `config_status` and the write refusal cannot disagree.
+    fn load_if_present(path: &Path) -> anyhow::Result<Option<Self>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        Self::load(path).map(Some)
+    }
+
     /// Load config from path, returning default if the file is absent.
     /// Prints a warning to stderr (not the log) if the file exists but fails to parse,
     /// because this may be called before the logger is initialized.
     pub fn load_or_default(path: &Path) -> Self {
-        if !path.exists() {
-            return Self::default();
-        }
-        match Self::load(path) {
-            Ok(cfg) => cfg,
+        Self::load_or_default_with_status(path).0
+    }
+
+    /// [`Config::load_or_default`], plus which of the three outcomes it was,
+    /// from a single read of the file.
+    pub fn load_or_default_with_status(path: &Path) -> (Self, ConfigLoadStatus) {
+        match Self::load_if_present(path) {
+            Ok(Some(cfg)) => (cfg, ConfigLoadStatus::Loaded),
+            Ok(None) => (Self::default(), ConfigLoadStatus::Missing),
             Err(e) => {
                 eprintln!(
                     "warning: failed to parse config file {}: {}",
                     path.display(),
                     e
                 );
-                Self::default()
+                (Self::default(), ConfigLoadStatus::ParseError)
             }
         }
     }
@@ -759,15 +774,14 @@ impl Config {
     /// cannot replace the user's layout, profiles and unknown keys with
     /// defaults. Every writer of the persistent config starts here.
     pub fn load_for_update(path: &Path) -> anyhow::Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        Self::load(path).map_err(|e| {
-            anyhow::anyhow!(
-                "{} failed to parse, so it was left untouched; fix or remove it first ({e})",
-                path.display()
-            )
-        })
+        Self::load_if_present(path)
+            .map(Option::unwrap_or_default)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "{} failed to parse, so it was left untouched; fix or remove it first ({e})",
+                    path.display()
+                )
+            })
     }
 
     /// Diagnose what `load_or_default` would actually do for `path`, without
@@ -777,11 +791,9 @@ impl Config {
     /// the wrong geometry while looking like it "has" a config path. Studio
     /// surfaces this in About so the silent fallback becomes visible.
     pub fn load_status(path: &Path) -> ConfigLoadStatus {
-        if !path.exists() {
-            return ConfigLoadStatus::Missing;
-        }
-        match Self::load(path) {
-            Ok(_) => ConfigLoadStatus::Loaded,
+        match Self::load_if_present(path) {
+            Ok(Some(_)) => ConfigLoadStatus::Loaded,
+            Ok(None) => ConfigLoadStatus::Missing,
             Err(_) => ConfigLoadStatus::ParseError,
         }
     }
@@ -1015,7 +1027,8 @@ pub fn backup_path(path: &Path) -> PathBuf {
 /// `deliberate` is set, then rename the temp file over `path` (and, when
 /// `deliberate`, sync the directory so the rename itself survives a crash). A failure at any step
 /// leaves the current file as it was. A symlinked `path` is written through,
-/// so the link survives. `before_rename` is the test seam for a failure
+/// so the link survives, and the `.bak` sits next to the link, where the
+/// docs and the user look for it. `before_rename` is the test seam for a failure
 /// between the write and the rename.
 ///
 /// The rename needs a writable directory and replaces the file's inode, so
@@ -1051,7 +1064,7 @@ fn replace_file(
     let (tmp, mut file) = match create_temp_file(&dir, &name) {
         Ok(created) => created,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && current.is_some() => {
-            return write_in_place(&target, contents, deliberate);
+            return write_in_place(&target, &backup_path(path), contents, deliberate);
         }
         Err(e) => return Err(e.into()),
     };
@@ -1059,7 +1072,7 @@ fn replace_file(
         if !rename_keeps_identity(meta, &file.metadata()?) {
             drop(file);
             let _ = std::fs::remove_file(&tmp);
-            return write_in_place(&target, contents, deliberate);
+            return write_in_place(&target, &backup_path(path), contents, deliberate);
         }
     }
 
@@ -1072,7 +1085,7 @@ fn replace_file(
         drop(file);
         before_rename()?;
         if deliberate && current.is_some() {
-            std::fs::copy(&target, backup_path(&target))?;
+            std::fs::copy(&target, backup_path(path))?;
         }
         std::fs::rename(&tmp, &target)?;
         Ok(())
@@ -1133,11 +1146,16 @@ fn rename_keeps_identity(_current: &std::fs::Metadata, _created: &std::fs::Metad
 /// itself, which keeps its inode, owner, links and attributes. The `.bak` is
 /// best-effort here: a directory that refused a temp file may refuse it too,
 /// and that must not block the write the old `fs::write` allowed.
-fn write_in_place(target: &Path, contents: &[u8], deliberate: bool) -> anyhow::Result<()> {
+fn write_in_place(
+    target: &Path,
+    backup: &Path,
+    contents: &[u8],
+    deliberate: bool,
+) -> anyhow::Result<()> {
     use std::io::Write as _;
 
     if deliberate {
-        if let Err(e) = std::fs::copy(target, backup_path(target)) {
+        if let Err(e) = std::fs::copy(target, backup) {
             log::warn!("no backup of {} kept: {e}", target.display());
         }
     }
@@ -1970,7 +1988,7 @@ mod save_tests {
         let dir = dir("symlink");
         let real = dir.join("real.yaml");
         let link = dir.join("config.yaml");
-        with_layout("old").save(&real).unwrap();
+        with_layout("old").save_without_backup(&real).unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
         with_layout("new").save(&link).unwrap();
         assert!(
@@ -1981,5 +1999,10 @@ mod save_tests {
         );
         let back = Config::load(&real).unwrap();
         assert_eq!(back.render.unwrap().output_file.as_deref(), Some("new"));
+        assert_eq!(
+            entries(&dir),
+            ["config.yaml", "config.yaml.bak", "real.yaml"],
+            "the .bak sits next to the link"
+        );
     }
 }
