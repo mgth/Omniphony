@@ -29,9 +29,7 @@
 //!
 //! That keeps them out of the debug test run. CI runs them in steps of their
 //! own (`ci.yml`, "Run the perf gate"), on the release build it already makes
-//! for the SIMD bit-identity tests. The topology-change cases are reported
-//! there but do not gate yet: on a 4-vCPU runner the band build still costs
-//! the render thread whole scheduler slices now and then.
+//! for the SIMD bit-identity tests.
 //!
 //! **Run alone.** They are additionally behind the `perf-gate` feature, because
 //! a timing measurement must not share the machine with the rest of the suite
