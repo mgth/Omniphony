@@ -24,6 +24,10 @@ address is missing from it. Keep this document and that crate in sync.
   engine coerces. Most togglish controls take a single int `0`/`1`.
 - **Enums** are lowercase strings; an unrecognised value is ignored (the engine
   validates and drops bad input rather than erroring).
+- **Nesting** is bounded: bundles may nest 8 deep, and so may arrays within a
+  message's arguments. The engine drops a datagram that goes deeper, whole
+  (logged as undecodable). Its own bundles are one level deep and it sends no
+  array.
 - **Realtime gain** controls (`/control/realtime/*`) carry a trailing monotonic
   **sequence int** so the engine can drop stale updates that arrive out of order.
 - Larger structured payloads (layout / speakers / audio / input config) are sent

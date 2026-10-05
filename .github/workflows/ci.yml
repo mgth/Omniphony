@@ -436,13 +436,14 @@ jobs:
       # Linux test run passes whether or not the sockets lift it, and a socket
       # that stops doing so would only be noticed by a macOS user whose saves
       # vanish. Filtered to the tests that send a large datagram or check the
-      # buffer (`maximum_size` / `send_buffer` in their names); the sysctl
-      # values are printed so the log says what they ran against.
+      # buffer (`maximum_size` / `send_buffer` / `deeply_nested` in their
+      # names); the sysctl values are printed so the log says what they ran
+      # against.
       - name: Test large OSC datagrams from the engine (macOS arm64)
         working-directory: omniphony-renderer
         run: |
           sysctl net.inet.udp.maxdgram net.inet.udp.recvspace
-          cargo test -p orender_engine --lib --locked -- maximum_size send_buffer
+          cargo test -p orender_engine --lib --locked -- maximum_size send_buffer deeply_nested
 
       - name: Test large OSC datagrams from the native Studio (macOS arm64)
         working-directory: omniphony-studio-egui

@@ -14,6 +14,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use crate::callback_log::{CallbackLog, CallbackLogDrain, callback_event};
 use crate::output_telemetry::{interleaved_samples_to_ms, samples_to_ms};
 use crate::{
     AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, adaptive_band_name,
@@ -145,6 +146,9 @@ pub struct CpalWriter {
     reset_ratio_requested: Arc<AtomicBool>,
     // We keep the stream alive by holding it here, though cpal streams run in background threads
     _stream: Option<cpal::Stream>,
+    /// Logs what the device callback queues. Declared after the stream, so it
+    /// is dropped after it (fields drop in order) and logs the last events.
+    _callback_log_drain: CallbackLogDrain,
 }
 
 /// Get a list of available output device names for this platform's backend.
@@ -416,6 +420,13 @@ impl CpalWriter {
             (initial_cfg.high_recover_entry_margin_ms as usize).saturating_mul(samples_per_ms);
         let device_channel_count_for_callback = device_channel_count;
         let adaptive_resampling_enabled = enable_adaptive_resampling;
+        // The live config as the callback sees it: its own copy, refreshed
+        // once per callback without blocking (on contention the previous copy
+        // stands until the next one), as the PipeWire callback does.
+        let mut callback_cfg = initial_cfg.clone();
+        // The callback reports through this queue; the drain thread logs.
+        let (mut callback_log, callback_log_reader) = CallbackLog::new(module_path!());
+        let callback_log_drain = CallbackLogDrain::spawn(callback_log_reader);
 
         // The whole output callback, on an f32 device buffer. Devices whose
         // native format is not f32 (ASIO drivers commonly expose only I32)
@@ -433,10 +444,10 @@ impl CpalWriter {
                     .store(reset.displayed_rate_adjust.to_bits(), Ordering::Relaxed);
                 current_adaptive_band_clone.store(reset.adaptive_band, Ordering::Relaxed);
             }
-            let is_pi_paused = live_config_for_callback
-                .try_lock()
-                .map(|cfg| cfg.paused)
-                .unwrap_or(false);
+            if let Some(cfg) = live_config_for_callback.try_lock() {
+                callback_cfg.clone_from(&cfg);
+            }
+            let is_pi_paused = callback_cfg.paused;
 
             // 1. Check buffer fill & Calculate Rate
             let available_samples = buffer_clone.len(); // Input-domain samples (frames * channels)
@@ -477,7 +488,6 @@ impl CpalWriter {
                 0.0
             };
             pipeline_latency_ms_bits_clone.store(callback_midpoint_ms.to_bits(), Ordering::Relaxed);
-            let current_asio_cfg = live_config_for_callback.lock().clone();
             // The device callback dt comes from the nominal frame size of
             // the active buffer. We don't have an atomic-published dt
             // here as on the PipeWire path; the configured value is
@@ -497,8 +507,8 @@ impl CpalWriter {
                 channel_count as usize,
                 input_sample_rate,
                 callback_midpoint_ms,
-                current_asio_cfg.control_smoothing_cutoff_hz,
-                current_asio_cfg.control_smoothing_order,
+                callback_cfg.control_smoothing_cutoff_hz,
+                callback_cfg.control_smoothing_order,
                 callback_dt_s,
                 LatencyMetricTargets {
                     measured_latency_ms_bits: &measured_latency_ms_bits_clone,
@@ -523,7 +533,7 @@ impl CpalWriter {
                 );
             }
             let fallback_band = far_mode_band_from_latency(
-                &current_asio_cfg,
+                &callback_cfg,
                 metrics.control_available,
                 target_buffer_fill,
                 samples_per_ms,
@@ -541,18 +551,18 @@ impl CpalWriter {
                 // Only adjust rate if we have started playback and have enough data
                 if should_run_adaptive_servo(
                     callback_count,
-                    current_asio_cfg.update_interval_callbacks,
+                    callback_cfg.update_interval_callbacks,
                     metrics.total_available_input_domain,
                     channel_count as usize,
                 ) {
                     let mut decision = run_adaptive_servo(
                         &mut runtime_state,
-                        &current_asio_cfg,
+                        &callback_cfg,
                         metrics,
                         target_buffer_fill,
                         resample_ratio,
                         100,
-                        current_asio_cfg.max_adjust.max(0.000_001),
+                        callback_cfg.max_adjust.max(0.000_001),
                         samples_per_ms,
                         samples_per_ms_f64,
                     );
@@ -569,7 +579,7 @@ impl CpalWriter {
                         paused_rate_adjust(resample_ratio, clamped_ratio);
 
                     if let Err(e) = resampler.set_resample_ratio(clamped_ratio, true) {
-                        log::warn!("Failed to set resampler ratio: {}", e);
+                        callback_event!(callback_log, Warn, "failed to set the resampler ratio"; e);
                     } else {
                         effective_resample_ratio = clamped_ratio;
                     }
@@ -579,18 +589,20 @@ impl CpalWriter {
                     recovery_band = decision.adaptive_band;
 
                     if callback_count % 100 == 0 {
-                        log::trace!(
-                            "{BACKEND} Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6} kp={:.6} ki={:.6} max_adjust={:.6})",
-                            metrics.control_available,
-                            target_buffer_fill,
-                            decision.step.drift,
-                            decision.step.current_ratio,
-                            resample_ratio,
-                            decision.step.p_term,
-                            decision.step.i_term,
-                            current_asio_cfg.kp_near,
-                            current_asio_cfg.ki,
-                            current_asio_cfg.max_adjust,
+                        callback_event!(
+                            callback_log,
+                            Trace,
+                            "adaptive",
+                            buf = metrics.control_available,
+                            target = target_buffer_fill,
+                            drift = decision.step.drift,
+                            ratio = decision.step.current_ratio,
+                            base = resample_ratio,
+                            p = decision.step.p_term,
+                            i = decision.step.i_term,
+                            kp = callback_cfg.kp_near,
+                            ki = callback_cfg.ki,
+                            max_adjust = callback_cfg.max_adjust
                         );
                     }
                 }
@@ -608,13 +620,12 @@ impl CpalWriter {
             // output_fifo contains frames * channel_count
             let output_frames_needed = data.len() / device_channel_count_for_callback as usize;
             let audio_samples_needed = output_frames_needed * channel_count as usize;
-            let far_mode_cfg = live_config_for_callback.lock().clone();
             let startup_low_recover_was_active = runtime_state.startup_low_recover_active;
             let low_recover_was_active =
                 runtime_state.low_recover_phase != LowRecoverPhase::Inactive;
             let far_decision: FarModeDecision = update_far_mode_state(
                 &mut runtime_state,
-                &far_mode_cfg,
+                &callback_cfg,
                 recovery_band == crate::ADAPTIVE_BAND_FAR,
                 metrics.control_available,
                 metrics.smoothed_control_available,
@@ -714,7 +725,7 @@ impl CpalWriter {
                         &mut resampler,
                         prepared_samples,
                     ) {
-                        log::error!("Resampler error: {}", e);
+                        callback_event!(callback_log, Error, "resampler error"; e);
                     }
                     if far_decision.low_recover_trim_output_samples > 0 {
                         resampler_fifo
@@ -733,7 +744,7 @@ impl CpalWriter {
                     &mut resampler,
                     audio_samples_needed,
                 ) {
-                    log::error!("Resampler error: {}", e);
+                    callback_event!(callback_log, Error, "resampler error"; e);
                 }
             }
 
@@ -751,7 +762,7 @@ impl CpalWriter {
                     &mut resampler,
                     plan.desired_consume_output_samples,
                 ) {
-                    log::error!("Resampler error: {}", e);
+                    callback_event!(callback_log, Error, "resampler error"; e);
                 }
                 resampler_fifo.discard_samples(plan.desired_consume_output_samples);
                 data.fill(0.0);
@@ -779,8 +790,8 @@ impl CpalWriter {
                 // Underrun
                 note_refill_or_underrun(
                     &mut runtime_state,
-                    "output underrun",
-                    "output underrun",
+                    &mut callback_log,
+                    "output underrun: zero-padding the remainder",
                     resampler_fifo.output_len(),
                     audio_samples_needed,
                 );
@@ -847,6 +858,7 @@ impl CpalWriter {
             live_adaptive_config: live_config,
             backpressure_disabled,
             reset_ratio_requested,
+            _callback_log_drain: callback_log_drain,
             _stream: Some(stream),
         })
     }

@@ -10,6 +10,7 @@ use renderer::live_params::RendererControl;
 use runtime_control::HostControlHandler;
 
 mod client_registry;
+mod decode;
 mod dispatch;
 mod export;
 mod gaintable;
@@ -666,7 +667,7 @@ impl OscSender {
                     }
                     match rx_socket.recv_from(&mut buf) {
                         Ok((len, src)) => {
-                            match rosc::decoder::decode_udp(&buf[..len]) {
+                            match decode::decode_datagram(&buf[..len]) {
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr == osc_contract::REGISTER =>
                                 {

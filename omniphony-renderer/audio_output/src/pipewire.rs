@@ -15,6 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::callback_log::{CallbackLog, CallbackLogDrain, callback_event};
 use crate::callback_state::CallbackState;
 use crate::output_telemetry::{LatencySample, OutputTelemetry};
 use crate::pipewire_registry::{
@@ -1057,6 +1058,11 @@ fn run_pipewire_loop(
         max_buffer_fill
     );
 
+    // The callback reports through this queue; the drain thread logs. Declared
+    // before the listener, so it outlives the callback and logs its last events.
+    let (mut callback_log, callback_log_reader) = CallbackLog::new(module_path!());
+    let _callback_log_drain = CallbackLogDrain::spawn(callback_log_reader);
+
     let _listener = stream
         .add_local_listener_with_user_data(())
         .process(move |stream, _| {
@@ -1141,7 +1147,6 @@ fn run_pipewire_loop(
                         capacity_frames
                     };
                     let max_samples = max_frames * ch;
-                    let frame_aligned_max = max_samples;
                     callback_output_frames = max_frames;
                     // When the pacer is active, it adds its (fixed) capacity
                     // to the total end-to-end latency. To keep the user's
@@ -1159,23 +1164,25 @@ fn run_pipewire_loop(
                     };
 
                     if callback_count == 1 {
-                        log::info!(
-                            "PipeWire callback #1: buffer={} bytes, {} samples, {} channels → {} frames (remainder: {}) | requested_frames={} chunk_size_bytes={}",
-                            slice.len(), max_samples, ch, max_frames, max_samples % ch,
-                            requested_frames_this_cycle, chunk_size_bytes
+                        callback_event!(
+                            callback_log,
+                            Info,
+                            "PipeWire callback #1",
+                            buffer_bytes = slice.len(),
+                            samples = max_samples,
+                            channels = ch,
+                            frames = max_frames,
+                            requested_frames = requested_frames_this_cycle,
+                            chunk_size_bytes = chunk_size_bytes
                         );
-                        if max_samples != frame_aligned_max {
-                            log::warn!(
-                                "PipeWire buffer NOT frame-aligned! {} samples / {} channels = {} remainder. Sink may have different channel count.",
-                                max_samples, ch, max_samples % ch
-                            );
-                        }
                     }
                     if runtime_target_buffer_fill != state.logged_runtime_target {
-                        log::debug!(
-                            "PipeWire runtime target fill adjusted to {} samples for observed callback size {} samples",
-                            runtime_target_buffer_fill,
-                            frame_aligned_max
+                        callback_event!(
+                            callback_log,
+                            Debug,
+                            "PipeWire runtime target fill adjusted for the observed callback size",
+                            target = runtime_target_buffer_fill,
+                            callback_samples = max_samples
                         );
                         state.logged_runtime_target = runtime_target_buffer_fill;
                     }
@@ -1226,9 +1233,9 @@ fn run_pipewire_loop(
                     );
                     // Callback consumption (input-domain samples).
                     let callback_input_domain_samples = if state.resampler.effective_ratio > 0.0 {
-                        ((frame_aligned_max as f64) / state.resampler.effective_ratio).round() as usize
+                        ((max_samples as f64) / state.resampler.effective_ratio).round() as usize
                     } else {
-                        frame_aligned_max
+                        max_samples
                     };
                     // Increment cumulative-drained BEFORE we read the running
                     // difference for control_available. callback_input_domain
@@ -1450,22 +1457,24 @@ fn run_pipewire_loop(
                                     resampler.set_resample_ratio(clamped_ratio, true)
                                         as Result<(), rubato::ResampleError>
                                 {
-                                    log::warn!("Failed to set resampler ratio: {}", e);
+                                    callback_event!(callback_log, Warn, "failed to set the resampler ratio"; e);
                                 } else {
                                     state.resampler.effective_ratio = clamped_ratio;
                                     if state.resampler.effective_ratio.to_bits()
                                         != state.runtime.last_logged_ratio_bits
                                     {
                                         let rel_ratio = state.resampler.effective_ratio / state.resampler.configured_ratio;
-                                        log::debug!(
-                                            "PipeWire adaptive ratio applied: base={:.6} effective={:.6} relative={:.6} consume={:.6} drift={} buf={}/{}",
-                                            state.resampler.configured_ratio,
-                                            state.resampler.effective_ratio,
-                                            rel_ratio,
-                                            decision.step.consume_adjust,
-                                            decision.step.drift,
-                                            metrics.control_available,
-                                            runtime_target_buffer_fill
+                                        callback_event!(
+                                            callback_log,
+                                            Debug,
+                                            "PipeWire adaptive ratio applied",
+                                            base = state.resampler.configured_ratio,
+                                            effective = state.resampler.effective_ratio,
+                                            relative = rel_ratio,
+                                            consume = decision.step.consume_adjust,
+                                            drift = decision.step.drift,
+                                            buf = metrics.control_available,
+                                            target = runtime_target_buffer_fill
                                         );
                                     }
                                     state.runtime.last_logged_ratio_bits =
@@ -1477,15 +1486,17 @@ fn run_pipewire_loop(
                                     .store(decision.displayed_rate_adjust.to_bits(), Ordering::Relaxed);
 
                                 if callback_count % 100 == 0 {
-                                    log::debug!(
-                                        "PipeWire Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
-                                        metrics.control_available,
-                                        runtime_target_buffer_fill,
-                                        decision.step.drift,
-                                        decision.step.current_ratio,
-                                        state.resampler.configured_ratio,
-                                        decision.step.p_term,
-                                        decision.step.i_term
+                                    callback_event!(
+                                        callback_log,
+                                        Debug,
+                                        "PipeWire adaptive",
+                                        buf = metrics.control_available,
+                                        target = runtime_target_buffer_fill,
+                                        drift = decision.step.drift,
+                                        ratio = decision.step.current_ratio,
+                                        base = state.resampler.configured_ratio,
+                                        p = decision.step.p_term,
+                                        i = decision.step.i_term
                                     );
                                 }
                             }
@@ -1564,7 +1575,7 @@ fn run_pipewire_loop(
                                     resampler,
                                     audio_samples_needed,
                                 ) {
-                                    log::error!("Resampler error during recovery reacquire: {}", e);
+                                    callback_event!(callback_log, Error, "resampler error during recovery reacquire"; e);
                                 } else if state.resampler.fifo.output_len() > 0 {
                                     state.resampler.fifo.discard_samples(audio_samples_needed);
                                 }
@@ -1575,7 +1586,7 @@ fn run_pipewire_loop(
                                 resampler,
                                 audio_samples_needed,
                             ) {
-                                log::error!("Resampler error during recovery reacquire: {}", e);
+                                callback_event!(callback_log, Error, "resampler error during recovery reacquire"; e);
                                 zero_pad_tail(&mut dest[..max_samples], 0);
                                 max_samples
                             } else if state.resampler.fifo.output_len() >= audio_samples_needed {
@@ -1595,8 +1606,8 @@ fn run_pipewire_loop(
                                 zero_pad_tail(&mut dest[..max_samples], copy_count);
                                 note_refill_or_underrun(
                                     &mut state.runtime,
-                                    "Resampler output underrun",
-                                    "Resampler output underrun",
+                                    &mut callback_log,
+                                    "resampler output underrun: zero-padding the remainder",
                                     copy_count,
                                     audio_samples_needed,
                                 );
@@ -1630,7 +1641,7 @@ fn run_pipewire_loop(
                                         resampler,
                                         prepared_samples,
                                     ) {
-                                        log::error!("Resampler error: {}", e);
+                                        callback_event!(callback_log, Error, "resampler error"; e);
                                     } else {
                                         if far_decision.low_recover_trim_output_samples > 0 {
                                             state.resampler.fifo.discard_samples(
@@ -1650,7 +1661,7 @@ fn run_pipewire_loop(
                                 resampler,
                                 audio_samples_needed,
                             ) {
-                                log::error!("Resampler error: {}", e);
+                                callback_event!(callback_log, Error, "resampler error"; e);
                             }
                             if far_decision.hard_recover_high {
                                 let plan = compute_hard_recover_high_plan(
@@ -1665,7 +1676,7 @@ fn run_pipewire_loop(
                                     resampler,
                                     plan.desired_consume_output_samples,
                                 ) {
-                                    log::error!("Resampler error: {}", e);
+                                    callback_event!(callback_log, Error, "resampler error"; e);
                                 }
                                 state.resampler.fifo.discard_samples(plan.desired_consume_output_samples);
                                 dest[..max_samples].fill(0.0);
@@ -1688,8 +1699,8 @@ fn run_pipewire_loop(
                                 zero_pad_tail(&mut dest[..max_samples], copy_count);
                                 note_refill_or_underrun(
                                     &mut state.runtime,
-                                    "Resampler underrun",
-                                    "Resampler underrun",
+                                    &mut callback_log,
+                                    "resampler underrun: zero-padding the remainder",
                                     fifo_available,
                                     audio_samples_needed,
                                 );
@@ -1730,15 +1741,17 @@ fn run_pipewire_loop(
                                     .store((decision.step.current_ratio as f32).to_bits(), Ordering::Relaxed);
 
                                 if callback_count % 100 == 0 {
-                                    log::trace!(
-                                        "PipeWire native adaptive: buf={}/{} drift={} rate={:.6} consume={:.6} (P={:.6} I={:.6})",
-                                        metrics.control_available,
-                                        runtime_target_buffer_fill,
-                                        decision.step.drift,
-                                        decision.step.current_ratio,
-                                        decision.step.consume_adjust,
-                                        decision.step.p_term,
-                                        decision.step.i_term
+                                    callback_event!(
+                                        callback_log,
+                                        Trace,
+                                        "PipeWire native adaptive",
+                                        buf = metrics.control_available,
+                                        target = runtime_target_buffer_fill,
+                                        drift = decision.step.drift,
+                                        rate = decision.step.current_ratio,
+                                        consume = decision.step.consume_adjust,
+                                        p = decision.step.p_term,
+                                        i = decision.step.i_term
                                     );
                                 }
                             } else {
@@ -1780,14 +1793,16 @@ fn run_pipewire_loop(
                                 desired_rate_for_callback.store(pipewire_rate.to_bits(), Ordering::Relaxed);
 
                                 if callback_count % 100 == 0 {
-                                    log::trace!(
-                                        "PipeWire latency servo: buf={} target={} max={} drift={} -> consume={:.6} pw_rate={:.6}",
-                                        metrics.control_available,
-                                        runtime_target_buffer_fill,
-                                        max_buffer_fill,
-                                        drift,
-                                        consume_adjust,
-                                        pipewire_rate
+                                    callback_event!(
+                                        callback_log,
+                                        Trace,
+                                        "PipeWire latency servo",
+                                        buf = metrics.control_available,
+                                        target = runtime_target_buffer_fill,
+                                        max = max_buffer_fill,
+                                        drift = drift,
+                                        consume = consume_adjust,
+                                        pw_rate = pipewire_rate
                                     );
                                 }
                             }
@@ -1849,11 +1864,7 @@ fn run_pipewire_loop(
                                     Ordering::Relaxed,
                                 );
                                 if dropped < samples_to_read {
-                                    log::debug!(
-                                        "Recovery reacquire underfed: consumed {} / {} samples while re-priming output",
-                                        dropped,
-                                        samples_to_read
-                                    );
+                                    callback_event!(callback_log, Debug, "recovery reacquire underfed while re-priming output", consumed = dropped, wanted = samples_to_read);
                                 }
                                 dest[..max_samples].fill(0.0);
                                 max_samples
@@ -1897,11 +1908,7 @@ fn run_pipewire_loop(
                                 Ordering::Relaxed,
                             );
                             if dropped < plan.desired_consume_input_samples {
-                                log::debug!(
-                                    "Far hard recover underfed: consumed {} / {} samples while targeting exact recovery",
-                                    dropped,
-                                    plan.desired_consume_input_samples
-                                );
+                                callback_event!(callback_log, Debug, "far hard recover underfed while targeting exact recovery", consumed = dropped, wanted = plan.desired_consume_input_samples);
                             }
                             dest[..max_samples].fill(0.0);
                             max_samples
@@ -1925,11 +1932,7 @@ fn run_pipewire_loop(
                                     Ordering::Relaxed,
                                 );
                                 if dropped < samples_to_discard {
-                                    log::debug!(
-                                        "Low-recover muted consume underfed: consumed {} / {} samples while stabilizing resume latency",
-                                        dropped,
-                                        samples_to_discard
-                                    );
+                                    callback_event!(callback_log, Debug, "low-recover muted consume underfed while stabilizing resume latency", consumed = dropped, wanted = samples_to_discard);
                                 }
                             }
                             if far_decision.mute_far_output {
@@ -1980,13 +1983,13 @@ fn run_pipewire_loop(
                                 &mut state.runtime,
                             );
 
-                            if samples_to_read < frame_aligned_max {
+                            if samples_to_read < max_samples {
                                 note_refill_or_underrun(
                                     &mut state.runtime,
-                                    "Buffer underrun",
-                                    "Buffer underrun",
+                                    &mut callback_log,
+                                    "buffer underrun: zero-padding the remainder",
                                     samples_to_read,
-                                    frame_aligned_max,
+                                    max_samples,
                                 );
                             }
 
