@@ -10,6 +10,7 @@ use renderer::live_params::RendererControl;
 use runtime_control::HostControlHandler;
 
 mod client_registry;
+mod decode;
 mod dispatch;
 mod export;
 mod gaintable;
@@ -25,8 +26,8 @@ use self::dispatch::{RealtimeSeqState, handle_control_message};
 use self::export::build_live_state;
 use self::gaintable::GaintableCache;
 use self::transport::{
-    broadcast_string, flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client,
-    send_metering_state, send_raw_filtered,
+    broadcast_string, ensure_send_buffer, flush_pending_logs, resolve_register_addr,
+    send_buffered_logs_to_client, send_metering_state, send_raw_filtered,
 };
 use runtime_control::osc_contract;
 
@@ -380,9 +381,79 @@ pub struct OscSender {
     playout: playout::PlayoutMarks,
 }
 
+/// Receive buffer of the control listener: larger than any UDP payload, so no
+/// datagram is ever truncated on receipt. Control messages run to tens of
+/// kilobytes (a backend file of up to 60 000 bytes, a whole-layout JSON).
+const RX_DATAGRAM_MAX: usize = 65_536;
+
+/// Rate limit for a warning the listener would otherwise log once per
+/// datagram, so a lost control message is visible without a misbehaving
+/// sender flooding the log. One occurrence is logged at `warn`; the ones that
+/// follow within [`Self::INTERVAL`] are held back (logged at `debug` only) and
+/// their count is reported with the next warning, or on its own once the
+/// interval is over.
+#[derive(Default)]
+struct WarnLimiter {
+    last: Option<std::time::Instant>,
+    held_back: u32,
+}
+
+impl WarnLimiter {
+    const INTERVAL: Duration = Duration::from_secs(5);
+
+    /// Counts one occurrence at `now`: `Some(n)` when it is to be logged, `n`
+    /// being the occurrences held back since the last one that was; `None`
+    /// when it is held back itself.
+    fn record(&mut self, now: std::time::Instant) -> Option<u32> {
+        if self
+            .last
+            .is_some_and(|last| now.duration_since(last) < Self::INTERVAL)
+        {
+            self.held_back = self.held_back.saturating_add(1);
+            return None;
+        }
+        self.last = Some(now);
+        Some(std::mem::take(&mut self.held_back))
+    }
+
+    /// The count still held back once the interval is over, for when no
+    /// further occurrence comes to carry it. Returned once.
+    fn overdue(&mut self, now: std::time::Instant) -> Option<u32> {
+        if self.held_back == 0 {
+            return None;
+        }
+        let last = self.last?;
+        (now.duration_since(last) >= Self::INTERVAL).then(|| std::mem::take(&mut self.held_back))
+    }
+
+    /// Logs `message` at `warn`, or at `debug` when it is held back.
+    fn report(&mut self, message: std::fmt::Arguments<'_>) {
+        match self.record(std::time::Instant::now()) {
+            Some(0) => log::warn!("{message}"),
+            Some(held_back) => {
+                log::warn!("{message} ({held_back} more since the last report)")
+            }
+            None => log::debug!("{message}"),
+        }
+    }
+
+    /// Reports the occurrences still held back when the interval ended with
+    /// none to carry them: the tail of a burst. `what` names them.
+    fn flush(&mut self, what: &str) {
+        if self.held_back == 0 {
+            return;
+        }
+        if let Some(held_back) = self.overdue(std::time::Instant::now()) {
+            log::warn!("OSC: {held_back} more {what} since the last report");
+        }
+    }
+}
+
 impl OscSender {
     pub fn new(default_target: SocketAddrV4) -> Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
+        // Every state bundle and every reply leaves through this socket.
+        ensure_send_buffer(&socket);
         let clients = Arc::new(OscClientRegistry::new(CLIENT_TIMEOUT));
         clients.insert_permanent(SocketAddr::V4(default_target));
         // Per-instance id: mixes pid and a sub-second timestamp so it differs
@@ -518,11 +589,18 @@ impl OscSender {
                     }
                 }
 
-                let mut buf = [0u8; 4096];
+                // Large enough for any UDP datagram, allocated once: a
+                // truncated control message (a backend file, a layout) would
+                // fail to decode and be lost.
+                let mut buf = vec![0u8; RX_DATAGRAM_MAX];
+                let mut decode_errors = WarnLimiter::default();
+                let mut recv_errors = WarnLimiter::default();
                 loop {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
+                    decode_errors.flush("undecodable datagram(s) dropped");
+                    recv_errors.flush("recv error(s)");
                     flush_pending_logs(&socket, &clients, &mut last_log_seq);
                     if let Some(host) = host_handler.as_ref() {
                         let generation = host.state_generation();
@@ -589,7 +667,7 @@ impl OscSender {
                     }
                     match rx_socket.recv_from(&mut buf) {
                         Ok((len, src)) => {
-                            match rosc::decoder::decode_udp(&buf[..len]) {
+                            match decode::decode_datagram(&buf[..len]) {
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr == osc_contract::REGISTER =>
                                 {
@@ -669,9 +747,9 @@ impl OscSender {
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    log::debug!("OSC decode error from {}: {}", src, e)
-                                }
+                                Err(e) => decode_errors.report(format_args!(
+                                    "OSC: dropped an undecodable {len}-byte datagram from {src}: {e}"
+                                )),
                             }
                         }
                         Err(e)
@@ -679,7 +757,9 @@ impl OscSender {
                                 e.kind(),
                                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                             ) => {}
-                        Err(e) => log::warn!("OSC recv error: {}", e),
+                        // A failing socket returns at once, every pass: the
+                        // same limit as for a misbehaving sender.
+                        Err(e) => recv_errors.report(format_args!("OSC recv error: {e}")),
                     }
                 }
             })?;
@@ -1037,20 +1117,94 @@ fn maybe_broadcast_head_pose(
     );
 }
 
+/// Scaffolding shared by the tests, here and in the submodules, that start a
+/// real listener or otherwise reach the process-wide port state.
 #[cfg(test)]
-mod yield_tests {
+mod test_support {
     use super::*;
 
-    /// Serialises the tests that exercise a port-contention path, since they
-    /// share the process-global [`LOCAL_RX_RELEASE`] registry and
-    /// [`RESUME_TARGET`] slot.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    /// Serialises the tests that exercise a port-contention path or start a
+    /// listener, since they share the process-global [`LOCAL_RX_RELEASE`]
+    /// registry and [`RESUME_TARGET`] slot.
+    pub(super) static SERIAL: Mutex<()> = Mutex::new(());
 
     /// Grab a free UDP port by binding port 0, then release it.
-    fn free_port() -> u16 {
+    pub(super) fn free_port() -> u16 {
         let s = UdpSocket::bind("127.0.0.1:0").unwrap();
         s.local_addr().unwrap().port()
     }
+
+    pub(super) fn test_sender() -> OscSender {
+        OscSender::new(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1)).unwrap()
+    }
+
+    /// A sender driving `control` whose listener is bound, and its port.
+    ///
+    /// [`free_port`] leaves the port unclaimed until the listener binds it,
+    /// and a test that does not hold [`SERIAL`] may be handed it meanwhile.
+    /// `start_listener` reports that as "not listening": take another port.
+    pub(super) fn listening_sender(control: &Arc<RendererControl>) -> (OscSender, u16) {
+        let mut sender = test_sender();
+        sender.attach_renderer_control(Arc::clone(control));
+        for _ in 0..8 {
+            let port = free_port();
+            sender.start_listener(port, false).unwrap();
+            if sender.is_listening() {
+                return (sender, port);
+            }
+        }
+        panic!("no free port for the test listener");
+    }
+}
+
+#[cfg(test)]
+mod warn_limiter_tests {
+    use super::*;
+    use std::time::Instant;
+
+    const INTERVAL: Duration = WarnLimiter::INTERVAL;
+
+    #[test]
+    fn one_warning_per_interval_carries_the_count_held_back() {
+        let start = Instant::now();
+        let mut limiter = WarnLimiter::default();
+        assert_eq!(limiter.record(start), Some(0), "the first one is logged");
+        assert_eq!(limiter.record(start + INTERVAL / 4), None);
+        assert_eq!(limiter.record(start + INTERVAL / 2), None);
+        assert_eq!(
+            limiter.record(start + INTERVAL),
+            Some(2),
+            "the next one past the interval reports the two held back"
+        );
+        // The interval runs again from that warning, with a fresh count.
+        assert_eq!(limiter.record(start + INTERVAL + INTERVAL / 2), None);
+        assert_eq!(limiter.record(start + INTERVAL * 2), Some(1));
+    }
+
+    #[test]
+    fn the_tail_of_a_burst_is_reported_once_the_interval_is_over() {
+        let start = Instant::now();
+        let mut limiter = WarnLimiter::default();
+        assert_eq!(limiter.overdue(start), None, "nothing happened yet");
+        assert_eq!(limiter.record(start), Some(0));
+        assert_eq!(limiter.record(start + INTERVAL / 4), None);
+        assert_eq!(limiter.record(start + INTERVAL / 2), None);
+        assert_eq!(
+            limiter.overdue(start + INTERVAL / 2),
+            None,
+            "a later occurrence may still carry the count"
+        );
+        assert_eq!(limiter.overdue(start + INTERVAL), Some(2));
+        assert_eq!(limiter.overdue(start + INTERVAL * 2), None, "reported once");
+        // The count went out on its own: the next occurrence has none to carry.
+        assert_eq!(limiter.record(start + INTERVAL * 2), Some(0));
+    }
+}
+
+#[cfg(test)]
+mod yield_tests {
+    use super::test_support::{SERIAL, free_port, test_sender};
+    use super::*;
 
     /// A same-process holder (the previous track's listener) is reclaimed via the
     /// direct release registry, not the multi-second external yield dance.
@@ -1079,10 +1233,6 @@ mod yield_tests {
 
         *LOCAL_RX_RELEASE.lock().unwrap() = None;
         h.join().unwrap();
-    }
-
-    fn test_sender() -> OscSender {
-        OscSender::new(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1)).unwrap()
     }
 
     /// A resume that re-acquires the port must arm the handoff adoption and then
@@ -1284,6 +1434,9 @@ mod yield_tests {
 
     #[test]
     fn negotiation_reservation_holds_the_port_until_the_listener_binds() {
+        // Losing the `free_port` window makes the negotiation ask the local
+        // listener to release the port: whichever one a sibling test started.
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let port = free_port();
         assert!(negotiate_rx_port(port), "free port must negotiate");
         // The reservation keeps the port held: an external bind must fail …
@@ -1316,5 +1469,33 @@ mod yield_tests {
             bind_rx_socket(port, true, Duration::from_secs(5)).expect("port freed after yield");
         assert_eq!(socket.local_addr().unwrap().port(), port);
         t.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod send_size_tests {
+    use super::export::MAX_STATE_DATAGRAM;
+    use super::*;
+
+    /// A datagram of the largest size the live state is split into leaves the
+    /// sender's own socket and arrives whole. macOS and the BSDs refuse a UDP
+    /// send larger than the socket's send buffer, which starts at 9,216 bytes
+    /// there, so this only passes on them when the sender has raised it.
+    #[test]
+    fn a_maximum_size_state_datagram_leaves_the_sender_socket() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let SocketAddr::V4(target) = receiver.local_addr().unwrap() else {
+            unreachable!("bound to an IPv4 address");
+        };
+        let sender = OscSender::new(target).unwrap();
+
+        sender.send_raw_to_all(&vec![0x5a; MAX_STATE_DATAGRAM]);
+
+        let mut buf = vec![0u8; 70_000];
+        let len = receiver.recv(&mut buf).expect("the datagram arrives");
+        assert_eq!(len, MAX_STATE_DATAGRAM);
     }
 }
