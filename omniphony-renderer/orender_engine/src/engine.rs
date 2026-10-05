@@ -135,8 +135,8 @@ pub struct Engine {
     /// extracts → drives `frame.drc_gain`). Synced from the live param each
     /// `process` so config + OSC changes reach the decoder, as in the CLI.
     drc_mode: DrcModeSync,
-    /// Log level last pushed to the bridge, so its diagnostics follow
-    /// `log_level` changes made over OSC.
+    /// Log level last pushed to the bridge (first when it was opened), so its
+    /// diagnostics follow `log_level` changes made over OSC.
     log_level: LogLevelSync,
 
     // ── reusable scratch ──
@@ -294,8 +294,10 @@ impl Engine {
     /// Build a session around an already-loaded bridge and a constructed
     /// renderer. The bridge must already be configured (presentation, DRC mode)
     /// before the first [`process`](Self::process) call.
-    pub fn new(bridge: LoadedBridge, renderer: SpatialRenderer, sample_rate: u32) -> Self {
+    pub fn new(mut bridge: LoadedBridge, renderer: SpatialRenderer, sample_rate: u32) -> Self {
         crate::bridge_loader::declare_source_families(&bridge.lib, &renderer.renderer_control());
+        // Checked before each packet without locking the bridge.
+        let log_level = std::mem::take(&mut bridge.log_level);
         let coordinate_format = bridge.bridge.coordinate_format();
         let bridge_has_objects = Arc::new(AtomicBool::new(bridge.bridge.has_objects()));
         let engine = Self {
@@ -311,7 +313,7 @@ impl Engine {
             last_object_count: 0,
             last_bed_labels: Vec::new(),
             drc_mode: DrcModeSync::new(),
-            log_level: LogLevelSync::new(),
+            log_level,
             pcm_f32_buf: Vec::new(),
             output_pool: Vec::new(),
             held: None,

@@ -11,6 +11,7 @@ use bridge_api::*;
 use log::LevelFilter;
 use orender_engine::Engine;
 use orender_engine::bridge_loader::LoadedBridge;
+use orender_engine::decode_step::LogLevelSync;
 use orender_engine::renderer_build::{SpatialRendererParams, build_spatial_renderer};
 use renderer::speaker_layout::SpeakerLayout;
 
@@ -101,7 +102,15 @@ fn engine(configured: &Arc<Mutex<Vec<String>>>) -> Engine {
         source_families,
     }
     .leak_into_prefix();
-    Engine::new(LoadedBridge { lib, bridge }, renderer, 48_000)
+    Engine::new(
+        LoadedBridge {
+            lib,
+            bridge,
+            log_level: LogLevelSync::new(),
+        },
+        renderer,
+        48_000,
+    )
 }
 
 #[test]

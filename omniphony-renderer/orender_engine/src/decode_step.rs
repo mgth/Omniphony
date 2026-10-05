@@ -236,8 +236,11 @@ impl DrcModeSync {
 /// (`log_level` over OSC) while a host pushes it only when it changes: one
 /// atomic load and a compare per packet, no call into the bridge.
 ///
-/// The first update always reports a change. A bridge that refuses the key
-/// predates it and is not asked again.
+/// One per bridge instance, from [`open`](Self::open) when the bridge is
+/// opened (`bridge_loader::open_bridge`), so the host does not send the level
+/// the bridge was opened with again. A bridge that refuses the key predates
+/// it and is not asked again. [`new`](Self::new) knows of no push: its first
+/// update always reports a change.
 #[derive(Debug, Default)]
 pub struct LogLevelSync {
     level: Option<LevelFilter>,
@@ -247,6 +250,14 @@ pub struct LogLevelSync {
 impl LogLevelSync {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Push `level` to a bridge that has just been opened, and remember it
+    /// and whether the bridge took it.
+    pub fn open(level: LevelFilter, bridge: &mut FormatBridgeBox) -> Self {
+        let mut sync = Self::new();
+        sync.apply(level, bridge);
+        sync
     }
 
     /// Whether `level` has to be pushed: it differs from the level last
@@ -486,5 +497,26 @@ mod tests {
             *calls.lock().unwrap(),
             [("log_level".to_owned(), "info".to_owned())]
         );
+    }
+
+    /// The level a bridge was opened with is not sent again before its first
+    /// packet, nor, when the bridge refused it, ever again.
+    #[test]
+    fn the_sync_from_opening_knows_what_the_bridge_was_sent() {
+        for (knows_log_level, expected) in [(true, &["info", "debug"][..]), (false, &["info"][..])]
+        {
+            let (mut bridge, calls) = recorder(knows_log_level);
+            let mut sync = LogLevelSync::open(LevelFilter::Info, &mut bridge);
+            for level in [LevelFilter::Info, LevelFilter::Debug, LevelFilter::Debug] {
+                sync.apply(level, &mut bridge);
+            }
+            let sent: Vec<_> = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, v)| v.clone())
+                .collect();
+            assert_eq!(sent, expected, "bridge knows log_level: {knows_log_level}");
+        }
     }
 }

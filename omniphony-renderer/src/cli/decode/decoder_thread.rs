@@ -95,6 +95,8 @@ pub struct DecoderThreadConfig {
     pub pipe_input_diag: Option<PipeInputDiag>,
     /// The bridge owns the complete decode pipeline.
     pub bridge: FormatBridgeBox,
+    /// The log level `bridge` was opened with (`LoadedBridge::log_level`).
+    pub log_level: LogLevelSync,
     /// Platform-agnostic shutdown signal for interrupt-aware I/O.
     pub shutdown_signal: sys::ShutdownSignal,
 }
@@ -110,12 +112,12 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             drain_tx,
             pipe_input_diag,
             mut bridge,
+            mut log_level,
             shutdown_signal,
         } = config;
 
         let mut frame_count: u64 = 0;
         let mut drc_mode = DrcModeSync::new();
-        let mut log_level = LogLevelSync::new();
         // When a frame carries the bridge's declaration: the same rule as the
         // embedded engine and the PipeWire sink's bridge decoder.
         let mut declarations = DeclarationTracker::new();
@@ -622,6 +624,7 @@ mod tests {
                 },
                 TD_Opaque,
             ),
+            log_level: LogLevelSync::new(),
             shutdown_signal: sys::ShutdownSignal { fd: fds[0] },
         })
         .join()

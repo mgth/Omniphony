@@ -38,10 +38,12 @@ pub struct LiveBridgeDiag {
 /// handler has no room for is dropped. A declaration it carried is not: it
 /// rides on the next frame that is delivered, unless a newer one replaced it.
 ///
-/// `requested_drc_mode` is the DRC mode the handler asks for; it reaches the
-/// bridge before the next packet whenever it changes.
+/// `requested_drc_mode` is the DRC mode the handler asks for, and
+/// `log_level` holds the log level the bridge was opened with (`open_bridge`);
+/// each reaches the bridge before the next packet whenever it changes.
 pub fn spawn_live_bridge_decoder(
     bridge: FormatBridgeBox,
+    log_level: LogLevelSync,
     raw_rx: mpsc::Receiver<(u8, Vec<u8>)>,
     requested_drc_mode: Option<Arc<RwLock<String>>>,
     diag: Option<LiveBridgeDiag>,
@@ -50,13 +52,14 @@ pub fn spawn_live_bridge_decoder(
     thread::Builder::new()
         .name("bridge-decode".to_string())
         .spawn(move || {
-            run_live_bridge_decoder(bridge, raw_rx, requested_drc_mode, diag, tx);
+            run_live_bridge_decoder(bridge, log_level, raw_rx, requested_drc_mode, diag, tx);
         })
         .map_err(|e| anyhow!("Failed to spawn bridge decode worker: {e}"))
 }
 
 fn run_live_bridge_decoder(
     mut bridge: FormatBridgeBox,
+    mut log_level: LogLevelSync,
     raw_rx: mpsc::Receiver<(u8, Vec<u8>)>,
     requested_drc_mode: Option<Arc<RwLock<String>>>,
     diag: Option<LiveBridgeDiag>,
@@ -64,7 +67,6 @@ fn run_live_bridge_decoder(
 ) {
     let mut first_frame_logs_remaining = 16usize;
     let mut drc_mode = DrcModeSync::new();
-    let mut log_level = LogLevelSync::new();
     let mut declarations = DeclarationTracker::new();
     // A declaration whose frame the handler had no room for.
     let mut undelivered: Option<Declaration> = None;
@@ -320,7 +322,7 @@ mod tests {
         }
         drop(raw_tx);
         let bridge = bridge_recording(&Arc::default(), &configured);
-        run_live_bridge_decoder(bridge, raw_rx, None, None, tx);
+        run_live_bridge_decoder(bridge, LogLevelSync::new(), raw_rx, None, None, tx);
         assert_eq!(*configured.lock().unwrap(), ["log_level=info"]);
     }
 
@@ -338,7 +340,14 @@ mod tests {
             raw_tx.send((0x0B, vec![p])).unwrap();
         }
         drop(raw_tx);
-        run_live_bridge_decoder(bridge(&drc_modes), raw_rx, drc, None, tx);
+        run_live_bridge_decoder(
+            bridge(&drc_modes),
+            LogLevelSync::new(),
+            raw_rx,
+            drc,
+            None,
+            tx,
+        );
         let frames = rx
             .try_iter()
             .map(|m| match m.unwrap() {
