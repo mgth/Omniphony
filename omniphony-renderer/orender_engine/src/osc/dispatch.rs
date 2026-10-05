@@ -1108,6 +1108,71 @@ mod notify_tests {
         );
     }
 
+    /// A maximum-size `backend/file/put`, sent through the control listener's
+    /// real UDP socket, is received whole, written and acknowledged: the
+    /// datagram is well over the 4 KiB the listener used to read.
+    #[test]
+    fn a_maximum_size_backend_file_put_crosses_the_socket() {
+        use crate::osc::test_support::{SERIAL, listening_sender};
+        // The listener registers in the process-wide port registry and its
+        // drop consumes the resume target, like the yield tests.
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("orender-osc-big-put-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let control = fixture_control();
+        control.set_config_path(dir.join("config.yaml"));
+        let (sender, port) = listening_sender(&control);
+
+        let content = "x".repeat(BACKEND_FILE_MAX_BYTES);
+        let put = rosc::encoder::encode(&rosc::OscPacket::Message(OscMessage {
+            addr: osc_contract::CONTROL_BACKEND_FILE_PUT.to_string(),
+            args: vec![
+                OscType::String("test".into()),
+                OscType::String("script".into()),
+                OscType::String("big.lua".into()),
+                OscType::String(content.clone()),
+            ],
+        }))
+        .unwrap();
+        assert!(put.len() > BACKEND_FILE_MAX_BYTES);
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // A client has the same send limit to lift as the engine.
+        crate::osc::transport::ensure_send_buffer(&client);
+        client.send_to(&put, ("127.0.0.1", port)).unwrap();
+
+        let ack = awaited(&client, osc_contract::STATE_BACKEND_FILE_CONTENT)
+            .expect("the put is acknowledged");
+        assert_eq!(ack.args.get(3), Some(&OscType::String(content.clone())));
+        let path = backend_files::resolve(Some(&dir), "test", "big.lua", false).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+
+        drop(sender);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The first message on `addr` the socket receives. A reply produced on
+    /// the listener thread arrives when that thread gets to it, so this waits
+    /// for it rather than for the socket to go quiet like [`received`].
+    fn awaited(socket: &UdpSocket, addr: &str) -> Option<OscMessage> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut buf = vec![0u8; 70_000];
+        socket
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        while std::time::Instant::now() < deadline {
+            let Ok(len) = socket.recv(&mut buf) else {
+                continue;
+            };
+            if let Ok((_, rosc::OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len])
+                && msg.addr == addr
+            {
+                return Some(msg);
+            }
+        }
+        None
+    }
+
     /// Every message the bystander receives until the socket goes quiet.
     fn received(socket: &UdpSocket) -> Vec<OscMessage> {
         fn flatten(packet: rosc::OscPacket, out: &mut Vec<OscMessage>) {
@@ -1274,5 +1339,38 @@ mod notify_tests {
                 .any(|m| m.addr == osc_contract::STATE_REALTIME_MASTER_GAIN)
         );
         assert_ne!(control.live_state_generation(), generation);
+    }
+
+    /// Datagrams nested thousands of levels deep, in bundles and in arrays,
+    /// are dropped and the listener goes on answering. Decoded, either one
+    /// overflows the listener thread's stack, which aborts the whole process;
+    /// only the larger receive buffer lets a datagram hold that many levels.
+    #[test]
+    fn a_deeply_nested_datagram_does_not_take_the_listener_down() {
+        use crate::osc::decode::{nested_arrays, nested_bundles};
+        use crate::osc::test_support::{SERIAL, listening_sender};
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let control = fixture_control();
+        let (sender, port) = listening_sender(&control);
+
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        crate::osc::transport::ensure_send_buffer(&client);
+        for nested in [nested_bundles(3_000), nested_arrays(30_000)] {
+            assert_eq!(nested.len(), 60_008);
+            client.send_to(&nested, ("127.0.0.1", port)).unwrap();
+        }
+
+        let heartbeat = rosc::encoder::encode(&rosc::OscPacket::Message(OscMessage {
+            addr: osc_contract::HEARTBEAT.to_string(),
+            args: vec![],
+        }))
+        .unwrap();
+        client.send_to(&heartbeat, ("127.0.0.1", port)).unwrap();
+        assert!(
+            awaited(&client, osc_contract::HEARTBEAT_UNKNOWN).is_some(),
+            "the listener still answers"
+        );
+
+        drop(sender);
     }
 }

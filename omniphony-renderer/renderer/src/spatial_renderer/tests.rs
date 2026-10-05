@@ -1766,19 +1766,25 @@ fn binaural_clipping_flags_ear_and_auto_gain_reduces_master() {
         sample_pos: Some(0),
     }];
 
-    let render = |auto_gain: bool| -> SpatialRenderer {
-        let mut r = build();
-        {
-            let mut live = r.control.live.write();
-            live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
-            // Hot enough that the HRIR-summed stereo bus exceeds 0 dBFS.
-            live.master_gain = 16.0;
-            live.auto_gain = auto_gain;
-        }
-        for i in 0..4 {
+    let hot = |auto_gain: bool| -> SpatialRenderer {
+        let r = build();
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        // Hot enough that the HRIR-summed stereo bus exceeds 0 dBFS.
+        live.master_gain = 16.0;
+        live.auto_gain = auto_gain;
+        drop(live);
+        r
+    };
+    let frames = |r: &mut SpatialRenderer, n: usize| {
+        for i in 0..n {
             let ev: &[SpatialChannelEvent] = if i == 0 { &event } else { &[] };
             r.render_frame(&pcm, 1, ev, Vec::new(), false).unwrap();
         }
+    };
+    let render = |auto_gain: bool| -> SpatialRenderer {
+        let mut r = hot(auto_gain);
+        frames(&mut r, 4);
         r
     };
 
@@ -1805,6 +1811,26 @@ fn binaural_clipping_flags_ear_and_auto_gain_reduces_master() {
         master < 16.0,
         "master gain not reduced by auto-gain: {master}"
     );
+
+    // A control write in progress (#670): the render thread does not wait
+    // for it — on one thread, waiting would never end — it skips the fold,
+    // and a clipping frame after the write folds instead.
+    let mut r = hot(true);
+    let control = r.renderer_control();
+    let held = control.live.write();
+    frames(&mut r, 4);
+    assert!(
+        matches!(r.control.take_clip_pending(), Some(0) | Some(1)),
+        "clip flag not raised while a write is held"
+    );
+    assert!(!r.auto_gain_triggered(), "folded through a held write");
+    drop(held);
+    frames(&mut r, 1);
+    assert!(
+        r.auto_gain_triggered(),
+        "auto-gain did not fold after the write"
+    );
+    assert!(r.control.live.read().master_gain < 16.0);
 }
 
 /// In binaural mode a bed mapped to a `spatialize: false` speaker (the LFE)
