@@ -208,7 +208,7 @@ pub struct OwnedPlacement {
 
 impl OwnedPlacement {
     pub fn from_live(live: &renderer::live_params::LiveParams, family: SourceFamily) -> Self {
-        let effective = live.placement.effective(family);
+        let effective = live.placement.effective(family, live.binaural.output_mode);
         Self {
             mode: effective.mode,
             layout: effective.layout.cloned(),
@@ -1054,7 +1054,10 @@ impl ChannelPlanKey {
             && *planned_family == family
             && labels.as_slice() == channel_labels
             && planned_poses.as_slice() == declared_poses
-            && placement.mode == live.placement.effective_mode(family)
+            && placement.mode
+                == live
+                    .placement
+                    .effective_mode(family, live.binaural.output_mode)
             && placement.layout.as_ref() == live.placement.effective_layout(family)
     }
 }
@@ -2732,6 +2735,51 @@ pub(crate) mod tests {
         out.clear();
         planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
         assert!(out.is_empty(), "nothing changed since → cached plan");
+    }
+
+    /// Switching the output to headphones moves a family nobody chose a mode
+    /// for from its room corners to the sphere, on the next frame and without
+    /// an epoch bump; a family with a mode of its own stays where it was.
+    #[test]
+    fn headphones_replan_a_default_family_onto_the_sphere() {
+        use renderer::live_params::OutputMode;
+        use renderer::placement::PlacementMode;
+        let renderer = small_renderer(SpeakerLayout::preset("7.1.4").expect("preset layout"));
+        let control = renderer.renderer_control();
+        let dolby = test_family(&control, "dolby");
+        let dts = test_family(&control, "dts");
+        control.live.write().placement.family_mut(dts).mode = Some(PlacementMode::Room);
+        let labels = [
+            RChannelLabel::L,
+            RChannelLabel::R,
+            RChannelLabel::C,
+            RChannelLabel::LFE,
+            RChannelLabel::Object,
+        ];
+        let plan = |planner: &mut FixedChannelPlanner, family| {
+            let mut out = Vec::new();
+            planner.plan_object_stream_fixed(&labels, family, &[], &renderer, &mut out);
+            out
+        };
+
+        let mut dolby_planner = FixedChannelPlanner::new();
+        let mut dts_planner = FixedChannelPlanner::new();
+        let l_room = event_position(&plan(&mut dolby_planner, dolby), 0).expect("L event");
+        assert!(!plan(&mut dts_planner, dts).is_empty(), "initial plan");
+
+        control.live.write().binaural.output_mode = OutputMode::Binaural;
+        let l_headphones =
+            event_position(&plan(&mut dolby_planner, dolby), 0).expect("L event after the switch");
+        assert_ne!(l_headphones, l_room, "the default family left the room");
+        control.live.write().placement.family_mut(dolby).mode = Some(PlacementMode::Sphere);
+        assert!(
+            plan(&mut dolby_planner, dolby).is_empty(),
+            "the default on headphones is the sphere itself → cached plan"
+        );
+        assert!(
+            plan(&mut dts_planner, dts).is_empty(),
+            "a chosen room is not the output's to change"
+        );
     }
 
     /// A route that depends on the output layout — here `LFE2`, which folds

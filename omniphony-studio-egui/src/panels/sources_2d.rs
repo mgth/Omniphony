@@ -13,7 +13,8 @@ use egui::Ui;
 
 use crate::app::StudioSpike;
 use crate::host::channels::{
-    Family, LayoutSource, PlacementMode, families, family_label, family_placement, playing_family,
+    Family, LayoutSource, ModeSource, PlacementMode, families, family_label, family_placement,
+    playing_family,
 };
 use crate::host::commands::engine;
 use crate::i18n::t;
@@ -146,7 +147,7 @@ impl StudioSpike {
     /// entries. Picking Manual seeds the family's entries with the poses it
     /// renders right now, so nothing jumps.
     fn placement_group(&mut self, ui: &mut Ui) {
-        let (family, placement, generic_has_mode, tabs) = {
+        let (family, placement, tabs) = {
             let live = self.host.read();
             let family = live.editing_family;
             let playing = playing_family(&live.app);
@@ -156,14 +157,7 @@ impl StudioSpike {
                 .into_iter()
                 .map(|f| (f, family_label(&live.app, f), playing == Some(f)))
                 .collect();
-            (
-                family,
-                family_placement(&live.app, family),
-                family_placement(&live.app, Family::GENERIC)
-                    .own_mode
-                    .is_some(),
-                tabs,
-            )
+            (family, family_placement(&live.app, family), tabs)
         };
         let mode_name = t(placement.effective_mode.i18n_key());
         Group::new(t("placement.title"))
@@ -197,12 +191,13 @@ impl StudioSpike {
                         }
                     }
                 });
-                if placement.own_mode.is_none() {
-                    let text = if !family.is_generic() && generic_has_mode {
-                        t("placement.inherited")
-                    } else {
-                        t("placement.builtin")
-                    };
+                let why = match placement.mode_source {
+                    ModeSource::Own => None,
+                    ModeSource::Generic => Some(t("placement.inherited")),
+                    ModeSource::Headphones => Some(t("placement.headphonesDefault")),
+                    ModeSource::Family => Some(t("placement.builtin")),
+                };
+                if let Some(text) = why {
                     widgets::note(ui, &text.replace("{mode}", mode_name));
                 }
                 widgets::note(

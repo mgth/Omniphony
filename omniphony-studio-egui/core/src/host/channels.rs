@@ -150,8 +150,9 @@ pub fn family_label(app: &AppState, family: Family) -> String {
         .to_owned()
 }
 
-/// The mode a family runs in when neither it nor the generic family sets
-/// one, as the renderer reports it (`defaultMode`): room when it says nothing.
+/// The mode a family runs in on speakers when neither it nor the generic
+/// family sets one, as the renderer reports it (`defaultMode`): room when it
+/// says nothing.
 fn default_mode(app: &AppState, family: Family) -> PlacementMode {
     placement_block(app, family)
         .and_then(|block| block.get("defaultMode"))
@@ -195,6 +196,20 @@ impl PlacementMode {
     }
 }
 
+/// Why a family runs in the mode it does (`modeSource`), in the order the
+/// renderer's rule looks (`renderer::placement::PlacementState::resolve_mode`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModeSource {
+    /// The family's own choice.
+    Own,
+    /// The generic family's choice, inherited.
+    Generic,
+    /// Nobody chose, and the output is headphones: Sphere.
+    Headphones,
+    /// Nobody chose, and the output is speakers: the family's default.
+    Family,
+}
+
 /// Whose entries a family uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LayoutSource {
@@ -214,6 +229,7 @@ pub struct FamilyPlacement {
     /// The family's own mode, `None` when it inherits.
     pub own_mode: Option<PlacementMode>,
     pub effective_mode: PlacementMode,
+    pub mode_source: ModeSource,
     pub layout_source: LayoutSource,
 }
 
@@ -241,9 +257,18 @@ fn own_speakers(app: &AppState, family: Family) -> Option<&Vec<serde_json::Value
 
 pub fn family_placement(app: &AppState, family: Family) -> FamilyPlacement {
     let own = own_mode(app, family);
-    let effective_mode = own
-        .or_else(|| own_mode(app, Family::GENERIC))
-        .unwrap_or_else(|| default_mode(app, family));
+    let headphones = app
+        .binaural
+        .as_ref()
+        .and_then(|b| b.get("outputMode"))
+        .and_then(|v| v.as_str())
+        == Some("binaural");
+    let (effective_mode, mode_source) = match (own, own_mode(app, Family::GENERIC)) {
+        (Some(mode), _) => (mode, ModeSource::Own),
+        (None, Some(mode)) => (mode, ModeSource::Generic),
+        (None, None) if headphones => (PlacementMode::Sphere, ModeSource::Headphones),
+        (None, None) => (default_mode(app, family), ModeSource::Family),
+    };
     let layout_source = if own_speakers(app, family).is_some() {
         LayoutSource::Own
     } else if own_speakers(app, Family::GENERIC).is_some() || legacy_bed_speakers(app).is_some() {
@@ -254,6 +279,7 @@ pub fn family_placement(app: &AppState, family: Family) -> FamilyPlacement {
     FamilyPlacement {
         own_mode: own,
         effective_mode,
+        mode_source,
         layout_source,
     }
 }
@@ -974,6 +1000,32 @@ mod tests {
         let mut app = AppState::new(Vec::new());
         app.live_options.placement = Some(placement);
         app
+    }
+
+    /// The renderer's rule, mirrored: on headphones a family nobody chose a
+    /// mode for is on the sphere, and says why; a choice still wins.
+    #[test]
+    fn headphones_default_a_family_to_the_sphere() {
+        let mut app = app_with_placement(serde_json::json!({
+            "dolby": { "defaultMode": "room" },
+            "dts": { "defaultMode": "room", "mode": "room" }
+        }));
+        let dolby = || family_placement(&app, Family::named("dolby"));
+        assert_eq!(
+            (dolby().effective_mode, dolby().mode_source),
+            (PlacementMode::Room, ModeSource::Family)
+        );
+        app.binaural = Some(serde_json::json!({ "outputMode": "binaural" }));
+        let dolby = family_placement(&app, Family::named("dolby"));
+        assert_eq!(
+            (dolby.effective_mode, dolby.mode_source),
+            (PlacementMode::Sphere, ModeSource::Headphones)
+        );
+        let dts = family_placement(&app, Family::named("dts"));
+        assert_eq!(
+            (dts.effective_mode, dts.mode_source),
+            (PlacementMode::Room, ModeSource::Own)
+        );
     }
 
     #[test]
