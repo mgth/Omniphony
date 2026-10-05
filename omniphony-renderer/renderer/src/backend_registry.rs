@@ -334,6 +334,19 @@ pub struct TopologyBuildPlan {
     pub geometry_generation: u64,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TABLES_SAMPLED_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many band topologies — each sampling its gain table in a precomputed
+/// mode — the calling thread has built. Tests use it to tell the render
+/// thread's work from the band worker's.
+#[cfg(test)]
+pub(crate) fn tables_sampled_on_this_thread() -> usize {
+    TABLES_SAMPLED_HERE.with(std::cell::Cell::get)
+}
+
 impl TopologyBuildPlan {
     /// Build the topology to publish (see [`Self::build_topology_reusing`]).
     pub fn build_topology(&self) -> Result<RenderTopology> {
@@ -404,6 +417,8 @@ impl TopologyBuildPlan {
             ),
         };
         let engine = if sample {
+            #[cfg(test)]
+            TABLES_SAMPLED_HERE.with(|n| n.set(n.get() + 1));
             wrap_prepared_engine(model, effective_mode, &self.evaluation_build_config)?
         } else {
             wrap_unsampled_engine(model, effective_mode)

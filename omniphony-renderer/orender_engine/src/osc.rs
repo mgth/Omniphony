@@ -25,8 +25,8 @@ use self::dispatch::{RealtimeSeqState, handle_control_message};
 use self::export::build_live_state;
 use self::gaintable::GaintableCache;
 use self::transport::{
-    ensure_send_buffer, flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client,
-    send_metering_state, send_raw_filtered,
+    broadcast_string, ensure_send_buffer, flush_pending_logs, resolve_register_addr,
+    send_buffered_logs_to_client, send_metering_state, send_raw_filtered,
 };
 use runtime_control::osc_contract;
 
@@ -649,6 +649,19 @@ impl OscSender {
                             {
                                 send_raw_filtered(&socket, &clients, &bytes, |_| true);
                             }
+                        }
+                        // A band set the speaker stage's worker could not
+                        // build (the previous bands keep rendering), or the
+                        // empty string once a later build went through: on
+                        // the address a failed topology rebuild reports to,
+                        // which is what it is to a client.
+                        if let Some(message) = ctrl.take_band_build_error() {
+                            broadcast_string(
+                                &socket,
+                                &clients,
+                                osc_contract::STATE_SPEAKERS_RECOMPUTE_ERROR,
+                                &message,
+                            );
                         }
                     }
                     match rx_socket.recv_from(&mut buf) {

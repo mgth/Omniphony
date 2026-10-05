@@ -264,6 +264,9 @@ When the new topology is published, it broadcasts:
 - updated `/omniphony/state/speakers s <json>`
 
 A failed rebuild is reported on `/omniphony/state/speakers/recompute_error`.
+So is a published topology (or a crossover change) whose band engines could
+not be built: the previous bands keep rendering, and an empty string follows
+once a later build goes through.
 
 ## Notes
 
