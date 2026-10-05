@@ -1032,7 +1032,7 @@ fn collect_f32(args: &[rosc::OscType]) -> Vec<f32> {
 
 /// Apply a head-tracking packet if its address matches the configured tracking
 /// address. Recurses into bundles (sensor apps often batch readings). Reads the
-/// config under a short read lock and only takes the write lock on a match.
+/// config from the live params and writes them only on a match.
 /// Returns `true` if the pose was updated.
 fn apply_head_tracking_packet(packet: &OscPacket, ctrl: &RendererControl) -> bool {
     match packet {

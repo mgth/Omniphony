@@ -60,6 +60,55 @@ impl WavBridge {
         self.labels.clear();
     }
 
+    /// Run one `push_packet` body, catching a panic instead of letting it
+    /// unwind into the host: across the ABI boundary a panic ends the process,
+    /// which, when the engine is loaded as `liborender`, is the media player
+    /// (`BRIDGE_API.md`, "Panics"). A caught panic is a failed chunk: the
+    /// parser is reset like on any other decode failure, which a non-strict
+    /// host sees as `did_reset` and a strict one as an error.
+    fn recover_from_panic(&mut self, decode: impl FnOnce(&mut Self) -> RPushResult) -> RPushResult {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode(self))) {
+            Ok(result) => result,
+            Err(payload) => {
+                let reason = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("unknown panic");
+                let mut result = RPushResult {
+                    frames: RVec::new(),
+                    error_message: RString::new(),
+                    did_reset: false,
+                };
+                self.fail(
+                    &mut result,
+                    &format!("reference-bridge: decode panicked: {reason}"),
+                );
+                result
+            }
+        }
+    }
+
+    /// The `push_packet` body: buffer `data`, parse the header once, then
+    /// emit the PCM it completes.
+    fn decode(&mut self, data: &[u8]) -> RPushResult {
+        let mut result = RPushResult {
+            frames: RVec::new(),
+            error_message: RString::new(),
+            did_reset: false,
+        };
+
+        // The bridge is byte-stream oriented; both Raw and any extracted payload
+        // are simply appended. (The orender file-decode path always uses Raw.)
+        self.buf.extend_from_slice(data);
+
+        if matches!(self.state, State::Header) && !self.try_parse_header(&mut result) {
+            return result;
+        }
+        self.drain_pcm(&mut result);
+        result
+    }
+
     /// Emit one error into `result`, resetting the parser. In strict mode the
     /// message is surfaced via `error_message`; otherwise it is logged only.
     fn fail(&mut self, result: &mut RPushResult, message: &str) {
@@ -279,21 +328,7 @@ impl FormatBridge for WavBridge {
         _transport: RInputTransport,
         _data_type: u8,
     ) -> RPushResult {
-        let mut result = RPushResult {
-            frames: RVec::new(),
-            error_message: RString::new(),
-            did_reset: false,
-        };
-
-        // The bridge is byte-stream oriented; both Raw and any extracted payload
-        // are simply appended. (The orender file-decode path always uses Raw.)
-        self.buf.extend_from_slice(data.as_slice());
-
-        if matches!(self.state, State::Header) && !self.try_parse_header(&mut result) {
-            return result;
-        }
-        self.drain_pcm(&mut result);
-        result
+        self.recover_from_panic(|bridge| bridge.decode(data.as_slice()))
     }
 
     fn reset(&mut self) {
@@ -505,6 +540,37 @@ mod tests {
             total += r.frames.iter().map(|f| f.sample_count).sum::<u32>();
         }
         assert_eq!(total, 50);
+    }
+
+    /// A panic in a decode is caught at the boundary: the chunk counts as
+    /// failed, the parser starts over, and nothing unwinds into the host.
+    #[test]
+    fn a_panic_in_a_decode_resets_the_parser_instead_of_unwinding() {
+        let wav = write_wav(2, 48_000, &[vec![1i16, 2]]);
+        let mut bridge = WavBridge::new(false);
+        bridge.push_packet(RSlice::from_slice(&wav), RInputTransport::Raw, 0);
+        assert!(matches!(bridge.state, State::Data { .. }));
+
+        let r = bridge.recover_from_panic(|_| panic!("boom"));
+        assert!(r.did_reset && r.frames.is_empty());
+        assert!(
+            r.error_message.is_empty(),
+            "a non-strict bridge only resets"
+        );
+        assert!(matches!(bridge.state, State::Header));
+
+        let mut strict = WavBridge::new(true);
+        let r = strict.recover_from_panic(|_| panic!("boom {}", 2));
+        assert!(r.did_reset);
+        assert!(
+            r.error_message.as_str().contains("boom 2"),
+            "{}",
+            r.error_message
+        );
+
+        // The bridge decodes again from the next file start.
+        let r = bridge.push_packet(RSlice::from_slice(&wav), RInputTransport::Raw, 0);
+        assert_eq!(r.frames.iter().map(|f| f.sample_count).sum::<u32>(), 1);
     }
 
     #[test]

@@ -159,6 +159,29 @@ jobs:
         working-directory: omniphony-renderer
         run: cargo test --workspace --locked
 
+      # The bridge ABI policy (BRIDGE_API.md, "Versioning") held against a
+      # real old plugin: the reference bridge built at the last release tag
+      # is loaded into this host, which must load it when both share a
+      # bridge_api minor and otherwise refuse it with an error naming both
+      # versions. The layout itself is pinned by bridge_api's abi_baseline
+      # test in the run above. The old bridge gets a target directory of its
+      # own so its library does not replace the current one.
+      - name: Load the previous release's bridge
+        run: |
+          tag="$(git ls-remote --tags --refs origin 'v*' \
+            | sed 's|.*refs/tags/||' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -n 1)"
+          echo "Last release: $tag"
+          git fetch --no-tags --depth=1 origin "refs/tags/$tag:refs/tags/$tag"
+          git worktree add --detach "$RUNNER_TEMP/previous-release" "$tag"
+          target="$GITHUB_WORKSPACE/omniphony-renderer/target/previous-release"
+          (cd "$RUNNER_TEMP/previous-release/omniphony-renderer" \
+            && CARGO_TARGET_DIR="$target" cargo build --locked -p reference_bridge)
+          cd omniphony-renderer
+          ORENDER_PREVIOUS_RELEASE_BRIDGE="$target/debug/libreference_bridge.so" \
+            cargo test --locked -p orender_engine --test previous_release_bridge -- --ignored --nocapture
+
       # Compile-only gate for the release-only perf tests. The perf-gate
       # feature is off in the normal test run and its module is compiled out
       # in debug builds, so nothing above ever type-checks it and it can rot

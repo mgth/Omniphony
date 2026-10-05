@@ -21,7 +21,7 @@ rust-version = "1.89"
 # Workspace crates.
 audio_input = { version = "0.2.4", path = "audio_input" }
 audio_output = { version = "0.2.4", path = "audio_output" }
-bridge_api = { version = "0.4.0", path = "bridge_api" }
+bridge_api = { version = "0.5.0", path = "bridge_api" }
 diag = { version = "0.1.0", path = "diag" }
 dsp_fixtures = { version = "0.1.0", path = "dsp_fixtures" }
 example_backend = { version = "0.1.0", path = "example_backend" }

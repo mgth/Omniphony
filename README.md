@@ -17,7 +17,7 @@ or to **binaural headphones**, in real time. Open source, GPL-3.0.
 - 🎧 **Hear it on headphones** — binaural output (HRTF + ITD + live head-tracking),
   no surround rig required.
 - 🔊 **Render to any layout** — stereo, 5.1, 7.1, 7.1.4 and beyond, via VBAP.
-- 🧩 **Pluggable decoders** — a small, stable ABI (`bridge_api`) loads decoder
+- 🧩 **Pluggable decoders** — a small, versioned ABI (`bridge_api`) loads decoder
   bridges at runtime; bring your own format.
 - 🛰️ **Live control + 3D visualization** — Omniphony Studio supervises the engine
   over OSC.
@@ -100,7 +100,9 @@ The core engine (executable: `orender`) and its supporting crates:
 - `renderer` — VBAP engine, layouts, binaural, OSC output, runtime config
 - `audio_output` — PipeWire / ASIO / CoreAudio / file backends
 - `audio_input` — live PCM / bridge input
-- `bridge_api` — the stable ABI for external decoder bridges
+- `bridge_api` — the versioned ABI for external decoder bridges (a bridge
+  loads in a host built against the same `bridge_api` minor; see
+  [`BRIDGE_API.md`](omniphony-renderer/BRIDGE_API.md))
 - `reference_bridge` — a reference WAV/PCM decoder bridge (powers the demo)
 - `spdif` — IEC 61937 / S/PDIF parsing
 - `sys` — platform integration (incl. Windows service)
