@@ -12,7 +12,6 @@ name = "audio_output"
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
-crossbeam = "0.8"
 parking_lot.workspace = true
 rubato = "0.14"
 rtrb = "0.4"

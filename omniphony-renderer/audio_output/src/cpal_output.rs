@@ -5,7 +5,6 @@
 
 use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
 use rubato::{Resampler, SincFixedIn};
 use std::sync::{
@@ -30,8 +29,8 @@ use crate::{
     clamp_ratio_for_local_resampler, local_resampler_ratio_bounds,
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine, output_resampler_params},
     ring_buffer_io::{
-        OUTPUT_RING_CAPACITY, flush_ring_buffer, push_samples_drop_overflow,
-        push_samples_with_backpressure,
+        OUTPUT_RING_CAPACITY, RingMonitor, RingWriter, flush_ring_buffer,
+        push_samples_drop_overflow, push_samples_with_backpressure, sample_ring,
     },
 };
 
@@ -121,7 +120,12 @@ fn output_host() -> Result<cpal::Host> {
 }
 
 pub struct CpalWriter {
-    sample_buffer: Arc<ArrayQueue<f32>>,
+    /// The writing end of the ring the device callback reads. The renderer is
+    /// its one producer.
+    sample_buffer: RingWriter,
+    /// The same ring's level, for the flush, and the request to drop what a
+    /// flush gave up on.
+    ring: RingMonitor,
     input_sample_rate: u32,
     _output_sample_rate: u32,
     channel_count: u32,         // Number of audio channels we're producing
@@ -209,8 +213,9 @@ impl CpalWriter {
         // Local resampling ratio is output_rate / input_rate.
         let resample_ratio = output_sample_rate as f64 / input_sample_rate as f64;
 
-        let sample_buffer = Arc::new(ArrayQueue::new(OUTPUT_RING_CAPACITY));
-        let buffer_clone = sample_buffer.clone();
+        // The reading end moves into the callback, its one consumer.
+        let (sample_buffer, mut ring_reader) = sample_ring(OUTPUT_RING_CAPACITY);
+        let ring = sample_buffer.monitor();
         let stream_ready = Arc::new(AtomicBool::new(false));
         let ready_clone = stream_ready.clone();
         let current_rate_adjust = Arc::new(AtomicU32::new(1.0f32.to_bits()));
@@ -231,7 +236,7 @@ impl CpalWriter {
         let output_fifo_latency_ms_bits_clone = output_fifo_latency_ms_bits.clone();
         let resampler_pending_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let resampler_pending_latency_ms_bits_clone = resampler_pending_latency_ms_bits.clone();
-        // Ring-buffer thresholds in INPUT-domain samples (same domain as buffer_clone.len()).
+        // Ring-buffer thresholds in INPUT-domain samples (same domain as ring_reader.available()).
         let samples_per_ms =
             (input_sample_rate as usize).saturating_mul(channel_count as usize) / 1000;
         let samples_per_ms_f64 = samples_per_ms as f64;
@@ -449,8 +454,12 @@ impl CpalWriter {
             }
             let is_pi_paused = callback_cfg.paused;
 
+            // A flush that gave up leaves the rest for this end to drop.
+            ring_reader.apply_requested_discard();
+
             // 1. Check buffer fill & Calculate Rate
-            let available_samples = buffer_clone.len(); // Input-domain samples (frames * channels)
+            // Input-domain samples (frames * channels)
+            let available_samples = ring_reader.available();
             // Raw FIFO level for any future diagnostic plot; not used in the
             // PI input below (see chunk-cancellation rationale).
             let _output_fifo_input_domain_samples_raw = output_to_input_domain_samples(
@@ -721,7 +730,7 @@ impl CpalWriter {
                 };
                 if prepared_samples > 0 {
                     if let Err(e) = resampler_fifo.ensure_output_samples(
-                        &buffer_clone,
+                        &mut ring_reader,
                         &mut resampler,
                         prepared_samples,
                     ) {
@@ -740,7 +749,7 @@ impl CpalWriter {
                 }
             } else {
                 if let Err(e) = resampler_fifo.ensure_output_samples(
-                    &buffer_clone,
+                    &mut ring_reader,
                     &mut resampler,
                     audio_samples_needed,
                 ) {
@@ -758,7 +767,7 @@ impl CpalWriter {
                     channel_count as usize,
                 );
                 if let Err(e) = resampler_fifo.ensure_output_samples(
-                    &buffer_clone,
+                    &mut ring_reader,
                     &mut resampler,
                     plan.desired_consume_output_samples,
                 ) {
@@ -838,6 +847,7 @@ impl CpalWriter {
 
         Ok(Self {
             sample_buffer,
+            ring,
             input_sample_rate,
             _output_sample_rate: output_sample_rate,
             channel_count,
@@ -868,10 +878,10 @@ impl CpalWriter {
         // what fits below the threshold and drop the overflow — the same
         // policy as the PipeWire writer.
         let report = if self.backpressure_disabled.load(Ordering::Relaxed) {
-            push_samples_drop_overflow(&self.sample_buffer, samples, self.max_buffer_fill)
+            push_samples_drop_overflow(&mut self.sample_buffer, samples, self.max_buffer_fill)
         } else {
             push_samples_with_backpressure(
-                &self.sample_buffer,
+                &mut self.sample_buffer,
                 samples,
                 self.max_buffer_fill,
                 10,
@@ -886,7 +896,7 @@ impl CpalWriter {
 
     pub fn flush(&mut self) -> Result<()> {
         let _ = flush_ring_buffer(
-            &self.sample_buffer,
+            &self.ring,
             Duration::from_secs(5),
             Duration::from_millis(50),
             None,
