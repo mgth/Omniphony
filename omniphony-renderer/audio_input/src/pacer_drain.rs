@@ -18,8 +18,10 @@
 //! The rule: **a capture stream that is delivering chunks is the clock;
 //! otherwise the token clock is.** The capture stream holds it itself. It is
 //! not read from the input mode or from the applied input state: those say
-//! what was asked for and what was last decoded, and both can read "pipe
-//! bridge" while a capture stream is running.
+//! what was asked for and what was applied, not whether a stream is
+//! delivering. In PipeWire mode the applied state reads "pipewire" from the
+//! moment the capture is spawned, whether a client plays into it or not (and
+//! it read "pipe bridge" from the first bridge-decoded frame on, until #701).
 //!
 //! - A capture stream can only drain through its [`CaptureDrainClock`], which
 //!   takes the drain before it moves a sample, with each chunk the stream
@@ -777,9 +779,9 @@ mod tests {
         assert!(CAPTURE_SILENCE_LIMIT > longest_cycle);
     }
 
-    /// The applied input state has no say. It reads "pipe bridge" in PipeWire
-    /// mode from the first bitstream frame decoded from the capture on, and
-    /// "pipewire" before a capture stream delivers anything.
+    /// The applied input state has no say: it reads "pipewire" with a stream
+    /// delivering and with one waiting for a client alike, and it read "pipe
+    /// bridge" in PipeWire mode from the first bitstream frame on, until #701.
     #[test]
     fn the_applied_input_state_does_not_pick_the_clock() {
         let output = output();
