@@ -104,17 +104,13 @@ impl<'a> SpatialMetadataCoordinator<'a> {
             .spatial
             .stream
             .object_frame_metas(self.spatial_renderer, conf);
-        if let Err(e) = osc_sender.send_object_frame(
+        osc_sender.send_object_frame(
             sample_pos,
             meta.ramp_duration,
             self.spatial.stream.osc_coordinate_format(),
             &objects,
-        ) {
-            log::warn!("Failed to send OSC metadata: {}", e);
-        }
+        );
         let seconds = sample_pos as f64 / sample_rate as f64;
-        if let Err(e) = osc_sender.send_timestamp(sample_pos, seconds) {
-            log::warn!("Failed to send OSC timestamp: {}", e);
-        }
+        osc_sender.send_timestamp(sample_pos, seconds);
     }
 }
