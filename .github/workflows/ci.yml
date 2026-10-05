@@ -65,6 +65,17 @@ jobs:
         working-directory: omniphony-renderer
         run: cargo fmt --all -- --check
 
+      # The release version is written in a dozen manifests and lockfiles; a
+      # copy left behind is a release whose parts disagree on what they are
+      # (#676). The script needs tomllib (3.11), which ubuntu-22.04 lacks.
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Check every copy of the release version agrees
+        run: python3 scripts/release_version.py check
+
       # ── Platform dependencies ─────────────────────────────────────────────
       # Same PipeWire PPA as release.yml: ubuntu-22.04 ships PipeWire 0.3.48 but
       # pipewire-rs 0.9.x needs >= 0.3.65. The GUI/Tauri libs are kept too so the
@@ -373,6 +384,26 @@ jobs:
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":null}}'
         run: cargo check --locked
+
+      # `check` only sees the tree at its current version; a copy the bump
+      # forgets to move shows up at the next release, when the release build
+      # refuses its lockfile (#712 review: the Tauri lock's studio-core
+      # entry). So bump for real, resolve the three workspaces `--locked` as
+      # the builds will, then put the tree back. Offline, for this runner's
+      # platform only: the steps above fetched its dependencies, not the
+      # Windows/macOS-only ones, and the lockfile is checked as a whole
+      # either way.
+      - name: Bump the release version and resolve every lockfile
+        run: |
+          set -euo pipefail
+          trap 'git checkout -- .' EXIT
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          python3 scripts/release_version.py set 99.0.0 --player mpv-v99.0.0
+          for workspace in omniphony-renderer omniphony-studio/src-tauri omniphony-studio-egui; do
+            (cd "$workspace" && cargo metadata --locked --offline --filter-platform "$host" \
+              --format-version 1 > /dev/null)
+            echo "$workspace: lockfile valid at 99.0.0"
+          done
 
       # Drift pins for the renderer<->Studio mirrors (channel-spelling
       # normalisation, geometry golden vectors) — hard gates, like knip below.

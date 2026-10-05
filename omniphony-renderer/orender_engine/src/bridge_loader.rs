@@ -77,13 +77,15 @@ impl LoadedBridge {
 fn check_bridge_api_version(path: &Path) -> Result<()> {
     let header = lib_header_from_path(path)
         .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
+    let host = host_bridge_api_version();
     let bridge = header.version_strings().parsed().with_context(|| {
         format!(
-            "Bridge plugin {} has no valid bridge_api version",
-            path.display()
+            "Bridge plugin {} has no valid bridge_api version (this host loads bridge_api {}.{}.x)",
+            path.display(),
+            host.major,
+            host.minor
         )
     })?;
-    let host = host_bridge_api_version();
     if let Err(reason) = bridge_api_compatible(host, bridge) {
         bail!(
             "Bridge plugin {} cannot be loaded: {reason}",

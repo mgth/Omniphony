@@ -601,6 +601,9 @@ pub struct AppState {
     pub render_executable: Option<String>,
     #[serde(rename = "renderAbi")]
     pub render_abi: Option<String>,
+    /// The `bridge_api` version the renderer loads bridges of.
+    #[serde(rename = "renderBridgeApi")]
+    pub render_bridge_api: Option<String>,
     /// Named config profiles (`/omniphony/state/profiles`): the active profile
     /// name and the full name list, mirrored verbatim from the renderer.
     #[serde(rename = "activeProfile")]
@@ -892,6 +895,7 @@ impl Default for AppState {
             render_version: None,
             render_executable: None,
             render_abi: None,
+            render_bridge_api: None,
             active_profile: None,
             profile_names: Vec::new(),
             render_bridge_error: None,

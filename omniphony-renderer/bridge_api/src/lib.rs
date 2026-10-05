@@ -11,6 +11,12 @@
 
 pub mod labels;
 
+/// This crate's version, the `bridge_api` a host built against it loads
+/// bridges of (same minor). Hosts publish it to their clients
+/// (`/omniphony/state/render/bridge_api`, Studio's About box) so a bridge
+/// that will not load can be matched against it before anyone reads a log.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 use abi_stable::{
     StableAbi, declare_root_module_statics,
     library::RootModule,

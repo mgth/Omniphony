@@ -615,6 +615,9 @@ export function applyInitState(payload) {
   if (typeof payload.renderAbi === 'string') {
     app.renderAbi = payload.renderAbi.trim() || null;
   }
+  if (typeof payload.renderBridgeApi === 'string') {
+    app.renderBridgeApi = payload.renderBridgeApi.trim() || null;
+  }
   if (typeof payload.renderBridgeError === 'string') {
     app.renderBridgeError = payload.renderBridgeError.trim() || null;
   }

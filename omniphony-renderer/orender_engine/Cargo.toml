@@ -1,6 +1,6 @@
 [package]
 name = "orender_engine"
-version = "0.2.3"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
