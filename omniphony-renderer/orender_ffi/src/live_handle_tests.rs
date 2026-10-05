@@ -30,19 +30,37 @@ impl Drop for Session {
 
 fn reference_bridge() -> CString {
     let exe = std::env::current_exe().expect("test binary path");
+    let path = find_reference_bridge(exe.parent().expect("test binary directory"))
+        .unwrap_or_else(|| panic!("reference bridge not built near {}", exe.display()));
+    CString::new(path.to_str().expect("utf-8 path")).unwrap()
+}
+
+/// The reference bridge cdylib cargo built for this run, searched from `start`
+/// upwards. Cargo puts a dependency's cdylib in `deps/` beside the binaries
+/// (a workspace build also copies it next to them); the newer build-dir layout
+/// (cargo nightly) puts it in `build/reference_bridge/<hash>/out/` under the
+/// profile directory instead. The most recent of several builds wins.
+fn find_reference_bridge(start: &Path) -> Option<PathBuf> {
     let name = format!(
         "{}reference_bridge{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    let path = exe
-        .ancestors()
-        .skip(1)
-        .take(2)
-        .map(|dir| dir.join(&name))
-        .find(|path| path.is_file())
-        .unwrap_or_else(|| panic!("{name} not built next to {}", exe.display()));
-    CString::new(path.to_str().expect("utf-8 path")).unwrap()
+    let modified = |p: &Path| p.metadata().and_then(|m| m.modified()).ok();
+    for dir in start.ancestors().take(5) {
+        let mut found: Vec<PathBuf> = vec![dir.join(&name), dir.join("deps").join(&name)];
+        if let Ok(entries) = std::fs::read_dir(dir.join("build").join("reference_bridge")) {
+            found.extend(entries.flatten().map(|e| e.path().join("out").join(&name)));
+        }
+        if let Some(path) = found
+            .into_iter()
+            .filter(|p| p.is_file())
+            .max_by_key(|p| modified(p))
+        {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn demo() -> Vec<u8> {
