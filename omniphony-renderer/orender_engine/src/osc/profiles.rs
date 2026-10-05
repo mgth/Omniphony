@@ -294,7 +294,12 @@ pub(crate) fn adopt_handoff_live_state(
         return;
     };
     let (config, restored) = renderer::config::Config::load_or_default_with_live(&path);
+    // The adopted state may be another instance's parse-error fallback, or
+    // the file this instance once failed to parse may since load: the status
+    // the Save refusal keys on follows the state, as at boot.
+    let status = renderer::config::live_load_status(&path, &config, restored);
     apply_switched_profile(&config, control, socket, clients, gaintable_cache);
+    control.set_config_status(Some(status.as_str().into()));
     if restored {
         // Sidecar state only ever lived in that file, so it is unsaved by
         // definition — the save indicator must show it as pending, exactly as
@@ -508,6 +513,49 @@ mod tests {
         assert!(!control.config_dirty.load(Ordering::Relaxed));
         assert_eq!(control.config_status().as_deref(), Some("loaded"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Codex's standby sequence: this instance loaded the file and went to
+    /// standby; the file broke, the incoming instance ran on the defaults,
+    /// the file was fixed, and that instance handed its fallback over. On
+    /// resume the adopted state is still the fallback, so the Save must be
+    /// refused although this instance loaded the file and it parses again.
+    /// Adopting a state that is not a fallback lifts an old parse_error.
+    #[test]
+    fn a_standby_resume_adopts_the_parse_error_status_of_the_handed_over_state() {
+        let dir =
+            std::env::temp_dir().join(format!("orender-standby-resume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        config_with_layout("9.1.6").save(&path).unwrap();
+        let fixed = std::fs::read(&path).unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        let mut fallback = config_with_layout("7.1.4");
+        fallback.live_from_parse_error = true;
+        fallback.save_without_backup(&sidecar).unwrap();
+
+        let control = fixture_control();
+        control.set_config_path(path.clone());
+        control.set_config_status(Some("loaded".into()));
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
+        let gaintable_cache = Arc::new(GaintableCache::new());
+
+        adopt_handoff_live_state(&control, &socket, &clients, &gaintable_cache);
+        assert_eq!(control.config_status().as_deref(), Some("parse_error"));
+        assert!(runtime_control::persist::save_live_config(&control, None).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), fixed);
+
+        // A handover from an instance that loaded the file: no fallback left.
+        config_with_layout("7.1.4")
+            .save_without_backup(&sidecar)
+            .unwrap();
+        adopt_handoff_live_state(&control, &socket, &clients, &gaintable_cache);
+        assert_eq!(control.config_status().as_deref(), Some("loaded"));
+
+        renderer::config::discard_live_sidecar(&path);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1243,12 +1243,20 @@ pub fn live_overlay_active(config_path: &Path) -> bool {
 /// ([`Config::live_from_parse_error`]). Call it after the sidecar was consumed
 /// ([`Config::load_or_default_with_live`]).
 pub fn boot_load_status(config_path: &Path) -> ConfigLoadStatus {
-    let from_fallback = LIVE_OVERLAY
-        .lock()
-        .unwrap()
-        .get(config_path)
-        .is_some_and(|overlay| overlay.live_from_parse_error);
-    if from_fallback {
+    let overlay = LIVE_OVERLAY.lock().unwrap().get(config_path).cloned();
+    match overlay {
+        Some(overlay) => live_load_status(config_path, &overlay, true),
+        None => Config::load_status(config_path),
+    }
+}
+
+/// The `config_status` for a live state `loaded` from
+/// [`Config::load_or_default_with_live`] (`restored` as it returned): a
+/// restored parse-error fallback stays `parse_error`, anything else gets the
+/// file's own status. For a host adopting the state after boot (a standby
+/// resume), which has the result in hand.
+pub fn live_load_status(config_path: &Path, loaded: &Config, restored: bool) -> ConfigLoadStatus {
+    if restored && loaded.live_from_parse_error {
         ConfigLoadStatus::ParseError
     } else {
         Config::load_status(config_path)
