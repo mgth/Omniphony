@@ -7,8 +7,9 @@
 //! variant of a type they carry — must come with a minor bump, or bridges of
 //! the same version number stop loading in each other's hosts.
 //!
-//! This test walks that layout from the root module, writes it as text, and
-//! compares it with `abi-baseline.txt`:
+//! This test walks that layout from the root module — and from what crosses
+//! the boundary outside it, the log callback `set_host_log_sink` receives as
+//! a `usize` — writes it as text, and compares it with `abi-baseline.txt`:
 //!
 //! - same layout: passes (the header must name the current minor);
 //! - layout changed, minor not bumped: fails, and no environment variable
@@ -17,15 +18,22 @@
 //!   `UPDATE_BRIDGE_ABI_BASELINE=1 cargo test -p bridge_api --test abi_baseline`
 //!   and commit it with the change, so the review shows the ABI diff.
 //!
-//! The text leaves out what does not reach the ABI or differs between
-//! platforms and builds: sizes and alignments (they follow from the fields
-//! and primitives listed), source lines, module paths, type ids, parameter
-//! names.
+//! Sizes and alignments are part of the text: `repr_attr` does not report an
+//! `align(N)`, and a type can change both without a field changing. They
+//! depend on the pointer width, so the baseline describes 64-bit targets and
+//! the test runs there; a source change moves the 64-bit layout as well, so
+//! that is where it is caught. The text leaves out what does not reach the
+//! ABI or differs between builds: source lines, module paths, type ids,
+//! parameter names.
+
+#![cfg(target_pointer_width = "64")]
+#![allow(non_local_definitions)]
 
 use abi_stable::StableAbi;
+use abi_stable::std_types::RStr;
 use abi_stable::std_types::UTypeId;
 use abi_stable::type_layout::{TLData, TLField, TLFields, TypeLayout};
-use bridge_api::BridgeLibRef;
+use bridge_api::{BridgeHostLogSink, BridgeLibRef, RLogLevel};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -45,13 +53,46 @@ fn current_minor() -> (u32, u32) {
     )
 }
 
-/// Every type reachable from `root`, once each, in the order the walk first
+/// What crosses the boundary outside the root module's layout: the host's
+/// log callback, which `set_host_log_sink` receives as a `usize`, so neither
+/// abi_stable's load check nor a walk from the root module sees its
+/// signature. A field of a struct, because a function pointer's own layout
+/// is opaque: only a field carries its parameter and return types.
+///
+/// The derive reads a signature only when it is spelled out in the field, not
+/// through the `BridgeHostLogSink` alias, so it is spelled out here and
+/// [`same_signature`] keeps it equal to the alias.
+#[repr(C)]
+#[derive(StableAbi)]
+struct OutOfBand {
+    host_log_sink: extern "C" fn(level: RLogLevel, target: RStr<'_>, message: RStr<'_>),
+}
+
+/// Compiles only while `OutOfBand::host_log_sink` and `BridgeHostLogSink`
+/// are the same type, in both directions.
+#[allow(dead_code)]
+fn same_signature(sink: BridgeHostLogSink) -> BridgeHostLogSink {
+    let spelled_out: extern "C" fn(RLogLevel, RStr<'_>, RStr<'_>) = sink;
+    spelled_out
+}
+
+/// The whole ABI a bridge sees: the root module, then what goes around it.
+fn describe_abi() -> String {
+    describe(&[
+        <BridgeLibRef as StableAbi>::LAYOUT,
+        <OutOfBand as StableAbi>::LAYOUT,
+    ])
+}
+
+/// Every type reachable from `roots`, once each, in the order the walk first
 /// meets them. Types are told apart by their type id, not their printed name:
 /// abi_stable prints `RVec<u8>` and `RVec<REvent>` both as `RVec`, so a type
 /// whose name is already taken gets a `#2`, `#3`… suffix.
-fn describe(root: &'static TypeLayout) -> String {
+fn describe(roots: &[&'static TypeLayout]) -> String {
     let mut walk = Walk::default();
-    walk.name_of(root);
+    for root in roots {
+        walk.name_of(root);
+    }
     while let Some(layout) = walk.queue.pop_front() {
         walk.describe_type(layout);
     }
@@ -90,9 +131,11 @@ impl Walk {
         let name = self.name_of(layout);
         let _ = writeln!(
             self.out,
-            "type {name} [{} repr={:?}{}]",
+            "type {name} [{} repr={:?} size={} align={}{}]",
             layout.package(),
             layout.repr_attr(),
+            layout.size(),
+            layout.alignment(),
             if layout.is_nonzero() { " nonzero" } else { "" },
         );
         match layout.data() {
@@ -215,7 +258,7 @@ fn first_difference(a: &str, b: &str) -> String {
 
 #[test]
 fn bridge_abi_changes_only_with_a_minor_bump() {
-    let current = describe(<BridgeLibRef as StableAbi>::LAYOUT);
+    let current = describe_abi();
     let minor = current_minor();
     let path = baseline_path();
     let update = std::env::var_os(UPDATE_VAR).is_some();
@@ -262,17 +305,19 @@ fn bridge_abi_changes_only_with_a_minor_bump() {
     );
 }
 
-/// The walk reaches the trait's methods through the root module, so a method
-/// added to `FormatBridge` shows up in the text: without this, the vtable
-/// could change behind a baseline that only lists the root module.
+/// The walk reaches the trait's methods through the root module, and the log
+/// callback's signature through `OutOfBand`: without this, the vtable or the
+/// callback could change behind a baseline that only lists the root module.
 #[test]
 fn the_walk_reaches_the_trait_vtable() {
-    let text = describe(<BridgeLibRef as StableAbi>::LAYOUT);
+    let text = describe_abi();
     for method in [
         "push_packet",
         "fixed_channel_poses",
         "channel_tags",
         "source_families",
+        "host_log_sink",
+        "RLogLevel",
     ] {
         assert!(
             text.contains(method),

@@ -24,7 +24,9 @@ version.** Rebuild the bridge with the host: a bridge built against
 - **What a patch release may change.** Documentation, constants, plain Rust
   helpers: anything that leaves the layout alone.
 - **The check.** `bridge_api/tests/abi_baseline.rs` writes the layout a
-  bridge sees, from the root module down to every type it reaches, and
+  bridge sees — from the root module down to every type it reaches, plus the
+  host log callback `set_host_log_sink` receives as a `usize` — with each
+  type's size and alignment (as on 64-bit targets, where the test runs), and
   compares it with the committed `bridge_api/abi-baseline.txt`. A layout
   change without a minor bump fails it, whatever the environment says; with
   the bump, regenerate the baseline and commit it with the change:
