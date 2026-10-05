@@ -365,11 +365,14 @@ pub enum OscEvent {
     #[serde(rename = "state:snapshot_complete")]
     StateSnapshotComplete,
     /// `/state/generation`: where the state the engine sent stands; `full`
-    /// when it closes a snapshot (osc-contract `STATE_GENERATION`).
+    /// in each datagram of a snapshot, with that datagram's index and the
+    /// snapshot's count (osc-contract `STATE_GENERATION`).
     #[serde(rename = "state:generation")]
     StateGeneration {
         generation: i32,
         full: bool,
+        part: u32,
+        parts: u32,
     },
     /// `/state/control_error`: a control this client sent was not applied.
     #[serde(rename = "state:control_error")]
@@ -1037,6 +1040,18 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 _ => return None,
             },
             full: args.get(1).copied().and_then(to_number).unwrap_or(0.0) != 0.0,
+            part: args
+                .get(2)
+                .copied()
+                .and_then(to_number)
+                .unwrap_or(0.0)
+                .max(0.0) as u32,
+            parts: args
+                .get(3)
+                .copied()
+                .and_then(to_number)
+                .unwrap_or(1.0)
+                .max(1.0) as u32,
         }),
         (3, "control_error") => Some(OscEvent::StateControlError {
             address: raw_args.first().and_then(unwrap_string)?,

@@ -41,37 +41,65 @@ pub(crate) const STATE_TIMETAG: OscTime = OscTime {
     fractional: 1,
 };
 
-/// `/omniphony/state/generation [generation, full]`: what closes a snapshot
-/// (`full`) or follows a single state update (see
-/// [`osc_contract::STATE_GENERATION`]).
-pub(crate) fn state_generation_message(generation: u32, full: bool) -> OscPacket {
+/// `/omniphony/state/generation [generation, full, part, parts]` (see
+/// [`osc_contract::STATE_GENERATION`]): after a single update, `full = 0` and
+/// part 0 of 1; in each datagram of a snapshot, `full = 1` with that
+/// datagram's index and the snapshot's datagram count.
+pub(crate) fn state_generation_message(
+    generation: u32,
+    full: bool,
+    part: usize,
+    parts: usize,
+) -> OscPacket {
+    let int = |value: usize| OscType::Int(i32::try_from(value).unwrap_or(i32::MAX));
     OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_GENERATION.to_string(),
         // The wire's int is signed; the count is compared for equality only.
         args: vec![
             OscType::Int(generation as i32),
             OscType::Int(i32::from(full)),
+            int(part),
+            int(parts),
         ],
     })
 }
 
-/// Broadcast one state update, versioned: it goes out in a bundle with the
-/// next state generation, so a client that missed the one before it can tell.
+/// Broadcast state updates, versioned: `capture` runs under the publication
+/// lock, and each message it returns goes out in a bundle of its own with the
+/// next state generation, so a client that missed one can tell. One per
+/// datagram, as they went before they were numbered: a recompute's renderer,
+/// layout and speakers together could outgrow a datagram.
+///
 /// For control-plane state only — a telemetry stream sent this way would move
 /// the generation on every reading, and every client would keep asking for
-/// snapshots.
-fn broadcast_state(socket: &UdpSocket, clients: &OscClientRegistry, msg: OscMessage) {
-    let generation = clients.advance_state_generation();
-    let bundle = OscPacket::Bundle(OscBundle {
-        timetag: STATE_TIMETAG,
-        content: vec![
-            OscPacket::Message(msg),
-            state_generation_message(generation, false),
-        ],
+/// snapshots. A value read on another thread than the one that changed it (a
+/// recompute's result, the overlay, the loudness) is read in `capture`, so it
+/// is never older than a publication that went out before it.
+pub(crate) fn publish_state(
+    socket: &UdpSocket,
+    clients: &OscClientRegistry,
+    capture: impl FnOnce() -> Vec<OscMessage>,
+) {
+    clients.publish(|generation| {
+        for msg in capture() {
+            let bundle = OscPacket::Bundle(OscBundle {
+                timetag: STATE_TIMETAG,
+                content: vec![
+                    OscPacket::Message(msg),
+                    state_generation_message(generation.advance(), false, 0, 1),
+                ],
+            });
+            if let Ok(bytes) = rosc::encoder::encode(&bundle) {
+                send_raw(socket, clients, &bytes);
+            }
+        }
     });
-    if let Ok(bytes) = rosc::encoder::encode(&bundle) {
-        send_raw(socket, clients, &bytes);
-    }
+}
+
+/// One state update whose value the caller holds already: the thread that
+/// just changed it. See [`publish_state`].
+fn broadcast_state(socket: &UdpSocket, clients: &OscClientRegistry, msg: OscMessage) {
+    publish_state(socket, clients, || vec![msg]);
 }
 
 pub(crate) fn broadcast_float(

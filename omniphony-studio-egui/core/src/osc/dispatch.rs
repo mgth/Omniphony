@@ -980,8 +980,17 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             live.app.osc_snapshot_ready = true;
             Change::Snapshot
         }
-        OscEvent::StateGeneration { generation, full } => {
-            live.state_sync.on_generation(generation, full);
+        OscEvent::StateGeneration {
+            generation,
+            full,
+            part,
+            parts,
+        } => {
+            if full {
+                live.state_sync.on_snapshot_part(generation, part, parts);
+            } else {
+                live.state_sync.on_update(generation);
+            }
             Change::None
         }
         OscEvent::StateControlError {

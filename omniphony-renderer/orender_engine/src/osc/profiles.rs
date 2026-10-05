@@ -17,7 +17,7 @@ use runtime_control::HostControlHandler;
 use runtime_control::osc_contract;
 
 use super::client_registry::OscClientRegistry;
-use super::export::build_live_state;
+use super::export::broadcast_live_state;
 use super::gaintable::GaintableCache;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{broadcast_int, broadcast_string};
@@ -222,7 +222,7 @@ pub(crate) fn handle_profile_message(
     broadcast_profiles_state(control, socket, clients);
     // Full state refresh so every client view (options, layout, binaural,
     // gains…) re-syncs to the post-operation state.
-    build_live_state(control, host).broadcast(socket, clients);
+    broadcast_live_state(control, host, socket, clients);
     log::info!(
         "OSC {addr}: '{name}' done (active profile '{}')",
         config.active_profile_name()
@@ -354,7 +354,7 @@ pub(crate) fn reload_config_in_place(
     broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
     broadcast_profiles_state(control, socket, clients);
-    build_live_state(control, host).broadcast(socket, clients);
+    broadcast_live_state(control, host, socket, clients);
     log::info!(
         "OSC reload_config: reloaded {} in place (active profile '{}')",
         path.display(),

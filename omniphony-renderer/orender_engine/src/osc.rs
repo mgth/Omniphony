@@ -23,7 +23,7 @@ mod transport;
 
 use self::client_registry::OscClientRegistry;
 use self::dispatch::{ControlOutcome, RealtimeSeqState, handle_control_message};
-use self::export::build_live_state;
+use self::export::{broadcast_live_state, send_live_state_to};
 use self::gaintable::GaintableCache;
 use self::transport::{
     broadcast_string, ensure_send_buffer, flush_pending_logs, resolve_register_addr,
@@ -644,7 +644,7 @@ impl OscSender {
                         if last_host_state_generation != Some(generation) {
                             last_host_state_generation = Some(generation);
                             if let Some(ref ctrl) = control {
-                                build_live_state(ctrl, Some(host)).broadcast(&socket, &clients);
+                                broadcast_live_state(ctrl, Some(host), &socket, &clients);
                             }
                         }
                     }
@@ -652,12 +652,16 @@ impl OscSender {
                         let generation = crate::overlay::state_generation();
                         if last_overlay_generation != Some(generation) {
                             last_overlay_generation = Some(generation);
-                            broadcast_string(
-                                &socket,
-                                &clients,
-                                osc_contract::STATE_OVERLAY,
-                                &crate::overlay::display_state_json(),
-                            );
+                            // Read under the publication lock: mpv writes the
+                            // overlay prefs from its own thread.
+                            transport::publish_state(&socket, &clients, || {
+                                vec![OscMessage {
+                                    addr: osc_contract::STATE_OVERLAY.to_string(),
+                                    args: vec![rosc::OscType::String(
+                                        crate::overlay::display_state_json(),
+                                    )],
+                                }]
+                            });
                         }
                     }
                     // Re-broadcast when core live state changed asynchronously on the
@@ -667,8 +671,7 @@ impl OscSender {
                         let generation = ctrl.live_state_generation();
                         if last_live_state_generation != Some(generation) {
                             last_live_state_generation = Some(generation);
-                            build_live_state(ctrl, host_handler.as_ref())
-                                .broadcast(&socket, &clients);
+                            broadcast_live_state(ctrl, host_handler.as_ref(), &socket, &clients);
                         }
                         // One-shot clip notification carrying the offending speaker
                         // index (set on the audio thread on any detected clip,
@@ -713,8 +716,7 @@ impl OscSender {
                                     force_full_next.store(true, Ordering::Relaxed);
                                     // Send the current state bundle, including layout and speakers.
                                     if let Some(ref ctrl) = control {
-                                        build_live_state(ctrl, host_handler.as_ref())
-                                            .send_to(&socket, &clients, client);
+                                        send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, client);
                                     }
                                     send_buffered_logs_to_client(&socket, client, 0);
                                     send_metering_state(&socket, client, metering_enabled);
@@ -767,8 +769,7 @@ impl OscSender {
                                     let client = resolve_register_addr(src, &msg.args);
                                     if let Some(ref ctrl) = control {
                                         log::debug!("OSC state refresh → {client}");
-                                        build_live_state(ctrl, host_handler.as_ref())
-                                            .send_to(&socket, &clients, client);
+                                        send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, client);
                                     }
                                 }
 

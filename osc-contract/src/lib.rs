@@ -522,19 +522,21 @@ pub const STATE_DIAG_SCHEMA: &str = "/omniphony/state/diag_schema";
 pub const STATE_DIAG_VALUES: &str = "/omniphony/state/diag_values";
 pub const STATE_FRAME_DURATION_MS: &str = "/omniphony/state/frame_duration_ms";
 /// Where the control-plane state a client holds stands: args
-/// `[generation (int), full (int)]`.
+/// `[generation (int), full (int), part (int), parts (int)]`.
 ///
-/// The engine counts every state broadcast that is not telemetry (the
-/// snapshot, and the single values controls publish) and sends the count in
-/// the same bundle as the state it versions. With `full = 0` it follows a
-/// single update, and a client that holds generation `g` expects `g + 1`: any
-/// other value means one went missing. With `full = 1` it closes a snapshot,
-/// which sets the client to that generation whatever it held. The
-/// [`HEARTBEAT_ACK`] carries the current count too, so the last update of a
-/// burst is not lost unnoticed either. A client that falls behind sends
-/// [`CONTROL_STATE_REFRESH`].
+/// The engine counts every state publication that is not telemetry (the
+/// snapshot, and the values controls and the engine publish) and sends the
+/// count with the state it versions. With `full = 0` it follows an update, as
+/// part 0 of 1, and a client that holds generation `g` expects `g + 1`: any
+/// other value means one went missing. With `full = 1` it opens each datagram
+/// of a snapshot, with that datagram's index and the snapshot's datagram count:
+/// a client that has every part of it holds that generation whatever it held
+/// before, and one that misses a part does not. The [`HEARTBEAT_ACK`] carries
+/// the current count too, so the last update of a burst is not lost unnoticed
+/// either. A client that falls behind sends [`CONTROL_STATE_REFRESH`].
 ///
-/// The count wraps; compare for equality only.
+/// The count is taken with the state, under one lock in the engine, so a later
+/// count never carries an older state. It wraps; compare for equality only.
 pub const STATE_GENERATION: &str = "/omniphony/state/generation";
 pub const STATE_HEAD_POSE: &str = "/omniphony/state/head_pose";
 pub const STATE_INPUT: &str = "/omniphony/state/input";

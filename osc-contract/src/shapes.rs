@@ -61,7 +61,8 @@ pub const STATE: &[(&str, &[Arg])] = &[
     (STATE_DIAG_SCHEMA, &[Json]),
     (STATE_DIAG_VALUES, &[Json]),
     (STATE_FRAME_DURATION_MS, &[Float]),
-    (STATE_GENERATION, &[Int, Int]),
+    // generation, full, part, parts.
+    (STATE_GENERATION, &[Int, Int, Int, Int]),
     (STATE_INPUT, &[Json]),
     (STATE_INPUT_PIPE, &[String]),
     (STATE_LATENCY, &[Float]),

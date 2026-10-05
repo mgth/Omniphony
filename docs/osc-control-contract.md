@@ -98,20 +98,25 @@ carries what a client needs to notice either. The contract crate's
   not know (it re-registers). `epoch` is random per engine instance: when it
   changes, another engine answers on the port. `generation` is the state
   generation below. An engine before revision 1 sends `epoch` alone.
-- **State generation** — `/omniphony/state/generation [generation, full]`.
-  The engine counts the control-plane state it broadcasts: every single state
-  update (`config/saved`, `log_level`, `speakers/recomputing`, a control's
-  echo, `overlay`, …) travels in a bundle with the next count and `full = 0`;
-  every snapshot carries the count with `full = 1` just before
-  `snapshot_complete` (a broadcast snapshot advances it, one sent to a single
-  client does not). A client holding `g` expects `g + 1` next; anything else,
-  or an acknowledgement reporting another value, means it missed something.
-  It then sends `/omniphony/control/state/refresh [reply_port]`, which resends
-  the snapshot to it and nothing else. Telemetry is not counted: the meter
-  bundle (timings, latencies, the object test position), diagnostics, the head
-  pose, the realtime gain echoes (sequenced on their own), the gain-table
-  stream (versioned and resent on its own) and the object and meter streams.
-  The count wraps; compare it for equality only.
+- **State generation** — `/omniphony/state/generation [generation, full,
+  part, parts]`. The engine counts the control-plane state it publishes: every
+  state update (`config/saved`, `log_level`, `speakers/recomputing`, a
+  control's echo, `overlay`, a recompute's `renderer`/`layout`/`speakers`, …)
+  travels in a bundle with the next count, `full = 0`, part 0 of 1. Every
+  datagram of a snapshot opens on the count with `full = 1`, its index and the
+  snapshot's datagram count (a broadcast snapshot advances the count, one sent
+  to a single client does not). A client holding `g` expects `g + 1` next, and
+  holds a snapshot's generation only once it has every part of it; anything
+  else — a count that skips, a snapshot whose last part arrives with an
+  earlier one missing, an acknowledgement reporting another count — means it
+  missed something. It then sends `/omniphony/control/state/refresh
+  [reply_port]`, which resends the snapshot to it and nothing else. The engine
+  takes the count with the state it captures, under one lock, so a later count
+  never carries an older state. Telemetry is not counted: the meter bundle
+  (timings, latencies, the object test position), diagnostics, the head pose,
+  the realtime gain echoes (sequenced on their own), the gain-table stream
+  (versioned and resent on its own) and the object and meter streams. The
+  count wraps; compare it for equality only.
 - **Control errors** — a control the engine does not apply is answered, to
   its sender only, with `/omniphony/state/control_error [address, code,
   message]`. `code` is one of `unknown_address` (no handler knows it),

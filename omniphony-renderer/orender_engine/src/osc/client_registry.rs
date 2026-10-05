@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
@@ -41,12 +40,31 @@ pub(crate) struct OscClientRegistry {
     clients: Mutex<HashMap<SocketAddr, OscClientState>>,
     timeout: Duration,
     /// The control-plane state count every client is held to
-    /// (`osc_contract::STATE_GENERATION`). Here because every state broadcast
-    /// already goes through the registry, and every client hears the same
-    /// ones. Not ordered with the sends: two threads broadcasting at once can
-    /// reach the wire in the other order, which costs a client one snapshot
-    /// it did not need, and keeps the clients lock out of it.
-    state_generation: AtomicU32,
+    /// (`osc_contract::STATE_GENERATION`), and the lock every state
+    /// publication holds from the capture of what it says to its send. Here
+    /// because every state broadcast already goes through the registry, and
+    /// every client hears the same ones.
+    ///
+    /// Held across the capture, not only the send: a state read on one
+    /// thread and sent after another thread published a newer one would go
+    /// out under the higher count and pass for current. Taken before the
+    /// clients lock, never inside it.
+    publication: Mutex<StateGeneration>,
+}
+
+/// The state count, as a publication holding the lock sees it.
+pub(crate) struct StateGeneration(u32);
+
+impl StateGeneration {
+    pub(crate) fn current(&self) -> u32 {
+        self.0
+    }
+
+    /// The count of the next datagram of state to go out.
+    pub(crate) fn advance(&mut self) -> u32 {
+        self.0 = self.0.wrapping_add(1);
+        self.0
+    }
 }
 
 impl OscClientRegistry {
@@ -54,20 +72,25 @@ impl OscClientRegistry {
         Self {
             clients: Mutex::new(HashMap::new()),
             timeout,
-            state_generation: AtomicU32::new(0),
+            publication: Mutex::new(StateGeneration(0)),
         }
     }
 
-    /// Where the state the clients were sent stands.
+    /// Where the state the clients were sent stands. Waits for a publication
+    /// in progress, so a heartbeat ack never reports a count whose state is
+    /// still on its way.
     pub(crate) fn state_generation(&self) -> u32 {
-        self.state_generation.load(Ordering::Relaxed)
+        self.publication.lock().unwrap().current()
     }
 
-    /// The generation of a state broadcast about to go out. Wraps.
-    pub(crate) fn advance_state_generation(&self) -> u32 {
-        self.state_generation
-            .fetch_add(1, Ordering::Relaxed)
-            .wrapping_add(1)
+    /// Run one state publication — capture, encode, send — under the
+    /// publication lock, given the count to number it with. A broadcast
+    /// advances it once per datagram it numbers (the count wraps); a snapshot
+    /// sent to one client reads it, which tells that client where it stands.
+    /// Must not publish again from inside `publish`.
+    pub(crate) fn publish<R>(&self, publish: impl FnOnce(&mut StateGeneration) -> R) -> R {
+        let mut generation = self.publication.lock().unwrap();
+        publish(&mut generation)
     }
 
     pub(crate) fn insert_permanent(&self, addr: SocketAddr) {

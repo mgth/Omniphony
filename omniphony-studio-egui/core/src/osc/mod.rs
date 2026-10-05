@@ -1042,6 +1042,74 @@ mod connection_tests {
         assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
     }
 
+    /// The review's loss case, through the real parser and dispatch: the
+    /// first datagram of a two-part snapshot is lost and the last one arrives,
+    /// `snapshot_complete` and all. The acknowledgement that follows reports
+    /// the snapshot's generation, and the client still asks again, and is
+    /// current once the refresh is in.
+    #[test]
+    fn a_split_snapshot_missing_its_first_part_is_asked_again() {
+        use crate::osc_contract;
+        let stats = OscStats::new();
+        *stats.target.lock().unwrap() = Some("127.0.0.1:9000".parse().unwrap());
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        let message = |addr: &str, args: Vec<OscType>| OscMessage {
+            addr: addr.into(),
+            args,
+        };
+        let generation = |part, parts| {
+            message(
+                osc_contract::STATE_GENERATION,
+                vec![
+                    OscType::Int(4),
+                    OscType::Int(1),
+                    OscType::Int(part),
+                    OscType::Int(parts),
+                ],
+            )
+        };
+        let mut handle = |m: &OscMessage, live: &mut Live| {
+            handle_message(m, live, &stats, &mut PacketOutcome::default())
+        };
+        // Part 0 of 2, carrying the log level, never arrives.
+        handle(&generation(1, 2), &mut live);
+        handle(
+            &message(osc_contract::STATE_SNAPSHOT_COMPLETE, vec![OscType::Int(1)]),
+            &mut live,
+        );
+        handle(
+            &message(
+                osc_contract::HEARTBEAT_ACK,
+                vec![OscType::Int(7), OscType::Int(4)],
+            ),
+            &mut live,
+        );
+        assert!(live.app.osc_snapshot_ready);
+        assert_ne!(
+            live.app.log_level.as_deref(),
+            Some("debug"),
+            "the lost part's state is missing"
+        );
+        assert!(
+            live.state_sync.refresh_due(Instant::now()),
+            "and the client knows it"
+        );
+
+        // The refresh: the same generation, whole.
+        for m in [
+            generation(0, 1),
+            message(
+                osc_contract::STATE_LOG_LEVEL,
+                vec![OscType::String("debug".into())],
+            ),
+            message(osc_contract::STATE_SNAPSHOT_COMPLETE, vec![OscType::Int(1)]),
+        ] {
+            handle(&m, &mut live);
+        }
+        assert_eq!(live.app.log_level.as_deref(), Some("debug"));
+        assert!(!live.state_sync.is_stale());
+    }
+
     #[test]
     fn graceful_shutdown_disconnects_immediately_after_a_fresh_ack() {
         let stats = OscStats::new();

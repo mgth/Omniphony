@@ -7,7 +7,8 @@ use runtime_control::snapshot::{build_renderer_state_json, build_speakers_state_
 
 use super::client_registry::OscClientRegistry;
 use super::gaintable::GaintableCache;
-use super::transport::{broadcast_int, broadcast_string, send_update_to_client};
+use super::transport::{broadcast_int, broadcast_string, publish_state, send_update_to_client};
+use rosc::{OscMessage, OscType};
 use runtime_control::osc_contract;
 
 pub(crate) fn trigger_layout_recompute(
@@ -98,63 +99,59 @@ pub(crate) fn trigger_layout_recompute(
                         "Render backend {} updated with new speaker layout",
                         rebuild_plan_for_thread.backend_id()
                     );
-                    let renderer_state_json = {
-                        let live = control_clone.live.read();
-                        let topology = control_clone.active_topology();
-                        let scale_m = control_clone.editable_layout().radius_m;
-                        // Speaker names that don't resolve to a known channel
-                        // label — can't be routed by position in by_name mode.
-                        let unroutable: Vec<String> = topology
-                            .speaker_layout
-                            .speakers
-                            .iter()
-                            .filter(|s| {
-                                crate::channel_layout::label_for_speaker_name(&s.name)
-                                    == bridge_api::RChannelLabel::Unknown
-                            })
-                            .map(|s| s.name.clone())
-                            .collect();
-                        build_renderer_state_json(
-                            &live,
-                            &topology,
-                            scale_m,
-                            control_clone.available_backends(),
-                            control_clone.plugin_params(),
-                            &unroutable,
-                            &control_clone.fixed_channel_catalog(),
-                            &control_clone.fixed_channel_processing(),
-                            control_clone.crossover_info(),
-                            &control_clone.binaural_hrir_status(),
-                            &control_clone.binaural_brir_status(),
-                        )
-                    };
-                    let layout_json = {
-                        let layout = control_clone.editable_layout();
-                        serde_json::to_string(&layout).unwrap_or_else(|_| "{}".to_string())
-                    };
-                    let speakers_state_json = {
-                        let live = control_clone.live.read();
-                        let layout = control_clone.editable_layout();
-                        build_speakers_state_json(&live, &layout)
-                    };
-                    broadcast_string(
-                        &socket_clone,
-                        &clients_clone,
-                        osc_contract::STATE_RENDERER,
-                        &renderer_state_json,
-                    );
-                    broadcast_string(
-                        &socket_clone,
-                        &clients_clone,
-                        osc_contract::STATE_LAYOUT,
-                        &layout_json,
-                    );
-                    broadcast_string(
-                        &socket_clone,
-                        &clients_clone,
-                        osc_contract::STATE_SPEAKERS,
-                        &speakers_state_json,
-                    );
+                    // Read under the publication lock: a snapshot the
+                    // listener publishes meanwhile is either all before
+                    // these or all after, never newer under a lower count.
+                    publish_state(&socket_clone, &clients_clone, || {
+                        let renderer_state_json = {
+                            let live = control_clone.live.read();
+                            let topology = control_clone.active_topology();
+                            let scale_m = control_clone.editable_layout().radius_m;
+                            // Speaker names that don't resolve to a known channel
+                            // label — can't be routed by position in by_name mode.
+                            let unroutable: Vec<String> = topology
+                                .speaker_layout
+                                .speakers
+                                .iter()
+                                .filter(|s| {
+                                    crate::channel_layout::label_for_speaker_name(&s.name)
+                                        == bridge_api::RChannelLabel::Unknown
+                                })
+                                .map(|s| s.name.clone())
+                                .collect();
+                            build_renderer_state_json(
+                                &live,
+                                &topology,
+                                scale_m,
+                                control_clone.available_backends(),
+                                control_clone.plugin_params(),
+                                &unroutable,
+                                &control_clone.fixed_channel_catalog(),
+                                &control_clone.fixed_channel_processing(),
+                                control_clone.crossover_info(),
+                                &control_clone.binaural_hrir_status(),
+                                &control_clone.binaural_brir_status(),
+                            )
+                        };
+                        let layout_json = {
+                            let layout = control_clone.editable_layout();
+                            serde_json::to_string(&layout).unwrap_or_else(|_| "{}".to_string())
+                        };
+                        let speakers_state_json = {
+                            let live = control_clone.live.read();
+                            let layout = control_clone.editable_layout();
+                            build_speakers_state_json(&live, &layout)
+                        };
+                        let message = |addr: &str, json: String| OscMessage {
+                            addr: addr.to_string(),
+                            args: vec![OscType::String(json)],
+                        };
+                        vec![
+                            message(osc_contract::STATE_RENDERER, renderer_state_json),
+                            message(osc_contract::STATE_LAYOUT, layout_json),
+                            message(osc_contract::STATE_SPEAKERS, speakers_state_json),
+                        ]
+                    });
                     broadcast_int(
                         &socket_clone,
                         &clients_clone,

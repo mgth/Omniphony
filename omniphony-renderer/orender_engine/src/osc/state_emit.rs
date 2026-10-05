@@ -3,7 +3,7 @@ use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 use serde_json::json;
 
 use super::OscSender;
-use super::export::build_live_state;
+use super::export::broadcast_live_state;
 use runtime_control::osc_contract;
 impl OscSender {
     pub fn send_live_state_bundle(&self) -> Result<()> {
@@ -11,8 +11,12 @@ impl OscSender {
             Some(ref c) => c,
             None => return Ok(()),
         };
-        build_live_state(control, self.host_handler.as_ref())
-            .broadcast(&self.socket, &self.clients);
+        broadcast_live_state(
+            control,
+            self.host_handler.as_ref(),
+            &self.socket,
+            &self.clients,
+        );
         Ok(())
     }
 
@@ -21,21 +25,25 @@ impl OscSender {
             Some(ref c) => c,
             None => return,
         };
-        let live = control.live.read();
-        let socket = &self.socket;
-        let clients = &self.clients;
-
-        let gain_linear: f32 = match (live.use_loudness, live.dialogue_level) {
-            (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
-            _ => 1.0,
-        };
-        let payload = json!({
-            "enabled": live.use_loudness,
-            "source": live.dialogue_level,
-            "gain": gain_linear
-        })
-        .to_string();
-        super::transport::broadcast_string(socket, clients, osc_contract::STATE_LOUDNESS, &payload);
+        // Read under the publication lock: this runs on the decode thread,
+        // and a snapshot the listener publishes meanwhile carries loudness too.
+        super::transport::publish_state(&self.socket, &self.clients, || {
+            let live = control.live.read();
+            let gain_linear: f32 = match (live.use_loudness, live.dialogue_level) {
+                (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
+                _ => 1.0,
+            };
+            let payload = json!({
+                "enabled": live.use_loudness,
+                "source": live.dialogue_level,
+                "gain": gain_linear
+            })
+            .to_string();
+            vec![OscMessage {
+                addr: osc_contract::STATE_LOUDNESS.to_string(),
+                args: vec![OscType::String(payload)],
+            }]
+        });
     }
 
     /// Publish the diag schema and/or values bundle to subscribed clients.

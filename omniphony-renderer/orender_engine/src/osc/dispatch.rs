@@ -20,7 +20,7 @@ use runtime_control::osc::{
 use runtime_control::osc_contract;
 
 use super::client_registry::OscClientRegistry;
-use super::export::{build_live_state, export_current_layout, save_live_config};
+use super::export::{broadcast_live_state, export_current_layout, save_live_config};
 use super::gaintable::GaintableCache;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
@@ -291,7 +291,7 @@ pub(crate) fn handle_control_message(
     }
 
     if addr == osc_contract::CONTROL_INPUT_REFRESH {
-        build_live_state(control, host).broadcast(socket, clients);
+        broadcast_live_state(control, host, socket, clients);
         log::info!("OSC: input state refresh requested");
         return ControlOutcome::Handled;
     }
@@ -599,7 +599,7 @@ fn publish_changed(
     notify: Notify,
 ) {
     match notify {
-        Notify::Snapshot => build_live_state(control, host).broadcast(socket, clients),
+        Notify::Snapshot => broadcast_live_state(control, host, socket, clients),
         // Picked up by the OSC loop's live-state generation poll.
         Notify::CoalescedSnapshot => control.bump_live_state(),
         Notify::DirtyOnly => {}
@@ -1255,7 +1255,7 @@ mod notify_tests {
         // … and the value is queued for the OSC loop's next live-state
         // bundle, which is what the loop broadcasts on a generation change.
         assert_ne!(control.live_state_generation(), generation);
-        build_live_state(&control, None).broadcast(&wire.engine, &wire.clients);
+        broadcast_live_state(&control, None, &wire.engine, &wire.clients);
         let renderer = state_json(&received(&wire.bystander), osc_contract::STATE_RENDERER)
             .expect("bundle carries /state/renderer");
         assert_eq!(
@@ -1468,12 +1468,17 @@ mod notify_tests {
     fn state_updates_and_snapshots_carry_the_generation_in_sequence() {
         let control = fixture_control();
         let wire = wire();
-        let generations = |messages: &[OscMessage]| -> Vec<(i32, i32)> {
+        let generations = |messages: &[OscMessage]| -> Vec<(i32, i32, i32, i32)> {
             messages
                 .iter()
                 .filter(|m| m.addr == osc_contract::STATE_GENERATION)
                 .map(|m| match m.args[..] {
-                    [OscType::Int(g), OscType::Int(full)] => (g, full),
+                    [
+                        OscType::Int(g),
+                        OscType::Int(full),
+                        OscType::Int(part),
+                        OscType::Int(parts),
+                    ] => (g, full, part, parts),
                     _ => panic!("malformed generation: {:?}", m.args),
                 })
                 .collect()
@@ -1491,19 +1496,25 @@ mod notify_tests {
             osc_contract::STATE_LOG_LEVEL,
             "info",
         );
-        build_live_state(&control, None).broadcast(&wire.engine, &wire.clients);
+        broadcast_live_state(&control, None, &wire.engine, &wire.clients);
         assert_eq!(
             generations(&received(&wire.bystander)),
-            [(start + 1, 0), (start + 2, 0), (start + 3, 1)]
+            [
+                (start + 1, 0, 0, 1),
+                (start + 2, 0, 0, 1),
+                (start + 3, 1, 0, 1)
+            ]
         );
 
-        build_live_state(&control, None).send_to(
+        crate::osc::export::send_live_state_to(
+            &control,
+            None,
             &wire.engine,
             &wire.clients,
             wire.bystander.local_addr().unwrap(),
         );
         let messages = received(&wire.bystander);
-        assert_eq!(generations(&messages), [(start + 3, 1)]);
+        assert_eq!(generations(&messages), [(start + 3, 1, 0, 1)]);
         assert_eq!(
             messages.last().map(|m| m.addr.as_str()),
             Some(osc_contract::STATE_SNAPSHOT_COMPLETE),
@@ -1619,7 +1630,7 @@ mod notify_tests {
     fn the_snapshot_and_state_updates_match_the_contract_shapes() {
         let control = fixture_control();
         let wire = wire();
-        build_live_state(&control, None).broadcast(&wire.engine, &wire.clients);
+        broadcast_live_state(&control, None, &wire.engine, &wire.clients);
         broadcast_int(
             &wire.engine,
             &wire.clients,
@@ -1639,5 +1650,97 @@ mod notify_tests {
             }
             assert_conforms(msg);
         }
+    }
+
+    /// The interleaving the publication lock is for: a snapshot asked for
+    /// while another publication is under way is captured when its turn
+    /// comes, not when it was asked for. Captured early, it would carry the
+    /// state from before a change made meanwhile under a count higher than
+    /// the change's own, and a client would take the older state for current.
+    #[test]
+    fn a_snapshot_captures_the_state_of_its_turn_under_the_lock() {
+        use std::sync::mpsc;
+        let control = fixture_control();
+        control.live.write().master_gain = 1.0;
+        let wire = wire();
+        let (entered_tx, entered) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            // A publication in progress, holding the lock.
+            let clients = &wire.clients;
+            let held = scope.spawn(move || {
+                clients.publish(|generation| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    generation.advance()
+                })
+            });
+            entered.recv().unwrap();
+            // A snapshot asked for now has to wait its turn …
+            let snapshot =
+                scope.spawn(|| broadcast_live_state(&control, None, &wire.engine, &wire.clients));
+            std::thread::sleep(Duration::from_millis(100));
+            // … so the change made while it waits is in it.
+            control.live.write().master_gain = 0.5;
+            release.send(()).unwrap();
+            let held_generation = held.join().unwrap();
+            snapshot.join().unwrap();
+            assert_eq!(wire.clients.state_generation(), held_generation + 1);
+        });
+        let messages = received(&wire.bystander);
+        let renderer = state_json(&messages, osc_contract::STATE_RENDERER).expect("a snapshot");
+        assert_eq!(renderer["masterGain"], 0.5);
+    }
+
+    /// Several values captured together go out one datagram each, numbered
+    /// in sequence: together, a recompute's renderer, layout and speakers
+    /// could outgrow a datagram.
+    #[test]
+    fn values_published_together_go_out_one_numbered_datagram_each() {
+        let wire = wire();
+        let start = wire.clients.state_generation() as i32;
+        crate::osc::transport::publish_state(&wire.engine, &wire.clients, || {
+            [osc_contract::STATE_RENDERER, osc_contract::STATE_LAYOUT]
+                .into_iter()
+                .map(|addr| OscMessage {
+                    addr: addr.to_string(),
+                    args: vec![OscType::String("{}".into())],
+                })
+                .collect()
+        });
+        let mut buf = vec![0u8; 70_000];
+        let mut numbered = Vec::new();
+        while let Ok(len) = wire.bystander.recv(&mut buf) {
+            let (_, rosc::OscPacket::Bundle(bundle)) =
+                rosc::decoder::decode_udp(&buf[..len]).unwrap()
+            else {
+                panic!("a state update is a bundle");
+            };
+            let [
+                rosc::OscPacket::Message(value),
+                rosc::OscPacket::Message(generation),
+            ] = &bundle.content[..]
+            else {
+                panic!("one value and its generation per datagram");
+            };
+            assert_conforms(generation);
+            numbered.push((value.addr.clone(), generation.args[0].clone()));
+            if numbered.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(
+            numbered,
+            [
+                (
+                    osc_contract::STATE_RENDERER.to_string(),
+                    OscType::Int(start + 1)
+                ),
+                (
+                    osc_contract::STATE_LAYOUT.to_string(),
+                    OscType::Int(start + 2)
+                ),
+            ]
+        );
     }
 }
