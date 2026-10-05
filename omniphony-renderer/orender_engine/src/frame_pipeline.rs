@@ -351,7 +351,7 @@ impl FramePipeline {
                     .collect();
                 overlay::update_levels(&levels);
             }
-            if want_meter_osc && let Some(osc) = osc.as_deref_mut() {
+            if want_meter_osc && let Some(osc) = osc {
                 let timings = MeterTimings {
                     decode_time_ms: Some(decode_ms),
                     crossover_time_ms: Some(rendered.crossover_time_ms),

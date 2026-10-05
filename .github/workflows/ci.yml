@@ -9,11 +9,10 @@ name: CI
 # The supported targets, and what each job guarantees for them, are listed in
 # the README ("Supported platforms"); keep the two in step.
 #
-# NOTE on scope: `clippy` is NOT gated yet — the workspace currently has ~70
-# clippy warnings plus a couple of deny-level lints, several inside hot audio
-# loops where the lint suggestions are not obviously safe. Cleaning that up is a
-# separate, careful pass; until then a clippy gate would block merges for
-# reasons unrelated to correctness.
+# The `lint` job ratchets clippy (counts per crate and lint can only go down,
+# omniphony-renderer/scripts/clippy-ratchet.sh), runs cargo-deny and checks
+# that every action is pinned by commit; `msrv` builds the renderer on its
+# declared minimum Rust.
 on:
   push:
     branches: [main, release]
@@ -35,20 +34,19 @@ jobs:
     # backstop against a genuine stall, not a performance target.
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 20
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           components: rustfmt
 
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         # Caching is an optimization, not a correctness step: a crash of the
         # cache action must never fail the build.
         continue-on-error: true
@@ -185,16 +183,6 @@ jobs:
           ORENDER_PREVIOUS_RELEASE_BRIDGE="$target/debug/libreference_bridge.so" \
             cargo test --locked -p orender_engine --test previous_release_bridge -- --ignored --nocapture
 
-      # Compile-only gate for the release-only perf tests. The perf-gate
-      # feature is off in the normal test run and its module is compiled out
-      # in debug builds, so nothing above ever type-checks it and it can rot
-      # silently (it did: E0057, caught on PR #222). Check-only on purpose —
-      # the timing test itself must run alone and stays out of the parallel
-      # PR gate (see renderer/src/spatial_renderer/perf_gate.rs module doc).
-      - name: Check perf-gate feature compiles (release)
-        working-directory: omniphony-renderer
-        run: cargo check --release -p renderer --features perf-gate --tests --locked
-
       # The bit-identity tests, optimised. The renderer's hot loops have
       # CPU-specific builds picked at run time (AVX2 today, wider where a CPU
       # has it), each pinned to return the portable build's bits; the
@@ -216,6 +204,23 @@ jobs:
           echo "Runner CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
           echo "Vector extensions: $(grep -m1 '^flags' /proc/cpuinfo | grep -o 'avx[^ ]*' | sort -u | tr '\n' ' ')"
           cargo test --release -p renderer --lib --locked -- bit_for_bit bit_identical --nocapture
+
+      # The worst-case block-time gate (renderer/src/spatial_renderer/
+      # perf_gate.rs): a high percentile of per-block render time, budgeted as
+      # a fraction of the block period rather than in microseconds, so a slow
+      # runner does not fail it. Steady and all-moving measured 2-5 % of real
+      # time on these runners against a 25 % budget. The topology-change cases
+      # time the render thread while the band worker builds: they hold on a
+      # 4-vCPU runner because background builds run in the idle scheduling
+      # class (renderer/src/background_pool.rs); without it the render thread
+      # lost whole 3 ms scheduler slices to them. Release only, behind the
+      # perf-gate feature and on one test thread: a timing measurement must
+      # not share the machine with the rest of the suite, and in this step it
+      # does not. Placed after the step above, which already built the
+      # dependencies in release; the feature only rebuilds the renderer crate.
+      - name: Run the perf gate (release)
+        working-directory: omniphony-renderer
+        run: cargo test --release -p renderer --features perf-gate --lib --locked -- spatial_renderer::perf_gate --test-threads=1 --nocapture
 
       # The OSC contract is a crate of its own, shared by the engine and the
       # Studio and a member of neither workspace, so `--workspace` above does
@@ -279,7 +284,7 @@ jobs:
       # holding both would be evicted by whichever changed last. Its Cargo.lock
       # is tracked, so the key can be exact rather than a guess from manifests.
       - name: Cache the native Studio build
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         with:
           path: omniphony-studio-egui/target
@@ -352,7 +357,7 @@ jobs:
       # This host has a separate build tree from both the renderer and native
       # Studio. Cache it too so core changes do not rebuild GTK/WebKit every PR.
       - name: Cache the Tauri host build
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         with:
           path: omniphony-studio/src-tauri/target
@@ -417,15 +422,14 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           components: rustfmt
 
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         with:
           path: |
@@ -445,7 +449,7 @@ jobs:
       # dialogs — surfaced at release time. Same toolchain pin and build tree
       # as the Linux job.
       - name: Cache the native Studio build
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         with:
           path: omniphony-studio-egui/target
@@ -501,13 +505,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         with:
           path: |
@@ -519,7 +521,6 @@ jobs:
 
       - name: Setup ASIO SDK
         uses: ./.github/actions/setup-asio-sdk
-
       - name: Build renderer workspace (Windows x64)
         working-directory: omniphony-renderer
         run: cargo build --workspace --locked
@@ -556,7 +557,7 @@ jobs:
       # pin applies.
       - name: Cache the native Studio build
         if: ${{ !cancelled() }}
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         with:
           path: omniphony-studio-egui/target
@@ -588,13 +589,11 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         with:
           path: |
@@ -645,3 +644,144 @@ jobs:
           cc -Wall -Werror -I orender_ffi/include orender_ffi/examples/smoke.c \
              -L target/debug -lorender -o target/debug/orender_smoke
           LD_LIBRARY_PATH=target/debug target/debug/orender_smoke
+
+  lint:
+    # Static gates that need no test run: action pinning, cargo-deny and the
+    # clippy ratchet for the renderer workspace.
+    #
+    # Ubuntu 24.04 rather than build-and-test's 22.04: clippy compiles the
+    # PipeWire -sys build scripts, and 24.04's stock PipeWire (1.0) already
+    # satisfies pipewire-rs 0.9, so this job needs no PPA.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # A tag can be moved by whoever controls the action's repository, and
+      # the release jobs run actions with `contents: write`; a commit cannot
+      # be moved. Every `uses:` therefore names a full commit SHA, with the
+      # version it was taken from in a trailing comment. Local actions
+      # (`./...`) are part of this repository and exempt.
+      - name: Check every action is pinned by commit
+        run: |
+          unpinned="$(grep -rnE '^[[:space:]]*(-[[:space:]]+)?uses:' .github/workflows .github/actions \
+            | grep -vE 'uses:[[:space:]]*\./' \
+            | grep -vE 'uses:[[:space:]]*[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)' || true)"
+          if [ -n "$unpinned" ]; then
+            echo "::error::Actions must be pinned by full commit SHA (with the version as a trailing comment):"
+            echo "$unpinned"
+            exit 1
+          fi
+
+      # The release binary, pinned by version and checksum, rather than the
+      # cargo-deny action: its image carries its own, older Rust, and the
+      # graph is resolved with whichever cargo runs it.
+      - name: Install cargo-deny
+        env:
+          DENY_VERSION: 0.20.2
+          DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          archive="cargo-deny-$DENY_VERSION-x86_64-unknown-linux-musl"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/$archive.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/$DENY_VERSION/$archive.tar.gz"
+          echo "$DENY_SHA256  $RUNNER_TEMP/$archive.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive.tar.gz" -C "$RUNNER_TEMP"
+          install -m 755 "$RUNNER_TEMP/$archive/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
+
+      # Advisories, banned or duplicated crates, licences and sources, against
+      # omniphony-renderer/deny.toml. `--workspace` makes every member a root:
+      # without it only the root package (`orender`) is, and liborender's
+      # graph is never looked at. Before clippy because it compiles nothing.
+      # A new RustSec advisory fails this without any commit moving: fix it by
+      # updating the crate, or ignore the advisory in deny.toml with a reason.
+      - name: cargo-deny
+        working-directory: omniphony-renderer
+        run: cargo deny --workspace --locked check
+
+      - name: Cache Cargo registry
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            omniphony-renderer/target
+          key: ${{ runner.os }}-lint-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock', 'omniphony-renderer/clippy-baseline.txt') }}
+          restore-keys: ${{ runner.os }}-lint-cargo-
+
+      # PipeWire for the output and input backends; libclang for the bindgen
+      # run in pipewire-sys and libspa-sys. Bounded and retried for the same
+      # reasons as build-and-test's install.
+      - name: Install Linux system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo timeout 180 apt-get update \
+              && sudo apt-get install -y libpipewire-0.3-dev libclang-dev clang pkg-config; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "apt-get failed after $attempt attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # Warnings per crate and lint may only go down: a crate absent from
+      # omniphony-renderer/clippy-baseline.txt is held at zero, any other
+      # count above its baseline fails, and a count below it fails until the
+      # lowered baseline is committed. The baseline names the clippy toolchain
+      # it was taken with, and the script installs and runs that one, so a
+      # new Rust release cannot add warnings to main. Deny-level lints fail
+      # clippy itself.
+      - name: Clippy ratchet
+        run: omniphony-renderer/scripts/clippy-ratchet.sh
+
+  msrv:
+    # The renderer workspace on the minimum Rust it declares
+    # (`rust-version` in omniphony-renderer/Cargo.toml, read from there so the
+    # two cannot drift). Every other job builds on the latest stable, so a
+    # newer language feature or std API, or a dependency raising its own
+    # floor, would otherwise leave the declared version false. A check, not a
+    # build: what an MSRV breaks is name resolution and type checking.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Cache Cargo registry
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            omniphony-renderer/target
+          key: ${{ runner.os }}-msrv-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock', 'omniphony-renderer/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-msrv-cargo-
+
+      # As in the lint job: stock PipeWire on 24.04, no PPA.
+      - name: Install Linux system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo timeout 180 apt-get update \
+              && sudo apt-get install -y libpipewire-0.3-dev libclang-dev clang pkg-config; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "apt-get failed after $attempt attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Check the renderer workspace on its MSRV
+        working-directory: omniphony-renderer
+        run: |
+          msrv="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ -z "$msrv" ]; then
+            echo "::error::no workspace rust-version in omniphony-renderer/Cargo.toml"
+            exit 1
+          fi
+          echo "Declared MSRV: $msrv"
+          rustup toolchain install --profile minimal "$msrv"
+          cargo "+$msrv" check --workspace --all-targets --locked
