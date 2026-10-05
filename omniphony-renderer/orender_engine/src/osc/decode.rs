@@ -1,4 +1,5 @@
-//! The control listener's decoder: `rosc`'s, behind a bound on nesting.
+//! The control listener's decoder: `rosc`'s, behind the contract's bound on
+//! nesting.
 //!
 //! `rosc` decodes a bundle by recursion, one level of its stack per level of
 //! nesting, and the value it builds for nested arrays is freed by recursion
@@ -7,135 +8,26 @@
 //! enough to overflow the listener thread's stack, which aborts the process.
 //! One datagram from anyone who can reach the port does it.
 //!
-//! [`decode_datagram`] reads the nesting off the raw bytes first, without
-//! recursing, and refuses the datagram past [`MAX_NESTING`].
+//! [`decode_datagram`] has the nesting read off the raw bytes first, without
+//! recursing, and refuses the datagram past the contract's limit. The walk is
+//! the contract crate's ([`nesting::check`]), where the Studio's listener
+//! finds the same one; the tests that hold it to what `rosc` decodes are
+//! here, where the decoder is.
 
 use rosc::{OscError, OscPacket};
-
-/// How deep bundles may nest, and arrays within one message's arguments. The
-/// protocol's own bundles are one level deep and it sends no array, so a
-/// client keeps plenty of room for framing of its own, and the decoder never
-/// recurses more than a few levels.
-pub(crate) const MAX_NESTING: usize = 8;
-
-const BUNDLE_TAG: &[u8] = b"#bundle\0";
-const TIME_TAG_LEN: usize = 8;
+use runtime_control::osc_contract::nesting;
 
 /// Decode a datagram received from the network: `rosc::decoder::decode_udp`,
-/// refusing first what nests deeper than [`MAX_NESTING`].
+/// refusing first what nests deeper than [`nesting::MAX_NESTING`].
 pub(crate) fn decode_datagram(datagram: &[u8]) -> Result<(&[u8], OscPacket), OscError> {
-    check_nesting(datagram).map_err(OscError::BadPacket)?;
+    nesting::check(datagram).map_err(OscError::BadPacket)?;
     rosc::decoder::decode_udp(datagram)
-}
-
-/// Walk the framing the decoder recurses on, with a fixed stack.
-///
-/// A packet that starts with the bundle tag holds a time tag, then elements:
-/// a 4-byte size and that many bytes, a packet in turn. Anything else is a
-/// message, where only the type tags can nest. Where the framing breaks, the
-/// decoder gives up on the bundle; this goes on to what follows instead, so
-/// it visits everything the decoder does and never reads a datagram as
-/// shallower than the decoder finds it.
-fn check_nesting(datagram: &[u8]) -> Result<(), &'static str> {
-    // Where each bundle being walked ends, outermost first.
-    let mut bundle_ends = [0usize; MAX_NESTING];
-    let mut depth = 0;
-    // The packet looked at: `datagram[start..end]`.
-    let (mut start, mut end) = (0, datagram.len());
-    loop {
-        if datagram[start..end].starts_with(BUNDLE_TAG) {
-            if depth == MAX_NESTING {
-                return Err("bundles nested too deep");
-            }
-            bundle_ends[depth] = end;
-            depth += 1;
-            // The tag is padded to a 4-byte boundary of the datagram.
-            start = (start + BUNDLE_TAG.len()).next_multiple_of(4) + TIME_TAG_LEN;
-        } else {
-            if array_depth(datagram, start, end) > MAX_NESTING {
-                return Err("arrays nested too deep");
-            }
-            start = end;
-        }
-        // On to the next element, of the innermost bundle that has one left.
-        loop {
-            let Some(&bundle_end) = depth.checked_sub(1).map(|outer| &bundle_ends[outer]) else {
-                return Ok(());
-            };
-            if let Some(element) = element_at(datagram, start, bundle_end) {
-                (start, end) = element;
-                break;
-            }
-            start = bundle_end;
-            depth -= 1;
-        }
-    }
-}
-
-/// The packet of the element at `at` in a bundle that ends at `bundle_end`.
-/// `None` at the end of the bundle, and where the size runs past it.
-fn element_at(datagram: &[u8], at: usize, bundle_end: usize) -> Option<(usize, usize)> {
-    let start = at.checked_add(4).filter(|&start| start <= bundle_end)?;
-    let size = u32::from_be_bytes(datagram[at..start].try_into().ok()?) as usize;
-    let end = start.checked_add(size).filter(|&end| end <= bundle_end)?;
-    Some((start, end))
-}
-
-/// How deep the arrays of the message `datagram[start..end]` nest, read from
-/// its type tags: the string after the padded address, where `[` opens an
-/// array and `]` closes one. An array left open counts, though the decoder
-/// builds nothing nested from it.
-fn array_depth(datagram: &[u8], start: usize, end: usize) -> usize {
-    let Some(address_len) = datagram[start..end].iter().position(|&byte| byte == 0) else {
-        return 0;
-    };
-    let tags_start = (start + address_len + 1).next_multiple_of(4);
-    let Some(tags) = datagram.get(tags_start..end) else {
-        return 0;
-    };
-    let (mut depth, mut deepest) = (0usize, 0usize);
-    for &tag in tags.iter().take_while(|&&tag| tag != 0) {
-        match tag {
-            b'[' => {
-                depth += 1;
-                deepest = deepest.max(depth);
-            }
-            b']' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    deepest
-}
-
-/// `depth` bundles nested one inside the other around a single message with
-/// no argument: 20 bytes a level, plus 8.
-#[cfg(test)]
-pub(crate) fn nested_bundles(depth: usize) -> Vec<u8> {
-    let mut datagram = Vec::with_capacity(depth * 20 + 8);
-    for inner in (0..depth).rev() {
-        datagram.extend_from_slice(BUNDLE_TAG);
-        datagram.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]);
-        datagram.extend_from_slice(&((inner * 20 + 8) as u32).to_be_bytes());
-    }
-    datagram.extend_from_slice(b"/a\0\0,\0\0\0");
-    datagram
-}
-
-/// A message whose only argument is `depth` empty arrays nested one inside
-/// the other: 2 bytes a level.
-#[cfg(test)]
-pub(crate) fn nested_arrays(depth: usize) -> Vec<u8> {
-    let mut datagram = b"/a\0\0,".to_vec();
-    datagram.extend(std::iter::repeat_n(b'[', depth));
-    datagram.extend(std::iter::repeat_n(b']', depth));
-    datagram.push(0);
-    datagram.resize(datagram.len().next_multiple_of(4), 0);
-    datagram
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nesting::{MAX_NESTING, nested_arrays, nested_bundles};
     use rosc::{OscArray, OscBundle, OscMessage, OscTime, OscType};
 
     const TIME: OscTime = OscTime {

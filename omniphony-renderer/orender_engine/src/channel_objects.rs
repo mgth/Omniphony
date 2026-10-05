@@ -262,12 +262,14 @@ impl ChannelObjectStages {
         }
     }
 
-    /// Read the stage selection off the live params (one read lock, nothing
+    /// Read the stage selection off the live params (one lock-free read, nothing
     /// cloned), (re)plan both stages and hand them their parameters when those
     /// changed or the generator was rebuilt — what both hosts do on every
     /// channel frame. In steady state that is one atomic load: the plugin
     /// store is only locked when something moved.
     pub fn sync_from_control(&mut self, control: &RendererControl, ctx: &PrepareCtx) -> StageSync {
+        // The epoch before the params, so a bump seen here comes with its
+        // write (see `renderer::live_cell`).
         let options_epoch = control.options_epoch();
         let live = control.live.read();
         let selection = StageSelection {
