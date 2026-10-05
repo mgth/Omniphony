@@ -1,4 +1,5 @@
 pub mod adaptive_runtime;
+pub mod callback_core;
 pub mod callback_log;
 pub mod callback_state;
 pub mod control;

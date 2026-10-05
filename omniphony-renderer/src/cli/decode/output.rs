@@ -534,7 +534,7 @@ impl AudioWriter {
             #[cfg(target_os = "linux")]
             AudioWriter::Pipewire(pw) => pw.diag_atomic_handles(),
             #[cfg(any(target_os = "windows", target_os = "macos"))]
-            AudioWriter::Cpal(_) => Vec::new(),
+            AudioWriter::Cpal(w) => w.diag_atomic_handles(),
             AudioWriter::File(_) => Vec::new(),
             AudioWriter::Unsupported => Vec::new(),
         }
