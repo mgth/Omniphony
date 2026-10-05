@@ -366,6 +366,20 @@ impl SpatialRenderer {
         );
     }
 
+    /// Drop the loudness correction: unity gain and no dialogue level, as
+    /// before any stream sent one. For an input that carries no level (plain
+    /// PCM) taking over from one that did. True when a level was set.
+    pub fn clear_loudness(&self) -> bool {
+        if self.control.live.read().dialogue_level.is_none() {
+            return false;
+        }
+        self.loudness_gain
+            .store(1.0_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.control.live.write().dialogue_level = None;
+        log::info!("Dialog normalization: no dialogue level, gain=0 dB");
+        true
+    }
+
     /// Set the bed channel IDs in PCM channel order.
     ///
     /// Must be called once when the first metadata arrives, before any call to `render_frame`.

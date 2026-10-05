@@ -81,7 +81,8 @@ pub struct DecoderThreadConfig {
     /// starts, so the bridge decodes the first packet in that mode; a later
     /// change reaches it before the next input chunk.
     pub requested_drc_mode: Arc<RwLock<String>>,
-    /// Post-rendering output pacer drain clock (pure pipe-bridge mode only).
+    /// Post-rendering output pacer drain clock, for the frames this thread
+    /// decodes (in pure pipe mode and beside a PipeWire capture alike).
     /// Each decoded packet posts its emitted source duration (microseconds)
     /// here, before the (potentially blocking) frame send. An independent
     /// drain thread converts that to output frames and drains the pacer FIFO
