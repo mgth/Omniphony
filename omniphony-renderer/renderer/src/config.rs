@@ -2647,6 +2647,25 @@ mod save_tests {
         });
         assert!(Config::load(&path).is_ok());
         assert_eq!(entries(&dir), ["config.yaml", "config.yaml.bak"]);
+        // Both files are, byte for byte, one of the configs saved: a torn
+        // write can still parse, so loading alone would not show one. The
+        // `.bak` is the file as the last save found it, so it is a different
+        // one of them.
+        let saved: Vec<Vec<u8>> = std::iter::once("start".to_string())
+            .chain((0..4).flat_map(|t| (0..25).map(move |i| format!("t{t}-{i}"))))
+            .map(|name| with_layout(&name).to_yaml().unwrap().into_bytes())
+            .collect();
+        let current = std::fs::read(&path).unwrap();
+        let backup = std::fs::read(backup_path(&path)).unwrap();
+        assert!(
+            saved.contains(&current),
+            "config.yaml is not a saved config"
+        );
+        assert!(
+            saved.contains(&backup),
+            "config.yaml.bak is not a saved config"
+        );
+        assert_ne!(backup, current);
     }
 
     /// A config whose directory is not writable (only the file is) is still
