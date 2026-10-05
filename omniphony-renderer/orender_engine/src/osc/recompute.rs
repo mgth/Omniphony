@@ -311,14 +311,26 @@ mod tests {
             let Ok(len) = client.recv(&mut buf) else {
                 continue;
             };
-            let Ok((_, OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len]) else {
-                continue;
+            // A state update travels in a bundle with its generation.
+            let messages = match rosc::decoder::decode_udp(&buf[..len]) {
+                Ok((_, OscPacket::Message(msg))) => vec![msg],
+                Ok((_, OscPacket::Bundle(bundle))) => bundle
+                    .content
+                    .into_iter()
+                    .filter_map(|packet| match packet {
+                        OscPacket::Message(msg) => Some(msg),
+                        OscPacket::Bundle(_) => None,
+                    })
+                    .collect(),
+                Err(_) => continue,
             };
-            if msg.addr == addr
-                && let Some(OscType::String(s)) = msg.args.first()
-                && !s.is_empty()
-            {
-                return Some(s.clone());
+            for msg in messages {
+                if msg.addr == addr
+                    && let Some(OscType::String(s)) = msg.args.first()
+                    && !s.is_empty()
+                {
+                    return Some(s.clone());
+                }
             }
         }
         None

@@ -22,8 +22,9 @@ address is missing from it. Keep this document and that crate in sync.
 
 - **Booleans** are accepted as OSC `int` (`0`/non-zero), `float`, or `bool`; the
   engine coerces. Most togglish controls take a single int `0`/`1`.
-- **Enums** are lowercase strings; an unrecognised value is ignored (the engine
-  validates and drops bad input rather than erroring).
+- **Enums** are lowercase strings; an unrecognised value is refused, and the
+  sender told so on `/state/control_error` (see
+  [Session and reliability](#session-and-reliability)).
 - **Nesting** is bounded: bundles may nest 8 deep, and so may arrays within a
   message's arguments. The engine and the Studio each drop a datagram that
   goes deeper, whole and before decoding it (logged as undecodable); the limit
@@ -79,6 +80,60 @@ commit unsaved edits either: a switch discards them unless it is sent with
 delete are bookkeeping. A targeted write never touches the other unsaved edits:
 they stay pending, and a live-handoff sidecar holding them is amended rather
 than discarded.
+
+## Session and reliability
+
+UDP loses datagrams and the engine answers nothing by default, so the session
+carries what a client needs to notice either. The contract crate's
+`CONTRACT_REVISION` (`osc-contract`) is the revision this section describes:
+**1**.
+
+- **Registration** — `/omniphony/register [reply_port]` registers the sender
+  (the port is optional; the source port otherwise) and sends it the
+  live-state snapshot, its log backlog and its metering state. A registered
+  client sends `/omniphony/heartbeat [reply_port]` every 5 s and is dropped
+  after 10 s of silence.
+- **Heartbeat acknowledgement** — `/omniphony/heartbeat/ack [epoch,
+  generation]`, or `/omniphony/heartbeat/unknown` to a client the engine does
+  not know (it re-registers). `epoch` is random per engine instance: when it
+  changes, another engine answers on the port. `generation` is the state
+  generation below. An engine before revision 1 sends `epoch` alone.
+- **State generation** — `/omniphony/state/generation [generation, full]`.
+  The engine counts the control-plane state it broadcasts: every single state
+  update (`config/saved`, `log_level`, `speakers/recomputing`, a control's
+  echo, `overlay`, …) travels in a bundle with the next count and `full = 0`;
+  every snapshot carries the count with `full = 1` just before
+  `snapshot_complete` (a broadcast snapshot advances it, one sent to a single
+  client does not). A client holding `g` expects `g + 1` next; anything else,
+  or an acknowledgement reporting another value, means it missed something.
+  It then sends `/omniphony/control/state/refresh [reply_port]`, which resends
+  the snapshot to it and nothing else. Telemetry is not counted: the meter
+  bundle (timings, latencies, the object test position), diagnostics, the head
+  pose, the realtime gain echoes (sequenced on their own), the gain-table
+  stream (versioned and resent on its own) and the object and meter streams.
+  The count wraps; compare it for equality only.
+- **Control errors** — a control the engine does not apply is answered, to
+  its sender only, with `/omniphony/state/control_error [address, code,
+  message]`. `code` is one of `unknown_address` (no handler knows it),
+  `invalid_arguments` (its handler refused the arguments; a grouped
+  `/control/options` write reports the pairs it dropped and applies the
+  rest), `not_applied` (a catalogued address nothing on this engine took: its
+  arguments were refused without a reason, or the host does not implement it,
+  such as an audio-output control sent to an engine embedded in mpv) and
+  `undecodable` (not OSC the engine can read; `address` is empty, and these
+  are answered at most once per 5 s). `message` is for a person. A control
+  taken and found to change nothing is not answered.
+- **Contract revision** — `/state/capabilities` carries `contractRevision`.
+  A client compares it with its own and says so when they differ; an engine
+  that advertises none predates revisions and counts as 0. The revision moves
+  with any change to the wire surface: an address added, removed or renamed,
+  or an address's arguments. The contract crate pins the address set to the
+  revision, so a catalogue change without a bump fails its tests.
+- **Argument shapes** — `osc_contract::shapes::STATE` gives the arguments of
+  every state address. The engine's tests hold what it sends to it, and
+  Studio's conformance test parses a message of every shape, so a state
+  address Studio cannot read fails a test rather than being dropped at run
+  time.
 
 ---
 
@@ -485,6 +540,7 @@ and heatmap configuration.
 | `/control/quit` | — | Shut the engine down. |
 | `/control/yield_port` | — | Ask this instance to free the OSC RX port. Honoured only by instances started with `--osc-yield` (a Studio-launched standby renderer); ignored otherwise, so an embedded (mpv) renderer can never be evicted. Sent automatically by a starting instance that finds the port busy. The instance replies `/omniphony/yield/resume_port [port]` and stands by. |
 | `/control/resume` | — | Sent to a standing-by instance, on the resume port it advertised, to re-acquire the OSC port and audio. |
+| `/control/state/refresh` | int reply port (optional) | Resend the live-state snapshot to the sender, and nothing else: for a client whose state generation fell behind (see [Session and reliability](#session-and-reliability)). |
 
 `/control/unknown` is a sentinel for tests (an address no handler takes).
 
@@ -509,7 +565,10 @@ individual deltas use the addresses below. `osc_contract::ALL_STATE` is the
 exhaustive machine-readable list.
 
 - **Snapshot / lifecycle** — `renderer` (full JSON), `snapshot_complete`,
-  `capabilities`, `config/saved`, `config/save_error`, `shutdown` (goodbye
+  `generation` (the state count, see
+  [Session and reliability](#session-and-reliability)), `capabilities`
+  (including `contractRevision`), `control_error` (to the sender of a control
+  that was not applied), `config/saved`, `config/save_error`, `shutdown` (goodbye
   broadcast on graceful engine teardown, one string arg with the reason;
   clients should treat the connection as gone and re-register with the next
   instance). The snapshot travels as one OSC bundle, or as several
@@ -558,15 +617,19 @@ exhaustive machine-readable list.
 ## Adding or changing an address
 
 1. Add/rename the constant in `osc-contract/src/lib.rs` (and to `ALL_CONTROL`,
-   `ALL_STATE` or `ALL_SESSION`).
-2. Reference the constant from the dispatcher / producer instead of a literal.
-3. Document it above, and list it in the [address index](#address-index).
+   `ALL_STATE` or `ALL_SESSION`). A state address also gets its arguments in
+   `osc-contract/src/shapes.rs`, and Studio's parser an arm that reads them.
+2. Bump `CONTRACT_REVISION` — for any change to an address or its arguments —
+   and pin the new address set where the contract's test says.
+3. Reference the constant from the dispatcher / producer instead of a literal.
+4. Document it above, and list it in the [address index](#address-index).
 
 The contract crate's tests guard the structural invariants (every control const
 is a control address, every state const a state address, no duplicate wire
 addresses), that the engine and Studio sources reference constants instead of
-spelling addresses, and that every catalogued address appears in the index
-below.
+spelling addresses, that every catalogued address appears in the index
+below, that every state address has a shape, and that the address set has not
+changed under the same `CONTRACT_REVISION`.
 
 ## Address index
 
@@ -580,7 +643,7 @@ not catalogued: `/omniphony/control/object/{id}/mute`,
 `/omniphony/control/render_evaluation/polar/…` (see above), plus the
 per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id}`.
 
-<details><summary>Control (161)</summary>
+<details><summary>Control (162)</summary>
 
 - `/omniphony/control/adaptive_resampling`
 - `/omniphony/control/adaptive_resampling/enable_far_mode`
@@ -741,6 +804,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/control/spread/max`
 - `/omniphony/control/spread/min`
 - `/omniphony/control/spread/size_to_spread_mode`
+- `/omniphony/control/state/refresh`
 - `/omniphony/control/surround_placement`
 - `/omniphony/control/synthetic_objects`
 - `/omniphony/control/unknown`
@@ -749,7 +813,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 
 </details>
 
-<details><summary>State (73)</summary>
+<details><summary>State (76)</summary>
 
 - `/omniphony/state/adaptive_resampling/band`
 - `/omniphony/state/adaptive_resampling/state`
@@ -761,6 +825,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/clip`
 - `/omniphony/state/config/save_error`
 - `/omniphony/state/config/saved`
+- `/omniphony/state/control_error`
 - `/omniphony/state/crossover_time_ms`
 - `/omniphony/state/debug/speaker_gaintable/chunk`
 - `/omniphony/state/debug/speaker_gaintable/meta`
@@ -770,6 +835,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/diag_schema`
 - `/omniphony/state/diag_values`
 - `/omniphony/state/frame_duration_ms`
+- `/omniphony/state/generation`
 - `/omniphony/state/head_pose`
 - `/omniphony/state/input`
 - `/omniphony/state/input_pipe`

@@ -1,6 +1,6 @@
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 
-use rosc::{OscMessage, OscPacket, OscType};
+use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 use runtime_control::osc::{BroadcastUpdate, BroadcastValue};
 
 use super::client_registry::OscClientRegistry;
@@ -35,6 +35,45 @@ pub(crate) fn ensure_send_buffer(socket: &UdpSocket) {
     }
 }
 
+/// Timetag of every bundle of state: "immediately".
+pub(crate) const STATE_TIMETAG: OscTime = OscTime {
+    seconds: 0,
+    fractional: 1,
+};
+
+/// `/omniphony/state/generation [generation, full]`: what closes a snapshot
+/// (`full`) or follows a single state update (see
+/// [`osc_contract::STATE_GENERATION`]).
+pub(crate) fn state_generation_message(generation: u32, full: bool) -> OscPacket {
+    OscPacket::Message(OscMessage {
+        addr: osc_contract::STATE_GENERATION.to_string(),
+        // The wire's int is signed; the count is compared for equality only.
+        args: vec![
+            OscType::Int(generation as i32),
+            OscType::Int(i32::from(full)),
+        ],
+    })
+}
+
+/// Broadcast one state update, versioned: it goes out in a bundle with the
+/// next state generation, so a client that missed the one before it can tell.
+/// For control-plane state only — a telemetry stream sent this way would move
+/// the generation on every reading, and every client would keep asking for
+/// snapshots.
+fn broadcast_state(socket: &UdpSocket, clients: &OscClientRegistry, msg: OscMessage) {
+    let generation = clients.advance_state_generation();
+    let bundle = OscPacket::Bundle(OscBundle {
+        timetag: STATE_TIMETAG,
+        content: vec![
+            OscPacket::Message(msg),
+            state_generation_message(generation, false),
+        ],
+    });
+    if let Ok(bytes) = rosc::encoder::encode(&bundle) {
+        send_raw(socket, clients, &bytes);
+    }
+}
+
 pub(crate) fn broadcast_float(
     socket: &UdpSocket,
     clients: &OscClientRegistry,
@@ -45,9 +84,7 @@ pub(crate) fn broadcast_float(
         addr: addr.to_string(),
         args: vec![OscType::Float(value)],
     };
-    if let Ok(bytes) = rosc::encoder::encode(&OscPacket::Message(msg)) {
-        send_raw(socket, clients, &bytes);
-    }
+    broadcast_state(socket, clients, msg);
 }
 
 pub(crate) fn broadcast_int(
@@ -60,9 +97,7 @@ pub(crate) fn broadcast_int(
         addr: addr.to_string(),
         args: vec![OscType::Int(value)],
     };
-    if let Ok(bytes) = rosc::encoder::encode(&OscPacket::Message(msg)) {
-        send_raw(socket, clients, &bytes);
-    }
+    broadcast_state(socket, clients, msg);
 }
 
 pub(crate) fn broadcast_fff(
@@ -77,11 +112,11 @@ pub(crate) fn broadcast_fff(
         addr: addr.to_string(),
         args: vec![OscType::Float(a), OscType::Float(b), OscType::Float(c)],
     };
-    if let Ok(bytes) = rosc::encoder::encode(&OscPacket::Message(msg)) {
-        send_raw(socket, clients, &bytes);
-    }
+    broadcast_state(socket, clients, msg);
 }
 
+/// Not versioned, unlike the helpers above: its one user is the head pose,
+/// a ~30 Hz stream.
 pub(crate) fn broadcast_ffff(
     socket: &UdpSocket,
     clients: &OscClientRegistry,
@@ -111,17 +146,16 @@ pub(crate) fn broadcast_string(
     addr: &str,
     value: &str,
 ) {
-    let packet = OscPacket::Message(OscMessage {
+    let msg = OscMessage {
         addr: addr.to_string(),
         args: vec![OscType::String(value.to_string())],
-    });
-    if let Ok(data) = rosc::encoder::encode(&packet) {
-        send_raw(socket, clients, &data);
-    }
+    };
+    broadcast_state(socket, clients, msg);
 }
 
 /// Broadcast a single OSC `blob` arg (raw bytes). For bulk binary payloads such
-/// as the chunked, compressed speaker gain table.
+/// as the chunked, compressed speaker gain table — which has its own versions
+/// and resend, so this one is not versioned.
 pub(crate) fn broadcast_blob(
     socket: &UdpSocket,
     clients: &OscClientRegistry,
@@ -266,6 +300,27 @@ pub(crate) fn send_message_to_client(
             log::warn!("Failed to send {addr} to {client}: {e}");
         }
     }
+}
+
+/// `/omniphony/state/control_error [address, code, message]` to the sender of
+/// a control the engine did not apply.
+pub(crate) fn send_control_error(
+    socket: &UdpSocket,
+    client: SocketAddr,
+    address: &str,
+    code: &str,
+    message: &str,
+) {
+    send_message_to_client(
+        socket,
+        client,
+        osc_contract::STATE_CONTROL_ERROR,
+        vec![
+            OscType::String(address.to_string()),
+            OscType::String(code.to_string()),
+            OscType::String(message.to_string()),
+        ],
+    );
 }
 
 pub(crate) fn resolve_register_addr(src: SocketAddr, args: &[OscType]) -> SocketAddr {

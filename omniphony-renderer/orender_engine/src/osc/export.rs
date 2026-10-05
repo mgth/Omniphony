@@ -3,37 +3,44 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use renderer::live_params::RendererControl;
-use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
+use rosc::{OscBundle, OscMessage, OscPacket, OscType};
 use runtime_control::HostControlHandler;
 
 use super::client_registry::OscClientRegistry;
-use super::transport::{broadcast_int, broadcast_string, send_raw};
+use super::transport::{
+    STATE_TIMETAG, broadcast_int, broadcast_string, send_raw, state_generation_message,
+};
 use runtime_control::osc_contract;
 
 /// Largest payload one UDP datagram carries over IPv4 (65 535 bytes minus the
 /// IP and UDP headers), with room to spare for the bundle framing.
 pub(crate) const MAX_STATE_DATAGRAM: usize = 65_000;
 
-const STATE_TIMETAG: OscTime = OscTime {
-    seconds: 0,
-    fractional: 1,
-};
+/// The live-state snapshot, encoded for the wire as it is sent: one OSC bundle
+/// when it fits a datagram, consecutive bundles when it does not (a long device
+/// list, a bridge error report…). Each bundle stays under
+/// [`MAX_STATE_DATAGRAM`]; a single message larger than that travels alone and
+/// fails on its own, instead of taking the whole snapshot down with it — which
+/// is what a snapshot that silently never arrives looks like from Studio: "not
+/// connected". Clients read the messages in order and act on
+/// `snapshot_complete`, the last one, so the split is invisible to them.
+///
+/// Encoded at send time rather than here because the snapshot carries the
+/// state generation ([`osc_contract::STATE_GENERATION`], `full = 1`) just ahead
+/// of `snapshot_complete`, and only the send knows which one: a broadcast
+/// advances it, a reply to one client reports where it stands.
+pub(crate) struct LiveState(Vec<OscPacket>);
 
-/// The live-state snapshot encoded for the wire: one OSC bundle when it fits a
-/// datagram, consecutive bundles when it does not (a long device list, a bridge
-/// error report…). Each bundle stays under [`MAX_STATE_DATAGRAM`]; a single
-/// message larger than that travels alone and fails on its own, instead of
-/// taking the whole snapshot down with it — which is what a snapshot that
-/// silently never arrives looks like from Studio: "not connected". Clients read
-/// the messages in order and act on `snapshot_complete`, the last one, so the
-/// split is invisible to them.
-pub(crate) struct LiveStateDatagrams(Vec<Vec<u8>>);
-
-impl LiveStateDatagrams {
+impl LiveState {
     /// Send the snapshot to one client (registration, refresh).
-    pub(crate) fn send_to(&self, socket: &UdpSocket, client: SocketAddr) {
-        for bytes in &self.0 {
-            if let Err(e) = socket.send_to(bytes, client) {
+    pub(crate) fn send_to(
+        self,
+        socket: &UdpSocket,
+        clients: &OscClientRegistry,
+        client: SocketAddr,
+    ) {
+        for bytes in self.encode(clients.state_generation()) {
+            if let Err(e) = socket.send_to(&bytes, client) {
                 log::warn!(
                     "Failed to send live state ({} bytes) to {}: {}",
                     bytes.len(),
@@ -45,10 +52,17 @@ impl LiveStateDatagrams {
     }
 
     /// Broadcast the snapshot to every registered client.
-    pub(crate) fn broadcast(&self, socket: &UdpSocket, clients: &OscClientRegistry) {
-        for bytes in &self.0 {
-            send_raw(socket, clients, bytes);
+    pub(crate) fn broadcast(self, socket: &UdpSocket, clients: &OscClientRegistry) {
+        for bytes in self.encode(clients.advance_state_generation()) {
+            send_raw(socket, clients, &bytes);
         }
+    }
+
+    fn encode(mut self, generation: u32) -> Vec<Vec<u8>> {
+        let at = self.0.len().saturating_sub(1);
+        self.0
+            .insert(at, state_generation_message(generation, true));
+        encode_state_datagrams(self.0, MAX_STATE_DATAGRAM)
     }
 }
 
@@ -101,11 +115,11 @@ pub(crate) fn encode_state_datagrams(messages: Vec<OscPacket>, max: usize) -> Ve
 /// Compose the live-state snapshot: core messages (renderer/layout/
 /// speakers/loudness/DRC/monitoring/objects) + the host handler's extra
 /// messages (e.g. /state/audio + /state/input device fields) + the
-/// snapshot_complete marker, bundled and encoded for the wire.
+/// snapshot_complete marker, bundled and encoded for the wire when it is sent.
 pub(crate) fn build_live_state(
     control: &Arc<RendererControl>,
     host: Option<&Arc<dyn HostControlHandler>>,
-) -> LiveStateDatagrams {
+) -> LiveState {
     let has_audio = host.is_some();
     let has_input = host.is_some();
     let mut messages = runtime_control::snapshot::build_live_state_bundle_with_host(
@@ -135,7 +149,7 @@ pub(crate) fn build_live_state(
         addr: osc_contract::STATE_SNAPSHOT_COMPLETE.to_string(),
         args: vec![OscType::Int(1)],
     }));
-    LiveStateDatagrams(encode_state_datagrams(messages, MAX_STATE_DATAGRAM))
+    LiveState(messages)
 }
 
 pub(crate) fn save_live_config(
