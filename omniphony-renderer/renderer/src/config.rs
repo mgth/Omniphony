@@ -1012,6 +1012,14 @@ pub fn backup_path(path: &Path) -> PathBuf {
 /// leaves the current file as it was. A symlinked `path` is written through,
 /// so the link survives. `before_rename` is the test seam for a failure
 /// between the write and the rename.
+///
+/// The rename needs a writable directory and replaces the file's inode, so
+/// where that would refuse a write the old in-place `fs::write` allowed, or
+/// change what the file is, the file is rewritten in place instead (not
+/// atomic, as before this existed): the directory is not writable (a config
+/// under `/etc` whose file alone is writable), the file has other hard links,
+/// or it belongs to another owner or group (a save run as root on a user's
+/// file). ACLs and extended attributes are not carried over by the rename.
 fn replace_file(
     path: &Path,
     contents: &[u8],
@@ -1033,19 +1041,30 @@ fn replace_file(
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("{} has no file name", target.display()))?
         .to_string_lossy();
-    // The pid keeps two processes saving the same file at once (the Studio
-    // engine and a player's liborender) off each other's temp file.
-    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let current = std::fs::metadata(&target).ok();
+
+    let (tmp, mut file) = match create_temp_file(&dir, &name) {
+        Ok(created) => created,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && current.is_some() => {
+            return write_in_place(&target, contents, backup);
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(meta) = &current {
+        if !rename_keeps_identity(meta, &file.metadata()?) {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp);
+            return write_in_place(&target, contents, backup);
+        }
+    }
 
     let result = (|| -> anyhow::Result<()> {
-        let mut file = std::fs::File::create(&tmp)?;
         file.write_all(contents)?;
         file.sync_all()?;
-        drop(file);
-        let current = std::fs::metadata(&target).ok();
         if let Some(meta) = &current {
-            std::fs::set_permissions(&tmp, meta.permissions())?;
+            file.set_permissions(meta.permissions())?;
         }
+        drop(file);
         before_rename()?;
         if backup && current.is_some() {
             std::fs::copy(&target, backup_path(&target))?;
@@ -1063,6 +1082,63 @@ fn replace_file(
     if let Ok(dir) = std::fs::File::open(&dir) {
         let _ = dir.sync_all();
     }
+    Ok(())
+}
+
+/// Create a fresh temp file next to `name` in `dir`. The pid keeps two
+/// processes (the Studio engine and a player's liborender) apart and the
+/// counter two saves in one process; `create_new` makes sure no save ever
+/// opens, and truncates, another's temp file.
+fn create_temp_file(dir: &Path, name: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = dir.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => return Ok((tmp, file)),
+            // A leftover of a crashed process that had the same pid.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Whether renaming a file created by this process over `current` leaves it
+/// the same file to everyone else: the same owner and group, and no other
+/// hard link left pointing at the old contents.
+#[cfg(unix)]
+fn rename_keeps_identity(current: &std::fs::Metadata, created: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    current.nlink() == 1 && current.uid() == created.uid() && current.gid() == created.gid()
+}
+
+#[cfg(not(unix))]
+fn rename_keeps_identity(_current: &std::fs::Metadata, _created: &std::fs::Metadata) -> bool {
+    true
+}
+
+/// The non-atomic fallback of [`replace_file`]: truncate and rewrite `target`
+/// itself, which keeps its inode, owner, links and attributes. The `.bak` is
+/// best-effort here: a directory that refused a temp file may refuse it too,
+/// and that must not block the write the old `fs::write` allowed.
+fn write_in_place(target: &Path, contents: &[u8], backup: bool) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    if backup {
+        if let Err(e) = std::fs::copy(target, backup_path(target)) {
+            log::warn!("no backup of {} kept: {e}", target.display());
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(target)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
     Ok(())
 }
 
@@ -1816,6 +1892,68 @@ mod save_tests {
         assert!(result.is_err());
         assert_eq!(std::fs::read(&path).unwrap(), old);
         assert_eq!(entries(&dir), ["config.yaml"], "temp file cleaned up");
+    }
+
+    /// Saves of one file from several threads of one process each get their
+    /// own temp file: none fails, and none is left behind.
+    #[test]
+    fn concurrent_saves_in_one_process_do_not_share_a_temp_file() {
+        let dir = dir("concurrent");
+        let path = dir.join("config.yaml");
+        with_layout("start").save(&path).unwrap();
+        std::thread::scope(|scope| {
+            for t in 0..4 {
+                let path = &path;
+                scope.spawn(move || {
+                    for i in 0..25 {
+                        with_layout(&format!("t{t}-{i}")).save(path).unwrap();
+                    }
+                });
+            }
+        });
+        assert!(Config::load(&path).is_ok());
+        assert_eq!(entries(&dir), ["config.yaml", "config.yaml.bak"]);
+    }
+
+    /// A config whose directory is not writable (only the file is) is still
+    /// saved, in place, as `fs::write` used to.
+    #[cfg(unix)]
+    #[test]
+    fn save_rewrites_in_place_when_the_directory_is_not_writable() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = dir("ro-dir");
+        let path = dir.join("config.yaml");
+        with_layout("older").save(&path).unwrap();
+        // The `.bak` already exists, so it can be rewritten in place too.
+        with_layout("old").save(&path).unwrap();
+        let old = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores the directory mode; there is nothing to check then.
+        let enforced = std::fs::File::create(dir.join("probe")).is_err();
+        let result = with_layout("new").save(&path);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !enforced {
+            return;
+        }
+        result.unwrap();
+        let back = Config::load(&path).unwrap();
+        assert_eq!(back.render.unwrap().output_file.as_deref(), Some("new"));
+        assert_eq!(std::fs::read(backup_path(&path)).unwrap(), old);
+        assert_eq!(entries(&dir), ["config.yaml", "config.yaml.bak"]);
+    }
+
+    /// A hard-linked config stays one file under both names.
+    #[cfg(unix)]
+    #[test]
+    fn save_keeps_hard_links() {
+        let dir = dir("hardlink");
+        let path = dir.join("config.yaml");
+        let other = dir.join("other.yaml");
+        with_layout("old").save(&path).unwrap();
+        std::fs::hard_link(&path, &other).unwrap();
+        with_layout("new").save(&path).unwrap();
+        let back = Config::load(&other).unwrap();
+        assert_eq!(back.render.unwrap().output_file.as_deref(), Some("new"));
     }
 
     #[cfg(unix)]
