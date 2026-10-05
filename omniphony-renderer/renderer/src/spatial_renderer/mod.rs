@@ -564,10 +564,19 @@ impl SpatialRenderer {
         ctx: &RampContext,
     ) -> Result<()> {
         for event in events {
+            if event.channel_idx >= components::MAX_EVENT_CHANNELS {
+                continue;
+            }
             let state = Self::state_mut(states, event.channel_idx);
             state.initialized = true;
 
-            if let Some(gain) = event.gain_db {
+            // A gain no linear factor stands for (NaN, +inf, past ~770 dB) is
+            // a broken event, not an instruction: the channel keeps the gain it
+            // had. -inf is the mute it means (see `gain_db_to_linear`).
+            if let Some(gain) = event
+                .gain_db
+                .filter(|&g| components::gain_db_to_linear(g).is_finite())
+            {
                 state.gain_db = gain;
             }
             if let Some(ramp_length) = event.ramp_length {
