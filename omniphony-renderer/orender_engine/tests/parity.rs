@@ -12,8 +12,8 @@
 //! cargo test -p orender_engine --test parity -- --nocapture
 //! ```
 //!
-//! Bit-exact comparison against the `orender` CLI is a separate step that first
-//! needs a render-to-file output mode in the CLI.
+//! The bit-exact comparison with the `orender` CLI runs in CI on the bundled
+//! demo and the reference bridge: `tests/host_parity.rs` in the CLI crate.
 
 use orender_engine::Engine;
 use std::path::Path;

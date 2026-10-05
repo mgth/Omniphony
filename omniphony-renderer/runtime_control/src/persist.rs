@@ -586,7 +586,6 @@ mod tests {
 
         let (_, restored) = Config::load_or_default_with_live(&path);
         assert!(restored);
-        // Read once: other tests clear the process-wide overlay cache.
         let status = boot_load_status(&path);
         assert_eq!(status, ConfigLoadStatus::ParseError);
         let after = crate::test_support::fixture_control();

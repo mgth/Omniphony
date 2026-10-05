@@ -308,6 +308,7 @@ fn init_osc_runtime(
         // parameters and no channel catalogue for the bed editor.
         handler
             .spatial
+            .pipeline
             .stream
             .channel_objects
             .publish_static_state(&ctrl);
@@ -529,7 +530,7 @@ pub fn init_no_bridge_handler(
     let (renderer, osc_sender) = runtime.into_parts();
     handler.spatial_renderer = Some(renderer);
     handler.telemetry.osc_sender = osc_sender;
-    handler.spatial.stream.coordinate_format =
+    handler.spatial.pipeline.stream.coordinate_format =
         orender_engine::degraded::NO_BRIDGE_COORDINATE_FORMAT;
     init_telemetry(handler);
 

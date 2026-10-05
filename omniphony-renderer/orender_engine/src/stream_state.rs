@@ -5,9 +5,10 @@
 //! Each host used to keep its own copy of these fields with its own update
 //! code, and a per-stream rule honoured in one host only was a recurring bug
 //! (a segment start without the content-generation bump, synthetic objects
-//! rendered by one host only). The data and the rules now live here; the
-//! hosts keep only their plumbing (decode thread, output buffers, sinks, OSC
-//! and overlay emission) and what only one of them needs.
+//! rendered by one host only). The data and the rules now live here, and the
+//! sequence that applies them frame by frame in [`crate::frame_pipeline`];
+//! the hosts keep only their plumbing (decode thread, output buffers, sinks)
+//! and what only one of them needs.
 //!
 //! Nothing here allocates on a steady stream: the event buffers and the
 //! object↔channel declaration are reused, and the planners cache their plans.
