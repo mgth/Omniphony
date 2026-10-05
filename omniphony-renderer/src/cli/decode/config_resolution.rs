@@ -601,6 +601,8 @@ pub(super) fn effective_to_config(
     // profiles (docs/config-profiles.md — wiping them here would destroy
     // every non-active profile on `--save-config`) and unknown keys.
     Ok(Config {
+        // A save stamps this build's own.
+        schema_version: existing.and_then(|c| c.schema_version),
         global: global_opt,
         render: Some(render),
         active_profile: existing.and_then(|c| c.active_profile.clone()),

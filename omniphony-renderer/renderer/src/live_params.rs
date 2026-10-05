@@ -3,9 +3,9 @@
 //! # Design
 //!
 //! `RendererControl` is wrapped in an `Arc` and held by both the `SpatialRenderer`
-//! (reads) and the `OscSender` listener thread (writes).  The render thread takes a
-//! snapshot at the beginning of each frame so that the `RwLock` on `LiveParams` is
-//! held for the shortest possible time.
+//! (reads) and the `OscSender` listener thread (writes). `LiveParams` sits in a
+//! [`LiveCell`]: the render thread loads it without a lock, so no control write
+//! can make it wait.
 //!
 //! Speaker position updates (via `/omniphony/control/speaker/{idx}/{az|el|distance}` +
 //! `/omniphony/control/speakers/apply`) trigger a background recompute of the VBAP
@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::backend_registry::{BackendRegistry, TopologyBuildPlan, prepare_topology_build_plan};
+pub use crate::live_cell::LiveCell;
 use crate::render_backend::{EvaluationBuildConfig, PreparedRenderEngine, RenderRequest};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
@@ -1158,8 +1159,10 @@ impl Default for HybridLiveParams {
 
 /// Live-tunable rendering parameters.
 ///
-/// Written (exclusively) by the OSC listener thread, read via snapshot by the
-/// render thread.
+/// Written by the control threads (OSC listener, config seeding), read
+/// lock-free by the render thread through [`LiveCell`]. `Clone` because a
+/// write edits a copy and publishes it.
+#[derive(Clone)]
 pub struct LiveParams {
     /// Master output gain, linear scale (1.0 = unity, 0.5 ≈ −6 dB).
     pub master_gain: f32,
@@ -1586,13 +1589,14 @@ impl RenderTopology {
 
 /// Shared control object held by both `SpatialRenderer` and `OscSender`.
 ///
-/// The renderer reads `live` via a snapshot and loads the current immutable
-/// `RenderTopology` lock-free at the start of each frame. The OSC listener writes
+/// The renderer loads `live` and the current immutable `RenderTopology`
+/// lock-free. The OSC listener writes
 /// `live`, edits the staging layout, rebuilds a new `RenderTopology` in the
 /// background, then publishes it atomically.
 pub struct RendererControl {
-    /// Live-tunable parameters (protected by a readers-writer lock).
-    pub live: RwLock<LiveParams>,
+    /// Live-tunable parameters: read lock-free, written under a mutex that
+    /// only writers take (see [`LiveCell`]).
+    pub live: LiveCell<LiveParams>,
 
     /// Current render topology, shared between render thread (reads) and OSC
     /// listener (writes on recompute).  Lock-free: the render thread loads an
@@ -1797,6 +1801,16 @@ impl Default for ProfilesInfo {
     }
 }
 
+/// A generation that tells readers the live params changed must be bumped
+/// once they are published, not while the write guard is still held.
+#[track_caller]
+fn debug_assert_bumped_after_publish() {
+    debug_assert!(
+        !crate::live_cell::write_held_on_this_thread(),
+        "live params generation bumped while their write guard is held: drop it first"
+    );
+}
+
 impl RendererControl {
     /// Create a new `RendererControl` and wrap it in an `Arc`.
     ///
@@ -1811,7 +1825,7 @@ impl RendererControl {
         backend_rebuild_params: Option<BackendRebuildParams>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            live: RwLock::new(live),
+            live: LiveCell::new(live),
             topology: ArcSwap::new(Arc::new(initial_topology)),
             editable_layout: Mutex::new(editable_layout),
             backend_rebuild_params: RwLock::new(backend_rebuild_params),
@@ -2310,14 +2324,22 @@ impl RendererControl {
         *self.backend_rebuild_params.write() = params;
     }
 
+    /// Tell the render thread the per-object live params changed. Call it
+    /// after the write guard is dropped: the render thread loads the live
+    /// params after this generation, so a bump it sees comes with the data
+    /// (see [`LiveCell`]).
     pub fn mark_object_params_dirty(&self) {
+        debug_assert_bumped_after_publish();
         self.object_params_generation
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Release);
     }
 
+    /// [`mark_object_params_dirty`](Self::mark_object_params_dirty) for the
+    /// per-speaker live params.
     pub fn mark_speaker_params_dirty(&self) {
+        debug_assert_bumped_after_publish();
         self.speaker_params_generation
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Release);
     }
 
     /// The last binaural HRIR build's outcome (see the field).
@@ -2351,12 +2373,15 @@ impl RendererControl {
 
     /// Bump the options epoch: a `REPLAN`-flagged live option changed, so the
     /// synthesized-object plan signatures must invalidate (see [`crate::options`]).
+    /// Like the params generations, bumped after the write guard is dropped
+    /// and read before the live params are loaded.
     pub fn bump_options_epoch(&self) {
-        self.options_epoch.fetch_add(1, Ordering::Relaxed);
+        debug_assert_bumped_after_publish();
+        self.options_epoch.fetch_add(1, Ordering::Release);
     }
 
     pub fn options_epoch(&self) -> u64 {
-        self.options_epoch.load(Ordering::Relaxed)
+        self.options_epoch.load(Ordering::Acquire)
     }
 
     /// Flag that output clipping was detected this frame on `speaker_idx`
@@ -2473,21 +2498,24 @@ impl RendererControl {
                     .prepare_topology_rebuild_for_layout(band_layout)
                     .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology"))?
                     .build_band_topology_reusing(None)?;
-                let per_cell: Vec<crate::spatial_vbap::Gains> = (0..cell_count)
-                    .into_par_iter()
-                    .map(|idx| {
-                        let xi = idx % nx;
-                        let yi = (idx / nx) % ny;
-                        let zi = idx / (nx * ny);
-                        let mut req = template;
-                        req.adm_position = [
-                            x_positions[xi] as f64,
-                            y_positions[yi] as f64,
-                            z_positions[zi] as f64,
-                        ];
-                        band_topology.backend.compute_gains(&req).gains
-                    })
-                    .collect();
+                let per_cell: Vec<crate::spatial_vbap::Gains> =
+                    crate::background_pool::install(|| {
+                        (0..cell_count)
+                            .into_par_iter()
+                            .map(|idx| {
+                                let xi = idx % nx;
+                                let yi = (idx / nx) % ny;
+                                let zi = idx / (nx * ny);
+                                let mut req = template;
+                                req.adm_position = [
+                                    x_positions[xi] as f64,
+                                    y_positions[yi] as f64,
+                                    z_positions[zi] as f64,
+                                ];
+                                band_topology.backend.compute_gains(&req).gains
+                            })
+                            .collect()
+                    });
                 for (idx, cell) in per_cell.iter().enumerate() {
                     let base = idx * speaker_count;
                     for (gi, &g) in cell.iter().enumerate() {

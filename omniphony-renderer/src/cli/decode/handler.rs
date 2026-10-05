@@ -165,6 +165,15 @@ impl DecodeHandler {
             .unwrap_or(false)
     }
 
+    /// Record the decoded stream in the applied input state, in pure pipe mode.
+    ///
+    /// In PipeWire mode the applied state is the capture's — the sink's node
+    /// and carrier, as the live-input manager published them — and a decoded
+    /// frame changes none of it, whichever producer it came from (the sink's
+    /// own bridge decoder, the input pipe, the speaker-test idle feed).
+    /// Recording the frame there turned the applied mode into `Bridge` with
+    /// the capture still up, and [`should_accept_source`](Self::should_accept_source)
+    /// then refused the sink's linear PCM until the next input apply.
     fn sync_input_runtime_state(
         &mut self,
         source: DecodedSource,
@@ -175,10 +184,7 @@ impl DecodeHandler {
         };
         let applied_before = input_control.applied_snapshot();
         if matches!(source, DecodedSource::Bridge)
-            && matches!(
-                applied_before.active_mode,
-                InputMode::Bridge | InputMode::Pipewire
-            )
+            && applied_before.active_mode == InputMode::Bridge
         {
             let channels = Some(frame.channel_count as u16);
             let sample_rate_hz = Some(frame.sampling_frequency);
@@ -264,9 +270,9 @@ impl DecodeHandler {
             let osc_sender = self
                 .telemetry
                 .osc_sender
-                .as_ref()
+                .as_mut()
                 .expect("osc_sender present");
-            osc_sender.send_live_state_bundle()?;
+            osc_sender.send_live_state_bundle();
         }
         Ok(())
     }
@@ -356,7 +362,7 @@ impl DecodeHandler {
                 if let Some(osc_sender) = self
                     .telemetry
                     .osc_sender
-                    .as_ref()
+                    .as_mut()
                     .filter(|sender| sender.has_osc_clients())
                 {
                     osc_sender.send_loudness_state();
@@ -366,7 +372,7 @@ impl DecodeHandler {
 
         // Everything sent about this frame describes the block starting here.
         let block_start = self.session.decoded_samples;
-        if let Some(osc_sender) = self.telemetry.osc_sender.as_ref() {
+        if let Some(osc_sender) = self.telemetry.osc_sender.as_mut() {
             osc_sender.render_at(block_start);
         }
 
@@ -389,7 +395,7 @@ impl DecodeHandler {
         // writer measures, and the render's own delay (a linear-phase
         // crossover). Lets a client show each block when it is heard.
         if let (Some(latency), Some(osc_sender)) =
-            (latency_snapshot, self.telemetry.osc_sender.as_ref())
+            (latency_snapshot, self.telemetry.osc_sender.as_mut())
         {
             let rate = sample_rate.max(1);
             let in_flight = (f64::from(latency.final_latency_ms.max(0.0)) * f64::from(rate)
@@ -532,6 +538,28 @@ impl DecodeHandler {
             self.output.reset_realtime_output_tracking();
         }
 
+        // Nor can a file capture carried over a stream end take a stream at
+        // another rate: the sink writes samples as they come, so they would
+        // sit under a CAF header describing the streams before them and play
+        // at the wrong speed. That stream starts the file over, as every
+        // stream did before captures were carried over.
+        if let Some(capture_rate) = self
+            .output
+            .carried_capture_rate
+            .take()
+            .filter(|&rate| rate != sample_rate)
+        {
+            log::warn!(
+                "Stream at {} Hz cannot continue the {} Hz capture in '{}': starting the file over",
+                sample_rate,
+                capture_rate,
+                self.runtime.output_file,
+            );
+            if let Some(mut writer) = self.output.invalidate_writer(self.input_control.as_deref()) {
+                let _ = writer.flush();
+            }
+        }
+
         OutputRuntimeCoordinator::new(
             &mut self.output,
             &mut self.runtime,
@@ -672,6 +700,64 @@ impl DecodeHandler {
         Ok(())
     }
 
+    /// The stream ended (continuous mode) and its output is flushed: the
+    /// handler starts over for the next one, keeping what outlives a stream.
+    ///
+    /// That includes a sink writing to a regular file. The next frame would
+    /// build a new one, and opening the path again truncates it: a capture
+    /// then only ever held what followed the last stream end, where the same
+    /// run to stdout holds everything. Any other writer is dropped, as it
+    /// always was — which is what tells a FIFO's reader the stream is over.
+    ///
+    /// The capture is one format. Only a stream of the same width and rate
+    /// continues it; the next frame checks both
+    /// ([`handle_decoded_frame`](Self::handle_decoded_frame)), and another
+    /// format starts the file over.
+    pub fn reset_for_next_stream(&mut self) {
+        let spatial_renderer = self.spatial_renderer.take();
+        let audio_control = self.audio_control.take();
+        let input_control = self.input_control.take();
+        // The decoders outlive the stream: without their DRC links, a mode picked
+        // after the first stream end never reached them.
+        let drc = std::mem::take(&mut self.drc);
+        let osc_sender = self.telemetry.osc_sender.take();
+        let audio_meter = self.telemetry.audio_meter.take();
+        let runtime = self.runtime.clone();
+        // A property of the bridge, which outlives the stream too.
+        let coordinate_format = self.spatial.stream.coordinate_format;
+        let file_capture = self
+            .output
+            .audio_writer
+            .take_if(|writer| writer.is_regular_file_sink());
+        let file_capture_channels = self.output.audio_writer_channels;
+        // What the capture holds is at the rate of the stream that ended; one
+        // that brought no frame leaves the rate carried over before it.
+        let file_capture_rate = self
+            .output
+            .carried_capture_rate
+            .unwrap_or(self.session.final_sample_rate);
+
+        *self = DecodeHandler::default();
+
+        self.spatial.stream.coordinate_format = coordinate_format;
+
+        self.spatial_renderer = spatial_renderer;
+        self.audio_control = audio_control;
+        self.input_control = input_control;
+        self.drc = drc;
+        self.telemetry.osc_sender = osc_sender;
+        self.telemetry.audio_meter = audio_meter;
+        self.runtime = runtime;
+        if file_capture.is_some() {
+            self.output.audio_writer = file_capture;
+            self.output.audio_writer_channels = file_capture_channels;
+            self.output.carried_capture_rate = Some(file_capture_rate);
+        }
+        if let Some(ref mut osc_sender) = self.telemetry.osc_sender {
+            osc_sender.bump_content_generation();
+        }
+    }
+
     fn reset_spatial_state_for_segment(&mut self) {
         SpatialMetadataCoordinator::new(
             &mut self.spatial,
@@ -692,11 +778,11 @@ impl DecodeHandler {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use bridge_api::RChannelLabel;
 
-    fn test_renderer() -> renderer::spatial_renderer::SpatialRenderer {
+    pub(in crate::cli::decode) fn test_renderer() -> renderer::spatial_renderer::SpatialRenderer {
         orender_engine::renderer_build::build_spatial_renderer(
             &orender_engine::renderer_build::SpatialRendererParams::from_render_config(None),
             renderer::speaker_layout::SpeakerLayout::preset("7.1.4").expect("preset"),
@@ -715,13 +801,18 @@ mod tests {
 
     /// A 5.1 bed frame, as the decoder thread hands it over.
     fn bed_frame() -> RDecodedFrame {
+        bed_frame_of(480, 48_000)
+    }
+
+    /// A 5.1 bed frame of `sample_count` samples at `sampling_frequency`.
+    fn bed_frame_of(sample_count: u32, sampling_frequency: u32) -> RDecodedFrame {
         use RChannelLabel::*;
         let labels = vec![L, R, C, LFE, Ls, Rs];
         RDecodedFrame {
-            sampling_frequency: 48_000,
-            sample_count: 480,
+            sampling_frequency,
+            sample_count,
             channel_count: labels.len() as u32,
-            pcm: vec![0i32; 480 * labels.len()].into(),
+            pcm: vec![0i32; sample_count as usize * labels.len()].into(),
             channel_labels: labels.into(),
             metadata: abi_stable::std_types::RVec::new(),
             drc_gain: 1.0,
@@ -873,5 +964,155 @@ mod tests {
             2 * 480 * 2 * 4,
             "the block before the restart was lost"
         );
+    }
+
+    /// What one [`bed_frame`] takes in a raw f32 sink, written unrendered.
+    const BED_FRAME_BYTES: usize = 480 * 6 * 4;
+
+    /// A handler as `--output-backend file --output-file <destination>` leaves
+    /// it, with no renderer: frames reach the sink as decoded.
+    fn file_output_handler(destination: &std::path::Path) -> DecodeHandler {
+        let mut handler = DecodeHandler::default();
+        handler.runtime.active_output_backend = OutputBackend::File;
+        handler.runtime.output_file = destination.to_str().expect("utf-8 path").to_owned();
+        handler
+    }
+
+    /// One frame through the handler, as the decoder thread hands it over.
+    fn feed(handler: &mut DecodeHandler, frame: RDecodedFrame) {
+        let ctx = FrameHandlerContext {
+            bed_conform: false,
+            decode_time_ms: 0.0,
+            queue_delay_ms: 0.0,
+        };
+        handler
+            .handle_decoded_frame(DecodedSource::Bridge, frame, &ctx)
+            .expect("frame");
+    }
+
+    /// A capture to a regular file holds the streams of a continuous run one
+    /// after the other. The stream end used to drop the sink with the rest of
+    /// the handler, and the next frame built a new one — truncating the file,
+    /// so it only ever held what followed the last stream end.
+    #[test]
+    fn a_stream_end_keeps_a_regular_file_sink() {
+        let path =
+            std::env::temp_dir().join(format!("orender-stream-end-{}.f32", std::process::id()));
+        let mut handler = file_output_handler(&path);
+
+        feed(&mut handler, bed_frame());
+        handler.finalize().expect("finalize");
+        handler.reset_for_next_stream();
+        feed(&mut handler, bed_frame());
+        handler.finalize().expect("finalize");
+        drop(handler);
+
+        let written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            written,
+            2 * BED_FRAME_BYTES as u64,
+            "the stream before the stream end was lost"
+        );
+    }
+
+    /// The sample rate a CAF header declares, and the bytes of audio after it.
+    /// The header has no `chan` chunk: no renderer, no speakers to describe.
+    fn caf_rate_and_payload(caf: &[u8]) -> (f64, usize) {
+        const HEADER_BYTES: usize = 68;
+        assert_eq!(&caf[..4], b"caff");
+        assert_eq!(&caf[8..12], b"desc");
+        assert_eq!(&caf[52..56], b"data");
+        let rate = f64::from_be_bytes(caf[20..28].try_into().unwrap());
+        (rate, caf.len() - HEADER_BYTES)
+    }
+
+    /// A capture is at one rate: the sink writes samples as they come, under
+    /// a CAF header that describes them once. Streams at that rate follow one
+    /// another in it; a stream at another rate starts the file over with a
+    /// header of its own, where it would otherwise play at the wrong speed.
+    #[test]
+    fn a_stream_at_another_rate_starts_the_capture_over() {
+        let path = std::env::temp_dir().join(format!(
+            "orender-stream-end-rate-{}.caf",
+            std::process::id()
+        ));
+        let mut handler = file_output_handler(&path);
+        handler.runtime.output_file_format = crate::cli::command::OutputFileFormatArg::Caf;
+        let capture = || caf_rate_and_payload(&std::fs::read(&path).expect("capture"));
+        let stream = |handler: &mut DecodeHandler, rate: u32| {
+            feed(handler, bed_frame_of(480, rate));
+            handler.finalize().expect("finalize");
+            handler.reset_for_next_stream();
+        };
+
+        stream(&mut handler, 48_000);
+        stream(&mut handler, 48_000);
+        let same_rate = capture();
+        stream(&mut handler, 96_000);
+        let other_rate = capture();
+        // A stream that brings no frame does not make the capture forget its
+        // rate.
+        handler.reset_for_next_stream();
+        stream(&mut handler, 48_000);
+        let after_an_empty_stream = capture();
+        drop(handler);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(same_rate, (48_000.0, 2 * BED_FRAME_BYTES));
+        assert_eq!(other_rate, (96_000.0, BED_FRAME_BYTES));
+        assert_eq!(after_an_empty_stream, (48_000.0, BED_FRAME_BYTES));
+    }
+
+    /// A FIFO sink is still closed by a stream end, which is how its reader
+    /// learns the stream is over, and opened again by the next stream.
+    #[cfg(unix)]
+    #[test]
+    fn a_stream_end_still_closes_a_fifo_sink() {
+        use std::io::Read;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // This thread writes a stream into the FIFO and only then reads it
+        // back, so a stream must fit whatever the pipe holds or its flush
+        // never returns. That is as little as a page or two for a user over
+        // the pipe budget (`pipe-user-pages-soft`); `_POSIX_PIPE_BUF`, 512
+        // bytes, always fits.
+        const SAMPLES: u32 = 8;
+        const STREAM_BYTES: usize = SAMPLES as usize * 6 * 4;
+        const { assert!(STREAM_BYTES <= 512) };
+
+        let path =
+            std::env::temp_dir().join(format!("orender-stream-end-{}.fifo", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        // Non-blocking, so an empty pipe reads as `WouldBlock` while a writer
+        // holds it and as end of file once none does.
+        let mut reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .expect("fifo reader");
+        let mut stream = [0u8; STREAM_BYTES];
+        let mut handler = file_output_handler(&path);
+
+        feed(&mut handler, bed_frame_of(SAMPLES, 48_000));
+        handler.finalize().expect("finalize");
+        reader.read_exact(&mut stream).expect("first stream");
+        let pending = reader
+            .read(&mut stream)
+            .expect_err("the sink is still open");
+        assert_eq!(pending.kind(), std::io::ErrorKind::WouldBlock);
+
+        handler.reset_for_next_stream();
+        assert!(handler.output.audio_writer.is_none());
+        assert_eq!(reader.read(&mut stream).expect("end of stream"), 0);
+
+        feed(&mut handler, bed_frame_of(SAMPLES, 48_000));
+        handler.finalize().expect("finalize");
+        reader.read_exact(&mut stream).expect("second stream");
+        drop(handler);
+        let _ = std::fs::remove_file(&path);
     }
 }

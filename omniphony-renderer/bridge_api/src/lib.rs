@@ -1,3 +1,12 @@
+//! The ABI between the orender host and its decoder bridges.
+//!
+//! A bridge loads only in a host built against the same `bridge_api` minor
+//! version (`BRIDGE_API.md`, "Versioning"). Any change to what a bridge sees
+//! across the boundary — a trait method, a root-module field, a field or a
+//! variant of a type they exchange — bumps the minor; the
+//! `tests/abi_baseline.rs` test fails a change that does not. A patch release
+//! never changes the ABI.
+
 #![allow(non_local_definitions)]
 
 pub mod labels;
@@ -404,13 +413,10 @@ pub trait FormatBridge: Send + Sync + 'static {
     /// per frame, so a bridge may build the list on each call. Entries whose
     /// label is not in the current frame's labels are ignored.
     ///
-    /// Marks the end of the `bridge_api` 0.4 method prefix: methods added
-    /// after this one in later 0.4.x releases must carry a default body, so a
-    /// bridge that does not implement them still builds. At load, abi_stable
-    /// accepts a bridge built against a *newer* 0.4.x than the host (the
-    /// host never calls what it does not know) but refuses an *older* one —
-    /// a vtable shorter than the host's is "too many fields" — so a host
-    /// that gains a method needs a bridge built against it.
+    /// Marks the end of the vtable's prefix. Methods after it carry a
+    /// default body so that a bridge that does not implement them still
+    /// builds; it still has to be rebuilt against the `bridge_api` minor that
+    /// added them to load (see the crate documentation).
     ///
     /// [`reset`]: FormatBridge::reset
     #[sabi(last_prefix_field)]
@@ -423,8 +429,7 @@ pub trait FormatBridge: Send + Sync + 'static {
     /// name the renderer does not know, means its generic family.
     ///
     /// Declaration-level like the labels: read when they change, never per
-    /// frame. Added after the 0.4 prefix with a default body: a bridge that
-    /// does not implement it reads as generic.
+    /// frame. A bridge that does not implement it reads as generic.
     fn source_family(&self) -> RString {
         RString::new()
     }
@@ -440,8 +445,7 @@ pub trait FormatBridge: Send + Sync + 'static {
     /// Declaration-level like the family: read when the labels change,
     /// never per frame, and naming what is actually decoded — a lossy
     /// carrier whose spatial layer the bridge cannot read is named as the
-    /// carrier alone. Added after the 0.4 prefix with a default body: a
-    /// bridge that does not implement it states none.
+    /// carrier alone. A bridge that does not implement it states none.
     fn source_label(&self) -> RString {
         RString::new()
     }
@@ -452,12 +456,8 @@ pub trait FormatBridge: Send + Sync + 'static {
     ///
     /// Declaration-level like the poses: read when the frame's labels
     /// change, after [`reset`] and at a segment start, never per frame — so
-    /// a bridge changes its tags only along with one of those. Added after
-    /// the 0.4 prefix with a default body: a bridge that does not implement
-    /// it tags nothing (one built before it is refused at load, see the
-    /// prefix note on [`fixed_channel_poses`]).
-    ///
-    /// [`fixed_channel_poses`]: FormatBridge::fixed_channel_poses
+    /// a bridge changes its tags only along with one of those. A bridge that
+    /// does not implement it tags nothing.
     ///
     /// [`reset`]: FormatBridge::reset
     fn channel_tags(&self) -> RVec<RChannelTag> {
@@ -498,11 +498,7 @@ pub struct BridgeLib {
     /// stream of theirs plays.
     ///
     /// A root-module field rather than a trait method: it describes the
-    /// plugin, not a stream. Like a trait method added after the prefix, it
-    /// does not make an older bridge loadable: abi_stable refuses a root
-    /// module with fewer fields than the host's ("too many fields",
-    /// measured), so a host that has this field needs a bridge built against
-    /// it. A newer bridge in an older host loads and is simply not asked.
+    /// plugin, not a stream.
     pub source_families: extern "C" fn() -> RVec<RSourceFamily>,
 }
 

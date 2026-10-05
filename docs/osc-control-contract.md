@@ -25,9 +25,11 @@ address is missing from it. Keep this document and that crate in sync.
 - **Enums** are lowercase strings; an unrecognised value is ignored (the engine
   validates and drops bad input rather than erroring).
 - **Nesting** is bounded: bundles may nest 8 deep, and so may arrays within a
-  message's arguments. The engine drops a datagram that goes deeper, whole
-  (logged as undecodable). Its own bundles are one level deep and it sends no
-  array.
+  message's arguments. The engine and the Studio each drop a datagram that
+  goes deeper, whole and before decoding it (logged as undecodable); the limit
+  and the check are the contract crate's (`osc-contract`, module `nesting`),
+  for any other listener to use. The engine's own bundles are one level deep
+  and it sends no array.
 - **Realtime gain** controls (`/control/realtime/*`) carry a trailing monotonic
   **sequence int** so the engine can drop stale updates that arrive out of order.
 - Larger structured payloads (layout / speakers / audio / input config) are sent
@@ -516,7 +518,10 @@ exhaustive machine-readable list.
   marker, never on the bundle boundary.
 - **Render** — `render/version`, `render/executable` (path of the process
   serving the engine), `render/abi` (C-ABI `major.minor` of the liborender
-  shim, `""` for the CLI), `render/config_path`, `render/config_status`,
+  shim, `""` for the CLI), `render/config_path`, `render/config_status`
+  (`loaded`, `missing`, `parse_error` — running on built-in defaults — or
+  `newer_schema` — written by a newer build, read as far as this one
+  understands it and never written; `""` without a config path),
   `render/bridge_path`, `render/bridge_error` (bounded to 2 KB: the first
   line and the distinct verdicts of a plugin load failure, the full report
   stays in the renderer log), `vbap/allow_negative_z`,
@@ -547,6 +552,23 @@ exhaustive machine-readable list.
 - **Diagnostics** — `diag_schema`, `diag_values`.
 - **Gain-table stream** — `debug/speaker_gaintable/{meta,chunk,uptodate,
   unavailable}`.
+
+### The stream's rate
+
+The stream messages (`spatial/frame` and the `object/*` messages it
+precedes, `timestamp`, the meter and timing bundles, `playout/*`, `loudness`)
+leave from a thread of their own, every 10 ms, in the order the engine
+produced them. Of the object frames and the timestamps, which the engine
+produces for every block it renders, only the latest of each 480-sample
+window of the timeline goes out: at most 100 per second of audio each at
+48 kHz. The window is one of audio, not of wall-clock time, so a host that
+renders ahead of playback in bursts still sends a pose for every window of
+what will be heard. Nothing a client holds goes stale for it: the object
+messages are sent for what changed since the last frame *sent*, and a frame
+that forces a full resend (a new content generation, a seek, a client
+registering) passes that on to the frame that supersedes it. The meter and
+diag bundles keep the rates set by `/control/metering/rate_hz` and
+`/control/diag/rate_hz`.
 
 ---
 

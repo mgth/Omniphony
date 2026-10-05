@@ -366,6 +366,20 @@ impl SpatialRenderer {
         );
     }
 
+    /// Drop the loudness correction: unity gain and no dialogue level, as
+    /// before any stream sent one. For an input that carries no level (plain
+    /// PCM) taking over from one that did. True when a level was set.
+    pub fn clear_loudness(&self) -> bool {
+        if self.control.live.read().dialogue_level.is_none() {
+            return false;
+        }
+        self.loudness_gain
+            .store(1.0_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.control.live.write().dialogue_level = None;
+        log::info!("Dialog normalization: no dialogue level, gain=0 dB");
+        true
+    }
+
     /// Set the bed channel IDs in PCM channel order.
     ///
     /// Must be called once when the first metadata arrives, before any call to `render_frame`.
@@ -774,19 +788,24 @@ impl SpatialRenderer {
                 }
         };
 
-        // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
+        // ── 1. Snapshot the live params this frame needs (a lock-free read) ──
         let live_position_interpolation;
         let live = {
-            let g = self.control.live.read();
-            live_position_interpolation = g.evaluation.position_interpolation;
+            // The generations first, then the params: a writer bumps them
+            // once its write is published, so a generation seen here comes
+            // with its data. The other order could record a new generation
+            // over params loaded just before the write, and the caches
+            // would keep them until the next change.
             let object_params_generation = self
                 .control
                 .object_params_generation
-                .load(std::sync::atomic::Ordering::Relaxed);
+                .load(std::sync::atomic::Ordering::Acquire);
             let speaker_params_generation = self
                 .control
                 .speaker_params_generation
-                .load(std::sync::atomic::Ordering::Relaxed);
+                .load(std::sync::atomic::Ordering::Acquire);
+            let g = self.control.live.read();
+            live_position_interpolation = g.evaluation.position_interpolation;
 
             if self.object_params_generation_seen != object_params_generation {
                 if self.object_params_buf.len() < input_channel_count {
@@ -1149,9 +1168,10 @@ impl SpatialRenderer {
             // shared master gain, targeting the configured ceiling.
             if peak_sample > 1.0 {
                 self.control.note_clip(peak_ear);
-                if live.auto_gain {
-                    let new_master_gain =
-                        self.fold_clip_into_master_gain(peak_sample, live.auto_gain_ceiling_db);
+                if live.auto_gain
+                    && let Some(new_master_gain) =
+                        self.fold_clip_into_master_gain(peak_sample, live.auto_gain_ceiling_db)
+                {
                     log::warn!(
                         "Clipping detected on headphone {} (peak={:.3})! Master gain reduced to {:.4} ({:.1} dB), ceiling {:.1} dBFS",
                         if peak_ear == 0 { "L" } else { "R" },
@@ -1323,16 +1343,17 @@ impl SpatialRenderer {
             // master gain (peak-hold, no recovery) so the reduction is visible on
             // the master control and persisted with it. Detection stays at 0 dBFS
             // but the correction targets the configured ceiling (default −1 dBFS),
-            // leaving headroom so it fires less often. The write lock is taken only
-            // on clipping frames (transient), never in steady state.
+            // leaving headroom so it fires less often. The live params are written
+            // only on clipping frames (transient), never in steady state.
             //
             // The log + name resolution live here (not in the always-run flag path)
             // so a sustained clip with auto-gain *off* only flips the atomic flag for
             // the UI indicators — it does not spam the log or load the topology each
             // frame. With auto-gain on, the correction makes clips transient anyway.
-            if live.auto_gain {
-                let new_master_gain =
-                    self.fold_clip_into_master_gain(peak_sample, live.auto_gain_ceiling_db);
+            if live.auto_gain
+                && let Some(new_master_gain) =
+                    self.fold_clip_into_master_gain(peak_sample, live.auto_gain_ceiling_db)
+            {
                 // The speaker is named straight from the topology, without
                 // building a `String` on the audio thread.
                 let topology = self.control.active_topology();
@@ -1435,14 +1456,17 @@ impl SpatialRenderer {
     /// it, and return the new master gain. Shared by the speaker and the
     /// headphone paths.
     ///
-    /// Takes the live write lock, so it runs only on clipping frames (which
-    /// the correction makes transient), never in steady state. Re-reading
-    /// under the lock preserves any concurrent OSC master change.
-    fn fold_clip_into_master_gain(&self, peak: f32, ceiling_db: f32) -> f32 {
+    /// Runs only on clipping frames (which the correction makes transient),
+    /// never in steady state. Writing the live params copies them, and is
+    /// skipped — `None` — while a control thread is writing them: the render
+    /// thread does not wait, and the next clipping frame folds instead.
+    /// Applying the gain to the published value preserves any concurrent OSC
+    /// master change.
+    fn fold_clip_into_master_gain(&self, peak: f32, ceiling_db: f32) -> Option<f32> {
         // Bring the peak down to the ceiling rather than exactly 0 dBFS.
         let required_gain = db_to_linear(ceiling_db) / peak;
         let new_master_gain = {
-            let mut params = self.control.live.write();
+            let mut params = self.control.live.try_write()?;
             params.master_gain *= required_gain;
             params.master_gain
         };
@@ -1450,7 +1474,7 @@ impl SpatialRenderer {
         self.control.bump_live_state();
         self.auto_gain_triggered
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        new_master_gain
+        Some(new_master_gain)
     }
 
     /// Apply the in-flight output-mode cross-fade to an interleaved block, and

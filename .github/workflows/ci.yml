@@ -1,10 +1,13 @@
 name: CI
 
 # Integration gate for the `main` (integration) and `release` branches.
-# Linux validates formatting, tests, native Studio, the web frontend and the
-# Tauri host. macOS and Windows compile the renderer and native Studio; macOS
-# also runs the large-datagram socket tests, Windows also checks the shared
-# core on stable. Release archives are built by release.yml.
+# Linux x64 validates formatting, tests, native Studio, the web frontend and
+# the Tauri host. macOS (arm64) and Windows (x64) build and test the renderer
+# workspace, the OSC contract and the native Studio; Windows also checks the
+# shared core on stable. Linux arm64 builds and tests the renderer workspace,
+# the engine an embedded box runs. Release archives are built by release.yml.
+# The supported targets, and what each job guarantees for them, are listed in
+# the README ("Supported platforms"); keep the two in step.
 #
 # NOTE on scope: `clippy` is NOT gated yet — the workspace currently has ~70
 # clippy warnings plus a couple of deny-level lints, several inside hot audio
@@ -158,6 +161,29 @@ jobs:
       - name: Test renderer workspace
         working-directory: omniphony-renderer
         run: cargo test --workspace --locked
+
+      # The bridge ABI policy (BRIDGE_API.md, "Versioning") held against a
+      # real old plugin: the reference bridge built at the last release tag
+      # is loaded into this host, which must load it when both share a
+      # bridge_api minor and otherwise refuse it with an error naming both
+      # versions. The layout itself is pinned by bridge_api's abi_baseline
+      # test in the run above. The old bridge gets a target directory of its
+      # own so its library does not replace the current one.
+      - name: Load the previous release's bridge
+        run: |
+          tag="$(git ls-remote --tags --refs origin 'v*' \
+            | sed 's|.*refs/tags/||' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -n 1)"
+          echo "Last release: $tag"
+          git fetch --no-tags --depth=1 origin "refs/tags/$tag:refs/tags/$tag"
+          git worktree add --detach "$RUNNER_TEMP/previous-release" "$tag"
+          target="$GITHUB_WORKSPACE/omniphony-renderer/target/previous-release"
+          (cd "$RUNNER_TEMP/previous-release/omniphony-renderer" \
+            && CARGO_TARGET_DIR="$target" cargo build --locked -p reference_bridge)
+          cd omniphony-renderer
+          ORENDER_PREVIOUS_RELEASE_BRIDGE="$target/debug/libreference_bridge.so" \
+            cargo test --locked -p orender_engine --test previous_release_bridge -- --ignored --nocapture
 
       # Compile-only gate for the release-only perf tests. The perf-gate
       # feature is off in the normal test run and its module is compiled out
@@ -383,12 +409,13 @@ jobs:
           node omniphony-studio/scripts/check-options-schema.mjs /tmp/host-options-schema.json
 
   build-macos:
-    # macOS arm64 compile gate. The renderer workspace pulls the CoreAudio
-    # output backend (cpal) and the `sys` signal/IO layer, both of which carry
-    # macOS-specific code paths. Build-only (no PipeWire/Tauri) but for the
-    # socket tests at the end — this catches macOS portability regressions on
-    # PRs, before the tag-triggered release builds (liborender / Studio / mpv)
-    # ever run on macOS.
+    # macOS arm64 build and test gate. The renderer workspace pulls the
+    # CoreAudio output backend (cpal) and the `sys` signal/IO layer, both of
+    # which carry macOS-specific code paths. No PipeWire and no Tauri; the
+    # test suites are the same as on Linux, so a macOS regression shows on
+    # the PR rather than in a user's report after a release (#200, #201,
+    # #205 and #260 all reached users that way). The job name is a required
+    # check on `main`: rename it and branch protection must follow.
     runs-on: macos-14
     timeout-minutes: 60
     steps:
@@ -431,28 +458,36 @@ jobs:
         working-directory: omniphony-studio-egui
         run: cargo build --workspace --locked
 
-      # The one thing this job runs rather than compiles. macOS refuses a UDP
-      # send larger than the socket's send buffer (EMSGSIZE), and that buffer
-      # starts at net.inet.udp.maxdgram: 9,216 bytes, far under a state bundle
-      # or a backend script. Linux and Windows have no such limit, so the
-      # Linux test run passes whether or not the sockets lift it, and a socket
-      # that stops doing so would only be noticed by a macOS user whose saves
-      # vanish. Filtered to the tests that send a large datagram or check the
-      # buffer (`maximum_size` / `send_buffer` / `deeply_nested` in their
-      # names); the sysctl values are printed so the log says what they ran
-      # against.
-      - name: Test large OSC datagrams from the engine (macOS arm64)
+      # The whole suite, as on Linux. Tests that need a sound device or a
+      # PipeWire daemon are #[ignore]d or compiled for Linux only, so none of
+      # them runs here. --no-fail-fast here and on the other non-Linux-x64
+      # jobs: a platform break tends to fail several crates at once, and one
+      # run should name them all rather than stop at the first.
+      #
+      # One part of it matters on macOS more than anywhere: macOS refuses a
+      # UDP send larger than the socket's send buffer (EMSGSIZE), and that
+      # buffer starts at net.inet.udp.maxdgram: 9,216 bytes, far under a state
+      # bundle or a backend script. Linux and Windows have no such limit, so
+      # the large-datagram tests (`maximum_size` / `send_buffer` /
+      # `deeply_nested` in their names) only prove the sockets lift it here.
+      # The sysctl values are printed so the log says what they ran against.
+      - name: Test renderer workspace (macOS arm64)
         working-directory: omniphony-renderer
         run: |
           sysctl net.inet.udp.maxdgram net.inet.udp.recvspace
-          cargo test -p orender_engine --lib --locked -- maximum_size send_buffer deeply_nested
+          cargo test --workspace --locked --no-fail-fast
 
-      - name: Test large OSC datagrams from the native Studio (macOS arm64)
+      - name: Test the OSC contract (macOS arm64)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --no-fail-fast --manifest-path osc-contract/Cargo.toml
+
+      - name: Test native Studio (macOS arm64)
+        if: ${{ !cancelled() }}
         working-directory: omniphony-studio-egui
-        run: cargo test -p omniphony-studio-core --lib --locked -- maximum_size send_buffer
+        run: cargo test --workspace --locked --no-fail-fast
 
   build-windows:
-    # Windows x64 compile gate. On Windows cpal always pulls its ASIO backend
+    # Windows x64 build and test gate. On Windows cpal always pulls its ASIO backend
     # (audio_output enables the feature per-target; the workspace `asio` feature
     # is a legacy no-op alias), so this is the only job that exercises asio-sys:
     # fetching the SDK, running bindgen over asio.h, compiling the SDK's C++ into
@@ -460,9 +495,11 @@ jobs:
     # ever built by the tag-triggered release.yml — a broken SDK setup surfaced at
     # release time, not on the PR that caused it.
     #
-    # Build-only: no Tauri bundle, and no vcpkg/SAF since saf_vbap is opt-in and
-    # the default VBAP backend is pure Rust. bindgen finds libclang on the runner
-    # image without any setup, which is why no LLVM step appears here.
+    # No Tauri bundle, and no vcpkg/SAF since saf_vbap is opt-in and the
+    # default VBAP backend is pure Rust. bindgen finds libclang on the runner
+    # image without any setup, which is why no LLVM step appears here. The
+    # test suites are the same as on Linux. The job name is a required check
+    # on `main`: rename it and branch protection must follow.
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -489,6 +526,19 @@ jobs:
         working-directory: omniphony-renderer
         run: cargo build --workspace --locked
 
+      # Tests that need a sound device (ASIO, WASAPI) or a PipeWire daemon are
+      # #[ignore]d or compiled for Linux only, so none of them runs here.
+      # The steps after this one run even when it fails (`!cancelled()`), on
+      # this job and the other non-Linux-x64 ones: a red renderer suite
+      # should not hide the state of the Studio's.
+      - name: Test renderer workspace (Windows x64)
+        working-directory: omniphony-renderer
+        run: cargo test --workspace --locked --no-fail-fast
+
+      - name: Test the OSC contract (Windows x64)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --no-fail-fast --manifest-path osc-contract/Cargo.toml
+
       # The native Studio's core, which the Tauri host depends on. Its Windows
       # path — the process-tree working-set readout — had never been compiled
       # for Windows by anything: the Linux job builds the whole egui workspace,
@@ -499,6 +549,7 @@ jobs:
       # toolchain for egui's sake; the core does not need it, and the Tauri host
       # builds it on stable, which is what this checks.
       - name: Build the native Studio core (Windows x64)
+        if: ${{ !cancelled() }}
         run: cargo build --locked --manifest-path omniphony-studio-egui/core/Cargo.toml
 
       # The whole native Studio, on its pinned toolchain this time: it ships
@@ -506,6 +557,7 @@ jobs:
       # step above only proves the core. Run from inside the directory so the
       # pin applies.
       - name: Cache the native Studio build
+        if: ${{ !cancelled() }}
         uses: actions/cache@v5
         continue-on-error: true
         with:
@@ -514,5 +566,84 @@ jobs:
           restore-keys: windows-studio-egui-
 
       - name: Build native Studio (Windows x64)
+        if: ${{ !cancelled() }}
         working-directory: omniphony-studio-egui
         run: cargo build --workspace --locked
+
+      - name: Test native Studio (Windows x64)
+        if: ${{ !cancelled() }}
+        working-directory: omniphony-studio-egui
+        run: cargo test --workspace --locked --no-fail-fast
+
+  build-linux-arm64:
+    # Linux arm64 build and test gate, on GitHub's native arm64 runner (no
+    # emulation). The embedded target — an aarch64 box running mpv with
+    # liborender — is this platform, and until this job existed CI compiled
+    # nothing for it: the aarch64 code paths (the FPCR flush-to-zero the
+    # render thread claims, see renderer/src/dsp) were only ever built on
+    # macOS and only ever run by hand. The engine only: the native Studio
+    # and the Tauri host are not shipped for Linux arm64.
+    #
+    # Ubuntu 24.04 rather than the x64 job's 22.04 because its stock PipeWire
+    # (1.0) already satisfies pipewire-rs 0.9 (>= 0.3.65), so no PPA is
+    # needed here.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            omniphony-renderer/target
+          key: linux-arm64-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
+          restore-keys: linux-arm64-ci-cargo-
+
+      # PipeWire for the output and input backends; libclang for the
+      # bindgen run in pipewire-sys and libspa-sys. Bounded and retried for
+      # the same reasons as the x64 job's install.
+      - name: Install Linux system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo timeout 180 apt-get update \
+              && sudo apt-get install -y libpipewire-0.3-dev libclang-dev clang pkg-config; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "apt-get failed after $attempt attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "libpipewire-0.3-dev $(dpkg-query -W -f='${Version}' libpipewire-0.3-dev)"
+
+      - name: Build renderer workspace (Linux arm64)
+        working-directory: omniphony-renderer
+        run: cargo build --workspace --locked
+
+      # Tests that need a sound device or a PipeWire daemon are #[ignore]d,
+      # as on x64.
+      - name: Test renderer workspace (Linux arm64)
+        working-directory: omniphony-renderer
+        run: cargo test --workspace --locked --no-fail-fast
+
+      - name: Test the OSC contract (Linux arm64)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --no-fail-fast --manifest-path osc-contract/Cargo.toml
+
+      # liborender is what the embedded box's mpv loads: same header/link
+      # smoke test as the x64 job.
+      - name: C ABI smoke test (liborender, Linux arm64)
+        if: ${{ !cancelled() }}
+        working-directory: omniphony-renderer
+        run: |
+          cc -Wall -Werror -I orender_ffi/include orender_ffi/examples/smoke.c \
+             -L target/debug -lorender -o target/debug/orender_smoke
+          LD_LIBRARY_PATH=target/debug target/debug/orender_smoke

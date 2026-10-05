@@ -751,7 +751,30 @@ pub struct AppState {
     pub last_overlay_emit_hash: Option<u64>,
 }
 
+/// Why the connected renderer will not write its configuration file, as its
+/// `render/config_status` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigRefusal {
+    /// `parse_error`: the file failed to parse, and the renderer runs on its
+    /// built-in defaults.
+    ParseError,
+    /// `newer_schema`: a newer build wrote the file, and the renderer runs on
+    /// what it understands of it.
+    NewerSchema,
+}
+
 impl AppState {
+    /// Why the renderer will not write its configuration file, if it said so.
+    /// A Reload that reads the file publishes the status again, which lifts
+    /// it.
+    pub fn config_refusal(&self) -> Option<ConfigRefusal> {
+        match self.render_config_status.as_deref()? {
+            "parse_error" => Some(ConfigRefusal::ParseError),
+            "newer_schema" => Some(ConfigRefusal::NewerSchema),
+            _ => None,
+        }
+    }
+
     /// The current stream's dialogue tag, when it codes its dialogue apart
     /// (the dialogue level only means something then).
     pub fn dialogue_tag(&self) -> Option<&ChannelTag> {

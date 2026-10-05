@@ -1,6 +1,8 @@
 use anyhow::Result;
 use bridge_api::{FormatBridgeBox, RInputTransport};
-use orender_engine::decode_step::{DeclarationTracker, DecodedPacket, DrcModeSync, decode_packet};
+use orender_engine::decode_step::{
+    DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
+};
 use spdif::SpdifParser;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -79,13 +81,15 @@ pub struct DecoderThreadConfig {
     /// starts, so the bridge decodes the first packet in that mode; a later
     /// change reaches it before the next input chunk.
     pub requested_drc_mode: Arc<RwLock<String>>,
-    /// Post-rendering output pacer drain clock (pure pipe-bridge mode only).
-    /// Each decoded packet posts its emitted source duration (microseconds)
-    /// here, before the (potentially blocking) frame send. An independent
-    /// drain thread converts that to output frames and drains the pacer FIFO
-    /// into the ring — keeping the drain off this thread avoids the
-    /// backpressure deadlock (send blocks → FIFO never drains → send stays
-    /// blocked). `None` when output pacing is unused.
+    /// Post-rendering output pacer drain clock (the token clock), for the
+    /// frames this thread decodes, in pure pipe mode and beside a PipeWire
+    /// capture alike; it stands down while a capture stream delivers. Each
+    /// decoded packet posts its emitted source duration (microseconds) here,
+    /// before the (potentially blocking) frame send. An independent drain
+    /// thread converts that to output frames and drains the pacer FIFO into
+    /// the ring — keeping the drain off this thread avoids the backpressure
+    /// deadlock (send blocks → FIFO never drains → send stays blocked).
+    /// `None` when output pacing is unused.
     pub drain_tx: Option<mpsc::Sender<u64>>,
     /// Optional diag handles for the named-pipe / stdin input path. Published
     /// from the decoder thread so we can correlate upstream delivery cadence
@@ -93,6 +97,8 @@ pub struct DecoderThreadConfig {
     pub pipe_input_diag: Option<PipeInputDiag>,
     /// The bridge owns the complete decode pipeline.
     pub bridge: FormatBridgeBox,
+    /// The log level `bridge` was opened with (`LoadedBridge::log_level`).
+    pub log_level: LogLevelSync,
     /// Platform-agnostic shutdown signal for interrupt-aware I/O.
     pub shutdown_signal: sys::ShutdownSignal,
 }
@@ -108,6 +114,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             drain_tx,
             pipe_input_diag,
             mut bridge,
+            mut log_level,
             shutdown_signal,
         } = config;
 
@@ -183,6 +190,8 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     let requested = requested_drc_mode.read().unwrap_or_else(|e| e.into_inner());
                     drc_mode.apply(&requested, &mut bridge);
                 }
+                // The bridge's diagnostics follow `log_level` changes made over OSC.
+                log_level.apply(live_log::current_runtime_level(), &mut bridge);
 
                 let now = Instant::now();
                 let chunk_gap_ms = last_chunk_at
@@ -617,6 +626,7 @@ mod tests {
                 },
                 TD_Opaque,
             ),
+            log_level: LogLevelSync::new(),
             shutdown_signal: sys::ShutdownSignal { fd: fds[0] },
         })
         .join()

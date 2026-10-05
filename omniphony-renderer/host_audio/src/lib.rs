@@ -814,6 +814,28 @@ mod tests {
         );
     }
 
+    /// A Save writes every live-input row. A row still at what an absent key
+    /// stands for leaves the value a newer build wrote there; one the user
+    /// changed replaces it.
+    #[test]
+    fn a_save_keeps_the_live_input_values_a_newer_build_wrote() {
+        let host = host();
+        let mut render: renderer::config::RenderConfig = serde_json::from_str(
+            r#"{"live_input": {"clock_mode": "ptp", "lfe_mode": "bass_shaker", "node": "in"}}"#,
+        )
+        .expect("values a newer build wrote must not fail the section");
+        host.amend_saved_config(&mut render);
+        let saved = serde_json::to_value(&render).unwrap();
+        assert_eq!(saved["live_input"]["clock_mode"], "ptp", "{saved}");
+        assert_eq!(saved["live_input"]["lfe_mode"], "bass_shaker", "{saved}");
+
+        host.input.set_requested_lfe_mode(InputLfeMode::Object);
+        host.amend_saved_config(&mut render);
+        let saved = serde_json::to_value(&render).unwrap();
+        assert_eq!(saved["live_input"]["clock_mode"], "ptp", "{saved}");
+        assert_eq!(saved["live_input"]["lfe_mode"], "object", "{saved}");
+    }
+
     #[test]
     fn input_config_patch_with_the_retired_backend_still_parses() {
         // A client (an older Studio) that still sends `asio` must not lose the
@@ -998,6 +1020,7 @@ mod tests {
                 InputLfeMode::Direct => renderer::config::InputLfeModeConfig::Direct,
                 InputLfeMode::Drop => renderer::config::InputLfeModeConfig::Drop,
             }),
+            ..Default::default()
         });
     }
 

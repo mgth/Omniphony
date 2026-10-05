@@ -17,7 +17,7 @@ or to **binaural headphones**, in real time. Open source, GPL-3.0.
 - 🎧 **Hear it on headphones** — binaural output (HRTF + ITD + live head-tracking),
   no surround rig required.
 - 🔊 **Render to any layout** — stereo, 5.1, 7.1, 7.1.4 and beyond, via VBAP.
-- 🧩 **Pluggable decoders** — a small, stable ABI (`bridge_api`) loads decoder
+- 🧩 **Pluggable decoders** — a small, versioned ABI (`bridge_api`) loads decoder
   bridges at runtime; bring your own format.
 - 🛰️ **Live control + 3D visualization** — Omniphony Studio supervises the engine
   over OSC.
@@ -100,7 +100,9 @@ The core engine (executable: `orender`) and its supporting crates:
 - `renderer` — VBAP engine, layouts, binaural, OSC output, runtime config
 - `audio_output` — PipeWire / ASIO / CoreAudio / file backends
 - `audio_input` — live PCM / bridge input
-- `bridge_api` — the stable ABI for external decoder bridges
+- `bridge_api` — the versioned ABI for external decoder bridges (a bridge
+  loads in a host built against the same `bridge_api` minor; see
+  [`BRIDGE_API.md`](omniphony-renderer/BRIDGE_API.md))
 - `reference_bridge` — a reference WAV/PCM decoder bridge (powers the demo)
 - `spdif` — IEC 61937 / S/PDIF parsing
 - `sys` — platform integration (incl. Windows service)
@@ -129,6 +131,25 @@ The previous, web-based Studio. Deprecated in favour of
 - `docs/` — frontend usage guides (e.g. [mpv-omniphony](docs/mpv-omniphony.md))
 - `assets/` — demo clip, logo, captures
 - `scripts/` — helpers
+
+## Supported platforms
+
+"Tested" means the CI gate on every pull request to `main` builds the code and
+runs its test suite on that platform; "packaged" means a release ships a
+prebuilt download for it.
+
+| Platform | Engine (`orender`, `liborender`) | Native Studio | Packaged |
+| --- | --- | --- | --- |
+| Linux x86_64 | tested | tested | yes — Studio bundle, `liborender`, AUR (from source) |
+| Windows x86_64 | tested | tested | yes — Studio bundle, `liborender` |
+| macOS arm64 (Apple Silicon) | tested | tested | yes — Studio bundle, `liborender` |
+| Linux arm64 (aarch64) | tested | not built | no — build from source |
+
+The Tauri Studio is built on Linux only. Tests that need a sound device or a
+running PipeWire session are skipped by CI on every platform, so the audio
+backends themselves (PipeWire, ASIO, CoreAudio) are compiled but not exercised
+there. Anything not listed — macOS on Intel, 32-bit targets — is not built by
+CI.
 
 ## License
 

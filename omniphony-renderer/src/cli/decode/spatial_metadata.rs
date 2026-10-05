@@ -69,7 +69,7 @@ impl<'a> SpatialMetadataCoordinator<'a> {
     /// ([`StreamState::begin_segment`], as the embedded engine does it —
     /// including the OSC purge of the previous layout's objects and the
     /// release of the dialogue-normalisation latch), then this host's export
-    /// bed ids.
+    /// bed ids and the level it holds for the bridge while the sink plays PCM.
     ///
     /// The bridge's declaration is kept: the decoder thread re-sends it on a
     /// label change, not per segment.
@@ -77,6 +77,7 @@ impl<'a> SpatialMetadataCoordinator<'a> {
     /// [`StreamState::begin_segment`]: orender_engine::stream_state::StreamState::begin_segment
     pub fn reset_for_segment(&mut self) {
         self.spatial.bed_indices = None;
+        self.spatial.drop_dialnorm_aside();
         match self.spatial_renderer {
             Some(renderer) => self
                 .spatial
@@ -103,17 +104,13 @@ impl<'a> SpatialMetadataCoordinator<'a> {
             .spatial
             .stream
             .object_frame_metas(self.spatial_renderer, conf);
-        if let Err(e) = osc_sender.send_object_frame(
+        osc_sender.send_object_frame(
             sample_pos,
             meta.ramp_duration,
             self.spatial.stream.osc_coordinate_format(),
             &objects,
-        ) {
-            log::warn!("Failed to send OSC metadata: {}", e);
-        }
+        );
         let seconds = sample_pos as f64 / sample_rate as f64;
-        if let Err(e) = osc_sender.send_timestamp(sample_pos, seconds) {
-            log::warn!("Failed to send OSC timestamp: {}", e);
-        }
+        osc_sender.send_timestamp(sample_pos, seconds);
     }
 }

@@ -153,9 +153,10 @@ fn build_requested_input_config(
     let mut requested = RequestedAudioInputConfig::default();
 
     if let Some(render_cfg) = render_cfg {
-        requested.mode = match render_cfg.input_mode {
-            Some(renderer::config::InputModeConfig::Pipewire) => InputMode::Pipewire,
-            _ => InputMode::Bridge,
+        let input_mode = render_cfg.input_mode_or_default();
+        requested.mode = match input_mode {
+            renderer::config::InputModeConfig::Pipewire => InputMode::Pipewire,
+            renderer::config::InputModeConfig::Bridge => InputMode::Bridge,
         };
 
         if let Some(live_input) = render_cfg.live_input.as_ref() {
@@ -166,24 +167,20 @@ fn build_requested_input_config(
             requested.node_description = live_input.description.clone();
             requested.layout_path = live_input.layout.clone();
             requested.current_layout = live_input.current_layout.clone();
-            requested.clock_mode = match live_input.clock_mode {
-                Some(renderer::config::InputClockModeConfig::Pipewire) => InputClockMode::Pipewire,
-                Some(renderer::config::InputClockModeConfig::Upstream) => InputClockMode::Upstream,
-                Some(renderer::config::InputClockModeConfig::Dac) => InputClockMode::Dac,
-                None if requested.mode == InputMode::Pipewire => InputClockMode::Upstream,
-                None => InputClockMode::Dac,
+            requested.clock_mode = match live_input.clock_mode_or_default(&input_mode) {
+                renderer::config::InputClockModeConfig::Pipewire => InputClockMode::Pipewire,
+                renderer::config::InputClockModeConfig::Upstream => InputClockMode::Upstream,
+                renderer::config::InputClockModeConfig::Dac => InputClockMode::Dac,
             };
             requested.channels = live_input.channels;
             requested.sample_rate_hz = live_input.sample_rate;
-            requested.map_mode = match live_input.map {
-                Some(renderer::config::InputMapModeConfig::SevenOneFixed) | None => {
-                    InputMapMode::SevenOneFixed
-                }
+            requested.map_mode = match live_input.map_or_default() {
+                renderer::config::InputMapModeConfig::SevenOneFixed => InputMapMode::SevenOneFixed,
             };
-            requested.lfe_mode = match live_input.lfe_mode {
-                Some(renderer::config::InputLfeModeConfig::Object) => InputLfeMode::Object,
-                Some(renderer::config::InputLfeModeConfig::Drop) => InputLfeMode::Drop,
-                Some(renderer::config::InputLfeModeConfig::Direct) | None => InputLfeMode::Direct,
+            requested.lfe_mode = match live_input.lfe_mode_or_default() {
+                renderer::config::InputLfeModeConfig::Object => InputLfeMode::Object,
+                renderer::config::InputLfeModeConfig::Drop => InputLfeMode::Drop,
+                renderer::config::InputLfeModeConfig::Direct => InputLfeMode::Direct,
             };
         }
     }

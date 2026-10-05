@@ -1074,7 +1074,11 @@ mod notify_tests {
     }
 
     fn wire() -> Wire {
-        let engine = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let engine = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // As OscSender's socket: without it macOS refuses the live-state
+        // bundle (EMSGSIZE above net.inet.udp.maxdgram) and nothing arrives.
+        crate::osc::transport::ensure_send_buffer(&engine);
+        let engine = Arc::new(engine);
         let writer = UdpSocket::bind("127.0.0.1:0").unwrap();
         let bystander = UdpSocket::bind("127.0.0.1:0").unwrap();
         bystander
@@ -1347,8 +1351,8 @@ mod notify_tests {
     /// only the larger receive buffer lets a datagram hold that many levels.
     #[test]
     fn a_deeply_nested_datagram_does_not_take_the_listener_down() {
-        use crate::osc::decode::{nested_arrays, nested_bundles};
         use crate::osc::test_support::{SERIAL, listening_sender};
+        use osc_contract::nesting::{nested_arrays, nested_bundles};
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let control = fixture_control();
         let (sender, port) = listening_sender(&control);

@@ -3,13 +3,14 @@
 //! declaration is read after a seek. Needs no bridge library or sample, unlike
 //! `decode_thread.rs`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use abi_stable::std_types::{ROption, RSlice, RStr, RString, RVec};
 use abi_stable::{prefix_type::PrefixTypeTrait, sabi_trait::prelude::TD_Opaque};
 use bridge_api::*;
 use orender_engine::bridge_loader::LoadedBridge;
+use orender_engine::decode_step::LogLevelSync;
 use orender_engine::renderer_build::{SpatialRendererParams, build_spatial_renderer};
 use orender_engine::{DecodeThreadMode, Engine, RenderedAudio};
 use renderer::live_params::RendererControl;
@@ -176,7 +177,15 @@ fn engine_with_control() -> (Engine, Arc<Mutex<Vec<String>>>, Arc<RendererContro
         source_families,
     }
     .leak_into_prefix();
-    let engine = Engine::new(LoadedBridge { lib, bridge }, renderer, 48_000);
+    let engine = Engine::new(
+        LoadedBridge {
+            lib,
+            bridge,
+            log_level: LogLevelSync::new(),
+        },
+        renderer,
+        48_000,
+    );
     (engine, declaration_reads, control)
 }
 
@@ -515,6 +524,52 @@ fn a_host_that_forces_the_thread_ignores_the_option() {
     );
 }
 
+/// The render path never waits for the live parameters (#670): with a control
+/// write held open on another thread, mid-edit as an OSC handler is, packets
+/// still decode and render — the engine's DRC and decode-thread sync, the
+/// stream's DRC and dialogue gains, the channel stages and the renderer all
+/// read them.
+#[test]
+fn a_control_write_in_progress_does_not_stall_the_render_path() {
+    let (mut engine, _, control) = engine_with_control();
+    feed(&mut engine, (0..4).map(|_| packet_in(40, 1, false)));
+
+    let (held_tx, held_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let writer = {
+        let control = Arc::clone(&control);
+        std::thread::spawn(move || {
+            let mut live = control.live.write();
+            live.master_gain = 0.5;
+            held_tx.send(()).unwrap();
+            // Held until the render below is done. A render that waits for
+            // it gets it after the timeout, so the test fails, not hangs.
+            done_rx.recv_timeout(Duration::from_secs(5)).is_err()
+        })
+    };
+    held_rx.recv().unwrap();
+    let rendered = feed(&mut engine, (0..20).map(|_| packet_in(40, 1, false)));
+    let _ = done_tx.send(());
+    let timed_out = writer.join().unwrap();
+
+    assert!(!timed_out, "the render path waited for the live write");
+    assert_eq!(rendered, 20 * 40);
+    assert_eq!(control.live.read().master_gain, 0.5, "published on release");
+}
+
+/// A params generation bumped while the live write guard is still held could
+/// be seen with the params from before the write, and the render thread's
+/// cache would keep them under the new generation: debug builds refuse it.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "while their write guard is held")]
+fn a_params_generation_bumped_inside_the_write_guard_is_refused() {
+    let (_engine, _, control) = engine_with_control();
+    let mut live = control.live.write();
+    live.objects.entry(0).or_default().muted = true;
+    control.mark_object_params_dirty();
+}
+
 /// Every OSC message that reached `socket` within `wait`, bundles flattened,
 /// in arrival order.
 fn osc_messages(socket: &std::net::UdpSocket, wait: Duration) -> Vec<rosc::OscMessage> {
@@ -600,10 +655,13 @@ fn heard_us_publishes_the_listener_and_marks_each_block() {
     assert_eq!(heard[0].args.get(1), Some(&rosc::OscType::Int(48_000)));
 
     // Every meter bundle is preceded by the marker of its block, and the
-    // markers name 1536-sample blocks, in order, each once.
+    // markers name 1536-sample blocks, in order, each once. From the heard
+    // message on: the telemetry thread sends what the render path queued in
+    // order, so a meter of a block rendered before the report, late past
+    // the listening window above on a slow runner, comes first, unmarked.
     let mut last_block = None;
     let mut blocks = Vec::new();
-    for m in &after {
+    for m in after.iter().skip_while(|m| m.addr != PLAYOUT_HEARD) {
         if m.addr == PLAYOUT_BLOCK {
             let pos = long_arg(m, 0).unwrap();
             assert_eq!(pos % 1536, 0, "{pos}");

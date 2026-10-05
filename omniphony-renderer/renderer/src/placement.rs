@@ -36,7 +36,9 @@
 //! family, or one missing from the table, gets.
 
 use serde::{Deserialize, Serialize};
+use serde_yaml_ng::Mapping;
 
+use crate::config::unknown_values::{self, EnumKey, KeepsUnknownValues};
 use crate::speaker_layout::SpeakerLayout;
 
 /// How a family's fixed channels are placed. See the module docs.
@@ -104,20 +106,90 @@ pub struct FamilyInfo {
 /// One family's own settings: both optional, each inherited from the generic
 /// family when absent (see the module docs). This is also the config form of
 /// a family (`render.placement.<family>`).
+///
+/// `Deserialize` and `Serialize` wrap the derived ones (`remote = "Self"`): a
+/// mode this build does not know is kept rather than failing the file (see
+/// [`unknown_values`]).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct FamilyPlacement {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kept_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub mode: Option<PlacementMode>,
     /// The family's entries: `spatialize` and `gain_db` in every mode, the
     /// pose in manual mode. The speaker-layout schema, so the Studio editor
     /// and the config share one format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<SpeakerLayout>,
+    /// The family's keys this build does not know, and a mode it does not
+    /// know, kept so that a save writes them back.
+    #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
+    pub extra: Mapping,
 }
 
 impl FamilyPlacement {
     pub fn is_default(&self) -> bool {
-        self.mode.is_none() && self.layout.is_none()
+        self.mode.is_none() && self.layout.is_none() && self.extra.is_empty()
+    }
+
+    /// Set the family's own mode, as a client chose it; `true` when it
+    /// changed. A choice drops a mode a newer build wrote and this one kept,
+    /// or it would come back the next time the family is set to inherit.
+    /// Inherit while already inheriting is no choice (a client re-sending
+    /// its state): this build runs the kept mode as inherit anyway.
+    pub fn set_mode(&mut self, mode: Option<PlacementMode>) -> bool {
+        if mode.is_some() || self.mode.is_some() {
+            self.extra.shift_remove("mode");
+        }
+        std::mem::replace(&mut self.mode, mode) != mode
+    }
+}
+
+/// `mode`, keeping one this build does not know (see [`unknown_values`]).
+fn kept_mode<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<PlacementMode>, D::Error> {
+    unknown_values::keep_unknown(
+        deserializer,
+        None,
+        "mode",
+        "render.placement.<family>.",
+        |value| Option::<PlacementMode>::deserialize(value),
+    )
+}
+
+impl KeepsUnknownValues for FamilyPlacement {
+    const ENUM_KEYS: &'static [EnumKey<Self>] = &[EnumKey {
+        parent: None,
+        key: "mode",
+        // Absent inherits, which no mode spells.
+        chosen: |own| own.mode.is_some(),
+        clear: |own| own.mode = None,
+    }];
+
+    fn extra(&self, _parent: Option<&str>) -> Option<&Mapping> {
+        Some(&self.extra)
+    }
+
+    fn extra_mut(&mut self, _parent: Option<&str>) -> Option<&mut Mapping> {
+        Some(&mut self.extra)
+    }
+}
+
+impl<'de> Deserialize<'de> for FamilyPlacement {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        unknown_values::deserialize(deserializer, FamilyPlacement::deserialize)
+    }
+}
+
+impl Serialize for FamilyPlacement {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        unknown_values::serialize(self, serializer, |own, serializer| {
+            FamilyPlacement::serialize(own, serializer)
+        })
     }
 }
 
@@ -280,6 +352,7 @@ impl PlacementState {
                         layout.radius_m = (layout.radius_m as f64 * 1e6).round() as f32 / 1e6;
                         layout
                     }),
+                    extra: entry.own.extra.clone(),
                 };
                 (entry.info.name.clone(), own)
             })
@@ -320,6 +393,7 @@ impl PlacementState {
         *self.family_mut(SourceFamily::GENERIC) = FamilyPlacement {
             mode: Some(PlacementMode::Manual),
             layout: Some(layout),
+            ..Default::default()
         };
     }
 }

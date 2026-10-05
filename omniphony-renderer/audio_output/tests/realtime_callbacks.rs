@@ -9,9 +9,9 @@
 //! `audio_output::callback_log` and read their config with `try_lock`.
 //!
 //! The compiler cannot hold that, so this scans the sources: the bodies of the
-//! two callbacks, and what they call into — whole modules where the module is
-//! realtime code throughout, single functions where it is not. A failure names
-//! the line. Move the work out of the callback (a `callback_event!` for a log
+//! backends' callbacks, and what they call into — whole modules where the
+//! module is realtime code throughout (the shared callback core among them),
+//! single functions where it is not. A failure names the line. Move the work out of the callback (a `callback_event!` for a log
 //! line, a `try_lock` with a kept copy for shared state) rather than narrowing
 //! what is scanned here.
 //!
@@ -66,8 +66,29 @@ const CALLEE_FUNCTIONS: &[(&str, &str)] = &[
         "pub fn drain(&self, drain_samples: usize) -> bool {",
     ),
     (
+        "src/pacer.rs",
+        "pub fn drain_if(&self, drain_samples: usize, still_mine: impl FnOnce() -> bool) -> bool {",
+    ),
+    ("src/pacer.rs", "pub fn drain_available_if("),
+    (
+        "src/pacer.rs",
+        "fn flush_and_prime(&self, fifo: &mut RingReader) -> bool {",
+    ),
+    (
+        "src/pacer.rs",
+        "fn transfer(fifo: &mut RingReader, ring: &mut RingWriter, count: usize) -> bool {",
+    ),
+    (
+        "src/pacer.rs",
+        "fn add_to(counter: &AtomicU64, count: usize) {",
+    ),
+    (
         "src/pipewire.rs",
-        "fn pipewire_rate_for_consume_adjust(consume_adjust: f64) -> f32 {",
+        "fn schedule(&self, acc: &mut i64, output_frames: usize, output_rate: u32) {",
+    ),
+    (
+        "src/pipewire.rs",
+        "fn graph_delay_ms(stream: &pw::stream::Stream) -> Option<f32> {",
     ),
     (
         "src/callback_log.rs",
@@ -95,6 +116,7 @@ const CALLEE_FUNCTIONS: &[(&str, &str)] = &[
 const CALLEE_MODULES: &[&str] = &[
     "src/lib.rs",
     "src/adaptive_runtime.rs",
+    "src/callback_core.rs",
     "src/callback_state.rs",
     "src/iir.rs",
     "src/output_telemetry.rs",
