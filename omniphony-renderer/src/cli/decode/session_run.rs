@@ -504,9 +504,21 @@ fn handle_audio_message(
     let frame = decoded.frame;
     let declaration =
         super::state::resolve_declaration(handler.spatial_renderer.as_ref(), decoded.declaration);
-    handler
-        .spatial
-        .take_declaration(decoded.source, declaration);
+    let loudness_changed = handler.spatial.take_input(
+        decoded.source,
+        declaration,
+        handler.spatial_renderer.as_ref(),
+    );
+    if loudness_changed {
+        if let Some(osc_sender) = handler
+            .telemetry
+            .osc_sender
+            .as_ref()
+            .filter(|sender| sender.has_osc_clients())
+        {
+            osc_sender.send_loudness_state();
+        }
+    }
     if frame.is_new_segment {
         // Use the live-active backend (not the launch one) so a segment
         // restart preserves a Studio-requested switch (e.g. to `file`).
@@ -642,8 +654,9 @@ fn pump_idle_feed(
         is_new_segment: false,
     };
     // Post the pacer drain token first, exactly like the decoder thread does
-    // for a real packet. Ignored (by the drain thread) outside pure
-    // pipe-bridge mode; a closed channel just means the run is winding down.
+    // for a real packet. Drained in every input mode: from idle no capture
+    // chunk clocks these frames, PipeWire mode included. A closed channel just
+    // means the run is winding down.
     let emitted_us = chunk.sample_count as u64 * 1_000_000 / chunk.sample_rate.max(1) as u64;
     let _ = drain_tx.send(emitted_us);
     handle_audio_message(
@@ -808,8 +821,9 @@ fn finalize_render_run(prepared: PreparedDecodeRun, handler: &mut DecodeHandler)
     complete_render_run(prepared, handler, is_shutdown)
 }
 
-/// Drains the post-rendering output pacer FIFO into the ring for pure
-/// pipe-bridge mode, where no PipeWire input RT callback exists to do it.
+/// Drains the post-rendering output pacer FIFO into the ring for what no
+/// PipeWire capture chunk clocks: the input pipe and the speaker-test idle
+/// feed.
 ///
 /// The clock is the decoder's source clock, conveyed as per-packet emitted
 /// audio durations over `drain_rx`. Running on its own thread (independent of
@@ -817,9 +831,13 @@ fn finalize_render_run(prepared: PreparedDecodeRun, handler: &mut DecodeHandler)
 /// keeps relieving the FIFO even while the decoder is blocked sending and the
 /// handler is blocked in `write_samples`.
 ///
-/// Only one component may own the FIFO drain at a time, so this thread acts
-/// only when pacing is enabled AND the active input mode is `Bridge`; in
-/// `Pipewire` the input RT callback owns it and tokens are dropped.
+/// Tokens are drained whatever the input mode: beside a PipeWire capture too,
+/// nothing else drains the pipe's frames or a speaker test from idle while no
+/// client is streaming into the sink. (The applied mode gated this once, but
+/// in PipeWire mode it read `Bridge` from the first bridge-decoded frame on,
+/// so the gate was open whenever there was a token to drain.) While a client
+/// is streaming, the capture callback drains on its own clock as well, and
+/// nothing here keeps the two apart: mgth/Omniphony#694.
 fn spawn_pacer_drain_thread(
     input_control: std::sync::Arc<audio_input::InputControl>,
     drain_rx: mpsc::Receiver<u64>,
@@ -847,10 +865,6 @@ fn spawn_pacer_drain_thread(
                     frac_frames = 0.0;
                     continue;
                 };
-                if input_control.applied_snapshot().active_mode != audio_input::InputMode::Bridge {
-                    frac_frames = 0.0;
-                    continue;
-                }
                 let now = std::time::Instant::now();
                 let drain_dt_us = last_drain_at
                     .map(|prev| now.saturating_duration_since(prev).as_micros() as u64)
@@ -1139,6 +1153,260 @@ mod tests {
             .err()
             .expect("missing input");
         assert!(!is_bridge_unavailable_error(&err), "{err:#}");
+    }
+
+    /// PipeWire input mode with the capture up: the requested mode, and the
+    /// applied state as the live-input manager publishes it.
+    fn pipewire_mode_input_control() -> Arc<audio_input::InputControl> {
+        let control = Arc::new(audio_input::InputControl::default());
+        control.set_requested_mode(audio_input::InputMode::Pipewire);
+        super::super::live_input::publish_pipewire_capture_state(
+            &control,
+            "omniphony-test",
+            "Omniphony test sink",
+            2,
+            192_000,
+        );
+        control
+    }
+
+    const BLOCK_FRAMES: usize = 480;
+
+    /// One 7.1 block at 48 kHz, as either producer hands it over: `sample(i)`
+    /// of full scale on every channel of frame `i`.
+    fn seven_one(source: DecodedSource, sample: impl Fn(usize) -> f32) -> DecodedAudioData {
+        use bridge_api::RChannelLabel::*;
+        let labels = vec![L, R, C, LFE, Ls, Rs, Lb, Rb];
+        let pcm: Vec<i32> = (0..BLOCK_FRAMES)
+            .flat_map(|frame| {
+                let value = (sample(frame) * bridge_api::I32_PCM_FULL_SCALE as f32) as i32;
+                std::iter::repeat_n(value, labels.len())
+            })
+            .collect();
+        DecodedAudioData {
+            source,
+            frame: bridge_api::RDecodedFrame {
+                sampling_frequency: 48_000,
+                sample_count: BLOCK_FRAMES as u32,
+                channel_count: labels.len() as u32,
+                pcm: pcm.into(),
+                channel_labels: labels.into(),
+                metadata: abi_stable::std_types::RVec::new(),
+                drc_gain: 1.0,
+                drc_ramp_duration: 0,
+                dialogue_level: abi_stable::std_types::ROption::RNone,
+                is_new_segment: false,
+            },
+            declaration: None,
+            decode_time_ms: 0.0,
+            sent_at: std::time::Instant::now(),
+        }
+    }
+
+    /// A block with every sample at `level` of full scale.
+    fn seven_one_block(source: DecodedSource, level: f32) -> DecodedAudioData {
+        seven_one(source, |_| level)
+    }
+
+    /// A block of a 1 kHz tone (whole periods), carrying `dialogue_level`
+    /// when given one.
+    fn seven_one_tone(source: DecodedSource, dialogue_level: Option<i8>) -> DecodedAudioData {
+        let mut block = seven_one(source, |frame| {
+            0.25 * (std::f32::consts::TAU * 1_000.0 * frame as f32 / 48_000.0).sin()
+        });
+        block.frame.dialogue_level = dialogue_level.into();
+        block
+    }
+
+    /// A handler fed the way the render loop feeds it (`handle_audio_message`),
+    /// writing to a raw-f32 file sink.
+    struct FileSinkRun {
+        handler: DecodeHandler,
+        args: RenderArgs,
+        path: std::path::PathBuf,
+    }
+
+    impl FileSinkRun {
+        fn new(
+            tag: &str,
+            input_control: &Arc<audio_input::InputControl>,
+            spatial_renderer: Option<renderer::spatial_renderer::SpatialRenderer>,
+        ) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "orender-input-sources-{tag}-{}.f32",
+                std::process::id()
+            ));
+            let mut handler = DecodeHandler {
+                input_control: Some(Arc::clone(input_control)),
+                spatial_renderer,
+                ..DecodeHandler::default()
+            };
+            handler.runtime.active_output_backend = OutputBackend::File;
+            handler.runtime.output_file = path.to_str().expect("utf-8 path").to_string();
+            Self {
+                handler,
+                args: render_args(&["in.thd"]),
+                path,
+            }
+        }
+
+        fn feed(&mut self, block: DecodedAudioData) {
+            let ctx = DecodeRunContext { args: &self.args };
+            handle_audio_message(&mut self.handler, block, &ctx).expect("frame handled");
+        }
+
+        /// What reached the sink, a block of `channels` channels at a time.
+        fn finish(mut self, channels: usize) -> Vec<Vec<f32>> {
+            self.handler.finalize().expect("finalize");
+            drop(self.handler);
+            let bytes = std::fs::read(&self.path).unwrap_or_default();
+            let _ = std::fs::remove_file(&self.path);
+            let block_bytes = BLOCK_FRAMES * channels * std::mem::size_of::<f32>();
+            assert_eq!(bytes.len() % block_bytes, 0, "a partial block was written");
+            bytes
+                .chunks_exact(block_bytes)
+                .map(|block| {
+                    block
+                        .chunks_exact(4)
+                        .map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+                        .collect()
+                })
+                .collect()
+        }
+    }
+
+    /// Feed `blocks` into a file sink with no renderer (the decoded channels
+    /// are written as they are); returns the level of each block that reached
+    /// it, in order.
+    fn levels_written(
+        input_control: &Arc<audio_input::InputControl>,
+        blocks: Vec<DecodedAudioData>,
+        tag: &str,
+    ) -> Vec<f32> {
+        let mut run = FileSinkRun::new(tag, input_control, None);
+        for block in blocks {
+            run.feed(block);
+        }
+        run.finish(8).iter().map(|block| block[0]).collect()
+    }
+
+    /// With the loudness correction on and a real renderer: `RUN_BLOCKS` tone
+    /// blocks from each `(source, dialogue level)` in turn, the level carried
+    /// by the first block of its run only, as a bridge sends it at a major
+    /// sync. Returns the RMS of the last rendered block of each run.
+    fn rendered_run_levels(tag: &str, runs: &[(DecodedSource, Option<i8>)]) -> Vec<f32> {
+        const RUN_BLOCKS: usize = 30;
+        let renderer = super::super::handler::tests::test_renderer();
+        renderer.renderer_control().live.write().use_loudness = true;
+        let channels = renderer.output_channel_count();
+        let mut run = FileSinkRun::new(tag, &pipewire_mode_input_control(), Some(renderer));
+        for &(source, dialogue_level) in runs {
+            for block in 0..RUN_BLOCKS {
+                run.feed(seven_one_tone(
+                    source,
+                    dialogue_level.filter(|_| block == 0),
+                ));
+            }
+        }
+        let written = run.finish(channels);
+        assert_eq!(written.len(), runs.len() * RUN_BLOCKS);
+        written
+            .chunks_exact(RUN_BLOCKS)
+            .map(|run| {
+                let last = &run[RUN_BLOCKS - 1];
+                (last.iter().map(|s| s * s).sum::<f32>() / last.len() as f32).sqrt()
+            })
+            .collect()
+    }
+
+    /// A bitstream's dialogue level is its own: the sink's PCM, which carries
+    /// none, plays at its own level before and after it, and the bitstream
+    /// gets its level back when it returns, without its bridge repeating it.
+    #[test]
+    fn a_bitstreams_dialogue_level_does_not_reach_the_sinks_pcm() {
+        use DecodedSource::{Bridge, Live};
+        let unity = rendered_run_levels("loudness-unity", &[(Bridge, None), (Live, None)]);
+        let (bridge_unity, pcm_unity) = (unity[0], unity[1]);
+        assert!(bridge_unity > 0.0 && pcm_unity > 0.0, "{unity:?}");
+
+        // -11 dBFS against the -31 dBFS reference: -20 dB.
+        let levels = rendered_run_levels(
+            "loudness",
+            &[
+                (Live, None),
+                (Bridge, Some(-11)),
+                (Live, None),
+                (Bridge, None),
+            ],
+        );
+        let expected = [pcm_unity, 0.1 * bridge_unity, pcm_unity, 0.1 * bridge_unity];
+        for (run, (level, expected)) in levels.iter().zip(expected).enumerate() {
+            assert!(
+                (level / expected - 1.0).abs() < 1e-3,
+                "run {run}: {level} instead of {expected} ({levels:?})"
+            );
+        }
+    }
+
+    /// The PipeWire sink carries a bitstream or linear PCM, whichever its
+    /// client negotiated, and one can follow the other: PCM played into the
+    /// sink after a bridge-decoded frame (a bitstream, a packet on the input
+    /// pipe, a speaker test from idle) still reaches the output, and so does
+    /// what the bridge decodes after it. The applied input state stays the
+    /// capture's throughout. It used to read `Bridge` from the first
+    /// bridge-decoded frame on, and the sink's PCM was then dropped until the
+    /// next input apply.
+    #[test]
+    fn pipewire_mode_plays_sink_pcm_after_a_bridge_decoded_frame() {
+        use DecodedSource::{Bridge, Live};
+        let input = pipewire_mode_input_control();
+
+        let written = levels_written(
+            &input,
+            vec![
+                seven_one_block(Bridge, 0.25),
+                seven_one_block(Live, 0.5),
+                seven_one_block(Bridge, 0.25),
+                seven_one_block(Live, 0.5),
+            ],
+            "pipewire",
+        );
+        assert_eq!(written, [0.25, 0.5, 0.25, 0.5]);
+
+        let applied = input.applied_snapshot();
+        assert_eq!(applied.active_mode, audio_input::InputMode::Pipewire);
+        assert_eq!(applied.backend, Some(audio_input::InputBackend::Pipewire));
+        assert_eq!(applied.node_name.as_deref(), Some("omniphony-test"));
+        assert_eq!(applied.channels, Some(2));
+        assert_eq!(applied.sample_rate_hz, Some(192_000));
+        assert_eq!(applied.stream_format.as_deref(), Some("pipewire-iec61937"));
+    }
+
+    /// Pure pipe mode has no sink: a frame tagged as its PCM is refused, and
+    /// the applied state describes the stream the bridge decodes, as before.
+    #[test]
+    fn pipe_mode_refuses_sink_pcm_and_records_the_decoded_stream() {
+        use DecodedSource::{Bridge, Live};
+        let input = Arc::new(audio_input::InputControl::default());
+
+        let written = levels_written(
+            &input,
+            vec![
+                seven_one_block(Live, 0.5),
+                seven_one_block(Bridge, 0.25),
+                seven_one_block(Live, 0.5),
+                seven_one_block(Bridge, 0.25),
+            ],
+            "pipe",
+        );
+        assert_eq!(written, [0.25, 0.25]);
+
+        let applied = input.applied_snapshot();
+        assert_eq!(applied.active_mode, audio_input::InputMode::Bridge);
+        assert_eq!(applied.backend, None);
+        assert_eq!(applied.channels, Some(8));
+        assert_eq!(applied.sample_rate_hz, Some(48_000));
+        assert_eq!(applied.stream_format.as_deref(), Some("bridge-decoded"));
     }
 
     /// The live state a Studio registering with `control` would get, by
