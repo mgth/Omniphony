@@ -991,7 +991,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_core_error(
     id: u32,
     seq: i32,
     res: i32,
-    message: *const i8,
+    message: *const std::os::raw::c_char,
 ) {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
     let message = if message.is_null() {

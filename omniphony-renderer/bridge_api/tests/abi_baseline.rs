@@ -264,7 +264,9 @@ fn bridge_abi_changes_only_with_a_minor_bump() {
     let update = std::env::var_os(UPDATE_VAR).is_some();
 
     let stored = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
+        // A Windows checkout may turn the file's line ends into CRLF; the
+        // baseline is the text, not its line ends.
+        Ok(text) => text.replace("\r\n", "\n"),
         Err(_) if update => {
             std::fs::write(&path, render(minor, &current)).expect("write baseline");
             return;
