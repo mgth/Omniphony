@@ -29,8 +29,8 @@ use crate::{
     clamp_ratio_for_local_resampler, local_resampler_ratio_bounds,
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine, output_resampler_params},
     ring_buffer_io::{
-        OUTPUT_RING_CAPACITY, RingMonitor, RingWriter, flush_ring_buffer,
-        push_samples_drop_overflow, push_samples_with_backpressure, sample_ring,
+        RingMonitor, RingWriter, flush_ring_buffer, push_samples_drop_overflow,
+        push_samples_with_backpressure, sample_ring,
     },
 };
 
@@ -213,9 +213,6 @@ impl CpalWriter {
         // Local resampling ratio is output_rate / input_rate.
         let resample_ratio = output_sample_rate as f64 / input_sample_rate as f64;
 
-        // The reading end moves into the callback, its one consumer.
-        let (sample_buffer, mut ring_reader) = sample_ring(OUTPUT_RING_CAPACITY);
-        let ring = sample_buffer.monitor();
         let stream_ready = Arc::new(AtomicBool::new(false));
         let ready_clone = stream_ready.clone();
         let current_rate_adjust = Arc::new(AtomicU32::new(1.0f32.to_bits()));
@@ -250,6 +247,14 @@ impl CpalWriter {
         let target_buffer_fill = (samples_per_ms * target_buffer_ms as usize).max(min_buffer_fill);
         let max_buffer_fill = (samples_per_ms * max_buffer_ms as usize)
             .max(target_buffer_fill + channel_count as usize);
+
+        // The ring holds what the back-pressure threshold lets in, and no
+        // more. A change of latency rebuilds the writer, and the ring with it.
+        // The reading end moves into the callback, its one consumer.
+        let channels = (channel_count as usize).max(1);
+        let (sample_buffer, mut ring_reader) =
+            sample_ring(max_buffer_fill.div_ceil(channels), channels);
+        let ring = sample_buffer.monitor();
 
         // Open the platform's cpal output host (ASIO on Windows, CoreAudio on macOS).
         let host = output_host()?;

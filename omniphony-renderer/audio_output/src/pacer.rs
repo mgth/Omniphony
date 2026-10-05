@@ -112,9 +112,9 @@ impl PacerHandle {
 
     /// Move `drain_samples` (across all channels) from the pacer FIFO into the
     /// ring. Honours pre-roll (pushes silence until the FIFO is primed) and
-    /// zero-fills on underrun. `drain_samples` should be a whole number of
-    /// frames (i.e. a multiple of the output channel count) so the ring's
-    /// channel interleaving stays aligned.
+    /// zero-fills on underrun. Both rings move whole frames only, so the
+    /// quantum is rounded down to one, and what a full ring refuses is
+    /// dropped from a frame boundary: the ring's channels never shift.
     ///
     /// Both the PipeWire input RT callback (Pipewire mode) and the pure
     /// pipe-bridge drain thread share this single drain implementation; the
@@ -129,6 +129,7 @@ impl PacerHandle {
             return false;
         };
         let PacerDrainEnds { fifo, ring } = &mut *ends;
+        let drain_samples = drain_samples - drain_samples % ring.frame_len();
         // Honour a deferred flush first, so no stale sample reaches the ring.
         // Done here because this is the FIFO's only consumer — see
         // [`request_flush_and_rearm`](Self::request_flush_and_rearm).
@@ -150,13 +151,12 @@ impl PacerHandle {
             0
         };
         // The FIFO is drawn down by the clock whatever the ring takes: what a
-        // full ring refuses is dropped, from the first sample it refuses on.
-        let mut ring_full = false;
-        fifo.pop_with(from_fifo, |block| {
-            if !ring_full {
-                ring_full = ring.push_slice(block) < block.len();
-            }
-        });
+        // full ring refuses is dropped, from the first frame it refuses.
+        let moved = ring.transfer_from(fifo, from_fifo);
+        let ring_full = moved < from_fifo;
+        if ring_full {
+            fifo.discard(from_fifo - moved);
+        }
         let underruns = drain_samples - from_fifo;
         if underruns > 0 && !ring_full {
             ring.push_silence(underruns);
@@ -196,9 +196,11 @@ mod tests {
         pacer_with_ring_capacity(pre_roll, 4096)
     }
 
+    /// `ring_capacity` in samples, a whole number of frames.
     fn pacer_with_ring_capacity(pre_roll: usize, ring_capacity: usize) -> Pacer {
-        let (fifo_writer, fifo_reader) = sample_ring(4096);
-        let (ring_writer, ring_reader) = sample_ring(ring_capacity);
+        let channels = CHANNELS as usize;
+        let (fifo_writer, fifo_reader) = sample_ring(4096 / channels, channels);
+        let (ring_writer, ring_reader) = sample_ring(ring_capacity / channels, channels);
         let handle = PacerHandle {
             ends: Arc::new(Mutex::new(PacerDrainEnds {
                 fifo: fifo_reader,
@@ -369,5 +371,36 @@ mod tests {
         // It finishes: the next drain goes through.
         assert!(p.handle.drain(2));
         assert_eq!(drain_ring(&mut p), vec![1.0, 2.0]);
+    }
+
+    /// A quantum that falls inside a frame is rounded down to one: half a
+    /// frame would leave every later sample a channel off.
+    #[test]
+    fn a_quantum_inside_a_frame_moves_whole_frames() {
+        let mut p = pacer(0);
+        fill(&mut p, &[1.0, 2.0, 3.0, 4.0]);
+        p.handle.drain(3);
+        assert_eq!(drain_ring(&mut p), vec![1.0, 2.0]);
+        assert_eq!(diag(&p.handle.diag_drain_total), 2.0);
+        p.handle.drain(2);
+        assert_eq!(drain_ring(&mut p), vec![3.0, 4.0]);
+    }
+
+    /// What a full ring refuses goes from a frame boundary, and the next
+    /// drain starts on the first channel.
+    #[test]
+    fn a_full_ring_keeps_the_channels_aligned() {
+        let mut p = pacer_with_ring_capacity(0, 6);
+        // Left and right tagged 1 and 2, frame by frame.
+        let frames = |n: usize| -> Vec<f32> { (0..n).flat_map(|_| [1.0, 2.0]).collect() };
+        fill(&mut p, &frames(2));
+        p.handle.drain(4);
+        fill(&mut p, &frames(3));
+        p.handle.drain(6);
+        assert_eq!(p.fifo.fill(), 0, "the refused frames left the FIFO");
+        assert_eq!(drain_ring(&mut p), frames(3), "one frame of room");
+        fill(&mut p, &frames(2));
+        p.handle.drain(4);
+        assert_eq!(drain_ring(&mut p), frames(2));
     }
 }
