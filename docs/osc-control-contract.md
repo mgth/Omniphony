@@ -518,7 +518,9 @@ exhaustive machine-readable list.
   marker, never on the bundle boundary.
 - **Render** — `render/version`, `render/executable` (path of the process
   serving the engine), `render/abi` (C-ABI `major.minor` of the liborender
-  shim, `""` for the CLI), `render/config_path`, `render/config_status`
+  shim, `""` for the CLI), `render/bridge_api` (the `bridge_api` version the
+  engine was built against; a decoder bridge loads only if built against the
+  same minor), `render/config_path`, `render/config_status`
   (`loaded`, `missing`, `parse_error` — running on built-in defaults — or
   `newer_schema` — written by a newer build, read as far as this one
   understands it and never written; `""` without a config path),
@@ -799,6 +801,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/realtime/master_gain`
 - `/omniphony/state/realtime/speaker_gain`
 - `/omniphony/state/render/abi`
+- `/omniphony/state/render/bridge_api`
 - `/omniphony/state/render/bridge_error`
 - `/omniphony/state/render/bridge_path`
 - `/omniphony/state/render/config_path`
