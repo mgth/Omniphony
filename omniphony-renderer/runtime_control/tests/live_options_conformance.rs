@@ -429,7 +429,7 @@ mod registry {
         ]
     }
 
-    fn sample_for(key: &str) -> RawOptionValue<'static> {
+    pub(super) fn sample_for(key: &str) -> RawOptionValue<'static> {
         non_default_samples()
             .into_iter()
             .find(|(k, _)| *k == key)
@@ -1092,5 +1092,136 @@ mod host_scope {
 
         let _ = std::fs::remove_file(&base);
         let _ = std::fs::remove_file(&out);
+    }
+}
+
+/// `config.yaml` is edited by hand and copied between machines: a value in it
+/// is no more trusted than one on the wire. Every option, written into the
+/// file with a value its kind does not allow, is either refused when the file
+/// is parsed or reaches the live state inside the kind's bounds — the same
+/// bounds the OSC setter enforces.
+mod hostile_config_values {
+    use super::*;
+    use renderer::options::{self, OptionKind};
+
+    /// YAML spellings a hand edit or another build could leave for `kind`.
+    fn hostile(kind: OptionKind) -> &'static [&'static str] {
+        match kind {
+            OptionKind::Float { .. } | OptionKind::FloatArray { .. } => &[
+                ".nan",
+                ".inf",
+                "-.inf",
+                "1e30",
+                "-1e30",
+                "[.nan, .nan, .nan]",
+                "[1e30, -1e30, .inf]",
+                "\"loud\"",
+            ],
+            OptionKind::Int { .. } | OptionKind::OptionalInt { .. } => &[
+                "-5",
+                "0",
+                "4.5",
+                "9223372036854775807",
+                "-9223372036854775808",
+                "\"many\"",
+                ".nan",
+            ],
+            OptionKind::Bool => &["2", "\"maybe\"", "[true]", ".nan"],
+            OptionKind::Enum(_) | OptionKind::DynamicEnum { .. } | OptionKind::Str => {
+                &["\"no_such_value\"", "7", "[a, b]", "{a: 1}", "\"\""]
+            }
+        }
+    }
+
+    /// Whether `value`, as `get_json` reports it, is one `kind` allows.
+    fn within(kind: OptionKind, value: &serde_json::Value) -> bool {
+        let number_in = |v: &serde_json::Value, min: f64, max: f64| {
+            v.as_f64()
+                .is_some_and(|x| x.is_finite() && x >= min && x <= max)
+        };
+        match kind {
+            OptionKind::Float { min, max, .. } => number_in(value, min as f64, max as f64),
+            OptionKind::FloatArray { len, min, max, .. } => value.as_array().is_some_and(|a| {
+                a.len() == len && a.iter().all(|v| number_in(v, min as f64, max as f64))
+            }),
+            OptionKind::Int { min, max } => number_in(value, min as f64, max as f64),
+            OptionKind::OptionalInt { min, max } => {
+                value.is_null() || number_in(value, min as f64, max as f64)
+            }
+            OptionKind::Bool => value.is_boolean(),
+            OptionKind::Enum(allowed) => value.as_str().is_some_and(|s| allowed.contains(&s)),
+            // Validated against the running host; a string is all that is
+            // promised here.
+            OptionKind::DynamicEnum { .. } | OptionKind::Str => value.is_string(),
+        }
+    }
+
+    /// The seed's guard takes a value its kind does not admit for a hostile
+    /// one: every value a fresh control holds, and every sample the setters
+    /// accept, must be admitted, or a valid config would be rewritten at boot.
+    #[test]
+    fn every_legitimate_value_is_admitted_by_its_kind() {
+        let control = fixture_control();
+        let mut live = control.live.write();
+        for spec in options::LIVE_OPTIONS {
+            let value = (spec.get_json)(&live);
+            assert!(spec.kind.admits(&value), "{}: default {value}", spec.key);
+            assert!(within(spec.kind, &value), "{}: default {value}", spec.key);
+            (spec.set)(
+                &mut live,
+                &super::registry::sample_for(spec.key),
+                &env(&control),
+            )
+            .expect("sample");
+            let value = (spec.get_json)(&live);
+            assert!(spec.kind.admits(&value), "{}: sample {value}", spec.key);
+        }
+    }
+
+    #[test]
+    fn a_hostile_value_in_the_file_is_refused_or_bounded() {
+        let mut seeded = 0;
+        let mut refused = 0;
+        let mut violations = Vec::new();
+        // One control, its live state put back before each case: building a
+        // renderer per case would make this the slowest test of the suite.
+        let control = fixture_control();
+        let pristine = control.live.read().clone();
+        for spec in options::LIVE_OPTIONS {
+            for value in hostile(spec.kind) {
+                let yaml = format!("render:\n  {}: {}\n", spec.key, value);
+                let Ok(config) = serde_yaml_ng::from_str::<Config>(&yaml) else {
+                    // Refused at parse: the file loads as a parse error, and
+                    // nothing reaches the live state.
+                    refused += 1;
+                    continue;
+                };
+                let render = config.render.unwrap_or_default();
+                *control.live.write() = pristine.clone();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut live = control.live.write();
+                    options::seed_live_from_config(&mut live, &render, &env(&control));
+                    (spec.get_json)(&live)
+                }));
+                match outcome {
+                    Err(_) => violations.push(format!("{}: {value} panicked the seed", spec.key)),
+                    Ok(got) if !within(spec.kind, &got) => {
+                        violations.push(format!("{}: {value} seeded as {got}", spec.key))
+                    }
+                    Ok(_) => seeded += 1,
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "values out of their option's bounds reached the live state from config.yaml:\n{}",
+            violations.join("\n")
+        );
+        // Both outcomes must actually occur, or the sweep is not reaching the
+        // seed (a key spelt differently in the file, say).
+        assert!(
+            seeded > 50 && refused > 50,
+            "seeded {seeded}, refused {refused}"
+        );
     }
 }
