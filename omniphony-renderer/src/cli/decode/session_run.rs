@@ -224,7 +224,7 @@ fn maybe_save_effective_config(
 /// (`seed_runtime_state_from_render_config`), known before the renderer is
 /// built so the decoders can start in it.
 fn configured_drc_mode(render_cfg: &renderer::config::RenderConfig) -> &str {
-    render_cfg.drc_mode.as_deref().unwrap_or("Off")
+    render_cfg.options.drc_mode.as_deref().unwrap_or("Off")
 }
 
 fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecodeRun> {
@@ -434,7 +434,7 @@ fn effective_output_backend(
 /// it on or off since the start.
 fn log_auto_gain_summary(handler: &DecodeHandler) {
     if let Some(ref renderer) = handler.spatial_renderer {
-        if !renderer.renderer_control().live.read().auto_gain {
+        if !renderer.renderer_control().live.read().options.auto_gain {
             return;
         }
         if renderer.auto_gain_triggered() {
@@ -1466,7 +1466,12 @@ mod tests {
     fn rendered_run_levels(tag: &str, runs: &[(DecodedSource, Option<i8>)]) -> Vec<f32> {
         const RUN_BLOCKS: usize = 30;
         let renderer = super::super::handler::tests::test_renderer();
-        renderer.renderer_control().live.write().use_loudness = true;
+        renderer
+            .renderer_control()
+            .live
+            .write()
+            .options
+            .use_loudness = true;
         let channels = renderer.output_channel_count();
         let mut run = FileSinkRun::new(tag, &pipewire_mode_input_control(), Some(renderer));
         for &(source, dialogue_level) in runs {

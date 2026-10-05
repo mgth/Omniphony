@@ -60,7 +60,7 @@ fn make_cartesian_renderer() -> SpatialRenderer {
     .unwrap();
     {
         let ctrl = r.renderer_control();
-        ctrl.live.write().ramp_mode = RampMode::Off;
+        ctrl.live.write().options.ramp_mode = RampMode::Off;
     }
     r
 }

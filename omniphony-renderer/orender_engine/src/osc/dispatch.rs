@@ -9,6 +9,7 @@ use renderer::live_params::RendererControl;
 use rosc::{OscMessage, OscType};
 use runtime_control::HostControlHandler;
 use runtime_control::command::{RuntimeCommand, parse_process_command};
+use runtime_control::command_table::{self, Command};
 use runtime_control::context::RuntimeControlContext;
 use runtime_control::osc::{
     BroadcastUpdate, BroadcastValue, ControlEffects, Notify, apply_simple_osc_control,
@@ -33,6 +34,102 @@ use super::transport::{
 pub(crate) struct RealtimeSeqState {
     pub master_gain: Option<i32>,
     pub speaker_gain: HashMap<usize, i32>,
+}
+
+/// What an engine handler of [`ENGINE_COMMANDS`] reaches.
+pub(crate) struct Dispatch<'a> {
+    msg: &'a OscMessage,
+    /// The sender, for the handlers that reply point-to-point.
+    src: SocketAddr,
+    control: &'a Arc<RendererControl>,
+    host: Option<&'a Arc<dyn HostControlHandler>>,
+    realtime_seq: &'a mut RealtimeSeqState,
+    socket: &'a Arc<UdpSocket>,
+    clients: &'a Arc<OscClientRegistry>,
+    gaintable_cache: &'a Arc<GaintableCache>,
+}
+
+type EngineHandler = fn(&mut Dispatch);
+
+/// The engine's control addresses (see `runtime_control::command_table`):
+/// the mpv overlay, the per-client subscriptions, the realtime gains, the
+/// bridge and input paths, the profiles, the backend files and the layout
+/// export. Tried after the live options, before the process commands, the
+/// core's table and the host.
+pub(crate) static ENGINE_COMMANDS: &[Command<EngineHandler>] = &[
+    Command::exact(osc_contract::CONTROL_OVERLAY_ENABLED, overlay_enabled),
+    Command::exact(osc_contract::CONTROL_OVERLAY_LABELS, overlay_labels),
+    Command::exact(osc_contract::CONTROL_OVERLAY_OBJECTS, overlay_objects),
+    Command::exact(
+        osc_contract::CONTROL_OVERLAY_HEATMAP_ENABLED,
+        overlay_heatmap_enabled,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_OVERLAY_HEATMAP_CUSTOM_STOPS,
+        overlay_heatmap_custom_stops,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_OVERLAY_HEATMAP_BANDS,
+        overlay_heatmap_bands,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_OVERLAY_HEATMAP_COLORMAP,
+        overlay_heatmap_colormap,
+    ),
+    Command::exact(osc_contract::CONTROL_OVERLAY_TRAILS, overlay_trails),
+    Command::exact(osc_contract::CONTROL_OVERLAY_TAG, overlay_tag),
+    Command::exact(
+        osc_contract::CONTROL_DEBUG_SPEAKER_GAINTABLE_SUBSCRIBE,
+        debug_speaker_gaintable_subscribe,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_DEBUG_SPEAKER_GAINTABLE_UNSUBSCRIBE,
+        debug_speaker_gaintable_unsubscribe,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_DEBUG_SPEAKER_GAINTABLE_NACK,
+        debug_speaker_gaintable_nack,
+    ),
+    Command::exact(osc_contract::CONTROL_METERING, metering),
+    Command::exact(osc_contract::CONTROL_DIAG_ENABLED, diag_enabled),
+    Command::exact(osc_contract::CONTROL_INPUT_REFRESH, input_refresh),
+    Command::exact(
+        osc_contract::CONTROL_REALTIME_MASTER_GAIN,
+        realtime_master_gain,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_REALTIME_SPEAKER_GAIN,
+        realtime_speaker_gain,
+    ),
+    Command::exact(osc_contract::CONTROL_RENDER_BRIDGE_PATH, render_bridge_path),
+    Command::exact(osc_contract::CONTROL_RENDER_INPUT_PIPE, render_input_pipe),
+    Command::exact(osc_contract::CONTROL_BACKEND_FILE_GET, backend_file_get),
+    Command::exact(osc_contract::CONTROL_BACKEND_FILE_LIST, backend_file_list),
+    Command::exact(osc_contract::CONTROL_BACKEND_FILE_PUT, backend_file_put),
+    Command::exact(osc_contract::CONTROL_LAYOUT_EXPORT, layout_export),
+    Command::any(
+        &[
+            osc_contract::CONTROL_PROFILE_SWITCH,
+            osc_contract::CONTROL_PROFILE_CREATE,
+            osc_contract::CONTROL_PROFILE_DELETE,
+            osc_contract::CONTROL_PROFILE_RENAME,
+        ],
+        profile,
+    ),
+];
+
+/// Named config profiles: switch / create / delete / rename
+/// (docs/config-profiles.md). Handled before the process commands so the
+/// profile addresses never fall through to the host.
+fn profile(d: &mut Dispatch) {
+    super::profiles::handle_profile_message(
+        d.msg,
+        d.control,
+        d.host,
+        d.socket,
+        d.clients,
+        d.gaintable_cache,
+    );
 }
 
 pub(crate) fn handle_control_message(
@@ -60,374 +157,17 @@ pub(crate) fn handle_control_message(
         return;
     }
 
-    // mpv overlay configuration. The overlay itself is generated in-process by
-    // the `overlay` module and pulled over FFI; Studio only configures it here
-    // (it no longer transports overlay frames). These are view state
-    // (docs/persistence-policy.md): the enabled, labels and trails switches
-    // are written to `overlay-prefs.conf` as they change, the rest is
-    // transient, and none of them ever marks the config dirty.
-    if addr == osc_contract::CONTROL_OVERLAY_ENABLED {
-        let enabled = match parse_bool_arg(msg.args.first()) {
-            Some(v) => v,
-            None => return,
-        };
-        crate::overlay::set_enabled(enabled);
-        return;
-    }
-    if addr == osc_contract::CONTROL_OVERLAY_LABELS {
-        let enabled = match parse_bool_arg(msg.args.first()) {
-            Some(v) => v,
-            None => return,
-        };
-        crate::overlay::set_labels_enabled(enabled);
-        return;
-    }
-    if addr == osc_contract::CONTROL_OVERLAY_OBJECTS {
-        let visible = match parse_bool_arg(msg.args.first()) {
-            Some(v) => v,
-            None => return,
-        };
-        crate::overlay::set_objects_visible(visible);
-        return;
-    }
-    if addr == osc_contract::CONTROL_OVERLAY_HEATMAP_ENABLED {
-        let enabled = match parse_bool_arg(msg.args.first()) {
-            Some(v) => v,
-            None => return,
-        };
-        crate::overlay::set_heatmap_enabled(enabled);
-        return;
-    }
-    if addr == osc_contract::CONTROL_OVERLAY_HEATMAP_CUSTOM_STOPS {
-        // Flat [pos, r, g, b, …] floats → grouped stops for the custom gradient.
-        let flat: Vec<f32> = msg
-            .args
-            .iter()
-            .filter_map(|a| match a {
-                OscType::Float(f) => Some(*f),
-                OscType::Int(i) => Some(*i as f32),
-                _ => None,
-            })
-            .collect();
-        let stops: Vec<[f32; 4]> = flat
-            .chunks_exact(4)
-            .map(|c| [c[0], c[1], c[2], c[3]])
-            .collect();
-        crate::overlay::set_heatmap_custom_stops(stops);
-        return;
-    }
-    if addr == osc_contract::CONTROL_OVERLAY_HEATMAP_BANDS {
-        let count = match parse_positive_u32_arg(msg.args.first()) {
-            Some(v) => v as usize,
-            None => return,
-        };
-        crate::overlay::set_heatmap_bands(count);
-        return;
-    }
-    if addr == osc_contract::CONTROL_OVERLAY_HEATMAP_COLORMAP {
-        let idx = match parse_nonnegative_u32_arg(msg.args.first()) {
-            Some(v) => v as usize,
-            None => return,
-        };
-        crate::overlay::set_heatmap_colormap(idx);
-        return;
-    }
-    if addr == osc_contract::CONTROL_OVERLAY_TRAILS {
-        // Args mirror Studio's former wire fields: enabled, ttl_ms, mode, teleport.
-        let enabled = match parse_bool_arg(msg.args.first()) {
-            Some(v) => v,
-            None => return,
-        };
-        let ttl_ms = parse_nonnegative_u32_arg(msg.args.get(1)).unwrap_or(7000);
-        let diffuse = matches!(
-            msg.args.get(2),
-            Some(OscType::String(s)) if s.eq_ignore_ascii_case("diffuse")
-        );
-        let teleport = parse_f32_arg(msg.args.get(3)).unwrap_or(0.0) as f64;
-        crate::overlay::set_trail_config(enabled, ttl_ms, diffuse, teleport);
-        return;
-    }
-    if addr == osc_contract::CONTROL_OVERLAY_TAG {
-        // [id, tag]: tag "A"/"B" sets an override colour, anything else clears it.
-        let Some(id) = msg.args.first().and_then(|a| match a {
-            OscType::Int(v) if *v >= 0 => Some(*v as u32),
-            OscType::Float(v) if *v >= 0.0 => Some(*v as u32),
-            OscType::String(s) => s.parse::<u32>().ok(),
-            _ => None,
-        }) else {
-            return;
-        };
-        let tag = match msg.args.get(1) {
-            Some(OscType::String(s)) => s
-                .chars()
-                .next()
-                .filter(|c| matches!(c, 'A' | 'a' | 'B' | 'b')),
-            _ => None,
-        };
-        crate::overlay::set_tag(id, tag);
-        return;
-    }
-    // Speaker gain-table pub/sub. A client subscribes for one speaker (the heatmap
-    // shows one), carrying the version it has cached; the renderer pushes that
-    // speaker's per-band field only if the version differs, and keeps pushing on
-    // every topology rebuild while subscribed (see `recompute.rs`). Args:
-    // [Int have_version, Int speaker_index].
-    if addr == osc_contract::CONTROL_DEBUG_SPEAKER_GAINTABLE_SUBSCRIBE {
-        let have_version = parse_nonnegative_u32_arg(msg.args.first());
-        // A negative index selects an all-speaker derived field, not an error:
-        // the global heatmaps subscribe through the same path as a per-speaker
-        // one. Known sentinels pass through; an unknown negative falls back to
-        // the energy field so an older client never gets a field it can't read.
-        let speaker = match msg.args.get(1) {
-            Some(OscType::Int(i)) if *i >= 0 => *i as i64,
-            Some(OscType::Int(i))
-                if matches!(
-                    *i as i64,
-                    renderer::band_gaintable::GAIN_DISCONTINUITY_INDEX
-                        | renderer::band_gaintable::CENTROID_JUMP_INDEX
-                ) =>
-            {
-                *i as i64
-            }
-            Some(OscType::Int(_)) => renderer::band_gaintable::GLOBAL_ENERGY_INDEX,
-            _ => 0,
-        };
-        let client = resolve_register_addr(src, &[]);
-        // Ensure the client exists in the registry (refreshes liveness) so the
-        // subscribe flag sticks and the 5 s heartbeat keeps it alive.
-        clients.register(client);
-        clients.set_gaintable(client, true);
-        // Additive: a client showing several heatmaps subscribes once per
-        // target, and each must keep receiving pushes.
-        clients.add_gaintable_target(client, speaker);
-        push_gaintable_subscribe(
+    if let Some(run) = command_table::find(ENGINE_COMMANDS, addr) {
+        run(&mut Dispatch {
+            msg,
+            src,
+            control,
+            host,
+            realtime_seq,
             socket,
             clients,
             gaintable_cache,
-            &runtime_ctx,
-            client,
-            speaker,
-            have_version,
-        );
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_DEBUG_SPEAKER_GAINTABLE_UNSUBSCRIBE {
-        let client = resolve_register_addr(src, &[]);
-        clients.set_gaintable(client, false);
-        // Drop the targets too: the next subscribe declares what it wants, and
-        // keeping them would push fields nobody is displaying any more.
-        clients.clear_gaintable_targets(client);
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_DEBUG_SPEAKER_GAINTABLE_NACK {
-        // Args: Int version, Int missing_index… — resend just the lost chunks for
-        // the client's subscribed speaker.
-        let mut ints = msg.args.iter().filter_map(|a| match a {
-            OscType::Int(i) if *i >= 0 => Some(*i as u32),
-            _ => None,
         });
-        if let Some(version) = ints.next() {
-            let missing: Vec<u32> = ints.collect();
-            if !missing.is_empty() {
-                let client = resolve_register_addr(src, &[]);
-                // Resolve the target from the version the client is missing
-                // chunks for, so a NACK is answered with the right field even
-                // when several transfers are in flight.
-                let target = clients
-                    .gaintable_target_for_version(client, version)
-                    .unwrap_or(0);
-                if let Some((_v, bytes)) = gaintable_cache.bytes_for_target(&runtime_ctx, target) {
-                    for update in gaintable_chunk_broadcasts(&bytes, Some((version, missing))) {
-                        send_update_to_client(socket, client, &update);
-                    }
-                }
-            }
-        }
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_METERING {
-        let enabled = match parse_bool_arg(msg.args.first()) {
-            Some(v) => v,
-            None => return,
-        };
-        let client = resolve_register_addr(src, &[]);
-        if clients.set_metering(client, enabled) {
-            send_metering_state(socket, client, enabled);
-        }
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_DIAG_ENABLED {
-        let enabled = match parse_bool_arg(msg.args.first()) {
-            Some(v) => v,
-            None => return,
-        };
-        let client = resolve_register_addr(src, &[]);
-        if clients.set_diag(client, enabled) {
-            send_diag_state(socket, client, enabled);
-        }
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_INPUT_REFRESH {
-        build_live_state(control, host).broadcast(socket, clients);
-        log::info!("OSC: input state refresh requested");
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_REALTIME_MASTER_GAIN {
-        let Some(value) = msg.args.first().and_then(|arg| match arg {
-            OscType::Float(v) => Some(*v),
-            OscType::Int(v) => Some(*v as f32),
-            _ => None,
-        }) else {
-            return;
-        };
-        let Some(seq) = msg.args.get(1).and_then(|arg| match arg {
-            OscType::Int(v) => Some(*v),
-            _ => None,
-        }) else {
-            return;
-        };
-        if realtime_seq.master_gain.is_some_and(|last| seq < last) {
-            return;
-        }
-        // Same setter as `/control/gain`: one validation, one field.
-        let Some(value) = runtime_control::osc::set_master_gain(control, value) else {
-            return;
-        };
-        realtime_seq.master_gain = Some(seq);
-        // The realtime echo below is for the sender's own sequencing; the
-        // other clients read the gain from the live-state bundle, coalesced
-        // because a gain slider drag is a burst of writes.
-        notify_changed(control, host, socket, clients, Notify::CoalescedSnapshot);
-        if let Ok(bytes) = rosc::encoder::encode(&rosc::OscPacket::Message(rosc::OscMessage {
-            addr: osc_contract::STATE_REALTIME_MASTER_GAIN.to_string(),
-            args: vec![OscType::Float(value), OscType::Int(seq)],
-        })) {
-            super::transport::send_raw(socket, clients, &bytes);
-        }
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_REALTIME_SPEAKER_GAIN {
-        let Some(idx) = msg.args.first().and_then(|arg| match arg {
-            OscType::Int(v) if *v >= 0 => Some(*v as usize),
-            OscType::Float(v) if *v >= 0.0 => Some(*v as usize),
-            _ => None,
-        }) else {
-            return;
-        };
-        let Some(value) = msg.args.get(1).and_then(|arg| match arg {
-            OscType::Float(v) => Some(*v),
-            OscType::Int(v) => Some(*v as f32),
-            _ => None,
-        }) else {
-            return;
-        };
-        let Some(seq) = msg.args.get(2).and_then(|arg| match arg {
-            OscType::Int(v) => Some(*v),
-            _ => None,
-        }) else {
-            return;
-        };
-        if realtime_seq
-            .speaker_gain
-            .get(&idx)
-            .copied()
-            .is_some_and(|last| seq < last)
-        {
-            return;
-        }
-        if !value.is_finite() || value < 0.0 {
-            log::warn!("OSC speaker gain: rejected value {value}");
-            return;
-        }
-        realtime_seq.speaker_gain.insert(idx, seq);
-        control.live.write().speakers.entry(idx).or_default().gain = value;
-        control.mark_speaker_params_dirty();
-        notify_changed(control, host, socket, clients, Notify::CoalescedSnapshot);
-        if let Ok(bytes) = rosc::encoder::encode(&rosc::OscPacket::Message(rosc::OscMessage {
-            addr: osc_contract::STATE_REALTIME_SPEAKER_GAIN.to_string(),
-            args: vec![
-                OscType::Int(idx as i32),
-                OscType::Float(value),
-                OscType::Int(seq),
-            ],
-        })) {
-            super::transport::send_raw(socket, clients, &bytes);
-        }
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_RENDER_BRIDGE_PATH {
-        let value = match msg.args.first() {
-            Some(OscType::String(s)) => s.trim(),
-            _ => return,
-        };
-        let next = if value.is_empty() {
-            None
-        } else {
-            Some(std::path::PathBuf::from(value))
-        };
-        if control.bridge_path() != next {
-            control.set_bridge_path(next.clone());
-            notify_changed(control, host, socket, clients, Notify::DirtyOnly);
-            let state_value = next
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_default();
-            broadcast_string(
-                socket,
-                clients,
-                osc_contract::STATE_RENDER_BRIDGE_PATH,
-                &state_value,
-            );
-            log::info!(
-                "OSC: render.bridge_path → {}",
-                next.as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "<auto>".to_string())
-            );
-        }
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_RENDER_INPUT_PIPE {
-        let value = match msg.args.first() {
-            Some(OscType::String(s)) => s.trim(),
-            _ => return,
-        };
-        let next = if value.is_empty() {
-            None
-        } else {
-            Some(value.to_string())
-        };
-        if control.input_path() != next {
-            control.set_input_path(next.clone());
-            notify_changed(control, host, socket, clients, Notify::DirtyOnly);
-            broadcast_string(
-                socket,
-                clients,
-                osc_contract::STATE_INPUT_PIPE,
-                &next.clone().unwrap_or_default(),
-            );
-            log::info!(
-                "OSC: render.input_pipe → {}",
-                next.as_deref().unwrap_or("<default>")
-            );
-        }
-        return;
-    }
-
-    // Named config profiles: switch / create / delete / rename
-    // (docs/config-profiles.md). Handled before the process commands so the
-    // profile addresses never fall through to the host.
-    if super::profiles::handle_profile_message(msg, control, host, socket, clients, gaintable_cache)
-    {
         return;
     }
 
@@ -516,22 +256,6 @@ pub(crate) fn handle_control_message(
         return;
     }
 
-    // Editable backend files (e.g. the scriptable backend's `.lua`). The content
-    // is owned by the renderer, so the editor reads/writes it here over OSC; these
-    // reply point-to-point to the requester (`src`) rather than broadcasting.
-    if addr == osc_contract::CONTROL_BACKEND_FILE_GET {
-        handle_backend_file_get(msg, src, control, socket);
-        return;
-    }
-    if addr == osc_contract::CONTROL_BACKEND_FILE_LIST {
-        handle_backend_file_list(msg, src, control, socket);
-        return;
-    }
-    if addr == osc_contract::CONTROL_BACKEND_FILE_PUT {
-        handle_backend_file_put(msg, src, control, host, socket, clients, gaintable_cache);
-        return;
-    }
-
     if let Some(effects) = apply_simple_osc_control(msg, &runtime_ctx) {
         apply_control_effects(effects, control, host, socket, clients, gaintable_cache);
         return;
@@ -540,15 +264,6 @@ pub(crate) fn handle_control_message(
     // Core didn't handle it — delegate to the host (audio output/input).
     if let Some(effects) = host.and_then(|h| h.handle(addr, msg)) {
         apply_control_effects(effects, control, host, socket, clients, gaintable_cache);
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_LAYOUT_EXPORT {
-        let requested_name = match msg.args.first() {
-            Some(OscType::String(s)) if !s.trim().is_empty() => Some(s.trim()),
-            _ => None,
-        };
-        export_current_layout(control, requested_name);
         return;
     }
 }
@@ -951,6 +666,18 @@ fn push_gaintable_subscribe(
 }
 
 #[cfg(test)]
+mod command_table_tests {
+    use super::*;
+
+    #[test]
+    fn the_engine_table_is_declared_in_the_contract_and_claimed_once() {
+        let core = runtime_control::command_table::core_addresses;
+        let found = runtime_control::command_table::problems(ENGINE_COMMANDS, &[&core]);
+        assert!(found.is_empty(), "{found:#?}");
+    }
+}
+
+#[cfg(test)]
 mod backend_file_request_tests {
     use super::*;
     #[test]
@@ -1215,7 +942,7 @@ mod notify_tests {
     #[test]
     fn a_generator_param_write_reaches_the_other_clients() {
         let control = fixture_control();
-        control.live.write().object_generator_id = "pad".to_string();
+        control.live.write().options.object_generator_id = "pad".to_string();
         let wire = wire();
         let generation = control.live_state_generation();
         send(
@@ -1373,4 +1100,454 @@ mod notify_tests {
 
         drop(sender);
     }
+}
+
+/// mpv overlay configuration. The overlay itself is generated in-process by
+/// the `overlay` module and pulled over FFI; Studio only configures it here
+/// (it no longer transports overlay frames). These are view state
+/// (docs/persistence-policy.md): the enabled, labels and trails switches
+/// are written to `overlay-prefs.conf` as they change, the rest is
+/// transient, and none of them ever marks the config dirty.
+fn overlay_enabled(d: &mut Dispatch) {
+    let msg = d.msg;
+    let enabled = match parse_bool_arg(msg.args.first()) {
+        Some(v) => v,
+        None => return,
+    };
+    crate::overlay::set_enabled(enabled);
+}
+
+fn overlay_labels(d: &mut Dispatch) {
+    let msg = d.msg;
+    let enabled = match parse_bool_arg(msg.args.first()) {
+        Some(v) => v,
+        None => return,
+    };
+    crate::overlay::set_labels_enabled(enabled);
+}
+
+fn overlay_objects(d: &mut Dispatch) {
+    let msg = d.msg;
+    let visible = match parse_bool_arg(msg.args.first()) {
+        Some(v) => v,
+        None => return,
+    };
+    crate::overlay::set_objects_visible(visible);
+}
+
+fn overlay_heatmap_enabled(d: &mut Dispatch) {
+    let msg = d.msg;
+    let enabled = match parse_bool_arg(msg.args.first()) {
+        Some(v) => v,
+        None => return,
+    };
+    crate::overlay::set_heatmap_enabled(enabled);
+}
+
+fn overlay_heatmap_custom_stops(d: &mut Dispatch) {
+    let msg = d.msg;
+    // Flat [pos, r, g, b, …] floats → grouped stops for the custom gradient.
+    let flat: Vec<f32> = msg
+        .args
+        .iter()
+        .filter_map(|a| match a {
+            OscType::Float(f) => Some(*f),
+            OscType::Int(i) => Some(*i as f32),
+            _ => None,
+        })
+        .collect();
+    let stops: Vec<[f32; 4]> = flat
+        .chunks_exact(4)
+        .map(|c| [c[0], c[1], c[2], c[3]])
+        .collect();
+    crate::overlay::set_heatmap_custom_stops(stops);
+}
+
+fn overlay_heatmap_bands(d: &mut Dispatch) {
+    let msg = d.msg;
+    let count = match parse_positive_u32_arg(msg.args.first()) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    crate::overlay::set_heatmap_bands(count);
+}
+
+fn overlay_heatmap_colormap(d: &mut Dispatch) {
+    let msg = d.msg;
+    let idx = match parse_nonnegative_u32_arg(msg.args.first()) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    crate::overlay::set_heatmap_colormap(idx);
+}
+
+fn overlay_trails(d: &mut Dispatch) {
+    let msg = d.msg;
+    // Args mirror Studio's former wire fields: enabled, ttl_ms, mode, teleport.
+    let enabled = match parse_bool_arg(msg.args.first()) {
+        Some(v) => v,
+        None => return,
+    };
+    let ttl_ms = parse_nonnegative_u32_arg(msg.args.get(1)).unwrap_or(7000);
+    let diffuse = matches!(
+        msg.args.get(2),
+        Some(OscType::String(s)) if s.eq_ignore_ascii_case("diffuse")
+    );
+    let teleport = parse_f32_arg(msg.args.get(3)).unwrap_or(0.0) as f64;
+    crate::overlay::set_trail_config(enabled, ttl_ms, diffuse, teleport);
+}
+
+fn overlay_tag(d: &mut Dispatch) {
+    let msg = d.msg;
+    // [id, tag]: tag "A"/"B" sets an override colour, anything else clears it.
+    let Some(id) = msg.args.first().and_then(|a| match a {
+        OscType::Int(v) if *v >= 0 => Some(*v as u32),
+        OscType::Float(v) if *v >= 0.0 => Some(*v as u32),
+        OscType::String(s) => s.parse::<u32>().ok(),
+        _ => None,
+    }) else {
+        return;
+    };
+    let tag = match msg.args.get(1) {
+        Some(OscType::String(s)) => s
+            .chars()
+            .next()
+            .filter(|c| matches!(c, 'A' | 'a' | 'B' | 'b')),
+        _ => None,
+    };
+    crate::overlay::set_tag(id, tag);
+}
+
+/// Speaker gain-table pub/sub. A client subscribes for one speaker (the heatmap
+/// shows one), carrying the version it has cached; the renderer pushes that
+/// speaker's per-band field only if the version differs, and keeps pushing on
+/// every topology rebuild while subscribed (see `recompute.rs`). Args:
+/// [Int have_version, Int speaker_index].
+fn debug_speaker_gaintable_subscribe(d: &mut Dispatch) {
+    let runtime_ctx = RuntimeControlContext::new(Arc::clone(d.control));
+    let msg = d.msg;
+    let src = d.src;
+    let socket = d.socket;
+    let clients = d.clients;
+    let gaintable_cache = d.gaintable_cache;
+    let have_version = parse_nonnegative_u32_arg(msg.args.first());
+    // A negative index selects an all-speaker derived field, not an error:
+    // the global heatmaps subscribe through the same path as a per-speaker
+    // one. Known sentinels pass through; an unknown negative falls back to
+    // the energy field so an older client never gets a field it can't read.
+    let speaker = match msg.args.get(1) {
+        Some(OscType::Int(i)) if *i >= 0 => *i as i64,
+        Some(OscType::Int(i))
+            if matches!(
+                *i as i64,
+                renderer::band_gaintable::GAIN_DISCONTINUITY_INDEX
+                    | renderer::band_gaintable::CENTROID_JUMP_INDEX
+            ) =>
+        {
+            *i as i64
+        }
+        Some(OscType::Int(_)) => renderer::band_gaintable::GLOBAL_ENERGY_INDEX,
+        _ => 0,
+    };
+    let client = resolve_register_addr(src, &[]);
+    // Ensure the client exists in the registry (refreshes liveness) so the
+    // subscribe flag sticks and the 5 s heartbeat keeps it alive.
+    clients.register(client);
+    clients.set_gaintable(client, true);
+    // Additive: a client showing several heatmaps subscribes once per
+    // target, and each must keep receiving pushes.
+    clients.add_gaintable_target(client, speaker);
+    push_gaintable_subscribe(
+        socket,
+        clients,
+        gaintable_cache,
+        &runtime_ctx,
+        client,
+        speaker,
+        have_version,
+    );
+}
+
+fn debug_speaker_gaintable_unsubscribe(d: &mut Dispatch) {
+    let src = d.src;
+    let clients = d.clients;
+    let client = resolve_register_addr(src, &[]);
+    clients.set_gaintable(client, false);
+    // Drop the targets too: the next subscribe declares what it wants, and
+    // keeping them would push fields nobody is displaying any more.
+    clients.clear_gaintable_targets(client);
+}
+
+fn debug_speaker_gaintable_nack(d: &mut Dispatch) {
+    let runtime_ctx = RuntimeControlContext::new(Arc::clone(d.control));
+    let msg = d.msg;
+    let src = d.src;
+    let socket = d.socket;
+    let clients = d.clients;
+    let gaintable_cache = d.gaintable_cache;
+    // Args: Int version, Int missing_index… — resend just the lost chunks for
+    // the client's subscribed speaker.
+    let mut ints = msg.args.iter().filter_map(|a| match a {
+        OscType::Int(i) if *i >= 0 => Some(*i as u32),
+        _ => None,
+    });
+    if let Some(version) = ints.next() {
+        let missing: Vec<u32> = ints.collect();
+        if !missing.is_empty() {
+            let client = resolve_register_addr(src, &[]);
+            // Resolve the target from the version the client is missing
+            // chunks for, so a NACK is answered with the right field even
+            // when several transfers are in flight.
+            let target = clients
+                .gaintable_target_for_version(client, version)
+                .unwrap_or(0);
+            if let Some((_v, bytes)) = gaintable_cache.bytes_for_target(&runtime_ctx, target) {
+                for update in gaintable_chunk_broadcasts(&bytes, Some((version, missing))) {
+                    send_update_to_client(socket, client, &update);
+                }
+            }
+        }
+    }
+}
+
+fn metering(d: &mut Dispatch) {
+    let msg = d.msg;
+    let src = d.src;
+    let socket = d.socket;
+    let clients = d.clients;
+    let enabled = match parse_bool_arg(msg.args.first()) {
+        Some(v) => v,
+        None => return,
+    };
+    let client = resolve_register_addr(src, &[]);
+    if clients.set_metering(client, enabled) {
+        send_metering_state(socket, client, enabled);
+    }
+}
+
+fn diag_enabled(d: &mut Dispatch) {
+    let msg = d.msg;
+    let src = d.src;
+    let socket = d.socket;
+    let clients = d.clients;
+    let enabled = match parse_bool_arg(msg.args.first()) {
+        Some(v) => v,
+        None => return,
+    };
+    let client = resolve_register_addr(src, &[]);
+    if clients.set_diag(client, enabled) {
+        send_diag_state(socket, client, enabled);
+    }
+}
+
+fn input_refresh(d: &mut Dispatch) {
+    let control = d.control;
+    let host = d.host;
+    let socket = d.socket;
+    let clients = d.clients;
+    build_live_state(control, host).broadcast(socket, clients);
+    log::info!("OSC: input state refresh requested");
+}
+
+fn realtime_master_gain(d: &mut Dispatch) {
+    let msg = d.msg;
+    let control = d.control;
+    let host = d.host;
+    let realtime_seq = &mut *d.realtime_seq;
+    let socket = d.socket;
+    let clients = d.clients;
+    let Some(value) = msg.args.first().and_then(|arg| match arg {
+        OscType::Float(v) => Some(*v),
+        OscType::Int(v) => Some(*v as f32),
+        _ => None,
+    }) else {
+        return;
+    };
+    let Some(seq) = msg.args.get(1).and_then(|arg| match arg {
+        OscType::Int(v) => Some(*v),
+        _ => None,
+    }) else {
+        return;
+    };
+    if realtime_seq.master_gain.is_some_and(|last| seq < last) {
+        return;
+    }
+    // Same setter as `/control/gain`: one validation, one field.
+    let Some(value) = runtime_control::osc::set_master_gain(control, value) else {
+        return;
+    };
+    realtime_seq.master_gain = Some(seq);
+    // The realtime echo below is for the sender's own sequencing; the
+    // other clients read the gain from the live-state bundle, coalesced
+    // because a gain slider drag is a burst of writes.
+    notify_changed(control, host, socket, clients, Notify::CoalescedSnapshot);
+    if let Ok(bytes) = rosc::encoder::encode(&rosc::OscPacket::Message(rosc::OscMessage {
+        addr: osc_contract::STATE_REALTIME_MASTER_GAIN.to_string(),
+        args: vec![OscType::Float(value), OscType::Int(seq)],
+    })) {
+        super::transport::send_raw(socket, clients, &bytes);
+    }
+}
+
+fn realtime_speaker_gain(d: &mut Dispatch) {
+    let msg = d.msg;
+    let control = d.control;
+    let host = d.host;
+    let realtime_seq = &mut *d.realtime_seq;
+    let socket = d.socket;
+    let clients = d.clients;
+    let Some(idx) = msg.args.first().and_then(|arg| match arg {
+        OscType::Int(v) if *v >= 0 => Some(*v as usize),
+        OscType::Float(v) if *v >= 0.0 => Some(*v as usize),
+        _ => None,
+    }) else {
+        return;
+    };
+    let Some(value) = msg.args.get(1).and_then(|arg| match arg {
+        OscType::Float(v) => Some(*v),
+        OscType::Int(v) => Some(*v as f32),
+        _ => None,
+    }) else {
+        return;
+    };
+    let Some(seq) = msg.args.get(2).and_then(|arg| match arg {
+        OscType::Int(v) => Some(*v),
+        _ => None,
+    }) else {
+        return;
+    };
+    if realtime_seq
+        .speaker_gain
+        .get(&idx)
+        .copied()
+        .is_some_and(|last| seq < last)
+    {
+        return;
+    }
+    if !value.is_finite() || value < 0.0 {
+        log::warn!("OSC speaker gain: rejected value {value}");
+        return;
+    }
+    realtime_seq.speaker_gain.insert(idx, seq);
+    control.live.write().speakers.entry(idx).or_default().gain = value;
+    control.mark_speaker_params_dirty();
+    notify_changed(control, host, socket, clients, Notify::CoalescedSnapshot);
+    if let Ok(bytes) = rosc::encoder::encode(&rosc::OscPacket::Message(rosc::OscMessage {
+        addr: osc_contract::STATE_REALTIME_SPEAKER_GAIN.to_string(),
+        args: vec![
+            OscType::Int(idx as i32),
+            OscType::Float(value),
+            OscType::Int(seq),
+        ],
+    })) {
+        super::transport::send_raw(socket, clients, &bytes);
+    }
+}
+
+fn render_bridge_path(d: &mut Dispatch) {
+    let msg = d.msg;
+    let control = d.control;
+    let host = d.host;
+    let socket = d.socket;
+    let clients = d.clients;
+    let value = match msg.args.first() {
+        Some(OscType::String(s)) => s.trim(),
+        _ => return,
+    };
+    let next = if value.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(value))
+    };
+    if control.bridge_path() != next {
+        control.set_bridge_path(next.clone());
+        notify_changed(control, host, socket, clients, Notify::DirtyOnly);
+        let state_value = next
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        broadcast_string(
+            socket,
+            clients,
+            osc_contract::STATE_RENDER_BRIDGE_PATH,
+            &state_value,
+        );
+        log::info!(
+            "OSC: render.bridge_path → {}",
+            next.as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<auto>".to_string())
+        );
+    }
+}
+
+fn render_input_pipe(d: &mut Dispatch) {
+    let msg = d.msg;
+    let control = d.control;
+    let host = d.host;
+    let socket = d.socket;
+    let clients = d.clients;
+    let value = match msg.args.first() {
+        Some(OscType::String(s)) => s.trim(),
+        _ => return,
+    };
+    let next = if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    };
+    if control.input_path() != next {
+        control.set_input_path(next.clone());
+        notify_changed(control, host, socket, clients, Notify::DirtyOnly);
+        broadcast_string(
+            socket,
+            clients,
+            osc_contract::STATE_INPUT_PIPE,
+            &next.clone().unwrap_or_default(),
+        );
+        log::info!(
+            "OSC: render.input_pipe → {}",
+            next.as_deref().unwrap_or("<default>")
+        );
+    }
+}
+
+/// Editable backend files (e.g. the scriptable backend's `.lua`). The content
+/// is owned by the renderer, so the editor reads/writes it here over OSC; these
+/// reply point-to-point to the requester (`src`) rather than broadcasting.
+fn backend_file_get(d: &mut Dispatch) {
+    let msg = d.msg;
+    let src = d.src;
+    let control = d.control;
+    let socket = d.socket;
+    handle_backend_file_get(msg, src, control, socket);
+}
+
+fn backend_file_list(d: &mut Dispatch) {
+    let msg = d.msg;
+    let src = d.src;
+    let control = d.control;
+    let socket = d.socket;
+    handle_backend_file_list(msg, src, control, socket);
+}
+
+fn backend_file_put(d: &mut Dispatch) {
+    let msg = d.msg;
+    let src = d.src;
+    let control = d.control;
+    let host = d.host;
+    let socket = d.socket;
+    let clients = d.clients;
+    let gaintable_cache = d.gaintable_cache;
+    handle_backend_file_put(msg, src, control, host, socket, clients, gaintable_cache);
+}
+
+fn layout_export(d: &mut Dispatch) {
+    let msg = d.msg;
+    let control = d.control;
+    let requested_name = match msg.args.first() {
+        Some(OscType::String(s)) if !s.trim().is_empty() => Some(s.trim()),
+        _ => None,
+    };
+    export_current_layout(control, requested_name);
 }

@@ -370,9 +370,9 @@ fn attach_cli_host_state(
     // flag > config > default: after the seed, which they override.
     {
         let mut live = ctrl.live.write();
-        live.ramp_mode = args.ramp_mode.into();
+        live.options.ramp_mode = args.ramp_mode.into();
         live.channel_render_mode = args.channel_render_mode.into();
-        live.surround_placement = args.surround_placement.into();
+        live.options.surround_placement = args.surround_placement.into();
     }
 
     let requested_latency_target_ms = {

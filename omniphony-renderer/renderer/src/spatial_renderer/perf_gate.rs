@@ -228,7 +228,7 @@ fn block_time_across_a_topology_change_is_within_budget() {
 #[test]
 fn block_time_across_a_topology_change_with_the_fir_crossover_is_within_budget() {
     let (mut r, pcm) = prepared_crossover(N_OBJECTS, RampMode::Frame);
-    r.renderer_control().live.write().crossover_type = CrossoverType::Fir;
+    r.renderer_control().live.write().options.crossover_type = CrossoverType::Fir;
     // Onto the FIR bank, and past its first blocks.
     let builds = r.speaker_stage_builds();
     let deadline = Instant::now() + std::time::Duration::from_secs(60);

@@ -112,8 +112,8 @@ fn count_steady_state(
     {
         let control = r.renderer_control();
         let mut live = control.live.write();
-        live.crossover_type = crossover;
-        live.ramp_mode = ramp_mode;
+        live.options.crossover_type = crossover;
+        live.options.ramp_mode = ramp_mode;
     }
     let pcm: Vec<f32> = (0..BLOCK * CHANNELS)
         .map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 16) as f32 / 65535.0 - 0.5)

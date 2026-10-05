@@ -26,7 +26,7 @@ impl OscSender {
         };
         let (enabled, source) = {
             let live = control.live.read();
-            (live.use_loudness, live.dialogue_level)
+            (live.options.use_loudness, live.dialogue_level)
         };
         self.telemetry.push(Event::Loudness { enabled, source });
     }

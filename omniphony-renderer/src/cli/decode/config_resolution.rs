@@ -43,7 +43,7 @@ pub(super) fn apply_render_cfg_overrides(
         render.barycenter_localize = Some(localize);
     }
     if let Some(ceiling) = args.auto_gain_ceiling {
-        render.auto_gain_ceiling_db = Some(ceiling);
+        render.options.auto_gain_ceiling_db = Some(ceiling);
     }
     if let Some(b) = args.hybrid_external_backend {
         render.hybrid_external_backend = Some(b.as_config_str().to_string());
@@ -265,14 +265,14 @@ pub(super) fn apply_explicit_renderer_args(
         render.master_gain = Some(args.master_gain);
     }
     if explicit("auto_gain") {
-        render.auto_gain = Some(true);
+        render.options.auto_gain = Some(true);
     } else if explicit("no_auto_gain") {
-        render.auto_gain = Some(false);
+        render.options.auto_gain = Some(false);
     }
     if explicit("use_loudness") {
-        render.use_loudness = Some(true);
+        render.options.use_loudness = Some(true);
     } else if explicit("no_loudness") {
-        render.use_loudness = Some(false);
+        render.options.use_loudness = Some(false);
     }
     if explicit("distance_diffuse") {
         render.distance_diffuse = Some(true);
@@ -357,22 +357,20 @@ pub(super) fn merge_render_config(
         args.output_sample_rate = cfg.output_sample_rate;
     }
     if !arg_sources.is_explicit("ramp_mode") {
-        if let Some(v) = renderer::config_fields::ramp_mode::get(cfg) {
-            if let Some(mode) = renderer::live_params::RampMode::from_str(&v) {
-                args.ramp_mode = match mode {
-                    renderer::live_params::RampMode::Off => RampModeArg::Off,
-                    renderer::live_params::RampMode::Frame => RampModeArg::Frame,
-                    renderer::live_params::RampMode::Sample => RampModeArg::Sample,
-                    renderer::live_params::RampMode::Interp => RampModeArg::Interp,
-                };
-            }
+        if let Some(mode) = cfg.options.ramp_mode {
+            args.ramp_mode = match mode {
+                renderer::live_params::RampMode::Off => RampModeArg::Off,
+                renderer::live_params::RampMode::Frame => RampModeArg::Frame,
+                renderer::live_params::RampMode::Sample => RampModeArg::Sample,
+                renderer::live_params::RampMode::Interp => RampModeArg::Interp,
+            };
         }
     }
     // `render.channel_render_mode` is a read-only legacy key. Fixed-channel
     // processing defaults to Omniphony; an explicit CLI flag remains available
     // for diagnostics/raw sink passthrough without becoming global config.
     if !arg_sources.is_explicit("surround_placement") {
-        if let Some(placement) = renderer::config_fields::surround_placement::get(cfg) {
+        if let Some(placement) = cfg.options.surround_placement {
             args.surround_placement = placement.into();
         }
     }
@@ -576,17 +574,9 @@ pub(super) fn effective_to_config(
     render.adaptive_resampling_update_interval_callbacks =
         args.adaptive_resampling_update_interval_callbacks;
     render.output_sample_rate = args.output_sample_rate;
-    renderer::config_fields::ramp_mode::store(
-        &mut render,
-        match args.ramp_mode {
-            RampModeArg::Off => "off",
-            RampModeArg::Frame => "frame",
-            RampModeArg::Sample => "sample",
-            RampModeArg::Interp => "interp",
-        },
-    );
+    renderer::options::store::ramp_mode(&mut render, args.ramp_mode.into());
     render.channel_render_mode = None;
-    renderer::config_fields::surround_placement::store(&mut render, args.surround_placement.into());
+    renderer::options::store::surround_placement(&mut render, args.surround_placement.into());
     // Backend selection, backend-specific params, distance metrics and
     // size-to-spread: override-only fields shared with the runtime path.
     apply_render_cfg_overrides(&mut render, args);
@@ -879,7 +869,10 @@ mod tests {
         let file = renderer::config::RenderConfig {
             master_gain: Some(-6.0),
             room_ratio: Some("1.0,1.5,0.8".to_string()),
-            auto_gain: Some(true),
+            options: renderer::options::DeclaredOptionsConfig {
+                auto_gain: Some(true),
+                ..Default::default()
+            },
             render_evaluation_mode: Some("precomputed_cartesian".to_string()),
             vbap_distance_model: Some("linear".to_string()),
             ..Default::default()

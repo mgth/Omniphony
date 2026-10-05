@@ -283,7 +283,7 @@ pub fn prepared(
     let mut r = make_renderer(preset, position_interpolation, cartesian);
     {
         let ctrl = r.renderer_control();
-        ctrl.live.write().ramp_mode = ramp_mode;
+        ctrl.live.write().options.ramp_mode = ramp_mode;
     }
     let pcm = make_pcm(n_objects);
     let init = move_events(n_objects, 0);
@@ -318,7 +318,7 @@ pub fn prepared_binaural(n_objects: usize, ramp_mode: RampMode) -> (SpatialRende
     {
         let ctrl = r.renderer_control();
         let mut live = ctrl.live.write();
-        live.ramp_mode = ramp_mode;
+        live.options.ramp_mode = ramp_mode;
         live.binaural.output_mode = OutputMode::Binaural;
     }
     let pcm = make_pcm(n_objects);
@@ -345,7 +345,7 @@ pub fn prepared_binaural_cascaded(
     {
         let ctrl = r.renderer_control();
         let mut live = ctrl.live.write();
-        live.ramp_mode = ramp_mode;
+        live.options.ramp_mode = ramp_mode;
         live.binaural.output_mode = OutputMode::Binaural;
         live.binaural.mode = BinauralMode::Cascaded;
     }
@@ -367,7 +367,7 @@ pub fn prepared_crossover(n_objects: usize, ramp_mode: RampMode) -> (SpatialRend
     let mut r = build_renderer(crossover_layout(), true, false);
     {
         let ctrl = r.renderer_control();
-        ctrl.live.write().ramp_mode = ramp_mode;
+        ctrl.live.write().options.ramp_mode = ramp_mode;
     }
     let pcm = make_pcm(n_objects);
     let init = move_events(n_objects, 0);
@@ -506,7 +506,7 @@ pub fn render_single_object_binaural_at(
     {
         let ctrl = r.renderer_control();
         let mut live = ctrl.live.write();
-        live.ramp_mode = RampMode::Frame;
+        live.options.ramp_mode = RampMode::Frame;
         live.binaural.output_mode = OutputMode::Binaural;
         live.binaural.hrir_source = hrir_source.clone();
     }

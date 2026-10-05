@@ -575,7 +575,8 @@ mod tests {
 
         let control = fixture_control();
         control.set_config_path(path.clone());
-        control.live.write().surround_placement = renderer::live_params::SurroundPlacement::Back;
+        control.live.write().options.surround_placement =
+            renderer::live_params::SurroundPlacement::Back;
         control.mark_dirty();
         (path, control)
     }
@@ -694,7 +695,7 @@ mod tests {
         } else {
             config.profiles.get(name).cloned()
         };
-        render.expect("profile present").surround_placement
+        render.expect("profile present").options.surround_placement
             == Some(renderer::live_params::SurroundPlacement::Back)
     }
 

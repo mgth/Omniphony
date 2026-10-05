@@ -1374,7 +1374,7 @@ fn all_four_ramp_modes_render_distinctly() {
 
     let render = |mode: RampMode| -> Vec<f32> {
         let mut r = build();
-        r.control.live.write().ramp_mode = mode;
+        r.control.live.write().options.ramp_mode = mode;
         // First block establishes a position (and seeds Interp's start gains).
         r.render_frame(&pcm, 1, &block_a, Vec::new(), false)
             .unwrap();
@@ -1772,7 +1772,7 @@ fn binaural_clipping_flags_ear_and_auto_gain_reduces_master() {
         live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
         // Hot enough that the HRIR-summed stereo bus exceeds 0 dBFS.
         live.master_gain = 16.0;
-        live.auto_gain = auto_gain;
+        live.options.auto_gain = auto_gain;
         drop(live);
         r
     };
@@ -2366,7 +2366,7 @@ fn interp_survives_speaker_cascade_width_switch() {
     {
         let ctrl = r.control.clone();
         let mut live = ctrl.live.write();
-        live.ramp_mode = crate::live_params::RampMode::Interp;
+        live.options.ramp_mode = crate::live_params::RampMode::Interp;
         live.binaural.mode = crate::live_params::BinauralMode::Cascaded;
     }
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
@@ -3150,7 +3150,7 @@ fn a_recycled_output_buffer_renders_identically_to_a_fresh_one() {
 #[test]
 fn fir_crossover_keeps_beds_aligned_with_objects() {
     let mut r = crossover_renderer();
-    r.control.live.write().crossover_type = crate::live_params::CrossoverType::Fir;
+    r.control.live.write().options.crossover_type = crate::live_params::CrossoverType::Fir;
     // Channel 0: direct LFE bed (7.1.4 speaker 3). Channel 1: trailing object.
     r.configure_channel_routing(&[ChannelRoute::Direct(bridge_api::RChannelLabel::LFE)]);
     const LFE_SPK: usize = 3;
@@ -3501,7 +3501,7 @@ fn cell_caches_do_not_change_the_render() {
         for block in 0..MODES.len() * BLOCKS_PER_MODE {
             {
                 let mut live = r.control.live.write();
-                live.ramp_mode = MODES[block / BLOCKS_PER_MODE];
+                live.options.ramp_mode = MODES[block / BLOCKS_PER_MODE];
                 // Within each mode: trilinear, then nearest, then trilinear.
                 live.evaluation.position_interpolation =
                     !(5..10).contains(&(block % BLOCKS_PER_MODE));

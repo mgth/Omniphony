@@ -15,6 +15,8 @@
 //! `liborender`) registers nothing, so the core stays audio-free and
 //! cross-compiles without cpal/pipewire/asio.
 
+#[cfg(test)]
+mod doc_tables;
 mod options;
 
 use std::sync::Arc;
@@ -27,6 +29,7 @@ use renderer::live_params::RendererControl;
 use renderer::options::{HostBatchApplied, OptionKind, RawOptionValue};
 use rosc::{OscMessage, OscPacket, OscType};
 use runtime_control::HostControlHandler;
+use runtime_control::command_table::{self, Command};
 use runtime_control::live_control::WireValue;
 use runtime_control::osc::{
     BroadcastUpdate, BroadcastValue, ControlEffects, Notify, parse_bool_arg,
@@ -507,45 +510,47 @@ impl HostAudio {
     }
 }
 
+/// A handler of [`HOST_COMMANDS`]; `None` passes the message on.
+type HostHandler = fn(&HostAudio, &OscMessage) -> Option<ControlEffects>;
+
+/// This host's control addresses that are not one option's alias (see
+/// `runtime_control::command_table`): the JSON patches and the group
+/// applies (aliases of option batches), the device refresh, the structured
+/// input layout, the resampling hold and reset. The per-option aliases are
+/// looked up after it.
+static HOST_COMMANDS: &[Command<HostHandler>] = &[
+    Command::exact(osc_contract::CONTROL_CONFIG_AUDIO, config_audio),
+    Command::exact(osc_contract::CONTROL_CONFIG_INPUT, config_input),
+    Command::exact(osc_contract::CONTROL_CONFIG_AUDIO_APPLY, config_audio_apply),
+    Command::exact(
+        osc_contract::CONTROL_AUDIO_OUTPUT_DEVICES_REFRESH,
+        audio_output_devices_refresh,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_INPUT_LIVE_LAYOUT_IMPORT,
+        input_live_layout_import,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_ADAPTIVE_RESAMPLING_PAUSE,
+        adaptive_resampling_pause,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_ADAPTIVE_RESAMPLING_RESET_RATIO,
+        adaptive_resampling_reset_ratio,
+    ),
+    Command::any(
+        &[
+            osc_contract::CONTROL_CONFIG_INPUT_APPLY,
+            osc_contract::CONTROL_INPUT_APPLY,
+        ],
+        |host, _| host.apply_option_group(options::LIVE_INPUT.key),
+    ),
+];
+
 impl HostControlHandler for HostAudio {
     fn handle(&self, addr: &str, msg: &OscMessage) -> Option<ControlEffects> {
-        let audio = &self.audio;
-        let input = &self.input;
-        let mut effects = ControlEffects::default();
-
-        // ── The JSON patches: aliases of a batch of this host's options ──
-        if addr == osc_contract::CONTROL_CONFIG_AUDIO {
-            let Some(patch) = parse_json_string_arg::<AudioConfigPatch>(msg.args.first()) else {
-                return Some(effects);
-            };
-            // Not an option: a diagnostic hold, never saved.
-            if let Some(paused) = patch
-                .adaptive_resampling
-                .as_ref()
-                .and_then(|adaptive| adaptive.paused)
-            {
-                audio.set_requested_adaptive_resampling_paused(paused);
-            }
-            let values = audio_patch_values(patch);
-            return Some(self.apply_patch(&values, "OSC: audio config staged"));
-        }
-
-        if addr == osc_contract::CONTROL_CONFIG_INPUT {
-            let Some(patch) = parse_json_string_arg::<InputConfigPatch>(msg.args.first()) else {
-                return Some(effects);
-            };
-            let values = input_patch_values(patch);
-            return Some(self.apply_patch(&values, "OSC: input config staged"));
-        }
-
-        // ── The per-domain apply addresses: aliases of the group apply ──
-        if addr == osc_contract::CONTROL_CONFIG_AUDIO_APPLY {
-            return self.apply_option_group(options::AUDIO_OUTPUT.key);
-        }
-        if addr == osc_contract::CONTROL_CONFIG_INPUT_APPLY
-            || addr == osc_contract::CONTROL_INPUT_APPLY
-        {
-            return self.apply_option_group(options::LIVE_INPUT.key);
+        if let Some(run) = command_table::find(HOST_COMMANDS, addr) {
+            return run(self, msg);
         }
 
         // ── The dedicated per-option addresses: aliases of the rows ──
@@ -556,67 +561,23 @@ impl HostControlHandler for HostAudio {
                     .iter()
                     .find(|(alias, _)| *alias == addr)
                     .map(|(_, key)| *key)
-            });
-        if let Some(key) = key {
-            let kind = self.option_kind(key).unwrap_or(OptionKind::Str);
-            let Some(args) = msg.args.get(..kind.arity()) else {
-                log::warn!("OSC option {key}: missing value");
-                return Some(effects);
-            };
-            let value = WireValue::from_args(kind, args);
-            let Some(raw) = value.raw() else {
-                log::warn!("OSC option {key}: rejected value");
-                return Some(effects);
-            };
-            if options::legacy_ignores(addr, &raw) {
-                return Some(effects);
-            }
-            let batch = self.apply_options(&[(key, raw)]);
-            return Some(batch_effects(&batch, format!("OSC: {key} staged")));
-        }
-
-        // ── Not options ──
-        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_DEVICES_REFRESH {
-            if let Some(devices) = audio.refresh_available_output_devices() {
-                effects.broadcasts.push(BroadcastUpdate {
-                    addr: osc_contract::STATE_AUDIO.to_string(),
-                    value: BroadcastValue::String(build_audio_state_json(audio)),
-                });
-                effects.log_message = Some(format!(
-                    "OSC: output_devices/refresh → {} device(s)",
-                    devices.len()
-                ));
-            }
+            })?;
+        let effects = ControlEffects::default();
+        let kind = self.option_kind(key).unwrap_or(OptionKind::Str);
+        let Some(args) = msg.args.get(..kind.arity()) else {
+            log::warn!("OSC option {key}: missing value");
+            return Some(effects);
+        };
+        let value = WireValue::from_args(kind, args);
+        let Some(raw) = value.raw() else {
+            log::warn!("OSC option {key}: rejected value");
+            return Some(effects);
+        };
+        if options::legacy_ignores(addr, &raw) {
             return Some(effects);
         }
-
-        // A structured layout, kept out of the options.
-        if addr == osc_contract::CONTROL_INPUT_LIVE_LAYOUT_IMPORT {
-            let requested = parse_input_layout_arg(msg.args.first());
-            input.set_requested_current_layout(requested);
-            self.input_staged
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_PAUSE {
-            if let Some(paused) = parse_bool_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_paused(paused);
-                // A diagnostic hold, never saved.
-                effects = ControlEffects::transient(Notify::Snapshot);
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_RESET_RATIO {
-            // An action: nothing to save, nothing to publish.
-            audio.request_ratio_reset();
-            return Some(effects);
-        }
-
-        // Not ours.
-        None
+        let batch = self.apply_options(&[(key, raw)]);
+        Some(batch_effects(&batch, format!("OSC: {key} staged")))
     }
 
     fn extend_snapshot(&self) -> Vec<OscPacket> {
@@ -784,9 +745,107 @@ impl HostControlHandler for HostAudio {
     }
 }
 
+/// ── The JSON patches: aliases of a batch of this host's options ──
+fn config_audio(host: &HostAudio, msg: &OscMessage) -> Option<ControlEffects> {
+    let audio = &host.audio;
+    let effects = ControlEffects::default();
+    let Some(patch) = parse_json_string_arg::<AudioConfigPatch>(msg.args.first()) else {
+        return Some(effects);
+    };
+    // Not an option: a diagnostic hold, never saved.
+    if let Some(paused) = patch
+        .adaptive_resampling
+        .as_ref()
+        .and_then(|adaptive| adaptive.paused)
+    {
+        audio.set_requested_adaptive_resampling_paused(paused);
+    }
+    let values = audio_patch_values(patch);
+    return Some(host.apply_patch(&values, "OSC: audio config staged"));
+}
+
+fn config_input(host: &HostAudio, msg: &OscMessage) -> Option<ControlEffects> {
+    let effects = ControlEffects::default();
+    let Some(patch) = parse_json_string_arg::<InputConfigPatch>(msg.args.first()) else {
+        return Some(effects);
+    };
+    let values = input_patch_values(patch);
+    return Some(host.apply_patch(&values, "OSC: input config staged"));
+}
+
+/// ── The per-domain apply addresses: aliases of the group apply ──
+fn config_audio_apply(host: &HostAudio, _msg: &OscMessage) -> Option<ControlEffects> {
+    return host.apply_option_group(options::AUDIO_OUTPUT.key);
+}
+
+/// ── Not options ──
+fn audio_output_devices_refresh(host: &HostAudio, _msg: &OscMessage) -> Option<ControlEffects> {
+    let audio = &host.audio;
+    let mut effects = ControlEffects::default();
+    if let Some(devices) = audio.refresh_available_output_devices() {
+        effects.broadcasts.push(BroadcastUpdate {
+            addr: osc_contract::STATE_AUDIO.to_string(),
+            value: BroadcastValue::String(build_audio_state_json(audio)),
+        });
+        effects.log_message = Some(format!(
+            "OSC: output_devices/refresh → {} device(s)",
+            devices.len()
+        ));
+    }
+    Some(effects)
+}
+
+/// A structured layout, kept out of the options.
+fn input_live_layout_import(host: &HostAudio, msg: &OscMessage) -> Option<ControlEffects> {
+    let input = &host.input;
+    let mut effects = ControlEffects::default();
+    let requested = parse_input_layout_arg(msg.args.first());
+    input.set_requested_current_layout(requested);
+    host.input_staged
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    effects.mark_dirty = true;
+    Some(effects)
+}
+
+fn adaptive_resampling_pause(host: &HostAudio, msg: &OscMessage) -> Option<ControlEffects> {
+    let audio = &host.audio;
+    let mut effects = ControlEffects::default();
+    if let Some(paused) = parse_bool_arg(msg.args.first()) {
+        audio.set_requested_adaptive_resampling_paused(paused);
+        // A diagnostic hold, never saved.
+        effects = ControlEffects::transient(Notify::Snapshot);
+    }
+    Some(effects)
+}
+
+fn adaptive_resampling_reset_ratio(host: &HostAudio, _msg: &OscMessage) -> Option<ControlEffects> {
+    let audio = &host.audio;
+    let effects = ControlEffects::default();
+    // An action: nothing to save, nothing to publish.
+    audio.request_ratio_reset();
+    Some(effects)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_host_table_is_declared_in_the_contract_and_claimed_once() {
+        let core = runtime_control::command_table::core_addresses;
+        let aliases = || -> Vec<&'static str> {
+            options::HOST_OPTIONS
+                .iter()
+                .filter_map(|spec| match spec.legacy_control_addr {
+                    renderer::options::LegacyAddr::Exact(addr) => Some(addr),
+                    _ => None,
+                })
+                .chain(options::EXTRA_ALIASES.iter().map(|(alias, _)| *alias))
+                .collect()
+        };
+        let found = runtime_control::command_table::problems(HOST_COMMANDS, &[&core, &aliases]);
+        assert!(found.is_empty(), "{found:#?}");
+    }
 
     #[test]
     fn retired_asio_live_input_backend_is_rejected() {

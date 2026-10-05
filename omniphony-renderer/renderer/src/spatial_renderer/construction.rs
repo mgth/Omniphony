@@ -281,11 +281,10 @@ impl SpatialRenderer {
             spread_from_distance,
             spread_distance_range,
             spread_distance_curve,
-            // The declared default (`render.ramp_mode`, "frame"). Every host
-            // seeds the mode before rendering, so this only decides what a
-            // bare construction (tests, fixtures) starts with — but it must
-            // agree with the default the registry and the config declare.
-            RampMode::from_str(crate::config_fields::ramp_mode::DEFAULT).unwrap_or(RampMode::Frame),
+            // The declared default. Every host seeds the mode before
+            // rendering, so this only decides what a bare construction
+            // (tests, fixtures) starts with.
+            crate::options::defaults::ramp_mode,
             use_loudness,
             distance_model,
             room_ratio,
@@ -415,6 +414,14 @@ impl SpatialRenderer {
             object_test_clip: None,
             object_test_rotation: Default::default(),
             speaker_test_idle_feed_gen: 0,
+            // The declared options at their declared defaults, but for the
+            // two the spec carries; the hosts seed the rest from the config.
+            options: crate::options::DeclaredOptions {
+                auto_gain,
+                use_loudness,
+                ramp_mode,
+                ..Default::default()
+            },
             objects: std::collections::HashMap::new(),
             spread_min,
             spread_max,
@@ -422,8 +429,6 @@ impl SpatialRenderer {
             spread_distance_range,
             spread_distance_curve,
             size_to_spread_mode: Default::default(),
-            ramp_mode,
-            sample_ramp_stride: crate::config_fields::sample_ramp_stride::DEFAULT,
             backend_id: "vbap".to_string(),
             evaluation: EvaluationLiveParams {
                 mode: initial_evaluation_mode,
@@ -444,9 +449,6 @@ impl SpatialRenderer {
                 },
                 object_size_intervals: 0,
             },
-            use_loudness,
-            auto_gain,
-            auto_gain_ceiling_db: crate::config_fields::auto_gain_ceiling_db::DEFAULT,
             distance_model,
             distance_model_metric: crate::spatial_vbap::DistanceMetric::default(),
             distance_diffuse_metric: crate::spatial_vbap::DistanceMetric::default(),
@@ -460,9 +462,6 @@ impl SpatialRenderer {
             distance_diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
             distance_diffuse_threshold,
             distance_diffuse_curve,
-            drc_mode: "Off".to_string(),
-            drc_weight: 1.0,
-            dialogue_gain_db: 0.0,
             hybrid: crate::live_params::HybridLiveParams::default(),
             binaural: crate::live_params::BinauralLiveParams::default(),
             // Seeded to the default (Spatial); the CLI bootstrap and the
@@ -470,31 +469,10 @@ impl SpatialRenderer {
             // Internal host/CLI override; persistent user config is normalized
             // to the spatial policy by the option/config migration layer.
             channel_render_mode: crate::live_params::ChannelRenderMode::default(),
-            // Seeded to the default (Side); the CLI bootstrap and the embedded
-            // mpv host override it from `render.surround_placement`.
-            surround_placement: crate::live_params::SurroundPlacement::default(),
-            // Seeded to the default (ByIndex); the CLI bootstrap and the embedded
-            // mpv host override it from `render.output_channel_mapping`.
-            output_channel_mapping: crate::live_params::OutputChannelMapping::default(),
-            // Seeded to the default (Lr4); the CLI bootstrap and the embedded
-            // mpv host override it from `render.crossover_type`.
-            crossover_type: crate::live_params::CrossoverType::default(),
-            crossover_fir_transition_ratio:
-                crate::config_fields::crossover_fir_transition_ratio::DEFAULT,
             // Seeded from `render.placement` by the same bootstrap; the
             // default is every family at its built-in mode with no entries
             // (LFE direct, the rest virtualized at the catalogue pose).
             placement: crate::placement::PlacementState::default(),
-            // Off by default; selects the bed→height object generator (2D upmix)
-            // for channel content. Empty / "none" = disabled.
-            object_generator_id: String::new(),
-            // Empty = each generator uses its declared param defaults.
-            // Renderer-synthesized objects and phantom extraction are both off
-            // by default; their selections remain independent so the master can
-            // temporarily bypass processing without losing setup.
-            synthetic_objects_enabled: false,
-            decode_thread: false,
-            phantom_extract_mode: crate::live_params::PhantomExtractMode::Off,
         }
     }
 
