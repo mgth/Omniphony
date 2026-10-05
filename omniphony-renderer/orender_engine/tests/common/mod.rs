@@ -77,7 +77,10 @@ fn private_config_dir() -> PathBuf {
 }
 
 /// The reference bridge cdylib, which the dev-dependency on `reference_bridge`
-/// builds into `deps/`, beside this test binary.
+/// builds for this run, searched from the test binary upwards. Cargo puts a
+/// dependency's cdylib in `deps/` beside the binaries; the newer build-dir
+/// layout (cargo nightly) puts it in `build/reference_bridge/<hash>/out/`
+/// under the profile directory instead. The most recent of several wins.
 fn reference_bridge_path() -> PathBuf {
     let exe = std::env::current_exe().expect("test binary path");
     let name = format!(
@@ -85,15 +88,19 @@ fn reference_bridge_path() -> PathBuf {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    exe.ancestors()
-        .skip(1)
-        .take(2)
-        .map(|dir| dir.join(&name))
-        .find(|path| path.is_file())
-        .unwrap_or_else(|| {
-            panic!(
-                "reference bridge {name} not built next to {}",
-                exe.display()
-            )
-        })
+    let modified = |p: &Path| p.metadata().and_then(|m| m.modified()).ok();
+    for dir in exe.ancestors().skip(1).take(5) {
+        let mut found: Vec<PathBuf> = vec![dir.join(&name), dir.join("deps").join(&name)];
+        if let Ok(entries) = std::fs::read_dir(dir.join("build").join("reference_bridge")) {
+            found.extend(entries.flatten().map(|e| e.path().join("out").join(&name)));
+        }
+        if let Some(path) = found
+            .into_iter()
+            .filter(|p| p.is_file())
+            .max_by_key(|p| modified(p))
+        {
+            return path;
+        }
+    }
+    panic!("reference bridge {name} not built near {}", exe.display())
 }
