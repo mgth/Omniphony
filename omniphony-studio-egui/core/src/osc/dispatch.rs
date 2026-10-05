@@ -66,6 +66,9 @@ pub const TRAIL_MIN_POINT_INTERVAL: Duration = Duration::from_millis(70);
 pub const TRAIL_MAX_POINTS: usize = 240;
 
 /// The whole live model: the host's `AppState` plus the UI-only mirrors.
+/// How long the same control refusal stays one log line.
+const CONTROL_ERROR_REPEAT: Duration = Duration::from_secs(10);
+
 pub struct Live {
     pub diagnostics: crate::host::diagnostics::History,
     pub backend_file_pending: Option<crate::host::services::backend_files::Pending>,
@@ -150,6 +153,11 @@ pub struct Live {
     pub peak_hold_db: HashMap<String, f64>,
     /// Log ring shown by the log overlay (`src/log.js`, 120 entries).
     pub log: VecDeque<LogLine>,
+    /// Whether the state held is the engine's, by its state generation.
+    pub state_sync: crate::osc::state_sync::StateSync,
+    /// The last control refusal logged, so a control re-sent on a timer is
+    /// logged once and not once per send.
+    last_control_error: Option<(String, String, Instant)>,
     /// Set while a config save is in flight (`app.saveRequested`).
     pub save_requested: bool,
     /// Where the release check is up to.
@@ -496,6 +504,8 @@ impl Live {
     pub fn new(app: AppState) -> Self {
         Self {
             app,
+            state_sync: Default::default(),
+            last_control_error: None,
             master_reported: false,
             source_level_seen: HashMap::new(),
             speaker_level_seen: HashMap::new(),
@@ -879,6 +889,9 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             live.app.osc_metering_enabled = Some(u8::from(enabled));
             Change::None
         }
+        // The diag plot re-sends its subscription while it is open, so the
+        // engine's echo of it has nothing to correct.
+        OscEvent::StateOscDiag { .. } => Change::None,
         OscEvent::StateCapabilities { value } => {
             let Ok(caps) = serde_json::from_str(&value) else {
                 return Change::None;
@@ -965,6 +978,47 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateSnapshotComplete => {
             live.app.osc_snapshot_ready = true;
+            Change::Snapshot
+        }
+        OscEvent::StateGeneration {
+            generation,
+            full,
+            part,
+            parts,
+        } => {
+            if full {
+                live.state_sync.on_snapshot_part(generation, part, parts);
+            } else {
+                live.state_sync.on_update(generation);
+            }
+            Change::None
+        }
+        OscEvent::StateControlError {
+            address,
+            code,
+            message,
+        } => {
+            // In the log rather than a dialog: a control that does nothing is
+            // what this replaces, and the log line says which and why.
+            let now = Instant::now();
+            let repeated = live.last_control_error.as_ref().is_some_and(|(a, c, at)| {
+                *a == address && *c == code && now.duration_since(*at) < CONTROL_ERROR_REPEAT
+            });
+            live.last_control_error = Some((address.clone(), code.clone(), now));
+            if repeated {
+                return Change::None;
+            }
+            let address = if address.is_empty() {
+                "(undecodable)"
+            } else {
+                address.as_str()
+            };
+            log::warn!("[osc] control not applied: {address}: {message} ({code})");
+            live.push_log(
+                "warn",
+                "control",
+                format!("{address} not applied: {message} ({code})"),
+            );
             Change::Snapshot
         }
         OscEvent::StateLatency { value } => {
@@ -1163,6 +1217,11 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         OscEvent::StateRenderEvaluationPolarDistanceMax { value } => {
             live.app.vbap_polar.distance_max = (value > 0.0).then_some(value);
             Change::Snapshot
+        }
+        OscEvent::StateRenderEvaluationObjectSizeIntervals { value } => {
+            let changed = live.app.object_size_intervals != value;
+            live.app.object_size_intervals = value;
+            snapshot_if(changed)
         }
         OscEvent::StateRenderEvaluationPositionInterpolation { enabled } => {
             live.app.vbap_polar.position_interpolation = Some(enabled);

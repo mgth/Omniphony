@@ -60,6 +60,41 @@ jobs:
           key: ${{ runner.os }}-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-ci-cargo-
 
+      # The native Studio's own build tree, cached separately from the
+      # renderer's. It is a different toolchain and a disjoint dependency set —
+      # egui, wgpu and their graphics stack are nobody else's — and one entry
+      # holding both would be evicted by whichever changed last. Its Cargo.lock
+      # is tracked, so the key can be exact rather than a guess from manifests.
+      - name: Cache the native Studio build
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        continue-on-error: true
+        with:
+          path: omniphony-studio-egui/target
+          key: ${{ runner.os }}-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-studio-egui-
+
+      # This host has a separate build tree from both the renderer and native
+      # Studio. Cache it too so core changes do not rebuild GTK/WebKit every PR.
+      - name: Cache the Tauri host build
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        continue-on-error: true
+        with:
+          path: omniphony-studio/src-tauri/target
+          key: ${{ runner.os }}-studio-tauri-${{ hashFiles('omniphony-studio/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-studio-tauri-
+
+      # A restored build tree can be newer than this checkout: a run on main
+      # that finished after this one checked out saved it. Cargo then sees
+      # this branch's own crates older than the artifacts main built from its
+      # sources, and reuses them: a PR built against main's code, red or
+      # green for the wrong reason. So every build tree is restored before
+      # any build, and every tracked file dated after the last restore: the
+      # workspace crates rebuild — which a checkout older than the caches
+      # always made them do — and the dependencies stay cached.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
+
       # Fast fail before the heavy build if formatting drifts.
       - name: Check formatting
         working-directory: omniphony-renderer
@@ -291,19 +326,6 @@ jobs:
       # here, but a pinned toolchain comes without components: rustfmt has to
       # be asked for by name. The version is read from the pin file so the two
       # cannot drift apart.
-      # The native Studio's own build tree, cached separately from the
-      # renderer's. It is a different toolchain and a disjoint dependency set —
-      # egui, wgpu and their graphics stack are nobody else's — and one entry
-      # holding both would be evicted by whichever changed last. Its Cargo.lock
-      # is tracked, so the key can be exact rather than a guess from manifests.
-      - name: Cache the native Studio build
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        continue-on-error: true
-        with:
-          path: omniphony-studio-egui/target
-          key: ${{ runner.os }}-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
-          restore-keys: ${{ runner.os }}-studio-egui-
-
       - name: Install rustfmt for the native Studio toolchain
         working-directory: omniphony-studio-egui
         run: |
@@ -366,16 +388,6 @@ jobs:
       - name: Build Studio frontend
         working-directory: omniphony-studio
         run: npm run build
-
-      # This host has a separate build tree from both the renderer and native
-      # Studio. Cache it too so core changes do not rebuild GTK/WebKit every PR.
-      - name: Cache the Tauri host build
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        continue-on-error: true
-        with:
-          path: omniphony-studio/src-tauri/target
-          key: ${{ runner.os }}-studio-tauri-${{ hashFiles('omniphony-studio/src-tauri/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-studio-tauri-
 
       # Type-check the web host as a consumer of the shared native core. No
       # sidecar/resource bundle is needed for this compatibility gate.
@@ -472,10 +484,6 @@ jobs:
           key: macos-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: macos-ci-cargo-
 
-      - name: Build renderer workspace (macOS arm64)
-        working-directory: omniphony-renderer
-        run: cargo build --workspace --locked
-
       # The native Studio ships on macOS too (release.yml attaches an archive
       # per platform). Until this step existed only the Linux job compiled it,
       # so a platform-specific break — wgpu's Metal path, winit, the file
@@ -488,6 +496,22 @@ jobs:
           path: omniphony-studio-egui/target
           key: macos-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
           restore-keys: macos-studio-egui-
+
+      # A restored build tree can be newer than this checkout: a run on main
+      # that finished after this one checked out saved it. Cargo then sees
+      # this branch's own crates older than the artifacts main built from its
+      # sources, and reuses them: a PR built against main's code, red or
+      # green for the wrong reason. So every build tree is restored before
+      # any build, and every tracked file dated after the last restore: the
+      # workspace crates rebuild — which a checkout older than the caches
+      # always made them do — and the dependencies stay cached.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
+
+      - name: Build renderer workspace (macOS arm64)
+        working-directory: omniphony-renderer
+        run: cargo build --workspace --locked
 
       - name: Build native Studio (macOS arm64)
         working-directory: omniphony-studio-egui
@@ -552,6 +576,28 @@ jobs:
           key: windows-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: windows-ci-cargo-
 
+      # The native Studio's build tree, restored with the renderer's so the
+      # checkout can be dated after both (see below).
+      - name: Cache the native Studio build
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        continue-on-error: true
+        with:
+          path: omniphony-studio-egui/target
+          key: windows-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
+          restore-keys: windows-studio-egui-
+
+      # A restored build tree can be newer than this checkout: a run on main
+      # that finished after this one checked out saved it. Cargo then sees
+      # this branch's own crates older than the artifacts main built from its
+      # sources, and reuses them: a PR built against main's code, red or
+      # green for the wrong reason. So every build tree is restored before
+      # any build, and every tracked file dated after the last restore: the
+      # workspace crates rebuild — which a checkout older than the caches
+      # always made them do — and the dependencies stay cached.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
+
       - name: Setup ASIO SDK
         uses: ./.github/actions/setup-asio-sdk
       - name: Build renderer workspace (Windows x64)
@@ -588,15 +634,6 @@ jobs:
       # on Windows (release.yml attaches an archive per platform), and the
       # step above only proves the core. Run from inside the directory so the
       # pin applies.
-      - name: Cache the native Studio build
-        if: ${{ !cancelled() }}
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        continue-on-error: true
-        with:
-          path: omniphony-studio-egui/target
-          key: windows-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
-          restore-keys: windows-studio-egui-
-
       - name: Build native Studio (Windows x64)
         if: ${{ !cancelled() }}
         working-directory: omniphony-studio-egui
@@ -635,6 +672,11 @@ jobs:
             omniphony-renderer/target
           key: linux-arm64-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: linux-arm64-ci-cargo-
+
+      # See the x64 job: a restored build tree can be newer than this checkout.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
 
       # PipeWire for the output and input backends; libclang for the
       # bindgen run in pipewire-sys and libspa-sys. Bounded and retried for
@@ -742,6 +784,11 @@ jobs:
           key: ${{ runner.os }}-lint-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock', 'omniphony-renderer/clippy-baseline.txt') }}
           restore-keys: ${{ runner.os }}-lint-cargo-
 
+      # Dated after the restore, for the reason given in build-and-test.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
+
       # PipeWire for the output and input backends; libclang for the bindgen
       # run in pipewire-sys and libspa-sys. Bounded and retried for the same
       # reasons as build-and-test's install.
@@ -791,6 +838,11 @@ jobs:
             omniphony-renderer/target
           key: ${{ runner.os }}-msrv-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock', 'omniphony-renderer/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-msrv-cargo-
+
+      # Dated after the restore, for the reason given in build-and-test.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
 
       # As in the lint job: stock PipeWire on 24.04, no PPA.
       - name: Install Linux system dependencies

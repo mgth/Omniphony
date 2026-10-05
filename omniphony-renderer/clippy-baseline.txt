@@ -7,7 +7,7 @@
 # and commit this file with the change.
 #
 # toolchain: 1.99.0
-# total: 278
+# total: 277
 #
 # crate lint count
 audio_input clippy::doc_lazy_continuation 6
@@ -38,7 +38,6 @@ orender_engine clippy::field_reassign_with_default 1
 orender_engine clippy::manual_contains 1
 orender_engine clippy::manual_is_multiple_of 1
 orender_engine clippy::needless_range_loop 6
-orender_engine clippy::needless_return 1
 orender_engine clippy::too_many_arguments 5
 orender_engine clippy::type_complexity 1
 orender_engine clippy::unnecessary_cast 4

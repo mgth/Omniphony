@@ -25,12 +25,12 @@ mod transport;
 pub use self::telemetry::MeterTimings;
 
 use self::client_registry::OscClientRegistry;
-use self::dispatch::{RealtimeSeqState, handle_control_message};
-use self::export::build_live_state;
+use self::dispatch::{ControlOutcome, RealtimeSeqState, handle_control_message};
+use self::export::{broadcast_live_state, send_live_state_to};
 use self::gaintable::GaintableCache;
 use self::transport::{
     broadcast_string, ensure_send_buffer, flush_pending_logs, resolve_register_addr,
-    send_buffered_logs_to_client, send_metering_state, send_raw_filtered,
+    send_buffered_logs_to_client, send_control_error, send_metering_state, send_raw_filtered,
 };
 use runtime_control::osc_contract;
 
@@ -453,15 +453,20 @@ impl WarnLimiter {
         (now.duration_since(last) >= Self::INTERVAL).then(|| std::mem::take(&mut self.held_back))
     }
 
-    /// Logs `message` at `warn`, or at `debug` when it is held back.
-    fn report(&mut self, message: std::fmt::Arguments<'_>) {
+    /// Logs `message` at `warn`, or at `debug` when it is held back. Whether
+    /// it was logged at `warn`, so a reply can be held to the same rate.
+    fn report(&mut self, message: std::fmt::Arguments<'_>) -> bool {
         match self.record(std::time::Instant::now()) {
             Some(0) => log::warn!("{message}"),
             Some(held_back) => {
                 log::warn!("{message} ({held_back} more since the last report)")
             }
-            None => log::debug!("{message}"),
+            None => {
+                log::debug!("{message}");
+                return false;
+            }
         }
+        true
     }
 
     /// Reports the occurrences still held back when the interval ended with
@@ -474,6 +479,36 @@ impl WarnLimiter {
             log::warn!("OSC: {held_back} more {what} since the last report");
         }
     }
+}
+
+/// Tell the sender of a control message what became of it, when it was not
+/// applied ([`osc_contract::STATE_CONTROL_ERROR`]). Every refusal is answered:
+/// the reply goes to the one sender, the way the message came. The log is held
+/// to `limiter`'s rate, since a client retrying a control the engine does not
+/// know would otherwise fill it.
+fn report_control_outcome(
+    socket: &UdpSocket,
+    src: SocketAddr,
+    addr: &str,
+    outcome: ControlOutcome,
+    limiter: &mut WarnLimiter,
+) {
+    let (code, message) = match outcome {
+        ControlOutcome::Handled => return,
+        ControlOutcome::Invalid(reason) => (osc_contract::CONTROL_ERROR_INVALID_ARGUMENTS, reason),
+        ControlOutcome::Unhandled if osc_contract::is_known_control(addr) => (
+            osc_contract::CONTROL_ERROR_NOT_APPLIED,
+            "not applied: its arguments were refused, or this engine host does not \
+             implement it"
+                .to_string(),
+        ),
+        ControlOutcome::Unhandled => (
+            osc_contract::CONTROL_ERROR_UNKNOWN_ADDRESS,
+            "unknown control address".to_string(),
+        ),
+    };
+    limiter.report(format_args!("OSC: {addr} from {src}: {message}"));
+    send_control_error(socket, src, addr, code, &message);
 }
 
 impl OscSender {
@@ -627,19 +662,21 @@ impl OscSender {
                 let mut buf = vec![0u8; RX_DATAGRAM_MAX];
                 let mut decode_errors = WarnLimiter::default();
                 let mut recv_errors = WarnLimiter::default();
+                let mut control_errors = WarnLimiter::default();
                 loop {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
                     decode_errors.flush("undecodable datagram(s) dropped");
                     recv_errors.flush("recv error(s)");
+                    control_errors.flush("control message(s) not applied");
                     flush_pending_logs(&socket, &clients, &mut last_log_seq);
                     if let Some(host) = host_handler.as_ref() {
                         let generation = host.state_generation();
                         if last_host_state_generation != Some(generation) {
                             last_host_state_generation = Some(generation);
                             if let Some(ref ctrl) = control {
-                                build_live_state(ctrl, Some(host)).broadcast(&socket, &clients);
+                                broadcast_live_state(ctrl, Some(host), &socket, &clients);
                             }
                         }
                     }
@@ -647,16 +684,16 @@ impl OscSender {
                         let generation = crate::overlay::state_generation();
                         if last_overlay_generation != Some(generation) {
                             last_overlay_generation = Some(generation);
-                            if let Ok(bytes) =
-                                rosc::encoder::encode(&OscPacket::Message(OscMessage {
-                                    addr: runtime_control::osc_contract::STATE_OVERLAY.to_string(),
+                            // Read under the publication lock: mpv writes the
+                            // overlay prefs from its own thread.
+                            transport::publish_state(&socket, &clients, || {
+                                vec![OscMessage {
+                                    addr: osc_contract::STATE_OVERLAY.to_string(),
                                     args: vec![rosc::OscType::String(
                                         crate::overlay::display_state_json(),
                                     )],
-                                }))
-                            {
-                                send_raw_filtered(&socket, &clients, &bytes, |_| true);
-                            }
+                                }]
+                            });
                         }
                     }
                     // Re-broadcast when core live state changed asynchronously on the
@@ -666,8 +703,7 @@ impl OscSender {
                         let generation = ctrl.live_state_generation();
                         if last_live_state_generation != Some(generation) {
                             last_live_state_generation = Some(generation);
-                            build_live_state(ctrl, host_handler.as_ref())
-                                .broadcast(&socket, &clients);
+                            broadcast_live_state(ctrl, host_handler.as_ref(), &socket, &clients);
                         }
                         // One-shot clip notification carrying the offending speaker
                         // index (set on the audio thread on any detected clip,
@@ -712,8 +748,7 @@ impl OscSender {
                                     force_full_next.store(true, Ordering::Relaxed);
                                     // Send the current state bundle, including layout and speakers.
                                     if let Some(ref ctrl) = control {
-                                        build_live_state(ctrl, host_handler.as_ref())
-                                            .send_to(&socket, client);
+                                        send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, client);
                                     }
                                     send_buffered_logs_to_client(&socket, client, 0);
                                     send_metering_state(&socket, client, metering_enabled);
@@ -730,10 +765,17 @@ impl OscSender {
                                         osc_contract::HEARTBEAT_UNKNOWN
                                     };
                                     // Echo this instance's epoch so the client can
-                                    // detect a producer swap behind the same port.
+                                    // detect a producer swap behind the same port,
+                                    // and the state generation so it can tell it
+                                    // missed the last update of a burst.
                                     let reply = OscMessage {
                                         addr: reply_addr.to_string(),
-                                        args: vec![rosc::OscType::Int(instance_epoch)],
+                                        args: vec![
+                                            rosc::OscType::Int(instance_epoch),
+                                            rosc::OscType::Int(
+                                                clients.state_generation() as i32,
+                                            ),
+                                        ],
                                     };
                                     match rosc::encoder::encode(&OscPacket::Message(reply)) {
                                         Ok(bytes) => {
@@ -751,12 +793,24 @@ impl OscSender {
                                     }
                                 }
 
+                                // A client whose state generation fell behind:
+                                // the snapshot again, and nothing else.
+                                Ok((_, OscPacket::Message(msg)))
+                                    if msg.addr == osc_contract::CONTROL_STATE_REFRESH =>
+                                {
+                                    let client = resolve_register_addr(src, &msg.args);
+                                    if let Some(ref ctrl) = control {
+                                        log::debug!("OSC state refresh → {client}");
+                                        send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, client);
+                                    }
+                                }
+
                                 // ── Live-parameter control messages ─────────────────────────────────
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr.starts_with("/omniphony/control/") =>
                                 {
                                     if let Some(ref ctrl) = control {
-                                        handle_control_message(
+                                        let outcome = handle_control_message(
                                             &msg,
                                             src,
                                             ctrl,
@@ -765,6 +819,13 @@ impl OscSender {
                                             &socket,
                                             &clients,
                                             &gaintable_cache,
+                                        );
+                                        report_control_outcome(
+                                            &socket,
+                                            src,
+                                            &msg.addr,
+                                            outcome,
+                                            &mut control_errors,
                                         );
                                     }
                                 }
@@ -779,9 +840,23 @@ impl OscSender {
                                         }
                                     }
                                 }
-                                Err(e) => decode_errors.report(format_args!(
-                                    "OSC: dropped an undecodable {len}-byte datagram from {src}: {e}"
-                                )),
+                                Err(e) => {
+                                    // Answered at the rate it is logged: the
+                                    // sender is unknown, and may be no client
+                                    // at all.
+                                    let reason = format!("{e}");
+                                    if decode_errors.report(format_args!(
+                                        "OSC: dropped an undecodable {len}-byte datagram from {src}: {reason}"
+                                    )) {
+                                        send_control_error(
+                                            &socket,
+                                            src,
+                                            "",
+                                            osc_contract::CONTROL_ERROR_UNDECODABLE,
+                                            &reason,
+                                        );
+                                    }
+                                }
                             }
                         }
                         Err(e)
@@ -791,7 +866,9 @@ impl OscSender {
                             ) => {}
                         // A failing socket returns at once, every pass: the
                         // same limit as for a misbehaving sender.
-                        Err(e) => recv_errors.report(format_args!("OSC recv error: {e}")),
+                        Err(e) => {
+                            recv_errors.report(format_args!("OSC recv error: {e}"));
+                        }
                     }
                 }
             })?;
