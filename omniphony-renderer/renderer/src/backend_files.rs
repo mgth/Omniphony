@@ -123,14 +123,25 @@ pub fn resolve_file_params(
 mod tests {
     use super::*;
 
+    /// `unix` as an absolute path on this platform: on Windows a path needs a
+    /// drive to be absolute, and `/home/me` is not one.
+    fn abs(unix: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!("C:{unix}"))
+        } else {
+            PathBuf::from(unix)
+        }
+    }
+
     fn cfg() -> PathBuf {
-        PathBuf::from("/etc/omniphony")
+        abs("/etc/omniphony")
     }
 
     #[test]
     fn absolute_handle_is_literal_when_allowed() {
-        let p = resolve(Some(&cfg()), "script", "/home/me/foo.lua", true).unwrap();
-        assert_eq!(p, PathBuf::from("/home/me/foo.lua"));
+        let handle = abs("/home/me/foo.lua");
+        let p = resolve(Some(&cfg()), "script", handle.to_str().unwrap(), true).unwrap();
+        assert_eq!(p, handle);
     }
 
     #[test]
@@ -138,19 +149,13 @@ mod tests {
         // A remote peer may not address an absolute path: it is reduced to its
         // basename inside the managed store.
         let p = resolve(Some(&cfg()), "script", "/home/me/foo.lua", false).unwrap();
-        assert_eq!(
-            p,
-            PathBuf::from("/etc/omniphony/backend-files/script/foo.lua")
-        );
+        assert_eq!(p, abs("/etc/omniphony/backend-files/script/foo.lua"));
     }
 
     #[test]
     fn bare_name_resolves_into_the_store() {
         let p = resolve(Some(&cfg()), "script", "panner.lua", true).unwrap();
-        assert_eq!(
-            p,
-            PathBuf::from("/etc/omniphony/backend-files/script/panner.lua")
-        );
+        assert_eq!(p, abs("/etc/omniphony/backend-files/script/panner.lua"));
     }
 
     #[test]
@@ -161,10 +166,7 @@ mod tests {
         // A store-relative handle that sanitises to a basename can never escape
         // the store dir.
         let p = resolve(Some(&cfg()), "script", "../secret.lua", false).unwrap();
-        assert_eq!(
-            p,
-            PathBuf::from("/etc/omniphony/backend-files/script/secret.lua")
-        );
+        assert_eq!(p, abs("/etc/omniphony/backend-files/script/secret.lua"));
         assert!(resolve(Some(&cfg()), "script", "   ", true).is_none());
     }
 
@@ -172,7 +174,8 @@ mod tests {
     fn store_relative_needs_a_config_dir() {
         assert!(resolve(None, "script", "panner.lua", true).is_none());
         // ...but an absolute handle still resolves without one.
-        assert!(resolve(None, "script", "/abs/panner.lua", true).is_some());
+        let handle = abs("/abs/panner.lua");
+        assert!(resolve(None, "script", handle.to_str().unwrap(), true).is_some());
     }
 
     #[test]
@@ -187,10 +190,11 @@ mod tests {
             backend == "script" && key == "path"
         });
         let script = &out["script"];
-        assert_eq!(
-            script["path"].as_str(),
-            Some("/etc/omniphony/backend-files/script/panner.lua")
-        );
+        let expected = cfg()
+            .join("backend-files")
+            .join("script")
+            .join("panner.lua");
+        assert_eq!(script["path"].as_str(), expected.to_str());
         // Non-file params are untouched.
         assert_eq!(script["falloff"].as_f32(), Some(0.1));
     }
