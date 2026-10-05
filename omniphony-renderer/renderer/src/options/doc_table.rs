@@ -67,7 +67,8 @@ pub fn markdown(rows: impl IntoIterator<Item = DocRow>) -> String {
     out
 }
 
-fn kind_cell(kind: OptionKind) -> String {
+/// What a value of `kind` is, in a few words (`float [0, 1], step 0.01`).
+pub fn kind_cell(kind: OptionKind) -> String {
     match kind {
         OptionKind::Bool => "bool".into(),
         OptionKind::Enum(values) => values

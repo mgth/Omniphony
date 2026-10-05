@@ -454,7 +454,11 @@ impl<'a> OptionEnv<'a> {
 
     /// Whether a backend with this id is registered.
     pub fn has_backend(&self, id: &str) -> bool {
-        self.control.is_some_and(|control| control.has_backend(id))
+        match self.control {
+            Some(control) => control.has_backend(id),
+            // Detached: the built-in backends only.
+            None => crate::render_backend::canonical_builtin_backend_id(id).is_some(),
+        }
     }
 
     /// What the running renderer was built with (preferred evaluation mode,
@@ -700,11 +704,12 @@ fn cartesian_in_force(live: &LiveParams, env: &OptionEnv) -> bool {
     match live.requested_evaluation_mode() {
         LiveEvaluationMode::PrecomputedCartesian => true,
         LiveEvaluationMode::PrecomputedPolar | LiveEvaluationMode::Realtime => false,
-        LiveEvaluationMode::Auto => matches!(
-            env.build_facts()
-                .map(|facts| facts.preferred_evaluation_mode),
-            Some(PreferredEvaluationMode::PrecomputedCartesian)
-        ),
+        // No renderer to ask (a config edited on its own, such as the
+        // command line's): a size given is kept, as the build may well be
+        // cartesian.
+        LiveEvaluationMode::Auto => env.build_facts().is_none_or(|facts| {
+            facts.preferred_evaluation_mode == PreferredEvaluationMode::PrecomputedCartesian
+        }),
     }
 }
 
@@ -2906,6 +2911,58 @@ pub fn seed_rebuilding_rows_from_config(
         }
     }
     rebuild
+}
+
+/// Write client values into a config as a save of a live change would: each
+/// value through its row's `set` (validated and bounded exactly as an OSC
+/// write), then its row's `config_store`. Rows not named keep what the config
+/// says. For a config edited without a renderer (the command line): the rows
+/// work on a scratch [`LiveParams`] seeded from `render`. Returns the keys
+/// that are unknown, not offered on this host, or whose value was refused.
+pub fn store_client_values(
+    render: &mut RenderConfig,
+    values: &[(&str, RawOptionValue)],
+    env: &OptionEnv,
+) -> Vec<String> {
+    let mut live = LiveParams::default();
+    reset_live_to_defaults(&mut live, env);
+    seed_live_from_config(&mut live, render, env);
+    let mut refused = Vec::new();
+    let mut applied = Vec::new();
+    for (key, raw) in values {
+        match find(key).filter(|spec| env.offers(spec)) {
+            Some(spec) if (spec.set)(&mut live, raw, env).is_some() => applied.push(spec),
+            _ => refused.push((*key).to_string()),
+        }
+    }
+    for spec in applied {
+        if !pin_room_ratio(render, &live, spec.key) {
+            (spec.config_store)(render, &live, env);
+        }
+    }
+    refused
+}
+
+/// A room value given on its own is pinned as its ratio key, not stored as a
+/// save writes it. A save stores the room in metres against the layout
+/// radius, width being the reference, so a width other than 1 is folded into
+/// the radius when the file is loaded again; a launch never reloads, and the
+/// renderer build reads the ratio keys (which win over the metres in a loaded
+/// config, `config_fields::room::resolve`). `false` for any other key.
+fn pin_room_ratio(render: &mut RenderConfig, live: &LiveParams, key: &str) -> bool {
+    match key {
+        "room_ratio" => {
+            let [width, length, height] = live.room_ratio;
+            render.room_ratio = Some(format!("{width},{length},{height}"));
+        }
+        "room_ratio_rear" => render.room_ratio_rear = Some(live.room_ratio_rear),
+        "room_ratio_lower" => render.room_ratio_lower = Some(live.room_ratio_lower),
+        "room_ratio_center_blend" => {
+            render.room_ratio_center_blend = Some(live.room_ratio_center_blend)
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// Write every declared live option — plus the placement — into a config

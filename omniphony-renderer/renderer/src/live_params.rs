@@ -26,8 +26,9 @@ use crate::render_backend::{EvaluationBuildConfig, PreparedRenderEngine, RenderR
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LiveEvaluationMode {
+    #[default]
     Auto,
     Realtime,
     PrecomputedPolar,
@@ -1057,7 +1058,7 @@ pub fn speaker_gain_linear(gain_db: f32) -> f32 {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct CartesianEvaluationParams {
     pub x_size: usize,
     pub y_size: usize,
@@ -1065,7 +1066,7 @@ pub struct CartesianEvaluationParams {
     pub z_neg_size: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct PolarEvaluationParams {
     pub azimuth_values: i32,
     pub elevation_values: i32,
@@ -1073,7 +1074,7 @@ pub struct PolarEvaluationParams {
     pub distance_max: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct EvaluationLiveParams {
     pub mode: LiveEvaluationMode,
     pub position_interpolation: bool,
@@ -1161,8 +1162,11 @@ impl Default for HybridLiveParams {
 ///
 /// Written by the control threads (OSC listener, config seeding), read
 /// lock-free by the render thread through [`LiveCell`]. `Clone` because a
-/// write edits a copy and publishes it.
-#[derive(Clone)]
+/// write edits a copy and publishes it. `Default` is a blank state with no
+/// renderer behind it (no speakers, the declared options at their
+/// defaults): a scratch for code that edits a config through the option
+/// rows (`options::store_client_values`), never what a renderer starts with.
+#[derive(Clone, Default)]
 pub struct LiveParams {
     /// The options declared in `options::declared` (one field per option,
     /// defaulted from its row).

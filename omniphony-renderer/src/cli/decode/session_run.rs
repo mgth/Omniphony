@@ -124,7 +124,7 @@ fn resolve_effective_decode_args(
     args: &RenderArgs,
     cli: &Cli,
     arg_sources: &RenderArgSources<'_>,
-) -> ResolvedRun {
+) -> Result<ResolvedRun> {
     let config_path = cli
         .config
         .clone()
@@ -137,14 +137,16 @@ fn resolve_effective_decode_args(
         .map(|p| renderer::config::Config::load_or_default_with_live(p).0)
         .unwrap_or_default();
 
+    // The registered options given as flags go into the render section
+    // first, through their rows; the args below are resolved from it.
+    let mut render_cfg = config.render.clone().unwrap_or_default();
+    crate::cli::options::store_given_values(&mut render_cfg, &arg_sources.option_values())?;
+
     let mut effective = args.clone();
-    if let Some(rc) = &config.render {
-        merge_render_config(rc, &mut effective, arg_sources);
-    }
+    merge_render_config(&render_cfg, &mut effective, arg_sources);
     let osc = resolve_osc_settings(config.render.as_ref(), &effective, arg_sources);
     apply_osc_settings(&mut effective, osc);
 
-    let mut render_cfg = config.render.clone().unwrap_or_default();
     apply_render_cfg_overrides(&mut render_cfg, &effective);
     apply_explicit_renderer_args(&mut render_cfg, &effective, arg_sources);
     let renderer_params = renderer_params(&render_cfg, &effective);
@@ -153,14 +155,14 @@ fn resolve_effective_decode_args(
         .render
         .as_ref()
         .and_then(|rc| rc.current_layout.clone());
-    ResolvedRun {
+    Ok(ResolvedRun {
         config_path,
         args: effective,
         config,
         render_cfg,
         renderer_params,
         current_layout,
-    }
+    })
 }
 
 fn decode_queue_capacity(latency_target_ms: Option<u32>) -> usize {
@@ -1252,7 +1254,7 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
     let mut restart_bridge_path_override: Option<Option<std::path::PathBuf>> = None;
     loop {
         negotiate_osc_port_if_enabled(args, cli, arg_sources);
-        let mut run = resolve_effective_decode_args(args, cli, arg_sources);
+        let mut run = resolve_effective_decode_args(args, cli, arg_sources)?;
         if let Some(bridge_path) = restart_bridge_path_override.take() {
             run.args.bridge_path = bridge_path;
         }
@@ -1671,7 +1673,8 @@ mod tests {
         let Commands::Render(args) = &parsed.cli.command else {
             unreachable!("render subcommand")
         };
-        let run = resolve_effective_decode_args(args, &parsed.cli, &parsed.render_sources());
+        let run = resolve_effective_decode_args(args, &parsed.cli, &parsed.render_sources())
+            .expect("resolved");
         let mut handler = DecodeHandler::default();
         init_no_bridge_handler(
             &mut handler,

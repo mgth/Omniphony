@@ -377,6 +377,24 @@ reads ratios back through `room::resolve`, the single reading shared by the
 renderer build, the live seed and the profile switch — so the dependent
 default (an absent rear follows the length) lives in one place.
 
+### Command-line flags
+
+`orender render` takes every registered option as a flag generated from the
+registries (`src/cli/options.rs`): `--<key>` with `-` for `_`, or the pair
+`--<key>` / `--no-<key>` for a boolean; an enum lists its values, a float
+array takes `n,n,n`, an optional integer takes `none`. Core rows offered on
+a host with audio I/O and the standalone host's rows (`HOST_OPTIONS`) are
+generated; `master_gain` stays a hand-written flag in decibels (the option's
+wire value is linear) and `adaptive_resampling_integral_discharge_ratio` has
+no flag. A value given goes into the run's config through its row, as a
+save of the same live change writes it (`options::store_client_values`, on
+a scratch `LiveParams` seeded from the file; `host_audio::store_host_values`
+on a blank `HostIo`): validated and bounded as an OSC write, refused with an
+error naming the flag, kept by `--save-config`. A room flag is pinned as its
+ratio key rather than stored in metres as a save does: the metres carry a
+width other than 1 in the layout radius, folded in only when the file is
+loaded again, and a launch reads the ratio keys.
+
 ### Outside the registry: the command tables
 
 Not every control address is an option. The rest are declared in one table
@@ -428,7 +446,8 @@ Why these are not options:
    fails in CI when they drift).
 2. Add the control markup with its `data-option` attribute (a switch, a
    toggle-btn pair or a select — no JS).
-3. Done: OSC (generic + schema), persistence, CLI/FFI seeding, replan
+3. Done: OSC (generic + schema), the `orender render --<key>` flag,
+   persistence, CLI/FFI seeding, replan
    invalidation, the snapshot block, the UI wiring and the CI contract checks
    all derive from the row + the markup. The conformance net fails if a layer
    is missing, and derives its non-default sample from the row (only a
