@@ -806,6 +806,58 @@ fn bands_built_after_a_later_edit_are_not_reused_for_it() {
     assert!(Arc::ptr_eq(&second_edit, &band_model(&r)));
 }
 
+/// A sample-rate change rebuilds everything timed in samples, the crossover
+/// bank among it, but takes the band engines over: a gain table does not
+/// depend on the rate. A host that prepared the stage before it knew the
+/// stream's rate (the CLI always does) would otherwise sample every table a
+/// second time, on the first frame.
+#[test]
+fn a_sample_rate_change_takes_the_band_engines_over() {
+    let mut r = build_table_renderer(true, true);
+    let engines = |r: &SpatialRenderer| -> Vec<_> {
+        r.speaker_stage
+            .render_bands
+            .iter()
+            .map(|band| Arc::clone(band.engine().expect("band engine")))
+            .collect()
+    };
+    let before = engines(&r);
+    assert!(before.len() > 1, "a crossover layout");
+    let builds = r.speaker_stage_builds();
+    let sampled = crate::backend_registry::tables_sampled_on_this_thread();
+
+    r.set_sample_rate(96_000).unwrap();
+    assert!(
+        r.speaker_stage.crossover_filter_bank.is_none(),
+        "the stage is rebuilt by the next frame"
+    );
+    let pcm = vec![0.0f32; 40];
+    r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+
+    assert_eq!(r.speaker_stage_builds(), builds + 1);
+    assert_eq!(
+        crate::backend_registry::tables_sampled_on_this_thread(),
+        sampled,
+        "no gain table is sampled again"
+    );
+    let after = engines(&r);
+    assert_eq!(before.len(), after.len());
+    assert!(
+        before.iter().zip(&after).all(|(a, b)| Arc::ptr_eq(a, b)),
+        "the band engines are the same"
+    );
+    assert!(r.speaker_stage.unified_table.is_some());
+    assert!(r.speaker_stage.crossover_filter_bank.is_some());
+    assert_eq!(
+        r.control
+            .crossover_info()
+            .expect("crossover info")
+            .sample_rate,
+        96_000,
+        "the bank is built for the new rate"
+    );
+}
+
 #[test]
 fn test_renderer_creation() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();

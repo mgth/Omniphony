@@ -45,7 +45,10 @@
 
 use std::time::Instant;
 
-use dsp_fixtures::scene::{BLOCK_SAMPLES, RampMode, SAMPLE_RATE, make_pcm, move_events, prepared};
+use dsp_fixtures::scene::{
+    BLOCK_SAMPLES, CrossoverType, RampMode, SAMPLE_RATE, make_pcm, move_events, prepared,
+    prepared_crossover,
+};
 
 /// Wall time one block of audio occupies: 40 samples at 48 kHz ≈ 833 µs.
 const BLOCK_PERIOD_US: f64 = BLOCK_SAMPLES as f64 * 1e6 / SAMPLE_RATE as f64;
@@ -141,63 +144,102 @@ fn block_time_all_objects_moving_is_within_budget() {
 /// topology mid-stream.
 const TOPOLOGY_CHANGES: usize = 8;
 
-/// A topology change mid-stream (a speaker moved in Studio): the blocks from
-/// the publish until the new band set is installed keep the deadline, because
-/// the band tables are sampled by the stage's worker, not the render thread.
+/// Render topology changes on `$r` mid-stream (a speaker moved in Studio) and
+/// gate the blocks from each publish until the new band set is installed, the
+/// first block mixed on it included. They keep the deadline because the set
+/// is built by the stage's worker — gain tables, crossover bank and filter
+/// memory — and not by the render thread.
 ///
 /// Gated on the median over the changes of each one's slowest block: a build
 /// back on the render thread blows every change, an OS hiccup only one.
+///
+/// A macro, not a function: the fixture's renderer is another instance of
+/// this crate (the dev-dependency cycle), whose type cannot be named here.
+#[cfg(not(debug_assertions))]
+macro_rules! assert_topology_changes_within_budget {
+    ($label:expr, $r:ident) => {{
+        let control = $r.renderer_control();
+        let pcm = make_pcm(N_OBJECTS);
+        let mut buf = Vec::new();
+        macro_rules! render {
+            () => {{
+                let start = Instant::now();
+                let frame = $r
+                    .render_frame(&pcm, N_OBJECTS, &[], std::mem::take(&mut buf), false)
+                    .expect("render_frame");
+                let us = start.elapsed().as_secs_f64() * 1e6;
+                buf = frame.samples;
+                buf.clear();
+                us
+            }};
+        }
+        let mut worst_per_change = Vec::with_capacity(TOPOLOGY_CHANGES);
+        for _ in 0..TOPOLOGY_CHANGES {
+            // The recompute thread's part, untimed: the topology it publishes.
+            control.bump_geometry_generation();
+            let plan = control.prepare_topology_rebuild().expect("plan");
+            let topology = plan
+                .build_topology_reusing(Some(&control.active_topology()))
+                .expect("topology");
+            let builds = $r.speaker_stage_builds();
+            control.publish_topology(topology);
+
+            let mut worst = render!();
+            let deadline = Instant::now() + std::time::Duration::from_secs(60);
+            while $r.speaker_stage_builds() == builds {
+                assert!(Instant::now() < deadline, "the band worker never delivered");
+                worst = worst.max(render!());
+            }
+            // The block after the install, which runs on the new bands.
+            worst_per_change.push(worst.max(render!()));
+        }
+        let median = percentile_us(worst_per_change.clone(), 0.5);
+        println!(
+            "[measure] block_time {}: worst block per change {worst_per_change:.1?} µs",
+            $label
+        );
+        assert!(
+            median / BLOCK_PERIOD_US <= MAX_BLOCK_FRACTION,
+            "{}: the slowest block around a change takes {:.1} % of the block period \
+             (median over {TOPOLOGY_CHANGES} changes, {median:.1} µs of {BLOCK_PERIOD_US:.1} µs), \
+             over the {:.0} % budget: is the band build back on the render thread?",
+            $label,
+            median / BLOCK_PERIOD_US * 100.0,
+            MAX_BLOCK_FRACTION * 100.0,
+        );
+    }};
+}
+
+/// A layout without crossover: the one band's gain table is what a change
+/// rebuilds.
 #[cfg(not(debug_assertions))]
 #[test]
 fn block_time_across_a_topology_change_is_within_budget() {
     let (mut r, _) = prepared("7.1.4", N_OBJECTS, RampMode::Frame, true, false);
-    let control = r.renderer_control();
-    let pcm = make_pcm(N_OBJECTS);
-    let mut buf = Vec::new();
-    // A macro, not a closure: the fixture's renderer is another instance of
-    // this crate (the dev-dependency cycle), whose type cannot be named here.
-    macro_rules! render {
-        () => {{
-            let start = Instant::now();
-            let frame = r
-                .render_frame(&pcm, N_OBJECTS, &[], std::mem::take(&mut buf), false)
-                .expect("render_frame");
-            let us = start.elapsed().as_secs_f64() * 1e6;
-            buf = frame.samples;
-            buf.clear();
-            us
-        }};
-    }
-    let mut worst_per_change = Vec::with_capacity(TOPOLOGY_CHANGES);
-    for _ in 0..TOPOLOGY_CHANGES {
-        // The recompute thread's part, untimed: the topology it publishes.
-        control.bump_geometry_generation();
-        let plan = control.prepare_topology_rebuild().expect("plan");
-        let topology = plan
-            .build_topology_reusing(Some(&control.active_topology()))
-            .expect("topology");
-        let builds = r.speaker_stage_builds();
-        control.publish_topology(topology);
+    assert_topology_changes_within_budget!("topology-change", r);
+}
 
-        let mut worst = render!();
-        let deadline = Instant::now() + std::time::Duration::from_secs(60);
-        while r.speaker_stage_builds() == builds {
-            assert!(Instant::now() < deadline, "the band worker never delivered");
-            worst = worst.max(render!());
+/// A crossover layout on the linear-phase engine, the costly one to swap: a
+/// change also rebuilds the FIR bank and the filter memory of every object,
+/// each a set of FFT buffers. Allocated on the first block mixed on the new
+/// set, and the old ones freed there, they alone took that block over the
+/// deadline.
+#[cfg(not(debug_assertions))]
+#[test]
+fn block_time_across_a_topology_change_with_the_fir_crossover_is_within_budget() {
+    let (mut r, pcm) = prepared_crossover(N_OBJECTS, RampMode::Frame);
+    r.renderer_control().live.write().crossover_type = CrossoverType::Fir;
+    // Onto the FIR bank, and past its first blocks.
+    let builds = r.speaker_stage_builds();
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
+    let mut settled = 0;
+    while settled < 64 {
+        assert!(Instant::now() < deadline, "the band worker never delivered");
+        r.render_frame(&pcm, N_OBJECTS, &[], Vec::new(), false)
+            .expect("render_frame");
+        if r.speaker_stage_builds() > builds {
+            settled += 1;
         }
-        // The block after the install, which runs on the new bands.
-        worst_per_change.push(worst.max(render!()));
     }
-    let median = percentile_us(worst_per_change.clone(), 0.5);
-    println!(
-        "[measure] block_time topology-change: worst block per change {worst_per_change:.1?} µs"
-    );
-    assert!(
-        median / BLOCK_PERIOD_US <= MAX_BLOCK_FRACTION,
-        "topology change: the slowest block around a change takes {:.1} % of the block period \
-         (median over {TOPOLOGY_CHANGES} changes, {median:.1} µs of {BLOCK_PERIOD_US:.1} µs), \
-         over the {:.0} % budget: is the band build back on the render thread?",
-        median / BLOCK_PERIOD_US * 100.0,
-        MAX_BLOCK_FRACTION * 100.0,
-    );
+    assert_topology_changes_within_budget!("topology-change, FIR crossover", r);
 }

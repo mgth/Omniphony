@@ -590,11 +590,12 @@ impl SpatialRenderer {
         if sample_rate == 0 || sample_rate == self.sample_rate {
             return Ok(());
         }
-        // Rebuilt by the next frame, at the new rate.
-        self.speaker_stage = super::SpeakerRenderStage::unbuilt(
+        // Rebuilt by the next frame, at the new rate; its band engines, which
+        // do not depend on the rate, are taken over rather than sampled again.
+        self.speaker_stage = super::SpeakerRenderStage::unbuilt_replacing(
+            &mut self.speaker_stage,
             &self.control,
             &self.control.active_topology().speaker_layout,
-            self.num_speakers,
             sample_rate,
         );
         self.binaural = Self::build_binaural_stage(&self.control, sample_rate);

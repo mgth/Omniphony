@@ -80,8 +80,22 @@ pub(super) struct BandSet {
     /// The facts about that bank, published on the control when the set is
     /// installed: a set that is dropped instead must not be advertised.
     crossover_info: CrossoverInfo,
+    /// Fresh filter memory for that bank, for the channels that were being
+    /// filtered when the set was asked for: allocated with the set, so the
+    /// first block mixed on it does not (the FIR engine's is large).
+    crossover_filter_states: Vec<Option<CrossoverStates>>,
     unified_table: Option<MultiBandTable>,
     speaker_freq_ranges: Vec<(Option<f32>, Option<f32>)>,
+}
+
+/// Bands a build can start from. For the topology they were built for, they
+/// are taken over as they are: a band's gain table depends on the topology,
+/// not on the crossover engine or the sample rate, so a change of those
+/// samples nothing. For another topology, their gain models are reused where
+/// the geometry did not change (see [`BandRenderer::from_band`]).
+pub(super) struct PreviousBands<'a> {
+    pub(super) topology: Option<&'a Arc<RenderTopology>>,
+    pub(super) bands: &'a [BandRenderer],
 }
 
 pub(super) struct SpeakerRenderStage {
@@ -90,14 +104,17 @@ pub(super) struct SpeakerRenderStage {
     /// Sample rate for slew and delay-target conversion.
     pub(super) sample_rate: u32,
     /// Per-band VBAP engines. Once built, always ≥1 entry (the "all speakers"
-    /// band when no crossover is configured); empty only before the first
-    /// build (see [`Self::unbuilt`]). Each returns full-size `Gains`.
+    /// band when no crossover is configured). Before the first build (see
+    /// [`Self::unbuilt`]) it is empty, or holds the bands of the stage this
+    /// one replaces ([`Self::unbuilt_replacing`]) for that build to take
+    /// over; nothing is mixed before it. Each returns full-size `Gains`.
     pub(super) render_bands: Vec<BandRenderer>,
     /// What the installed band engines were built for; `None` until the
     /// first build, which [`Self::refresh_for_topology`] then always runs.
     built: Option<BandSetKey>,
-    /// The topology they were built for, kept so its address — the key —
-    /// stays unique while they are installed.
+    /// The topology `render_bands` were built for, kept so its address — the
+    /// key — stays unique while they are installed, and to tell a build
+    /// whether it can take them over.
     built_topology: Option<Arc<RenderTopology>>,
     /// The set last asked of the worker and not answered yet.
     requested: Option<BandSetKey>,
@@ -1166,6 +1183,24 @@ impl SpeakerRenderStage {
         }
     }
 
+    /// [`Self::unbuilt`] in place of `previous`, at another sample rate.
+    /// Everything timed in samples starts over (crossover bank, filter
+    /// memory, delay lines), but the first build takes the band engines of
+    /// `previous` over if the topology is still theirs: a gain table does not
+    /// depend on the rate, and sampling them again is what a start-up at a
+    /// rate other than the stream's would otherwise pay twice.
+    pub(super) fn unbuilt_replacing(
+        previous: &mut Self,
+        control: &Arc<RendererControl>,
+        layout: &SpeakerLayout,
+        sample_rate: u32,
+    ) -> Self {
+        let mut stage = Self::unbuilt(control, layout, previous.num_speakers, sample_rate);
+        stage.built_topology = previous.built_topology.take();
+        stage.render_bands = std::mem::take(&mut previous.render_bands);
+        stage
+    }
+
     /// Keep the band engines in step with the published topology and the
     /// live crossover options. Returns whether it installed a new set.
     ///
@@ -1236,15 +1271,23 @@ impl SpeakerRenderStage {
                 wanted,
                 self.num_speakers,
                 self.sample_rate,
-                &self.render_bands,
+                PreviousBands {
+                    topology: self.built_topology.as_ref(),
+                    bands: &self.render_bands,
+                },
+                self.filtered_channels(),
             )?;
-            self.worker.seed(set.render_bands.clone());
+            self.worker
+                .seed(Arc::clone(topology), set.render_bands.clone());
             self.install(control, set);
             self.requested = None;
             return Ok(true);
         }
         if self.requested != Some(wanted) && self.failed.is_none() {
-            if self.worker.request(Arc::clone(topology), wanted) {
+            if self
+                .worker
+                .request(Arc::clone(topology), wanted, self.filtered_channels())
+            {
                 self.requested = Some(wanted);
             } else {
                 // The worker is gone, which only a panic outside a build can
@@ -1276,6 +1319,22 @@ impl SpeakerRenderStage {
         self.failed.is_some()
     }
 
+    /// The channels holding crossover filter memory right now: from the first
+    /// that does to the last slot. A set built now allocates theirs for its
+    /// own bank. Directly-routed channels come first and hold none, so this
+    /// is the objects; a channel that starts being filtered later gets its
+    /// memory on its first block, as before.
+    fn filtered_channels(&self) -> Range<usize> {
+        match self
+            .crossover_filter_states
+            .iter()
+            .position(Option::is_some)
+        {
+            Some(first) => first..self.crossover_filter_states.len(),
+            None => 0..0,
+        }
+    }
+
     /// Drop the remembered failure, its topology freed by the worker.
     fn forget_failure(&mut self) {
         if let Some(failed) = self.failed.take() {
@@ -1293,6 +1352,7 @@ impl SpeakerRenderStage {
             render_bands,
             crossover_filter_bank,
             crossover_info,
+            crossover_filter_states,
             unified_table,
             speaker_freq_ranges,
         } = set;
@@ -1300,10 +1360,13 @@ impl SpeakerRenderStage {
         // that renders, and a set built for a key since left is never that.
         control.set_crossover_info(crossover_info);
         self.forget_failure();
+        // The filter memory goes with the bank it was made for: the replaced
+        // one is freed by the worker with the rest, the new one came built.
         let replaced = (
             self.built_topology.replace(topology),
             std::mem::replace(&mut self.render_bands, render_bands),
             std::mem::replace(&mut self.crossover_filter_bank, crossover_filter_bank),
+            std::mem::replace(&mut self.crossover_filter_states, crossover_filter_states),
             std::mem::replace(&mut self.unified_table, unified_table),
             std::mem::replace(&mut self.speaker_freq_ranges, speaker_freq_ranges),
         );
@@ -1316,7 +1379,6 @@ impl SpeakerRenderStage {
         self.table_caches
             .iter_mut()
             .for_each(CornerCache::invalidate);
-        self.crossover_filter_states.clear();
         self.bed_delays.clear();
         self.test_filter_states = None;
         self.test_direct_bank = None;
@@ -1325,27 +1387,41 @@ impl SpeakerRenderStage {
     }
 
     /// Build the band set `key` describes, on whichever thread calls it.
-    /// `prev` are bands whose gain models can be reused when the geometry
-    /// did not change.
+    /// `previous` are the bands it can start from (see [`PreviousBands`]);
+    /// `filtered_channels` the channels to allocate crossover filter memory
+    /// for (see [`Self::filtered_channels`]).
     fn build_band_set(
         control: &Arc<RendererControl>,
         topology: Arc<RenderTopology>,
         key: BandSetKey,
         num_speakers: usize,
         sample_rate: u32,
-        prev: &[BandRenderer],
+        previous: PreviousBands<'_>,
+        filtered_channels: Range<usize>,
     ) -> Result<BandSet> {
         let layout = &topology.speaker_layout;
+        let same_topology = previous.topology.is_some_and(|p| Arc::ptr_eq(p, &topology));
         let (render_bands, crossover_filter_bank, crossover_info) = Self::build_crossover(
             control,
             layout,
             topology.geometry_generation,
             num_speakers,
             sample_rate,
-            prev,
+            previous.bands,
+            same_topology,
             key.crossover_type,
             key.fir_ratio,
         )?;
+        let crossover_filter_states = match &crossover_filter_bank {
+            Some(bank) => (0..filtered_channels.end)
+                .map(|channel| {
+                    filtered_channels
+                        .contains(&channel)
+                        .then(|| bank.make_channel_states(channel))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         let unified_table = Self::build_unified_table(&render_bands, num_speakers);
         let speaker_freq_ranges = layout
             .speakers
@@ -1358,6 +1434,7 @@ impl SpeakerRenderStage {
             render_bands,
             crossover_filter_bank,
             crossover_info,
+            crossover_filter_states,
             unified_table,
             speaker_freq_ranges,
         })
@@ -1804,6 +1881,8 @@ impl SpeakerRenderStage {
     /// ([`BandSetKey`]); `info` describes the result, for the control once
     /// the set is installed. `geometry_generation` is the one of the topology
     /// `layout` comes from, which the band gain models are built for.
+    /// `prev_bands_same_topology` says `prev_bands` were built for that very
+    /// topology: they are then taken over, table and all.
     #[allow(clippy::too_many_arguments)]
     fn build_crossover(
         control: &Arc<RendererControl>,
@@ -1812,16 +1891,28 @@ impl SpeakerRenderStage {
         num_speakers: usize,
         sample_rate: u32,
         prev_bands: &[BandRenderer],
+        prev_bands_same_topology: bool,
         crossover_type: CrossoverType,
         fir_transition_ratio: f32,
     ) -> Result<(Vec<BandRenderer>, Option<CrossoverBank>, CrossoverInfo)> {
-        // For each new band, reuse the matching previous band (same speaker subset)
-        // so an evaluation-only refresh can keep its triangulated gain model.
+        // For each new band, the matching previous band (same speaker subset):
+        // taken over as it is when the topology is the same, else reused for
+        // its triangulated gain model, which an evaluation-only refresh keeps.
         let make_renderer = |b: &FreqBand| {
             let prev = prev_bands
                 .iter()
                 .find(|p| p.speaker_indices == b.speaker_indices);
-            BandRenderer::from_band(b, layout, geometry_generation, num_speakers, control, prev)
+            match prev {
+                Some(prev) if prev_bands_same_topology => Ok(prev.clone()),
+                _ => BandRenderer::from_band(
+                    b,
+                    layout,
+                    geometry_generation,
+                    num_speakers,
+                    control,
+                    prev,
+                ),
+            }
         };
 
         let bands = compute_bands(layout);

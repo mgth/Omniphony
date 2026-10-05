@@ -12,12 +12,13 @@
 //! reason goes to the log and to the control (for the clients), and the
 //! worker carries on with the next request.
 
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::mpsc;
 
 use parking_lot::Mutex;
 
-use super::{BandSet, BandSetKey, SpeakerRenderStage};
+use super::{BandSet, BandSetKey, PreviousBands, SpeakerRenderStage};
 use crate::live_params::{RenderTopology, RendererControl};
 use crate::spatial_renderer::components::BandRenderer;
 
@@ -27,10 +28,15 @@ enum Request {
     Build {
         topology: Arc<RenderTopology>,
         key: BandSetKey,
+        /// The channels to allocate crossover filter memory for.
+        filtered_channels: Range<usize>,
     },
-    /// The bands the render thread built itself, for the next build to reuse
-    /// their gain models.
-    Seed(Vec<BandRenderer>),
+    /// The bands the render thread built itself for `topology`, for the next
+    /// build to start from.
+    Seed {
+        topology: Arc<RenderTopology>,
+        bands: Vec<BandRenderer>,
+    },
     /// Something the render thread is done with, to free here.
     Retire(Box<dyn std::any::Any + Send>),
 }
@@ -58,6 +64,10 @@ pub(super) struct BandWorker {
     /// render thread only `try_lock`s it; the worker holds it for the store
     /// alone.
     finished: Arc<Mutex<Option<Finished>>>,
+    /// How many builds the worker has answered, counted once the outcome is
+    /// in the slot: tests wait on it, whoever takes the outcome.
+    #[cfg(test)]
+    answered: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl BandWorker {
@@ -69,25 +79,55 @@ impl BandWorker {
         let (requests, rx) = mpsc::channel();
         let finished = Arc::new(Mutex::new(None));
         let slot = Arc::clone(&finished);
+        #[cfg(test)]
+        let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        #[cfg(test)]
+        let count = Arc::clone(&answered);
         std::thread::Builder::new()
             .name("speaker-band-worker".into())
-            .spawn(move || Self::run(rx, &control, num_speakers, sample_rate, &slot))
+            .spawn(move || {
+                Self::run(rx, &control, num_speakers, sample_rate, |outcome| {
+                    // An older outcome still waiting is superseded: it drops
+                    // here.
+                    let superseded = slot.lock().replace(outcome);
+                    drop(superseded);
+                    #[cfg(test)]
+                    count.fetch_add(1, std::sync::atomic::Ordering::Release);
+                })
+            })
             .expect("spawn speaker band worker");
-        Self { requests, finished }
+        Self {
+            requests,
+            finished,
+            #[cfg(test)]
+            answered,
+        }
     }
 
-    /// Ask for the set `key` needs. A newer request supersedes this one if
-    /// the worker has not started on it yet. Returns `false` when the worker
-    /// is gone and nothing will come back.
+    /// Ask for the set `key` needs, with filter memory for
+    /// `filtered_channels`. A newer request supersedes this one if the worker
+    /// has not started on it yet. Returns `false` when the worker is gone and
+    /// nothing will come back.
     #[must_use]
-    pub(super) fn request(&self, topology: Arc<RenderTopology>, key: BandSetKey) -> bool {
-        self.requests.send(Request::Build { topology, key }).is_ok()
+    pub(super) fn request(
+        &self,
+        topology: Arc<RenderTopology>,
+        key: BandSetKey,
+        filtered_channels: Range<usize>,
+    ) -> bool {
+        self.requests
+            .send(Request::Build {
+                topology,
+                key,
+                filtered_channels,
+            })
+            .is_ok()
     }
 
-    /// Hand the worker the bands just built on the render thread, so its
-    /// next build can reuse their gain models.
-    pub(super) fn seed(&self, bands: Vec<BandRenderer>) {
-        let _ = self.requests.send(Request::Seed(bands));
+    /// Hand the worker the bands just built on the render thread for
+    /// `topology`, for its next build to start from.
+    pub(super) fn seed(&self, topology: Arc<RenderTopology>, bands: Vec<BandRenderer>) {
+        let _ = self.requests.send(Request::Seed { topology, bands });
     }
 
     /// Free `retired` on the worker rather than the render thread (on the
@@ -108,32 +148,54 @@ impl BandWorker {
         self.finished.lock().is_some()
     }
 
+    /// How many builds the worker has answered so far, taken or not.
+    #[cfg(test)]
+    pub(super) fn answered(&self) -> usize {
+        self.answered.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     fn run(
         rx: mpsc::Receiver<Request>,
         control: &Arc<RendererControl>,
         num_speakers: usize,
         sample_rate: u32,
-        finished: &Mutex<Option<Finished>>,
+        deliver: impl Fn(Finished),
     ) {
-        // The bands of the last set built here or seeded, whose gain models
-        // the next build reuses when the geometry did not change.
-        let mut last: Vec<BandRenderer> = Vec::new();
+        // The bands of the last set built here or seeded, and the topology
+        // they are for: what the next build starts from. A build for that
+        // same topology shares them with the set it came from, so a set the
+        // render thread drops keeps no table of its own alive here.
+        let mut last: Option<(Arc<RenderTopology>, Vec<BandRenderer>)> = None;
         // Whether the clients were last told of a failed build: the next
         // build that goes through takes the error back.
         let mut error_reported = false;
         while let Ok(first) = rx.recv() {
             let mut build = None;
             let mut handle = |request: Request| match request {
-                Request::Build { topology, key } => build = Some((topology, key)),
-                Request::Seed(bands) => last = bands,
+                Request::Build {
+                    topology,
+                    key,
+                    filtered_channels,
+                } => build = Some((topology, key, filtered_channels)),
+                Request::Seed { topology, bands } => last = Some((topology, bands)),
                 Request::Retire(retired) => drop(retired),
             };
             handle(first);
             while let Ok(next) = rx.try_recv() {
                 handle(next);
             }
-            let Some((topology, key)) = build else {
+            let Some((topology, key, filtered_channels)) = build else {
                 continue;
+            };
+            let previous = match &last {
+                Some((topology, bands)) => PreviousBands {
+                    topology: Some(topology),
+                    bands,
+                },
+                None => PreviousBands {
+                    topology: None,
+                    bands: &[],
+                },
             };
             // A backend that panics while its table is sampled must not take
             // the worker with it: every later change would go unanswered.
@@ -144,7 +206,8 @@ impl BandWorker {
                     key,
                     num_speakers,
                     sample_rate,
-                    &last,
+                    previous,
+                    filtered_channels,
                 )
             }))
             .unwrap_or_else(|payload| {
@@ -161,7 +224,7 @@ impl BandWorker {
             });
             let outcome = match built {
                 Ok(set) => {
-                    last = set.render_bands.clone();
+                    last = Some((Arc::clone(&topology), set.render_bands.clone()));
                     if error_reported {
                         control.report_band_build_error(String::new());
                         error_reported = false;
@@ -178,9 +241,7 @@ impl BandWorker {
                     Finished::Failed(FailedBuild { key, topology })
                 }
             };
-            // An older outcome still waiting is superseded: it drops here.
-            let superseded = finished.lock().replace(outcome);
-            drop(superseded);
+            deliver(outcome);
         }
     }
 }
