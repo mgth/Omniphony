@@ -692,7 +692,7 @@ pub fn zero_pad_tail(samples: &mut [f32], written: usize) {
 /// first of a streak through `log` (the callback's queue: never logged here).
 pub fn note_refill_or_underrun(
     state: &mut AdaptiveRuntimeState,
-    log: &CallbackLog,
+    log: &mut CallbackLog,
     what: &'static str,
     available: usize,
     needed: usize,
@@ -1183,10 +1183,11 @@ mod tests {
     #[test]
     fn refill_streak_increments_and_warns_once() {
         let mut s = AdaptiveRuntimeState::new(1.0);
-        note_refill_or_underrun(&mut s, &CallbackLog::new("test"), "u", 10, 40);
+        let (mut log, _reader) = CallbackLog::new("test");
+        note_refill_or_underrun(&mut s, &mut log, "u", 10, 40);
         assert_eq!(s.refill_streak, 1);
         assert!(s.underrun_warned);
-        note_refill_or_underrun(&mut s, &CallbackLog::new("test"), "u", 10, 40);
+        note_refill_or_underrun(&mut s, &mut log, "u", 10, 40);
         assert_eq!(s.refill_streak, 2);
         assert!(s.underrun_warned); // stays latched
     }

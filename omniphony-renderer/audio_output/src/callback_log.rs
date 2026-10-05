@@ -5,10 +5,17 @@
 //! underrun path, the moment the callback is already late, being the one that
 //! logged most. Instead the callback pushes a [`CallbackEvent`] — a static
 //! message, a few numbers, and the resampler's error when there is one — onto
-//! a preallocated lock-free queue, and a normal thread ([`CallbackLogDrain`])
-//! logs it a few milliseconds later. A full queue drops the event and counts
-//! it; nothing in the push allocates, locks or formats, and an event owns
-//! nothing, so dropping one frees nothing either.
+//! a preallocated ring, and a normal thread ([`CallbackLogDrain`]) logs it a
+//! few milliseconds later. A full ring drops the event and counts it; nothing
+//! in the push allocates, locks, formats or waits, and an event owns nothing,
+//! so dropping one frees nothing either.
+//!
+//! The ring is `rtrb`'s, single-producer single-consumer: its push reads the
+//! consumer's position at most once and gives up when there is no free slot.
+//! A general-purpose queue does not promise that. `crossbeam`'s
+//! `ArrayQueue::push` spins while a `pop` is in progress on the slot it
+//! wants, so with the queue full the callback waited for the drain thread, a
+//! normal-priority one, to be scheduled again.
 //!
 //! `tests/realtime_callbacks.rs` holds the callbacks to this.
 
@@ -16,8 +23,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
-
-use crossbeam::queue::ArrayQueue;
 
 /// Numbers an event carries at most.
 const MAX_FIELDS: usize = 10;
@@ -101,10 +106,9 @@ macro_rules! callback_event {
 }
 pub(crate) use callback_event;
 
-/// The queue between a callback and its drain.
-pub struct CallbackLog {
+/// What the two ends of a callback log share besides the ring.
+struct Shared {
     target: &'static str,
-    queue: ArrayQueue<CallbackEvent>,
     dropped: AtomicU64,
     /// The most verbose level the process logger accepts for `target`, as
     /// `log::Level as usize` (0: none). `log::max_level()` cannot stand in for
@@ -113,51 +117,80 @@ pub struct CallbackLog {
     level: AtomicUsize,
 }
 
+/// The callback's end of the log. There is one per log and it cannot be
+/// shared or cloned: the ring has a single producer.
+pub struct CallbackLog {
+    shared: Arc<Shared>,
+    events: rtrb::Producer<CallbackEvent>,
+}
+
 impl CallbackLog {
-    /// A queue whose events are logged under `target` (the backend's module).
-    pub fn new(target: &'static str) -> Arc<Self> {
-        Arc::new(Self {
+    /// A log whose events are logged under `target` (the backend's module):
+    /// this end for the callback, the reader for [`CallbackLogDrain::spawn`].
+    pub fn new(target: &'static str) -> (Self, CallbackLogReader) {
+        let shared = Arc::new(Shared {
             target,
-            queue: ArrayQueue::new(CAPACITY),
             dropped: AtomicU64::new(0),
             level: AtomicUsize::new(accepted_level(target)),
-        })
+        });
+        let (producer, consumer) = rtrb::RingBuffer::new(CAPACITY);
+        let log = Self {
+            shared: Arc::clone(&shared),
+            events: producer,
+        };
+        let reader = CallbackLogReader {
+            shared,
+            events: consumer,
+        };
+        (log, reader)
     }
 
     /// Whether an event at `level` would be logged. One atomic load: the
     /// callback tests it before building an event it would only drop.
     #[inline]
     pub fn enabled(&self, level: log::Level) -> bool {
-        level as usize <= self.level.load(Ordering::Relaxed)
+        level as usize <= self.shared.level.load(Ordering::Relaxed)
     }
 
-    /// Queue `event` for the drain. Realtime-safe: no lock, no allocation.
+    /// Queue `event` for the drain. Realtime-safe: no lock, no allocation and
+    /// no waiting. Without a free slot the event is dropped and counted, and
+    /// that includes the drain being stopped in the middle of taking one.
     #[inline]
-    pub fn push(&self, event: CallbackEvent) {
+    pub fn push(&mut self, event: CallbackEvent) {
         if !self.enabled(event.level) {
             return;
         }
-        if self.queue.push(event).is_err() {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+        if self.events.push(event).is_err() {
+            self.shared.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
 
-    /// Take the logger's current level for `target`, so a level changed at
+/// The drain's end of the log.
+pub struct CallbackLogReader {
+    shared: Arc<Shared>,
+    events: rtrb::Consumer<CallbackEvent>,
+}
+
+impl CallbackLogReader {
+    /// Take the logger's current level for the target, so a level changed at
     /// runtime reaches the callback. On a normal thread only.
     fn follow_logger_level(&self) {
-        self.level
-            .store(accepted_level(self.target), Ordering::Relaxed);
+        self.shared
+            .level
+            .store(accepted_level(self.shared.target), Ordering::Relaxed);
     }
 
     /// Log everything queued. On a normal thread only.
-    pub fn drain(&self) {
-        while let Some(event) = self.queue.pop() {
-            log::log!(target: self.target, event.level, "{event}");
+    pub fn drain(&mut self) {
+        let target = self.shared.target;
+        while let Ok(event) = self.events.pop() {
+            log::log!(target: target, event.level, "{event}");
         }
-        let dropped = self.dropped.swap(0, Ordering::Relaxed);
+        let dropped = self.shared.dropped.swap(0, Ordering::Relaxed);
         if dropped > 0 {
             log::warn!(
-                target: self.target,
+                target: target,
                 "{dropped} output callback log events dropped (queue full)"
             );
         }
@@ -174,38 +207,38 @@ fn accepted_level(target: &str) -> usize {
         .map_or(0, |level| level as usize)
 }
 
-/// The thread that drains a [`CallbackLog`]. Stopping it (on drop) drains
-/// what is left, so nothing queued before is lost.
+/// The thread that drains a [`CallbackLogReader`]. Stopping it (on drop)
+/// drains what is left, so nothing queued before is lost.
 pub struct CallbackLogDrain {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl CallbackLogDrain {
-    pub fn spawn(log: Arc<CallbackLog>) -> Self {
+    pub fn spawn(mut reader: CallbackLogReader) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
+        let shared = Arc::clone(&reader.shared);
         let thread = {
             let stop = Arc::clone(&stop);
-            let log = Arc::clone(&log);
             std::thread::Builder::new()
                 // Linux keeps 15 bytes of a thread name, and what is left must
                 // not read as the callback's own thread in a profiler.
                 .name("cb-log-drain".into())
                 .spawn(move || {
                     while !stop.load(Ordering::Relaxed) {
-                        log.follow_logger_level();
-                        log.drain();
+                        reader.follow_logger_level();
+                        reader.drain();
                         // Parked rather than asleep: dropping the drain wakes
                         // it at once instead of waiting out the interval.
                         std::thread::park_timeout(DRAIN_INTERVAL);
                     }
-                    log.drain();
+                    reader.drain();
                 })
                 .ok()
         };
         if thread.is_none() {
             // Nothing would ever log the events: have the callback build none.
-            log.level.store(0, Ordering::Relaxed);
+            shared.level.store(0, Ordering::Relaxed);
             log::warn!("audio output: no thread to log the output callback's events");
         }
         Self { stop, thread }
@@ -226,12 +259,16 @@ impl Drop for CallbackLogDrain {
 mod tests {
     use super::*;
 
-    /// A queue that accepts events up to `level`, whatever logger the test
+    /// A log that accepts events up to `level`, whatever logger the test
     /// process has (none: `tests/callback_log_level.rs` covers a real one).
-    fn log_at(level: log::Level) -> Arc<CallbackLog> {
-        let log = CallbackLog::new("test");
-        log.level.store(level as usize, Ordering::Relaxed);
-        log
+    fn log_at(level: log::Level) -> (CallbackLog, CallbackLogReader) {
+        let (log, reader) = CallbackLog::new("test");
+        log.shared.level.store(level as usize, Ordering::Relaxed);
+        (log, reader)
+    }
+
+    fn dropped(log: &CallbackLog) -> u64 {
+        log.shared.dropped.load(Ordering::Relaxed)
     }
 
     #[test]
@@ -263,27 +300,51 @@ mod tests {
 
     #[test]
     fn an_event_below_the_level_is_not_queued() {
-        let log = log_at(log::Level::Info);
+        let (mut log, reader) = log_at(log::Level::Info);
         assert!(log.enabled(log::Level::Warn));
         assert!(log.enabled(log::Level::Info));
         assert!(!log.enabled(log::Level::Debug));
         log.push(CallbackEvent::new(log::Level::Debug, "filtered"));
-        assert!(log.queue.is_empty());
+        assert_eq!(reader.events.slots(), 0);
         log.push(CallbackEvent::new(log::Level::Info, "kept"));
-        assert_eq!(log.queue.len(), 1);
-        assert_eq!(log.dropped.load(Ordering::Relaxed), 0);
+        assert_eq!(reader.events.slots(), 1);
+        assert_eq!(dropped(&log), 0);
     }
 
     #[test]
     fn a_full_queue_counts_what_it_drops() {
-        let log = log_at(log::Level::Error);
+        let (mut log, mut reader) = log_at(log::Level::Error);
         for _ in 0..CAPACITY + 5 {
             log.push(CallbackEvent::new(log::Level::Error, "e"));
         }
-        assert_eq!(log.queue.len(), CAPACITY);
-        assert_eq!(log.dropped.load(Ordering::Relaxed), 5);
-        log.drain();
-        assert!(log.queue.is_empty());
-        assert_eq!(log.dropped.load(Ordering::Relaxed), 0);
+        assert_eq!(reader.events.slots(), CAPACITY);
+        assert_eq!(dropped(&log), 5);
+        reader.drain();
+        assert_eq!(reader.events.slots(), 0);
+        assert_eq!(dropped(&log), 0);
+    }
+
+    /// The case a general-purpose queue gets wrong: the queue is full and the
+    /// drain has been preempted in the middle of taking an event, read but its
+    /// slot not released yet. The push must come back at once with the event
+    /// dropped, not wait for the drain to be scheduled again.
+    #[test]
+    fn a_push_does_not_wait_for_a_drain_stopped_mid_event() {
+        let (mut log, mut reader) = log_at(log::Level::Error);
+        for _ in 0..CAPACITY {
+            log.push(CallbackEvent::new(log::Level::Error, "e"));
+        }
+        assert_eq!(dropped(&log), 0);
+
+        // The drain, held where a preempted thread can be.
+        let taking = reader.events.read_chunk(1).unwrap();
+        log.push(CallbackEvent::new(log::Level::Error, "no slot yet"));
+        assert_eq!(dropped(&log), 1);
+
+        // It resumes and releases the slot: the next event fits.
+        taking.commit_all();
+        log.push(CallbackEvent::new(log::Level::Error, "fits"));
+        assert_eq!(dropped(&log), 1);
+        assert_eq!(reader.events.slots(), CAPACITY);
     }
 }

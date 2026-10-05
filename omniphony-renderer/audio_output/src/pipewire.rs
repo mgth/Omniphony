@@ -1060,8 +1060,8 @@ fn run_pipewire_loop(
 
     // The callback reports through this queue; the drain thread logs. Declared
     // before the listener, so it outlives the callback and logs its last events.
-    let callback_log = CallbackLog::new(module_path!());
-    let _callback_log_drain = CallbackLogDrain::spawn(Arc::clone(&callback_log));
+    let (mut callback_log, callback_log_reader) = CallbackLog::new(module_path!());
+    let _callback_log_drain = CallbackLogDrain::spawn(callback_log_reader);
 
     let _listener = stream
         .add_local_listener_with_user_data(())
@@ -1606,7 +1606,7 @@ fn run_pipewire_loop(
                                 zero_pad_tail(&mut dest[..max_samples], copy_count);
                                 note_refill_or_underrun(
                                     &mut state.runtime,
-                                    &callback_log,
+                                    &mut callback_log,
                                     "resampler output underrun: zero-padding the remainder",
                                     copy_count,
                                     audio_samples_needed,
@@ -1699,7 +1699,7 @@ fn run_pipewire_loop(
                                 zero_pad_tail(&mut dest[..max_samples], copy_count);
                                 note_refill_or_underrun(
                                     &mut state.runtime,
-                                    &callback_log,
+                                    &mut callback_log,
                                     "resampler underrun: zero-padding the remainder",
                                     fifo_available,
                                     audio_samples_needed,
@@ -1986,7 +1986,7 @@ fn run_pipewire_loop(
                             if samples_to_read < max_samples {
                                 note_refill_or_underrun(
                                     &mut state.runtime,
-                                    &callback_log,
+                                    &mut callback_log,
                                     "buffer underrun: zero-padding the remainder",
                                     samples_to_read,
                                     max_samples,

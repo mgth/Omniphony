@@ -76,7 +76,7 @@ const CALLEE_FUNCTIONS: &[(&str, &str)] = &[
     ),
     (
         "src/callback_log.rs",
-        "pub fn push(&self, event: CallbackEvent) {",
+        "pub fn push(&mut self, event: CallbackEvent) {",
     ),
 ];
 

@@ -425,8 +425,8 @@ impl CpalWriter {
         // stands until the next one), as the PipeWire callback does.
         let mut callback_cfg = initial_cfg.clone();
         // The callback reports through this queue; the drain thread logs.
-        let callback_log = CallbackLog::new(module_path!());
-        let callback_log_drain = CallbackLogDrain::spawn(Arc::clone(&callback_log));
+        let (mut callback_log, callback_log_reader) = CallbackLog::new(module_path!());
+        let callback_log_drain = CallbackLogDrain::spawn(callback_log_reader);
 
         // The whole output callback, on an f32 device buffer. Devices whose
         // native format is not f32 (ASIO drivers commonly expose only I32)
@@ -790,7 +790,7 @@ impl CpalWriter {
                 // Underrun
                 note_refill_or_underrun(
                     &mut runtime_state,
-                    &callback_log,
+                    &mut callback_log,
                     "output underrun: zero-padding the remainder",
                     resampler_fifo.output_len(),
                     audio_samples_needed,
