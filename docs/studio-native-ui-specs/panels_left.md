@@ -303,7 +303,7 @@ Opened by the brand row **and** by `#aboutBtn` (§3.1). Contents, in order:
 | `about.version` "Version" → `#aboutVersion` | `info.version` = `CARGO_PKG_VERSION` | |
 | `about.license` "License" → `#aboutLicense` | `info.license` = "GPL-3.0-or-later" | |
 | `about.repository` "Repository" → `#aboutRepositoryLink` | `info.repository` (note: host serialises `repository_url`; JS reads `info.repository`, so in practice the baked href `https://github.com/mgth/Omniphony` stays) | external link |
-| `about.rendererVersion` "Renderer" → `#aboutRendererVersion` | `app.renderVersion` (+ `" · ABI " + app.renderAbi` when present); `—` when unknown; tooltip = text + `\n` + `app.renderExecutable` | `updateAboutRendererVersion` |
+| `about.rendererVersion` "Renderer" → `#aboutRendererVersion` | `app.renderVersion` (+ `" · ABI " + app.renderAbi`, then `" · bridge_api " + app.renderBridgeApi`, each when present); `—` when unknown; tooltip = text + `\n` + `app.renderExecutable` | `updateAboutRendererVersion` |
 | `about.configPath` "Config" → `#aboutConfigPath` | `app.renderConfigPath`; if `renderConfigStatus` is `missing`/`parse_error` → `"<path> — " + t('about.configMissing'|'about.configParseError')` in **red `#ff7676`**; no path but connected → `t('about.configDefaults')` in **amber `#ffb347`**; else `—` | `updateAboutConfigPath` |
 | `#aboutCloseBtn` | `common.close` | closes |
 
