@@ -795,6 +795,37 @@ fn an_oversized_evaluation_grid_is_refused_and_reported() {
     assert!(err.to_string().contains("budget"), "{err}");
 }
 
+/// The band gain table Studio subscribes to keeps every band's gains: its
+/// budget counts them all. On a four-band layout, a grid one band's table
+/// would fit in is refused, before anything is allocated.
+#[test]
+fn the_band_gain_table_budget_counts_every_band() {
+    use crate::render_backend::MAX_EVALUATION_TABLE_BYTES;
+    let r = build_table_renderer(true, true);
+    let control = r.renderer_control();
+    let layout = control.active_topology().speaker_layout.clone();
+    assert_eq!(crate::crossover::compute_bands(&layout).len(), 4);
+    let speakers = layout.speakers.len();
+    // The largest cubic grid one band's table fits in (the build samples
+    // each axis at its size plus one).
+    let table = |side: usize| (side + 1).pow(3) * speakers * 4;
+    let mut side = 2;
+    while table(side + 1) <= MAX_EVALUATION_TABLE_BYTES {
+        side += 1;
+    }
+    assert!(4 * table(side) > MAX_EVALUATION_TABLE_BYTES);
+    {
+        let mut live = control.live.write();
+        let g = &mut live.evaluation.cartesian;
+        (g.x_size, g.y_size, g.z_size, g.z_neg_size) = (side, side, side, 0);
+    }
+    let err = control
+        .build_band_gaintable_full()
+        .err()
+        .expect("four bands do not fit");
+    assert!(err.to_string().contains("budget"), "{err}");
+}
+
 /// In cascaded binaural mode the virtual speakers stand where the installed
 /// bands place them. After a speaker move the bands of the previous layout
 /// render on until the worker's set lands, and for good if it cannot be built:

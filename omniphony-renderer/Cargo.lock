@@ -1627,6 +1627,7 @@ dependencies = [
  "runtime_control",
  "script_backend",
  "serde_json",
+ "serde_yaml_ng",
  "socket2",
  "sys",
 ]

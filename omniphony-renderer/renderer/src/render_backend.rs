@@ -3004,6 +3004,15 @@ mod size_interval_tests {
     #[test]
     fn an_oversized_grid_is_refused_before_it_is_allocated() {
         let model: Arc<dyn GainModel> = Arc::from(make_model());
+        // Every table counts: a grid that fits once is refused four times over.
+        let cells = [128, 128, 128];
+        let one = 128 * 128 * 128 * 12 * 4;
+        assert!(one < MAX_EVALUATION_TABLE_BYTES && 4 * one > MAX_EVALUATION_TABLE_BYTES);
+        check_table_budget("cartesian", &cells, 12, 1).expect("one band fits");
+        assert!(
+            check_table_budget("cartesian", &cells, 12, 4).is_err(),
+            "four do not"
+        );
         // The default grid on 24 speakers, eight size steps: well inside.
         check_table_budget("cartesian", &[62, 62, 30], 24, 9).expect("the default grid fits");
 

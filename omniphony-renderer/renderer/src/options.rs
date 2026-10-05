@@ -3285,7 +3285,9 @@ pub fn reset_live_to_defaults(live: &mut LiveParams, env: &OptionEnv) {
 /// through the setter instead, which clamps a finite number as it would one
 /// from the wire; what the setter refuses (NaN, an infinity) leaves the
 /// option as it was before the file was read. A NaN gain read from the file
-/// would otherwise render NaN on every speaker.
+/// would otherwise render NaN on every speaker. If the option already held
+/// an unsound value — a host's boot copied it from the same file before the
+/// seed — it gets its declared default.
 fn seed_option(spec: &OptionSpec, live: &mut LiveParams, render: &RenderConfig, env: &OptionEnv) {
     let before = (spec.get_json)(live);
     (spec.config_seed)(live, render, env);
@@ -3295,8 +3297,15 @@ fn seed_option(spec: &OptionSpec, live: &mut LiveParams, render: &RenderConfig, 
     }
     let clamped = set_from_json(spec, live, &seeded, env).is_some()
         && spec.kind.admits(&(spec.get_json)(live));
-    if !clamped {
-        let _ = set_from_json(spec, live, &before, env);
+    // What the option held before is not necessarily sound either: a host's
+    // boot copies some values from the same file before seeding (the master
+    // gain into the renderer it builds, say). Failing that, the declared
+    // default.
+    if !clamped
+        && !(set_from_json(spec, live, &before, env).is_some()
+            && spec.kind.admits(&(spec.get_json)(live)))
+    {
+        let _ = set_from_json(spec, live, &spec.default.to_json(), env);
     }
     log::warn!(
         "config: {} = {seeded} is outside what the option accepts; using {}",

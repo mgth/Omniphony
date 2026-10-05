@@ -2448,6 +2448,9 @@ impl RendererControl {
         let layout = topology.speaker_layout.clone();
         let speaker_count = layout.speakers.len();
 
+        // Every band's gains are kept, so all of them count in the budget.
+        let bands = crate::crossover::compute_bands(&layout);
+
         // Same cartesian grid the full gain table uses.
         let (x_positions, y_positions, z_positions, template) = {
             let live = self.live.read();
@@ -2467,7 +2470,7 @@ impl RendererControl {
                     c.z_size.max(2).saturating_add(c.z_neg_size),
                 ],
                 speaker_count,
-                1,
+                bands.len(),
             )?;
             (
                 crate::render_backend::evenly_spaced_axis(
@@ -2489,8 +2492,6 @@ impl RendererControl {
         };
         let (nx, ny, nz) = (x_positions.len(), y_positions.len(), z_positions.len());
         let cell_count = nx * ny * nz;
-
-        let bands = crate::crossover::compute_bands(&layout);
 
         let mut band_meta: Vec<(f32, f32)> = Vec::with_capacity(bands.len());
         let mut band_gains_all: Vec<Vec<f32>> = Vec::with_capacity(bands.len());
