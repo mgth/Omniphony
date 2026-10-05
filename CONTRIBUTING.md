@@ -174,6 +174,60 @@ native Studio's architecture test.
 - **Branch names**: use generic, descriptive names (e.g. `fix/spdif-parser`,
   `feat/my-backend`).
 
+## Writing tests
+
+A test earns its place by failing when the behaviour it names breaks. The
+rules below come from a review that found tests passing without checking
+anything; each names the failure it prevents.
+
+- **A test must be able to fail.** Never `return` early when a fixture, a
+  device or an environment variable is missing: the run reports `ok` for a
+  test that did not happen. Use `#[ignore = "why"]`, so the reason shows in
+  every run, and make the test fail with a message when run without what it
+  needs. Prefer a committed fixture (the reference bridge and the bundled demo
+  WAV run the engine tests everywhere).
+- **Guard against vacuous comparisons.** Comparing two renders, two state
+  dumps or two lists proves nothing when both are empty: assert that there is
+  something to compare. A negative test checks *which* error it got (the
+  reason in the message), not just `is_err()`: an input that is wrong in two
+  ways fails for the wrong one. A sweep counts what it reached and asserts the
+  count.
+- **Check that it bites.** After writing a test for a fix, revert the fix (or
+  break the code the test guards) and watch it fail. Say so in the PR.
+- **Test through public seams.** Assert what a caller sees — the rendered
+  output, the published state, the returned error — not private fields, exact
+  call counts or a re-implementation of the code under test. Those break on a
+  correct refactor and pass on a wrong one that keeps the structure.
+- **Stay hermetic.** Tests run in parallel, in one process, on machines where
+  a renderer and Studio may be running: bind sockets to port 0 and send only
+  to sockets the test owns (never 9000 or `OMNIPHONY_OSC_PORT`); write under a
+  temp directory of the test's own; change an environment variable only under
+  the one lock its crate's tests share for that, and restore it even on panic;
+  hold a module's test lock before touching its process-global state (the
+  overlay, the OSC port registry).
+- **Every external input gets negative tests**: OSC datagrams, config.yaml,
+  SOFA/WAV files, the C ABI. Malformed input must be refused or bounded, never
+  panic, allocate without bound, or reach the render as NaN. The registry
+  sweeps (`live_options_conformance.rs`, the control sweeps in
+  `orender_engine/src/osc/dispatch.rs`) cover every option and address at
+  once; a new option or address is covered by declaring it.
+- **Keep fixtures shared and fast.** Reuse the helpers that exist
+  (`dsp_fixtures` for scenes, signals and analysis; `saf_kemar_shared` rather
+  than parsing the embedded set again) and build an expensive fixture once per
+  test, not once per case.
+- **Coverage guides, it does not gate.** A covered line is not a checked one.
+  To find untested code, measure locally — no global threshold, which would
+  reward tests that execute without asserting:
+
+  ```sh
+  cd omniphony-renderer
+  RUSTFLAGS="-C instrument-coverage" LLVM_PROFILE_FILE="$PWD/../cov/%p-%m.profraw" \
+    CARGO_TARGET_DIR=../cov/target cargo test --workspace
+  ```
+
+  then merge the profiles with `llvm-profdata` and report with `llvm-cov`,
+  using an LLVM matching the toolchain's (`rustc -vV`).
+
 ## DSP validation
 
 Changes to the render path, the crossover, the VBAP panner or the binaural
