@@ -17,6 +17,7 @@ pub mod decode_step;
 pub mod degraded;
 pub mod engine;
 pub mod events;
+pub mod frame_pipeline;
 pub mod object_gen;
 pub mod osc;
 pub mod osc_settings;

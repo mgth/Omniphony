@@ -1,7 +1,7 @@
-//! Metering around one render call, shared by the embedded engine and the
-//! standalone renderer (`src/cli/decode/sample_write.rs`), so the levels a
-//! client sees do not depend on which host renders: what goes into which
-//! accumulator, and when a snapshot is due.
+//! Metering around one render call, run by the frame sequence both hosts
+//! share ([`crate::frame_pipeline`]), so the levels a client sees do not
+//! depend on which host renders: what goes into which accumulator, and when a
+//! snapshot is due.
 
 use renderer::metering::{AudioMeter, MeterSnapshot};
 use renderer::spatial_renderer::{RenderedFrame, SpatialRenderer};
