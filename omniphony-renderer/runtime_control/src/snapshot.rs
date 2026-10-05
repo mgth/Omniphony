@@ -460,7 +460,9 @@ fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String 
         "spatial": true,
         "metering": true,
         "fileRequestIds": true,
-        "controlConfig": control_config
+        "controlConfig": control_config,
+        // What a client compares its own contract with (osc-contract).
+        "contractRevision": crate::osc_contract::CONTRACT_REVISION
     })
     .to_string()
 }
@@ -471,6 +473,17 @@ mod capability_tests {
 
     fn parse(json: &str) -> serde_json::Value {
         serde_json::from_str(json).expect("valid capabilities JSON")
+    }
+
+    #[test]
+    fn both_variants_advertise_the_contract_revision() {
+        for has_host in [true, false] {
+            let v = parse(&build_renderer_capabilities_json(has_host, has_host));
+            assert_eq!(
+                v["contractRevision"],
+                crate::osc_contract::CONTRACT_REVISION
+            );
+        }
     }
 
     #[test]

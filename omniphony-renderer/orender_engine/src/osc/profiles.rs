@@ -17,7 +17,7 @@ use runtime_control::HostControlHandler;
 use runtime_control::osc_contract;
 
 use super::client_registry::OscClientRegistry;
-use super::export::build_live_state;
+use super::export::broadcast_live_state;
 use super::gaintable::GaintableCache;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{broadcast_int, broadcast_string};
@@ -222,7 +222,7 @@ pub(crate) fn handle_profile_message(
     broadcast_profiles_state(control, socket, clients);
     // Full state refresh so every client view (options, layout, binaural,
     // gains…) re-syncs to the post-operation state.
-    build_live_state(control, host).broadcast(socket, clients);
+    broadcast_live_state(control, host, socket, clients);
     log::info!(
         "OSC {addr}: '{name}' done (active profile '{}')",
         config.active_profile_name()
@@ -354,7 +354,7 @@ pub(crate) fn reload_config_in_place(
     broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
     broadcast_profiles_state(control, socket, clients);
-    build_live_state(control, host).broadcast(socket, clients);
+    broadcast_live_state(control, host, socket, clients);
     log::info!(
         "OSC reload_config: reloaded {} in place (active profile '{}')",
         path.display(),
@@ -605,8 +605,11 @@ mod tests {
         save_errors(&client)
     }
 
-    /// The `save_error` strings queued on `client`: everything was sent
-    /// before the handler returned, so draining without waiting is enough.
+    /// The `save_error` strings `client` received: everything was sent
+    /// before the handler returned, but not necessarily received. macOS hands
+    /// a loopback datagram to the receiving socket from another thread, so it
+    /// can still be on its way when the handler returns; the drain waits for
+    /// the socket to go quiet rather than take only what is already there.
     fn save_errors(client: &UdpSocket) -> Vec<String> {
         fn collect(packet: rosc::OscPacket, out: &mut Vec<String>) {
             match packet {
@@ -624,7 +627,9 @@ mod tests {
                 }
             }
         }
-        client.set_nonblocking(true).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
         let mut out = Vec::new();
         let mut buf = vec![0u8; 70_000];
         while let Ok(len) = client.recv(&mut buf) {
