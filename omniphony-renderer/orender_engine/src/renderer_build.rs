@@ -596,8 +596,10 @@ pub fn seed_runtime_state_from_render_config(
         live.options.drc_mode = render_cfg
             .and_then(|c| c.options.drc_mode.clone())
             .unwrap_or_else(|| "Off".to_string());
+        // A non-finite weight in the file reads as none: clamp keeps a NaN.
         live.options.drc_weight = render_cfg
             .and_then(|c| c.options.drc_weight)
+            .filter(|w| w.is_finite())
             .unwrap_or(1.0)
             .clamp(0.0, 1.0);
     }
@@ -772,6 +774,90 @@ mod tests {
             None,
         )
         .expect("renderer")
+    }
+
+    /// The boot path a host takes, end to end: a float option written into
+    /// config.yaml as NaN, an infinity or 1e30 never reaches the live state
+    /// outside its bounds — not through the values the renderer is built
+    /// with, not through the copies the boot makes before and after the
+    /// registry seed. A renderer that refuses to build is an answer too.
+    #[test]
+    fn a_hostile_float_in_the_file_never_reaches_the_live_state() {
+        use renderer::options::{LIVE_OPTIONS, OptionKind};
+        use std::sync::Mutex;
+
+        /// Boot from `yaml` as a host does; the options outside their kind, or
+        /// `None` when the file is refused or the renderer does not build.
+        fn boot(yaml: &str) -> Option<Vec<String>> {
+            let config = serde_yaml_ng::from_str::<renderer::config::Config>(yaml).ok()?;
+            let render = config.render.unwrap_or_default();
+            let params = SpatialRendererParams::from_render_config(Some(&render));
+            let renderer = build_spatial_renderer(
+                &params,
+                SpeakerLayout::preset("7.1.4").expect("preset layout"),
+                48_000,
+                bridge_api::RVbapCartesianDefaults::BALANCED,
+                bridge_api::RVbapTableMode::Cartesian,
+                Some(&render),
+            )
+            .ok()?;
+            let control = renderer.renderer_control();
+            seed_runtime_state_from_render_config(&control, Some(&render));
+            let live = control.live.read();
+            Some(
+                LIVE_OPTIONS
+                    .iter()
+                    .filter(|spec| !spec.kind.admits(&(spec.get_json)(&live)))
+                    .map(|spec| format!("{} = {}", spec.key, (spec.get_json)(&live)))
+                    .collect(),
+            )
+        }
+
+        let violations = Mutex::new(Vec::new());
+        let booted = Mutex::new(0usize);
+        // One thread per option: each boot builds a renderer.
+        std::thread::scope(|scope| {
+            for spec in LIVE_OPTIONS {
+                if !matches!(
+                    spec.kind,
+                    OptionKind::Float { .. } | OptionKind::FloatArray { .. }
+                ) {
+                    continue;
+                }
+                let (violations, booted) = (&violations, &booted);
+                scope.spawn(move || {
+                    for value in [
+                        ".nan",
+                        ".inf",
+                        "-.inf",
+                        "1e30",
+                        "-1e30",
+                        "[.nan, .nan, .nan]",
+                    ] {
+                        let yaml = format!(
+                            "render:\n  evaluation_cartesian_x_size: 5\n  \
+                             evaluation_cartesian_y_size: 5\n  evaluation_cartesian_z_size: 3\n  \
+                             {}: {}\n",
+                            spec.key, value
+                        );
+                        let Some(bad) = boot(&yaml) else { continue };
+                        *booted.lock().unwrap() += 1;
+                        violations.lock().unwrap().extend(
+                            bad.into_iter()
+                                .map(|b| format!("{}: {value} left {b}", spec.key)),
+                        );
+                    }
+                });
+            }
+        });
+        let violations = violations.into_inner().unwrap();
+        assert!(
+            violations.is_empty(),
+            "the boot path let a hostile config value through:\n{}",
+            violations.join("\n")
+        );
+        let booted = booted.into_inner().unwrap();
+        assert!(booted > 50, "too few boots to mean anything: {booted}");
     }
 
     /// A config-set evaluation table mode is where the live mode starts, so

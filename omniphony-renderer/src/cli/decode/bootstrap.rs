@@ -421,11 +421,17 @@ fn attach_cli_host_state(
 
     handler.audio_control = Some(Arc::clone(&audio_control));
     handler.input_control = Some(Arc::clone(&input_control));
-    Arc::new(host_audio::HostAudio::new(
-        Arc::clone(ctrl),
-        audio_control,
-        input_control,
-    ))
+    let host =
+        host_audio::HostAudio::new(Arc::clone(ctrl), Arc::clone(&audio_control), input_control);
+    // The output and input state above was built straight from config.yaml,
+    // which is edited by hand: bound it as the OSC setters would, and run the
+    // resampler on the bounded tuning from the start.
+    if !host.bound_options_to_their_kinds().is_empty() {
+        let mut adaptive = audio_control.requested_adaptive_config();
+        adaptive.update_interval_callbacks = adaptive.update_interval_callbacks.max(1);
+        handler.runtime.adaptive_resampling_config = adaptive;
+    }
+    Arc::new(host)
 }
 
 /// Wire the audio meter and the diag publication cadence to the shared rate
@@ -569,4 +575,103 @@ pub fn init_render_handler(
     )?;
     init_osc_runtime(handler, args, render_cfg, input_path, config_path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod host_bounds_tests {
+    use super::*;
+    use crate::cli::command::{Commands, ParsedCli};
+    use runtime_control::HostControlHandler;
+
+    fn args() -> RenderArgs {
+        let parsed = ParsedCli::parse_from(["orender", "render"]).expect("parse render args");
+        match parsed.cli.command {
+            Commands::Render(args) => args,
+            _ => unreachable!("explicit render subcommand"),
+        }
+    }
+
+    /// The host this bootstrap builds for `render`: its output and input
+    /// state straight from the config, as `attach_cli_host_state` does.
+    fn host_from(render: &renderer::config::RenderConfig) -> host_audio::HostAudio {
+        // The host only reaches the renderer's control through its options;
+        // one renderer serves every case.
+        static CTRL: std::sync::OnceLock<Arc<RendererControl>> = std::sync::OnceLock::new();
+        let ctrl = Arc::clone(
+            CTRL.get_or_init(|| super::super::handler::tests::test_renderer().renderer_control()),
+        );
+        let audio = Arc::new(AudioControl::new(RequestedAudioOutputConfig {
+            adaptive: build_adaptive_resampling_config(Some(render)),
+            ..Default::default()
+        }));
+        let input = Arc::new(InputControl::new(build_requested_input_config(Some(
+            render,
+        ))));
+        host_audio::HostAudio::new(ctrl, audio, input)
+    }
+
+    /// Every option of `host` the kind of which does not admit its value.
+    fn out_of_bounds(host: &host_audio::HostAudio) -> Vec<String> {
+        host.options_json()
+            .into_iter()
+            .filter(|(key, value)| !host.option_kind(key).is_some_and(|kind| kind.admits(value)))
+            .map(|(key, value)| format!("{key} = {value}"))
+            .collect()
+    }
+
+    /// A default config is left alone: the bound changes nothing.
+    #[test]
+    fn a_default_host_is_within_its_bounds() {
+        let host = host_from(&Default::default());
+        assert_eq!(out_of_bounds(&host), Vec::<String>::new());
+        assert!(host.bound_options_to_their_kinds().is_empty());
+    }
+
+    /// Every numeric host option, written into config.yaml as NaN, an
+    /// infinity, a huge or negative number, ends up within its kind once the
+    /// host is bound — the resampler tuning included, which this bootstrap
+    /// copies from the file field by field.
+    #[test]
+    fn a_hostile_host_value_in_the_file_is_bounded() {
+        let schema: Vec<serde_json::Value> =
+            serde_json::from_str(&host_audio::host_options_schema_json()).expect("schema");
+        let mut reached = 0;
+        let mut violations = Vec::new();
+        for entry in &schema {
+            let key = entry["key"].as_str().expect("key");
+            if !matches!(
+                entry["kind"].as_str(),
+                Some("float" | "int" | "optional_int")
+            ) {
+                continue;
+            }
+            for value in [".nan", ".inf", "-.inf", "1e30", "-1e30", "-5", "4294967296"] {
+                let yaml = format!("render:\n  {key}: {value}\n");
+                let Ok(config) = serde_yaml_ng::from_str::<renderer::config::Config>(&yaml) else {
+                    continue;
+                };
+                let host = host_from(&config.render.unwrap_or_default());
+                if out_of_bounds(&host).is_empty() {
+                    continue;
+                }
+                reached += 1;
+                host.bound_options_to_their_kinds();
+                violations.extend(
+                    out_of_bounds(&host)
+                        .into_iter()
+                        .map(|bad| format!("{key}: {value} left {bad}")),
+                );
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "host options outside their bounds after binding:\n{}",
+            violations.join("\n")
+        );
+        // The file must actually reach the host state, or this proves nothing.
+        assert!(
+            reached > 20,
+            "hostile values that reached the host: {reached}"
+        );
+    }
 }

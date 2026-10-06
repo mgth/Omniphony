@@ -97,6 +97,30 @@ impl OptionKind {
             _ => 1,
         }
     }
+
+    /// Whether `value`, as an option's `get_json` reports it, is one this
+    /// kind allows: a finite number within the bounds, a member of the set.
+    /// A non-finite float reports as `null`, so it is never admitted.
+    pub fn admits(self, value: &serde_json::Value) -> bool {
+        let number_in = |v: &serde_json::Value, min: f64, max: f64| {
+            v.as_f64()
+                .is_some_and(|x| x.is_finite() && x >= min && x <= max)
+        };
+        match self {
+            Self::Bool => value.is_boolean(),
+            Self::Enum(allowed) => value.as_str().is_some_and(|s| allowed.contains(&s)),
+            // Validated against the running host by the setter.
+            Self::Str | Self::DynamicEnum { .. } => value.is_string(),
+            Self::Float { min, max, .. } => number_in(value, min as f64, max as f64),
+            Self::OptionalInt { min, max } => {
+                value.is_null() || number_in(value, min as f64, max as f64)
+            }
+            Self::Int { min, max } => number_in(value, min as f64, max as f64),
+            Self::FloatArray { len, min, max, .. } => value.as_array().is_some_and(|a| {
+                a.len() == len && a.iter().all(|v| number_in(v, min as f64, max as f64))
+            }),
+        }
+    }
 }
 
 /// When a group's writes take effect.
@@ -629,6 +653,11 @@ const DISTANCE_DIFFUSE_CURVE_KIND: OptionKind = OptionKind::Float {
     step: 0.05,
 };
 
+/// The cells below the horizon: none is a grid that stops at it.
+const GRID_CELLS_OR_NONE_KIND: OptionKind = OptionKind::Int {
+    min: 0,
+    max: i32::MAX as i64,
+};
 /// Grid sizes and counts: at least one cell, as the old handlers floored them.
 const GRID_CELLS_KIND: OptionKind = OptionKind::Int {
     min: 1,
@@ -1451,7 +1480,7 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
     },
     OptionSpec {
         key: "evaluation_cartesian_z_neg_size",
-        kind: GRID_CELLS_KIND,
+        kind: GRID_CELLS_OR_NONE_KIND,
         default: OptionDefault::Build,
         flags: OptionFlags::NONE,
         group: Some(&EVALUATION),
@@ -1462,7 +1491,7 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
             tail: "z_neg_size",
         },
         set: |live, raw, _env| {
-            let cells = raw_int(raw, GRID_CELLS_KIND)?;
+            let cells = raw_int(raw, GRID_CELLS_OR_NONE_KIND)?;
             live.evaluation.cartesian.z_neg_size = cells as usize;
             Some(cells.to_string())
         },
@@ -1754,8 +1783,10 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         },
         set: |live, raw, _env| {
             let v = raw_float(raw, HYBRID_CURVE_SMOOTHING_KIND)?;
-            // The old handler's tolerance: float noise is no change.
-            if (live.hybrid.curve_smoothing - v).abs() > 1e-6 {
+            // The old handler's tolerance: float noise is no change. A NaN
+            // compares unequal to nothing, so it is replaced outright.
+            let current = live.hybrid.curve_smoothing;
+            if current.is_nan() || (current - v).abs() > 1e-6 {
                 live.hybrid.curve_smoothing = v;
             }
             Some(format!("{v}"))
@@ -2834,6 +2865,101 @@ pub fn reset_live_to_defaults(live: &mut LiveParams, env: &OptionEnv) {
     live.placement.reset_settings();
 }
 
+/// Seed one option from a loaded config, within the bounds its setter
+/// enforces on the wire.
+///
+/// `config.yaml` is edited by hand and copied between machines, so its values
+/// are no more trusted than an OSC argument; but the rows' `config_seed`
+/// copy them as they are. A value the option's kind does not admit goes
+/// through the setter instead, which clamps a finite number as it would one
+/// from the wire; what the setter refuses (NaN, an infinity) leaves the
+/// option as it was before the file was read. A NaN gain read from the file
+/// would otherwise render NaN on every speaker. If the option already held
+/// an unsound value — a host's boot copied it from the same file before the
+/// seed — it gets its declared default.
+fn seed_option(spec: &OptionSpec, live: &mut LiveParams, render: &RenderConfig, env: &OptionEnv) {
+    let before = (spec.get_json)(live);
+    (spec.config_seed)(live, render, env);
+    let seeded = (spec.get_json)(live);
+    if spec.kind.admits(&seeded) {
+        return;
+    }
+    let clamped = set_from_json(spec, live, &seeded, env).is_some()
+        && spec.kind.admits(&(spec.get_json)(live));
+    // What the option held before is not necessarily sound either: a host's
+    // boot copies some values from the same file before seeding (the master
+    // gain into the renderer it builds, say). Failing that, the declared
+    // default.
+    if !clamped
+        && !(set_from_json(spec, live, &before, env).is_some()
+            && spec.kind.admits(&(spec.get_json)(live)))
+    {
+        let _ = set_from_json(spec, live, &spec.default.to_json(), env);
+    }
+    log::warn!(
+        "config: {} = {seeded} is outside what the option accepts; using {}",
+        spec.key,
+        (spec.get_json)(live)
+    );
+}
+
+/// Apply a `get_json`-shaped value through the option's setter.
+fn set_from_json(
+    spec: &OptionSpec,
+    live: &mut LiveParams,
+    value: &serde_json::Value,
+    env: &OptionEnv,
+) -> Option<String> {
+    with_raw_of(value, |raw| (spec.set)(live, raw, env))
+}
+
+/// Run `f` on the raw form of a `get_json`-shaped value.
+fn with_raw_of<T>(
+    value: &serde_json::Value,
+    f: impl FnOnce(&RawOptionValue) -> Option<T>,
+) -> Option<T> {
+    use serde_json::Value;
+    match value {
+        Value::Null => f(&RawOptionValue::Null),
+        Value::Bool(b) => f(&RawOptionValue::Bool(*b)),
+        Value::Number(n) => f(&RawOptionValue::Number(n.as_f64()?)),
+        Value::String(s) => f(&RawOptionValue::Str(s)),
+        Value::Array(items) => {
+            let numbers: Option<Vec<f64>> = items.iter().map(Value::as_f64).collect();
+            f(&RawOptionValue::Numbers(&numbers?))
+        }
+        Value::Object(_) => None,
+    }
+}
+
+/// Bring every host option back within its kind: [`seed_option`]'s guard,
+/// for a host whose state was built straight from the config (the standalone
+/// renderer's audio output and live input are) rather than seeded through
+/// the rows. A value its kind does not admit goes through the row's setter,
+/// which clamps a finite number; what the setter refuses gets the declared
+/// default. Returns the keys it changed, each also logged.
+pub fn bound_host_options<H>(host: &H, specs: &[HostOptionSpec<H>]) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    for spec in specs {
+        let value = (spec.get_json)(host);
+        if spec.kind.admits(&value) {
+            continue;
+        }
+        let clamped = with_raw_of(&value, |raw| (spec.set)(host, raw)).is_some()
+            && spec.kind.admits(&(spec.get_json)(host));
+        if !clamped {
+            let _ = with_raw_of(&spec.default.to_json(), |raw| (spec.set)(host, raw));
+        }
+        log::warn!(
+            "config: {} = {value} is outside what the option accepts; using {}",
+            spec.key,
+            (spec.get_json)(host)
+        );
+        changed.push(spec.key);
+    }
+    changed
+}
+
 /// Seed every declared live option — plus the document-valued companion the
 /// registry doesn't model (the placement) — from a loaded config. The plugin
 /// parameter values are `RendererControl`'s
@@ -2841,7 +2967,7 @@ pub fn reset_live_to_defaults(live: &mut LiveParams, env: &OptionEnv) {
 /// two boot paths cannot drift (the FFI/CLI parity bug class).
 pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig, env: &OptionEnv) {
     for spec in LIVE_OPTIONS {
-        (spec.config_seed)(live, render, env);
+        seed_option(spec, live, render, env);
     }
     // Migrate the old phantom boolean + `phantom_params.method` split into the
     // explicit three-position mode. A remembered method remains available even
@@ -2905,7 +3031,7 @@ pub fn seed_rebuilding_rows_from_config(
             continue;
         }
         let before = (spec.get_json)(live);
-        (spec.config_seed)(live, render, env);
+        seed_option(spec, live, render, env);
         if (spec.get_json)(live) != before {
             rebuild = rebuild.max(effect);
         }

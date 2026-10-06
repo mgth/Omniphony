@@ -519,36 +519,61 @@ impl MeasuredHrirData {
             dims.n as usize,
             dims.c as usize,
         );
-        if r < 2 {
-            anyhow::bail!("{r} receiver(s); a binaural set needs the two ears");
-        }
-        if m == 0 || n == 0 {
-            anyhow::bail!("no measurements (M = {m}, N = {n})");
-        }
         let pos = &hrtf.source_position.values;
         let ir = &hrtf.data_ir.values;
-        if pos.len() < m * c || c < 3 {
-            anyhow::bail!("SourcePosition holds {} values for M = {m}", pos.len());
-        }
-        if ir.len() < m * r * n {
-            anyhow::bail!(
-                "Data.IR holds {} values for M×R×N = {}",
-                ir.len(),
-                m * r * n
-            );
-        }
-        let mut positions = Vec::with_capacity(m);
-        let mut irs = Vec::with_capacity(m);
-        for i in 0..m {
-            positions.push([pos[i * c], pos[i * c + 1], pos[i * c + 2]]);
-            let base = i * r * n;
-            irs.push((
-                ir[base..base + n].to_vec(),
-                ir[base + n..base + 2 * n].to_vec(),
-            ));
-        }
+        let (positions, irs) = measurements_from_arrays(m, r, n, c, pos, ir)?;
         Ok(Self::from_sofa_measurements(sample_rate, &positions, irs))
     }
+}
+
+/// One measurement's `(left, right)` impulse responses.
+#[cfg(any(test, feature = "sofa"))]
+type IrPair = (Vec<f32>, Vec<f32>);
+
+/// The `(position, (left, right))` measurements of a SOFA file's arrays:
+/// `pos` holds `M × C` coordinates, `ir` holds `M × R × N` samples (only the
+/// first two receivers are read). Everything in them comes from the file, so
+/// the shape is checked without overflow and a non-finite value is refused:
+/// a NaN response would survive the silence check and render as NaN, a NaN
+/// position has no direction.
+#[cfg(any(test, feature = "sofa"))]
+fn measurements_from_arrays(
+    m: usize,
+    r: usize,
+    n: usize,
+    c: usize,
+    pos: &[f32],
+    ir: &[f32],
+) -> anyhow::Result<(Vec<[f32; 3]>, Vec<IrPair>)> {
+    if r < 2 {
+        anyhow::bail!("{r} receiver(s); a binaural set needs the two ears");
+    }
+    if m == 0 || n == 0 {
+        anyhow::bail!("no measurements (M = {m}, N = {n})");
+    }
+    if c < 3 || m.checked_mul(c).is_none_or(|need| pos.len() < need) {
+        anyhow::bail!("SourcePosition holds {} values for M = {m}", pos.len());
+    }
+    let need = m.checked_mul(r).and_then(|v| v.checked_mul(n));
+    if need.is_none_or(|need| ir.len() < need) {
+        anyhow::bail!("Data.IR holds {} values for M×R×N = {m}×{r}×{n}", ir.len());
+    }
+    let mut positions = Vec::with_capacity(m);
+    let mut irs = Vec::with_capacity(m);
+    for i in 0..m {
+        let p = [pos[i * c], pos[i * c + 1], pos[i * c + 2]];
+        if !p.iter().all(|v| v.is_finite()) {
+            anyhow::bail!("SourcePosition {i} is not finite ({p:?})");
+        }
+        let base = i * r * n;
+        let (left, right) = (&ir[base..base + n], &ir[base + n..base + 2 * n]);
+        if let Some(v) = left.iter().chain(right).find(|v| !v.is_finite()) {
+            anyhow::bail!("Data.IR of measurement {i} holds a non-finite value ({v})");
+        }
+        positions.push(p);
+        irs.push((left.to_vec(), right.to_vec()));
+    }
+    Ok((positions, irs))
 }
 
 impl MeasuredHrirData {
@@ -1554,5 +1579,61 @@ mod tests {
         grid_b.at(37.0, 12.0, &mut b);
         assert_eq!(a.left, b.left);
         assert_eq!(a.right, b.right);
+    }
+
+    /// Two measurements, two receivers, four samples, three coordinates.
+    fn arrays() -> (Vec<f32>, Vec<f32>) {
+        let pos = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let ir = (0..16).map(|i| i as f32 / 16.0).collect();
+        (pos, ir)
+    }
+
+    fn arrays_refusal(m: usize, r: usize, n: usize, c: usize, pos: &[f32], ir: &[f32]) -> String {
+        match measurements_from_arrays(m, r, n, c, pos, ir) {
+            Ok(_) => panic!("the arrays were accepted"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn sofa_arrays_are_split_per_measurement_and_ear() {
+        let (pos, ir) = arrays();
+        let (positions, irs) = measurements_from_arrays(2, 2, 4, 3, &pos, &ir).expect("valid");
+        assert_eq!(positions, vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
+        assert_eq!(irs[1].0, ir[8..12].to_vec(), "second measurement, left ear");
+        assert_eq!(
+            irs[1].1,
+            ir[12..16].to_vec(),
+            "second measurement, right ear"
+        );
+    }
+
+    #[test]
+    fn malformed_sofa_arrays_are_refused_with_their_reason() {
+        let (pos, ir) = arrays();
+        assert!(arrays_refusal(2, 1, 4, 3, &pos, &ir).contains("two ears"));
+        assert!(arrays_refusal(0, 2, 4, 3, &pos, &ir).contains("no measurements"));
+        assert!(arrays_refusal(2, 2, 0, 3, &pos, &ir).contains("no measurements"));
+        assert!(arrays_refusal(2, 2, 4, 2, &pos, &ir).contains("SourcePosition holds"));
+        assert!(arrays_refusal(3, 2, 4, 3, &pos, &ir).contains("SourcePosition holds"));
+        assert!(arrays_refusal(2, 2, 5, 3, &pos, &ir).contains("Data.IR holds"));
+        // Dimensions whose product wraps around are refused, not trusted.
+        assert!(arrays_refusal(2, usize::MAX / 2 + 1, 4, 3, &pos, &ir).contains("Data.IR holds"));
+        assert!(arrays_refusal(usize::MAX / 2 + 1, 2, 4, 3, &pos, &ir).contains("SourcePosition"));
+
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut p = pos.clone();
+            p[4] = bad;
+            assert!(
+                arrays_refusal(2, 2, 4, 3, &p, &ir).contains("SourcePosition 1"),
+                "{bad}"
+            );
+            let mut i = ir.clone();
+            i[13] = bad;
+            assert!(
+                arrays_refusal(2, 2, 4, 3, &pos, &i).contains("measurement 1"),
+                "{bad}"
+            );
+        }
     }
 }

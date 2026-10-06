@@ -254,6 +254,14 @@ impl std::ops::Deref for HostAudio {
 }
 
 impl HostAudio {
+    /// Bring every declared option of this host within its kind (see
+    /// [`renderer::options::bound_host_options`]): for a host whose audio
+    /// output and live input were built straight from config.yaml, before
+    /// anything plays. Returns the keys it changed.
+    pub fn bound_options_to_their_kinds(&self) -> Vec<&'static str> {
+        renderer::options::bound_host_options(&self.io, options::HOST_OPTIONS)
+    }
+
     pub fn new(
         renderer: Arc<RendererControl>,
         audio: Arc<AudioControl>,

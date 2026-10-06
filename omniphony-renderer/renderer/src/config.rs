@@ -2381,23 +2381,16 @@ mod profile_tests {
 
 #[cfg(test)]
 mod config_dir_override_tests {
-    /// The env is process-global, so this test owns it for its duration.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use crate::runtime_env::with_var;
 
     #[test]
     fn a_pinned_runtime_namespace_moves_the_config_out_of_the_shared_location() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let previous = std::env::var("OMNIPHONY_CONFIG_DIR").ok();
-
-        unsafe { std::env::set_var("OMNIPHONY_CONFIG_DIR", "/tmp/omniphony-wf-probe") };
-        let pinned = super::default_config_path();
-        unsafe { std::env::remove_var("OMNIPHONY_CONFIG_DIR") };
-        let shared = super::default_config_path();
-
-        match previous {
-            Some(v) => unsafe { std::env::set_var("OMNIPHONY_CONFIG_DIR", v) },
-            None => unsafe { std::env::remove_var("OMNIPHONY_CONFIG_DIR") },
-        }
+        let pinned = with_var(
+            "OMNIPHONY_CONFIG_DIR",
+            Some("/tmp/omniphony-wf-probe"),
+            super::default_config_path,
+        );
+        let shared = with_var("OMNIPHONY_CONFIG_DIR", None, super::default_config_path);
 
         assert_eq!(
             pinned,
