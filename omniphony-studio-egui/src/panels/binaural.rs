@@ -121,7 +121,7 @@ impl StudioSpike {
         if text(doc, &["outputMode"]).as_deref() != Some("binaural") {
             widgets::note(ui, t("binaural.speakerOutputNote"));
         }
-        self.hrtf_block(ui, doc, path);
+        self.hrtf_block(ui, doc, path, true);
         if path != BinauralPath::Brir {
             self.distance_block(ui, doc);
             self.room_block(ui, doc);
@@ -164,7 +164,26 @@ impl StudioSpike {
         }
     }
 
-    fn hrtf_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>, path: BinauralPath) {
+    /// The Essentials view's HRTF group: the source, its file and what was
+    /// loaded, without the rows that shape it.
+    pub(crate) fn essentials_hrtf(&mut self, ui: &mut Ui) {
+        let doc = {
+            let live = self.host.read();
+            live.app.binaural.clone()
+        };
+        let doc = doc.as_ref();
+        self.adopt_hrir_params(doc);
+        self.hrtf_block(ui, doc, BinauralPath::of(doc), false);
+    }
+
+    /// The HRTF group; `full: false` leaves out the shaping rows.
+    fn hrtf_block(
+        &mut self,
+        ui: &mut Ui,
+        doc: Option<&serde_json::Value>,
+        path: BinauralPath,
+        full: bool,
+    ) {
         let source = text(doc, &["hrirSource"]).unwrap_or_else(|| "saf".to_owned());
         let effective = text(doc, &["hrirEffective"]);
         // The source select and, for a SOFA file, its Browse button: only
@@ -207,7 +226,7 @@ impl StudioSpike {
                 });
             })
             .show(ui, |ui| {
-                self.hrtf_rows(ui, doc, path, &source, effective.as_deref())
+                self.hrtf_rows(ui, doc, path, &source, effective.as_deref(), full)
             });
         if chosen != source {
             self.send_hrir_source(&chosen);
@@ -235,6 +254,7 @@ impl StudioSpike {
         path: BinauralPath,
         source: &str,
         effective: Option<&str>,
+        full: bool,
     ) {
         if path == BinauralPath::Brir {
             // A room response has its own status: the HRIR grid's effective
@@ -286,6 +306,9 @@ impl StudioSpike {
             }
         }
 
+        if !full {
+            return;
+        }
         let mut eq = flag(doc, &["diffuseFieldEq"], false);
         if widgets::switch_row_help(
             ui,
