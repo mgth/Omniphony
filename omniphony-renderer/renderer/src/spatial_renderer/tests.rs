@@ -21,45 +21,45 @@ fn unified_crossover_matches_per_band() {
         for (sp, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
             sp.freq_low = Some(cutoff);
         }
-        SpatialRenderer::new(
-            layout,
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 21,
                 y_size: 21,
                 z_size: 9,
                 z_neg_size: 9,
             },
-            false,
-            true, // position interpolation → trilinear lookup + per-sample motion
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 2.0, 0.5],
-            2.0,
-            0.5,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            21,
-            21,
-            9,
-            9,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: true, // position interpolation → trilinear lookup + per-sample motion
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 21,
+            cartesian_default_y_size: 21,
+            cartesian_default_z_size: 9,
+            cartesian_default_z_neg_size: 9,
+        })
         .unwrap()
     }
 
@@ -113,40 +113,40 @@ fn unified_polar_matches_per_band() {
         for (sp, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
             sp.freq_low = Some(cutoff);
         }
-        SpatialRenderer::new(
-            layout,
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Polar,
-            false,
-            true, // position interpolation → trilinear lookup + per-sample motion
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 2.0, 0.5],
-            2.0,
-            0.5,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedPolar,
-            LiveEvaluationMode::PrecomputedPolar,
-            31,
-            31,
-            15,
-            15,
-        )
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Polar,
+            allow_negative_z: false,
+            vbap_position_interpolation: true, // position interpolation → trilinear lookup + per-sample motion
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedPolar,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedPolar,
+            cartesian_default_x_size: 31,
+            cartesian_default_y_size: 31,
+            cartesian_default_z_size: 15,
+            cartesian_default_z_neg_size: 15,
+        })
         .unwrap()
     }
 
@@ -213,45 +213,45 @@ fn unified_table_with_two_speaker_fallback_band() {
             }
             sp.freq_high = Some(200.0);
         }
-        SpatialRenderer::new(
-            layout,
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 21,
                 y_size: 21,
                 z_size: 9,
                 z_neg_size: 9,
             },
-            false,
-            true,
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 2.0, 0.5],
-            2.0,
-            0.5,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            21,
-            21,
-            9,
-            9,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: true,
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 21,
+            cartesian_default_y_size: 21,
+            cartesian_default_z_size: 9,
+            cartesian_default_z_neg_size: 9,
+        })
         .unwrap()
     }
 
@@ -302,45 +302,45 @@ fn unified_table_with_two_speaker_fallback_band() {
 #[test]
 fn eval_mode_change_reuses_geometry() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let r = SpatialRenderer::new(
-        layout,
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    let r = SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 21,
             y_size: 21,
             z_size: 9,
             z_neg_size: 9,
         },
-        false,
-        true,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
-        21,
-        21,
-        9,
-        9,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: true,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+        cartesian_default_x_size: 21,
+        cartesian_default_y_size: 21,
+        cartesian_default_z_size: 9,
+        cartesian_default_z_neg_size: 9,
+    })
     .unwrap();
     let control = r.renderer_control();
     let topo0 = control.active_topology();
@@ -475,45 +475,45 @@ fn the_published_topology_samples_no_gain_table() {
     use std::sync::atomic::Ordering;
     let smoke = crate::backend_registry::SMOKE_TEST_POSITIONS.len();
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let mut r = SpatialRenderer::new(
-        layout,
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    let mut r = SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 21,
             y_size: 21,
             z_size: 9,
             z_neg_size: 9,
         },
-        false,
-        true,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
-        21,
-        21,
-        9,
-        9,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: true,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+        cartesian_default_x_size: 21,
+        cartesian_default_y_size: 21,
+        cartesian_default_z_size: 9,
+        cartesian_default_z_neg_size: 9,
+    })
     .unwrap();
     let control = r.renderer_control();
 
@@ -759,6 +759,73 @@ fn a_band_build_that_fails_on_the_worker_is_reported_and_not_awaited() {
     );
 }
 
+/// A grid size past the evaluation table budget — typed into config.yaml or
+/// sent over OSC — is refused by the band build before anything is
+/// allocated: the reason reaches the clients, and the previous bands keep
+/// rendering.
+#[test]
+fn an_oversized_evaluation_grid_is_refused_and_reported() {
+    let mut r = build_table_renderer(true, false);
+    let control = r.renderer_control();
+    let pcm = vec![0.25f32; 40];
+    settle(&mut r, &pcm);
+    assert!(!r.speaker_stage_rebuild_failed());
+    let builds = r.speaker_stage_builds();
+    assert_eq!(control.take_band_build_error(), None);
+
+    control.live.write().evaluation.cartesian.x_size = 1_000_000_000;
+    control.bump_geometry_generation();
+    let plan = control.prepare_topology_rebuild().expect("plan");
+    let topology = plan
+        .build_topology_reusing(Some(&control.active_topology()))
+        .expect("the topology itself samples no table");
+    control.publish_topology(topology);
+    settle(&mut r, &pcm);
+
+    assert!(r.speaker_stage_rebuild_failed());
+    assert_eq!(
+        r.speaker_stage_builds(),
+        builds,
+        "the previous bands keep rendering"
+    );
+    let error = control.take_band_build_error().expect("reported");
+    assert!(error.contains("budget"), "{error}");
+    // The band gain table Studio subscribes to samples the same grid.
+    let err = control.build_band_gaintable_full().err().expect("refused");
+    assert!(err.to_string().contains("budget"), "{err}");
+}
+
+/// The band gain table Studio subscribes to keeps every band's gains: its
+/// budget counts them all. On a four-band layout, a grid one band's table
+/// would fit in is refused, before anything is allocated.
+#[test]
+fn the_band_gain_table_budget_counts_every_band() {
+    use crate::render_backend::MAX_EVALUATION_TABLE_BYTES;
+    let r = build_table_renderer(true, true);
+    let control = r.renderer_control();
+    let layout = control.active_topology().speaker_layout.clone();
+    assert_eq!(crate::crossover::compute_bands(&layout).len(), 4);
+    let speakers = layout.speakers.len();
+    // The largest cubic grid one band's table fits in (the build samples
+    // each axis at its size plus one).
+    let table = |side: usize| (side + 1).pow(3) * speakers * 4;
+    let mut side = 2;
+    while table(side + 1) <= MAX_EVALUATION_TABLE_BYTES {
+        side += 1;
+    }
+    assert!(4 * table(side) > MAX_EVALUATION_TABLE_BYTES);
+    {
+        let mut live = control.live.write();
+        let g = &mut live.evaluation.cartesian;
+        (g.x_size, g.y_size, g.z_size, g.z_neg_size) = (side, side, side, 0);
+    }
+    let err = control
+        .build_band_gaintable_full()
+        .err()
+        .expect("four bands do not fit");
+    assert!(err.to_string().contains("budget"), "{err}");
+}
+
 /// In cascaded binaural mode the virtual speakers stand where the installed
 /// bands place them. After a speaker move the bands of the previous layout
 /// render on until the worker's set lands, and for good if it cannot be built:
@@ -932,40 +999,40 @@ fn a_sample_rate_change_takes_the_band_engines_over() {
 #[test]
 fn test_renderer_creation() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let renderer = SpatialRenderer::new(
-        layout,
-        48000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Polar,
-        false,
-        false,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedPolar,
-        LiveEvaluationMode::PrecomputedPolar,
-        31,
-        31,
-        15,
-        15,
-    );
+    let renderer = SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Polar,
+        allow_negative_z: false,
+        vbap_position_interpolation: false,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedPolar,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedPolar,
+        cartesian_default_x_size: 31,
+        cartesian_default_y_size: 31,
+        cartesian_default_z_size: 15,
+        cartesian_default_z_neg_size: 15,
+    });
 
     assert!(renderer.is_ok());
 
@@ -984,45 +1051,45 @@ fn test_renderer_creation() {
 fn virtual_bed_mixes_direct_and_virtualized_channels() {
     fn build() -> SpatialRenderer {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();
-        SpatialRenderer::new(
-            layout,
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 21,
                 y_size: 21,
                 z_size: 9,
                 z_neg_size: 9,
             },
-            false,
-            true,
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 2.0, 0.5],
-            2.0,
-            0.5,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            21,
-            21,
-            9,
-            9,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: true,
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 21,
+            cartesian_default_y_size: 21,
+            cartesian_default_z_size: 9,
+            cartesian_default_z_neg_size: 9,
+        })
         .unwrap()
     }
 
@@ -1128,45 +1195,45 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
                 sp.freq_low = Some(CUTOFF);
             }
         }
-        SpatialRenderer::new(
-            layout,
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 21,
                 y_size: 21,
                 z_size: 9,
                 z_neg_size: 9,
             },
-            false,
-            true,
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 2.0, 0.5],
-            2.0,
-            0.5,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            21,
-            21,
-            9,
-            9,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: true,
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 21,
+            cartesian_default_y_size: 21,
+            cartesian_default_z_size: 9,
+            cartesian_default_z_neg_size: 9,
+        })
         .unwrap()
     }
 
@@ -1315,45 +1382,45 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
 fn all_four_ramp_modes_render_distinctly() {
     fn build() -> SpatialRenderer {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();
-        SpatialRenderer::new(
-            layout,
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 21,
                 y_size: 21,
                 z_size: 9,
                 z_neg_size: 9,
             },
-            false,
-            true, // position interpolation → trilinear lookup + per-sample motion
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 2.0, 0.5],
-            2.0,
-            0.5,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            21,
-            21,
-            9,
-            9,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: true, // position interpolation → trilinear lookup + per-sample motion
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 21,
+            cartesian_default_y_size: 21,
+            cartesian_default_z_size: 9,
+            cartesian_default_z_neg_size: 9,
+        })
         .unwrap()
     }
 
@@ -1374,7 +1441,7 @@ fn all_four_ramp_modes_render_distinctly() {
 
     let render = |mode: RampMode| -> Vec<f32> {
         let mut r = build();
-        r.control.live.write().ramp_mode = mode;
+        r.control.live.write().options.ramp_mode = mode;
         // First block establishes a position (and seeds Interp's start gains).
         r.render_frame(&pcm, 1, &block_a, Vec::new(), false)
             .unwrap();
@@ -1436,45 +1503,45 @@ fn all_four_ramp_modes_render_distinctly() {
 #[test]
 fn binaural_object_ramp_advances_and_lateralizes() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let mut r = SpatialRenderer::new(
-        layout,
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    let mut r = SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 21,
             y_size: 21,
             z_size: 9,
             z_neg_size: 9,
         },
-        false,
-        true,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
-        21,
-        21,
-        9,
-        9,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: true,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+        cartesian_default_x_size: 21,
+        cartesian_default_y_size: 21,
+        cartesian_default_z_size: 9,
+        cartesian_default_z_neg_size: 9,
+    })
     .unwrap();
     r.control.live.write().binaural.output_mode = crate::live_params::OutputMode::Binaural;
 
@@ -1546,45 +1613,45 @@ fn binaural_object_ramp_advances_and_lateralizes() {
 fn binaural_output_follows_master_gain() {
     fn build() -> SpatialRenderer {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();
-        SpatialRenderer::new(
-            layout,
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 21,
                 y_size: 21,
                 z_size: 9,
                 z_neg_size: 9,
             },
-            false,
-            true,
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 2.0, 0.5],
-            2.0,
-            0.5,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            21,
-            21,
-            9,
-            9,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: true,
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 21,
+            cartesian_default_y_size: 21,
+            cartesian_default_z_size: 9,
+            cartesian_default_z_neg_size: 9,
+        })
         .unwrap()
     }
 
@@ -1635,45 +1702,45 @@ fn binaural_output_follows_master_gain() {
 #[test]
 fn binaural_ear_mute_uses_dedicated_ear_params() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let mut r = SpatialRenderer::new(
-        layout,
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    let mut r = SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 21,
             y_size: 21,
             z_size: 9,
             z_neg_size: 9,
         },
-        false,
-        true,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
-        21,
-        21,
-        9,
-        9,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: true,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+        cartesian_default_x_size: 21,
+        cartesian_default_y_size: 21,
+        cartesian_default_z_size: 9,
+        cartesian_default_z_neg_size: 9,
+    })
     .unwrap();
     {
         let mut live = r.control.live.write();
@@ -1713,45 +1780,45 @@ fn binaural_ear_mute_uses_dedicated_ear_params() {
 fn binaural_clipping_flags_ear_and_auto_gain_reduces_master() {
     fn build() -> SpatialRenderer {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();
-        SpatialRenderer::new(
-            layout,
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 21,
                 y_size: 21,
                 z_size: 9,
                 z_neg_size: 9,
             },
-            false,
-            true,
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 2.0, 0.5],
-            2.0,
-            0.5,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            21,
-            21,
-            9,
-            9,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: true,
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 21,
+            cartesian_default_y_size: 21,
+            cartesian_default_z_size: 9,
+            cartesian_default_z_neg_size: 9,
+        })
         .unwrap()
     }
 
@@ -1772,7 +1839,7 @@ fn binaural_clipping_flags_ear_and_auto_gain_reduces_master() {
         live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
         // Hot enough that the HRIR-summed stereo bus exceeds 0 dBFS.
         live.master_gain = 16.0;
-        live.auto_gain = auto_gain;
+        live.options.auto_gain = auto_gain;
         drop(live);
         r
     };
@@ -1840,45 +1907,45 @@ fn binaural_clipping_flags_ear_and_auto_gain_reduces_master() {
 #[test]
 fn binaural_lfe_bed_feeds_both_ears_equally_and_dry() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let mut r = SpatialRenderer::new(
-        layout,
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    let mut r = SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 21,
             y_size: 21,
             z_size: 9,
             z_neg_size: 9,
         },
-        false,
-        true,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
-        21,
-        21,
-        9,
-        9,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: true,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+        cartesian_default_x_size: 21,
+        cartesian_default_y_size: 21,
+        cartesian_default_z_size: 9,
+        cartesian_default_z_neg_size: 9,
+    })
     .unwrap();
     // Channel 0 = direct LFE → the LFE speaker (index 3, spatialize:false).
     r.configure_channel_routing(&[ChannelRoute::Direct(bridge_api::RChannelLabel::LFE)]);
@@ -1963,45 +2030,45 @@ speakers:
 "#;
 
     fn build() -> SpatialRenderer {
-        SpatialRenderer::new(
-            SpeakerLayout::from_yaml_str(LAYOUT_5_1_4).unwrap(),
-            48_000,
-            1,
-            90,
-            0.25,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: SpeakerLayout::from_yaml_str(LAYOUT_5_1_4).unwrap(),
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 90,
+            spread_resolution: 0.25,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 63,
                 y_size: 63,
                 z_size: 16,
                 z_neg_size: 0,
             },
-            false,
-            true,
-            DistanceModel::None,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [2.0, 2.0, 1.0],
-            1.0,
-            0.466667,
-            0.5,
-            0.0,
-            false,
-            true,
-            true,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            63,
-            63,
-            16,
-            0,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: true,
+            distance_model: DistanceModel::None,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [2.0, 2.0, 1.0],
+            room_ratio_rear: 1.0,
+            room_ratio_lower: 0.466667,
+            room_ratio_center_blend: 0.5,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: true,
+            distance_diffuse: true,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 63,
+            cartesian_default_y_size: 63,
+            cartesian_default_z_size: 16,
+            cartesian_default_z_neg_size: 0,
+        })
         .unwrap()
     }
 
@@ -2075,45 +2142,45 @@ fn build_cascade_test_renderer(eval: LiveEvaluationMode, neutral_room: bool) -> 
     } else {
         (DistanceModel::Linear, [1.0f32, 2.0, 0.5], 2.0f32, 0.5f32)
     };
-    SpatialRenderer::new(
-        layout,
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 21,
             y_size: 21,
             z_size: 9,
             z_neg_size: 9,
         },
-        false,
-        true,
+        allow_negative_z: false,
+        vbap_position_interpolation: true,
         distance_model,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
         room_ratio,
-        rear,
-        lower,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        eval,
-        21,
-        21,
-        9,
-        9,
-    )
+        room_ratio_rear: rear,
+        room_ratio_lower: lower,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: eval,
+        cartesian_default_x_size: 21,
+        cartesian_default_y_size: 21,
+        cartesian_default_z_size: 9,
+        cartesian_default_z_neg_size: 9,
+    })
     .unwrap()
 }
 
@@ -2366,7 +2433,7 @@ fn interp_survives_speaker_cascade_width_switch() {
     {
         let ctrl = r.control.clone();
         let mut live = ctrl.live.write();
-        live.ramp_mode = crate::live_params::RampMode::Interp;
+        live.options.ramp_mode = crate::live_params::RampMode::Interp;
         live.binaural.mode = crate::live_params::BinauralMode::Cascaded;
     }
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
@@ -2473,45 +2540,45 @@ fn render_until_width(
 /// direction where the count grows.
 #[test]
 fn rendered_frame_reports_the_geometry_it_produced() {
-    let mut renderer = SpatialRenderer::new(
-        SpeakerLayout::preset("7.1.4").unwrap(),
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    let mut renderer = SpatialRenderer::new(RendererSpec {
+        speaker_layout: SpeakerLayout::preset("7.1.4").unwrap(),
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 21,
             y_size: 21,
             z_size: 9,
             z_neg_size: 9,
         },
-        false,
-        false,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
-        21,
-        21,
-        9,
-        9,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: false,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+        cartesian_default_x_size: 21,
+        cartesian_default_y_size: 21,
+        cartesian_default_z_size: 9,
+        cartesian_default_z_neg_size: 9,
+    })
     .unwrap();
 
     let frames = 40;
@@ -2574,45 +2641,45 @@ fn rendered_frame_reports_the_geometry_it_produced() {
 /// near silence, and the first block of the new width must start there.
 #[test]
 fn an_output_mode_change_is_ramped_not_stepped() {
-    let mut r = SpatialRenderer::new(
-        SpeakerLayout::preset("7.1.4").unwrap(),
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    let mut r = SpatialRenderer::new(RendererSpec {
+        speaker_layout: SpeakerLayout::preset("7.1.4").unwrap(),
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 21,
             y_size: 21,
             z_size: 9,
             z_neg_size: 9,
         },
-        false,
-        false,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
-        21,
-        21,
-        9,
-        9,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: false,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+        cartesian_default_x_size: 21,
+        cartesian_default_y_size: 21,
+        cartesian_default_z_size: 9,
+        cartesian_default_z_neg_size: 9,
+    })
     .unwrap();
 
     // Steady input, so any envelope in the output is the fade and not the
@@ -2695,45 +2762,45 @@ fn crossover_renderer() -> SpatialRenderer {
 /// Build a renderer over an arbitrary layout with the same defaults as
 /// [`crossover_renderer`].
 fn renderer_for_layout(layout: SpeakerLayout) -> SpatialRenderer {
-    SpatialRenderer::new(
-        layout,
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 21,
             y_size: 21,
             z_size: 9,
             z_neg_size: 9,
         },
-        false,
-        false,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
-        21,
-        21,
-        9,
-        9,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: false,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+        cartesian_default_x_size: 21,
+        cartesian_default_y_size: 21,
+        cartesian_default_z_size: 9,
+        cartesian_default_z_neg_size: 9,
+    })
     .unwrap()
 }
 
@@ -3018,45 +3085,45 @@ fn clearing_the_test_restores_normal_output() {
 #[test]
 fn cadences_fall_back_to_the_host_default() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let renderer = SpatialRenderer::new(
-        layout,
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    let renderer = SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 9,
             y_size: 9,
             z_size: 5,
             z_neg_size: 5,
         },
-        false,
-        false,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
-        9,
-        9,
-        5,
-        5,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: false,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+        cartesian_default_x_size: 9,
+        cartesian_default_y_size: 9,
+        cartesian_default_z_size: 5,
+        cartesian_default_z_neg_size: 5,
+    })
     .unwrap();
     let control = renderer.renderer_control();
 
@@ -3098,45 +3165,45 @@ fn cadences_fall_back_to_the_host_default() {
 #[test]
 fn a_recycled_output_buffer_renders_identically_to_a_fresh_one() {
     fn build() -> SpatialRenderer {
-        SpatialRenderer::new(
-            SpeakerLayout::preset("7.1.4").unwrap(),
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: SpeakerLayout::preset("7.1.4").unwrap(),
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 9,
                 y_size: 9,
                 z_size: 5,
                 z_neg_size: 5,
             },
-            false,
-            false,
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 2.0, 0.5],
-            2.0,
-            0.5,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            9,
-            9,
-            5,
-            5,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: false,
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 9,
+            cartesian_default_y_size: 9,
+            cartesian_default_z_size: 5,
+            cartesian_default_z_neg_size: 5,
+        })
         .unwrap()
     }
 
@@ -3180,7 +3247,7 @@ fn a_recycled_output_buffer_renders_identically_to_a_fresh_one() {
 #[test]
 fn fir_crossover_keeps_beds_aligned_with_objects() {
     let mut r = crossover_renderer();
-    r.control.live.write().crossover_type = crate::live_params::CrossoverType::Fir;
+    r.control.live.write().options.crossover_type = crate::live_params::CrossoverType::Fir;
     // Channel 0: direct LFE bed (7.1.4 speaker 3). Channel 1: trailing object.
     r.configure_channel_routing(&[ChannelRoute::Direct(bridge_api::RChannelLabel::LFE)]);
     const LFE_SPK: usize = 3;
@@ -3403,9 +3470,10 @@ fn synchronous_stage_builds_land_on_the_requesting_frame() {
 
 /// A 7.1.4 renderer on a precomputed table, cartesian or polar. With
 /// `band_limited` its first three speakers are band-limited, so objects render
-/// through several crossover bands and the unified multi-band table; without,
-/// through the single band's own evaluator. Coarse grids: the tests that use it
-/// compare renders with each other, not with a geometry.
+/// through several crossover bands; without, through a single band. Either way
+/// through the unified table (a test that wants the per-band path clears it).
+/// Coarse grids: the tests that use it compare renders with each other, not
+/// with a geometry.
 pub(super) fn build_table_renderer(cartesian: bool, band_limited: bool) -> SpatialRenderer {
     let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
     if band_limited {
@@ -3431,46 +3499,45 @@ pub(super) fn build_table_renderer(cartesian: bool, band_limited: bool) -> Spati
             LiveEvaluationMode::PrecomputedPolar,
         )
     };
-    let mut r = SpatialRenderer::new(
-        layout,
-        48_000,
-        6,
-        6,
-        0.0,
-        2.0,
+    let mut r = SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48_000,
+        az_res_deg: 6,
+        el_res_deg: 6,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
         table_mode,
-        false,
-        true,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        preferred,
-        live,
-        15,
-        15,
-        7,
-        7,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: true,
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: preferred,
+        initial_evaluation_mode: live,
+        cartesian_default_x_size: 15,
+        cartesian_default_y_size: 15,
+        cartesian_default_z_size: 7,
+        cartesian_default_z_neg_size: 7,
+    })
     .unwrap();
     r.prepare_speaker_stage().unwrap();
-    assert_eq!(
+    assert!(
         r.speaker_stage.unified_table.is_some(),
-        band_limited,
-        "only the band-limited layout renders through the unified table"
+        "every precomputed layout renders through the unified table"
     );
     r
 }
@@ -3484,6 +3551,51 @@ pub(super) fn noise_block(n_channels: usize, sample_length: usize, block: usize)
             ((x >> 8) & 0xffff) as f32 / 65535.0 * 0.5 - 0.25
         })
         .collect()
+}
+
+/// A layout without crossover renders through the unified table too, its one
+/// band merged like a crossover's: the lookup localises the cell once and
+/// reads the corner cache. It must render exactly what the band's own
+/// evaluator renders — the same bits, in the sample ramp, objects moving.
+#[test]
+fn a_single_band_renders_the_same_bits_through_the_unified_table() {
+    for cartesian in [true, false] {
+        let mut unified = build_table_renderer(cartesian, false);
+        assert!(unified.speaker_stage.unified_table.is_some(), "{cartesian}");
+        let mut per_band = build_table_renderer(cartesian, false);
+        per_band.speaker_stage.unified_table = None;
+        for r in [&mut unified, &mut per_band] {
+            r.control.live.write().options.ramp_mode = RampMode::Sample;
+        }
+        const OBJECTS: usize = 4;
+        for block in 0..24 {
+            let events = circling_events(OBJECTS, block, 120);
+            let pcm = noise_block(OBJECTS, 40, block);
+            let a = unified
+                .render_frame(&pcm, OBJECTS, &events, Vec::new(), false)
+                .unwrap();
+            let b = per_band
+                .render_frame(&pcm, OBJECTS, &events, Vec::new(), false)
+                .unwrap();
+            assert_eq!(a.samples.len(), b.samples.len());
+            assert!(
+                a.samples.iter().any(|x| x.abs() > 1e-3),
+                "block {block} is silent"
+            );
+            let first = a
+                .samples
+                .iter()
+                .zip(&b.samples)
+                .position(|(x, y)| x.to_bits() != y.to_bits());
+            assert_eq!(
+                first,
+                None,
+                "cartesian {cartesian}, block {block}: unified {:?} vs per band {:?}",
+                first.map(|i| a.samples[i]),
+                first.map(|i| b.samples[i])
+            );
+        }
+    }
 }
 
 /// One event per object on a slow circle round the listener, each object at
@@ -3531,7 +3643,7 @@ fn cell_caches_do_not_change_the_render() {
         for block in 0..MODES.len() * BLOCKS_PER_MODE {
             {
                 let mut live = r.control.live.write();
-                live.ramp_mode = MODES[block / BLOCKS_PER_MODE];
+                live.options.ramp_mode = MODES[block / BLOCKS_PER_MODE];
                 // Within each mode: trilinear, then nearest, then trilinear.
                 live.evaluation.position_interpolation =
                     !(5..10).contains(&(block % BLOCKS_PER_MODE));
