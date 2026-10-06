@@ -183,8 +183,8 @@ unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> windows::Win32::Founda
 /// On Windows the decoder thread detects shutdown by polling
 /// [`ShutdownHandle::is_requested`].
 ///
-/// - SIGTERM / SIGINT (Unix), Ctrl+C / close (Windows) → [`is_requested`]
-/// - SIGHUP (Unix only)                                → [`is_reload_requested`]
+/// - SIGTERM / SIGINT (Unix), Ctrl+C / close (Windows) → [`is_requested`](Self::is_requested)
+/// - SIGHUP (Unix only)                                → [`is_reload_requested`](Self::is_reload_requested)
 pub struct ShutdownHandle {
     /// Read end of the self-pipe. Poll this fd to detect a shutdown signal.
     /// Only available on Unix (used with poll(2) in the decoder thread).

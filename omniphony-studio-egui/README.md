@@ -2,11 +2,11 @@
 
 Native egui/wgpu host for Omniphony Studio, the replacement for the Tauri
 web frontend. Phase 0 (the spike and its measurements) is documented in
-[`docs/studio-native-ui-spike.md`](../docs/studio-native-ui-spike.md); phase 1
+[`docs/studio-native-ui-spike.md`](../docs/archive/studio-native-ui-spike.md); phase 1
 (viewport parity with the three.js scene) in
-[`docs/studio-native-ui-phase1.md`](../docs/studio-native-ui-phase1.md), phase 2
+[`docs/studio-native-ui-phase1.md`](../docs/archive/studio-native-ui-phase1.md), phase 2
 (the panels) in
-[`docs/studio-native-ui-phase2.md`](../docs/studio-native-ui-phase2.md).
+[`docs/studio-native-ui-phase2.md`](../docs/archive/studio-native-ui-phase2.md).
 
 The toolkit-free core owns OSC, state and domain behavior. The scene is a
 separate wgpu crate; the frontend owns drawing and view state. Start with the

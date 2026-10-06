@@ -244,7 +244,7 @@ pub fn resolve_bridge_path(explicit: Option<&Path>) -> Result<PathBuf> {
 ///
 /// A requested path that is **relative** is resolved CWD-independently — against
 /// the process working dir first, then the host executable's directory (see
-/// [`resolve_requested`]) — so a bare `harletty_bridge.dll` next to `mpv.exe`
+/// `resolve_requested`) — so a bare `harletty_bridge.dll` next to `mpv.exe`
 /// works regardless of which folder the host was launched from. This is the
 /// common real-world footgun: a relative `render.bridge_path` / `--bridge-path`
 /// that previously only resolved against the CWD.

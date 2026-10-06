@@ -45,7 +45,7 @@ struct Splitter {
 /// A bank of crossover filters for B = `cutoffs.len() + 1` bands.
 ///
 /// Build once per renderer construction from the frequency band cutoffs.
-/// Call [`process_sample`] with per-object mutable state each audio sample.
+/// Call [`process_sample`](Self::process_sample) with per-object mutable state each audio sample.
 pub struct LR4CrossoverBank {
     /// One splitter per cutoff frequency.
     splitters: Vec<Splitter>,

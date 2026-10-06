@@ -40,7 +40,7 @@ pub struct ObjectTestClip {
     /// What the file itself was, for the UI.
     pub source_rate: u32,
     pub source_channels: u16,
-    /// True when the tail was dropped at [`MAX_SECONDS`].
+    /// True when the tail was dropped at `MAX_SECONDS`.
     pub truncated: bool,
 }
 
