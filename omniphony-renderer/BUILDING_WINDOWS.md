@@ -1,5 +1,8 @@
 # Building omniphony-renderer with SAF-backed VBAP on Windows
 
+This page is only for the optional `saf_vbap` feature. The default Windows build
+needs none of it: see [QUICKSTART.md](QUICKSTART.md#windows).
+
 This guide documents how to build `omniphony-renderer` with the `saf_vbap` feature on Windows,
 enabling runtime VBAP gain table generation via the `generate-vbap` command.
 
@@ -15,7 +18,7 @@ Important naming note:
 ## Prerequisites
 
 - **Visual Studio 2022** (Community or higher) with C++ desktop workload
-- **Rust 1.87.0+** with the `x86_64-pc-windows-msvc` target
+- **Rust 1.89+** (the workspace's `rust-version`) with the `x86_64-pc-windows-msvc` target
 - **LLVM/Clang** installed (for `bindgen`) — download from https://github.com/llvm/llvm-project/releases
 - **Git** (Git for Windows)
 
