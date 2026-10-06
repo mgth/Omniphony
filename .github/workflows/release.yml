@@ -194,11 +194,11 @@ jobs:
 
       # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
       # The same release ships the native Studio as a plain archive per
-      # platform: the binary, the renderer it launches (the sidecar the Tauri
-      # build just prepared, so the same commit), the layouts and the head
-      # model, laid out as `HostPaths::bundled()` and the asset defaults expect
-      # — everything beside the executable. Built after tauri-action so the
-      # draft release exists by the time the archive is attached to it.
+      # platform: the binary, the renderer it launches (built from the same
+      # commit), the layouts and the head model, laid out as
+      # `HostPaths::bundled()` and the asset defaults expect — everything
+      # beside the executable. Built after tauri-action so the draft release
+      # exists by the time the archive is attached to it.
       #
       # Its own build tree and toolchain: rust-toolchain.toml in the crate
       # pins a newer rustc than the renderer's, and rustup installs it when
@@ -215,6 +215,17 @@ jobs:
         working-directory: omniphony-studio-egui
         run: cargo build --release --locked
 
+      # The renderer the archive ships and the engine library the liborender
+      # archive below ships, built here rather than taken from the Tauri
+      # sidecar staging (src-tauri/binaries/) so neither depends on the
+      # deprecated host's build. Same commands as the Tauri build's
+      # prepare-sidecar, so on this runner they find the build done.
+      - name: Build the renderer and the engine library
+        working-directory: omniphony-renderer
+        run: |
+          cargo build --release --locked
+          cargo build --release --locked -p orender_ffi
+
       - name: Stage the native Studio archive
         shell: bash
         run: |
@@ -229,12 +240,11 @@ jobs:
           dir="staging/$name"
           mkdir -p "$dir/layouts/legacy" "$dir/assets"
           cp "omniphony-studio-egui/target/release/omniphony-studio-egui$exe" "$dir/"
-          # The sidecar carries the host triple in its name; the Studio looks
-          # for a plain `orender` next to itself.
-          cp omniphony-studio/src-tauri/binaries/orender-*"$exe" "$dir/orender$exe"
+          # The Studio looks for a plain `orender` next to itself.
+          cp "omniphony-renderer/target/release/orender$exe" "$dir/"
           cp layouts/*.yaml "$dir/layouts/"
           cp layouts/legacy/*.yaml "$dir/layouts/legacy/"
-          cp omniphony-studio/assets/la_dame_de_brassempouy_centered.glb "$dir/assets/"
+          cp omniphony-studio-egui/assets/la_dame_de_brassempouy_centered.glb "$dir/assets/"
           cp LICENSE "$dir/"
           ls -laR "$dir"
           cd staging
@@ -246,8 +256,8 @@ jobs:
           echo "archive=staging/$archive" >> "$GITHUB_ENV"
 
       # ── Standalone liborender ─────────────────────────────────────────────
-      # The engine library the sidecar step built from this commit, with its C
-      # header, for the player and any other host linking it outside Studio.
+      # The engine library built above from this commit, with its C header,
+      # for the player and any other host linking it outside Studio.
       # It used to be a release of its own under liborender-v* tags, which
       # drifted from the Studio line and only ever built when tagged by hand;
       # it now ships with every release, under the release's number (#676).
