@@ -2006,14 +2006,18 @@ impl SpeakerRenderStage {
         Ok((render_bands, Some(filter_bank), info))
     }
 
-    /// Merge the per-band cartesian tables into a single multi-band table so a
-    /// lookup localises the cell once for all bands. Returns `None` (→ per-band
-    /// path) unless there are several bands all backed by a cartesian evaluator.
+    /// Merge the per-band tables into a single multi-band table so a lookup
+    /// localises the cell once for all bands, and reads the per-object corner
+    /// cache. A layout without crossover gets one too, for its single band:
+    /// the same bits as its evaluator
+    /// (`a_single_band_renders_the_same_bits_through_the_unified_table`) at a
+    /// cheaper read. Returns `None` (→ per-band path) unless every band is
+    /// backed by a precomputed cartesian, or every one by a polar, table.
     fn build_unified_table(
         render_bands: &[BandRenderer],
         num_speakers: usize,
     ) -> Option<MultiBandTable> {
-        if render_bands.len() <= 1 {
+        if render_bands.is_empty() {
             return None;
         }
         // Every band shares the active evaluation mode, so they are all cartesian
@@ -2036,7 +2040,7 @@ impl SpeakerRenderStage {
             let table = MultiBandTable::build_cartesian(&cartesian, num_speakers);
             if table.is_some() {
                 log::info!(
-                    "Crossover: unified cartesian table built for {} bands",
+                    "Speaker stage: unified cartesian table built for {} band(s)",
                     render_bands.len()
                 );
             }
@@ -2052,7 +2056,7 @@ impl SpeakerRenderStage {
         let table = MultiBandTable::build_polar(&polar, num_speakers);
         if table.is_some() {
             log::info!(
-                "Crossover: unified polar table built for {} bands",
+                "Speaker stage: unified polar table built for {} band(s)",
                 render_bands.len()
             );
         }
