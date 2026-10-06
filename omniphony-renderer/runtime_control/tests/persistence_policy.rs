@@ -81,20 +81,78 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The file's production code: comments dropped, and cut at its test module,
-/// which the sources keep at the end of the file.
+/// The file's production code: comments dropped, and every `#[cfg(test)]` item
+/// left out.
 fn production_code(path: &Path) -> String {
-    let src = std::fs::read_to_string(path).expect("readable source");
+    production_code_of(&std::fs::read_to_string(path).expect("readable source"))
+}
+
+/// [`production_code`] on source text. A `#[cfg(test)]` item is skipped up to
+/// its `;` or its matching closing brace, wherever it sits: a test module is not
+/// always the end of its file, and code after it is scanned like any other.
+/// Braces are counted naively, which holds for the sources scanned here (no
+/// unbalanced brace in a string or char literal inside a test item).
+fn production_code_of(src: &str) -> String {
     let mut code = String::new();
-    for line in src.lines() {
-        if line.trim_start().starts_with("#[cfg(test)]") {
-            break;
+    let mut lines = src.lines().map(|l| l.split("//").next().unwrap_or(""));
+    while let Some(line) = lines.next() {
+        if !line.trim_start().starts_with("#[cfg(test)]") {
+            code.push_str(line);
+            code.push('\n');
+            continue;
         }
-        let line = line.split("//").next().unwrap_or("");
-        code.push_str(line);
-        code.push('\n');
+        // Skip the item the attribute applies to (and any further attribute).
+        let mut depth = 0i32;
+        let mut opened = false;
+        let mut rest = line.trim_start()["#[cfg(test)]".len()..].to_string();
+        loop {
+            let item = rest.trim();
+            depth += item.matches('{').count() as i32 - item.matches('}').count() as i32;
+            opened |= item.contains('{');
+            let attribute_only = item.is_empty() || item.starts_with("#[");
+            if (opened && depth <= 0) || (!opened && !attribute_only && item.ends_with(';')) {
+                break;
+            }
+            match lines.next() {
+                Some(next) => rest = next.to_string(),
+                None => break,
+            }
+        }
     }
     code
+}
+
+#[test]
+fn the_scan_keeps_code_after_a_test_item() {
+    let src = "fn before() {}\n\
+               #[cfg(test)]\n\
+               mod tests {\n    fn inner() { save_live_config(); }\n}\n\
+               fn after() { commit_config(); }\n\
+               #[cfg(test)]\n\
+               #[allow(dead_code)]\n\
+               use something::Else;\n\
+               #[cfg(test)]\n\
+               mod more_tests;\n\
+               fn last() {} // save_live_config(\n";
+    let code = production_code_of(src);
+    assert!(code.contains("fn before()"), "{code}");
+    assert!(
+        code.contains("fn after() { commit_config(); }"),
+        "code after a test module must be scanned: {code}"
+    );
+    assert!(code.contains("fn last()"), "{code}");
+    assert!(
+        !code.contains("inner"),
+        "the test module is left out: {code}"
+    );
+    assert!(
+        !code.contains("Else") && !code.contains("more_tests"),
+        "{code}"
+    );
+    assert!(
+        !code.contains("save_live_config"),
+        "comments are dropped: {code}"
+    );
 }
 
 #[test]
