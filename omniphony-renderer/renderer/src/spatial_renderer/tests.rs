@@ -2592,8 +2592,12 @@ fn a_playing_renderer_survives_layout_and_sample_rate_changes() {
     // Render until a frame sounds on channels `from..used` and on none past
     // `used`, checking every frame on the way. (The object sounds on a
     // height speaker of 7.1.4, channel 9: `from` 6 tells 7.1.4 from 5.1.)
+    // The bands are built on a worker thread: wait for it by the clock, not
+    // by a count of blocks, so a slow runner is not reported as a failure.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
     let mut play_until = |r: &mut SpatialRenderer, from: usize, used: usize| {
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        while std::time::Instant::now() < deadline {
             // The object's metadata in every block, as a stream carries it: a
             // sample-rate change is a new stream and resets what it knew.
             let events = std::slice::from_ref(&event);
@@ -2646,12 +2650,20 @@ fn a_playing_renderer_survives_layout_and_sample_rate_changes() {
 
     // Wider than the output: refused, the 5.1 bands keep playing.
     publish("9.1.6");
-    let error = (0..200)
-        .find_map(|_| {
-            play_until(&mut r, 0, 6);
-            control.take_band_build_error()
-        })
-        .expect("the wider layout is refused with a reason");
+    // The 5.1 bands stay installed meanwhile, so every block settles at once:
+    // wait for the worker's reply, with the 5.1 output checked on the way.
+    let deadline = std::time::Instant::now() + PATIENCE;
+    let error = loop {
+        play_until(&mut r, 0, 6);
+        if let Some(error) = control.take_band_build_error() {
+            break error;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wider layout is refused with a reason"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
     assert!(
         error.contains("16 speakers") && error.contains("restart"),
         "{error}"
