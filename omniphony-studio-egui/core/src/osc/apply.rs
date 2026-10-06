@@ -981,6 +981,17 @@ fn decode_band_gaintable(bytes: &[u8], version: u32) -> Option<GainTable> {
     let y_count = dim("y_count")?;
     let z_count = dim("z_count")?;
     let band_count = dim("band_count")?;
+    // The grid positions, then one gain per cell and band: the dimensions
+    // come from the network, so the payload must hold what they announce,
+    // with no product overflowing on the way.
+    if [x_count, y_count, z_count, band_count].contains(&0) {
+        return None;
+    }
+    let positions = x_count.checked_add(y_count)?.checked_add(z_count)?;
+    let floats = cells(&[x_count, y_count, z_count, band_count])?.checked_add(positions)?;
+    if raw.len() / 4 < floats {
+        return None;
+    }
     // Signed: -1 (GLOBAL_ENERGY_INDEX) marks the all-speaker energy field, and
     // an unsigned read would silently fold it onto speaker 0.
     let speaker_index = metadata
@@ -1160,6 +1171,53 @@ mod gaintable_untrusted_tests {
                 assert_eq!(gains, vec![0.1, 0.2, 0.3, 0.4]);
             }
             other => panic!("expected a cartesian table, got {other:?}"),
+        }
+    }
+
+    fn bands(x: u64, y: u64, z: u64, bands: u64) -> serde_json::Value {
+        serde_json::json!({
+            "x_count": x, "y_count": y, "z_count": z, "band_count": bands,
+            "speaker_index": 3
+        })
+    }
+
+    /// The band-aware table's dimensions are checked against its payload,
+    /// like the evaluation table's: its consumer slices by them.
+    #[test]
+    fn a_band_table_holds_what_its_dimensions_announce() {
+        // 2 x 1 x 1 cells, 2 bands: 2 + 1 + 1 positions, 4 gains.
+        let raw = floats(&[-1.0, 1.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.4]);
+        match decode_evaluation_artifact(&artifact(b"OBGT", &bands(2, 1, 1, 2), &raw), 4) {
+            Some(GainTable::CartesianBands {
+                speaker_index,
+                band_count,
+                data,
+                ..
+            }) => {
+                assert_eq!((speaker_index, band_count), (3, 2));
+                assert_eq!(data.len(), 8);
+            }
+            other => panic!("expected a band table, got {other:?}"),
+        }
+
+        let huge = u64::MAX / 2;
+        let four = floats(&[0.0; 4]);
+        for (metadata, raw) in [
+            // One cell, four floats: an absurd band count overflows its
+            // product with the cells (the review's probe).
+            (bands(1, 1, 1, u64::MAX), &four),
+            (bands(1, 1, 1, huge), &four),
+            (bands(huge, huge, huge, 1), &four),
+            (bands(1 << 40, 1 << 40, 1, 1), &four),
+            // Sound arithmetic, a payload too short for it.
+            (bands(2, 1, 1, 3), &raw),
+            (bands(0, 1, 1, 1), &raw),
+            (bands(1, 1, 1, 0), &raw),
+        ] {
+            assert!(
+                decode_evaluation_artifact(&artifact(b"OBGT", &metadata, raw), 1).is_none(),
+                "{metadata}"
+            );
         }
     }
 
