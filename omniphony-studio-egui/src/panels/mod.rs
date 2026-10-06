@@ -14,6 +14,7 @@ pub mod connection;
 pub mod diag_plot;
 pub mod display;
 pub mod drc;
+pub mod essentials;
 pub mod footer;
 pub mod gizmo_drag;
 pub mod gradient;
