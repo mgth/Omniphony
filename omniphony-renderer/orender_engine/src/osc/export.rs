@@ -1,4 +1,6 @@
-use std::net::{SocketAddr, UdpSocket};
+use std::net::UdpSocket;
+
+use super::peer::Peer;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,6 +17,11 @@ use runtime_control::osc_contract;
 /// Largest payload one UDP datagram carries over IPv4 (65 535 bytes minus the
 /// IP and UDP headers), with room to spare for the bundle framing.
 pub(crate) const MAX_STATE_DATAGRAM: usize = 65_000;
+
+/// Largest snapshot packet sent to a stream client: the whole snapshot in
+/// one bundle, short of a pathological one. Readers accept at least this
+/// ([`crate::osc::STREAM_PACKET_MAX`]).
+pub(crate) const MAX_STATE_STREAM_PACKET: usize = 1 << 20;
 
 /// Broadcast the live-state snapshot to every registered client.
 ///
@@ -45,13 +52,19 @@ pub(crate) fn send_live_state_to(
     host: Option<&Arc<dyn HostControlHandler>>,
     socket: &UdpSocket,
     clients: &OscClientRegistry,
-    client: SocketAddr,
+    client: &Peer,
 ) {
+    // A stream carries the snapshot whole: no datagram to fit it in (#680).
+    let max = if client.is_stream() {
+        MAX_STATE_STREAM_PACKET
+    } else {
+        MAX_STATE_DATAGRAM
+    };
     clients.publish(|generation| {
         let generation = generation.current();
         let messages = live_state_messages(control, host);
-        for bytes in encode_snapshot(messages, generation, MAX_STATE_DATAGRAM) {
-            if let Err(e) = socket.send_to(&bytes, client) {
+        for bytes in encode_snapshot(messages, generation, max) {
+            if let Err(e) = client.send(socket, &bytes) {
                 log::warn!(
                     "Failed to send live state ({} bytes) to {}: {}",
                     bytes.len(),

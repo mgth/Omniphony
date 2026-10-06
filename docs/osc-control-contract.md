@@ -86,13 +86,28 @@ than discarded.
 UDP loses datagrams and the engine answers nothing by default, so the session
 carries what a client needs to notice either. The contract crate's
 `CONTRACT_REVISION` (`osc-contract`) is the revision this section describes:
-**1**.
+**2**.
+
+- **Stream transport** (revision 2) — the engine also listens on TCP, on
+  loopback, on the OSC/UDP control port's number. A connection carries the
+  same packets, each preceded by its size as a big-endian int32 (OSC 1.0
+  stream framing), up to 1 MiB each way. A connected client registers with
+  `/omniphony/register` like a datagram client (its argument is ignored: the
+  connection is the reply address) and sends no heartbeat: the connection is
+  the session, and closing it unregisters the client. It is sent everything a
+  datagram client is, in order and without loss, except telemetry and the log
+  relay, which it loses as a datagram client would when it falls behind
+  (8 MiB queued); a
+  client too slow for the state is disconnected instead, and gets a fresh
+  snapshot when it reconnects. Its snapshot comes in one part. An engine that
+  cannot bind the port runs on datagrams only. See
+  `docs/control-transport.md`.
 
 - **Registration** — `/omniphony/register [reply_port]` registers the sender
   (the port is optional; the source port otherwise) and sends it the
   live-state snapshot, its log backlog and its metering state. A registered
-  client sends `/omniphony/heartbeat [reply_port]` every 5 s and is dropped
-  after 10 s of silence.
+  datagram client sends `/omniphony/heartbeat [reply_port]` every 5 s and is
+  dropped after 15 s of silence.
 - **Heartbeat acknowledgement** — `/omniphony/heartbeat/ack [epoch,
   generation]`, or `/omniphony/heartbeat/unknown` to a client the engine does
   not know (it re-registers). `epoch` is random per engine instance: when it
@@ -128,6 +143,20 @@ carries what a client needs to notice either. The contract crate's
   `undecodable` (not OSC the engine can read; `address` is empty, and these
   are answered at most once per 5 s). `message` is for a person. A control
   taken and found to change nothing is not answered.
+- **Sync** (revision 2) — `/omniphony/sync [args…]` is answered with
+  `/omniphony/sync/ack [args…]` (the same arguments) once every packet the
+  client sent before it has been dispatched. On a stream connection, whose
+  packets are handled in order, the ack is a dispatch barrier: each earlier
+  control was applied (the state it changed published before the ack),
+  refused (its `control_error` before the ack), or started asynchronous work.
+  The ack says nothing about that work: it may have ended before the ack or
+  end after it. A layout or speaker rebuild reports itself as it always has:
+  `speakers/recomputing 1` then `speakers/recompute_error ""` when a build
+  starts; `speakers/recompute_error <message>` on failure, then
+  `speakers/recomputing 0`, when it ends. A change that arrives while a build
+  runs queues one follow-up build, which starts right after the first one's
+  `0`: a `0` says that a build ended, not that every earlier change is built.
+  Over UDP the ack only says the engine heard the sync.
 - **Contract revision** — `/state/capabilities` carries `contractRevision`.
   A client compares it with its own and says so when they differ; an engine
   that advertises none predates revisions and counts as 0. The revision moves
@@ -1045,7 +1074,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 
 </details>
 
-<details><summary>Session and streams (13)</summary>
+<details><summary>Session and streams (15)</summary>
 
 - `/omniphony/bed/config`
 - `/omniphony/heartbeat`
@@ -1058,6 +1087,8 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/playout/heard`
 - `/omniphony/register`
 - `/omniphony/spatial/frame`
+- `/omniphony/sync`
+- `/omniphony/sync/ack`
 - `/omniphony/timestamp`
 - `/omniphony/yield/resume_port`
 
