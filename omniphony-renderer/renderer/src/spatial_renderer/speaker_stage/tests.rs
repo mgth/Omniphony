@@ -236,7 +236,9 @@ fn bits(samples: &[f32]) -> Vec<u32> {
 }
 
 const N_BEDS: usize = 2;
-const N_OBJECTS: usize = 6;
+/// Enough channels for three LR4 lane groups of 8 (#750), the last one
+/// partial, the first one holding the beds.
+const N_OBJECTS: usize = 15;
 const N_CHANNELS: usize = N_BEDS + N_OBJECTS;
 const MODES: [RampMode; 4] = [
     RampMode::Sample,
