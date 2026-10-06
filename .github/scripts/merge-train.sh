@@ -26,10 +26,13 @@
 #   - nobody on board: board the next candidate, merging main into it if it
 #     is behind, and start CI on it.
 #
-# The update is pushed with the workflow's GITHUB_TOKEN, and GitHub starts no
-# workflow for a push made with it, so the train dispatches CI on the branch
-# itself (ci.yml's workflow_dispatch). Its check runs land on the branch's
-# head commit, which is what the required checks are read from.
+# The update is pushed with the workflow's GITHUB_TOKEN. GitHub does not run
+# CI for that push: it creates the pull_request run but holds it for a
+# maintainer's approval ("Approve workflows to run" on the pull request).
+# Nobody needs to approve it: the train dispatches CI on the branch itself
+# (ci.yml's workflow_dispatch), whose check runs land on the branch's head
+# commit, which is what the required checks are read from. Approving the held
+# run only runs CI a second time.
 #
 # DRY_RUN=1 prints what a tick would change instead of changing it, for a
 # run by hand: GITHUB_REPOSITORY=mgth/Omniphony DRY_RUN=1 .github/scripts/merge-train.sh
@@ -65,15 +68,23 @@ pr_field() { # <json> <number> <jq filter on the pull request>
 }
 
 # State of the latest CI run on a commit: success, failure, pending or none.
-# A cancelled run (superseded by a newer push) counts as none.
+# Runs that never ran are left out: cancelled ones (superseded by a newer
+# push), skipped ones, and the pull_request run GitHub creates for the
+# train's own update and holds for a maintainer's approval
+# (`action_required`, see the header). On 2026-10-06 that held run, created
+# in the same second as the dispatched one, was read as a failure and threw
+# the first pull request off the train.
 ci_state() {
-  gh run list -R "$repo" --workflow "$ci_workflow" --commit "$1" --limit 1 \
-    --json status,conclusion \
-    --jq 'if length == 0 then "none"
-          elif .[0].status != "completed" then "pending"
-          elif .[0].conclusion == "success" then "success"
-          elif .[0].conclusion == "cancelled" or .[0].conclusion == "skipped" then "none"
-          else "failure" end'
+  gh run list -R "$repo" --workflow "$ci_workflow" --commit "$1" --limit 20 \
+    --json status,conclusion,createdAt \
+    --jq '[.[] | select(.conclusion as $c
+                        | ["cancelled", "skipped", "action_required", "stale"]
+                        | index($c) | not)]
+          | sort_by(.createdAt) | last
+          | if . == null then "none"
+            elif .status != "completed" then "pending"
+            elif .conclusion == "success" then "success"
+            else "failure" end'
 }
 
 behind_by() { gh api "repos/$repo/compare/$base...$1" --jq .behind_by; }
@@ -168,7 +179,14 @@ tend_on_board() { # <prs json> <number>
       log "#$n: CI running on ${head:0:8}; waiting"
       return 0 ;;
     none)
-      dispatch_ci "$n" "$branch"
+      # A run dispatched a moment ago may not be listed yet: give it a few
+      # minutes before dispatching again (a second dispatch would cancel the
+      # first through ci.yml's concurrency group).
+      if [ "$(minutes_on_board "$n")" -ge 3 ]; then
+        dispatch_ci "$n" "$branch"
+      else
+        log "#$n: no CI run listed on ${head:0:8} yet; waiting"
+      fi
       return 0 ;;
     failure)
       eject "$n" "CI failed on ${head:0:8}, this branch brought up to date with \`$base\`."
