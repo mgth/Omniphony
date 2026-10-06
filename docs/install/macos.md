@@ -82,7 +82,7 @@ render:
 EOF
 ```
 
-Only append this if the file has no `render:` section yet (Studio writes one).
+Only append this if the file has no `render:` section yet (Studio writes one when you press Save).
 Otherwise, put the `bridge_path:` line under the `render:` already there. The
 path must be absolute: `~` is not expanded.
 
