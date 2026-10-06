@@ -133,8 +133,9 @@ pub struct MeterTimings {
     pub drc_gain: Option<f32>,
 }
 
-/// The renderer's per-object gain lists, lent to a meter report and returned.
-pub(super) type MeterLists = (Vec<(usize, Gains)>, Vec<(usize, Vec<Gains>)>);
+/// The renderer's per-object gain lists and the render path's meter snapshot,
+/// lent to a meter report and returned.
+pub(super) type MeterLists = (Vec<(usize, Gains)>, Vec<(usize, Vec<Gains>)>, MeterSnapshot);
 
 /// One meter bundle, as the render path describes it.
 pub(super) struct MeterReport {
@@ -336,7 +337,11 @@ impl Telemetry {
             None => {
                 self.shared.dropped.fetch_add(1, Ordering::Relaxed);
                 if let Event::Meter(report) = event {
-                    self.held_meter = Some((report.object_gains, report.object_band_gains));
+                    self.held_meter = Some((
+                        report.object_gains,
+                        report.object_band_gains,
+                        report.snapshot,
+                    ));
                 }
             }
         }
@@ -652,9 +657,11 @@ impl Worker {
     }
 
     fn recycle_meter(&mut self, report: MeterReport) {
-        let _ = self
-            .spare_meter
-            .push((report.object_gains, report.object_band_gains));
+        let _ = self.spare_meter.push((
+            report.object_gains,
+            report.object_band_gains,
+            report.snapshot,
+        ));
     }
 
     fn report_drops(&mut self) {
@@ -850,7 +857,7 @@ mod tests {
             object_test_level: None,
             crossover_time_ms: 0.0,
         };
-        let snapshot = MeterSnapshot {
+        let mut snapshot = MeterSnapshot {
             object_levels: vec![(0, -6.0, -9.0)],
             object_band_levels: Vec::new(),
             speaker_levels: vec![(-6.0, -9.0); 2],
@@ -858,7 +865,7 @@ mod tests {
             master_peak: -6.0,
             master_rms: -9.0,
         };
-        sender.send_meter_bundle(snapshot, &mut rendered, MeterTimings::default());
+        sender.send_meter_bundle(&mut snapshot, &mut rendered, MeterTimings::default());
         sender.send_timing_update(None, None, Some(1.0));
         sender.send_diag_bundle(None, Some("{}".into()));
         sender.send_loudness_state();
