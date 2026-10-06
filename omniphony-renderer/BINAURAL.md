@@ -268,6 +268,12 @@ How it renders:
   genuinely *sound* far without making them quieter. Air absorption adds
   the matching "far sounds dull" high-frequency roll-off (bypassed within
   3 m, ~14 kHz cutoff at 10 m, ~5 kHz at 30 m).
+  These cues measure distance against the room cube's surface, not as a
+  straight-line radius: every point of the surface is at 1 unit, so a
+  layout's speakers, which sit on it, are equidistant as in a real room (a
+  7.1.4's corners would otherwise be √2 and √3 farther than its centre and
+  get up to 5 dB more reverb). Only sources inside or beyond the cube read
+  as nearer or farther. Direction (HRIR and ITD) is unaffected.
 - **Scale**: `unit_scale_m` sets how far "1 ADM unit" is in metres. At the
   default 1.0 the far wall of the mix is one metre from your nose — try 3–4
   for a room-sized stage. The reflection room grows on its own to contain

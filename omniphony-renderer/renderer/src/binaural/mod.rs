@@ -224,6 +224,16 @@ const MAX_REVERB_SEND: f32 = 4.0;
 /// Delay-line capacity for the ITD (s) — comfortably above the ~0.7 ms max.
 const ITD_MAX_S: f32 = 0.003;
 
+/// The distance (in ADM units) the distance cues — air absorption, reverb
+/// send, early reflections — see for a source at `pos`: the Chebyshev norm,
+/// which is the distance relative to the room cube's surface in the source's
+/// direction. Every point of the surface is at 1, so the speakers of a
+/// layout, which sit on that surface, read as equidistant, as they are in a
+/// real room. One max-abs per source per block, outside the sample loop.
+fn cue_distance_norm(pos: [f64; 3]) -> f32 {
+    pos[0].abs().max(pos[1].abs()).max(pos[2].abs()) as f32
+}
+
 /// Cutoff (Hz) of the air-absorption low-pass for a path of `dist_m`, or
 /// `None` within the 3 m bypass: ~14 kHz at 10 m, ~5 kHz at 30 m, floored at
 /// 2 kHz. One law for the direct path and for each reflection's own image
@@ -989,7 +999,16 @@ impl BinauralRenderer {
             // send, early reflections), never the direct object level. Those
             // cues are therefore expressed relative to the direct sound: the
             // 1/d the direct path does not apply is folded into them.
-            let dist_norm = ((pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt()) as f32;
+            //
+            // The distance is measured against the room cube's surface, not
+            // as a Euclidean radius (#753): positions sit on the cube, so a
+            // corner of a 7.1.4 is √2 or √3 farther than a face centre while
+            // a listener hears a room's speakers as equidistant. The radius
+            // of the cube in the source's direction is |p|₂/|p|∞, so this
+            // distance is |p|∞: 1 anywhere on the surface, nearer inside,
+            // farther outside. The cue position below keeps the direction and
+            // takes that radius.
+            let dist_norm = cue_distance_norm(pos);
             let dist_m = (dist_norm * unit_scale_m).max(0.0);
 
             // ITD stays continuous: it is the dominant lateralisation cue, and
@@ -1080,10 +1099,18 @@ impl BinauralRenderer {
             // ── Early reflections: per-block image-source update ─────────────
             if reflections.enabled {
                 let bank = &mut dsp.refl;
+                // The source as the distance cues see it: its direction, at
+                // the cue distance (see `cue_distance_norm`).
+                let euclid = ((pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt()) as f32;
+                let to_cue = if euclid > 1e-9 {
+                    dist_norm / euclid * unit_scale_m
+                } else {
+                    0.0
+                };
                 let phys = [
-                    pos[0] as f32 * unit_scale_m,
-                    pos[1] as f32 * unit_scale_m,
-                    pos[2] as f32 * unit_scale_m,
+                    pos[0] as f32 * to_cue,
+                    pos[1] as f32 * to_cue,
+                    pos[2] as f32 * to_cue,
                 ];
                 // The image sources are mirrors of the source *as pulled
                 // inside the room*, so the direct-path reference for their
@@ -1952,6 +1979,63 @@ mod tests {
         assert!(
             far > near * 4.0 && far < near * 20.0,
             "reverb send off the 1/d law: 1 m {near:.3e} vs 3 m {far:.3e}"
+        );
+    }
+
+    /// Positions on the room cube's surface are equidistant to the distance
+    /// cues (#753): on a 7.1.4 cube the centre (a face centre), a front wide
+    /// (a horizontal corner) and a top corner got reverb sends of 0.67, 0.94
+    /// and 1.15 from their Euclidean radii — about 5 dB of spread between
+    /// speakers a room puts at one distance.
+    #[test]
+    fn the_cube_surface_is_equidistant_to_the_reverb() {
+        assert_eq!(cue_distance_norm([0.0, 1.0, 0.0]), 1.0);
+        assert_eq!(cue_distance_norm([1.0, 1.0, 0.0]), 1.0);
+        assert_eq!(cue_distance_norm([-1.0, -1.0, 1.0]), 1.0);
+        assert_eq!(cue_distance_norm([0.0, 0.5, 0.25]), 0.5);
+        assert_eq!(cue_distance_norm([0.0, 2.0, 0.0]), 2.0);
+
+        let n = 24_000;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let tail = |pos: [f64; 3]| -> f32 {
+            let params = BinauralFrameParams {
+                reverb: BinauralReverb {
+                    enabled: true,
+                    level: 0.3,
+                    rt60_s: 0.4,
+                    predelay_ms: 20.0,
+                    ..BinauralReverb::default()
+                },
+                ..dry_params()
+            };
+            let mut out = vec![0.0f32; n * 2];
+            let mut r = BinauralRenderer::new(48_000);
+            r.render_frame(
+                &input,
+                1,
+                n,
+                &params,
+                &[pos],
+                &[ChannelGain::flat(1.0)],
+                &[],
+                None,
+                &mut out,
+            );
+            head_tail_energy(&out, 4_000).1
+        };
+        let centre = tail([0.0, 1.0, 0.0]);
+        let ratios: Vec<f32> = [[1.0, 1.0, 0.0], [-1.0, -1.0, 0.0], [1.0, 1.0, 1.0]]
+            .into_iter()
+            .map(|corner| tail(corner) / centre)
+            .collect();
+        // Same send. What is left is the left/right panning of the send into
+        // the two reverb buses, which are not exactly alike: a few per cent,
+        // against 2.0 and 3.0 (horizontal and top corners) by the Euclidean
+        // law this replaces.
+        assert!(
+            ratios.iter().all(|r| (r - 1.0).abs() < 0.1),
+            "corner/centre tail energy ratios {ratios:?}"
         );
     }
 
