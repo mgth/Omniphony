@@ -18,6 +18,7 @@
 # auto-merge enablement and on a schedule as a backstop, does at most one of:
 #
 #   - on board and behind main: update it again (main moved under it);
+#   - on board, CI held for approval: approve it;
 #   - on board, CI running: wait;
 #   - on board, CI green: wait for auto-merge, which GitHub does itself;
 #   - on board, CI red, conflicting, or stuck: put it off the train,
@@ -26,10 +27,13 @@
 #   - nobody on board: board the next candidate, merging main into it if it
 #     is behind, and start CI on it.
 #
-# The update is pushed with the workflow's GITHUB_TOKEN, and GitHub starts no
-# workflow for a push made with it, so the train dispatches CI on the branch
-# itself (ci.yml's workflow_dispatch). Its check runs land on the branch's
-# head commit, which is what the required checks are read from.
+# The update is pushed with the workflow's GITHUB_TOKEN. GitHub does not run
+# CI for that push on its own: it creates the pull_request run but holds it
+# for a maintainer's approval ("Approve workflows to run" on the pull
+# request), and the train approves it. Only that run counts: the pull
+# request's required checks are read from its pull_request runs, and a CI run
+# started by dispatch on the same commit, green, left it blocked (tried on
+# 2026-10-06).
 #
 # DRY_RUN=1 prints what a tick would change instead of changing it, for a
 # run by hand: GITHUB_REPOSITORY=mgth/Omniphony DRY_RUN=1 .github/scripts/merge-train.sh
@@ -64,16 +68,22 @@ pr_field() { # <json> <number> <jq filter on the pull request>
   jq -r --argjson n "$2" ".[] | select(.number == \$n) | $3" <<<"$1"
 }
 
-# State of the latest CI run on a commit: success, failure, pending or none.
-# A cancelled run (superseded by a newer push) counts as none.
+# State of the latest pull_request CI run on a commit, the kind the required
+# checks are read from: success, failure, pending or none. Runs that never ran
+# are left out: cancelled ones (superseded by a newer push), skipped ones, and
+# a run still held for approval (see the header). On 2026-10-06 a held run
+# was read as a failure and threw the first pull request off the train.
 ci_state() {
-  gh run list -R "$repo" --workflow "$ci_workflow" --commit "$1" --limit 1 \
-    --json status,conclusion \
-    --jq 'if length == 0 then "none"
-          elif .[0].status != "completed" then "pending"
-          elif .[0].conclusion == "success" then "success"
-          elif .[0].conclusion == "cancelled" or .[0].conclusion == "skipped" then "none"
-          else "failure" end'
+  gh run list -R "$repo" --workflow "$ci_workflow" --commit "$1" --event pull_request --limit 20 \
+    --json status,conclusion,createdAt \
+    --jq '[.[] | select(.conclusion as $c
+                        | ["cancelled", "skipped", "action_required", "stale"]
+                        | index($c) | not)]
+          | sort_by(.createdAt) | last
+          | if . == null then "none"
+            elif .status != "completed" then "pending"
+            elif .conclusion == "success" then "success"
+            else "failure" end'
 }
 
 behind_by() { gh api "repos/$repo/compare/$base...$1" --jq .behind_by; }
@@ -95,10 +105,33 @@ eject() { # <number> <reason>
 Auto-merge has been disabled. Re-enable it to put this pull request back in the queue." >/dev/null
 }
 
-# Starts CI on a branch, by dispatch (see the header).
-dispatch_ci() { # <number> <branch>
-  log "#$1: starting CI on $2"
-  act gh workflow run "$ci_workflow" -R "$repo" --ref "$2"
+# Id of the pull_request CI run held for approval on a commit, if any.
+held_run() { # <sha>
+  gh run list -R "$repo" --workflow "$ci_workflow" --commit "$1" --event pull_request --limit 20 \
+    --json databaseId,conclusion,createdAt \
+    --jq '[.[] | select(.conclusion == "action_required")] | sort_by(.createdAt) | last | .databaseId // empty'
+}
+
+# Approves the CI run GitHub holds for the train's update (see the header).
+# The run appears a few seconds after the push; waits for it up to a minute.
+# Returns 1 when there is none yet or the approval is refused.
+approve_ci() { # <number> <sha>
+  local id=""
+  for _ in $(seq 1 12); do
+    id="$(held_run "$2")"
+    [ -n "$id" ] && break
+    [ "$dry" = 1 ] && break
+    sleep 5
+  done
+  if [ -z "$id" ]; then
+    log "#$1: no CI run held for approval on ${2:0:8} yet; the next tick looks again"
+    return 1
+  fi
+  log "#$1: approving CI run $id on ${2:0:8}"
+  if ! act gh api -X POST "repos/$repo/actions/runs/$id/approve" >/dev/null; then
+    log "::error::#$1: approving CI run $id was refused; approve it on the pull request by hand"
+    return 1
+  fi
 }
 
 # Merges main into a pull request and waits for its new head. Returns 2 on a
@@ -114,7 +147,7 @@ update_branch() { # <number> <head sha>
     eject "$1" "merging \`$base\` into this branch failed (most likely a conflict). Merge \`$base\` and resolve it by hand."
     return 2
   fi
-  # The update is asynchronous: CI must start on the new head, not the old.
+  # The update is asynchronous: the run to approve is on the new head.
   for _ in $(seq 1 24); do
     if [ "$(gh pr view "$1" -R "$repo" --json headRefOid --jq .headRefOid)" != "$2" ]; then
       return 0
@@ -138,9 +171,8 @@ minutes_on_board() { # <number>
 # Handles the pull request on board. Returns 0 when the train must wait for
 # it, 1 when the train is free for the next one.
 tend_on_board() { # <prs json> <number>
-  local prs="$1" n="$2" head branch state
+  local prs="$1" n="$2" head state
   head="$(pr_field "$prs" "$n" .headRefOid)"
-  branch="$(pr_field "$prs" "$n" .headRefName)"
 
   if [ "$(pr_field "$prs" "$n" '.autoMergeRequest != null')" != true ]; then
     log "#$n: auto-merge was disabled; taking it off the train"
@@ -156,7 +188,7 @@ tend_on_board() { # <prs json> <number>
     local rc=0
     update_branch "$n" "$head" || rc=$?
     case "$rc" in
-      0) dispatch_ci "$n" "$branch"; return 0 ;;
+      0) approve_ci "$n" "$(gh pr view "$n" -R "$repo" --json headRefOid --jq .headRefOid)" || true; return 0 ;;
       1) return 0 ;;
       *) return 1 ;;
     esac
@@ -168,14 +200,16 @@ tend_on_board() { # <prs json> <number>
       log "#$n: CI running on ${head:0:8}; waiting"
       return 0 ;;
     none)
-      dispatch_ci "$n" "$branch"
+      # Nothing ran yet: the run held for the update still needs approving
+      # (an earlier tick may not have seen it appear).
+      approve_ci "$n" "$head" || true
       return 0 ;;
     failure)
       eject "$n" "CI failed on ${head:0:8}, this branch brought up to date with \`$base\`."
       return 1 ;;
     success)
       if [ "$(minutes_on_board "$n")" -ge "$stall_minutes" ]; then
-        eject "$n" "CI passed on ${head:0:8} but the pull request has not merged after ${stall_minutes} minutes on the train (a required check or review is missing?)."
+        eject "$n" "the pull request has not merged after ${stall_minutes} minutes on the train, CI having passed on ${head:0:8} (a required check or review is missing?)."
         return 1
       fi
       log "#$n: CI passed on ${head:0:8}; waiting for auto-merge"
@@ -185,12 +219,11 @@ tend_on_board() { # <prs json> <number>
 
 # Boards the next candidate. Returns 0 when one boarded.
 board_next() { # <prs json>
-  local prs="$1" n head branch rc
+  local prs="$1" n head rc
   # Queue order: oldest auto-merge enablement first.
   for n in $(jq -r '[.[] | select(.autoMergeRequest != null and (.isDraft | not) and (.isCrossRepository | not))]
                     | sort_by(.autoMergeRequest.enabledAt) | .[].number' <<<"$prs"); do
     head="$(pr_field "$prs" "$n" .headRefOid)"
-    branch="$(pr_field "$prs" "$n" .headRefName)"
     if [ "$(pr_field "$prs" "$n" .mergeable)" = CONFLICTING ]; then
       eject "$n" "this branch conflicts with \`$base\`."
       continue
@@ -205,7 +238,7 @@ board_next() { # <prs json>
       rc=0
       update_branch "$n" "$head" || rc=$?
       case "$rc" in
-        0) dispatch_ci "$n" "$branch" ;;
+        0) approve_ci "$n" "$(gh pr view "$n" -R "$repo" --json headRefOid --jq .headRefOid)" || true ;;
         2) continue ;;  # conflict: off the train, try the next one
       esac
     else

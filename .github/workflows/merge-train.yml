@@ -15,8 +15,7 @@ on:
     types: [completed]
   pull_request_target:
     types: [auto_merge_enabled, auto_merge_disabled, closed]
-  # Backstop for an event that never arrives (e.g. a CI run dispatched by the
-  # train finishing without a workflow_run delivery).
+  # Backstop for an event that never arrives.
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
@@ -30,7 +29,7 @@ permissions:
   contents: write       # merge main into the pull request on board
   pull-requests: write  # label, comment, disable auto-merge
   issues: write         # create the label
-  actions: write        # dispatch CI on the branch
+  actions: write        # approve the CI run GitHub holds for the train's update
 
 jobs:
   tick:
