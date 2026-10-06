@@ -173,8 +173,42 @@ fn the_sync_ack_follows_the_answers_to_every_earlier_control() {
     drop(sender);
 }
 
-/// A control that starts a recompute is acked once it is dispatched: the
-/// build's start (`recomputing = 1`) is before the ack, its end after.
+fn is_recomputing(msg: &OscMessage, value: i32) -> bool {
+    msg.addr == osc_contract::STATE_SPEAKERS_RECOMPUTING && msg.args == [OscType::Int(value)]
+}
+
+/// Read until the build that `seen` started has ended (`recomputing = 0`),
+/// counting what `seen` already holds: the end may come before the ack.
+fn wait_for_recompute_end(client: &mut Client, seen: &[OscMessage]) -> bool {
+    let started = seen.iter().rposition(|m| is_recomputing(m, 1));
+    if started.is_some_and(|at| seen[at..].iter().any(|m| is_recomputing(m, 0))) {
+        return true;
+    }
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        match client.until(osc_contract::STATE_SPEAKERS_RECOMPUTING) {
+            Some(messages) if messages.iter().any(|m| is_recomputing(m, 0)) => return true,
+            Some(_) => {}
+            None => return false,
+        }
+    }
+    false
+}
+
+fn change_room(client: &mut Client) {
+    client.send(
+        osc_contract::CONTROL_ROOM_RATIO,
+        vec![
+            OscType::Float(1.5),
+            OscType::Float(2.0),
+            OscType::Float(1.0),
+        ],
+    );
+}
+
+/// A control that starts a recompute is acked once it is dispatched, not
+/// once the build is done: with the worker held, the ack arrives after the
+/// build's start and before its end.
 #[test]
 fn the_sync_ack_does_not_wait_for_a_recompute() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -184,34 +218,51 @@ fn the_sync_ack_does_not_wait_for_a_recompute() {
     client.send(osc_contract::REGISTER, vec![]);
     client.until(osc_contract::STATE_SNAPSHOT_COMPLETE).unwrap();
 
-    client.send(
-        osc_contract::CONTROL_ROOM_RATIO,
-        vec![
-            OscType::Float(1.5),
-            OscType::Float(2.0),
-            OscType::Float(1.0),
-        ],
-    );
+    let held = super::recompute::hold::hold(&control);
+    change_room(&mut client);
     client.send(osc_contract::SYNC, vec![OscType::Int(1)]);
     let before = client
         .until(osc_contract::SYNC_ACK)
         .expect("the sync is acked");
-    let started = before
-        .iter()
-        .any(|m| m.addr == osc_contract::STATE_SPEAKERS_RECOMPUTING && m.args == [OscType::Int(1)]);
-    assert!(started, "the recompute's start is sent before the ack");
+    assert!(
+        before.iter().any(|m| is_recomputing(m, 1)),
+        "the build's start is sent before the ack"
+    );
+    assert!(
+        !before.iter().any(|m| is_recomputing(m, 0)),
+        "the build is still held: its end cannot be before the ack"
+    );
+    drop(held);
+    assert!(
+        wait_for_recompute_end(&mut client, &[]),
+        "the build's end follows"
+    );
+    drop(sender);
+}
 
-    // Its end comes after, as it does for a datagram client.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut ended = false;
-    while !ended && Instant::now() < deadline {
-        if let Some(messages) = client.until(osc_contract::STATE_SPEAKERS_RECOMPUTING) {
-            ended = messages.iter().any(|m| {
-                m.addr == osc_contract::STATE_SPEAKERS_RECOMPUTING && m.args == [OscType::Int(0)]
-            });
-        }
-    }
-    assert!(ended, "the recompute's end follows");
+/// The other order is just as valid: a build that ends before the sync is
+/// dispatched has its end before the ack, and the ack says nothing more about
+/// it. Seeing the end before sending the sync makes that schedule certain.
+#[test]
+fn a_recompute_that_ends_first_is_reported_before_the_ack() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let control = fixture_control();
+    let (sender, port) = listening_sender(&control);
+    let mut client = Client::connect(port);
+    client.send(osc_contract::REGISTER, vec![]);
+    client.until(osc_contract::STATE_SNAPSHOT_COMPLETE).unwrap();
+
+    change_room(&mut client);
+    assert!(wait_for_recompute_end(&mut client, &[]), "the build ends");
+    client.send(osc_contract::SYNC, vec![OscType::Int(2)]);
+    let after = client
+        .until(osc_contract::SYNC_ACK)
+        .expect("the sync is acked");
+    assert!(
+        !after.iter().any(|m| is_recomputing(m, 1)),
+        "no build is left to start after the ack: {:?}",
+        after.iter().map(|m| &m.addr).collect::<Vec<_>>()
+    );
     drop(sender);
 }
 
@@ -258,4 +309,44 @@ fn stopping_the_listener_ends_the_connections() {
         "and the port is released"
     );
     drop(sender);
+}
+
+/// A successor (a track handoff, a standby resuming) polls the datagram port
+/// and binds the stream port once, right after it got it: the stream port
+/// must already be free by then, while the old listener is still shutting
+/// down, not only once it has been joined.
+#[test]
+fn a_successor_that_gets_the_datagram_port_gets_the_stream_port_too() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    for attempt in 0..10 {
+        let control = fixture_control();
+        let (sender, port) = listening_sender(&control);
+        sender
+            .listener_stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        // A datagram wakes the receiver at once, while the acceptor may still
+        // be in its poll sleep: the order the releases must not depend on.
+        std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .send_to(b"", ("127.0.0.1", port))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let udp = loop {
+            match std::net::UdpSocket::bind(("0.0.0.0", port)) {
+                Ok(socket) => break socket,
+                Err(e) if Instant::now() > deadline => panic!("never released: {e}"),
+                Err(_) => std::thread::sleep(Duration::from_millis(1)),
+            }
+        };
+        let tcp = std::net::TcpListener::bind(("127.0.0.1", port));
+        assert!(
+            tcp.is_ok(),
+            "attempt {attempt}: the datagram port was free while the stream port was not"
+        );
+        drop((udp, tcp));
+        if let Some(handle) = sender.listener_thread.lock().unwrap().take() {
+            handle.join().unwrap();
+        }
+        drop(sender);
+    }
 }

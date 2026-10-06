@@ -626,7 +626,7 @@ impl OscSender {
             }
         };
         let (feeds, inbound) = inbound::spawn_feeds(
-            rx_socket,
+            Arc::new(rx_socket),
             tcp_listener,
             Arc::clone(&clients),
             Arc::clone(&stop),

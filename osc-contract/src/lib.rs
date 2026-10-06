@@ -644,11 +644,12 @@ pub const REGISTER: &str = "/omniphony/register";
 /// Barrier, revision 2: the engine answers [`SYNC_ACK`] with the same
 /// arguments once every packet the client sent before it has been dispatched.
 /// On a stream connection, whose packets are handled in order, the ack means
-/// each earlier control was applied (and the state it changed published
-/// before the ack), refused (its [`STATE_CONTROL_ERROR`] before the ack), or
-/// started asynchronous work, whose completion keeps its own signal (a layout
-/// change's [`STATE_SPEAKERS_RECOMPUTING`] going back to 0). Over UDP the ack
-/// only says the engine heard the sync.
+/// each earlier control was applied (the state it changed published before
+/// the ack), refused (its [`STATE_CONTROL_ERROR`] before the ack), or started
+/// asynchronous work, which may end before the ack or after it: a rebuild
+/// reports itself on [`STATE_SPEAKERS_RECOMPUTING`] and
+/// [`STATE_SPEAKERS_RECOMPUTE_ERROR`] as before (see the contract document).
+/// Over UDP the ack only says the engine heard the sync.
 pub const SYNC: &str = "/omniphony/sync";
 pub const SYNC_ACK: &str = "/omniphony/sync/ack";
 pub const SPATIAL_FRAME: &str = "/omniphony/spatial/frame";

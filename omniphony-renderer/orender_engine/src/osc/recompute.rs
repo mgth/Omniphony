@@ -69,6 +69,8 @@ pub(crate) fn trigger_layout_recompute(
     std::thread::Builder::new()
         .name("render-backend-recompute".into())
         .spawn(move || {
+            #[cfg(test)]
+            hold::wait_while_held(&control_clone);
             log::info!(
                 "Render backend recompute started ({})",
                 rebuild_plan_for_thread.log_summary()
@@ -241,6 +243,46 @@ pub(crate) fn trigger_layout_recompute(
             }
         })
         .expect("failed to spawn vbap-recompute thread");
+}
+
+/// Tests that need a recompute still running at a given moment hold the
+/// worker of one engine (one `RendererControl`) at its start until the guard
+/// is dropped; every other engine's workers run as usual.
+#[cfg(test)]
+pub(crate) mod hold {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    use renderer::live_params::RendererControl;
+
+    static HELD: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    static RELEASED: Condvar = Condvar::new();
+
+    fn key(control: &Arc<RendererControl>) -> usize {
+        Arc::as_ptr(control) as usize
+    }
+
+    pub(crate) struct Held(usize);
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            HELD.lock().unwrap().retain(|&k| k != self.0);
+            RELEASED.notify_all();
+        }
+    }
+
+    /// Hold `control`'s recompute workers until the returned guard drops.
+    pub(crate) fn hold(control: &Arc<RendererControl>) -> Held {
+        HELD.lock().unwrap().push(key(control));
+        Held(key(control))
+    }
+
+    pub(super) fn wait_while_held(control: &Arc<RendererControl>) {
+        let key = key(control);
+        let mut held = HELD.lock().unwrap();
+        while held.contains(&key) {
+            held = RELEASED.wait(held).unwrap();
+        }
+    }
 }
 
 #[cfg(test)]

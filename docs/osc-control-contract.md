@@ -146,13 +146,17 @@ carries what a client needs to notice either. The contract crate's
 - **Sync** (revision 2) — `/omniphony/sync [args…]` is answered with
   `/omniphony/sync/ack [args…]` (the same arguments) once every packet the
   client sent before it has been dispatched. On a stream connection, whose
-  packets are handled in order, the ack is a barrier: each earlier control
-  was applied (the state it changed published before the ack), refused (its
-  `control_error` before the ack), or started asynchronous work, whose
-  completion keeps its own signal: a layout or speaker change's
-  `speakers/recomputing` going back to 0, then `speakers/recompute_error`.
-  The ack does not wait for that work. Over UDP it only says the engine heard
-  the sync.
+  packets are handled in order, the ack is a dispatch barrier: each earlier
+  control was applied (the state it changed published before the ack),
+  refused (its `control_error` before the ack), or started asynchronous work.
+  The ack says nothing about that work: it may have ended before the ack or
+  end after it. A layout or speaker rebuild reports itself as it always has:
+  `speakers/recomputing 1` then `speakers/recompute_error ""` when a build
+  starts; `speakers/recompute_error <message>` on failure, then
+  `speakers/recomputing 0`, when it ends. A change that arrives while a build
+  runs queues one follow-up build, which starts right after the first one's
+  `0`: a `0` says that a build ended, not that every earlier change is built.
+  Over UDP the ack only says the engine heard the sync.
 - **Contract revision** — `/state/capabilities` carries `contractRevision`.
   A client compares it with its own and says so when they differ; an engine
   that advertises none predates revisions and counts as 0. The revision moves

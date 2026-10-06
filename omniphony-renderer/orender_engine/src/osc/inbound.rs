@@ -44,12 +44,16 @@ pub(crate) struct Inbound {
 pub(crate) struct Feeds {
     udp: Option<JoinHandle<()>>,
     tcp: Option<JoinHandle<()>>,
+    /// The datagram socket, held here as well as by its receiver, so it is
+    /// released after the stream listener whichever thread ends first.
+    udp_socket: Arc<UdpSocket>,
 }
 
 impl Feeds {
-    /// Wait for the feeds to end, the stream listener first: once the
-    /// datagram socket is released, the stream port is too, so a successor
-    /// that bound the first can bind the second.
+    /// Wait for the feeds to end, then release the datagram port, in that
+    /// order: a successor polls the datagram port (`bind_rx_socket`) and binds
+    /// the stream port once, right after it got it. The receiver may well end
+    /// before the acceptor wakes from its poll; the port must not.
     pub(crate) fn join(mut self) {
         if let Some(handle) = self.tcp.take() {
             let _ = handle.join();
@@ -57,24 +61,26 @@ impl Feeds {
         if let Some(handle) = self.udp.take() {
             let _ = handle.join();
         }
+        drop(self.udp_socket);
     }
 }
 
 /// Start feeding the listener from `udp` and, when it could be bound, from
 /// `tcp`. Both threads end when `stop` is set.
 pub(crate) fn spawn_feeds(
-    udp: UdpSocket,
+    udp: Arc<UdpSocket>,
     tcp: Option<TcpListener>,
     clients: Arc<OscClientRegistry>,
     stop: Arc<AtomicBool>,
 ) -> std::io::Result<(Feeds, Receiver<Inbound>)> {
     let (tx, rx) = sync_channel(INBOUND_QUEUE);
+    let udp_socket = Arc::clone(&udp);
     let udp = {
         let tx = tx.clone();
         let stop = Arc::clone(&stop);
         std::thread::Builder::new()
             .name("osc-udp-rx".into())
-            .spawn(move || receive_datagrams(udp, tx, stop))?
+            .spawn(move || receive_datagrams(&udp, tx, stop))?
     };
     let tcp = match tcp {
         Some(listener) => Some(
@@ -88,12 +94,13 @@ pub(crate) fn spawn_feeds(
         Feeds {
             udp: Some(udp),
             tcp,
+            udp_socket,
         },
         rx,
     ))
 }
 
-fn receive_datagrams(socket: UdpSocket, tx: SyncSender<Inbound>, stop: Arc<AtomicBool>) {
+fn receive_datagrams(socket: &UdpSocket, tx: SyncSender<Inbound>, stop: Arc<AtomicBool>) {
     let _ = socket.set_read_timeout(Some(POLL));
     // Large enough for any UDP datagram, allocated once: a truncated control
     // message (a backend file, a layout) would fail to decode and be lost.
