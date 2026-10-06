@@ -144,7 +144,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
-                let decoded = image::load_from_memory(include_bytes!("../icons/icon.png"))
+                let decoded = image::load_from_memory(include_bytes!("../../../omniphony-studio-egui/assets/icons/icon.png"))
                     .expect("failed to decode window icon")
                     .into_rgba8();
                 let (width, height) = decoded.dimensions();
