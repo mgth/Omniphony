@@ -512,12 +512,12 @@ pub(super) struct GainCarry {
 /// are those of its position; `segment_end` is scratch.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn mix_sample_ramp(
+fn mix_sample_ramp<S: RampStrategy + ?Sized>(
     bus: &mut MixBus<'_>,
     bands: &[Vec<f32>],
     sample_length: usize,
     ramp: &mut crate::ramp_strategy::ChannelRampState,
-    ramp_strategy: &dyn RampStrategy,
+    ramp_strategy: &S,
     ramp_context: &RampContext,
     stride: usize,
     carry: &mut GainCarry,
@@ -974,30 +974,51 @@ impl SpeakerRenderStage {
                         let unified_table = &self.unified_table;
                         let table_cache = &mut self.table_caches[input_channel_idx];
                         let render_bands = &self.render_bands;
-                        mix_sample_ramp(
-                            &mut bus,
-                            bands,
-                            sample_length,
-                            &mut state.ramp,
-                            ramp_strategy,
-                            ramp_context,
-                            sample_ramp_stride,
-                            &mut self.gain_carries[input_channel_idx],
-                            self.mix_pass,
-                            &mut band_gains,
-                            &mut self.segment_end_scratch,
-                            |position, size, out| {
-                                Self::fill_band_gains(
-                                    unified_table,
-                                    Some(&mut *table_cache),
-                                    render_bands,
-                                    render_params,
-                                    position,
-                                    size,
-                                    out,
-                                )
-                            },
-                        );
+                        let lookup = |position, size, out: &mut Vec<Gains>| {
+                            Self::fill_band_gains(
+                                unified_table,
+                                Some(&mut *table_cache),
+                                render_bands,
+                                render_params,
+                                position,
+                                size,
+                                out,
+                            )
+                        };
+                        let carry = &mut self.gain_carries[input_channel_idx];
+                        let segment_end = &mut self.segment_end_scratch;
+                        // The built-in ramp is called directly, so its
+                        // per-sample evaluation inlines into the loop.
+                        match ramp_strategy.as_position() {
+                            Some(position) => mix_sample_ramp(
+                                &mut bus,
+                                bands,
+                                sample_length,
+                                &mut state.ramp,
+                                position,
+                                ramp_context,
+                                sample_ramp_stride,
+                                carry,
+                                self.mix_pass,
+                                &mut band_gains,
+                                segment_end,
+                                lookup,
+                            ),
+                            None => mix_sample_ramp(
+                                &mut bus,
+                                bands,
+                                sample_length,
+                                &mut state.ramp,
+                                ramp_strategy,
+                                ramp_context,
+                                sample_ramp_stride,
+                                carry,
+                                self.mix_pass,
+                                &mut band_gains,
+                                segment_end,
+                                lookup,
+                            ),
+                        }
                     }
                     RampMode::Interp => {
                         // Destination gains for this block: one VBAP evaluation per
