@@ -11,30 +11,14 @@ use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 use crate::test_support;
 
-/// The unified multi-band cartesian table must render bit-equivalently to the
-/// per-band path it replaces. Build two identical crossover renderers, force
-/// one onto the per-band path (`unified_table = None`), feed both the same
-/// frame, and require matching output.
-#[test]
-fn unified_crossover_matches_per_band() {
-    fn build() -> SpatialRenderer {
-        let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
-        for (sp, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
-            sp.freq_low = Some(cutoff);
-        }
-        SpatialRenderer::new(RendererSpec {
-            vbap_position_interpolation: true, // position interpolation → trilinear lookup + per-sample motion
-            ..test_support::spec(layout)
-        })
-        .unwrap()
-    }
-
+/// Build two identical renderers with `build`, keep the unified multi-band
+/// table on one (it must have built one: `why` says why it should) and force
+/// the other onto the per-band path, feed both the same moving object, and
+/// require matching output.
+fn assert_unified_table_matches_per_band(build: fn() -> SpatialRenderer, why: &str) {
     let mut unified = build();
     unified.prepare_speaker_stage().unwrap();
-    assert!(
-        unified.speaker_stage.unified_table.is_some(),
-        "crossover layout should build a unified table"
-    );
+    assert!(unified.speaker_stage.unified_table.is_some(), "{why}");
     let mut per_band = build();
     per_band.prepare_speaker_stage().unwrap();
     per_band.speaker_stage.unified_table = None;
@@ -69,6 +53,25 @@ fn unified_crossover_matches_per_band() {
     );
 }
 
+/// The unified multi-band cartesian table must render bit-equivalently to the
+/// per-band path it replaces.
+#[test]
+fn unified_crossover_matches_per_band() {
+    fn build() -> SpatialRenderer {
+        let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
+        for (sp, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
+            sp.freq_low = Some(cutoff);
+        }
+        SpatialRenderer::new(RendererSpec {
+            vbap_position_interpolation: true, // position interpolation → trilinear lookup + per-sample motion
+            ..test_support::spec(layout)
+        })
+        .unwrap()
+    }
+
+    assert_unified_table_matches_per_band(build, "crossover layout should build a unified table");
+}
+
 /// Polar counterpart of `unified_crossover_matches_per_band`: the unified
 /// multi-band POLAR table must render bit-equivalently to the per-band polar
 /// path. Same crossover layout, but a precomputed polar evaluator.
@@ -93,43 +96,9 @@ fn unified_polar_matches_per_band() {
         .unwrap()
     }
 
-    let mut unified = build();
-    unified.prepare_speaker_stage().unwrap();
-    assert!(
-        unified.speaker_stage.unified_table.is_some(),
-        "polar crossover layout should build a unified table"
-    );
-    let mut per_band = build();
-    per_band.prepare_speaker_stage().unwrap();
-    per_band.speaker_stage.unified_table = None;
-
-    let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
-    let event = vec![SpatialChannelEvent {
-        channel_idx: 0,
-        is_bed: false,
-        gain_db: Some(0.0),
-        ramp_length: Some(40),
-        size: Some([0.0, 0.0, 0.0]),
-        position: Some([0.3, -0.2, 0.4]),
-        sample_pos: Some(0),
-    }];
-
-    let a = unified
-        .render_frame(&pcm, 1, &event, Vec::new(), false)
-        .unwrap();
-    let b = per_band
-        .render_frame(&pcm, 1, &event, Vec::new(), false)
-        .unwrap();
-    assert_eq!(a.samples.len(), b.samples.len());
-    let max_diff = a
-        .samples
-        .iter()
-        .zip(&b.samples)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max);
-    assert!(
-        max_diff < 1e-6,
-        "unified polar vs per-band output mismatch: max diff {max_diff}"
+    assert_unified_table_matches_per_band(
+        build,
+        "polar crossover layout should build a unified table",
     );
 }
 
@@ -159,43 +128,9 @@ fn unified_table_with_two_speaker_fallback_band() {
         SpatialRenderer::new(test_support::spec(layout)).unwrap()
     }
 
-    let mut unified = build();
-    unified.prepare_speaker_stage().unwrap();
-    assert!(
-        unified.speaker_stage.unified_table.is_some(),
-        "a 2-speaker fallback band must not disable the unified table"
-    );
-    let mut per_band = build();
-    per_band.prepare_speaker_stage().unwrap();
-    per_band.speaker_stage.unified_table = None;
-
-    let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
-    let event = vec![SpatialChannelEvent {
-        channel_idx: 0,
-        is_bed: false,
-        gain_db: Some(0.0),
-        ramp_length: Some(40),
-        size: Some([0.0, 0.0, 0.0]),
-        position: Some([0.3, -0.2, 0.4]),
-        sample_pos: Some(0),
-    }];
-
-    let a = unified
-        .render_frame(&pcm, 1, &event, Vec::new(), false)
-        .unwrap();
-    let b = per_band
-        .render_frame(&pcm, 1, &event, Vec::new(), false)
-        .unwrap();
-    assert_eq!(a.samples.len(), b.samples.len());
-    let max_diff = a
-        .samples
-        .iter()
-        .zip(&b.samples)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max);
-    assert!(
-        max_diff < 1e-6,
-        "unified vs per-band output mismatch (fallback band): max diff {max_diff}"
+    assert_unified_table_matches_per_band(
+        build,
+        "a 2-speaker fallback band must not disable the unified table",
     );
 }
 
