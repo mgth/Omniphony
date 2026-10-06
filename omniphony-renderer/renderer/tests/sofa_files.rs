@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use renderer::binaural::brir::{BrirLoadOptions, BrirSet};
+use renderer::binaural::hrir::{HRIR_LEN, HrirPair, HrirSet};
 use renderer::binaural::measured::hrir_set_from_sofa;
 
 const RATE: u32 = 48_000;
@@ -36,6 +37,26 @@ fn finite_brir(set: &BrirSet) -> bool {
     })
 }
 
+/// Every kernel the set renders, both ears, at each node of its 5° grid
+/// (azimuth all round, elevation -40° to 90°). `peak` cannot tell: it folds
+/// with `f32::max`, which skips a NaN.
+fn finite_hrir(set: &HrirSet) -> bool {
+    let mut pair = HrirPair {
+        left: [0.0; HRIR_LEN],
+        right: [0.0; HRIR_LEN],
+    };
+    (-8..=18).all(|el| {
+        (0..72).all(|az| {
+            set.at(az as f32 * 5.0, el as f32 * 5.0, &mut pair);
+            let taps = set.len();
+            pair.left[..taps]
+                .iter()
+                .chain(&pair.right[..taps])
+                .all(|s| s.is_finite())
+        })
+    })
+}
+
 /// Free-field HRIR sets as measured and as written by two different tools
 /// (the Matlab API, and netCDF4 through SOFAsonix, whose object headers
 /// sofar 0.3.0 could not read: issue #185).
@@ -51,8 +72,8 @@ fn free_field_hrir_files_load_as_a_direction_dependent_set() {
         let set = hrir_set_from_sofa(path_str(&path), RATE, true)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(!set.is_empty(), "{name}");
-        let peak = set.peak();
-        assert!(peak.is_finite() && peak > 0.0, "{name}: peak {peak}");
+        assert!(finite_hrir(&set), "{name}: non-finite HRIR");
+        assert!(set.peak() > 0.0, "{name}: silent");
         assert!(!set.is_direction_invariant(), "{name}");
     }
 }
@@ -91,7 +112,7 @@ fn load_or_refuse(path: &Path, what: &str) -> (bool, bool) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     let hrir = match hrir_set_from_sofa(p, RATE, true) {
         Ok(set) => {
-            assert!(set.peak().is_finite(), "{what}: non-finite HRIR set");
+            assert!(finite_hrir(&set), "{what}: non-finite HRIR set");
             true
         }
         Err(e) => {
