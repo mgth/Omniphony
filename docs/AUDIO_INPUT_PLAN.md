@@ -354,7 +354,7 @@ orender input-live \
 - `--speaker-layout`
 - `--output-backend`
 - `--output-device`
-- `--latency-target-ms`
+- `--latency-target`
 - `--pw-quantum`
 - `--enable-vbap`
 - `--osc`

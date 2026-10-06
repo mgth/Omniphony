@@ -124,7 +124,7 @@ fn resolve_effective_decode_args(
     args: &RenderArgs,
     cli: &Cli,
     arg_sources: &RenderArgSources<'_>,
-) -> ResolvedRun {
+) -> Result<ResolvedRun> {
     let config_path = cli
         .config
         .clone()
@@ -137,14 +137,16 @@ fn resolve_effective_decode_args(
         .map(|p| renderer::config::Config::load_or_default_with_live(p).0)
         .unwrap_or_default();
 
+    // The registered options given as flags go into the render section
+    // first, through their rows; the args below are resolved from it.
+    let mut render_cfg = config.render.clone().unwrap_or_default();
+    crate::cli::options::store_given_values(&mut render_cfg, &arg_sources.option_values())?;
+
     let mut effective = args.clone();
-    if let Some(rc) = &config.render {
-        merge_render_config(rc, &mut effective, arg_sources);
-    }
+    merge_render_config(&render_cfg, &mut effective, arg_sources);
     let osc = resolve_osc_settings(config.render.as_ref(), &effective, arg_sources);
     apply_osc_settings(&mut effective, osc);
 
-    let mut render_cfg = config.render.clone().unwrap_or_default();
     apply_render_cfg_overrides(&mut render_cfg, &effective);
     apply_explicit_renderer_args(&mut render_cfg, &effective, arg_sources);
     let renderer_params = renderer_params(&render_cfg, &effective);
@@ -153,14 +155,14 @@ fn resolve_effective_decode_args(
         .render
         .as_ref()
         .and_then(|rc| rc.current_layout.clone());
-    ResolvedRun {
+    Ok(ResolvedRun {
         config_path,
         args: effective,
         config,
         render_cfg,
         renderer_params,
         current_layout,
-    }
+    })
 }
 
 fn decode_queue_capacity(latency_target_ms: Option<u32>) -> usize {
@@ -224,7 +226,7 @@ fn maybe_save_effective_config(
 /// (`seed_runtime_state_from_render_config`), known before the renderer is
 /// built so the decoders can start in it.
 fn configured_drc_mode(render_cfg: &renderer::config::RenderConfig) -> &str {
-    render_cfg.drc_mode.as_deref().unwrap_or("Off")
+    render_cfg.options.drc_mode.as_deref().unwrap_or("Off")
 }
 
 fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecodeRun> {
@@ -434,7 +436,7 @@ fn effective_output_backend(
 /// it on or off since the start.
 fn log_auto_gain_summary(handler: &DecodeHandler) {
     if let Some(ref renderer) = handler.spatial_renderer {
-        if !renderer.renderer_control().live.read().auto_gain {
+        if !renderer.renderer_control().live.read().options.auto_gain {
             return;
         }
         if renderer.auto_gain_triggered() {
@@ -1252,7 +1254,7 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
     let mut restart_bridge_path_override: Option<Option<std::path::PathBuf>> = None;
     loop {
         negotiate_osc_port_if_enabled(args, cli, arg_sources);
-        let mut run = resolve_effective_decode_args(args, cli, arg_sources);
+        let mut run = resolve_effective_decode_args(args, cli, arg_sources)?;
         if let Some(bridge_path) = restart_bridge_path_override.take() {
             run.args.bridge_path = bridge_path;
         }
@@ -1468,7 +1470,12 @@ mod tests {
     fn rendered_run_levels(tag: &str, runs: &[(DecodedSource, Option<i8>)]) -> Vec<f32> {
         const RUN_BLOCKS: usize = 30;
         let renderer = super::super::handler::tests::test_renderer();
-        renderer.renderer_control().live.write().use_loudness = true;
+        renderer
+            .renderer_control()
+            .live
+            .write()
+            .options
+            .use_loudness = true;
         let channels = renderer.output_channel_count();
         let mut run = FileSinkRun::new(tag, &pipewire_mode_input_control(), Some(renderer));
         for &(source, dialogue_level) in runs {
@@ -1647,6 +1654,11 @@ mod tests {
             .expect("free port")
             .port()
             .to_string();
+        // Where the state is broadcast: a socket of the test's own, never the
+        // default port (9000, or the shell's OMNIPHONY_OSC_PORT) a live
+        // instance may be listening on.
+        let sink = std::net::UdpSocket::bind("127.0.0.1:0").expect("sink socket");
+        let tx_port = sink.local_addr().expect("sink address").port().to_string();
         let bridge = "/nonexistent/libnone_bridge.so";
         let error = format!("bridge path '{bridge}' does not exist");
 
@@ -1660,6 +1672,8 @@ mod tests {
             "--bridge-path",
             bridge,
             "--osc",
+            "--osc-port",
+            &tx_port,
             "--osc-rx-port",
             &rx_port,
             "in.thd",
@@ -1668,7 +1682,8 @@ mod tests {
         let Commands::Render(args) = &parsed.cli.command else {
             unreachable!("render subcommand")
         };
-        let run = resolve_effective_decode_args(args, &parsed.cli, &parsed.render_sources());
+        let run = resolve_effective_decode_args(args, &parsed.cli, &parsed.render_sources())
+            .expect("resolved");
         let mut handler = DecodeHandler::default();
         init_no_bridge_handler(
             &mut handler,

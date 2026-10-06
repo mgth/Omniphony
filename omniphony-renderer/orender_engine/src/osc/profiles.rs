@@ -17,7 +17,7 @@ use runtime_control::HostControlHandler;
 use runtime_control::osc_contract;
 
 use super::client_registry::OscClientRegistry;
-use super::export::build_live_state;
+use super::export::broadcast_live_state;
 use super::gaintable::GaintableCache;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{broadcast_int, broadcast_string};
@@ -222,7 +222,7 @@ pub(crate) fn handle_profile_message(
     broadcast_profiles_state(control, socket, clients);
     // Full state refresh so every client view (options, layout, binaural,
     // gains…) re-syncs to the post-operation state.
-    build_live_state(control, host).broadcast(socket, clients);
+    broadcast_live_state(control, host, socket, clients);
     log::info!(
         "OSC {addr}: '{name}' done (active profile '{}')",
         config.active_profile_name()
@@ -354,7 +354,7 @@ pub(crate) fn reload_config_in_place(
     broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
     broadcast_profiles_state(control, socket, clients);
-    build_live_state(control, host).broadcast(socket, clients);
+    broadcast_live_state(control, host, socket, clients);
     log::info!(
         "OSC reload_config: reloaded {} in place (active profile '{}')",
         path.display(),
@@ -416,7 +416,7 @@ mod tests {
     use super::*;
     use renderer::config::{Config, RenderConfig};
     use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
-    use renderer::spatial_renderer::SpatialRenderer;
+    use renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
     use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
     use renderer::speaker_layout::SpeakerLayout;
     use std::sync::atomic::Ordering;
@@ -426,45 +426,45 @@ mod tests {
     /// build stays trivial (same fixture as the live-options conformance net).
     fn fixture_control() -> Arc<RendererControl> {
         let layout = SpeakerLayout::preset("7.1.4").expect("7.1.4 preset");
-        SpatialRenderer::new(
-            layout,
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 5,
                 y_size: 5,
                 z_size: 3,
                 z_neg_size: 3,
             },
-            false,
-            true,
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 1.0, 1.0],
-            1.0,
-            1.0,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            5,
-            5,
-            3,
-            3,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: true,
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 1.0, 1.0],
+            room_ratio_rear: 1.0,
+            room_ratio_lower: 1.0,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 5,
+            cartesian_default_y_size: 5,
+            cartesian_default_z_size: 3,
+            cartesian_default_z_neg_size: 3,
+        })
         .expect("fixture renderer")
         .renderer_control()
     }
@@ -575,7 +575,8 @@ mod tests {
 
         let control = fixture_control();
         control.set_config_path(path.clone());
-        control.live.write().surround_placement = renderer::live_params::SurroundPlacement::Back;
+        control.live.write().options.surround_placement =
+            renderer::live_params::SurroundPlacement::Back;
         control.mark_dirty();
         (path, control)
     }
@@ -605,8 +606,11 @@ mod tests {
         save_errors(&client)
     }
 
-    /// The `save_error` strings queued on `client`: everything was sent
-    /// before the handler returned, so draining without waiting is enough.
+    /// The `save_error` strings `client` received: everything was sent
+    /// before the handler returned, but not necessarily received. macOS hands
+    /// a loopback datagram to the receiving socket from another thread, so it
+    /// can still be on its way when the handler returns; the drain waits for
+    /// the socket to go quiet rather than take only what is already there.
     fn save_errors(client: &UdpSocket) -> Vec<String> {
         fn collect(packet: rosc::OscPacket, out: &mut Vec<String>) {
             match packet {
@@ -624,7 +628,9 @@ mod tests {
                 }
             }
         }
-        client.set_nonblocking(true).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
         let mut out = Vec::new();
         let mut buf = vec![0u8; 70_000];
         while let Ok(len) = client.recv(&mut buf) {
@@ -694,7 +700,7 @@ mod tests {
         } else {
             config.profiles.get(name).cloned()
         };
-        render.expect("profile present").surround_placement
+        render.expect("profile present").options.surround_placement
             == Some(renderer::live_params::SurroundPlacement::Back)
     }
 

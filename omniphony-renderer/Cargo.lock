@@ -1582,6 +1582,8 @@ dependencies = [
  "renderer",
  "rosc",
  "runtime_control",
+ "serde_json",
+ "serde_yaml_ng",
  "spdif",
  "sys",
  "vergen-gitcl",
@@ -1621,12 +1623,14 @@ dependencies = [
  "log",
  "omniphony_geometry",
  "realfft",
+ "reference_bridge",
  "renderer",
  "rosc",
  "rtrb",
  "runtime_control",
  "script_backend",
  "serde_json",
+ "serde_yaml_ng",
  "socket2",
  "sys",
 ]
@@ -1641,6 +1645,7 @@ dependencies = [
  "env_logger",
  "log",
  "orender_engine",
+ "reference_bridge",
  "runtime_control",
 ]
 

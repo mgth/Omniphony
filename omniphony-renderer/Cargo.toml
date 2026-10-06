@@ -125,6 +125,10 @@ libc.workspace = true
 reference_bridge.workspace = true
 # Reads the live state the CLI publishes (unit and tests/ OSC round trips).
 rosc.workspace = true
+# The host-option bounds test: parses hostile config.yaml texts, reads the
+# host options schema.
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true
