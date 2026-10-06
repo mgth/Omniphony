@@ -229,27 +229,29 @@ jobs:
           ORENDER_PREVIOUS_RELEASE_BRIDGE="$target/debug/libreference_bridge.so" \
             cargo test --locked -p orender_engine --test previous_release_bridge -- --ignored --nocapture
 
-      # The bit-identity tests, optimised. The renderer's hot loops have
-      # CPU-specific builds picked at run time (AVX2 today, wider where a CPU
-      # has it), each pinned to return the portable build's bits; the
-      # speaker-major mix and the cached table reads are pinned the same way
-      # against their reference. The test run above is a debug build, where
-      # none of this is vectorised, so the comparison that matters — the code
-      # the release ships — would otherwise only ever be run by hand.
-      # Filtered to those tests (`bit_for_bit` / `bit_identical` in their
-      # names; they run in well under a second) and to the library, so the
-      # cost is one optimised build of the renderer and its dependencies.
+      # The renderer's unit tests, optimised. Its hot loops have CPU-specific
+      # builds picked at run time (AVX2 today, wider where a CPU has it), each
+      # pinned to return the portable build's bits; the speaker-major mix, the
+      # cached table reads and the convolvers are pinned the same way against
+      # their reference. The test run above is a debug build, where none of
+      # this is vectorised, so the comparison that matters — the code the
+      # release ships — would otherwise only ever be run by hand.
+      #
+      # The whole library, not a name filter: exactness tests are named for
+      # what they pin, and a `bit_for_bit` / `bit_identical` filter silently
+      # missed every one named otherwise. Optimised, the full suite runs in a
+      # few seconds; the cost is the optimised build, paid either way.
       #
       # What the comparison exercises depends on the runner's CPU: a test whose
       # wider build this CPU lacks prints that it skipped the comparison and
       # passes. `--nocapture` keeps that line in the log, and the CPU's vector
       # extensions are listed first, so the log says what was compared.
-      - name: Test SIMD builds against the portable ones (release)
+      - name: Test the renderer optimised, SIMD builds included (release)
         working-directory: omniphony-renderer
         run: |
           echo "Runner CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
           echo "Vector extensions: $(grep -m1 '^flags' /proc/cpuinfo | grep -o 'avx[^ ]*' | sort -u | tr '\n' ' ')"
-          cargo test --release -p renderer --lib --locked -- bit_for_bit bit_identical --nocapture
+          cargo test --release -p renderer --lib --locked -- --nocapture
 
       # The worst-case block-time gate (renderer/src/spatial_renderer/
       # perf_gate.rs): a high percentile of per-block render time, budgeted as
