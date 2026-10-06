@@ -1,0 +1,49 @@
+name: Merge train
+
+# One pull request at a time is brought up to date with main and tested,
+# instead of every open one rerunning CI whenever main moves. The rules are in
+# .github/scripts/merge-train.sh; this file only says when a tick runs.
+#
+# workflow_run, pull_request_target and schedule run this file as it is on
+# main, never a pull request's copy, and the tick checks out no pull request
+# code: it only reads state and calls the API.
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  pull_request_target:
+    types: [auto_merge_enabled, auto_merge_disabled, closed]
+  # Backstop for an event that never arrives (e.g. a CI run dispatched by the
+  # train finishing without a workflow_run delivery).
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+# Ticks run one after another: two at once could board two pull requests.
+concurrency:
+  group: merge-train
+  cancel-in-progress: false
+
+permissions:
+  contents: write       # merge main into the pull request on board
+  pull-requests: write  # label, comment, disable auto-merge
+  issues: write         # create the label
+  actions: write        # dispatch CI on the branch
+
+jobs:
+  tick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: main
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Advance the merge train
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/merge-train.sh
