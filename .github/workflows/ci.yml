@@ -252,6 +252,11 @@ jobs:
       # with the perf-gate feature so the next step reuses this binary; the
       # gate itself is skipped here and run there, alone.
       #
+      # With the wide DSP validation matrix: three extra sweeps (crossover
+      # flatness, VBAP energy, binaural ITD) that cost a fraction of a second
+      # optimised, so they need not wait for a separate job. Its known misses
+      # stay `#[ignore]`d with their measured value (dsp_fixtures/README.md).
+      #
       # What the comparison exercises depends on the runner's CPU: a test whose
       # wider build this CPU lacks prints that it skipped the comparison and
       # passes. `--nocapture` keeps that line in the log, and the CPU's vector
@@ -261,25 +266,39 @@ jobs:
         run: |
           echo "Runner CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
           echo "Vector extensions: $(grep -m1 '^flags' /proc/cpuinfo | grep -o 'avx[^ ]*' | sort -u | tr '\n' ' ')"
-          cargo test --release -p renderer --features perf-gate --lib --locked -- --skip spatial_renderer::perf_gate --nocapture
+          cargo test --release -p renderer --features perf-gate,wide-matrix --lib --locked -- --skip spatial_renderer::perf_gate --nocapture
+
+      # The criterion bench, run once per measurement as a test (`cargo test`
+      # on a criterion target runs each benchmark a single time and checks it
+      # completes; it times nothing). Without it the bench was not even
+      # compiled, and a renderer API change could break it unnoticed until
+      # someone sat down to measure. Same features as the step above, so it
+      # reuses its optimised build. Named, not `--benches`: that also selects
+      # the library's own tests (perf gate included, which must run alone).
+      - name: Run the render benchmarks once (release, test mode)
+        working-directory: omniphony-renderer
+        run: cargo test --release -p renderer --bench render_frame --features perf-gate,wide-matrix --locked
 
       # The worst-case block-time gate (renderer/src/spatial_renderer/
       # perf_gate.rs): a high percentile of per-block render time, budgeted as
       # a fraction of the block period rather than in microseconds, so a slow
       # runner does not fail it. Steady and all-moving measured 2-5 % of real
       # time on these runners against a 25 % budget. The topology-change cases
-      # time the render thread while the band worker builds: they hold on a
-      # 4-vCPU runner because background builds run in the idle scheduling
-      # class (renderer/src/background_pool.rs); without it the render thread
-      # lost whole 3 ms scheduler slices to them. Release only, behind the
-      # perf-gate feature and on one test thread: a timing measurement must
-      # not share the machine with the rest of the suite, and in this step it
-      # does not. The step above built this same test binary (the feature
-      # only adds the gate's module) and skipped the gate, so this step
-      # compiles nothing.
+      # time the render thread while the band worker builds, and gate what a
+      # change adds over as many blocks rendered with no change (the FIR
+      # crossover's own slowest block varies 10-32 % by runner CPU): they
+      # hold on a 4-vCPU runner because background builds run in the idle
+      # scheduling class (renderer/src/background_pool.rs); without it the
+      # render thread lost whole 3 ms scheduler slices to them. Release only,
+      # behind the perf-gate feature and on one test thread: a timing
+      # measurement must not share the machine with the rest of the suite,
+      # and in this step it does not. The optimised library step built this
+      # same test binary (same features: perf-gate only adds the gate's
+      # module, wide-matrix only test sweeps) and skipped the gate, so this
+      # step compiles nothing.
       - name: Run the perf gate (release)
         working-directory: omniphony-renderer
-        run: cargo test --release -p renderer --features perf-gate --lib --locked -- spatial_renderer::perf_gate --test-threads=1 --nocapture
+        run: cargo test --release -p renderer --features perf-gate,wide-matrix --lib --locked -- spatial_renderer::perf_gate --test-threads=1 --nocapture
 
       # The OSC contract is a crate of its own, shared by the engine and the
       # Studio and a member of neither workspace, so `--workspace` above does
