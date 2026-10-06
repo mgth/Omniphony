@@ -286,7 +286,6 @@ pub fn upload_to_renderer(state: &SharedState, dir: &Path, path: &Path) -> Resul
     if total == 0 || total > (1 << 30) {
         return Err(format!("bad file size: {total}"));
     }
-    const CHUNK: usize = 32 * 1024;
     send_control(
         tx,
         OscControlMsg::SendArgs {
@@ -294,21 +293,25 @@ pub fn upload_to_renderer(state: &SharedState, dir: &Path, path: &Path) -> Resul
             args: vec![OscType::String(name), OscType::Int(total as i32)],
         },
     );
-    let mut seq: i32 = 0;
-    for chunk in data.chunks(CHUNK) {
-        send_control(
-            tx,
-            OscControlMsg::SendArgs {
-                address: osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_CHUNK.to_string(),
-                args: vec![OscType::Int(seq), OscType::Blob(chunk.to_vec())],
-            },
-        );
-        seq += 1;
-        // UDP politeness: don't burst hundreds of datagrams back-to-back.
-        if seq % 16 == 0 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    }
+    let seq = send_upload_chunks(
+        &data,
+        || {
+            state
+                .stats
+                .stream_link
+                .load(std::sync::atomic::Ordering::Relaxed)
+        },
+        |seq, chunk| {
+            send_control(
+                tx,
+                OscControlMsg::SendArgs {
+                    address: osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_CHUNK.to_string(),
+                    args: vec![OscType::Int(seq), OscType::Blob(chunk.to_vec())],
+                },
+            )
+        },
+        std::thread::sleep,
+    );
     send_control(
         tx,
         OscControlMsg::SendArgs {
@@ -317,6 +320,47 @@ pub fn upload_to_renderer(state: &SharedState, dir: &Path, path: &Path) -> Resul
         },
     );
     Ok(seq as u32)
+}
+
+/// HRTF upload chunk over datagrams: well under a UDP payload.
+const UPLOAD_DATAGRAM_CHUNK: usize = 32 * 1024;
+/// HRTF upload chunk over the stream transport: a few large packets, under
+/// its packet bound (`osc_contract::stream::MAX_PACKET`) (#680, step 3).
+const UPLOAD_STREAM_CHUNK: usize = 512 * 1024;
+
+/// Send `data` as numbered chunks, sized for the link at the moment each one
+/// goes (`stream()`), and paced: over datagrams a pause every 16 chunks so
+/// hundreds of datagrams do not leave back to back; over the stream a short
+/// one per chunk, only so the control queue to the listener does not hold the
+/// whole file at once. The renderer takes chunks of any size, in sequence, so
+/// a link that changes mid-upload changes only the size of the next one.
+/// Returns the chunk count.
+fn send_upload_chunks(
+    data: &[u8],
+    stream: impl Fn() -> bool,
+    mut send: impl FnMut(i32, &[u8]),
+    mut pause: impl FnMut(std::time::Duration),
+) -> i32 {
+    let mut seq: i32 = 0;
+    let mut offset = 0;
+    while offset < data.len() {
+        let on_stream = stream();
+        let size = if on_stream {
+            UPLOAD_STREAM_CHUNK
+        } else {
+            UPLOAD_DATAGRAM_CHUNK
+        };
+        let end = (offset + size).min(data.len());
+        send(seq, &data[offset..end]);
+        seq += 1;
+        offset = end;
+        if on_stream {
+            pause(std::time::Duration::from_millis(1));
+        } else if seq % 16 == 0 {
+            pause(std::time::Duration::from_millis(2));
+        }
+    }
+    seq
 }
 
 /// Download one `.sofa` file into the cache dir and return its local path. The
@@ -392,6 +436,58 @@ pub fn download(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn upload(data: &[u8], stream: impl Fn(i32) -> bool) -> (Vec<(i32, usize)>, usize) {
+        let sent = std::cell::RefCell::new(Vec::new());
+        let mut pauses = 0;
+        let count = send_upload_chunks(
+            data,
+            || stream(sent.borrow().len() as i32),
+            |seq, chunk| sent.borrow_mut().push((seq, chunk.len())),
+            |_| pauses += 1,
+        );
+        let sent = sent.into_inner();
+        assert_eq!(count as usize, sent.len());
+        assert_eq!(sent.iter().map(|(_, len)| len).sum::<usize>(), data.len());
+        assert!(
+            sent.iter()
+                .enumerate()
+                .all(|(i, (seq, _))| *seq == i as i32)
+        );
+        (sent, pauses)
+    }
+
+    /// Datagram-sized chunks with a pause every 16 over UDP; large chunks over
+    /// the stream (#680, step 3); and a link that changes mid-upload changes
+    /// only the size of what follows, in sequence.
+    #[test]
+    fn upload_chunks_follow_the_link() {
+        let data = vec![1u8; 3 * UPLOAD_STREAM_CHUNK + 5];
+        let (sent, pauses) = upload(&data, |_| false);
+        assert!(sent.iter().all(|(_, len)| *len <= UPLOAD_DATAGRAM_CHUNK));
+        assert_eq!(sent.len(), data.len().div_ceil(UPLOAD_DATAGRAM_CHUNK));
+        assert_eq!(pauses, sent.len() / 16);
+
+        let (sent, _) = upload(&data, |_| true);
+        assert_eq!(
+            sent.iter().map(|(_, len)| *len).collect::<Vec<_>>(),
+            [
+                UPLOAD_STREAM_CHUNK,
+                UPLOAD_STREAM_CHUNK,
+                UPLOAD_STREAM_CHUNK,
+                5
+            ]
+        );
+
+        let (sent, _) = upload(&data, |seq| seq < 2);
+        assert_eq!(sent[0].1, UPLOAD_STREAM_CHUNK);
+        assert_eq!(sent[1].1, UPLOAD_STREAM_CHUNK);
+        assert!(
+            sent[2..]
+                .iter()
+                .all(|(_, len)| *len <= UPLOAD_DATAGRAM_CHUNK)
+        );
+    }
 
     #[test]
     fn parses_apache_index_rows() {

@@ -89,6 +89,9 @@ pub struct OscStats {
     pub start: Instant,
     /// Renderer the client is registered with (None = listen only).
     pub target: Mutex<Option<SocketAddr>>,
+    /// The renderer is reached over its stream transport (TCP) right now,
+    /// not by datagrams: what sizes the large transfers (#680, step 3).
+    pub stream_link: AtomicBool,
 }
 
 impl OscStats {
@@ -105,6 +108,7 @@ impl OscStats {
             last_packet_ms: AtomicU64::new(0),
             start: Instant::now(),
             target: Mutex::new(None),
+            stream_link: AtomicBool::new(false),
         })
     }
 
@@ -489,8 +493,10 @@ fn listener_loop(
             }
         }
 
+        stats.stream_link.store(link.is_stream(), Ordering::Relaxed);
         if stop.cancelled() {
             stats.registered.store(false, Ordering::Relaxed);
+            stats.stream_link.store(false, Ordering::Relaxed);
             link.close();
             return;
         }
