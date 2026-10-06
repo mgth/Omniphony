@@ -1,8 +1,9 @@
 name: CI
 
 # Integration gate for the `main` (integration) and `release` branches.
-# Linux x64 validates formatting, tests, native Studio, the web frontend and
-# the Tauri host. macOS (arm64) and Windows (x64) build and test the renderer
+# Linux x64 validates formatting and tests (build-and-test) and, in a job of
+# its own beside it, the native Studio, the web frontend and the Tauri host
+# (studio). macOS (arm64) and Windows (x64) build and test the renderer
 # workspace, the OSC contract and the native Studio; Windows also checks the
 # shared core on stable. Linux arm64 builds and tests the renderer workspace,
 # the engine an embedded box runs. Release archives are built by release.yml.
@@ -85,8 +86,6 @@ jobs:
         with:
           workspaces: |
             omniphony-renderer
-            omniphony-studio-egui
-            omniphony-studio/src-tauri
             osc-contract
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -121,8 +120,9 @@ jobs:
 
       # ── Platform dependencies ─────────────────────────────────────────────
       # Same PipeWire PPA as release.yml: ubuntu-22.04 ships PipeWire 0.3.48 but
-      # pipewire-rs 0.9.x needs >= 0.3.65. The GUI/Tauri libs are kept too so the
-      # whole workspace links exactly as in the release build (cheap, robust).
+      # pipewire-rs 0.9.x needs >= 0.3.65. The renderer workspace only: the
+      # GTK/WebKit stack the Studio and the Tauri host link is installed by the
+      # `studio` job.
       - name: Install Linux system dependencies
         run: |
           # `apt-get update` reaches Launchpad and can hang rather than fail
@@ -130,7 +130,7 @@ jobs:
           # against a command that never returns.
           #
           # The install is NOT capped, deliberately. The archive mirror is
-          # often merely slow — a 27 MB webkit fetch crawling at a few hundred
+          # often merely slow — a 27 MB package crawling at a few hundred
           # kB/s is not a stall, and a per-command cap turns a slow run into a
           # failed one (it did: exit 124 mid-download). `timeout-minutes` on
           # the job is the right backstop for a genuine stall; here we only
@@ -175,12 +175,8 @@ jobs:
           done
           for attempt in 1 2 3; do
             if sudo apt-get install -y \
-              libwebkit2gtk-4.1-dev \
-              libssl-dev \
-              libgtk-3-dev \
-              libayatana-appindicator3-dev \
-              librsvg2-dev \
               libpipewire-0.3-dev \
+              libasound2-dev \
               libxkbcommon-dev \
               libwayland-dev \
               pkg-config; then
@@ -342,12 +338,101 @@ jobs:
           gcc -std=c11 -Wall -Wextra -pedantic -Werror -fsyntax-only -I. "$RUNNER_TEMP/orender_h.c"
           g++ -std=c++17 -Wall -Wextra -pedantic -Werror -fsyntax-only -I. "$RUNNER_TEMP/orender_h.cpp"
 
+      # Options-schema contract: the renderer dumps its declared live options
+      # (registry rows); every option must resolve its Studio i18n keys. Hard
+      # gate — an option declared engine-side but invisible to the UI is the
+      # silent-omission class the registry exists to kill.
+      - name: Check options-schema ↔ Studio contract
+        run: |
+          cargo run -q -p renderer --example dump_options_schema --locked \
+            --manifest-path omniphony-renderer/Cargo.toml > /tmp/options-schema.json
+          node omniphony-studio/scripts/check-options-schema.mjs /tmp/options-schema.json
+          cargo run -q -p host_audio --example dump_host_options_schema --locked \
+            --manifest-path omniphony-renderer/Cargo.toml > /tmp/host-options-schema.json
+          node omniphony-studio/scripts/check-options-schema.mjs /tmp/host-options-schema.json
+
+  # The Studio half of the Linux x64 gate, beside build-and-test rather than
+  # after it: the native Studio, the deprecated web Studio and its Tauri host,
+  # and the release-version bump across every lockfile. None of it builds the
+  # renderer, and in build-and-test it added 3-5 minutes to the longest job.
+  # The job name is a required check on `main`: rename it and branch
+  # protection must follow.
+  #
+  # ubuntu-22.04, as the release build that links the same GTK/WebKit stack.
+  # No PipeWire, so no PPA: nothing here links the audio backends.
+  studio:
+    runs-on: ubuntu-22.04
+    # Backstop for a slow Ubuntu mirror, as in build-and-test.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 20
+
+      # Stable for the Tauri host and the version bump; the native Studio's
+      # pinned toolchain is installed below.
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      # Dependencies only, saved from main only: see build-and-test. The
+      # renderer workspace is listed for its registry entries alone, which
+      # the version bump resolves offline; this job builds none of it.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        continue-on-error: true
+        with:
+          workspaces: |
+            omniphony-studio-egui
+            omniphony-studio/src-tauri
+            omniphony-renderer
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Dated after the restore, for the reason given in build-and-test.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
+
+      # The version bump below runs scripts/release_version.py, which needs
+      # tomllib (3.11); ubuntu-22.04 lacks it.
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      # GTK/WebKit for the Tauri host, xkbcommon/Wayland for the native
+      # Studio. Bounded update and retried install, for the reasons given in
+      # build-and-test's install.
+      - name: Install Linux system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo timeout 180 apt-get update \
+              && sudo apt-get install -y \
+                libwebkit2gtk-4.1-dev \
+                libssl-dev \
+                libgtk-3-dev \
+                libayatana-appindicator3-dev \
+                librsvg2-dev \
+                libxkbcommon-dev \
+                libwayland-dev \
+                pkg-config; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "apt-get failed after $attempt attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
       # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
       # The phase-2 replacement of the web frontend. It is a separate workspace
       # (the egui app and its toolkit-free core, omniphony-studio-core)
       # with its own toolchain pin (egui 0.36 needs a newer rustc than the
       # renderer workspace uses), so it gets its own steps rather than joining
-      # the workspace build above. Without them the whole port would have no
+      # the renderer workspace build. Without them the whole port would have no
       # gate at all: the renderer steps do not compile a line of it.
       #
       # The tests are pure — coordinate round-trips, formatting rules, layout
@@ -432,14 +517,16 @@ jobs:
       # refuses its lockfile (#712 review: the Tauri lock's studio-core
       # entry). So bump for real, resolve the three workspaces `--locked` as
       # the builds will, then put the tree back. Offline, for this runner's
-      # platform only: the steps above fetched its dependencies, not the
-      # Windows/macOS-only ones, and the lockfile is checked as a whole
-      # either way.
+      # platform only: the steps above fetched the two Studio workspaces'
+      # dependencies and the fetch below the renderer's (this job builds none
+      # of it), not the Windows/macOS-only ones, and the lockfile is checked
+      # as a whole either way.
       - name: Bump the release version and resolve every lockfile
         run: |
           set -euo pipefail
-          trap 'git checkout -- .' EXIT
           host="$(rustc -vV | sed -n 's/^host: //p')"
+          (cd omniphony-renderer && cargo fetch --locked --target "$host")
+          trap 'git checkout -- .' EXIT
           python3 scripts/release_version.py set 99.0.0 --player mpv-v99.0.0
           for workspace in omniphony-renderer omniphony-studio/src-tauri omniphony-studio-egui; do
             (cd "$workspace" && cargo metadata --locked --offline --filter-platform "$host" \
@@ -472,19 +559,6 @@ jobs:
       - name: Dead-code lint (knip)
         working-directory: omniphony-studio
         run: npm run lint:dead
-
-      # Options-schema contract: the renderer dumps its declared live options
-      # (registry rows); every option must resolve its Studio i18n keys. Hard
-      # gate — an option declared engine-side but invisible to the UI is the
-      # silent-omission class the registry exists to kill.
-      - name: Check options-schema ↔ Studio contract
-        run: |
-          cargo run -q -p renderer --example dump_options_schema --locked \
-            --manifest-path omniphony-renderer/Cargo.toml > /tmp/options-schema.json
-          node omniphony-studio/scripts/check-options-schema.mjs /tmp/options-schema.json
-          cargo run -q -p host_audio --example dump_host_options_schema --locked \
-            --manifest-path omniphony-renderer/Cargo.toml > /tmp/host-options-schema.json
-          node omniphony-studio/scripts/check-options-schema.mjs /tmp/host-options-schema.json
 
   build-macos:
     # macOS arm64 build and test gate. The renderer workspace pulls the
