@@ -364,6 +364,87 @@ nearest integer; a `dynamic_enum` takes one of the ids of the set its
 `source` names (`backends`: `renderBackendState.available_backends` in
 `/state/renderer`). See `docs/live-options-registry.md`.
 
+The declared options (generated from the registry; the alias is the
+dedicated address, under `/omniphony`):
+
+<!-- BEGIN GENERATED live-options -->
+| Key | Value | Default | Group (mode, effect) | Flags | Alias |
+|---|---|---|---|---|---|
+| `surround_placement` | `side` \| `back` | `"side"` | — | replan | `/control/surround_placement` |
+| `synthetic_objects_enabled` | bool | `false` | — | replan | `/control/synthetic_objects` |
+| `decode_thread` | bool | `false` | — | embedded only | `/control/decode_thread` |
+| `output_channel_mapping` | `by_index` \| `by_name` | `"by_index"` | — | — | `/control/output_channel_mapping` |
+| `object_generator_id` | string | `""` | — | replan | `/control/object_generator` |
+| `phantom_extract_mode` | `off` \| `broadband` \| `spectral` | `"off"` | — | replan | `/control/phantom_extract` |
+| `crossover_type` | `lr4` \| `fir` | `"lr4"` | `crossover` (live, reload) | — | `/control/crossover_type` |
+| `crossover_fir_transition_ratio` | float [0.05, 2], step 0.05 | `0.5` | `crossover` (live, reload) | — | `/control/crossover_fir_transition_ratio` |
+| `auto_gain` | bool | `false` | — | — | `/control/auto_gain` |
+| `auto_gain_ceiling_db` | float [-12, 0], step 0.1 | `-1` | — | — | `/control/auto_gain_ceiling` |
+| `use_loudness` | bool | `false` | — | — | `/control/loudness` |
+| `ramp_mode` | `off` \| `frame` \| `interp` \| `sample` | `"frame"` | — | — | `/control/ramp_mode` |
+| `sample_ramp_stride` | int [1, 32] | `8` | — | — | — |
+| `drc_mode` | string | `"Off"` | — | — | `/control/input/drc_mode` |
+| `drc_weight` | float [0, 1], step 0.01 | `1` | — | — | `/control/input/drc_weight` |
+| `dialogue_gain_db` | float [-12, 12], step 0.5 | `0` | — | — | — |
+| `hrir_update_lattice` | `exact` \| `fine` \| `balanced` \| `coarse` | `"exact"` | `hrir_source` (live, reload) | — | `/control/binaural/hrir_update_lattice` |
+| `room_ratio` | 3 floats [0.01, 100], step 0.01 | `[1, 2, 1]` | `room` (live, topology) | — | `/control/room_ratio` |
+| `room_ratio_rear` | float [0.01, 100], step 0.01 | `2` | `room` (live, topology) | — | `/control/room_ratio_rear` |
+| `room_ratio_lower` | float [0.01, 100], step 0.01 | `0.5` | `room` (live, topology) | — | `/control/room_ratio_lower` |
+| `room_ratio_center_blend` | float [0, 1], step 0.01 | `0.5` | `room` (live, topology) | — | `/control/room_ratio_center_blend` |
+| `vbap_distance_model` | `none` \| `linear` \| `quadratic` \| `inverse-square` | `"none"` | `distance_model` (live, topology) | — | `/control/distance_model` |
+| `distance_model_metric` | `spherical` \| `chebyshev` | `"spherical"` | `distance_model` (live, topology) | — | `/control/distance_model_metric` |
+| `distance_diffuse` | bool | `false` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/enabled` |
+| `distance_diffuse_threshold` | float [0.000001, 100], step 0.01 | `1` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/threshold` |
+| `distance_diffuse_curve` | float [0, 100], step 0.05 | `1` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/curve` |
+| `distance_diffuse_metric` | `spherical` \| `chebyshev` | `"spherical"` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/metric` |
+| `distance_diffuse_mirror_axes` | `none` \| `x` \| `y` \| `z` \| `xy` \| `xz` \| `yz` \| `xyz` | `"xy"` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/mirror_axes` |
+| `render_evaluation_mode` | `auto` \| `realtime` \| `precomputed_polar` \| `precomputed_cartesian` | `"auto"` | `evaluation` (live, evaluation) | — | `/control/render_evaluation_mode` |
+| `evaluation_object_size_intervals` | int ≥ 0 | `0` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/object_size_intervals` |
+| `evaluation_cartesian_x_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/x_size` |
+| `evaluation_cartesian_y_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/y_size` |
+| `evaluation_cartesian_z_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/z_size` |
+| `evaluation_cartesian_z_neg_size` | int ≥ 0 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/z_neg_size` |
+| `vbap_azimuth_resolution` | int ≥ 1 | `360` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/azimuth_resolution` |
+| `vbap_elevation_resolution` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/elevation_resolution` |
+| `vbap_distance_res` | int ≥ 1 | `8` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/distance_res` |
+| `vbap_distance_max` | float [0.01, 1000], step 0.1 | `2` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/distance_max` |
+| `render_evaluation_position_interpolation` | bool | `true` | — | — | `/control/render_evaluation/position_interpolation` |
+| `render_backend` | one of `backends` | `"vbap"` | `backend` (live, topology) | — | `/control/render_backend` |
+| `hybrid_external_backend` | one of `backends` | `"vbap"` | `backend` (live, topology) | — | `/control/hybrid/external_backend` |
+| `hybrid_internal_backend` | one of `backends` | `"barycenter"` | `backend` (live, topology) | — | `/control/hybrid/internal_backend` |
+| `hybrid_curve_smoothing` | float [0, 1], step 0.01 | `0` | `backend` (live, topology) | — | `/control/hybrid/curve_smoothing` |
+| `hybrid_metric` | `spherical` \| `chebyshev` | `"chebyshev"` | `backend` (live, topology) | — | `/control/hybrid/metric` |
+| `output_mode` | `speaker` \| `binaural` | `"speaker"` | — | — | `/control/output_mode` |
+| `binaural_mode` | `direct` \| `cascaded` | `"direct"` | — | — | `/control/binaural_mode` |
+| `hrir_source` | string | `"saf"` | `hrir_source` (live, reload) | — | `/control/binaural/hrir_source` |
+| `brir_head_tracking` | `auto` \| `on` \| `off` | `"auto"` | `brir` (live, reload) | — | `/control/binaural/brir/head_tracking` |
+| `brir_max_length_s` | float [0, 10], step 0.1 | `2` | `brir` (live, reload) | — | `/control/binaural/brir/max_length` |
+| `brir_tail_floor_db` | float [20, 120], step 1 | `60` | `brir` (live, reload) | — | `/control/binaural/brir/tail_floor` |
+| `binaural_unit_scale_m` | float [0.01, 100], step 0.01 | `1` | — | — | `/control/binaural/unit_scale` |
+| `binaural_head_radius_m` | float [0.05, 0.15], step 0.001 | `0.0875` | — | — | `/control/binaural/head_radius` |
+| `binaural_air_absorption` | bool | `true` | — | — | `/control/binaural/air_absorption` |
+| `binaural_diffuse_field_eq` | bool | `false` | — | — | `/control/binaural/diffuse_field_eq` |
+| `reflections_enabled` | bool | `false` | — | — | `/control/binaural/reflections/enabled` |
+| `reflections_level` | float [0, 1], step 0.01 | `0.5` | — | — | `/control/binaural/reflections/level` |
+| `reflections_wall_cutoff_hz` | float [1000, 20000], step 100 | `6000` | — | — | `/control/binaural/reflections/wall_cutoff` |
+| `reflections_room_width_m` | float [1, 20], step 0.1 | `4` | — | — | `/control/binaural/reflections/room_width` |
+| `reflections_room_depth_m` | float [1, 20], step 0.1 | `5` | — | — | `/control/binaural/reflections/room_depth` |
+| `reflections_room_height_m` | float [1, 20], step 0.1 | `2.7` | — | — | `/control/binaural/reflections/room_height` |
+| `reverb_enabled` | bool | `false` | — | — | `/control/binaural/reverb/enabled` |
+| `reverb_level` | float [0, 1], step 0.01 | `0.25` | — | — | `/control/binaural/reverb/level` |
+| `reverb_rt60_s` | float [0.1, 3], step 0.01 | `0.35` | — | — | `/control/binaural/reverb/rt60` |
+| `reverb_predelay_ms` | float [0, 100], step 1 | `20` | — | — | `/control/binaural/reverb/predelay` |
+| `reverb_size` | float [0.5, 2], step 0.05 | `1` | — | — | `/control/binaural/reverb/size` |
+| `reverb_rt60_low_ratio` | float [0.25, 4], step 0.05 | `1` | — | — | `/control/binaural/reverb/rt60_low_ratio` |
+| `reverb_rt60_high_ratio` | float [0.25, 4], step 0.05 | `1` | — | — | `/control/binaural/reverb/rt60_high_ratio` |
+| `head_tracking_smoothing` | float [0, 0.999], step 0.01 | `0.2` | `head_tracking` (live, none) | — | `/control/head/tracking/smoothing` |
+| `head_tracking_invert` | bool | `false` | `head_tracking` (live, none) | — | `/control/head/tracking/invert` |
+| `head_tracking_osc_address` | string | `""` | `head_tracking` (live, none) | — | `/control/head/tracking/address` |
+| `head_tracking_format` | `auto` \| `quat` \| `rotvec` \| `euler` | `"auto"` | `head_tracking` (live, none) | — | `/control/head/tracking/format` |
+| `binaural_ear_gains` | 2 floats [0, 4], step 0.01 | `[1, 1]` | — | — | — |
+| `master_gain` | float [0, 1000], step 0.01 | `1` | — | — | `/control/gain` |
+<!-- END GENERATED live-options -->
+
 The standalone renderer's host declares its own options (audio output,
 adaptive resampling, live input — see [Audio output & live
 input](#audio-output--live-input)): the same setters take their keys, their
@@ -374,6 +455,51 @@ go out in `/state/host_options` (`{"options": {key: requested}, "applied":
 options only the embedded engine offers (`decode_thread`, flagged
 `embedded_only`): not in its schema, a write refused, a save keeps the
 file's value.
+
+The host's options (standalone renderer):
+
+<!-- BEGIN GENERATED host-options -->
+| Key | Value | Default | Group (mode, effect) | Flags | Alias |
+|---|---|---|---|---|---|
+| `output_device` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_device` |
+| `output_backend` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_backend` |
+| `output_file` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_file` |
+| `output_file_format` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_file_format` |
+| `output_sample_rate` | int or null [1, 768000] | unset | `audio_output` (live, restart_output) | — | `/control/audio/sample_rate` |
+| `latency_target` | int or null [1, 10000] | unset | `audio_output` (live, restart_output) | — | `/control/latency_target` |
+| `enable_adaptive_resampling` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling` |
+| `adaptive_resampling_enable_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/enable_far_mode` |
+| `adaptive_resampling_force_silence_in_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/force_silence_in_far_mode` |
+| `adaptive_resampling_hard_recover_high_in_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/hard_recover_high_in_far_mode` |
+| `adaptive_resampling_hard_recover_low_in_far_mode` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/hard_recover_low_in_far_mode` |
+| `adaptive_resampling_far_mode_return_fade_in_ms` | int ≥ 0 | `500` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/far_mode_return_fade_in_ms` |
+| `adaptive_resampling_kp_near` | float [0, 1000000], step 0.01 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/kp_near` |
+| `adaptive_resampling_ki` | float [0, 1000000], step 0.01 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/ki` |
+| `adaptive_resampling_integral_discharge_ratio` | float [0, 1], step 0.01 | `0.25` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/integral_discharge_ratio` |
+| `adaptive_resampling_max_adjust` | float [0, 1000000], step 0.01 | `0.01` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/max_adjust` |
+| `adaptive_resampling_update_interval_callbacks` | int ≥ 1 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/update_interval_callbacks` |
+| `adaptive_resampling_high_recover_entry_margin_ms` | int ≥ 1 | `1000` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/high_recover_entry_margin_ms` |
+| `adaptive_resampling_low_recover_settle_stable_ms` | float [0, 1000000], step 0.1 | `200` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_entry_margin_ms` | float [0, 1000000], step 0.1 | `18` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_exit_margin_ms` | float [0, 1000000], step 0.1 | `6` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_settle_margin_ms` | float [0, 1000000], step 0.1 | `6` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_refill_delta_alpha` | float [0, 1], step 0.01 | `0.5` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_control_smoothing_cutoff_hz` | float [0.001, 1000], step 0.001 | `0.5` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_control_smoothing_order` | int [1, 2] | `1` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_use_pre_bridge_clock` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_use_output_pacing` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_disable_backpressure` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `input_mode` | `pipe_bridge` \| `pipewire` | `"pipe_bridge"` | `live_input` (staged, restart_input) | — | `/control/input/mode` |
+| `live_input_backend` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/backend` |
+| `live_input_node` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/node` |
+| `live_input_description` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/description` |
+| `live_input_layout` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/layout` |
+| `live_input_clock_mode` | `dac` \| `pipewire` \| `upstream` | `"dac"` | `live_input` (staged, restart_input) | — | `/control/input/live/clock_mode` |
+| `live_input_channels` | int or null [1, 64] | unset | `live_input` (staged, restart_input) | — | `/control/input/live/channels` |
+| `live_input_sample_rate` | int or null [1, 768000] | unset | `live_input` (staged, restart_input) | — | `/control/input/live/sample_rate` |
+| `live_input_map` | string | `"7.1-fixed"` | `live_input` (staged, restart_input) | — | `/control/input/live/map` |
+| `live_input_lfe_mode` | `object` \| `direct` \| `drop` | `"direct"` | `live_input` (staged, restart_input) | — | `/control/input/live/lfe_mode` |
+<!-- END GENERATED host-options -->
 
 `/control/options/apply [group]` applies a group: a `staged` group
 (`live_input`) hands over every value staged since its last apply; a `live`

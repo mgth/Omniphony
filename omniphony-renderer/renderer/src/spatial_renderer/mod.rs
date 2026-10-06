@@ -16,45 +16,22 @@
 //! # Example
 //!
 //! ```ignore
-//! use omniphony_renderer::spatial_renderer::SpatialRenderer;
+//! use omniphony_renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
 //! use omniphony_renderer::speaker_layout::SpeakerLayout;
 //! use omniphony_renderer::spatial_vbap::{DistanceModel, VbapTableMode};
 //!
 //! // Load speaker layout
 //! let layout = SpeakerLayout::preset("7.1.4")?;
 //!
-//! // Create renderer with VBAP configuration
-//! let renderer = SpatialRenderer::new(
-//!     layout,
-//!     48000,                 // sample rate (Hz)
-//!     1,                     // azimuth resolution
-//!     1,                     // elevation resolution
-//!     0.25,                  // spread resolution (0.0 = single table, >0 = dynamic spread)
-//!     2.0,                   // polar distance max
-//!     VbapTableMode::Polar,  // precomputed table mode
-//!     true,                  // allow_negative_z
-//!     DistanceModel::Linear, // distance attenuation model
-//!     false,                 // spread_from_distance (false = use spread_min/spread_max)
-//!     1.0,                   // spread_distance_range (distance where spread reaches 0)
-//!     1.0,                   // spread_distance_curve (1.0 = linear, 2.0 = quadratic)
-//!     0.0,                   // spread_min
-//!     1.0,                   // spread_max
-//!     false,                 // log_object_positions
-//!     [1.0, 2.0, 0.5],       // room_ratio [width, length, height]
-//!     2.0,                   // room_ratio_rear
-//!     0.5,                   // room_ratio_center_blend
-//!     0.0,                   // master_gain_db
-//!     false,                 // auto_gain
-//!     false,                 // use_loudness
-//!     false,                 // distance_diffuse
-//!     1.0,                   // distance_diffuse_threshold
-//!     1.0,                   // distance_diffuse_curve
-//!     omniphony_renderer::live_params::PreferredEvaluationMode::PrecomputedPolar, // bridge preferred mode
-//!     omniphony_renderer::live_params::LiveEvaluationMode::PrecomputedPolar,      // initial live selection
-//!     31,                    // cartesian default x size
-//!     31,                    // cartesian default y size
-//!     15,                    // cartesian default z size
-//! )?;
+//! // Create renderer with VBAP configuration (see `RendererSpec` for each field)
+//! let renderer = SpatialRenderer::new(RendererSpec {
+//!     speaker_layout: layout,
+//!     sample_rate: 48000,
+//!     az_res_deg: 1,
+//!     el_res_deg: 1,
+//!     table_mode: VbapTableMode::Polar,
+//!     // …
+//! })?;
 //!
 //! // Render objects for a frame (in decode loop)
 //! let speaker_samples = renderer.render_frame(
@@ -78,6 +55,7 @@ use std::sync::Arc;
 mod cascade;
 mod components;
 mod construction;
+pub use construction::RendererSpec;
 mod speaker_stage;
 use components::{ChannelState, evaluation_build_config};
 pub use components::{GAIN_DB_NEG_INF, RenderedFrame, SpatialChannelEvent, gain_db_to_linear};
@@ -861,11 +839,11 @@ impl SpatialRenderer {
             LiveSnapshot {
                 master_gain: g.master_gain,
                 object_params: &self.object_params_buf[..input_channel_count],
-                ramp_mode: g.ramp_mode,
-                sample_ramp_stride: g.sample_ramp_stride,
-                use_loudness: g.use_loudness,
-                auto_gain: g.auto_gain,
-                auto_gain_ceiling_db: g.auto_gain_ceiling_db,
+                ramp_mode: g.options.ramp_mode,
+                sample_ramp_stride: g.options.sample_ramp_stride,
+                use_loudness: g.options.use_loudness,
+                auto_gain: g.options.auto_gain,
+                auto_gain_ceiling_db: g.options.auto_gain_ceiling_db,
                 speaker_params: &self.speaker_params_buf[..self.num_speakers],
                 speaker_test: g.speaker_test,
                 object_test: g.object_test,

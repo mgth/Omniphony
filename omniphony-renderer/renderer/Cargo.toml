@@ -52,11 +52,15 @@ required-features = ["sofa"]
 #   cargo test --release -p renderer --features perf-gate -- --test-threads=1
 perf-gate = []
 saf_vbap = []
+# `renderer::test_support`: renderer fixtures for other crates' tests. Enable it
+# from `[dev-dependencies]` only.
+test-support = []
 # Enables loading external SOFA HRTF files for the binaural stage (adds a SOFA
 # reader dependency). Off by default — the embedded SAF KEMAR set is always available.
 sofa = ["dep:sofar"]
-# Opt-in wide DSP validation matrix. Off by default so the PR gate stays
-# inside its CI time budget; #[ignore] is reserved for tracked deferrals.
+# Opt-in wide DSP validation matrix. Off by default, so the debug test run
+# stays quick; CI runs it in the optimised renderer step, where it costs a
+# fraction of a second. #[ignore] is reserved for tracked deferrals.
 # Gates only `#[cfg(feature = "wide-matrix")]` test code in this crate — it
 # forwards to nothing, so it cannot affect a release build.
 wide-matrix = []

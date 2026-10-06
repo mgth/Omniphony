@@ -1,6 +1,6 @@
 //! The options the standalone renderer's host declares: its audio output,
 //! the output's adaptive resampler and its live input
-//! (`renderer::options::HostOptionSpec` rows over [`HostAudio`]).
+//! (`renderer::options::HostOptionSpec` rows over [`HostIo`], the output and input of [`crate::HostAudio`]).
 //!
 //! The engine publishes, sets and applies them like the core's options —
 //! `/control/option(s)`, `/control/options/apply`, the schema,
@@ -25,7 +25,7 @@ use renderer::options::{
 use runtime_control::osc_contract;
 use serde_json::Value;
 
-use crate::HostAudio;
+use crate::HostIo;
 
 /// The audio output: device, backend, file sink, rate, latency target. The
 /// host compares what is requested with what runs on every poll and
@@ -315,7 +315,7 @@ fn map_mode_name(mode: InputMapMode) -> &'static str {
 }
 
 /// Every option this host declares.
-pub static HOST_OPTIONS: &[HostOptionSpec<HostAudio>] = &[
+pub static HOST_OPTIONS: &[HostOptionSpec<HostIo>] = &[
     // ── Audio output ────────────────────────────────────────────────────
     HostOptionSpec {
         key: "output_device",

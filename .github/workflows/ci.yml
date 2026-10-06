@@ -25,6 +25,15 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job builds its workspace crates from scratch (the checkout is dated
+# after the cache restore, see "Date the checkout..."), so incremental state is
+# never reused: it only slows the compiler and bloats the build trees. Line
+# tables keep file:line in panics and backtraces; full debuginfo only made the
+# trees, the links and the caches bigger. Release builds are not affected.
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
@@ -45,43 +54,42 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Cache Cargo registry
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      # The renderer's debug tests are its DSP run unoptimised: the library's
+      # unit tests took 155 s in debug against 12 s optimised, and the engine
+      # and integration tests spend their time in the same code. Opt-level 1
+      # for that one crate cuts the debug test run without changing what it
+      # checks: debug assertions and overflow checks stay on, and Rust floats
+      # mean the same at every opt-level. CI only: a local debug build stays
+      # unoptimised for the debugger. Cargo takes no environment variable for a
+      # per-package profile, hence the file; written before the cache step,
+      # whose key hashes it.
+      - name: Build the renderer crate at opt-level 1 in debug builds
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          printf '[profile.dev.package.renderer]\nopt-level = 1\n' > .cargo/config.toml
+
+      # Dependencies only: the cache drops this repository's own crates and
+      # the incremental state before saving, which a run rebuilds anyway, so an
+      # entry is a fraction of the whole build tree. Whole trees made each
+      # entry 1.5-2.5 GB, the repository's 10 GB went over, and the caches
+      # evicted one another, so runs built cold at random. Keyed by the
+      # lockfiles, the toolchains (the native Studio's pin included) and the
+      # CARGO_* environment. Saved from main only: a pull request restores
+      # main's entries and would only push them out with its own.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         # Caching is an optimization, not a correctness step: a crash of the
         # cache action must never fail the build.
         continue-on-error: true
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            omniphony-renderer/target
-          # Keyed off the lockfile: it names the exact versions the build will
-          # use, so the cache turns over when they do and not before.
-          key: ${{ runner.os }}-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-ci-cargo-
-
-      # The native Studio's own build tree, cached separately from the
-      # renderer's. It is a different toolchain and a disjoint dependency set —
-      # egui, wgpu and their graphics stack are nobody else's — and one entry
-      # holding both would be evicted by whichever changed last. Its Cargo.lock
-      # is tracked, so the key can be exact rather than a guess from manifests.
-      - name: Cache the native Studio build
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        continue-on-error: true
-        with:
-          path: omniphony-studio-egui/target
-          key: ${{ runner.os }}-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
-          restore-keys: ${{ runner.os }}-studio-egui-
-
-      # This host has a separate build tree from both the renderer and native
-      # Studio. Cache it too so core changes do not rebuild GTK/WebKit every PR.
-      - name: Cache the Tauri host build
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        continue-on-error: true
-        with:
-          path: omniphony-studio/src-tauri/target
-          key: ${{ runner.os }}-studio-tauri-${{ hashFiles('omniphony-studio/src-tauri/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-studio-tauri-
+          workspaces: |
+            omniphony-renderer
+            omniphony-studio-egui
+            omniphony-studio/src-tauri
+            osc-contract
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # A restored build tree can be newer than this checkout: a run on main
       # that finished after this one checked out saved it. Cargo then sees
@@ -240,7 +248,14 @@ jobs:
       # The whole library, not a name filter: exactness tests are named for
       # what they pin, and a `bit_for_bit` / `bit_identical` filter silently
       # missed every one named otherwise. Optimised, the full suite runs in a
-      # few seconds; the cost is the optimised build, paid either way.
+      # few seconds; the cost is the optimised build, paid either way. Built
+      # with the perf-gate feature so the next step reuses this binary; the
+      # gate itself is skipped here and run there, alone.
+      #
+      # With the wide DSP validation matrix: three extra sweeps (crossover
+      # flatness, VBAP energy, binaural ITD) that cost a fraction of a second
+      # optimised, so they need not wait for a separate job. Its known misses
+      # stay `#[ignore]`d with their measured value (dsp_fixtures/README.md).
       #
       # What the comparison exercises depends on the runner's CPU: a test whose
       # wider build this CPU lacks prints that it skipped the comparison and
@@ -251,24 +266,39 @@ jobs:
         run: |
           echo "Runner CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
           echo "Vector extensions: $(grep -m1 '^flags' /proc/cpuinfo | grep -o 'avx[^ ]*' | sort -u | tr '\n' ' ')"
-          cargo test --release -p renderer --lib --locked -- --nocapture
+          cargo test --release -p renderer --features perf-gate,wide-matrix --lib --locked -- --skip spatial_renderer::perf_gate --nocapture
+
+      # The criterion bench, run once per measurement as a test (`cargo test`
+      # on a criterion target runs each benchmark a single time and checks it
+      # completes; it times nothing). Without it the bench was not even
+      # compiled, and a renderer API change could break it unnoticed until
+      # someone sat down to measure. Same features as the step above, so it
+      # reuses its optimised build. Named, not `--benches`: that also selects
+      # the library's own tests (perf gate included, which must run alone).
+      - name: Run the render benchmarks once (release, test mode)
+        working-directory: omniphony-renderer
+        run: cargo test --release -p renderer --bench render_frame --features perf-gate,wide-matrix --locked
 
       # The worst-case block-time gate (renderer/src/spatial_renderer/
       # perf_gate.rs): a high percentile of per-block render time, budgeted as
       # a fraction of the block period rather than in microseconds, so a slow
       # runner does not fail it. Steady and all-moving measured 2-5 % of real
       # time on these runners against a 25 % budget. The topology-change cases
-      # time the render thread while the band worker builds: they hold on a
-      # 4-vCPU runner because background builds run in the idle scheduling
-      # class (renderer/src/background_pool.rs); without it the render thread
-      # lost whole 3 ms scheduler slices to them. Release only, behind the
-      # perf-gate feature and on one test thread: a timing measurement must
-      # not share the machine with the rest of the suite, and in this step it
-      # does not. Placed after the step above, which already built the
-      # dependencies in release; the feature only rebuilds the renderer crate.
+      # time the render thread while the band worker builds, and gate what a
+      # change adds over as many blocks rendered with no change (the FIR
+      # crossover's own slowest block varies 10-32 % by runner CPU): they
+      # hold on a 4-vCPU runner because background builds run in the idle
+      # scheduling class (renderer/src/background_pool.rs); without it the
+      # render thread lost whole 3 ms scheduler slices to them. Release only,
+      # behind the perf-gate feature and on one test thread: a timing
+      # measurement must not share the machine with the rest of the suite,
+      # and in this step it does not. The optimised library step built this
+      # same test binary (same features: perf-gate only adds the gate's
+      # module, wide-matrix only test sweeps) and skipped the gate, so this
+      # step compiles nothing.
       - name: Run the perf gate (release)
         working-directory: omniphony-renderer
-        run: cargo test --release -p renderer --features perf-gate --lib --locked -- spatial_renderer::perf_gate --test-threads=1 --nocapture
+        run: cargo test --release -p renderer --features perf-gate,wide-matrix --lib --locked -- spatial_renderer::perf_gate --test-threads=1 --nocapture
 
       # The OSC contract is a crate of its own, shared by the engine and the
       # Studio and a member of neither workspace, so `--workspace` above does
@@ -473,29 +503,24 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Cache Cargo registry
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        continue-on-error: true
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            omniphony-renderer/target
-          key: macos-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
-          restore-keys: macos-ci-cargo-
+      # Opt-level 1 for the renderer crate in debug builds, as in build-and-test.
+      - name: Build the renderer crate at opt-level 1 in debug builds
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          printf '[profile.dev.package.renderer]\nopt-level = 1\n' > .cargo/config.toml
 
-      # The native Studio ships on macOS too (release.yml attaches an archive
-      # per platform). Until this step existed only the Linux job compiled it,
-      # so a platform-specific break — wgpu's Metal path, winit, the file
-      # dialogs — surfaced at release time. Same toolchain pin and build tree
-      # as the Linux job.
-      - name: Cache the native Studio build
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      # Dependencies only, saved from main only: see build-and-test.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         continue-on-error: true
         with:
-          path: omniphony-studio-egui/target
-          key: macos-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
-          restore-keys: macos-studio-egui-
+          workspaces: |
+            omniphony-renderer
+            omniphony-studio-egui
+            osc-contract
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # A restored build tree can be newer than this checkout: a run on main
       # that finished after this one checked out saved it. Cargo then sees
@@ -513,6 +538,11 @@ jobs:
         working-directory: omniphony-renderer
         run: cargo build --workspace --locked
 
+      # The native Studio ships on macOS too (release.yml attaches an archive
+      # per platform). Until this step existed only the Linux job compiled it,
+      # so a platform-specific break — wgpu's Metal path, winit, the file
+      # dialogs — surfaced at release time. Same toolchain pin as the Linux
+      # job.
       - name: Build native Studio (macOS arm64)
         working-directory: omniphony-studio-egui
         run: cargo build --workspace --locked
@@ -565,26 +595,24 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - name: Cache Cargo registry
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        continue-on-error: true
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            omniphony-renderer/target
-          key: windows-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
-          restore-keys: windows-ci-cargo-
+      # Opt-level 1 for the renderer crate in debug builds, as in build-and-test.
+      - name: Build the renderer crate at opt-level 1 in debug builds
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          printf '[profile.dev.package.renderer]\nopt-level = 1\n' > .cargo/config.toml
 
-      # The native Studio's build tree, restored with the renderer's so the
-      # checkout can be dated after both (see below).
-      - name: Cache the native Studio build
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      # Dependencies only, saved from main only: see build-and-test.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         continue-on-error: true
         with:
-          path: omniphony-studio-egui/target
-          key: windows-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
-          restore-keys: windows-studio-egui-
+          workspaces: |
+            omniphony-renderer
+            omniphony-studio-egui
+            osc-contract
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # A restored build tree can be newer than this checkout: a run on main
       # that finished after this one checked out saved it. Cargo then sees
@@ -662,16 +690,23 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - name: Cache Cargo registry
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      # Opt-level 1 for the renderer crate in debug builds, as in build-and-test.
+      - name: Build the renderer crate at opt-level 1 in debug builds
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          printf '[profile.dev.package.renderer]\nopt-level = 1\n' > .cargo/config.toml
+
+      # Dependencies only, saved from main only: see build-and-test.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         continue-on-error: true
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            omniphony-renderer/target
-          key: linux-arm64-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
-          restore-keys: linux-arm64-ci-cargo-
+          workspaces: |
+            omniphony-renderer
+            osc-contract
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # See the x64 job: a restored build tree can be newer than this checkout.
       - name: Date the checkout after the restored build trees
@@ -773,16 +808,23 @@ jobs:
         working-directory: omniphony-renderer
         run: cargo deny --workspace --locked check
 
-      - name: Cache Cargo registry
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      # The ratchet installs its toolchain after the cache is restored, so the
+      # cache cannot see it among the installed ones: name it in the key, or a
+      # toolchain move would keep restoring artifacts built by the old one.
+      - name: Read the clippy toolchain for the cache key
+        run: |
+          echo "CLIPPY_TOOLCHAIN=$(sed -n 's/^# toolchain: *//p' omniphony-renderer/clippy-baseline.txt)" >> "$GITHUB_ENV"
+
+      # Dependencies only, saved from main only: see build-and-test.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         continue-on-error: true
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            omniphony-renderer/target
-          key: ${{ runner.os }}-lint-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock', 'omniphony-renderer/clippy-baseline.txt') }}
-          restore-keys: ${{ runner.os }}-lint-cargo-
+          workspaces: |
+            omniphony-renderer
+          env-vars: CLIPPY_TOOLCHAIN
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Dated after the restore, for the reason given in build-and-test.
       - name: Date the checkout after the restored build trees
@@ -828,16 +870,22 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - name: Cache Cargo registry
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      # As in the lint job: the MSRV toolchain is installed after the restore,
+      # so it is named in the cache key.
+      - name: Read the MSRV for the cache key
+        run: |
+          echo "MSRV_TOOLCHAIN=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' omniphony-renderer/Cargo.toml)" >> "$GITHUB_ENV"
+
+      # Dependencies only, saved from main only: see build-and-test.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         continue-on-error: true
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            omniphony-renderer/target
-          key: ${{ runner.os }}-msrv-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock', 'omniphony-renderer/Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-msrv-cargo-
+          workspaces: |
+            omniphony-renderer
+          env-vars: MSRV_TOOLCHAIN
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Dated after the restore, for the reason given in build-and-test.
       - name: Date the checkout after the restored build trees

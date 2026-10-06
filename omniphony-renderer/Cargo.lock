@@ -1582,6 +1582,8 @@ dependencies = [
  "renderer",
  "rosc",
  "runtime_control",
+ "serde_json",
+ "serde_yaml_ng",
  "spdif",
  "sys",
  "vergen-gitcl",
@@ -1628,6 +1630,7 @@ dependencies = [
  "runtime_control",
  "script_backend",
  "serde_json",
+ "serde_yaml_ng",
  "socket2",
  "sys",
 ]
@@ -2205,7 +2208,7 @@ dependencies = [
 [[package]]
 name = "sofar"
 version = "0.3.0"
-source = "git+https://github.com/mgth/sofar?rev=4c91bea0b752c6d2b2bde4e8954c2e114182c297#4c91bea0b752c6d2b2bde4e8954c2e114182c297"
+source = "git+https://github.com/mgth/sofar?rev=26ca8670b09bd55febc19fbdd73be5af06825ddb#26ca8670b09bd55febc19fbdd73be5af06825ddb"
 dependencies = [
  "arrayvec",
  "audioadapter-buffers",

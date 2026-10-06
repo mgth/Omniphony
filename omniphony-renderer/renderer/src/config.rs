@@ -194,12 +194,6 @@ pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continuous: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub use_loudness: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_gain: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_gain_ceiling_db: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub bed_conform: Option<bool>,
     /// How channel-based (non-object) content is rendered: `host` (let mpv/the
     /// sink handle it) or `spatial` (render through the parametrable virtual bed
@@ -211,44 +205,6 @@ pub struct RenderConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub channel_render_mode: Option<crate::live_params::ChannelRenderMode>,
-    /// Where the 4.x/5.x surround pair (`Ls`/`Rs`) is placed when rendered
-    /// through the virtual bed: `side` (the default) or `back`. Only affects
-    /// channel sources without dedicated back channels; 7.x ignores it.
-    /// Absent = `side`.
-    #[serde(
-        default,
-        deserialize_with = "kept_enum::surround_placement",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub surround_placement: Option<crate::live_params::SurroundPlacement>,
-    /// How output channels map to device ports: `by_index` (default — port N =
-    /// layout speaker N, positionless) or `by_name` (positional: tag each channel
-    /// with its speaker position so a position-aware host/sink routes by position).
-    /// Absent = `by_index`.
-    #[serde(
-        default,
-        deserialize_with = "kept_enum::output_channel_mapping",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub output_channel_mapping: Option<crate::live_params::OutputChannelMapping>,
-    /// Crossover filter implementation for band-limited layouts: `lr4` (IIR,
-    /// zero latency, the default) or `fir` (linear-phase FIR — the band sum is
-    /// a pure delay, at the price of ~0.1 s of latency). Absent = `lr4`.
-    #[serde(
-        default,
-        deserialize_with = "kept_enum::crossover_type",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub crossover_type: Option<crate::live_params::CrossoverType>,
-    /// FIR crossover transition width as a fraction of the lowest cutoff:
-    /// smaller = steeper bands but more taps/latency/ringing. Only consulted
-    /// by the `fir` engine. Absent = 0.5.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub crossover_fir_transition_ratio: Option<f32>,
-    /// Bed→height object generator (2D upmix) id for channel content
-    /// (`none` / `copy_up` / `pad` / …). Absent / empty = off.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub object_generator_id: Option<String>,
     /// Legacy flat parameter map of "the active object generator", read for
     /// migration into `generator_params[object_generator_id]` and dropped on
     /// save (see [`crate::plugin::PluginParams::from_config`]).
@@ -259,21 +215,6 @@ pub struct RenderConfig {
     /// them. Absent = every generator at its declared defaults.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub generator_params: crate::plugin::ParamBag,
-    /// Global renderer-synthesized-object master. Kept explicit once migrated so
-    /// an off master can retain non-off child selections.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub synthetic_objects_enabled: Option<bool>,
-    /// Decode on a thread of its own in the liborender engine, when its host
-    /// lets the option decide. Absent = off.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub decode_thread: Option<bool>,
-    /// Phantom extraction algorithm. Absent = off.
-    #[serde(
-        default,
-        deserialize_with = "kept_enum::phantom_extract_mode",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub phantom_extract_mode: Option<crate::live_params::PhantomExtractMode>,
     /// Legacy phantom enable flag, read for migration and dropped on save.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phantom_enabled: Option<bool>,
@@ -365,23 +306,12 @@ pub struct RenderConfig {
     pub adaptive_resampling_disable_backpressure: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_sample_rate: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub drc_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub drc_weight: Option<f32>,
-    /// Level of the channels a bridge tags as dialogue, in dB (absent = 0).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dialogue_gain_db: Option<f32>,
     /// OSC meter cadence (Hz). Persisted so the renderer is the source of truth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meter_rate: Option<f32>,
     /// OSC diag-publication cadence (Hz). Persisted alongside `meter_rate`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diag_rate: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ramp_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sample_ramp_stride: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_diffuse: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -432,6 +362,10 @@ pub struct RenderConfig {
     /// rendering. See [`crate::binaural`] and [`BinauralConfig`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binaural: Option<BinauralConfig>,
+    /// The options declared in `options::declared`, one key each (see
+    /// `DeclaredOptionsConfig`). Before `extra`, which takes what is left.
+    #[serde(flatten)]
+    pub options: crate::options::DeclaredOptionsConfig,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     /// This matters most for `render.*`: any field added by a future
     /// version of the CLI / a host that we haven't migrated into this
@@ -784,10 +718,6 @@ mod kept_enum {
 
     reader!("render.", None, input_mode: InputModeConfig);
     reader!("render.", None, channel_render_mode: crate::live_params::ChannelRenderMode);
-    reader!("render.", None, surround_placement: crate::live_params::SurroundPlacement);
-    reader!("render.", None, output_channel_mapping: crate::live_params::OutputChannelMapping);
-    reader!("render.", None, crossover_type: crate::live_params::CrossoverType);
-    reader!("render.", None, phantom_extract_mode: crate::live_params::PhantomExtractMode);
     reader!("render.", None, size_to_spread_mode: crate::render_backend::SizeToSpreadMode);
     // The retired `asio` is read (and dropped) by the field's own reader, so
     // it is not kept.
@@ -844,22 +774,6 @@ impl KeepsUnknownValues for RenderConfig {
                 crate::config_fields::channel_render_mode::DEFAULT
         ),
         render_enum_key!(
-            surround_placement: crate::live_params::SurroundPlacement =
-                crate::config_fields::surround_placement::DEFAULT
-        ),
-        render_enum_key!(
-            output_channel_mapping: crate::live_params::OutputChannelMapping =
-                crate::config_fields::output_channel_mapping::DEFAULT
-        ),
-        render_enum_key!(
-            crossover_type: crate::live_params::CrossoverType =
-                crate::config_fields::crossover_type::DEFAULT
-        ),
-        render_enum_key!(
-            phantom_extract_mode: crate::live_params::PhantomExtractMode =
-                crate::config_fields::phantom_extract_mode::DEFAULT
-        ),
-        render_enum_key!(
             size_to_spread_mode: crate::render_backend::SizeToSpreadMode =
                 crate::render_backend::SizeToSpreadMode::default()
         ),
@@ -883,6 +797,12 @@ impl KeepsUnknownValues for RenderConfig {
             default = |_| Some(LiveInputConfig::DEFAULT_LFE_MODE)
         ),
     ];
+
+    fn enum_keys() -> impl Iterator<Item = &'static EnumKey<Self>> {
+        Self::ENUM_KEYS
+            .iter()
+            .chain(crate::options::DECLARED_ENUM_KEYS.iter().flatten())
+    }
 
     fn extra(&self, parent: Option<&str>) -> Option<&Mapping> {
         match parent {
@@ -1849,6 +1769,7 @@ render:
   output_channel_mapping: by_mood
   crossover_type: brickwall
   phantom_extract_mode: neural
+  ramp_mode: warp
   size_to_spread_mode: volume
   master_gain: -3.5
   live_input:
@@ -1885,6 +1806,7 @@ render:
         (&["output_channel_mapping"], "by_mood"),
         (&["crossover_type"], "brickwall"),
         (&["phantom_extract_mode"], "neural"),
+        (&["ramp_mode"], "warp"),
         (&["size_to_spread_mode"], "volume"),
         (&["live_input", "backend"], "jack"),
         (&["live_input", "clock_mode"], "ptp"),
@@ -1901,10 +1823,10 @@ render:
         // Every enum field is at its default...
         assert_eq!(render.input_mode, None);
         assert_eq!(render.channel_render_mode, None);
-        assert_eq!(render.surround_placement, None);
-        assert_eq!(render.output_channel_mapping, None);
-        assert_eq!(render.crossover_type, None);
-        assert_eq!(render.phantom_extract_mode, None);
+        assert_eq!(render.options.surround_placement, None);
+        assert_eq!(render.options.output_channel_mapping, None);
+        assert_eq!(render.options.crossover_type, None);
+        assert_eq!(render.options.phantom_extract_mode, None);
         assert_eq!(render.size_to_spread_mode, None);
         let live_input = render.live_input.as_ref().unwrap();
         assert_eq!(live_input.backend, None);
@@ -1972,7 +1894,7 @@ profiles:
         .unwrap();
         let render = cfg.render.as_ref().unwrap();
         assert_eq!(
-            render.crossover_type,
+            render.options.crossover_type,
             Some(crate::live_params::CrossoverType::Fir)
         );
         assert_eq!(
@@ -2011,7 +1933,7 @@ profiles:
         // What a save writes for a setting nobody touched: the value the
         // unknown one fell back to. This build reads the kept value back the
         // same way, so the newer build's survives.
-        render.crossover_type = Some(CrossoverType::Lr4);
+        render.options.crossover_type = Some(CrossoverType::Lr4);
         let live_input = render.live_input.as_mut().unwrap();
         live_input.clock_mode = Some(InputClockModeConfig::Dac);
         live_input.lfe_mode = Some(InputLfeModeConfig::Direct);
@@ -2031,7 +1953,7 @@ profiles:
 
         // A value of its own, set in this build: it wins, once.
         let render = cfg.render.as_mut().unwrap();
-        render.crossover_type = Some(CrossoverType::Fir);
+        render.options.crossover_type = Some(CrossoverType::Fir);
         let live_input = render.live_input.as_mut().unwrap();
         live_input.clock_mode = Some(InputClockModeConfig::Upstream);
         live_input.backend = Some(InputBackendConfig::Pipewire);
