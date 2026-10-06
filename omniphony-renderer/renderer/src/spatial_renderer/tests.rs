@@ -3506,9 +3506,10 @@ fn synchronous_stage_builds_land_on_the_requesting_frame() {
 
 /// A 7.1.4 renderer on a precomputed table, cartesian or polar. With
 /// `band_limited` its first three speakers are band-limited, so objects render
-/// through several crossover bands and the unified multi-band table; without,
-/// through the single band's own evaluator. Coarse grids: the tests that use it
-/// compare renders with each other, not with a geometry.
+/// through several crossover bands; without, through a single band. Either way
+/// through the unified table (a test that wants the per-band path clears it).
+/// Coarse grids: the tests that use it compare renders with each other, not
+/// with a geometry.
 pub(super) fn build_table_renderer(cartesian: bool, band_limited: bool) -> SpatialRenderer {
     let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
     if band_limited {
@@ -3570,10 +3571,9 @@ pub(super) fn build_table_renderer(cartesian: bool, band_limited: bool) -> Spati
     })
     .unwrap();
     r.prepare_speaker_stage().unwrap();
-    assert_eq!(
+    assert!(
         r.speaker_stage.unified_table.is_some(),
-        band_limited,
-        "only the band-limited layout renders through the unified table"
+        "every precomputed layout renders through the unified table"
     );
     r
 }
@@ -3587,6 +3587,51 @@ pub(super) fn noise_block(n_channels: usize, sample_length: usize, block: usize)
             ((x >> 8) & 0xffff) as f32 / 65535.0 * 0.5 - 0.25
         })
         .collect()
+}
+
+/// A layout without crossover renders through the unified table too, its one
+/// band merged like a crossover's: the lookup localises the cell once and
+/// reads the corner cache. It must render exactly what the band's own
+/// evaluator renders — the same bits, in the sample ramp, objects moving.
+#[test]
+fn a_single_band_renders_the_same_bits_through_the_unified_table() {
+    for cartesian in [true, false] {
+        let mut unified = build_table_renderer(cartesian, false);
+        assert!(unified.speaker_stage.unified_table.is_some(), "{cartesian}");
+        let mut per_band = build_table_renderer(cartesian, false);
+        per_band.speaker_stage.unified_table = None;
+        for r in [&mut unified, &mut per_band] {
+            r.control.live.write().options.ramp_mode = RampMode::Sample;
+        }
+        const OBJECTS: usize = 4;
+        for block in 0..24 {
+            let events = circling_events(OBJECTS, block, 120);
+            let pcm = noise_block(OBJECTS, 40, block);
+            let a = unified
+                .render_frame(&pcm, OBJECTS, &events, Vec::new(), false)
+                .unwrap();
+            let b = per_band
+                .render_frame(&pcm, OBJECTS, &events, Vec::new(), false)
+                .unwrap();
+            assert_eq!(a.samples.len(), b.samples.len());
+            assert!(
+                a.samples.iter().any(|x| x.abs() > 1e-3),
+                "block {block} is silent"
+            );
+            let first = a
+                .samples
+                .iter()
+                .zip(&b.samples)
+                .position(|(x, y)| x.to_bits() != y.to_bits());
+            assert_eq!(
+                first,
+                None,
+                "cartesian {cartesian}, block {block}: unified {:?} vs per band {:?}",
+                first.map(|i| a.samples[i]),
+                first.map(|i| b.samples[i])
+            );
+        }
+    }
 }
 
 /// One event per object on a slow circle round the listener, each object at

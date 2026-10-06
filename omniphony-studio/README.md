@@ -4,8 +4,9 @@
 > [`omniphony-studio-egui`](../omniphony-studio-egui/README.md), and receives
 > no new features: Studio work lands in the native one only. It still builds
 > and ships for now; anything it lacks (for instance the source families a
-> bridge declares, such as IAMF) is only in the native Studio. Its `src/i18n/`
-> catalogues stay maintained — the native Studio reads them.
+> bridge declares, such as IAMF) is only in the native Studio. The catalogues,
+> the head model and the desktop icons it uses are the native Studio's
+> (`../omniphony-studio-egui/i18n/`, `../omniphony-studio-egui/assets/`).
 
 ![Omniphony Studio preview](omniphony-studio.png)
 

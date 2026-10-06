@@ -512,12 +512,12 @@ pub(super) struct GainCarry {
 /// are those of its position; `segment_end` is scratch.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn mix_sample_ramp(
+fn mix_sample_ramp<S: RampStrategy + ?Sized>(
     bus: &mut MixBus<'_>,
     bands: &[Vec<f32>],
     sample_length: usize,
     ramp: &mut crate::ramp_strategy::ChannelRampState,
-    ramp_strategy: &dyn RampStrategy,
+    ramp_strategy: &S,
     ramp_context: &RampContext,
     stride: usize,
     carry: &mut GainCarry,
@@ -974,30 +974,51 @@ impl SpeakerRenderStage {
                         let unified_table = &self.unified_table;
                         let table_cache = &mut self.table_caches[input_channel_idx];
                         let render_bands = &self.render_bands;
-                        mix_sample_ramp(
-                            &mut bus,
-                            bands,
-                            sample_length,
-                            &mut state.ramp,
-                            ramp_strategy,
-                            ramp_context,
-                            sample_ramp_stride,
-                            &mut self.gain_carries[input_channel_idx],
-                            self.mix_pass,
-                            &mut band_gains,
-                            &mut self.segment_end_scratch,
-                            |position, size, out| {
-                                Self::fill_band_gains(
-                                    unified_table,
-                                    Some(&mut *table_cache),
-                                    render_bands,
-                                    render_params,
-                                    position,
-                                    size,
-                                    out,
-                                )
-                            },
-                        );
+                        let lookup = |position, size, out: &mut Vec<Gains>| {
+                            Self::fill_band_gains(
+                                unified_table,
+                                Some(&mut *table_cache),
+                                render_bands,
+                                render_params,
+                                position,
+                                size,
+                                out,
+                            )
+                        };
+                        let carry = &mut self.gain_carries[input_channel_idx];
+                        let segment_end = &mut self.segment_end_scratch;
+                        // The built-in ramp is called directly, so its
+                        // per-sample evaluation inlines into the loop.
+                        match ramp_strategy.as_position() {
+                            Some(position) => mix_sample_ramp(
+                                &mut bus,
+                                bands,
+                                sample_length,
+                                &mut state.ramp,
+                                position,
+                                ramp_context,
+                                sample_ramp_stride,
+                                carry,
+                                self.mix_pass,
+                                &mut band_gains,
+                                segment_end,
+                                lookup,
+                            ),
+                            None => mix_sample_ramp(
+                                &mut bus,
+                                bands,
+                                sample_length,
+                                &mut state.ramp,
+                                ramp_strategy,
+                                ramp_context,
+                                sample_ramp_stride,
+                                carry,
+                                self.mix_pass,
+                                &mut band_gains,
+                                segment_end,
+                                lookup,
+                            ),
+                        }
                     }
                     RampMode::Interp => {
                         // Destination gains for this block: one VBAP evaluation per
@@ -2025,14 +2046,18 @@ impl SpeakerRenderStage {
         Ok((render_bands, Some(filter_bank), info))
     }
 
-    /// Merge the per-band cartesian tables into a single multi-band table so a
-    /// lookup localises the cell once for all bands. Returns `None` (→ per-band
-    /// path) unless there are several bands all backed by a cartesian evaluator.
+    /// Merge the per-band tables into a single multi-band table so a lookup
+    /// localises the cell once for all bands, and reads the per-object corner
+    /// cache. A layout without crossover gets one too, for its single band:
+    /// the same bits as its evaluator
+    /// (`a_single_band_renders_the_same_bits_through_the_unified_table`) at a
+    /// cheaper read. Returns `None` (→ per-band path) unless every band is
+    /// backed by a precomputed cartesian, or every one by a polar, table.
     fn build_unified_table(
         render_bands: &[BandRenderer],
         num_speakers: usize,
     ) -> Option<MultiBandTable> {
-        if render_bands.len() <= 1 {
+        if render_bands.is_empty() {
             return None;
         }
         // Every band shares the active evaluation mode, so they are all cartesian
@@ -2055,7 +2080,7 @@ impl SpeakerRenderStage {
             let table = MultiBandTable::build_cartesian(&cartesian, num_speakers);
             if table.is_some() {
                 log::info!(
-                    "Crossover: unified cartesian table built for {} bands",
+                    "Speaker stage: unified cartesian table built for {} band(s)",
                     render_bands.len()
                 );
             }
@@ -2071,7 +2096,7 @@ impl SpeakerRenderStage {
         let table = MultiBandTable::build_polar(&polar, num_speakers);
         if table.is_some() {
             log::info!(
-                "Crossover: unified polar table built for {} bands",
+                "Speaker stage: unified polar table built for {} band(s)",
                 render_bands.len()
             );
         }
