@@ -238,7 +238,10 @@ impl PluginParams {
         }
         if let (Some(legacy), Some(id)) = (
             render.object_generator_params.as_ref(),
-            crate::config_fields::object_generator_id::get(render)
+            render
+                .options
+                .object_generator_id
+                .as_ref()
                 .filter(|id| !id.trim().is_empty() && !id.trim().eq_ignore_ascii_case("none")),
         ) {
             for (key, value) in legacy {
@@ -370,7 +373,10 @@ mod tests {
     #[test]
     fn legacy_keys_migrate_into_the_new_ones_and_are_dropped_on_store() {
         let mut render = RenderConfig {
-            object_generator_id: Some("pad".to_string()),
+            options: crate::options::DeclaredOptionsConfig {
+                object_generator_id: Some("pad".to_string()),
+                ..Default::default()
+            },
             object_generator_params: Some(HashMap::from([("strength".to_string(), 0.8)])),
             phantom_params: Some(HashMap::from([
                 ("method".to_string(), 1.0),
@@ -407,7 +413,10 @@ mod tests {
     #[test]
     fn a_legacy_generator_map_without_a_generator_has_nowhere_to_go() {
         let render = RenderConfig {
-            object_generator_id: Some("none".to_string()),
+            options: crate::options::DeclaredOptionsConfig {
+                object_generator_id: Some("none".to_string()),
+                ..Default::default()
+            },
             object_generator_params: Some(HashMap::from([("strength".to_string(), 0.8)])),
             ..Default::default()
         };

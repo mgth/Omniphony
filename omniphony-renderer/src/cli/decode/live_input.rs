@@ -678,7 +678,8 @@ mod tests {
         assert!(!capture_latency_is_stale(Some(running), running));
     }
 
-    /// `--latency-target-ms 0` is a request the capture cannot run at: it is
+    /// A latency target of 0 (a config value; the `--latency-target` flag
+    /// unsets it instead) is a request the capture cannot run at: it is
     /// started at 1 ms, and that is not a change to reconcile either.
     #[test]
     fn a_zero_latency_target_leaves_a_capture_at_the_floor_alone() {

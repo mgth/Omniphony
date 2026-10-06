@@ -106,7 +106,7 @@ impl OscSender {
 pub(super) fn loudness_state_message(control: &RendererControl) -> OscMessage {
     let (enabled, source) = {
         let live = control.live.read();
-        (live.use_loudness, live.dialogue_level)
+        (live.options.use_loudness, live.dialogue_level)
     };
     let gain_linear: f32 = match (enabled, source) {
         (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),

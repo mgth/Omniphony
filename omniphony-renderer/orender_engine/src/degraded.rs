@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(control.config_status().as_deref(), Some("loaded"));
         assert_eq!(control.host_abi(), Some((0, 7)));
         assert_eq!(
-            control.live.read().ramp_mode,
+            control.live.read().options.ramp_mode,
             renderer::live_params::RampMode::Sample
         );
         assert_eq!(
