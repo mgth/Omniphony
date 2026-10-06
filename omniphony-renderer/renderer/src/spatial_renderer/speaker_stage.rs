@@ -60,9 +60,9 @@ impl BandSetKey {
         let live = control.live.read();
         Self {
             topology: Arc::as_ptr(topology) as usize,
-            crossover_type: live.crossover_type,
-            fir_ratio: if live.crossover_type == CrossoverType::Fir {
-                live.crossover_fir_transition_ratio
+            crossover_type: live.options.crossover_type,
+            fir_ratio: if live.options.crossover_type == CrossoverType::Fir {
+                live.options.crossover_fir_transition_ratio
             } else {
                 0.0
             },
