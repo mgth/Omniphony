@@ -2257,11 +2257,48 @@ fn crossover_renderer() -> SpatialRenderer {
 /// Build a renderer over an arbitrary layout with the same defaults as
 /// [`crossover_renderer`].
 fn renderer_for_layout(layout: SpeakerLayout) -> SpatialRenderer {
+    try_renderer_for_layout(layout).unwrap()
+}
+
+fn try_renderer_for_layout(layout: SpeakerLayout) -> Result<SpatialRenderer> {
     SpatialRenderer::new(RendererSpec {
         vbap_position_interpolation: false,
         ..test_support::spec(layout)
     })
-    .unwrap()
+}
+
+/// A layout larger than the renderer's gains hold (`MAX_SPEAKERS`, LFE
+/// included) is refused with a reason when the renderer is built: every
+/// backend sized its gains by it and panicked out of bounds on the
+/// table-building workers. One more speaker than the limit is enough.
+#[test]
+fn a_layout_past_the_speaker_limit_is_refused_with_a_reason() {
+    use crate::spatial_vbap::MAX_SPEAKERS;
+    use crate::speaker_layout::Speaker;
+    let ring = |n: usize| {
+        SpeakerLayout::from_speakers(
+            (0..n)
+                .map(|i| {
+                    Speaker::new(
+                        format!("S{i}"),
+                        -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
+                        if i % 2 == 0 { 0.0 } else { 40.0 },
+                    )
+                })
+                .collect(),
+        )
+        .unwrap()
+    };
+    assert!(try_renderer_for_layout(ring(MAX_SPEAKERS)).is_ok());
+    let error = try_renderer_for_layout(ring(MAX_SPEAKERS + 1))
+        .err()
+        .expect("refused");
+    let error = format!("{error:#}");
+    assert!(
+        error.contains(&format!("{} speakers", MAX_SPEAKERS + 1))
+            && error.contains(&format!("at most {MAX_SPEAKERS}")),
+        "{error}"
+    );
 }
 
 /// The test signal must reach only the speaker under test.
