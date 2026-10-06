@@ -2044,6 +2044,124 @@ fn rendered_frame_reports_the_geometry_it_produced() {
     assert_eq!(bin.samples.len(), frames * bin.n_channels);
 }
 
+/// What Studio does to a playing renderer: the layout swapped for one with
+/// fewer, then more speakers, and the stream's sample rate changed. The
+/// output keeps the width it was opened with: a smaller layout fills its
+/// first channels, a larger one is refused with a reason for the clients and
+/// the previous layout keeps playing (its gains would land past the stage's
+/// gain sets). Every frame stays finite and the renderer keeps sounding; a
+/// per-speaker setting left on a speaker the new layout does not have is
+/// ignored, not a crash.
+#[test]
+fn a_playing_renderer_survives_layout_and_sample_rate_changes() {
+    const FRAMES: usize = 480;
+    const WIDTH: usize = 12;
+    let mut r = renderer_for_layout(SpeakerLayout::preset("7.1.4").unwrap());
+    let control = r.renderer_control();
+    let event = SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(0),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([0.3, 0.8, 0.2]),
+        sample_pos: Some(0),
+    };
+    let mut block = 0;
+    // Render until a frame sounds on channels `from..used` and on none past
+    // `used`, checking every frame on the way. (The object sounds on a
+    // height speaker of 7.1.4, channel 9: `from` 6 tells 7.1.4 from 5.1.)
+    // The bands are built on a worker thread: wait for it by the clock, not
+    // by a count of blocks, so a slow runner is not reported as a failure.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+    let mut play_until = |r: &mut SpatialRenderer, from: usize, used: usize| {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        while std::time::Instant::now() < deadline {
+            // The object's metadata in every block, as a stream carries it: a
+            // sample-rate change is a new stream and resets what it knew.
+            let events = std::slice::from_ref(&event);
+            let frame = r
+                .render_frame(&noise_block(1, FRAMES, block), 1, events, Vec::new(), false)
+                .unwrap();
+            block += 1;
+            assert_eq!(
+                frame.n_channels, WIDTH,
+                "the output keeps the width it was opened with"
+            );
+            assert_eq!(frame.samples.len(), FRAMES * WIDTH);
+            assert!(
+                frame.samples.iter().all(|s| s.is_finite()),
+                "non-finite output"
+            );
+            let energy = |c: usize| {
+                frame
+                    .samples
+                    .iter()
+                    .skip(c)
+                    .step_by(WIDTH)
+                    .map(|x| x * x)
+                    .sum::<f32>()
+            };
+            if (from..used).any(|c| energy(c) > 0.0) && (used..WIDTH).all(|c| energy(c) == 0.0) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("the renderer never settled on channels {from}..{used}");
+    };
+    let publish = |preset: &str| {
+        control.with_editable_layout(|l| *l = SpeakerLayout::preset(preset).unwrap());
+        control.bump_geometry_generation();
+        let plan = control.prepare_topology_rebuild().expect("plan");
+        let topology = plan
+            .build_topology_reusing(Some(&control.active_topology()))
+            .expect("topology");
+        control.publish_topology(topology);
+    };
+    play_until(&mut r, 6, WIDTH);
+
+    // A setting for the last 7.1.4 speaker, which 5.1 does not have.
+    control.live.write().speakers.entry(11).or_default().gain = 0.0;
+    control.mark_speaker_params_dirty();
+    publish("5.1");
+    play_until(&mut r, 0, 6);
+    assert_eq!(control.take_band_build_error(), None);
+
+    // Wider than the output: refused, the 5.1 bands keep playing.
+    publish("9.1.6");
+    // The 5.1 bands stay installed meanwhile, so every block settles at once:
+    // wait for the worker's reply, with the 5.1 output checked on the way.
+    let deadline = std::time::Instant::now() + PATIENCE;
+    let error = loop {
+        play_until(&mut r, 0, 6);
+        if let Some(error) = control.take_band_build_error() {
+            break error;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wider layout is refused with a reason"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert!(
+        error.contains("16 speakers") && error.contains("restart"),
+        "{error}"
+    );
+    play_until(&mut r, 0, 6);
+
+    // Back to a layout that fits: built, and the error taken back.
+    publish("7.1.4");
+    control.live.write().speakers.remove(&11);
+    control.mark_speaker_params_dirty();
+    play_until(&mut r, 6, WIDTH);
+    assert_eq!(control.take_band_build_error().as_deref(), Some(""));
+
+    for rate in [44_100, 96_000, 48_000] {
+        r.set_sample_rate(rate).expect("sample rate");
+        play_until(&mut r, 6, WIDTH);
+    }
+}
+
 /// A mode change must be ramped, not stepped.
 ///
 /// The binaural and speaker paths are independent DSP chains; swapping them
