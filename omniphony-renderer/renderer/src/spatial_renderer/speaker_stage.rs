@@ -1429,6 +1429,19 @@ impl SpeakerRenderStage {
         filtered_channels: Range<usize>,
     ) -> Result<BandSet> {
         let layout = &topology.speaker_layout;
+        // The output was opened with `num_speakers` channels and keeps that
+        // width; a smaller layout fills the first of them. A larger one has
+        // speakers with no channel to go to: its gains would be written past
+        // the stage's gain sets (a panic in debug, speakers silently dropped
+        // in release). Refused like any failed build — reported to the
+        // clients, the previous bands keep rendering — until the host reopens
+        // its output at the new width.
+        anyhow::ensure!(
+            layout.speakers.len() <= num_speakers,
+            "the layout has {} speakers but the output was opened with {num_speakers} \
+             channels; restart the renderer to use it",
+            layout.speakers.len()
+        );
         let same_topology = previous.topology.is_some_and(|p| Arc::ptr_eq(p, &topology));
         let (render_bands, crossover_filter_bank, crossover_info) = Self::build_crossover(
             control,
