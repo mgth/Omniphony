@@ -552,8 +552,8 @@ impl HrirSet {
     /// convolvers' current kernels to find out whether anything moved at all.
     /// Both costs are wasted whenever an object barely turned.
     ///
-    /// The grid is measured every [`AZ_STEP_DEG`](Self::AZ_STEP_DEG) /
-    /// [`EL_STEP_DEG`](Self::EL_STEP_DEG) — 5° — but `fa`/`fe` below are
+    /// The grid is measured every `AZ_STEP_DEG` /
+    /// `EL_STEP_DEG` — 5° — but `fa`/`fe` below are
     /// continuous, so today a 0.01° move yields a numerically different kernel
     /// and arms a full crossfade. That is precision the measurements do not
     /// contain: below the lattice we are only interpolating measurement noise.

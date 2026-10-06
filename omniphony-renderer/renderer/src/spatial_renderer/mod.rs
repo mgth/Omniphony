@@ -617,14 +617,14 @@ impl SpatialRenderer {
     ///
     /// # Arguments
     ///
-    /// * `pcm_data` - Decoded PCM samples [sample_idx][channel_idx]
+    /// * `pcm_data` - Decoded PCM samples `[sample_idx][channel_idx]`
     /// * `metadata` - Spatial object metadata (positions, gains, etc.)
     /// * `total_channels` - Total number of channels in pcm_data (bed + objects)
-    /// * `bed_indices` - Indices of channels that are bed channels (e.g., [3] for LFE only)
+    /// * `bed_indices` - Indices of channels that are bed channels (e.g., `[3]` for LFE only)
     ///
     /// # Returns
     ///
-    /// Interleaved speaker samples: [sample_idx][speaker_idx]
+    /// Interleaved speaker samples: `[sample_idx][speaker_idx]`
     ///
     /// # Notes
     ///

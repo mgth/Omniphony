@@ -400,7 +400,7 @@ impl ZeroAllocReport {
 }
 
 /// Verify `compute_gains` does not allocate, by running it over `opts.positions`
-/// while watching [`ALLOCATIONS`]. Requires a [`CountingAllocator`] global
+/// while watching [`count_allocations`]. Requires a [`CountingAllocator`] global
 /// allocator; if it is not installed (detected via a probe allocation), returns
 /// [`ZeroAllocReport::Skipped`].
 pub fn check_zero_alloc(model: &dyn GainModel, opts: &ConformanceOptions) -> ZeroAllocReport {

@@ -807,8 +807,8 @@ fn sinc(x: f64) -> f64 {
 /// cepstrum does not alias onto itself. Build-time only (`f64`, four
 /// transforms per response).
 ///
-/// One-shot; to run it over a set of responses, hold a [`MinPhase`] and call
-/// [`MinPhase::run`] so the plans and buffers are built once.
+/// One-shot; to run it over a set of responses, hold a `MinPhase` and call
+/// `MinPhase::run` so the plans and buffers are built once.
 pub fn minimum_phase(ir: &[f32]) -> Vec<f32> {
     if ir.is_empty() {
         return Vec::new();
