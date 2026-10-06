@@ -208,9 +208,12 @@ anything; each names the failure it prevents.
 - **Every external input gets negative tests**: OSC datagrams, config.yaml,
   SOFA/WAV files, the C ABI. Malformed input must be refused or bounded, never
   panic, allocate without bound, or reach the render as NaN. The registry
-  sweeps (`live_options_conformance.rs`, the control sweeps in
-  `orender_engine/src/osc/dispatch.rs`) cover every option and address at
-  once; a new option or address is covered by declaring it.
+  sweeps (`live_options_conformance.rs`, and the engine's control sweeps
+  where they exist) pick up every option registry row on their own: a new
+  option declared there joins them without a test of its own. Anything
+  outside the registry does not: a hand-wired address family (such as
+  `hybrid/curve`) or a lifecycle command needs its own cases, valid and
+  malformed, in the sweep's address list or in a test beside its handler.
 - **Keep fixtures shared and fast.** Reuse the helpers that exist
   (`dsp_fixtures` for scenes, signals and analysis; `saf_kemar_shared` rather
   than parsing the embedded set again) and build an expensive fixture once per
