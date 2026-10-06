@@ -488,7 +488,7 @@ fn mix_is_bit_identical_to_the_sample_major_mix_without_crossover() {
 #[test]
 fn mix_is_bit_identical_to_the_sample_major_mix_with_the_fir_crossover() {
     let mut r = build_table_renderer(true, true);
-    r.control.live.write().crossover_type = CrossoverType::Fir;
+    r.control.live.write().options.crossover_type = CrossoverType::Fir;
     let topology = r.control.active_topology();
     r.speaker_stage.synchronous_builds = true;
     r.speaker_stage
@@ -813,7 +813,7 @@ impl RampProbe {
 #[test]
 fn stride_interpolation_is_exact_for_a_linear_gain_law_across_blocks() {
     const BLOCK: usize = 37;
-    let mut probe = RampProbe::new(crate::config_fields::sample_ramp_stride::DEFAULT);
+    let mut probe = RampProbe::new(crate::options::defaults::sample_ramp_stride);
     probe.move_to(0.2, 0);
     let (_, _, lookups) = probe.block(BLOCK);
     assert_eq!(lookups, 1, "a settled block is one lookup");
@@ -895,7 +895,7 @@ fn stride_keeps_segment_ends_and_settled_samples_exact() {
         out
     };
     let exact = run(1);
-    let strided = run(crate::config_fields::sample_ramp_stride::DEFAULT);
+    let strided = run(crate::options::defaults::sample_ramp_stride);
     // Block 0 is settled. The ramp starts on sample 40, still at the settled
     // position, moves over samples 41..=92 and lands on its target on sample
     // 93, where the object stays.
@@ -930,7 +930,7 @@ fn stride_keeps_segment_ends_and_settled_samples_exact() {
 #[test]
 fn a_skipped_pass_drops_the_carried_gains() {
     const BLOCK: usize = 40;
-    let mut probe = RampProbe::new(crate::config_fields::sample_ramp_stride::DEFAULT);
+    let mut probe = RampProbe::new(crate::options::defaults::sample_ramp_stride);
     probe.move_to(0.9, 10 * BLOCK as u64);
     assert_eq!(probe.block(BLOCK).2, 6, "first moving block: no carry");
     assert_eq!(probe.block(BLOCK).2, 5, "second: starts from the carry");
@@ -946,8 +946,8 @@ fn stride_deviation(cartesian: bool, band_limited: bool, moving: bool) -> (f32, 
     const N: usize = 8;
     let render = |stride: usize| -> Vec<f32> {
         let mut r = build_table_renderer(cartesian, band_limited);
-        r.control.live.write().ramp_mode = RampMode::Sample;
-        r.control.live.write().sample_ramp_stride = stride;
+        r.control.live.write().options.ramp_mode = RampMode::Sample;
+        r.control.live.write().options.sample_ramp_stride = stride;
         let mut out = Vec::new();
         let mut buf = Vec::new();
         for block in 0..BLOCKS {
@@ -993,7 +993,7 @@ fn stride_deviation(cartesian: bool, band_limited: bool, moving: bool) -> (f32, 
         out
     };
     let exact = render(1);
-    let strided = render(crate::config_fields::sample_ramp_stride::DEFAULT);
+    let strided = render(crate::options::defaults::sample_ramp_stride);
     let mut peak = 0.0f32;
     let mut sum_sq = 0.0f64;
     let mut level = 0.0f32;
@@ -1090,7 +1090,7 @@ fn same_engines(
 fn a_band_set_for_a_key_left_behind_is_dropped_and_asked_again() {
     let mut r = build_table_renderer(true, true);
     let topology = r.control.active_topology();
-    let first = r.control.live.read().crossover_type;
+    let first = r.control.live.read().options.crossover_type;
     let other = match first {
         CrossoverType::Lr4 => CrossoverType::Fir,
         CrossoverType::Fir => CrossoverType::Lr4,
@@ -1100,14 +1100,14 @@ fn a_band_set_for_a_key_left_behind_is_dropped_and_asked_again() {
     let answered = r.speaker_stage.worker.answered();
 
     // Ask for the other engine, then go back before it is installed.
-    r.control.live.write().crossover_type = other;
+    r.control.live.write().options.crossover_type = other;
     assert!(
         !r.speaker_stage
             .refresh_for_topology(&r.control, &topology)
             .unwrap()
     );
     assert!(r.speaker_stage.rebuild_pending());
-    r.control.live.write().crossover_type = first;
+    r.control.live.write().options.crossover_type = first;
     assert!(
         !r.speaker_stage
             .refresh_for_topology(&r.control, &topology)
@@ -1132,7 +1132,7 @@ fn a_band_set_for_a_key_left_behind_is_dropped_and_asked_again() {
     );
 
     // The other engine again: asked again, installed when it lands.
-    r.control.live.write().crossover_type = other;
+    r.control.live.write().options.crossover_type = other;
     assert!(
         !r.speaker_stage
             .refresh_for_topology(&r.control, &topology)
@@ -1193,7 +1193,7 @@ fn a_band_set_comes_with_the_filter_memory_of_the_channels_in_use() {
     // The other engine, built by the worker.
     let topology = r.control.active_topology();
     let answered = r.speaker_stage.worker.answered();
-    r.control.live.write().crossover_type = CrossoverType::Fir;
+    r.control.live.write().options.crossover_type = CrossoverType::Fir;
     assert!(
         !r.speaker_stage
             .refresh_for_topology(&r.control, &topology)

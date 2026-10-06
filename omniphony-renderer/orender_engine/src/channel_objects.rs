@@ -249,9 +249,9 @@ impl ChannelObjectStages {
         let options_epoch = control.options_epoch();
         let live = control.live.read();
         let selection = StageSelection {
-            synthetic_objects_enabled: live.synthetic_objects_enabled,
-            phantom_mode: live.phantom_extract_mode,
-            generator_id: &live.object_generator_id,
+            synthetic_objects_enabled: live.options.synthetic_objects_enabled,
+            phantom_mode: live.options.phantom_extract_mode,
+            generator_id: &live.options.object_generator_id,
         };
         StageSync {
             counts: StageCounts::default(),
@@ -273,9 +273,9 @@ impl ChannelObjectStages {
         let options_epoch = control.options_epoch();
         let live = control.live.read();
         let selection = StageSelection {
-            synthetic_objects_enabled: live.synthetic_objects_enabled,
-            phantom_mode: live.phantom_extract_mode,
-            generator_id: &live.object_generator_id,
+            synthetic_objects_enabled: live.options.synthetic_objects_enabled,
+            phantom_mode: live.options.phantom_extract_mode,
+            generator_id: &live.options.object_generator_id,
         };
         let counts = self.sync(ctx, &selection, options_epoch);
         if counts.any() {
@@ -620,9 +620,9 @@ pub(crate) mod tests {
         let control = renderer.renderer_control();
         {
             let mut live = control.live.write();
-            live.synthetic_objects_enabled = true;
-            live.phantom_extract_mode = PhantomExtractMode::Broadband;
-            live.object_generator_id = "copy_up".to_string();
+            live.options.synthetic_objects_enabled = true;
+            live.options.phantom_extract_mode = PhantomExtractMode::Broadband;
+            live.options.object_generator_id = "copy_up".to_string();
         }
         let labels = [L, R, C, LFE, Ls, Rs];
         let poses = crate::virtual_bed::room_bed_poses(

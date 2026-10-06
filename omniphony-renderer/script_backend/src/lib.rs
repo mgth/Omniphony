@@ -1139,23 +1139,45 @@ mod tests {
         );
     }
 
+    /// A valid `gains` (one zero per speaker) that first runs `prelude`: only
+    /// the prelude can make it fail, so a failure is the sandbox's doing.
+    fn well_shaped(prelude: &str) -> String {
+        format!(
+            "function gains(p,s,st,pa) {prelude} local o={{}} for i=1,#s do o[i]=0 end return o end"
+        )
+    }
+
+    /// The construction error for `src`, which must fail.
+    fn construction_error(src: &str) -> String {
+        match backend(src) {
+            Ok(_) => panic!("the script was accepted: {src}"),
+            Err(e) => format!("{e:#}"),
+        }
+    }
+
     #[test]
     fn sandbox_denies_dangerous_stdlib() {
-        assert!(backend("function gains(p,s,st,pa) return os.time() end").is_err());
-        assert!(backend("function gains(p,s,st,pa) io.write('x') return {} end").is_err());
-        assert!(backend("function gains(p,s,st,pa) require('os') return {} end").is_err());
-        assert!(backend("function gains(p,s,st,pa) return { debug.getinfo(1) } end").is_err());
+        backend(&well_shaped("")).expect("the control script is valid");
+        for (call, global) in [
+            ("os.time()", "'os'"),
+            ("io.write('x')", "'io'"),
+            ("require('os')", "'require'"),
+            ("debug.getinfo(1)", "'debug'"),
+        ] {
+            let err = construction_error(&well_shaped(call));
+            assert!(
+                err.contains(global),
+                "`{call}` must fail on the missing global {global}, not on something else: {err}"
+            );
+        }
     }
 
     #[test]
     fn infinite_loop_and_runaway_allocation_are_bounded() {
-        assert!(backend("function gains(p,s,st,pa) while true do end end").is_err());
-        assert!(
-            backend(
-                "function gains(p,s,st,pa) local b=string.rep('x',256*1024*1024) return {#b} end"
-            )
-            .is_err()
-        );
+        let err = construction_error(&well_shaped("while true do end"));
+        assert!(err.contains("instruction budget"), "{err}");
+        let err = construction_error(&well_shaped("local b=string.rep('x',256*1024*1024)"));
+        assert!(err.contains("memory"), "{err}");
     }
 
     #[test]

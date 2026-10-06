@@ -1000,10 +1000,11 @@ mod tests {
             normalize_for_export(speaker);
         }
 
-        let path = std::env::temp_dir().join("omniphony-export-roundtrip.yaml");
+        // A directory of the test's own: several checkouts run this suite at once.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("export-roundtrip.yaml");
         save_layout_file(&path, &layout).expect("export must succeed");
         let reparsed = load_layout_file(&path).expect("exported YAML must parse");
-        let _ = std::fs::remove_file(&path);
 
         assert_eq!(reparsed.speakers.len(), 3);
         assert!((reparsed.radius_m - 1.5).abs() < 1e-9);

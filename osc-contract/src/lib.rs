@@ -41,9 +41,24 @@
 //! ## Framing
 //!
 //! What both ends accept besides addresses is here too: how deep a datagram may
-//! nest, and the check a listener runs before decoding one ([`nesting`]).
+//! nest, and the check a listener runs before decoding one ([`nesting`]); and
+//! the arguments each state address carries ([`shapes`]).
 
 pub mod nesting;
+pub mod shapes;
+
+/// Revision of this contract. The engine advertises it as `contractRevision`
+/// in `/state/capabilities`, and a client compares it with its own, so a
+/// mismatch can be shown instead of discovered through a control that does
+/// nothing.
+///
+/// Bump it with any change to the wire surface: an address added, removed or
+/// renamed, or a change to the arguments an address carries. The address set
+/// is fingerprinted by a test, so adding or removing one without a bump fails;
+/// a change to arguments only is for the author to remember.
+///
+/// An engine that predates this advertises none, which a client reads as 0.
+pub const CONTRACT_REVISION: u32 = 1;
 
 // ── Control: client → engine ────────────────────────────────────────────────
 
@@ -424,6 +439,11 @@ pub const CONTROL_SPREAD_MAX: &str = "/omniphony/control/spread/max";
 pub const CONTROL_SPREAD_MIN: &str = "/omniphony/control/spread/min";
 pub const CONTROL_SPREAD_SIZE_TO_SPREAD_MODE: &str =
     "/omniphony/control/spread/size_to_spread_mode";
+/// Ask for the live-state snapshot again: args `[reply_port (int)]`, the port
+/// optional as on [`REGISTER`]. Sent by a client whose [`STATE_GENERATION`]
+/// fell behind the engine's. Unlike a re-registration it resends nothing else
+/// (no log backlog, no metering state), and leaves the registration as it is.
+pub const CONTROL_STATE_REFRESH: &str = "/omniphony/control/state/refresh";
 pub const CONTROL_YIELD_PORT: &str = "/omniphony/control/yield_port";
 /// Sent to a standing-by instance (on the dynamic resume port it advertised in
 /// reply to a yield) to ask it to re-acquire the OSC port + audio and resume.
@@ -449,6 +469,25 @@ pub const CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX: &str =
 pub const CONTROL_RENDER_EVALUATION_POLAR_PREFIX: &str =
     "/omniphony/control/render_evaluation/polar/";
 
+// ── Control error codes ─────────────────────────────────────────────────────
+//
+// The `code` argument of [`STATE_CONTROL_ERROR`]: stable strings a client can
+// match on, where the message beside them is only for a person.
+
+/// No handler knows the address: not in this contract, or not in the one the
+/// engine was built with.
+pub const CONTROL_ERROR_UNKNOWN_ADDRESS: &str = "unknown_address";
+/// The handler for the address refused its arguments: a wrong type, a missing
+/// one, a value out of range or not one it accepts.
+pub const CONTROL_ERROR_INVALID_ARGUMENTS: &str = "invalid_arguments";
+/// The address is in the contract, but nothing on this engine applied it: its
+/// handler refused the arguments without saying which, or this host does not
+/// implement it (an audio-output control sent to an engine embedded in mpv).
+pub const CONTROL_ERROR_NOT_APPLIED: &str = "not_applied";
+/// The datagram is not OSC the engine can decode, or nests deeper than
+/// [`nesting::MAX_NESTING`]. Its address is unknown, so the reply's is empty.
+pub const CONTROL_ERROR_UNDECODABLE: &str = "undecodable";
+
 // ── State: engine → clients ─────────────────────────────────────────────────
 
 pub const STATE_ADAPTIVE_RESAMPLING_BAND: &str = "/omniphony/state/adaptive_resampling/band";
@@ -461,6 +500,14 @@ pub const STATE_CAPABILITIES: &str = "/omniphony/state/capabilities";
 pub const STATE_CLIP: &str = "/omniphony/state/clip";
 pub const STATE_CONFIG_SAVED: &str = "/omniphony/state/config/saved";
 pub const STATE_CONFIG_SAVE_ERROR: &str = "/omniphony/state/config/save_error";
+/// A control the engine did not apply, sent back to its sender only: args
+/// `[address (string), code (string), message (string)]`. `code` is one of the
+/// `CONTROL_ERROR_*` values; `message` is for a person. `address` is empty when
+/// the datagram could not be decoded at all.
+///
+/// Silence still does not mean success: a handler that takes the message and
+/// then finds nothing to change sends nothing either.
+pub const STATE_CONTROL_ERROR: &str = "/omniphony/state/control_error";
 pub const STATE_CROSSOVER_TIME_MS: &str = "/omniphony/state/crossover_time_ms";
 pub const STATE_DEBUG_SPEAKER_GAINTABLE_CHUNK: &str =
     "/omniphony/state/debug/speaker_gaintable/chunk";
@@ -474,6 +521,23 @@ pub const STATE_DECODE_TIME_MS: &str = "/omniphony/state/decode_time_ms";
 pub const STATE_DIAG_SCHEMA: &str = "/omniphony/state/diag_schema";
 pub const STATE_DIAG_VALUES: &str = "/omniphony/state/diag_values";
 pub const STATE_FRAME_DURATION_MS: &str = "/omniphony/state/frame_duration_ms";
+/// Where the control-plane state a client holds stands: args
+/// `[generation (int), full (int), part (int), parts (int)]`.
+///
+/// The engine counts every state publication that is not telemetry (the
+/// snapshot, and the values controls and the engine publish) and sends the
+/// count with the state it versions. With `full = 0` it follows an update, as
+/// part 0 of 1, and a client that holds generation `g` expects `g + 1`: any
+/// other value means one went missing. With `full = 1` it opens each datagram
+/// of a snapshot, with that datagram's index and the snapshot's datagram count:
+/// a client that has every part of it holds that generation whatever it held
+/// before, and one that misses a part does not. The [`HEARTBEAT_ACK`] carries
+/// the current count too, so the last update of a burst is not lost unnoticed
+/// either. A client that falls behind sends [`CONTROL_STATE_REFRESH`].
+///
+/// The count is taken with the state, under one lock in the engine, so a later
+/// count never carries an older state. It wraps; compare for equality only.
+pub const STATE_GENERATION: &str = "/omniphony/state/generation";
 pub const STATE_HEAD_POSE: &str = "/omniphony/state/head_pose";
 pub const STATE_INPUT: &str = "/omniphony/state/input";
 pub const STATE_INPUT_PIPE: &str = "/omniphony/state/input_pipe";
@@ -558,6 +622,11 @@ pub const STATE_WRITE_TIME_MS: &str = "/omniphony/state/write_time_ms";
 
 pub const BED_CONFIG: &str = "/omniphony/bed/config";
 pub const HEARTBEAT: &str = "/omniphony/heartbeat";
+/// Reply to a registered client's [`HEARTBEAT`]: args `[instance_epoch (int),
+/// state_generation (int)]`. The epoch is random per engine instance, so a
+/// change means another engine answers on the port. The generation is the
+/// current [`STATE_GENERATION`] count; an engine older than contract revision
+/// 1 sends the epoch alone.
 pub const HEARTBEAT_ACK: &str = "/omniphony/heartbeat/ack";
 pub const HEARTBEAT_UNKNOWN: &str = "/omniphony/heartbeat/unknown";
 pub const LOG: &str = "/omniphony/log";
@@ -595,6 +664,21 @@ pub const TIMESTAMP: &str = "/omniphony/timestamp";
 pub const YIELD_RESUME_PORT: &str = "/omniphony/yield/resume_port";
 
 // ── Address catalogues (handy for clients / tests) ──────────────────────────
+
+/// Whether `address` is a control this contract defines: catalogued (the test
+/// sentinel [`CONTROL_UNKNOWN`] aside), or under one of the families matched by
+/// prefix. A linear search, for the error path.
+pub fn is_known_control(address: &str) -> bool {
+    const FAMILIES: &[&str] = &[
+        CONTROL_OBJECT_PREFIX,
+        CONTROL_DISTANCE_DIFFUSE_PREFIX,
+        CONTROL_HYBRID_PREFIX,
+        CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+        CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+    ];
+    (address != CONTROL_UNKNOWN && ALL_CONTROL.contains(&address))
+        || FAMILIES.iter().any(|family| address.starts_with(family))
+}
 
 pub const ALL_CONTROL: &[&str] = &[
     CONTROL_ADAPTIVE_RESAMPLING,
@@ -721,6 +805,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_SPREAD_MAX,
     CONTROL_SPREAD_MIN,
     CONTROL_SPREAD_SIZE_TO_SPREAD_MODE,
+    CONTROL_STATE_REFRESH,
     CONTROL_YIELD_PORT,
     CONTROL_BINAURAL_AIR_ABSORPTION,
     CONTROL_BINAURAL_BRIR_HEAD_TRACKING,
@@ -772,6 +857,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_BACKEND_FILE_LIST,
     STATE_CAPABILITIES,
     STATE_CLIP,
+    STATE_CONTROL_ERROR,
     STATE_OBJECT_TEST_CLIP,
     STATE_OVERLAY,
     STATE_CONFIG_SAVED,
@@ -785,6 +871,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_DIAG_SCHEMA,
     STATE_DIAG_VALUES,
     STATE_FRAME_DURATION_MS,
+    STATE_GENERATION,
     STATE_INPUT,
     STATE_INPUT_PIPE,
     STATE_LATENCY,
@@ -1041,6 +1128,53 @@ mod tests {
             "addresses missing from the docs/osc-control-contract.md index:\n  {}",
             missing.join("\n  ")
         );
+    }
+
+    /// The address set [`CONTRACT_REVISION`] was last bumped for, as
+    /// `(revision, fingerprint)`. Change both together, and only together with
+    /// a bump: a new fingerprint under the old revision tells clients nothing
+    /// changed when it did.
+    const PINNED_ADDRESS_SET: (u32, u64) = (1, 0x6ef3_1994_e50f_d48d);
+
+    /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
+    /// and not the order the lists happen to be written in.
+    fn address_set_fingerprint() -> u64 {
+        let mut addresses: Vec<&str> = ALL_CONTROL
+            .iter()
+            .chain(ALL_STATE)
+            .chain(ALL_SESSION)
+            .copied()
+            .collect();
+        addresses.sort_unstable();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for address in addresses {
+            for byte in address.bytes().chain(std::iter::once(b'\n')) {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    #[test]
+    fn the_contract_revision_moves_with_the_address_set() {
+        let fingerprint = address_set_fingerprint();
+        assert!(
+            PINNED_ADDRESS_SET == (CONTRACT_REVISION, fingerprint),
+            "the catalogued address set or CONTRACT_REVISION changed: bump \
+             CONTRACT_REVISION for any change to the wire surface, then pin \
+             PINNED_ADDRESS_SET = ({}, {fingerprint:#018x})",
+            CONTRACT_REVISION.max(PINNED_ADDRESS_SET.0 + 1),
+        );
+    }
+
+    #[test]
+    fn known_controls_are_the_catalogue_and_the_families() {
+        assert!(is_known_control(CONTROL_GAIN));
+        assert!(is_known_control("/omniphony/control/object/3/mute"));
+        assert!(is_known_control("/omniphony/control/hybrid/metric"));
+        assert!(!is_known_control(CONTROL_UNKNOWN));
+        assert!(!is_known_control("/omniphony/control/gainn"));
     }
 
     #[test]
