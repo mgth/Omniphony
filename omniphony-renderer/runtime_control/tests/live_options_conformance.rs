@@ -15,7 +15,7 @@
 //! is then covered by the `registry` nets.
 //!
 //! Known gaps this net does NOT cover yet (see the RFC and
-//! `docs/option-surface-parity.fr.md`):
+//! `docs/option-surface-parity.md`):
 //! * CLI-vs-FFI seed parity for the remaining CLI-specific options, while
 //!   `Engine::from_paths` (FFI) seeds the whole family — exercising both boot
 //!   paths needs an engine fixture that doesn't exist yet.
