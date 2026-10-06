@@ -132,7 +132,10 @@ fn files_that_crashed_libmysofa_are_loaded_or_refused() {
     assert!(refused >= 15, "{refused} of {} refused", files.len());
 }
 
-/// Truncations at every 2 % and seeded byte flips of each valid file.
+/// Truncations at every 5 % and seeded byte flips of each valid file. Few
+/// cases: the parser's own fuzzing lives in sofar (`tests/malformed.rs`);
+/// these check what this crate does with what the parser lets through, and
+/// every copy that still loads costs a whole HRIR set build.
 #[test]
 fn damaged_copies_of_valid_files_are_loaded_or_refused() {
     let dir = std::env::temp_dir().join(format!("orender-sofa-damage-{}", std::process::id()));
@@ -144,10 +147,10 @@ fn damaged_copies_of_valid_files_are_loaded_or_refused() {
         "chunked_multispeaker_brir.sofa",
     ] {
         let bytes = std::fs::read(fixture(source)).unwrap();
-        for case in 0..100 {
+        for case in 0..30 {
             let mut damaged = bytes.clone();
-            let what = if case < 50 {
-                damaged.truncate(bytes.len() * case / 50);
+            let what = if case < 20 {
+                damaged.truncate(bytes.len() * case / 20);
                 format!("{source} cut at {} bytes", damaged.len())
             } else {
                 for _ in 0..=case % 8 {
