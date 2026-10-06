@@ -16,22 +16,38 @@ fn manifest_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The reference bridge cdylib, which the dev-dependency on
-/// `reference_bridge` builds into `deps/` beside the binary (a workspace build
-/// also copies it next to the binary itself).
 fn reference_bridge_path() -> PathBuf {
-    let dir = Path::new(env!("CARGO_BIN_EXE_orender"))
-        .parent()
-        .expect("binary directory");
+    let exe = Path::new(env!("CARGO_BIN_EXE_orender"));
+    find_reference_bridge(exe.parent().expect("binary directory"))
+        .unwrap_or_else(|| panic!("reference bridge not built near {}", exe.display()))
+}
+
+/// The reference bridge cdylib cargo built for this run, searched from `start`
+/// upwards. Cargo puts a dependency's cdylib in `deps/` beside the binaries
+/// (a workspace build also copies it next to them); the newer build-dir layout
+/// (cargo nightly) puts it in `build/reference_bridge/<hash>/out/` under the
+/// profile directory instead. The most recent of several builds wins.
+fn find_reference_bridge(start: &Path) -> Option<PathBuf> {
     let name = format!(
         "{}reference_bridge{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    [dir.join("deps").join(&name), dir.join(&name)]
-        .into_iter()
-        .find(|path| path.is_file())
-        .unwrap_or_else(|| panic!("reference bridge {name} not built in {}", dir.display()))
+    let modified = |p: &Path| p.metadata().and_then(|m| m.modified()).ok();
+    for dir in start.ancestors().take(5) {
+        let mut found: Vec<PathBuf> = vec![dir.join(&name), dir.join("deps").join(&name)];
+        if let Ok(entries) = std::fs::read_dir(dir.join("build").join("reference_bridge")) {
+            found.extend(entries.flatten().map(|e| e.path().join("out").join(&name)));
+        }
+        if let Some(path) = found
+            .into_iter()
+            .filter(|p| p.is_file())
+            .max_by_key(|p| modified(p))
+        {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Audio frames in a canonical PCM WAV: the `data` chunk over the block align.

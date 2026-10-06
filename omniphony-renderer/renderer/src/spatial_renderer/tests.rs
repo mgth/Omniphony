@@ -9,6 +9,7 @@ use crate::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
 use crate::render_backend::EffectiveEvaluationMode;
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
+use crate::test_support;
 
 /// The unified multi-band cartesian table must render bit-equivalently to the
 /// per-band path it replaces. Build two identical crossover renderers, force
@@ -22,43 +23,8 @@ fn unified_crossover_matches_per_band() {
             sp.freq_low = Some(cutoff);
         }
         SpatialRenderer::new(RendererSpec {
-            speaker_layout: layout,
-            sample_rate: 48_000,
-            az_res_deg: 1,
-            el_res_deg: 1,
-            spread_resolution: 0.0,
-            distance_max: 2.0,
-            table_mode: VbapTableMode::Cartesian {
-                x_size: 21,
-                y_size: 21,
-                z_size: 9,
-                z_neg_size: 9,
-            },
-            allow_negative_z: false,
             vbap_position_interpolation: true, // position interpolation → trilinear lookup + per-sample motion
-            distance_model: DistanceModel::Linear,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
-            room_ratio: [1.0, 2.0, 0.5],
-            room_ratio_rear: 2.0,
-            room_ratio_lower: 0.5,
-            room_ratio_center_blend: 0.0,
-            master_gain_db: 0.0,
-            auto_gain: false,
-            use_loudness: false,
-            distance_diffuse: false,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
-            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-            cartesian_default_x_size: 21,
-            cartesian_default_y_size: 21,
-            cartesian_default_z_size: 9,
-            cartesian_default_z_neg_size: 9,
+            ..test_support::spec(layout)
         })
         .unwrap()
     }
@@ -114,38 +80,15 @@ fn unified_polar_matches_per_band() {
             sp.freq_low = Some(cutoff);
         }
         SpatialRenderer::new(RendererSpec {
-            speaker_layout: layout,
-            sample_rate: 48_000,
-            az_res_deg: 1,
-            el_res_deg: 1,
-            spread_resolution: 0.0,
-            distance_max: 2.0,
             table_mode: VbapTableMode::Polar,
-            allow_negative_z: false,
             vbap_position_interpolation: true, // position interpolation → trilinear lookup + per-sample motion
-            distance_model: DistanceModel::Linear,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
-            room_ratio: [1.0, 2.0, 0.5],
-            room_ratio_rear: 2.0,
-            room_ratio_lower: 0.5,
-            room_ratio_center_blend: 0.0,
-            master_gain_db: 0.0,
-            auto_gain: false,
-            use_loudness: false,
-            distance_diffuse: false,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
             preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedPolar,
             initial_evaluation_mode: LiveEvaluationMode::PrecomputedPolar,
             cartesian_default_x_size: 31,
             cartesian_default_y_size: 31,
             cartesian_default_z_size: 15,
             cartesian_default_z_neg_size: 15,
+            ..test_support::spec(layout)
         })
         .unwrap()
     }
@@ -213,46 +156,7 @@ fn unified_table_with_two_speaker_fallback_band() {
             }
             sp.freq_high = Some(200.0);
         }
-        SpatialRenderer::new(RendererSpec {
-            speaker_layout: layout,
-            sample_rate: 48_000,
-            az_res_deg: 1,
-            el_res_deg: 1,
-            spread_resolution: 0.0,
-            distance_max: 2.0,
-            table_mode: VbapTableMode::Cartesian {
-                x_size: 21,
-                y_size: 21,
-                z_size: 9,
-                z_neg_size: 9,
-            },
-            allow_negative_z: false,
-            vbap_position_interpolation: true,
-            distance_model: DistanceModel::Linear,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
-            room_ratio: [1.0, 2.0, 0.5],
-            room_ratio_rear: 2.0,
-            room_ratio_lower: 0.5,
-            room_ratio_center_blend: 0.0,
-            master_gain_db: 0.0,
-            auto_gain: false,
-            use_loudness: false,
-            distance_diffuse: false,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
-            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-            cartesian_default_x_size: 21,
-            cartesian_default_y_size: 21,
-            cartesian_default_z_size: 9,
-            cartesian_default_z_neg_size: 9,
-        })
-        .unwrap()
+        SpatialRenderer::new(test_support::spec(layout)).unwrap()
     }
 
     let mut unified = build();
@@ -302,46 +206,7 @@ fn unified_table_with_two_speaker_fallback_band() {
 #[test]
 fn eval_mode_change_reuses_geometry() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let r = SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
-        table_mode: VbapTableMode::Cartesian {
-            x_size: 21,
-            y_size: 21,
-            z_size: 9,
-            z_neg_size: 9,
-        },
-        allow_negative_z: false,
-        vbap_position_interpolation: true,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-        cartesian_default_x_size: 21,
-        cartesian_default_y_size: 21,
-        cartesian_default_z_size: 9,
-        cartesian_default_z_neg_size: 9,
-    })
-    .unwrap();
+    let r = SpatialRenderer::new(test_support::spec(layout)).unwrap();
     let control = r.renderer_control();
     let topo0 = control.active_topology();
     let model0 = topo0
@@ -475,46 +340,7 @@ fn the_published_topology_samples_no_gain_table() {
     use std::sync::atomic::Ordering;
     let smoke = crate::backend_registry::SMOKE_TEST_POSITIONS.len();
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let mut r = SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
-        table_mode: VbapTableMode::Cartesian {
-            x_size: 21,
-            y_size: 21,
-            z_size: 9,
-            z_neg_size: 9,
-        },
-        allow_negative_z: false,
-        vbap_position_interpolation: true,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-        cartesian_default_x_size: 21,
-        cartesian_default_y_size: 21,
-        cartesian_default_z_size: 9,
-        cartesian_default_z_neg_size: 9,
-    })
-    .unwrap();
+    let mut r = SpatialRenderer::new(test_support::spec(layout)).unwrap();
     let control = r.renderer_control();
 
     // Construction: the default VBAP topology reports its mode, samples nothing.
@@ -691,6 +517,42 @@ fn settle(r: &mut SpatialRenderer, pcm: &[f32]) {
         std::thread::sleep(std::time::Duration::from_millis(1));
         r.render_frame(pcm, 1, &[], Vec::new(), false).unwrap();
     }
+}
+
+/// The same panic on a build the calling thread makes itself — at start-up
+/// ([`SpatialRenderer::prepare_speaker_stage`]) or in synchronous mode
+/// (offline renders) — is an error the caller gets, not a panic through the
+/// engine or the render thread.
+#[test]
+fn a_band_build_that_panics_on_the_calling_thread_is_an_error() {
+    use std::sync::atomic::Ordering;
+    let mut r = build_table_renderer(true, false);
+    let control = r.renderer_control();
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(FLAKY_BUILDS));
+    control.register_backend(Box::new(FlakyFactory(Arc::clone(&mode))));
+    control.live.write().backend_id = "flaky".to_string();
+    control.bump_geometry_generation();
+    let plan = control.prepare_topology_rebuild().expect("plan");
+    let topology = plan
+        .build_topology_reusing(Some(&control.active_topology()))
+        .expect("topology");
+    mode.store(FLAKY_PANICS, Ordering::Relaxed);
+    control.publish_topology(topology);
+
+    let prepared =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| r.prepare_speaker_stage()))
+            .expect("no panic out of prepare_speaker_stage");
+    let error = format!("{:#}", prepared.expect_err("the build failed"));
+    assert!(error.contains("backend bug"), "{error}");
+
+    r.set_synchronous_stage_builds(true);
+    let pcm = vec![0.25f32; 40];
+    let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        r.render_frame(&pcm, 1, &[], Vec::new(), false).map(|_| ())
+    }))
+    .expect("no panic out of a synchronous render");
+    let error = format!("{:#}", rendered.expect_err("the build failed"));
+    assert!(error.contains("backend bug"), "{error}");
 }
 
 /// A band set the worker cannot build — its backend fails, or panics — is
@@ -1000,38 +862,15 @@ fn a_sample_rate_change_takes_the_band_engines_over() {
 fn test_renderer_creation() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
     let renderer = SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
         table_mode: VbapTableMode::Polar,
-        allow_negative_z: false,
         vbap_position_interpolation: false,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
         preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedPolar,
         initial_evaluation_mode: LiveEvaluationMode::PrecomputedPolar,
         cartesian_default_x_size: 31,
         cartesian_default_y_size: 31,
         cartesian_default_z_size: 15,
         cartesian_default_z_neg_size: 15,
+        ..test_support::spec(layout)
     });
 
     assert!(renderer.is_ok());
@@ -1051,46 +890,7 @@ fn test_renderer_creation() {
 fn virtual_bed_mixes_direct_and_virtualized_channels() {
     fn build() -> SpatialRenderer {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();
-        SpatialRenderer::new(RendererSpec {
-            speaker_layout: layout,
-            sample_rate: 48_000,
-            az_res_deg: 1,
-            el_res_deg: 1,
-            spread_resolution: 0.0,
-            distance_max: 2.0,
-            table_mode: VbapTableMode::Cartesian {
-                x_size: 21,
-                y_size: 21,
-                z_size: 9,
-                z_neg_size: 9,
-            },
-            allow_negative_z: false,
-            vbap_position_interpolation: true,
-            distance_model: DistanceModel::Linear,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
-            room_ratio: [1.0, 2.0, 0.5],
-            room_ratio_rear: 2.0,
-            room_ratio_lower: 0.5,
-            room_ratio_center_blend: 0.0,
-            master_gain_db: 0.0,
-            auto_gain: false,
-            use_loudness: false,
-            distance_diffuse: false,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
-            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-            cartesian_default_x_size: 21,
-            cartesian_default_y_size: 21,
-            cartesian_default_z_size: 9,
-            cartesian_default_z_neg_size: 9,
-        })
-        .unwrap()
+        SpatialRenderer::new(test_support::spec(layout)).unwrap()
     }
 
     // LFE is speaker index 3 in the 7.1.4 preset (spatialize:false).
@@ -1195,46 +995,7 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
                 sp.freq_low = Some(CUTOFF);
             }
         }
-        SpatialRenderer::new(RendererSpec {
-            speaker_layout: layout,
-            sample_rate: 48_000,
-            az_res_deg: 1,
-            el_res_deg: 1,
-            spread_resolution: 0.0,
-            distance_max: 2.0,
-            table_mode: VbapTableMode::Cartesian {
-                x_size: 21,
-                y_size: 21,
-                z_size: 9,
-                z_neg_size: 9,
-            },
-            allow_negative_z: false,
-            vbap_position_interpolation: true,
-            distance_model: DistanceModel::Linear,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
-            room_ratio: [1.0, 2.0, 0.5],
-            room_ratio_rear: 2.0,
-            room_ratio_lower: 0.5,
-            room_ratio_center_blend: 0.0,
-            master_gain_db: 0.0,
-            auto_gain: false,
-            use_loudness: false,
-            distance_diffuse: false,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
-            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-            cartesian_default_x_size: 21,
-            cartesian_default_y_size: 21,
-            cartesian_default_z_size: 9,
-            cartesian_default_z_neg_size: 9,
-        })
-        .unwrap()
+        SpatialRenderer::new(test_support::spec(layout)).unwrap()
     }
 
     let num_speakers = 12;
@@ -1383,43 +1144,8 @@ fn all_four_ramp_modes_render_distinctly() {
     fn build() -> SpatialRenderer {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();
         SpatialRenderer::new(RendererSpec {
-            speaker_layout: layout,
-            sample_rate: 48_000,
-            az_res_deg: 1,
-            el_res_deg: 1,
-            spread_resolution: 0.0,
-            distance_max: 2.0,
-            table_mode: VbapTableMode::Cartesian {
-                x_size: 21,
-                y_size: 21,
-                z_size: 9,
-                z_neg_size: 9,
-            },
-            allow_negative_z: false,
             vbap_position_interpolation: true, // position interpolation → trilinear lookup + per-sample motion
-            distance_model: DistanceModel::Linear,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
-            room_ratio: [1.0, 2.0, 0.5],
-            room_ratio_rear: 2.0,
-            room_ratio_lower: 0.5,
-            room_ratio_center_blend: 0.0,
-            master_gain_db: 0.0,
-            auto_gain: false,
-            use_loudness: false,
-            distance_diffuse: false,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
-            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-            cartesian_default_x_size: 21,
-            cartesian_default_y_size: 21,
-            cartesian_default_z_size: 9,
-            cartesian_default_z_neg_size: 9,
+            ..test_support::spec(layout)
         })
         .unwrap()
     }
@@ -1503,46 +1229,7 @@ fn all_four_ramp_modes_render_distinctly() {
 #[test]
 fn binaural_object_ramp_advances_and_lateralizes() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let mut r = SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
-        table_mode: VbapTableMode::Cartesian {
-            x_size: 21,
-            y_size: 21,
-            z_size: 9,
-            z_neg_size: 9,
-        },
-        allow_negative_z: false,
-        vbap_position_interpolation: true,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-        cartesian_default_x_size: 21,
-        cartesian_default_y_size: 21,
-        cartesian_default_z_size: 9,
-        cartesian_default_z_neg_size: 9,
-    })
-    .unwrap();
+    let mut r = SpatialRenderer::new(test_support::spec(layout)).unwrap();
     r.control.live.write().binaural.output_mode = crate::live_params::OutputMode::Binaural;
 
     // One object channel ramping from the default [0,0,0] to hard right.
@@ -1613,46 +1300,7 @@ fn binaural_object_ramp_advances_and_lateralizes() {
 fn binaural_output_follows_master_gain() {
     fn build() -> SpatialRenderer {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();
-        SpatialRenderer::new(RendererSpec {
-            speaker_layout: layout,
-            sample_rate: 48_000,
-            az_res_deg: 1,
-            el_res_deg: 1,
-            spread_resolution: 0.0,
-            distance_max: 2.0,
-            table_mode: VbapTableMode::Cartesian {
-                x_size: 21,
-                y_size: 21,
-                z_size: 9,
-                z_neg_size: 9,
-            },
-            allow_negative_z: false,
-            vbap_position_interpolation: true,
-            distance_model: DistanceModel::Linear,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
-            room_ratio: [1.0, 2.0, 0.5],
-            room_ratio_rear: 2.0,
-            room_ratio_lower: 0.5,
-            room_ratio_center_blend: 0.0,
-            master_gain_db: 0.0,
-            auto_gain: false,
-            use_loudness: false,
-            distance_diffuse: false,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
-            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-            cartesian_default_x_size: 21,
-            cartesian_default_y_size: 21,
-            cartesian_default_z_size: 9,
-            cartesian_default_z_neg_size: 9,
-        })
-        .unwrap()
+        SpatialRenderer::new(test_support::spec(layout)).unwrap()
     }
 
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
@@ -1702,46 +1350,7 @@ fn binaural_output_follows_master_gain() {
 #[test]
 fn binaural_ear_mute_uses_dedicated_ear_params() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let mut r = SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
-        table_mode: VbapTableMode::Cartesian {
-            x_size: 21,
-            y_size: 21,
-            z_size: 9,
-            z_neg_size: 9,
-        },
-        allow_negative_z: false,
-        vbap_position_interpolation: true,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-        cartesian_default_x_size: 21,
-        cartesian_default_y_size: 21,
-        cartesian_default_z_size: 9,
-        cartesian_default_z_neg_size: 9,
-    })
-    .unwrap();
+    let mut r = SpatialRenderer::new(test_support::spec(layout)).unwrap();
     {
         let mut live = r.control.live.write();
         live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
@@ -1780,46 +1389,7 @@ fn binaural_ear_mute_uses_dedicated_ear_params() {
 fn binaural_clipping_flags_ear_and_auto_gain_reduces_master() {
     fn build() -> SpatialRenderer {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();
-        SpatialRenderer::new(RendererSpec {
-            speaker_layout: layout,
-            sample_rate: 48_000,
-            az_res_deg: 1,
-            el_res_deg: 1,
-            spread_resolution: 0.0,
-            distance_max: 2.0,
-            table_mode: VbapTableMode::Cartesian {
-                x_size: 21,
-                y_size: 21,
-                z_size: 9,
-                z_neg_size: 9,
-            },
-            allow_negative_z: false,
-            vbap_position_interpolation: true,
-            distance_model: DistanceModel::Linear,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
-            room_ratio: [1.0, 2.0, 0.5],
-            room_ratio_rear: 2.0,
-            room_ratio_lower: 0.5,
-            room_ratio_center_blend: 0.0,
-            master_gain_db: 0.0,
-            auto_gain: false,
-            use_loudness: false,
-            distance_diffuse: false,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
-            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-            cartesian_default_x_size: 21,
-            cartesian_default_y_size: 21,
-            cartesian_default_z_size: 9,
-            cartesian_default_z_neg_size: 9,
-        })
-        .unwrap()
+        SpatialRenderer::new(test_support::spec(layout)).unwrap()
     }
 
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
@@ -1907,46 +1477,7 @@ fn binaural_clipping_flags_ear_and_auto_gain_reduces_master() {
 #[test]
 fn binaural_lfe_bed_feeds_both_ears_equally_and_dry() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
-    let mut r = SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
-        table_mode: VbapTableMode::Cartesian {
-            x_size: 21,
-            y_size: 21,
-            z_size: 9,
-            z_neg_size: 9,
-        },
-        allow_negative_z: false,
-        vbap_position_interpolation: true,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-        cartesian_default_x_size: 21,
-        cartesian_default_y_size: 21,
-        cartesian_default_z_size: 9,
-        cartesian_default_z_neg_size: 9,
-    })
-    .unwrap();
+    let mut r = SpatialRenderer::new(test_support::spec(layout)).unwrap();
     // Channel 0 = direct LFE → the LFE speaker (index 3, spatialize:false).
     r.configure_channel_routing(&[ChannelRoute::Direct(bridge_api::RChannelLabel::LFE)]);
     {
@@ -2031,43 +1562,26 @@ speakers:
 
     fn build() -> SpatialRenderer {
         SpatialRenderer::new(RendererSpec {
-            speaker_layout: SpeakerLayout::from_yaml_str(LAYOUT_5_1_4).unwrap(),
-            sample_rate: 48_000,
-            az_res_deg: 1,
             el_res_deg: 90,
             spread_resolution: 0.25,
-            distance_max: 2.0,
             table_mode: VbapTableMode::Cartesian {
                 x_size: 63,
                 y_size: 63,
                 z_size: 16,
                 z_neg_size: 0,
             },
-            allow_negative_z: false,
-            vbap_position_interpolation: true,
             distance_model: DistanceModel::None,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
             room_ratio: [2.0, 2.0, 1.0],
             room_ratio_rear: 1.0,
             room_ratio_lower: 0.466667,
             room_ratio_center_blend: 0.5,
-            master_gain_db: 0.0,
-            auto_gain: false,
             use_loudness: true,
             distance_diffuse: true,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
-            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
             cartesian_default_x_size: 63,
             cartesian_default_y_size: 63,
             cartesian_default_z_size: 16,
             cartesian_default_z_neg_size: 0,
+            ..test_support::spec(SpeakerLayout::from_yaml_str(LAYOUT_5_1_4).unwrap())
         })
         .unwrap()
     }
@@ -2143,43 +1657,12 @@ fn build_cascade_test_renderer(eval: LiveEvaluationMode, neutral_room: bool) -> 
         (DistanceModel::Linear, [1.0f32, 2.0, 0.5], 2.0f32, 0.5f32)
     };
     SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
-        table_mode: VbapTableMode::Cartesian {
-            x_size: 21,
-            y_size: 21,
-            z_size: 9,
-            z_neg_size: 9,
-        },
-        allow_negative_z: false,
-        vbap_position_interpolation: true,
         distance_model,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
         room_ratio,
         room_ratio_rear: rear,
         room_ratio_lower: lower,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
         initial_evaluation_mode: eval,
-        cartesian_default_x_size: 21,
-        cartesian_default_y_size: 21,
-        cartesian_default_z_size: 9,
-        cartesian_default_z_neg_size: 9,
+        ..test_support::spec(layout)
     })
     .unwrap()
 }
@@ -2541,43 +2024,8 @@ fn render_until_width(
 #[test]
 fn rendered_frame_reports_the_geometry_it_produced() {
     let mut renderer = SpatialRenderer::new(RendererSpec {
-        speaker_layout: SpeakerLayout::preset("7.1.4").unwrap(),
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
-        table_mode: VbapTableMode::Cartesian {
-            x_size: 21,
-            y_size: 21,
-            z_size: 9,
-            z_neg_size: 9,
-        },
-        allow_negative_z: false,
         vbap_position_interpolation: false,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-        cartesian_default_x_size: 21,
-        cartesian_default_y_size: 21,
-        cartesian_default_z_size: 9,
-        cartesian_default_z_neg_size: 9,
+        ..test_support::spec(SpeakerLayout::preset("7.1.4").unwrap())
     })
     .unwrap();
 
@@ -2632,6 +2080,124 @@ fn rendered_frame_reports_the_geometry_it_produced() {
     assert_eq!(bin.samples.len(), frames * bin.n_channels);
 }
 
+/// What Studio does to a playing renderer: the layout swapped for one with
+/// fewer, then more speakers, and the stream's sample rate changed. The
+/// output keeps the width it was opened with: a smaller layout fills its
+/// first channels, a larger one is refused with a reason for the clients and
+/// the previous layout keeps playing (its gains would land past the stage's
+/// gain sets). Every frame stays finite and the renderer keeps sounding; a
+/// per-speaker setting left on a speaker the new layout does not have is
+/// ignored, not a crash.
+#[test]
+fn a_playing_renderer_survives_layout_and_sample_rate_changes() {
+    const FRAMES: usize = 480;
+    const WIDTH: usize = 12;
+    let mut r = renderer_for_layout(SpeakerLayout::preset("7.1.4").unwrap());
+    let control = r.renderer_control();
+    let event = SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(0),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([0.3, 0.8, 0.2]),
+        sample_pos: Some(0),
+    };
+    let mut block = 0;
+    // Render until a frame sounds on channels `from..used` and on none past
+    // `used`, checking every frame on the way. (The object sounds on a
+    // height speaker of 7.1.4, channel 9: `from` 6 tells 7.1.4 from 5.1.)
+    // The bands are built on a worker thread: wait for it by the clock, not
+    // by a count of blocks, so a slow runner is not reported as a failure.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+    let mut play_until = |r: &mut SpatialRenderer, from: usize, used: usize| {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        while std::time::Instant::now() < deadline {
+            // The object's metadata in every block, as a stream carries it: a
+            // sample-rate change is a new stream and resets what it knew.
+            let events = std::slice::from_ref(&event);
+            let frame = r
+                .render_frame(&noise_block(1, FRAMES, block), 1, events, Vec::new(), false)
+                .unwrap();
+            block += 1;
+            assert_eq!(
+                frame.n_channels, WIDTH,
+                "the output keeps the width it was opened with"
+            );
+            assert_eq!(frame.samples.len(), FRAMES * WIDTH);
+            assert!(
+                frame.samples.iter().all(|s| s.is_finite()),
+                "non-finite output"
+            );
+            let energy = |c: usize| {
+                frame
+                    .samples
+                    .iter()
+                    .skip(c)
+                    .step_by(WIDTH)
+                    .map(|x| x * x)
+                    .sum::<f32>()
+            };
+            if (from..used).any(|c| energy(c) > 0.0) && (used..WIDTH).all(|c| energy(c) == 0.0) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("the renderer never settled on channels {from}..{used}");
+    };
+    let publish = |preset: &str| {
+        control.with_editable_layout(|l| *l = SpeakerLayout::preset(preset).unwrap());
+        control.bump_geometry_generation();
+        let plan = control.prepare_topology_rebuild().expect("plan");
+        let topology = plan
+            .build_topology_reusing(Some(&control.active_topology()))
+            .expect("topology");
+        control.publish_topology(topology);
+    };
+    play_until(&mut r, 6, WIDTH);
+
+    // A setting for the last 7.1.4 speaker, which 5.1 does not have.
+    control.live.write().speakers.entry(11).or_default().gain = 0.0;
+    control.mark_speaker_params_dirty();
+    publish("5.1");
+    play_until(&mut r, 0, 6);
+    assert_eq!(control.take_band_build_error(), None);
+
+    // Wider than the output: refused, the 5.1 bands keep playing.
+    publish("9.1.6");
+    // The 5.1 bands stay installed meanwhile, so every block settles at once:
+    // wait for the worker's reply, with the 5.1 output checked on the way.
+    let deadline = std::time::Instant::now() + PATIENCE;
+    let error = loop {
+        play_until(&mut r, 0, 6);
+        if let Some(error) = control.take_band_build_error() {
+            break error;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wider layout is refused with a reason"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert!(
+        error.contains("16 speakers") && error.contains("restart"),
+        "{error}"
+    );
+    play_until(&mut r, 0, 6);
+
+    // Back to a layout that fits: built, and the error taken back.
+    publish("7.1.4");
+    control.live.write().speakers.remove(&11);
+    control.mark_speaker_params_dirty();
+    play_until(&mut r, 6, WIDTH);
+    assert_eq!(control.take_band_build_error().as_deref(), Some(""));
+
+    for rate in [44_100, 96_000, 48_000] {
+        r.set_sample_rate(rate).expect("sample rate");
+        play_until(&mut r, 6, WIDTH);
+    }
+}
+
 /// A mode change must be ramped, not stepped.
 ///
 /// The binaural and speaker paths are independent DSP chains; swapping them
@@ -2642,43 +2208,8 @@ fn rendered_frame_reports_the_geometry_it_produced() {
 #[test]
 fn an_output_mode_change_is_ramped_not_stepped() {
     let mut r = SpatialRenderer::new(RendererSpec {
-        speaker_layout: SpeakerLayout::preset("7.1.4").unwrap(),
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
-        table_mode: VbapTableMode::Cartesian {
-            x_size: 21,
-            y_size: 21,
-            z_size: 9,
-            z_neg_size: 9,
-        },
-        allow_negative_z: false,
         vbap_position_interpolation: false,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-        cartesian_default_x_size: 21,
-        cartesian_default_y_size: 21,
-        cartesian_default_z_size: 9,
-        cartesian_default_z_neg_size: 9,
+        ..test_support::spec(SpeakerLayout::preset("7.1.4").unwrap())
     })
     .unwrap();
 
@@ -2762,46 +2293,279 @@ fn crossover_renderer() -> SpatialRenderer {
 /// Build a renderer over an arbitrary layout with the same defaults as
 /// [`crossover_renderer`].
 fn renderer_for_layout(layout: SpeakerLayout) -> SpatialRenderer {
+    try_renderer_for_layout(layout).unwrap()
+}
+
+fn try_renderer_for_layout(layout: SpeakerLayout) -> Result<SpatialRenderer> {
     SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
-        table_mode: VbapTableMode::Cartesian {
-            x_size: 21,
-            y_size: 21,
-            z_size: 9,
-            z_neg_size: 9,
-        },
-        allow_negative_z: false,
         vbap_position_interpolation: false,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-        cartesian_default_x_size: 21,
-        cartesian_default_y_size: 21,
-        cartesian_default_z_size: 9,
-        cartesian_default_z_neg_size: 9,
+        ..test_support::spec(layout)
     })
-    .unwrap()
+}
+
+/// A layout larger than the renderer's gains hold (`MAX_SPEAKERS`, LFE
+/// included) is refused with a reason when the renderer is built: every
+/// backend sized its gains by it and panicked out of bounds on the
+/// table-building workers. One more speaker than the limit is enough.
+#[test]
+fn a_layout_past_the_speaker_limit_is_refused_with_a_reason() {
+    use crate::spatial_vbap::MAX_SPEAKERS;
+    use crate::speaker_layout::Speaker;
+    let ring = |n: usize| {
+        SpeakerLayout::from_speakers(
+            (0..n)
+                .map(|i| {
+                    Speaker::new(
+                        format!("S{i}"),
+                        -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
+                        if i % 2 == 0 { 0.0 } else { 40.0 },
+                    )
+                })
+                .collect(),
+        )
+        .unwrap()
+    };
+    assert!(try_renderer_for_layout(ring(MAX_SPEAKERS)).is_ok());
+    let error = try_renderer_for_layout(ring(MAX_SPEAKERS + 1))
+        .err()
+        .expect("refused");
+    let error = format!("{error:#}");
+    assert!(
+        error.contains(&format!("{} speakers", MAX_SPEAKERS + 1))
+            && error.contains(&format!("at most {MAX_SPEAKERS}")),
+        "{error}"
+    );
+}
+
+/// Render one object between two speakers on the plain 7.1.4 layout, after
+/// `setup` has set the per-speaker live params, and return each speaker's
+/// signal over the blocks after a settling run (identical input every time).
+fn per_speaker_streams(setup: impl Fn(&RendererControl)) -> Vec<Vec<f32>> {
+    const BLOCK: usize = 480;
+    const SETTLE: usize = 20;
+    const KEEP: usize = 10;
+    let mut r = renderer_for_layout(SpeakerLayout::preset("7.1.4").unwrap());
+    let control = r.renderer_control();
+    setup(&control);
+    control.mark_speaker_params_dirty();
+    let event = SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(0),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([-0.4, 1.0, 0.0]),
+        sample_pos: Some(0),
+    };
+    let mut streams: Vec<Vec<f32>> = Vec::new();
+    for block in 0..SETTLE + KEEP {
+        let pcm = noise_block(1, BLOCK, block);
+        let events = if block == 0 {
+            std::slice::from_ref(&event)
+        } else {
+            &[]
+        };
+        let out = r.render_frame(&pcm, 1, events, Vec::new(), false).unwrap();
+        let n = out.n_channels;
+        streams.resize(n, Vec::new());
+        if block >= SETTLE {
+            for (spk, stream) in streams.iter_mut().enumerate() {
+                stream.extend(out.samples.iter().skip(spk).step_by(n).copied());
+            }
+        }
+    }
+    streams
+}
+
+fn energy(stream: &[f32]) -> f64 {
+    stream.iter().map(|&s| s as f64 * s as f64).sum()
+}
+
+/// The output stage's per-speaker controls — gain, mute, delay — act on
+/// their speaker and on nothing else. Measured against the same render with
+/// no override: the object lands on two speakers, and each control is set on
+/// the louder one while the other must come out bit-identical.
+#[test]
+fn per_speaker_gain_mute_and_delay_shape_only_their_speaker() {
+    let reference = per_speaker_streams(|_| {});
+    let mut by_energy: Vec<usize> = (0..reference.len()).collect();
+    by_energy.sort_by(|&a, &b| energy(&reference[b]).total_cmp(&energy(&reference[a])));
+    let (target, other) = (by_energy[0], by_energy[1]);
+    assert!(
+        energy(&reference[other]) > 1e-3 * energy(&reference[target]),
+        "the object must land on two speakers for the comparison to mean anything"
+    );
+    let set = |f: fn(&mut crate::live_params::SpeakerLiveParams)| {
+        per_speaker_streams(move |control| {
+            f(control.live.write().speakers.entry(target).or_default())
+        })
+    };
+    let untouched = |streams: &[Vec<f32>], what: &str| {
+        for (spk, stream) in streams.iter().enumerate() {
+            if spk != target {
+                assert_eq!(stream, &reference[spk], "{what} changed speaker {spk}");
+            }
+        }
+    };
+
+    let halved = set(|p| p.gain = 0.5);
+    untouched(&halved, "a gain");
+    for (got, want) in halved[target].iter().zip(&reference[target]) {
+        assert!(
+            (got - 0.5 * want).abs() <= 1e-6,
+            "gain 0.5: {got} vs {want}"
+        );
+    }
+
+    let muted = set(|p| {
+        p.gain = 0.5;
+        p.muted = true;
+    });
+    untouched(&muted, "a mute");
+    assert!(
+        muted[target].iter().all(|&s| s == 0.0),
+        "a muted speaker is silent"
+    );
+
+    // 1 ms at 48 kHz: the speaker's signal, 48 samples later.
+    let delayed = set(|p| p.delay_ms = 1.0);
+    untouched(&delayed, "a delay");
+    let shift = 48;
+    for (n, (got, want)) in delayed[target][shift..]
+        .iter()
+        .zip(&reference[target])
+        .enumerate()
+    {
+        assert!(
+            (got - want).abs() <= 1e-5,
+            "delay: sample {n}: {got} vs {want}"
+        );
+    }
+    assert!(energy(&delayed[target]) > 0.5 * energy(&reference[target]));
+}
+
+/// What a decoder or a bridge hands `render_frame` is not to be trusted: no
+/// channel, a buffer that is not a whole number of frames, an event for a
+/// channel that does not exist (up to the last index), a position, size or
+/// gain that is NaN or infinite, a ramp of four billion samples. Each is answered with an error
+/// or with finite output — never a panic, never NaN on a speaker — and the
+/// renderer renders normally afterwards. (Non-finite PCM is not among them:
+/// the engine hands over integer PCM from the bridge ABI, finite by
+/// construction, and checking every sample here would cost the hot loop.)
+#[test]
+fn hostile_render_inputs_never_panic_or_reach_the_output_as_nan() {
+    let mut r = renderer_for_layout(SpeakerLayout::preset("7.1.4").unwrap());
+    let object = |position: [f64; 3]| SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(0),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some(position),
+        sample_pos: Some(0),
+    };
+    let nan = f64::NAN;
+    let inf = f64::INFINITY;
+    let mut events: Vec<(&str, Vec<SpatialChannelEvent>)> = vec![
+        ("NaN position", vec![object([nan, nan, nan])]),
+        ("infinite position", vec![object([inf, -inf, inf])]),
+        ("huge position", vec![object([1e30, -1e30, 1e30])]),
+        (
+            "NaN size",
+            vec![SpatialChannelEvent {
+                size: Some([f32::NAN; 3]),
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "NaN gain",
+            vec![SpatialChannelEvent {
+                gain_db: Some(f32::NAN),
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "infinite gain",
+            vec![SpatialChannelEvent {
+                gain_db: Some(f32::INFINITY),
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "endless ramp",
+            vec![SpatialChannelEvent {
+                ramp_length: Some(u32::MAX),
+                ..object([1.0, 0.0, 0.0])
+            }],
+        ),
+        (
+            "far sample position",
+            vec![SpatialChannelEvent {
+                sample_pos: Some(u64::MAX),
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "unknown channel",
+            vec![SpatialChannelEvent {
+                channel_idx: 99,
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "channel one billion",
+            vec![SpatialChannelEvent {
+                channel_idx: 1_000_000_000,
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "last channel index",
+            vec![SpatialChannelEvent {
+                channel_idx: usize::MAX,
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+    ];
+    events.push(("no event", Vec::new()));
+    let buffers: Vec<(&str, Vec<f32>, usize)> = vec![
+        ("one channel", noise_block(1, 480, 0), 1),
+        ("empty", Vec::new(), 1),
+        ("no channel", noise_block(1, 480, 1), 0),
+        ("partial frame", noise_block(1, 7, 2), 2),
+    ];
+    for (what_events, evs) in &events {
+        for (what_pcm, pcm, channels) in &buffers {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                r.render_frame(pcm, *channels, evs, Vec::new(), false)
+            }));
+            let case = format!("{what_events} / {what_pcm}");
+            let Ok(result) = outcome else {
+                panic!("{case}: render_frame panicked");
+            };
+            if let Ok(frame) = result {
+                assert!(
+                    frame.samples.iter().all(|s| s.is_finite()),
+                    "{case}: non-finite output"
+                );
+            }
+        }
+    }
+    // And the renderer is still a renderer.
+    let after = r
+        .render_frame(
+            &noise_block(1, 480, 9),
+            1,
+            &[object([0.0, 1.0, 0.0])],
+            Vec::new(),
+            false,
+        )
+        .expect("a normal frame after the hostile ones");
+    assert!(after.samples.iter().all(|s| s.is_finite()));
+    assert!(
+        after.samples.iter().any(|&s| s != 0.0),
+        "it still renders sound"
+    );
 }
 
 /// The test signal must reach only the speaker under test.
@@ -3086,43 +2850,18 @@ fn clearing_the_test_restores_normal_output() {
 fn cadences_fall_back_to_the_host_default() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
     let renderer = SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
         table_mode: VbapTableMode::Cartesian {
             x_size: 9,
             y_size: 9,
             z_size: 5,
             z_neg_size: 5,
         },
-        allow_negative_z: false,
         vbap_position_interpolation: false,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
         cartesian_default_x_size: 9,
         cartesian_default_y_size: 9,
         cartesian_default_z_size: 5,
         cartesian_default_z_neg_size: 5,
+        ..test_support::spec(layout)
     })
     .unwrap();
     let control = renderer.renderer_control();
@@ -3166,43 +2905,18 @@ fn cadences_fall_back_to_the_host_default() {
 fn a_recycled_output_buffer_renders_identically_to_a_fresh_one() {
     fn build() -> SpatialRenderer {
         SpatialRenderer::new(RendererSpec {
-            speaker_layout: SpeakerLayout::preset("7.1.4").unwrap(),
-            sample_rate: 48_000,
-            az_res_deg: 1,
-            el_res_deg: 1,
-            spread_resolution: 0.0,
-            distance_max: 2.0,
             table_mode: VbapTableMode::Cartesian {
                 x_size: 9,
                 y_size: 9,
                 z_size: 5,
                 z_neg_size: 5,
             },
-            allow_negative_z: false,
             vbap_position_interpolation: false,
-            distance_model: DistanceModel::Linear,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
-            room_ratio: [1.0, 2.0, 0.5],
-            room_ratio_rear: 2.0,
-            room_ratio_lower: 0.5,
-            room_ratio_center_blend: 0.0,
-            master_gain_db: 0.0,
-            auto_gain: false,
-            use_loudness: false,
-            distance_diffuse: false,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
-            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
             cartesian_default_x_size: 9,
             cartesian_default_y_size: 9,
             cartesian_default_z_size: 5,
             cartesian_default_z_neg_size: 5,
+            ..test_support::spec(SpeakerLayout::preset("7.1.4").unwrap())
         })
         .unwrap()
     }
@@ -3500,38 +3214,16 @@ pub(super) fn build_table_renderer(cartesian: bool, band_limited: bool) -> Spati
         )
     };
     let mut r = SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48_000,
         az_res_deg: 6,
         el_res_deg: 6,
-        spread_resolution: 0.0,
-        distance_max: 2.0,
         table_mode,
-        allow_negative_z: false,
-        vbap_position_interpolation: true,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
-        room_ratio: [1.0, 2.0, 0.5],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
         preferred_evaluation_mode: preferred,
         initial_evaluation_mode: live,
         cartesian_default_x_size: 15,
         cartesian_default_y_size: 15,
         cartesian_default_z_size: 7,
         cartesian_default_z_neg_size: 7,
+        ..test_support::spec(layout)
     })
     .unwrap();
     r.prepare_speaker_stage().unwrap();

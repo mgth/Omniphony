@@ -1419,6 +1419,12 @@ impl SpeakerRenderStage {
     /// `previous` are the bands it can start from (see [`PreviousBands`]);
     /// `filtered_channels` the channels to allocate crossover filter memory
     /// for (see [`Self::filtered_channels`]).
+    ///
+    /// A backend that panics while its table is sampled is an error like any
+    /// failed build, on every thread that builds: the worker must outlive it
+    /// to answer later changes, and the synchronous builds (start-up, a host
+    /// that did not prepare the stage, offline renders) must not take the
+    /// engine or the render thread down with it.
     fn build_band_set(
         control: &Arc<RendererControl>,
         topology: Arc<RenderTopology>,
@@ -1428,7 +1434,54 @@ impl SpeakerRenderStage {
         previous: PreviousBands<'_>,
         filtered_channels: Range<usize>,
     ) -> Result<BandSet> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Self::build_band_set_unguarded(
+                control,
+                topology,
+                key,
+                num_speakers,
+                sample_rate,
+                previous,
+                filtered_channels,
+            )
+        }))
+        .unwrap_or_else(|payload| {
+            let detail = if let Some(msg) = payload.downcast_ref::<&'static str>() {
+                (*msg).to_string()
+            } else if let Some(msg) = payload.downcast_ref::<String>() {
+                msg.clone()
+            } else {
+                "panic with non-string payload".to_string()
+            };
+            Err(anyhow::anyhow!(
+                "render backend panicked during the band build: {detail}"
+            ))
+        })
+    }
+
+    fn build_band_set_unguarded(
+        control: &Arc<RendererControl>,
+        topology: Arc<RenderTopology>,
+        key: BandSetKey,
+        num_speakers: usize,
+        sample_rate: u32,
+        previous: PreviousBands<'_>,
+        filtered_channels: Range<usize>,
+    ) -> Result<BandSet> {
         let layout = &topology.speaker_layout;
+        // The output was opened with `num_speakers` channels and keeps that
+        // width; a smaller layout fills the first of them. A larger one has
+        // speakers with no channel to go to: its gains would be written past
+        // the stage's gain sets (a panic in debug, speakers silently dropped
+        // in release). Refused like any failed build — reported to the
+        // clients, the previous bands keep rendering — until the host reopens
+        // its output at the new width.
+        anyhow::ensure!(
+            layout.speakers.len() <= num_speakers,
+            "the layout has {} speakers but the output was opened with {num_speakers} \
+             channels; restart the renderer to use it",
+            layout.speakers.len()
+        );
         let same_topology = previous.topology.is_some_and(|p| Arc::ptr_eq(p, &topology));
         let (render_bands, crossover_filter_bank, crossover_info) = Self::build_crossover(
             control,

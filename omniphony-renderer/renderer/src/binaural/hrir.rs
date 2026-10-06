@@ -810,7 +810,7 @@ mod tests {
             (
                 "saf",
                 HrirSet::new(
-                    &crate::binaural::measured::MeasuredHrirData::saf_kemar(),
+                    &*crate::binaural::measured::MeasuredHrirData::saf_kemar_shared(48_000),
                     48_000,
                 ),
             ),
@@ -1079,7 +1079,7 @@ mod tests {
     #[test]
     fn a_96k_set_uses_256_taps_and_is_silent_beyond() {
         let set = HrirSet::new(
-            &crate::binaural::measured::MeasuredHrirData::saf_kemar().resampled_to(96_000),
+            &*crate::binaural::measured::MeasuredHrirData::saf_kemar_shared(96_000),
             96_000,
         );
         assert_eq!(set.len(), 256);
@@ -1195,7 +1195,7 @@ mod tests {
     fn five_degree_grid_has_1944_nodes() {
         let t0 = std::time::Instant::now();
         let set = HrirSet::new(
-            &crate::binaural::measured::MeasuredHrirData::saf_kemar(),
+            &*crate::binaural::measured::MeasuredHrirData::saf_kemar_shared(48_000),
             48_000,
         );
         let elapsed = t0.elapsed();
