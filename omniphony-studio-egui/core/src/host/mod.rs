@@ -10,6 +10,7 @@ pub mod commands;
 pub mod config;
 pub mod control;
 pub mod diagnostics;
+pub mod engine_deploy;
 pub mod json_store;
 pub mod peak_hold;
 pub mod process;

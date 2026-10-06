@@ -235,7 +235,7 @@ fn bind_rx_socket(
 /// port *before* loading config (the FFI host consumes the live-state sidecar
 /// a yielded instance writes on shutdown). On success the bound socket is kept
 /// as a process-wide reservation, released when the real listener (or the
-/// degraded reporter) binds via [`bind_rx_socket`] — so the port is never
+/// degraded reporter) binds via `bind_rx_socket` — so the port is never
 /// observably free between negotiation and the listener coming up.
 pub fn negotiate_rx_port(rx_port: u16) -> bool {
     match bind_rx_socket(rx_port, true, YIELD_REBIND_BUDGET) {
@@ -1034,7 +1034,7 @@ impl OscSender {
     }
 
     /// Whether the OSC RX listener is currently bound and running. After
-    /// [`resume`], `false` means the port could not be re-acquired (still held
+    /// [`resume`](Self::resume), `false` means the port could not be re-acquired (still held
     /// by mpv): the caller should re-arm standby rather than run portless.
     pub fn is_listening(&self) -> bool {
         self.listener_bound

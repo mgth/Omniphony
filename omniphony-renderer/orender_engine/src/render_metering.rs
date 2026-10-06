@@ -31,7 +31,8 @@ pub fn meter_render_output(
     meter: &mut AudioMeter,
     renderer: &SpatialRenderer,
     rendered: &RenderedFrame,
-) -> Option<MeterSnapshot> {
+    out: &mut MeterSnapshot,
+) -> bool {
     if let Some((bus, n_bus)) = renderer.virtual_bus() {
         meter.process_speakers(bus, n_bus);
         meter.process_ears(&rendered.samples);
@@ -41,5 +42,5 @@ pub fn meter_render_output(
         meter.process_speakers(&rendered.samples, rendered.n_channels);
     }
     meter.process_object_bands(&rendered.object_band_sq);
-    meter.poll()
+    meter.poll_into(out)
 }

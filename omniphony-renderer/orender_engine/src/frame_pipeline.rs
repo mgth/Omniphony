@@ -27,7 +27,7 @@
 
 use anyhow::Result;
 use bridge_api::{RChannelLabel, RCoordinateFormat, RDecodedFrame};
-use renderer::metering::{AudioMeter, DutyEma};
+use renderer::metering::{AudioMeter, DutyEma, MeterSnapshot};
 use renderer::spatial_renderer::SpatialRenderer;
 
 use crate::channel_objects::StageCounts;
@@ -78,6 +78,11 @@ pub struct FramePipeline {
     /// The labels of a channel frame are being rendered as silence (no
     /// mapping): said once when it starts, not on every frame.
     unmapped_labels: bool,
+    /// The meter snapshot and the overlay's object levels, refilled on each
+    /// metered frame: a send lends the snapshot to the OSC telemetry thread
+    /// and takes a spare back, so metering allocates nothing once warm.
+    meter_snapshot: MeterSnapshot,
+    overlay_levels: Vec<(u32, f64)>,
 }
 
 impl FramePipeline {
@@ -87,6 +92,8 @@ impl FramePipeline {
             pcm_f32: Vec::new(),
             render_duty: DutyEma::default(),
             unmapped_labels: false,
+            meter_snapshot: MeterSnapshot::default(),
+            overlay_levels: Vec::new(),
         }
     }
 
@@ -341,15 +348,17 @@ impl FramePipeline {
         let mut meter_bundle_sent = false;
         if want_metering
             && let Some(meter) = meter.as_mut()
-            && let Some(snapshot) = meter_render_output(meter, renderer, &rendered)
+            && meter_render_output(meter, renderer, &rendered, &mut self.meter_snapshot)
         {
             if overlay_active {
-                let levels: Vec<(u32, f64)> = snapshot
-                    .object_levels
-                    .iter()
-                    .map(|&(id, _peak, rms)| (id, rms as f64))
-                    .collect();
-                overlay::update_levels(&levels);
+                self.overlay_levels.clear();
+                self.overlay_levels.extend(
+                    self.meter_snapshot
+                        .object_levels
+                        .iter()
+                        .map(|&(id, _peak, rms)| (id, rms as f64)),
+                );
+                overlay::update_levels(&self.overlay_levels);
             }
             if want_meter_osc && let Some(osc) = osc {
                 let timings = MeterTimings {
@@ -360,7 +369,7 @@ impl FramePipeline {
                     drc_gain: Some(self.stream.drc.gain),
                     ..output_stage
                 };
-                osc.send_meter_bundle(snapshot, &mut rendered, timings);
+                osc.send_meter_bundle(&mut self.meter_snapshot, &mut rendered, timings);
                 meter_bundle_sent = true;
             }
         }

@@ -91,7 +91,7 @@ impl StreamDeclaration {
 const TAG_GAIN_RAMP_SECS: f32 = 0.02;
 
 /// The gain on the channels tagged as dialogue: the live dialogue level,
-/// reached over [`TAG_GAIN_RAMP_SECS`] whenever it changes. Applied to the
+/// reached over `TAG_GAIN_RAMP_SECS` whenever it changes. Applied to the
 /// converted PCM before the upmix stages, so what phantom extraction takes
 /// out of a dialogue channel carries the level too.
 #[derive(Clone, Copy, Debug, PartialEq)]

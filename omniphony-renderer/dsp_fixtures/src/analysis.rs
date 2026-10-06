@@ -61,8 +61,8 @@ const AMBIGUITY_RATIO: f64 = 0.95;
 /// sign-flipped answer. That is not hypothetical: it is exactly what a
 /// 40-sample-periodic excitation did to the binaural ITD measurement, and it
 /// looked like an engine defect for as long as the estimator kept quiet about
-/// it. So a competing peak at least [`AMBIGUITY_SEPARATION`] away scoring
-/// [`AMBIGUITY_RATIO`] of the best is reported as an error rather than resolved.
+/// it. So a competing peak at least `AMBIGUITY_SEPARATION` away scoring
+/// `AMBIGUITY_RATIO` of the best is reported as an error rather than resolved.
 pub fn estimate_lag_checked(left: &[f32], right: &[f32], max_lag: usize) -> Result<f32, String> {
     if left.len() != right.len() {
         return Err(format!(
