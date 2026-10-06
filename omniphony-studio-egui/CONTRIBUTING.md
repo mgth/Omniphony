@@ -48,7 +48,7 @@ files belongs in a core job.
 
 | Change | Start here | Rule |
 |---|---|---|
-| Labels and translations | `../omniphony-studio/src/i18n/` | Reuse catalogue keys and shared formatting |
+| Labels and translations | `i18n/` | Reuse catalogue keys and shared formatting |
 | Row or control appearance | `src/ui/widgets.rs`, `PANELS.md` | Accessible label and keyboard state; stable bounds |
 | Panel draft, tab or confirmation | `src/panels/` | Explicit per-panel fields; preserve edits across echoes |
 | Command validation or protocol | `core/src/host/commands/`, `core/src/osc/` | Typed intent, one authoritative rule, no UI dependency |
