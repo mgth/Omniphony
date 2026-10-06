@@ -6,6 +6,10 @@ opt-in spatial audio decoder (`--ad=orender`) that renders objects through
 `liborender` (VBAP spatial rendering) instead of letting FFmpeg downmix.
 Non-spatial audio keeps playing via mpv's normal `ad_lavc` decoder.
 
+> **Installing:** the step-by-step pages take you from nothing to a film
+> playing — [Linux](install/linux.md) · [Windows](install/windows.md) ·
+> [macOS](install/macos.md).
+>
 > **Downloads:** prebuilt player builds are on the
 > [Omniphony releases page](https://github.com/mgth/Omniphony/releases) (`mpv-v*`).
 > Source, build instructions and packaging live in the
@@ -44,6 +48,7 @@ over OSC, showing per-object positions in the room and live meters.*
      set and unusable, spatial audio is disabled with a clear error (no
      fallback);
   2. the Studio-deployed per-user engine:
+     `$XDG_DATA_HOME/omniphony/lib/liborender.so.0`, by default
      `~/.local/share/omniphony/lib/liborender.so.0` (Linux),
      `~/Library/Application Support/omniphony/lib/liborender.dylib` (macOS),
      `%LOCALAPPDATA%\omniphony\lib\orender.dll` (Windows);
@@ -54,28 +59,31 @@ over OSC, showing per-object positions in the room and live meters.*
   library is rejected (one clear log line) and the search falls through to the
   next location. If nothing usable is found, mpv still plays everything through
   its native decoders — spatial rendering is simply unavailable.
-- **The decoder bridge** (the `omniphony-bridge` package, or see the release
-  notes — it is not bundled with the player).
-- The **shared omniphony config** at `~/.config/omniphony/config.yaml` (the same
-  one the `orender` CLI and studio use) providing `render.bridge_path` (the
-  decoder bridge) and optionally the speaker layout. ad_orender reads this
-  config — nothing is hardcoded. If you already run the CLI/studio, it works as
-  is; otherwise create it with at least:
-  ```yaml
-  render:
-    bridge_path: /usr/lib/orender/*_bridge.so
-  ```
+- **The decoder bridge**
+  ([harletty-bridge](https://github.com/harletty/harletty-bridge/releases) — it
+  is not bundled with the player). Without configuration the engine takes the
+  first `*_bridge.{so,dll,dylib}` next to the mpv executable, then in
+  `$ORENDER_BRIDGE_DIR`, then in `/usr/lib/orender` (Unix); `render.bridge_path`
+  in the config, or `--ad-orender-bridge-path`, names one file instead (no
+  globs, and no fallback when it is wrong).
+- The **shared omniphony config** (the same one the `orender` CLI and Studio
+  use): `~/.config/omniphony/config.yaml` on Linux and macOS,
+  `%ProgramData%\omniphony\config.yaml` on Windows, or
+  `$OMNIPHONY_CONFIG_DIR/config.yaml` when that is set. It carries the speaker
+  layout, the output mode (speakers or binaural) and optionally
+  `render.bridge_path`. Without it the engine runs on its defaults: a 7.1.4
+  speaker render, OSC off.
 
 ### macOS prebuilt releases (Apple Silicon)
 
-The release archives ship two macOS arm64 forms: `…-macos-arm64.zip` (the CLI
-binary with every dylib bundled — self-contained, no Homebrew ffmpeg needed) and
-`…-macos-arm64-app.zip` (a double-clickable `mpv-omniphony.app`). Both are
+The release ships one macOS arm64 archive, `…-macos-arm64.zip`, holding a
+self-contained `mpv-omniphony.app` (every dylib bundled, no Homebrew ffmpeg
+needed); command-line use runs `mpv-omniphony.app/Contents/MacOS/mpv`. It is
 ad-hoc signed (not notarized), so Gatekeeper blocks the first launch. Clear the
 download quarantine once:
 
 ```sh
-xattr -dr com.apple.quarantine /path/to/mpv-omniphony.app   # or the extracted mpv
+xattr -dr com.apple.quarantine /path/to/mpv-omniphony.app
 ```
 
 (or right-click → Open the first time).
@@ -87,7 +95,7 @@ mpv --ad=orender film.spatial.mkv          # opt-in; default playback is untouch
 ```
 
 With no options, everything (bridge path, speaker layout, OSC) comes from the
-shared `~/.config/omniphony/config.yaml`. Per-invocation overrides:
+shared omniphony config. Per-invocation overrides:
 
 | Option | Overrides |
 | --- | --- |
