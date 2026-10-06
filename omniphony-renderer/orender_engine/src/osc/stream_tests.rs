@@ -9,8 +9,8 @@ use renderer::test_support::fixture_control;
 use rosc::{OscMessage, OscPacket, OscType};
 use runtime_control::osc_contract;
 
-use super::peer::read_frame;
 use super::test_support::{SERIAL, listening_sender};
+use runtime_control::osc_contract::stream::{MAX_PACKET, read_frame};
 
 struct Client {
     stream: TcpStream,
@@ -31,8 +31,7 @@ impl Client {
             args,
         }))
         .unwrap();
-        let mut frame = (bytes.len() as u32).to_be_bytes().to_vec();
-        frame.extend_from_slice(&bytes);
+        let frame = runtime_control::osc_contract::stream::frame(&bytes).unwrap();
         self.stream.write_all(&frame).unwrap();
     }
 
@@ -42,7 +41,7 @@ impl Client {
     fn until(&mut self, last: &str) -> Option<Vec<OscMessage>> {
         let mut messages = Vec::new();
         loop {
-            let packet = match read_frame(&mut self.stream, super::inbound::STREAM_PACKET_MAX) {
+            let packet = match read_frame(&mut self.stream, MAX_PACKET) {
                 Ok(Some(packet)) => packet,
                 Ok(None) => return None,
                 Err(e)

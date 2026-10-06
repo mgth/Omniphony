@@ -19,11 +19,8 @@ use std::time::Duration;
 
 use super::RX_DATAGRAM_MAX;
 use super::client_registry::OscClientRegistry;
-use super::peer::{Peer, StreamPeer, read_frame};
-
-/// Largest packet either side sends on a stream: a whole state snapshot
-/// travels as one (see `export::MAX_STATE_STREAM_PACKET`).
-pub(crate) const STREAM_PACKET_MAX: usize = 1 << 20;
+use super::peer::{Peer, StreamPeer};
+use runtime_control::osc_contract::stream::{MAX_PACKET as STREAM_PACKET_MAX, read_frame};
 
 /// Packets waiting for the listener thread. Datagrams beyond it are dropped,
 /// as the kernel would drop them; a stream reader waits instead, which slows
