@@ -766,10 +766,32 @@ fn an_object_stream_is_rendered_counted_and_broadcast() {
     assert_eq!(engine.bed_labels(), &[RChannelLabel::L, RChannelLabel::R]);
     assert!(peak > 0.0, "the objects render (the bed is silent)");
     let messages = osc_messages(&socket, Duration::from_millis(300));
+    // The frame announces the bed's two channels and the two objects, and the
+    // objects' positions follow it: an empty object list would still send
+    // the frame header.
     assert!(
-        messages.iter().any(|m| m.addr == SPATIAL_FRAME),
-        "the objects' frame is broadcast"
+        messages
+            .iter()
+            .any(|m| m.addr == SPATIAL_FRAME && m.args.get(2) == Some(&rosc::OscType::Int(4))),
+        "the objects' frame is broadcast with four entries"
     );
+    let position = |id: usize| {
+        messages
+            .iter()
+            .rev()
+            .find(|m| m.addr == format!("/omniphony/object/{id}/xyz"))
+            .map(|m| {
+                m.args[..3]
+                    .iter()
+                    .map(|a| match a {
+                        rosc::OscType::Float(v) => *v,
+                        other => panic!("position argument {other:?}"),
+                    })
+                    .collect::<Vec<_>>()
+            })
+    };
+    assert_eq!(position(2), Some(vec![-1.0, 1.0, 0.0]), "{messages:?}");
+    assert_eq!(position(3), Some(vec![1.0, 1.0, 0.0]), "{messages:?}");
 
     // The same stream, now plain stereo: no objects left.
     feed(&mut engine, (0..4).map(|_| packet_in(480, 0, false)));
