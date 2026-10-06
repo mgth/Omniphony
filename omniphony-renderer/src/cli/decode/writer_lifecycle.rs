@@ -145,7 +145,13 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                 // map for their count.
                 let mapping = self
                     .spatial_renderer
-                    .map(|r| r.renderer_control().live.read().output_channel_mapping)
+                    .map(|r| {
+                        r.renderer_control()
+                            .live
+                            .read()
+                            .options
+                            .output_channel_mapping
+                    })
                     .unwrap_or_default();
                 let channel_names = match mapping {
                     renderer::live_params::OutputChannelMapping::ByName => {

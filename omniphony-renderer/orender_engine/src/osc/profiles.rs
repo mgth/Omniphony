@@ -415,59 +415,10 @@ fn apply_switched_profile(
 mod tests {
     use super::*;
     use renderer::config::{Config, RenderConfig};
-    use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
-    use renderer::spatial_renderer::SpatialRenderer;
-    use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
     use renderer::speaker_layout::SpeakerLayout;
+    use renderer::test_support::fixture_control;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
-
-    /// A real `RendererControl` on a 7.1.4 layout, small grid so the table
-    /// build stays trivial (same fixture as the live-options conformance net).
-    fn fixture_control() -> Arc<RendererControl> {
-        let layout = SpeakerLayout::preset("7.1.4").expect("7.1.4 preset");
-        SpatialRenderer::new(
-            layout,
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
-                x_size: 5,
-                y_size: 5,
-                z_size: 3,
-                z_neg_size: 3,
-            },
-            false,
-            true,
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 1.0, 1.0],
-            1.0,
-            1.0,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            5,
-            5,
-            3,
-            3,
-        )
-        .expect("fixture renderer")
-        .renderer_control()
-    }
 
     fn config_with_layout(preset: &str) -> Config {
         Config {
@@ -575,7 +526,8 @@ mod tests {
 
         let control = fixture_control();
         control.set_config_path(path.clone());
-        control.live.write().surround_placement = renderer::live_params::SurroundPlacement::Back;
+        control.live.write().options.surround_placement =
+            renderer::live_params::SurroundPlacement::Back;
         control.mark_dirty();
         (path, control)
     }
@@ -699,7 +651,7 @@ mod tests {
         } else {
             config.profiles.get(name).cloned()
         };
-        render.expect("profile present").surround_placement
+        render.expect("profile present").options.surround_placement
             == Some(renderer::live_params::SurroundPlacement::Back)
     }
 

@@ -125,6 +125,10 @@ libc.workspace = true
 reference_bridge.workspace = true
 # Reads the live state the CLI publishes (unit and tests/ OSC round trips).
 rosc.workspace = true
+# The host-option bounds test: parses hostile config.yaml texts, reads the
+# host options schema.
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true
@@ -172,6 +176,8 @@ pipewire = []
 # exports, issue #185; upstream merged the fix in f99153f) and its chunk
 # reader stops at three dimensions, one B-tree level and 256 MiB — a
 # MultiSpeakerBRIR as netCDF4 writes it (issue #219, the BBC R&D set) needs
-# the fork's fix/chunked-nd-datasets. Drop once upstream carries both.
+# the fork's fix/chunked-nd-datasets. Its fix/no-debug-panics, on top, makes a
+# corrupt file an error in debug builds too (it panicked). Drop once upstream
+# carries all three.
 [patch.crates-io]
-sofar = { git = "https://github.com/mgth/sofar", rev = "4c91bea0b752c6d2b2bde4e8954c2e114182c297" }
+sofar = { git = "https://github.com/mgth/sofar", rev = "26ca8670b09bd55febc19fbdd73be5af06825ddb" }

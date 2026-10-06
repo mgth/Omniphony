@@ -199,30 +199,17 @@ impl BandWorker {
                 },
             };
             // A backend that panics while its table is sampled must not take
-            // the worker with it: every later change would go unanswered.
-            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                SpeakerRenderStage::build_band_set(
-                    control,
-                    Arc::clone(&topology),
-                    key,
-                    num_speakers,
-                    sample_rate,
-                    previous,
-                    filtered_channels,
-                )
-            }))
-            .unwrap_or_else(|payload| {
-                let detail = if let Some(msg) = payload.downcast_ref::<&'static str>() {
-                    (*msg).to_string()
-                } else if let Some(msg) = payload.downcast_ref::<String>() {
-                    msg.clone()
-                } else {
-                    "panic with non-string payload".to_string()
-                };
-                Err(anyhow::anyhow!(
-                    "render backend panicked during the band build: {detail}"
-                ))
-            });
+            // the worker with it (every later change would go unanswered):
+            // the build turns the panic into an error.
+            let built = SpeakerRenderStage::build_band_set(
+                control,
+                Arc::clone(&topology),
+                key,
+                num_speakers,
+                sample_rate,
+                previous,
+                filtered_channels,
+            );
             let outcome = match built {
                 Ok(set) => {
                     last = Some((Arc::clone(&topology), set.render_bands.clone()));

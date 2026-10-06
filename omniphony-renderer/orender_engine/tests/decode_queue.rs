@@ -24,7 +24,8 @@ fn packet(frames: u16, decode_ms: u8) -> [u8; 3] {
     [lo, hi, decode_ms]
 }
 
-/// [`packet`] with its layout (`0`: stereo, `1`: L R C) and, with `restart`,
+/// [`packet`] with its layout (`0`: stereo, `1`: L R C, `3`: an L R bed and
+/// two objects, left and right) and, with `restart`,
 /// a second frame of it that starts a segment.
 fn packet_in(frames: u16, layout: u8, restart: bool) -> [u8; 5] {
     let [lo, hi, ms] = packet(frames, 0);
@@ -46,12 +47,41 @@ struct ScriptedBridge {
 
 impl FormatBridge for ScriptedBridge {
     fn push_packet(&mut self, data: RSlice<'_, u8>, _: RInputTransport, _: u8) -> RPushResult {
-        use RChannelLabel::{C, L, R};
+        use RChannelLabel::{C, L, Object, R};
         std::thread::sleep(Duration::from_millis(u64::from(data[2])));
         let frames = u16::from_le_bytes([data[0], data[1]]) as u32;
         self.labels = match data.get(3) {
             Some(1) => vec![L, R, C],
+            Some(3) => vec![L, R, Object, Object],
             _ => vec![L, R],
+        };
+        // The objects' positions, as an object format's metadata carries
+        // them: object 0 hard left, object 1 hard right (ADM cartesian).
+        let has_objects = self.labels.contains(&Object);
+        let metadata = || -> RVec<RMetadataFrame> {
+            if !has_objects {
+                return RVec::new();
+            }
+            let event = |id: u32, x: f64| REvent {
+                id,
+                sample_pos: 0,
+                has_pos: true,
+                pos: [x, 1.0, 0.0],
+                gain_db: 0,
+                size: [0.0; 3],
+                ramp_duration: 0,
+            };
+            RVec::from(vec![RMetadataFrame {
+                events: RVec::from(vec![event(0, -1.0), event(1, 1.0)]),
+                object_channels: RVec::from(vec![
+                    RObjectChannel { id: 0, channel: 2 },
+                    RObjectChannel { id: 1, channel: 3 },
+                ]),
+                channel_gains: RVec::new(),
+                name_updates: RVec::new(),
+                sample_pos: 0,
+                ramp_duration: 0,
+            }])
         };
         let restart = data.get(4) == Some(&1);
         let channels = self.labels.len() as u32;
@@ -59,9 +89,20 @@ impl FormatBridge for ScriptedBridge {
             sampling_frequency: 48_000,
             sample_count: frames,
             channel_count: channels,
-            pcm: RVec::from(vec![1_000_000; (channels * frames) as usize]),
+            // With objects, only the objects carry signal: what comes out is
+            // theirs, not the bed's.
+            pcm: (0..frames)
+                .flat_map(|_| self.labels.iter())
+                .map(|&label| {
+                    if has_objects && label != Object {
+                        0
+                    } else {
+                        1_000_000
+                    }
+                })
+                .collect(),
             channel_labels: self.labels.iter().copied().collect(),
-            metadata: RVec::new(),
+            metadata: metadata(),
             drc_gain: 1.0,
             drc_ramp_duration: 0,
             dialogue_level: ROption::RNone,
@@ -89,7 +130,7 @@ impl FormatBridge for ScriptedBridge {
         true
     }
     fn has_objects(&self) -> bool {
-        false
+        self.labels.contains(&RChannelLabel::Object)
     }
     fn configure(&mut self, _: RStr<'_>, _: RStr<'_>) -> bool {
         true
@@ -480,11 +521,11 @@ fn the_live_option_switches_the_thread_both_ways_mid_stream() {
     run(&mut engine, 20);
     assert!(!engine.decode_thread());
 
-    control.live.write().decode_thread = true;
+    control.live.write().options.decode_thread = true;
     run(&mut engine, 60);
     assert!(engine.decode_thread(), "on at the next packet");
 
-    control.live.write().decode_thread = false;
+    control.live.write().options.decode_thread = false;
     run(&mut engine, 1);
     assert!(
         engine.decode_thread(),
@@ -509,7 +550,7 @@ fn the_live_option_switches_the_thread_both_ways_mid_stream() {
 #[test]
 fn a_host_that_forces_the_thread_ignores_the_option() {
     let (mut engine, _, control) = engine_with_control();
-    control.live.write().decode_thread = true;
+    control.live.write().options.decode_thread = true;
     engine
         .set_decode_thread_mode(DecodeThreadMode::Off)
         .unwrap();
@@ -690,4 +731,70 @@ fn heard_us_publishes_the_listener_and_marks_each_block() {
         .filter_map(|m| long_arg(m, 0))
         .find(|&pos| pos <= last_before);
     assert!(first.is_some_and(|pos| pos < 4 * 1536), "{first:?}");
+}
+
+/// The object path, end to end on the engine: a stream whose frames carry
+/// objects is declared and counted as one, its bed is reported as the bed,
+/// its objects render and their positions go out over OSC; the same stream
+/// turning into plain channels drops the object state — a live fact, not a
+/// latched one (docs/channel-object-contract.md).
+#[test]
+fn an_object_stream_is_rendered_counted_and_broadcast() {
+    use runtime_control::osc_contract::SPATIAL_FRAME;
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let (mut engine, _, _) = engine_with_control();
+    engine
+        .enable_osc(orender_engine::OscOptions {
+            host: "127.0.0.1".into(),
+            port_out: socket.local_addr().unwrap().port(),
+            port_in: 0,
+            metering: false,
+        })
+        .unwrap();
+
+    let mut peak = 0.0f32;
+    for _ in 0..8 {
+        let chunks = engine.process_raw(&packet_in(480, 3, false)).unwrap();
+        for c in &chunks {
+            assert!(c.samples.iter().all(|s| s.is_finite()), "non-finite output");
+            peak = c.samples.iter().fold(peak, |m, s| m.max(s.abs()));
+        }
+        engine.recycle(chunks);
+    }
+    assert!(engine.has_objects(), "the stream carries objects");
+    assert_eq!(engine.object_count(), 2);
+    assert_eq!(engine.bed_labels(), &[RChannelLabel::L, RChannelLabel::R]);
+    assert!(peak > 0.0, "the objects render (the bed is silent)");
+    let messages = osc_messages(&socket, Duration::from_millis(300));
+    // The frame announces the bed's two channels and the two objects, and the
+    // objects' positions follow it: an empty object list would still send
+    // the frame header.
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.addr == SPATIAL_FRAME && m.args.get(2) == Some(&rosc::OscType::Int(4))),
+        "the objects' frame is broadcast with four entries"
+    );
+    let position = |id: usize| {
+        messages
+            .iter()
+            .rev()
+            .find(|m| m.addr == format!("/omniphony/object/{id}/xyz"))
+            .map(|m| {
+                m.args[..3]
+                    .iter()
+                    .map(|a| match a {
+                        rosc::OscType::Float(v) => *v,
+                        other => panic!("position argument {other:?}"),
+                    })
+                    .collect::<Vec<_>>()
+            })
+    };
+    assert_eq!(position(2), Some(vec![-1.0, 1.0, 0.0]), "{messages:?}");
+    assert_eq!(position(3), Some(vec![1.0, 1.0, 0.0]), "{messages:?}");
+
+    // The same stream, now plain stereo: no objects left.
+    feed(&mut engine, (0..4).map(|_| packet_in(480, 0, false)));
+    assert!(!engine.has_objects(), "has_objects follows the stream");
+    assert_eq!(engine.object_count(), 0);
 }
