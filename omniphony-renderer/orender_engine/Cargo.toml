@@ -47,6 +47,8 @@ sofa = ["renderer/sofa"]
 example-backend = ["dep:example_backend"]
 
 [dev-dependencies]
+# Parses the hostile config.yaml texts of the boot-path test.
+serde_yaml_ng.workspace = true
 # Not linked by the tests: depending on it makes `cargo test` build its cdylib,
 # the bridge the tests under tests/ load when no other one is given.
 reference_bridge.workspace = true

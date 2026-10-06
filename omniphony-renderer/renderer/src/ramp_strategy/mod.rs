@@ -174,6 +174,14 @@ pub trait RampStrategy: Send + Sync {
         progress: RampProgress,
         ctx: &RampContext,
     ) -> RampStatus;
+
+    /// The built-in position ramp, when this is it. The sample ramp evaluates
+    /// the strategy on every sample of every moving object; the render path
+    /// asks this to call the built-in one directly, where the compiler can
+    /// inline it, instead of through the vtable.
+    fn as_position(&self) -> Option<&PositionRampStrategy> {
+        None
+    }
 }
 
 #[inline]

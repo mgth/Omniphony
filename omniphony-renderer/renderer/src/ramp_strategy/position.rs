@@ -26,6 +26,7 @@ impl RampStrategy for PositionRampStrategy {
         state.target_sample_index = sample_index;
     }
 
+    #[inline]
     fn evaluate(
         &self,
         state: &mut ChannelRampState,
@@ -48,5 +49,9 @@ impl RampStrategy for PositionRampStrategy {
         } else {
             RampStatus::Ramping
         }
+    }
+
+    fn as_position(&self) -> Option<&PositionRampStrategy> {
+        Some(self)
     }
 }
