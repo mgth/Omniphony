@@ -15,7 +15,7 @@ use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
 // through this crate or the argument types will not match.
 pub use renderer::live_params::{CrossoverType, RampMode};
 use renderer::spatial_renderer::{RendererSpec, SpatialChannelEvent, SpatialRenderer};
-use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
+use renderer::spatial_vbap::VbapTableMode;
 use renderer::speaker_layout::SpeakerLayout;
 
 /// Samples per access unit fed to `render_frame`. Measured from a real TrueHD
@@ -83,38 +83,18 @@ pub fn build_renderer_binaural(
         )
     };
     SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
         sample_rate: SAMPLE_RATE,
         az_res_deg: 15, // az_res_deg — coarse: the binaural path never reads the VBAP table
-        el_res_deg: 15, // el_res_deg
-        spread_resolution: 0.0,
-        distance_max: 2.0,
+        el_res_deg: 15,
         table_mode,
-        allow_negative_z: false, // allow_negative_z
         vbap_position_interpolation: position_interpolation,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false, // log_object_positions
-        room_ratio: [1.0, 2.0, 0.5], // room_ratio
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,     // master_gain_db
-        auto_gain: false,        // auto_gain
-        use_loudness: false,     // use_loudness
-        distance_diffuse: false, // distance_diffuse
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
         preferred_evaluation_mode: preferred,
         initial_evaluation_mode: initial,
         cartesian_default_x_size: 31,
         cartesian_default_y_size: 31,
         cartesian_default_z_size: 15,
         cartesian_default_z_neg_size: 15,
+        ..renderer::test_support::spec(layout)
     })
     .expect("renderer build")
 }
@@ -143,38 +123,16 @@ pub fn build_renderer(
         )
     };
     SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
         sample_rate: SAMPLE_RATE,
-        az_res_deg: 1, // az_res_deg
-        el_res_deg: 1, // el_res_deg
-        spread_resolution: 0.0,
-        distance_max: 2.0,
         table_mode,
-        allow_negative_z: false, // allow_negative_z
         vbap_position_interpolation: position_interpolation,
-        distance_model: DistanceModel::Linear,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false, // log_object_positions
-        room_ratio: [1.0, 2.0, 0.5], // room_ratio
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
-        room_ratio_center_blend: 0.0,
-        master_gain_db: 0.0,     // master_gain_db
-        auto_gain: false,        // auto_gain
-        use_loudness: false,     // use_loudness
-        distance_diffuse: false, // distance_diffuse
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
         preferred_evaluation_mode: preferred,
         initial_evaluation_mode: initial,
         cartesian_default_x_size: 31,
         cartesian_default_y_size: 31,
         cartesian_default_z_size: 15,
         cartesian_default_z_neg_size: 15,
+        ..renderer::test_support::spec(layout)
     })
     .expect("renderer build")
 }

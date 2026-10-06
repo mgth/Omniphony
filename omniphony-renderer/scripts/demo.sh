@@ -6,9 +6,14 @@
 # the bundled rotating 7.1.4 demo through the binaural headphone stage — no
 # external player, no proprietary decoder.
 #
+# Runs on Linux, macOS and Windows (Git Bash / MSYS2). The audio device is the
+# platform's realtime backend: PipeWire on Linux, CoreAudio on macOS, ASIO on
+# Windows (which needs an ASIO driver: the sound card's own, or FlexASIO /
+# ASIO4ALL). Without one, use the `file` mode.
+#
 # Usage:
-#   scripts/demo.sh                 # binaural → PipeWire (default)
-#   scripts/demo.sh speakers        # 7.1.4 speaker render → PipeWire (no binaural)
+#   scripts/demo.sh                 # binaural → audio device (default)
+#   scripts/demo.sh speakers        # 7.1.4 speaker render → audio device (no binaural)
 #   scripts/demo.sh file            # binaural → ffplay (no audio device needed)
 #
 # The `file` mode pipes raw f32 stereo to ffplay:
@@ -21,21 +26,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RENDERER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"     # omniphony-renderer (cargo workspace root)
 REPO_ROOT="$(cd "$RENDERER_DIR/.." && pwd)"      # repo root (holds layouts/)
 
-BRIDGE="$RENDERER_DIR/target/release/libreference_bridge.so"
-ORENDER="$RENDERER_DIR/target/release/orender"
+case "$(uname -s)" in
+  Linux)                BRIDGE_FILE=libreference_bridge.so;    EXE=;     BACKEND=pipewire ;;
+  Darwin)               BRIDGE_FILE=libreference_bridge.dylib; EXE=;     BACKEND=coreaudio ;;
+  MINGW*|MSYS*|CYGWIN*) BRIDGE_FILE=reference_bridge.dll;      EXE=.exe; BACKEND=asio ;;
+  *) echo "[demo] unsupported platform: $(uname -s)" >&2; exit 2 ;;
+esac
+
+BRIDGE="$RENDERER_DIR/target/release/$BRIDGE_FILE"
+ORENDER="$RENDERER_DIR/target/release/orender$EXE"
 LAYOUT="$REPO_ROOT/layouts/7.1.4.yaml"
 WAV="$RENDERER_DIR/assets/demo/spatial-demo.wav"
 CONFIG="$RENDERER_DIR/assets/demo/demo.yaml"
 
 MODE="${1:-binaural}"
 
-# Run hermetically: isolate orender from any pre-existing per-user config
-# (~/.config/omniphony/config.yaml). A machine already set up for live playback
-# can otherwise inject an input/output mode that does not match this file-decode
-# demo. A throwaway XDG_CONFIG_HOME guarantees clean defaults on every machine.
-DEMO_CONFIG_HOME="$(mktemp -d)"
-trap 'rm -rf "$DEMO_CONFIG_HOME"' EXIT
-export XDG_CONFIG_HOME="$DEMO_CONFIG_HOME"
+# Run hermetically: isolate orender from any pre-existing config
+# (~/.config/omniphony/config.yaml, %ProgramData%\omniphony\config.yaml on
+# Windows). A machine already set up for live playback can otherwise inject an
+# input/output mode that does not match this file-decode demo. A throwaway
+# OMNIPHONY_CONFIG_DIR guarantees clean defaults on every platform.
+DEMO_CONFIG_DIR="$(mktemp -d)"
+trap 'rm -rf "$DEMO_CONFIG_DIR"' EXIT
+if command -v cygpath >/dev/null; then
+  export OMNIPHONY_CONFIG_DIR="$(cygpath -w "$DEMO_CONFIG_DIR")"   # native path for orender.exe
+else
+  export OMNIPHONY_CONFIG_DIR="$DEMO_CONFIG_DIR"
+fi
 
 echo "[demo] building reference bridge + orender (release) ..."
 ( cd "$RENDERER_DIR" && cargo build -r -p reference_bridge && cargo build -r -p omniphony-renderer )
@@ -54,12 +71,12 @@ COMMON=(
 
 case "$MODE" in
   binaural)
-    echo "[demo] binaural → PipeWire"
-    exec "$ORENDER" "${COMMON[@]}" --config "$CONFIG" --output-backend pipewire
+    echo "[demo] binaural → $BACKEND"
+    "$ORENDER" "${COMMON[@]}" --config "$CONFIG" --output-backend "$BACKEND"
     ;;
   speakers)
-    echo "[demo] 7.1.4 speaker render → PipeWire"
-    exec "$ORENDER" "${COMMON[@]}" --output-backend pipewire
+    echo "[demo] 7.1.4 speaker render → $BACKEND"
+    "$ORENDER" "${COMMON[@]}" --output-backend "$BACKEND"
     ;;
   file)
     echo "[demo] binaural → ffplay (no audio device needed)"
