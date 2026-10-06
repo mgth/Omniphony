@@ -7,7 +7,7 @@
 # and commit this file with the change.
 #
 # toolchain: 1.99.0
-# total: 277
+# total: 264
 #
 # crate lint count
 audio_input clippy::doc_lazy_continuation 6
@@ -25,9 +25,9 @@ dsp_fixtures clippy::chunks_exact_to_as_chunks 2
 dsp_fixtures clippy::identity_op 2
 omniphony-renderer clippy::chunks_exact_to_as_chunks 3
 omniphony-renderer clippy::clone_on_copy 1
-omniphony-renderer clippy::collapsible_if 24
+omniphony-renderer clippy::collapsible_if 15
 omniphony-renderer clippy::derivable_impls 5
-omniphony-renderer clippy::large_enum_variant 3
+omniphony-renderer clippy::large_enum_variant 2
 omniphony-renderer clippy::single_match 1
 omniphony-renderer clippy::too_many_arguments 3
 orender_engine clippy::assign_op_pattern 1
@@ -49,7 +49,7 @@ reference_bridge clippy::collapsible_if 1
 renderer clippy::chunks_exact_to_as_chunks 24
 renderer clippy::collapsible_if 9
 renderer clippy::derivable_impls 4
-renderer clippy::doc_lazy_continuation 2
+renderer clippy::doc_lazy_continuation 1
 renderer clippy::get_first 1
 renderer clippy::identity_op 1
 renderer clippy::int_plus_one 1
@@ -67,11 +67,11 @@ renderer clippy::needless_range_loop 19
 renderer clippy::ptr_arg 1
 renderer clippy::redundant_closure 2
 renderer clippy::should_implement_trait 19
-renderer clippy::too_many_arguments 7
+renderer clippy::too_many_arguments 6
 renderer clippy::type_complexity 5
 renderer clippy::unnecessary_to_owned 1
 runtime_control clippy::chunks_exact_to_as_chunks 1
-runtime_control clippy::collapsible_if 9
+runtime_control clippy::collapsible_if 8
 runtime_control clippy::field_reassign_with_default 1
 runtime_control clippy::manual_is_multiple_of 1
 runtime_control clippy::single_match 1

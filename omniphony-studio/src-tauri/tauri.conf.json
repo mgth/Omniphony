@@ -10,7 +10,11 @@
   },
   "bundle": {
     "active": true,
-    "icon": ["icons/icon.ico", "icons/icon.png", "icons/icon.icns"],
+    "icon": [
+      "../../omniphony-studio-egui/assets/icons/icon.ico",
+      "../../omniphony-studio-egui/assets/icons/icon.png",
+      "../../omniphony-studio-egui/assets/icons/icon.icns"
+    ],
     "externalBin": ["binaries/orender"],
     "resources": {
       "../../layouts/*.yaml": "layouts/",
