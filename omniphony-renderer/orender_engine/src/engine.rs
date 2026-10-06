@@ -694,6 +694,7 @@ impl Engine {
             .renderer_control()
             .live
             .read()
+            .options
             .output_channel_mapping
             .code()
     }
@@ -706,6 +707,7 @@ impl Engine {
                 .renderer_control()
                 .live
                 .write()
+                .options
                 .output_channel_mapping = mapping;
         }
     }
@@ -817,7 +819,10 @@ impl Engine {
         let (drc_changed, want_thread) = {
             let control = self.renderer.renderer_control();
             let live = control.live.read();
-            (self.drc_mode.update(&live.drc_mode), live.decode_thread)
+            (
+                self.drc_mode.update(&live.options.drc_mode),
+                live.options.decode_thread,
+            )
         };
         if drc_changed {
             self.lock_bridge()
@@ -1125,7 +1130,12 @@ impl Engine {
 
     /// The live `decode_thread` option.
     fn live_decode_thread(&self) -> bool {
-        self.renderer.renderer_control().live.read().decode_thread
+        self.renderer
+            .renderer_control()
+            .live
+            .read()
+            .options
+            .decode_thread
     }
 
     /// In [`DecodeThreadMode::Live`], bring the decode thread in line with the

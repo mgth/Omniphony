@@ -129,7 +129,8 @@ is written through even when its target does not exist yet, creating it.
   frame submits them. `prefs::display` holds the Display panel's settings,
   `prefs::view` the rest of the view — camera (taken at rest), window size,
   position and maximised state, open sections, tabs, the speaker-test
-  settings. Never persist through egui's memory (`ctx.memory`, `ctx.data`):
+  settings, the Advanced switch (Essentials view or the full board; a file
+  from before the switch opens on the full board). Never persist through egui's memory (`ctx.memory`, `ctx.data`):
   it is not saved, and another toolkit would not have it (`ARCHITECTURE.md`);
   sections, whose open state egui animates, report every toggle back to
   `prefs::view` (`ui::section::take_changed_open_states`).
