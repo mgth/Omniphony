@@ -255,6 +255,15 @@ fn own_speakers(app: &AppState, family: Family) -> Option<&Vec<serde_json::Value
         .as_array()
 }
 
+/// Whether the renderer defaults a family nobody chose a mode for by output
+/// (Sphere on headphones): it says why a family runs in its mode
+/// (`modeSource`). A renderer from before that gives every such family its
+/// `defaultMode`, headphones included, and Studio must show and edit what
+/// that renderer plays.
+fn resolves_by_output(app: &AppState, family: Family) -> bool {
+    placement_block(app, family).is_some_and(|block| block.get("modeSource").is_some())
+}
+
 pub fn family_placement(app: &AppState, family: Family) -> FamilyPlacement {
     let own = own_mode(app, family);
     let headphones = app
@@ -266,7 +275,9 @@ pub fn family_placement(app: &AppState, family: Family) -> FamilyPlacement {
     let (effective_mode, mode_source) = match (own, own_mode(app, Family::GENERIC)) {
         (Some(mode), _) => (mode, ModeSource::Own),
         (None, Some(mode)) => (mode, ModeSource::Generic),
-        (None, None) if headphones => (PlacementMode::Sphere, ModeSource::Headphones),
+        (None, None) if headphones && resolves_by_output(app, family) => {
+            (PlacementMode::Sphere, ModeSource::Headphones)
+        }
         (None, None) => (default_mode(app, family), ModeSource::Family),
     };
     let layout_source = if own_speakers(app, family).is_some() {
@@ -1007,8 +1018,8 @@ mod tests {
     #[test]
     fn headphones_default_a_family_to_the_sphere() {
         let mut app = app_with_placement(serde_json::json!({
-            "dolby": { "defaultMode": "room" },
-            "dts": { "defaultMode": "room", "mode": "room" }
+            "dolby": { "defaultMode": "room", "modeSource": "family" },
+            "dts": { "defaultMode": "room", "mode": "room", "modeSource": "own" }
         }));
         let dolby = || family_placement(&app, Family::named("dolby"));
         assert_eq!(
@@ -1026,6 +1037,38 @@ mod tests {
             (dts.effective_mode, dts.mode_source),
             (PlacementMode::Room, ModeSource::Own)
         );
+    }
+
+    /// A renderer from before the headphones default (no `modeSource`) keeps
+    /// a family nobody chose for in its `defaultMode` on headphones too.
+    /// Studio shows that mode, and switching to Manual starts from the room
+    /// poses that renderer plays, not from the sphere.
+    #[test]
+    fn an_older_renderer_keeps_its_default_mode_on_headphones() {
+        let entries = serde_json::json!({ "speakers": [
+            { "name": "Ls", "coord_mode": "polar", "azimuth": -135.0, "elevation": 0.0, "distance": 1.0 }
+        ] });
+        let mut app = app_with_placement(serde_json::json!({
+            "generic": { "layout": entries },
+            "dolby": {
+                "defaultMode": "room",
+                "mode": null,
+                "effectiveMode": "room",
+                "layoutSource": "generic"
+            }
+        }));
+        app.binaural = Some(serde_json::json!({ "outputMode": "binaural" }));
+        let dolby = family_placement(&app, Family::named("dolby"));
+        assert_eq!(
+            (dolby.effective_mode, dolby.mode_source),
+            (PlacementMode::Room, ModeSource::Family)
+        );
+        let mut catalog = ChannelCatalog::default();
+        catalog.refresh(&app);
+        let channels = effective_channels_for(&catalog, &app, Family::named("dolby"));
+        let ls = channels.iter().find(|c| c.name == "Ls").expect("Ls");
+        assert_eq!(ls.coord_mode, CoordMode::Cartesian);
+        assert_eq!((ls.x, ls.y, ls.z), (-1.0, 0.0, 0.0), "the room corner");
     }
 
     #[test]
