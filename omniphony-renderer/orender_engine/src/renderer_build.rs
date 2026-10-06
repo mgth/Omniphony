@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow, bail};
 use bridge_api::{RVbapCartesianDefaults, RVbapTableMode};
 use renderer::config::RenderConfig;
 use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode, RendererControl};
-use renderer::spatial_renderer::SpatialRenderer;
+use renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
 use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
 use renderer::speaker_layout::SpeakerLayout;
 use std::path::PathBuf;
@@ -163,11 +163,11 @@ impl SpatialRendererParams {
                 .and_then(renderer::config_fields::master_gain::get)
                 .unwrap_or(renderer::config_fields::master_gain::DEFAULT),
             auto_gain: cfg
-                .and_then(renderer::config_fields::auto_gain::get)
-                .unwrap_or(renderer::config_fields::auto_gain::DEFAULT),
+                .and_then(|c| c.options.auto_gain)
+                .unwrap_or(renderer::options::defaults::auto_gain),
             use_loudness: cfg
-                .and_then(renderer::config_fields::use_loudness::get)
-                .unwrap_or(renderer::config_fields::use_loudness::DEFAULT),
+                .and_then(|c| c.options.use_loudness)
+                .unwrap_or(renderer::options::defaults::use_loudness),
             distance_diffuse: cfg
                 .and_then(renderer::config_fields::distance_diffuse::get)
                 .unwrap_or(renderer::config_fields::distance_diffuse::DEFAULT),
@@ -295,53 +295,53 @@ pub fn build_spatial_renderer(
         let distance_step =
             params.evaluation_polar_distance_max.max(0.01) / (distance_cells as f32);
 
-        let renderer = SpatialRenderer::new(
-            layout,
+        let renderer = SpatialRenderer::new(RendererSpec {
+            speaker_layout: layout,
             sample_rate,
-            azimuth_step_deg,
-            elevation_step_deg,
-            distance_step,
-            params.evaluation_polar_distance_max,
-            vbap_table_mode,
-            vbap_allow_negative_z,
-            params.render_evaluation_position_interpolation,
+            az_res_deg: azimuth_step_deg,
+            el_res_deg: elevation_step_deg,
+            spread_resolution: distance_step,
+            distance_max: params.evaluation_polar_distance_max,
+            table_mode: vbap_table_mode,
+            allow_negative_z: vbap_allow_negative_z,
+            vbap_position_interpolation: params.render_evaluation_position_interpolation,
             distance_model,
-            params.spread_from_distance,
-            params.spread_distance_range,
-            params.spread_distance_curve,
-            params.vbap_spread_min,
-            params.vbap_spread_max,
-            params.log_object_positions,
+            spread_from_distance: params.spread_from_distance,
+            spread_distance_range: params.spread_distance_range,
+            spread_distance_curve: params.spread_distance_curve,
+            spread_min: params.vbap_spread_min,
+            spread_max: params.vbap_spread_max,
+            log_object_positions: params.log_object_positions,
             room_ratio,
             room_ratio_rear,
             room_ratio_lower,
             room_ratio_center_blend,
-            params.master_gain,
-            params.auto_gain,
-            params.use_loudness,
-            params.distance_diffuse,
-            params.distance_diffuse_threshold,
-            params.distance_diffuse_curve,
-            match preferred_evaluation_mode {
+            master_gain_db: params.master_gain,
+            auto_gain: params.auto_gain,
+            use_loudness: params.use_loudness,
+            distance_diffuse: params.distance_diffuse,
+            distance_diffuse_threshold: params.distance_diffuse_threshold,
+            distance_diffuse_curve: params.distance_diffuse_curve,
+            preferred_evaluation_mode: match preferred_evaluation_mode {
                 RVbapTableMode::Polar => PreferredEvaluationMode::PrecomputedPolar,
                 RVbapTableMode::Cartesian => PreferredEvaluationMode::PrecomputedCartesian,
             },
-            match params.render_evaluation_mode {
+            initial_evaluation_mode: match params.render_evaluation_mode {
                 Some(EvalMode::Polar) => LiveEvaluationMode::PrecomputedPolar,
                 Some(EvalMode::Cartesian) => LiveEvaluationMode::PrecomputedCartesian,
                 None => LiveEvaluationMode::Auto,
             },
-            params
+            cartesian_default_x_size: params
                 .evaluation_cartesian_x_size
                 .unwrap_or(vbap_cartesian_defaults.x_size as usize),
-            params
+            cartesian_default_y_size: params
                 .evaluation_cartesian_y_size
                 .unwrap_or(vbap_cartesian_defaults.y_size as usize),
-            params
+            cartesian_default_z_size: params
                 .evaluation_cartesian_z_size
                 .unwrap_or(vbap_cartesian_defaults.z_size as usize),
-            params.evaluation_cartesian_z_neg_size.unwrap_or(0),
-        )?;
+            cartesian_default_z_neg_size: params.evaluation_cartesian_z_neg_size.unwrap_or(0),
+        })?;
         let elapsed = start_time.elapsed();
         // No gain table yet: the speaker stage samples one per crossover band
         // on the first frame, once the config seed below has landed.
@@ -515,10 +515,8 @@ pub fn seed_control_from_render_config(
             if let Some(mode) = render_cfg.and_then(|cfg| cfg.size_to_spread_mode) {
                 live.size_to_spread_mode = mode;
             }
-            if let Some(ceiling) =
-                render_cfg.and_then(renderer::config_fields::auto_gain_ceiling_db::get)
-            {
-                live.auto_gain_ceiling_db = ceiling;
+            if let Some(ceiling) = render_cfg.and_then(|cfg| cfg.options.auto_gain_ceiling_db) {
+                live.options.auto_gain_ceiling_db = ceiling;
             }
             // Binaural: the options are registry rows (seeded with the others
             // by `seed_live_from_config`). Seeded here: the ear mutes, and the
@@ -576,11 +574,9 @@ pub fn seed_runtime_state_from_render_config(
     // explicit choice). Both the requested-mode mutex and the live snapshot
     // field must be set — the render loop reads the latter.
     let ramp_mode = render_cfg
-        .and_then(renderer::config_fields::ramp_mode::get)
-        .as_deref()
-        .and_then(renderer::live_params::RampMode::from_str)
-        .unwrap_or(renderer::live_params::RampMode::Frame);
-    control.live.write().ramp_mode = ramp_mode;
+        .and_then(|cfg| cfg.options.ramp_mode)
+        .unwrap_or(renderer::options::defaults::ramp_mode);
+    control.live.write().options.ramp_mode = ramp_mode;
 
     // Declared live options (registry rows) plus their param bags and the
     // virtual bed: one shared registry seed, same call as the CLI bootstrap.
@@ -597,12 +593,12 @@ pub fn seed_runtime_state_from_render_config(
     // list is host knowledge and stays with the host.
     {
         let mut live = control.live.write();
-        live.drc_mode = render_cfg
-            .and_then(|c| c.drc_mode.clone())
+        live.options.drc_mode = render_cfg
+            .and_then(|c| c.options.drc_mode.clone())
             .unwrap_or_else(|| "Off".to_string());
         // A non-finite weight in the file reads as none: clamp keeps a NaN.
-        live.drc_weight = render_cfg
-            .and_then(|c| c.drc_weight)
+        live.options.drc_weight = render_cfg
+            .and_then(|c| c.options.drc_weight)
             .filter(|w| w.is_finite())
             .unwrap_or(1.0)
             .clamp(0.0, 1.0);
@@ -728,7 +724,7 @@ pub fn apply_render_config_live(
         // seeding.
         live.hybrid.curve = renderer::live_params::HybridLiveParams::default().curve;
         live.size_to_spread_mode = Default::default();
-        live.auto_gain_ceiling_db = renderer::config_fields::auto_gain_ceiling_db::DEFAULT;
+        live.options.auto_gain_ceiling_db = renderer::options::defaults::auto_gain_ceiling_db;
         live.binaural = renderer::live_params::BinauralLiveParams::default();
         renderer::options::reset_live_to_defaults(
             &mut live,
@@ -738,8 +734,8 @@ pub fn apply_render_config_live(
         // Construction-time scalars that also exist as live params: the same
         // values `SpatialRenderer::new` would receive for this config
         // (`params` already encodes the config defaults for absent keys).
-        live.auto_gain = params.auto_gain;
-        live.use_loudness = params.use_loudness;
+        live.options.auto_gain = params.auto_gain;
+        live.options.use_loudness = params.use_loudness;
         // Spread fallbacks (used when the vbap param bag has no entry) —
         // construction seeds these from the same params.
         live.spread_min = params.vbap_spread_min;
@@ -1158,7 +1154,10 @@ mod tests {
         use renderer::live_params::CrossoverType;
         let cfg = RenderConfig {
             render_backend: Some("hybrid".to_string()),
-            crossover_type: Some(CrossoverType::Fir),
+            options: renderer::options::DeclaredOptionsConfig {
+                crossover_type: Some(CrossoverType::Fir),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut layout = SpeakerLayout::preset("7.1.4").expect("preset layout");
@@ -1208,7 +1207,7 @@ mod tests {
 
         // A live crossover flip (Studio) still rebuilds: the band worker
         // builds the new set while the old one renders on.
-        control.live.write().crossover_type = CrossoverType::Lr4;
+        control.live.write().options.crossover_type = CrossoverType::Lr4;
         renderer
             .render_frame(&silence, 2, &[], Vec::new(), false)
             .expect("render");

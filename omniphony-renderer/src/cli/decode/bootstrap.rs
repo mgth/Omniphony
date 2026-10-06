@@ -66,7 +66,6 @@ fn list_available_output_devices(_backend: OutputBackend) -> Vec<OutputDeviceOpt
 }
 
 fn build_adaptive_resampling_config(
-    args: &RenderArgs,
     render_cfg: Option<&renderer::config::RenderConfig>,
 ) -> AdaptiveResamplingConfig {
     let defaults = AdaptiveResamplingConfig::default();
@@ -102,11 +101,8 @@ fn build_adaptive_resampling_config(
             .and_then(|cfg| cfg.adaptive_resampling_max_adjust)
             .map(|v| v as f64)
             .unwrap_or(defaults.max_adjust),
-        update_interval_callbacks: args
-            .adaptive_resampling_update_interval_callbacks
-            .or_else(|| {
-                render_cfg.and_then(|cfg| cfg.adaptive_resampling_update_interval_callbacks)
-            })
+        update_interval_callbacks: render_cfg
+            .and_then(|cfg| cfg.adaptive_resampling_update_interval_callbacks)
             .unwrap_or(defaults.update_interval_callbacks)
             .max(1),
         high_recover_entry_margin_ms: render_cfg
@@ -202,7 +198,7 @@ fn configure_linux_runtime_output(
         max_latency_ms: latency_ms * 2,
         quantum_frames: args.pw_quantum.unwrap_or(defaults.quantum_frames),
     };
-    handler.runtime.adaptive_resampling_config = build_adaptive_resampling_config(args, render_cfg);
+    handler.runtime.adaptive_resampling_config = build_adaptive_resampling_config(render_cfg);
 }
 
 // ASIO (Windows) and CoreAudio (macOS) share the same runtime-output setup:
@@ -214,7 +210,7 @@ fn configure_cpal_runtime_output(
     render_cfg: Option<&renderer::config::RenderConfig>,
 ) {
     handler.runtime.output_device = args.output_device.clone();
-    handler.runtime.adaptive_resampling_config = build_adaptive_resampling_config(args, render_cfg);
+    handler.runtime.adaptive_resampling_config = build_adaptive_resampling_config(render_cfg);
 }
 
 fn resolve_layout(
@@ -367,14 +363,10 @@ fn attach_cli_host_state(
     ctrl: &Arc<RendererControl>,
 ) -> Arc<dyn runtime_control::HostControlHandler> {
     ctrl.set_input_path(Some(input_path.display().to_string()));
-    // The flag-backed settings, which the resolved args already fold through
-    // flag > config > default: after the seed, which they override.
-    {
-        let mut live = ctrl.live.write();
-        live.ramp_mode = args.ramp_mode.into();
-        live.channel_render_mode = args.channel_render_mode.into();
-        live.surround_placement = args.surround_placement.into();
-    }
+    // The channel render mode is a command-line override, never a setting:
+    // after the seed. (The registered options' flags are in `render_cfg`,
+    // which the seed already applied.)
+    ctrl.live.write().channel_render_mode = args.channel_render_mode.into();
 
     let requested_latency_target_ms = {
         #[cfg(target_os = "linux")]
@@ -609,7 +601,7 @@ mod host_bounds_tests {
             CTRL.get_or_init(|| super::super::handler::tests::test_renderer().renderer_control()),
         );
         let audio = Arc::new(AudioControl::new(RequestedAudioOutputConfig {
-            adaptive: build_adaptive_resampling_config(&args(), Some(render)),
+            adaptive: build_adaptive_resampling_config(Some(render)),
             ..Default::default()
         }));
         let input = Arc::new(InputControl::new(build_requested_input_config(Some(

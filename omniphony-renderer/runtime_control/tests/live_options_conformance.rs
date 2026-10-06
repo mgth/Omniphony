@@ -30,7 +30,7 @@ use renderer::live_params::{
     PreferredEvaluationMode, RendererControl, SurroundPlacement,
 };
 use renderer::placement::{PlacementMode, SourceFamily};
-use renderer::spatial_renderer::SpatialRenderer;
+use renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
 use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
 use renderer::speaker_layout::SpeakerLayout;
 use runtime_control::osc_contract;
@@ -59,41 +59,41 @@ const HAND_WIRED_OPTIONS: &[LiveOptionRow] = &[
         key: "synthetic_objects_enabled",
         control_addr: osc_contract::CONTROL_SYNTHETIC_OBJECTS,
         snapshot_key: "syntheticObjectsEnabled",
-        set_non_default: |live| live.synthetic_objects_enabled = true,
+        set_non_default: |live| live.options.synthetic_objects_enabled = true,
         snapshot_reflects: |v| v == true,
-        config_reflects: |r| r.synthetic_objects_enabled == Some(true),
+        config_reflects: |r| r.options.synthetic_objects_enabled == Some(true),
     },
     LiveOptionRow {
         key: "surround_placement",
         control_addr: osc_contract::CONTROL_SURROUND_PLACEMENT,
         snapshot_key: "surroundPlacement",
-        set_non_default: |live| live.surround_placement = SurroundPlacement::Back,
+        set_non_default: |live| live.options.surround_placement = SurroundPlacement::Back,
         snapshot_reflects: |v| v == "back",
-        config_reflects: |r| r.surround_placement == Some(SurroundPlacement::Back),
+        config_reflects: |r| r.options.surround_placement == Some(SurroundPlacement::Back),
     },
     LiveOptionRow {
         key: "output_channel_mapping",
         control_addr: osc_contract::CONTROL_OUTPUT_CHANNEL_MAPPING,
         snapshot_key: "outputChannelMapping",
-        set_non_default: |live| live.output_channel_mapping = OutputChannelMapping::ByName,
+        set_non_default: |live| live.options.output_channel_mapping = OutputChannelMapping::ByName,
         snapshot_reflects: |v| v == "by_name",
-        config_reflects: |r| r.output_channel_mapping == Some(OutputChannelMapping::ByName),
+        config_reflects: |r| r.options.output_channel_mapping == Some(OutputChannelMapping::ByName),
     },
     LiveOptionRow {
         key: "object_generator_id",
         control_addr: osc_contract::CONTROL_OBJECT_GENERATOR,
         snapshot_key: "objectGeneratorId",
-        set_non_default: |live| live.object_generator_id = "copy_up".to_string(),
+        set_non_default: |live| live.options.object_generator_id = "copy_up".to_string(),
         snapshot_reflects: |v| v == "copy_up",
-        config_reflects: |r| r.object_generator_id.as_deref() == Some("copy_up"),
+        config_reflects: |r| r.options.object_generator_id.as_deref() == Some("copy_up"),
     },
     LiveOptionRow {
         key: "phantom_extract_mode",
         control_addr: osc_contract::CONTROL_PHANTOM_EXTRACT,
         snapshot_key: "phantomExtractMode",
-        set_non_default: |live| live.phantom_extract_mode = PhantomExtractMode::Spectral,
+        set_non_default: |live| live.options.phantom_extract_mode = PhantomExtractMode::Spectral,
         snapshot_reflects: |v| v == "spectral",
-        config_reflects: |r| r.phantom_extract_mode == Some(PhantomExtractMode::Spectral),
+        config_reflects: |r| r.options.phantom_extract_mode == Some(PhantomExtractMode::Spectral),
     },
     LiveOptionRow {
         key: "placement.generic.layout",
@@ -154,50 +154,50 @@ const HAND_WIRED_OPTIONS: &[LiveOptionRow] = &[
 /// Small cartesian grid so the table build stays trivial.
 fn fixture_control() -> Arc<RendererControl> {
     let layout = SpeakerLayout::preset("7.1.4").expect("7.1.4 preset");
-    let renderer = SpatialRenderer::new(
-        layout,
-        48_000,
-        1,
-        1,
+    let renderer = SpatialRenderer::new(RendererSpec {
+        speaker_layout: layout,
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
         // 8 distance cells over 2 units: the declared polar defaults.
-        0.25,
-        2.0,
-        VbapTableMode::Cartesian {
+        spread_resolution: 0.25,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 5,
             y_size: 5,
             z_size: 3,
             z_neg_size: 3,
         },
-        false,
-        true,
+        allow_negative_z: false,
+        vbap_position_interpolation: true,
         // The declared default (`config_fields::vbap_distance_model`).
-        DistanceModel::None,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
+        distance_model: DistanceModel::None,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
         // The declared room defaults (`renderer::config_fields::room`), so
         // the snapshot-vs-schema default net holds for the room rows.
-        [1.0, 2.0, 1.0],
-        2.0,
-        0.5,
-        0.5,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
+        room_ratio: [1.0, 2.0, 1.0],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.5,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
         // The declared default mode.
-        LiveEvaluationMode::Auto,
-        5,
-        5,
-        3,
-        3,
-    )
+        initial_evaluation_mode: LiveEvaluationMode::Auto,
+        cartesian_default_x_size: 5,
+        cartesian_default_y_size: 5,
+        cartesian_default_z_size: 3,
+        cartesian_default_z_neg_size: 3,
+    })
     .expect("fixture renderer");
     renderer.renderer_control()
 }
@@ -317,30 +317,14 @@ mod registry {
     use super::*;
     use renderer::options::{self, RawOptionValue};
 
-    /// A non-default sample per declared option, keyed by canonical name.
-    /// Extending the registry without extending this list fails loudly below.
+    /// A non-default sample for the options [`derived_sample`] cannot make one
+    /// for (free-form strings, arrays, values that depend on other rows),
+    /// keyed by canonical name. A row with neither fails loudly below.
     fn non_default_samples() -> Vec<(&'static str, RawOptionValue<'static>)> {
         vec![
-            ("surround_placement", RawOptionValue::Str("back")),
-            ("output_channel_mapping", RawOptionValue::Str("by_name")),
-            ("synthetic_objects_enabled", RawOptionValue::Bool(true)),
-            ("decode_thread", RawOptionValue::Bool(true)),
             ("object_generator_id", RawOptionValue::Str("copy_up")),
-            ("phantom_extract_mode", RawOptionValue::Str("spectral")),
-            ("crossover_type", RawOptionValue::Str("fir")),
-            (
-                "crossover_fir_transition_ratio",
-                RawOptionValue::Number(0.75),
-            ),
             ("hrir_update_lattice", RawOptionValue::Str("coarse")),
-            ("auto_gain", RawOptionValue::Bool(true)),
-            ("auto_gain_ceiling_db", RawOptionValue::Number(-3.0)),
-            ("use_loudness", RawOptionValue::Bool(true)),
-            ("ramp_mode", RawOptionValue::Str("interp")),
-            ("sample_ramp_stride", RawOptionValue::Number(4.0)),
             ("drc_mode", RawOptionValue::Str("Standard")),
-            ("drc_weight", RawOptionValue::Number(0.5)),
-            ("dialogue_gain_db", RawOptionValue::Number(-4.5)),
             // Width stays the reference (1): the file stores metres against
             // it, so a width ratio is folded into the layout radius on reload.
             ("room_ratio", RawOptionValue::Numbers(&[1.0, 3.0, 1.5])),
@@ -429,12 +413,46 @@ mod registry {
         ]
     }
 
-    pub(super) fn sample_for(key: &str) -> RawOptionValue<'static> {
+    /// A value other than the default, from the row's kind: the other
+    /// boolean, a step away, the next integer, another enum value.
+    fn derived_sample(spec: &options::OptionSpec) -> Option<RawOptionValue<'static>> {
+        use options::{OptionDefault, OptionKind};
+        match (spec.kind, spec.default) {
+            (OptionKind::Bool, OptionDefault::Bool(default)) => {
+                Some(RawOptionValue::Bool(!default))
+            }
+            (OptionKind::Float { min, max, step }, OptionDefault::Float(default)) => {
+                let (default, step) = (default as f64, step as f64);
+                let up = default + step;
+                Some(RawOptionValue::Number(if up <= max as f64 {
+                    up
+                } else {
+                    (default - step).max(min as f64)
+                }))
+            }
+            (OptionKind::Int { min, max }, OptionDefault::Int(default)) => {
+                let value = if default < max {
+                    default + 1
+                } else {
+                    (default - 1).max(min)
+                };
+                Some(RawOptionValue::Number(value as f64))
+            }
+            (OptionKind::Enum(names), OptionDefault::Str(default)) => names
+                .iter()
+                .find(|name| **name != default)
+                .map(|name| RawOptionValue::Str(name)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn sample_for(spec: &options::OptionSpec) -> RawOptionValue<'static> {
         non_default_samples()
             .into_iter()
-            .find(|(k, _)| *k == key)
-            .unwrap_or_else(|| panic!("no non-default sample for registry option {key}"))
-            .1
+            .find(|(k, _)| *k == spec.key)
+            .map(|(_, sample)| sample)
+            .or_else(|| derived_sample(spec))
+            .unwrap_or_else(|| panic!("no non-default sample for registry option {}", spec.key))
     }
 
     #[test]
@@ -498,7 +516,7 @@ mod registry {
         {
             let mut live = control.live.write();
             for spec in options::LIVE_OPTIONS {
-                let raw = sample_for(spec.key);
+                let raw = sample_for(spec);
                 assert!(
                     (spec.set)(&mut live, &raw, &env(&control)).is_some(),
                     "{}: sample value rejected",
@@ -542,7 +560,7 @@ mod registry {
         };
         for spec in options::LIVE_OPTIONS {
             let control = fixture_control();
-            let sample = sample_for(spec.key);
+            let sample = sample_for(spec);
             let applied = options::apply_to_control(&control, spec, &sample).expect("accepted");
             assert!(applied.changed, "{}: the sample is not a change", spec.key);
             assert!(dirty(&control), "{}: a change must light Save", spec.key);
@@ -627,7 +645,7 @@ mod registry {
         let control = fixture_control();
         let mut live = control.live.write();
         for spec in options::LIVE_OPTIONS {
-            (spec.set)(&mut live, &sample_for(spec.key), &env(&control)).expect("sample accepted");
+            (spec.set)(&mut live, &sample_for(spec), &env(&control)).expect("sample accepted");
         }
         options::reset_live_to_defaults(&mut live, &env(&control));
         let schema: serde_json::Value =
@@ -740,7 +758,7 @@ mod registry {
         let control = fixture_control();
         let mut live = control.live.write();
         for spec in options::LIVE_OPTIONS {
-            let raw = sample_for(spec.key);
+            let raw = sample_for(spec);
             let canonical = (spec.set)(&mut live, &raw, &env(&control));
             assert!(canonical.is_some(), "{}: sample rejected", spec.key);
             if let options::OptionKind::Enum(values) = spec.kind {
@@ -771,7 +789,10 @@ fn legacy_fixed_channel_options_migrate_without_reactivating_host_mode() {
     let control = fixture_control();
     let mut legacy = RenderConfig {
         channel_render_mode: Some(renderer::live_params::ChannelRenderMode::Host),
-        object_generator_id: Some("pad".to_string()),
+        options: renderer::options::DeclaredOptionsConfig {
+            object_generator_id: Some("pad".to_string()),
+            ..Default::default()
+        },
         phantom_enabled: Some(true),
         ..Default::default()
     };
@@ -787,16 +808,19 @@ fn legacy_fixed_channel_options_migrate_without_reactivating_host_mode() {
             live.channel_render_mode,
             renderer::live_params::ChannelRenderMode::Spatial
         );
-        assert!(live.synthetic_objects_enabled);
-        assert_eq!(live.phantom_extract_mode, PhantomExtractMode::Spectral);
+        assert!(live.options.synthetic_objects_enabled);
+        assert_eq!(
+            live.options.phantom_extract_mode,
+            PhantomExtractMode::Spectral
+        );
         renderer::options::store_live_to_config(&mut legacy, &live, &env(&control));
     }
 
     assert_eq!(legacy.channel_render_mode, None);
     assert_eq!(legacy.phantom_enabled, None);
-    assert_eq!(legacy.synthetic_objects_enabled, Some(true));
+    assert_eq!(legacy.options.synthetic_objects_enabled, Some(true));
     assert_eq!(
-        legacy.phantom_extract_mode,
+        legacy.options.phantom_extract_mode,
         Some(PhantomExtractMode::Spectral)
     );
     assert!(
@@ -813,20 +837,23 @@ fn disabled_synthesis_master_preserves_non_off_child_selections() {
     let mut saved = RenderConfig::default();
     {
         let mut live = control.live.write();
-        live.synthetic_objects_enabled = false;
-        live.object_generator_id = "dirac".to_string();
-        live.phantom_extract_mode = PhantomExtractMode::Broadband;
+        live.options.synthetic_objects_enabled = false;
+        live.options.object_generator_id = "dirac".to_string();
+        live.options.phantom_extract_mode = PhantomExtractMode::Broadband;
         renderer::options::store_live_to_config(&mut saved, &live, &env(&control));
     }
-    assert_eq!(saved.synthetic_objects_enabled, Some(false));
+    assert_eq!(saved.options.synthetic_objects_enabled, Some(false));
 
     let restored = fixture_control();
     {
         let mut live = restored.live.write();
         renderer::options::seed_live_from_config(&mut live, &saved, &env(&restored));
-        assert!(!live.synthetic_objects_enabled);
-        assert_eq!(live.object_generator_id, "dirac");
-        assert_eq!(live.phantom_extract_mode, PhantomExtractMode::Broadband);
+        assert!(!live.options.synthetic_objects_enabled);
+        assert_eq!(live.options.object_generator_id, "dirac");
+        assert_eq!(
+            live.options.phantom_extract_mode,
+            PhantomExtractMode::Broadband
+        );
     }
 }
 
@@ -912,7 +939,7 @@ fn plugin_params_reach_the_catalogue_the_snapshot_and_the_saved_config() {
     .unwrap();
     let legacy = Config::load_or_default(&base).render.unwrap();
     control.seed_plugin_params(PluginParams::from_config(&legacy));
-    control.live.write().object_generator_id = "pad".to_string();
+    control.live.write().options.object_generator_id = "pad".to_string();
 
     let snapshot = snapshot_json(&control);
     assert_eq!(
@@ -1072,20 +1099,27 @@ mod host_scope {
         let out = temp_path("scope-out");
         let mut config = Config::default();
         config.render = Some(RenderConfig {
-            decode_thread: Some(true),
+            options: renderer::options::DeclaredOptionsConfig {
+                decode_thread: Some(true),
+                ..Default::default()
+            },
             ..Default::default()
         });
         config.save(&base).expect("base written");
-        assert!(!control.live.read().decode_thread);
+        assert!(!control.live.read().options.decode_thread);
 
         save_live_config_to_path(&control, Some(&StubHost), &base, &out).expect("save");
         let saved = Config::load_or_default(&out).render.expect("render");
-        assert_eq!(saved.decode_thread, Some(true), "the file's value survives");
+        assert_eq!(
+            saved.options.decode_thread,
+            Some(true),
+            "the file's value survives"
+        );
 
         save_live_config_to_path(&control, None, &base, &out).expect("save");
         let saved = Config::load_or_default(&out).render.expect("render");
         assert_ne!(
-            saved.decode_thread,
+            saved.options.decode_thread,
             Some(true),
             "the embedded engine writes its own"
         );
@@ -1169,7 +1203,7 @@ mod hostile_config_values {
             assert!(within(spec.kind, &value), "{}: default {value}", spec.key);
             (spec.set)(
                 &mut live,
-                &super::registry::sample_for(spec.key),
+                &super::registry::sample_for(spec),
                 &env(&control),
             )
             .expect("sample");

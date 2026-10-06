@@ -26,8 +26,9 @@ use crate::render_backend::{EvaluationBuildConfig, PreparedRenderEngine, RenderR
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LiveEvaluationMode {
+    #[default]
     Auto,
     Realtime,
     PrecomputedPolar,
@@ -92,7 +93,7 @@ pub enum RampMode {
 pub const MAX_SAMPLE_RAMP_STRIDE: usize = 32;
 
 impl RampMode {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Frame => "frame",
@@ -177,7 +178,7 @@ pub enum PhantomExtractMode {
 }
 
 impl PhantomExtractMode {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Broadband => "broadband",
@@ -216,7 +217,7 @@ pub enum CrossoverType {
 }
 
 impl CrossoverType {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Lr4 => "lr4",
             Self::Fir => "fir",
@@ -273,7 +274,7 @@ pub enum SurroundPlacement {
 }
 
 impl SurroundPlacement {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Side => "side",
             Self::Back => "back",
@@ -309,7 +310,7 @@ pub enum OutputChannelMapping {
 }
 
 impl OutputChannelMapping {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::ByIndex => "by_index",
             Self::ByName => "by_name",
@@ -1057,7 +1058,7 @@ pub fn speaker_gain_linear(gain_db: f32) -> f32 {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct CartesianEvaluationParams {
     pub x_size: usize,
     pub y_size: usize,
@@ -1065,7 +1066,7 @@ pub struct CartesianEvaluationParams {
     pub z_neg_size: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct PolarEvaluationParams {
     pub azimuth_values: i32,
     pub elevation_values: i32,
@@ -1073,7 +1074,7 @@ pub struct PolarEvaluationParams {
     pub distance_max: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct EvaluationLiveParams {
     pub mode: LiveEvaluationMode,
     pub position_interpolation: bool,
@@ -1161,9 +1162,16 @@ impl Default for HybridLiveParams {
 ///
 /// Written by the control threads (OSC listener, config seeding), read
 /// lock-free by the render thread through [`LiveCell`]. `Clone` because a
-/// write edits a copy and publishes it.
-#[derive(Clone)]
+/// write edits a copy and publishes it. `Default` is a blank state with no
+/// renderer behind it (no speakers, the declared options at their
+/// defaults): a scratch for code that edits a config through the option
+/// rows (`options::store_client_values`), never what a renderer starts with.
+#[derive(Clone, Default)]
 pub struct LiveParams {
+    /// The options declared in `options::declared` (one field per option,
+    /// defaulted from its row).
+    pub options: crate::options::DeclaredOptions,
+
     /// Master output gain, linear scale (1.0 = unity, 0.5 ≈ −6 dB).
     pub master_gain: f32,
 
@@ -1190,33 +1198,11 @@ pub struct LiveParams {
     /// (w, d, h) to derive a scalar spread for backends that consume it.
     pub size_to_spread_mode: crate::render_backend::SizeToSpreadMode,
 
-    /// Ramp processing mode for object moves and gain transitions.
-    pub ramp_mode: RampMode,
-
-    /// `RampMode::Sample`: samples between two gain lookups of a moving
-    /// object, interpolated linearly in between; 1 is a lookup per sample.
-    /// In `[1, MAX_SAMPLE_RAMP_STRIDE]`.
-    pub sample_ramp_stride: usize,
-
     /// Requested spatial render backend identifier.
     pub backend_id: String,
 
     /// Requested evaluation parameters for the current gain model.
     pub evaluation: EvaluationLiveParams,
-
-    /// Apply dialogue normalisation gain stored in the renderer.
-    pub use_loudness: bool,
-
-    /// Automatic gain reduction: when set, the gain stage permanently lowers
-    /// output gain on detected clipping (peak hold, no recovery). Live-tunable
-    /// via `/omniphony/control/auto_gain`.
-    pub auto_gain: bool,
-
-    /// Target ceiling (dBFS) that auto-gain corrects detected peaks down to.
-    /// Clipping is detected at 0 dBFS (peak > 1.0); when it fires, the master
-    /// gain is lowered so the peak lands at this level instead of exactly 0 dBFS,
-    /// leaving headroom so corrections fire less often. Default −1 dBFS.
-    pub auto_gain_ceiling_db: f32,
 
     /// Distance attenuation model currently applied by the renderer.
     pub distance_model: crate::spatial_vbap::DistanceModel,
@@ -1318,17 +1304,6 @@ pub struct LiveParams {
     /// Runtime tuning parameters for the hybrid backend.
     pub hybrid: HybridLiveParams,
 
-    /// Selected Dynamic Range Control mode (as string).
-    pub drc_mode: String,
-    /// DRC weighting in [0.0, 1.0]. 1.0 applies the full bridge-decoded DRC gain;
-    /// 0.0 bypasses it entirely. Intermediate values scale the dB reduction
-    /// linearly (effective_gain = bridge_gain.powf(drc_weight)).
-    pub drc_weight: f32,
-    /// Gain in dB on the channels the bridge tags as dialogue
-    /// (`FormatBridge::channel_tags`); 0 leaves them as the stream mixed
-    /// them. Applied with the PCM conversion, so before the upmix stages.
-    pub dialogue_gain_db: f32,
-
     /// Binaural (headphone) output stage parameters. When
     /// `binaural.output_mode == OutputMode::Binaural`, the renderer bypasses the
     /// speaker/VBAP path and emits a 2-channel frame instead.
@@ -1340,63 +1315,12 @@ pub struct LiveParams {
     /// is an internal/host override, not a Studio or persistent live option.
     pub channel_render_mode: ChannelRenderMode,
 
-    /// Where the 4.x/5.x surround pair (`Ls`/`Rs`) is placed: side vs back.
-    /// Consulted only for channel content without dedicated back channels;
-    /// 7.x sources ignore it. Live-tunable via
-    /// `/omniphony/control/surround_placement`.
-    pub surround_placement: SurroundPlacement,
-
-    /// How output channels map to device ports: positionless `ByIndex` (default,
-    /// port N = layout speaker N) or positional `ByName`. Consulted when the
-    /// output stream is (re)configured. Live-tunable via
-    /// `/omniphony/control/output_channel_mapping`.
-    pub output_channel_mapping: OutputChannelMapping,
-
-    /// Crossover filter implementation: minimum-latency IIR (`lr4`) or
-    /// linear-phase FIR (`fir`). The speaker stage compares this against the
-    /// bank it built every frame, so a flip takes effect without a topology
-    /// change. Live-tunable via `/omniphony/control/crossover_type`.
-    pub crossover_type: CrossoverType,
-
-    /// FIR crossover transition width as a fraction of the lowest cutoff
-    /// (the Kaiser design's `transition_ratio`): smaller = steeper bands but
-    /// more taps, latency and ringing; larger = the opposite. Only consulted
-    /// by the `fir` engine; the speaker stage rebuilds the bank live when it
-    /// moves. Clamped to [0.05, 2.0]. Live-tunable via
-    /// `/omniphony/control/crossover_fir_transition_ratio`.
-    pub crossover_fir_transition_ratio: f32,
-
     /// Where fixed channels go, per source family (consulted only when
     /// `channel_render_mode == Spatial`): each family's mode — sphere, room
     /// or manual — and its entries (`spatialize` virtual/direct, `gain_db`
     /// trim, and the pose in manual mode). See `crate::placement`.
     /// Live-tunable via the `placement` OSC controls.
     pub placement: crate::placement::PlacementState,
-
-    /// Selects the bed→height object generator (2D upmix): synthesizes height
-    /// objects from channel-based content so a height-capable layout (7.1.4, …)
-    /// is exercised when the source has no height. Empty / `"none"` = disabled
-    /// (the default). Consulted only for channel content without spatial objects;
-    /// object streams ignore it. Live-tunable via
-    /// `/omniphony/control/object_generator`.
-    pub object_generator_id: String,
-
-    /// Global permission for renderer-synthesized objects. When false, both the
-    /// phantom extractor and height generator are bypassed without clearing
-    /// their configured selections or parameters.
-    pub synthetic_objects_enabled: bool,
-
-    /// Decode on a thread of its own, overlapping the render (a performance
-    /// switch, off by default). Honoured by the liborender engine only when
-    /// its host lets the option decide (`orender_set_option("decode_thread",
-    /// "live")`), since the host must then stamp its output from the input
-    /// timestamps carried with the audio and drain at end of stream. The
-    /// standalone renderer always decodes on its own thread and ignores it.
-    pub decode_thread: bool,
-
-    /// Phantom-source extraction algorithm. `Off` disables only this stage;
-    /// the global synthesized-object master may independently suppress it.
-    pub phantom_extract_mode: PhantomExtractMode,
 }
 
 impl LiveParams {

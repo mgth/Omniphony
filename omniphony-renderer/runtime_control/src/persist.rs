@@ -453,12 +453,12 @@ mod tests {
         );
 
         // A setting changed in this build is its own choice, and is saved.
-        control.live.write().crossover_type = renderer::live_params::CrossoverType::Fir;
+        control.live.write().options.crossover_type = renderer::live_params::CrossoverType::Fir;
         save_live_config(&control, None).expect("save");
         let saved = renderer::config::Config::load(&path).unwrap();
         let render = saved.render.unwrap();
         assert_eq!(
-            render.crossover_type,
+            render.options.crossover_type,
             Some(renderer::live_params::CrossoverType::Fir)
         );
         assert!(!render.extra.contains_key("crossover_type"));
@@ -712,7 +712,7 @@ mod tests {
         std::fs::write(&sidecar, "render:\n  channel_render_mode: host\n").unwrap();
 
         persist_render_fields_to_path(&path, |render| {
-            renderer::config_fields::surround_placement::store(render, SurroundPlacement::Back)
+            renderer::options::store::surround_placement(render, SurroundPlacement::Back)
         });
 
         let written = std::fs::read_to_string(&path).unwrap();
@@ -810,7 +810,7 @@ mod tests {
         .unwrap();
 
         persist_render_fields_to_path(&path, |render| {
-            renderer::config_fields::surround_placement::store(render, SurroundPlacement::Side)
+            renderer::options::store::surround_placement(render, SurroundPlacement::Side)
         });
 
         let written = std::fs::read_to_string(&path).unwrap();
@@ -833,7 +833,7 @@ mod tests {
         let placement = cfg
             .render
             .as_ref()
-            .and_then(renderer::config_fields::surround_placement::get)
+            .and_then(|render| render.options.surround_placement)
             .unwrap_or(SurroundPlacement::Side);
         assert_eq!(placement, SurroundPlacement::Side);
 
