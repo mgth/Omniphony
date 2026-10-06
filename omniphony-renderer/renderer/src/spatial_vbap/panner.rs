@@ -100,7 +100,24 @@ mod saf_ffi {
 
 /// Maximum number of speakers supported without heap allocation.
 /// Covers all standard immersive audio layouts (up to 22.2).
+///
+/// It bounds the whole layout, LFE and non-spatialized speakers included:
+/// [`Gains`] carries one gain per speaker of the layout. Lifting it means
+/// gain buffers sized per layout instead (mgth/Omniphony#745).
 pub const MAX_SPEAKERS: usize = 24;
+
+/// Refuse a layout [`Gains`] cannot hold, with a reason a user can act on.
+/// Every backend and the speaker stage size their gains by it, so a larger
+/// layout would panic out of bounds in them (on the table-building workers,
+/// or on the render thread for a band rebuild) rather than fail.
+pub fn check_speaker_count(speakers: usize) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        speakers <= MAX_SPEAKERS,
+        "the layout has {speakers} speakers (LFE included); this renderer handles at most \
+         {MAX_SPEAKERS}"
+    );
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VbapTableMode {
