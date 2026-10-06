@@ -8,5 +8,6 @@ description = "Deterministic scenes, goldens and signal analysis for Omniphony D
 publish = false
 
 [dependencies]
-renderer.workspace = true
+# Test-only crate: the shared renderer spec comes from `renderer::test_support`.
+renderer = { workspace = true, features = ["test-support"] }
 realfft.workspace = true

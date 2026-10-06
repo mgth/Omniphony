@@ -43,7 +43,7 @@ use crate::partitioned_conv::{ConvolutionPlan, InputHistory, OutputScratch, Part
 
 /// Internal hop size (samples). Each hop triggers one forward FFT of
 /// `2 * BLOCK`; the filter kernels are partitioned into `BLOCK`-sized chunks.
-const BLOCK: usize = 1024;
+pub(crate) const BLOCK: usize = 1024;
 
 /// Hop phase step between consecutive channels, in samples: ≈ 5 · `BLOCK` / 24.
 ///

@@ -25,3 +25,5 @@ pub mod spatial_renderer;
 pub mod spatial_vbap;
 pub mod speaker_layout;
 pub mod speaker_test;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
