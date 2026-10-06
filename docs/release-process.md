@@ -155,6 +155,26 @@ runners (prefer `auto`), and any step that only runs on a tag push. Never cap
   `## Known limitations`, and the macOS quarantine/Gatekeeper install note
   (still needed until the app is notarized — #201).
 - Notes span everything since the last **public** tag.
+- Every release's notes (`v*`, `mpv-v*`, and the bridge's) open with the
+  install line, so a user who lands on a release page finds the path to a
+  film playing:
+
+  ```markdown
+  **New here?** Step-by-step install, from nothing to a film playing:
+  [Linux](https://github.com/mgth/Omniphony/blob/main/docs/install/linux.md) ·
+  [Windows](https://github.com/mgth/Omniphony/blob/main/docs/install/windows.md) ·
+  [macOS](https://github.com/mgth/Omniphony/blob/main/docs/install/macos.md)
+  ```
+
+- Every Linux asset says what it runs on, in the notes and in the table of
+  `docs/install/linux.md`: the build image and what the binary takes from the
+  system. At 0.6.0: the native Studio and the Tauri bundles are built on
+  Ubuntu 22.04 (glibc ≥ 2.35; the `orender` beside the Studio also needs a
+  system PipeWire); the player zip links Ubuntu 24.04's FFmpeg and libplacebo
+  and runs only there; the bridge is built on Ubuntu 24.04 and needs only glibc.
+- After publishing, bump the asset names and release links in
+  `docs/install/{linux,windows,macos}.md` on `main` (and the version pairing
+  stated at the top of each page) together with the README download badges.
 
 ```sh
 gh release edit vX.Y.Z --repo mgth/Omniphony --notes-file notes.md
