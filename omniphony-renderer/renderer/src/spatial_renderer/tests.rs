@@ -693,6 +693,42 @@ fn settle(r: &mut SpatialRenderer, pcm: &[f32]) {
     }
 }
 
+/// The same panic on a build the calling thread makes itself — at start-up
+/// ([`SpatialRenderer::prepare_speaker_stage`]) or in synchronous mode
+/// (offline renders) — is an error the caller gets, not a panic through the
+/// engine or the render thread.
+#[test]
+fn a_band_build_that_panics_on_the_calling_thread_is_an_error() {
+    use std::sync::atomic::Ordering;
+    let mut r = build_table_renderer(true, false);
+    let control = r.renderer_control();
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(FLAKY_BUILDS));
+    control.register_backend(Box::new(FlakyFactory(Arc::clone(&mode))));
+    control.live.write().backend_id = "flaky".to_string();
+    control.bump_geometry_generation();
+    let plan = control.prepare_topology_rebuild().expect("plan");
+    let topology = plan
+        .build_topology_reusing(Some(&control.active_topology()))
+        .expect("topology");
+    mode.store(FLAKY_PANICS, Ordering::Relaxed);
+    control.publish_topology(topology);
+
+    let prepared =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| r.prepare_speaker_stage()))
+            .expect("no panic out of prepare_speaker_stage");
+    let error = format!("{:#}", prepared.expect_err("the build failed"));
+    assert!(error.contains("backend bug"), "{error}");
+
+    r.set_synchronous_stage_builds(true);
+    let pcm = vec![0.25f32; 40];
+    let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        r.render_frame(&pcm, 1, &[], Vec::new(), false).map(|_| ())
+    }))
+    .expect("no panic out of a synchronous render");
+    let error = format!("{:#}", rendered.expect_err("the build failed"));
+    assert!(error.contains("backend bug"), "{error}");
+}
+
 /// A band set the worker cannot build — its backend fails, or panics — is
 /// answered all the same: the stage stops waiting, keeps the bands it has,
 /// does not ask again every frame, and the reason reaches the control for the
