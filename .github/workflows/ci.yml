@@ -2,8 +2,9 @@ name: CI
 
 # Integration gate for the `main` (integration) and `release` branches.
 # Linux x64 validates formatting and tests (build-and-test) and, in a job of
-# its own beside it, the native Studio, the web frontend and the Tauri host
-# (studio). macOS (arm64) and Windows (x64) build and test the renderer
+# its own beside it, the native Studio (studio), skipped on a pull request
+# that touches nothing it builds. The deprecated Tauri Studio is no longer
+# checked (it gets no more changes; release.yml still packages it). macOS (arm64) and Windows (x64) build and test the renderer
 # workspace, the OSC contract and the native Studio; Windows also checks the
 # shared core on stable. Linux arm64 builds and tests the renderer workspace,
 # the engine an embedded box runs. Release archives are built by release.yml.
@@ -120,9 +121,8 @@ jobs:
 
       # ── Platform dependencies ─────────────────────────────────────────────
       # Same PipeWire PPA as release.yml: ubuntu-22.04 ships PipeWire 0.3.48 but
-      # pipewire-rs 0.9.x needs >= 0.3.65. The renderer workspace only: the
-      # GTK/WebKit stack the Studio and the Tauri host link is installed by the
-      # `studio` job.
+      # pipewire-rs 0.9.x needs >= 0.3.65. What the renderer workspace links,
+      # nothing more: the GTK/WebKit stack went with the Tauri host's check.
       - name: Install Linux system dependencies
         run: |
           # `apt-get update` reaches Launchpad and can hang rather than fail
@@ -351,19 +351,64 @@ jobs:
             --manifest-path omniphony-renderer/Cargo.toml > /tmp/host-options-schema.json
           node omniphony-studio/scripts/check-options-schema.mjs /tmp/host-options-schema.json
 
-  # The Studio half of the Linux x64 gate, beside build-and-test rather than
-  # after it: the native Studio, the deprecated web Studio and its Tauri host,
-  # and the release-version bump across every lockfile. None of it builds the
-  # renderer, and in build-and-test it added 3-5 minutes to the longest job.
-  # The job name is a required check on `main`: rename it and branch
-  # protection must follow.
+  # Which jobs a pull request concerns. Only `studio` is optional: on a pull
+  # request whose files it builds nothing of, it is skipped, and GitHub
+  # counts a skipped job as passing a required check. Read from the pull
+  # request's own files, the diff against its base: the train's merge of main
+  # brings nothing main has not passed already, and every push to main runs
+  # every job. Anything but a pull request, and any failure to list the
+  # files, runs everything.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      studio: ${{ steps.filter.outputs.studio }}
+    steps:
+      - name: List what the pull request touches
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            echo "studio=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The files API stops at 3,000: a pull request that size runs it all.
+          if ! files="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename')" \
+            || [ "$(printf '%s\n' "$files" | wc -l)" -ge 3000 ]; then
+            echo "studio=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The native Studio and the path dependencies it builds (core and
+          # scene take the OSC contract and omniphony_geometry), its i18n check,
+          # and what the version-bump step resolves: every manifest and
+          # lockfile, and the script itself. This workflow too.
+          studio_paths='^(omniphony-studio-egui/|osc-contract/|omniphony-renderer/omniphony_geometry/|omniphony-studio/scripts/check-i18n\.mjs$|omniphony-studio/src-tauri/tauri\.conf\.json$|omniphony-studio/package(-lock)?\.json$|scripts/release_version\.py$|\.github/workflows/ci\.yml$)|(^|/)Cargo\.(toml|lock)$'
+          if printf '%s\n' "$files" | grep -qE "$studio_paths"; then
+            echo "studio=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No native Studio file touched: the studio job is skipped."
+            echo "studio=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The native Studio half of the Linux x64 gate, beside build-and-test
+  # rather than after it, with the release-version bump across every
+  # lockfile. None of it builds the renderer, and in build-and-test it added
+  # minutes to the longest job. The job name is a required check on `main`:
+  # rename it and branch protection must follow.
   #
-  # ubuntu-22.04, as the release build that links the same GTK/WebKit stack.
-  # No PipeWire, so no PPA: nothing here links the audio backends.
+  # No system package: the native Studio opens Wayland and xkbcommon at run
+  # time and its file dialogs go through the desktop portal, so it links
+  # nothing it would need a -dev package for.
   studio:
+    needs: changes
+    # Skipped only on an explicit "false": if `changes` failed, run.
+    if: ${{ !cancelled() && needs.changes.outputs.studio != 'false' }}
     runs-on: ubuntu-22.04
-    # Backstop for a slow Ubuntu mirror, as in build-and-test.
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Setup Node.js
@@ -371,22 +416,23 @@ jobs:
         with:
           node-version: 20
 
-      # Stable for the Tauri host and the version bump; the native Studio's
-      # pinned toolchain is installed below.
+      # Stable for the version bump; the native Studio's pinned toolchain is
+      # installed below.
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Dependencies only, saved from main only: see build-and-test. The
-      # renderer workspace is listed for its registry entries alone, which
-      # the version bump resolves offline; this job builds none of it.
+      # renderer and the Tauri host are listed for their registry entries
+      # alone, which the version bump resolves offline; this job builds
+      # neither.
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         continue-on-error: true
         with:
           workspaces: |
             omniphony-studio-egui
-            omniphony-studio/src-tauri
             omniphony-renderer
+            omniphony-studio/src-tauri
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -401,31 +447,6 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
-
-      # GTK/WebKit for the Tauri host, xkbcommon/Wayland for the native
-      # Studio. Bounded update and retried install, for the reasons given in
-      # build-and-test's install.
-      - name: Install Linux system dependencies
-        run: |
-          for attempt in 1 2 3; do
-            if sudo timeout 180 apt-get update \
-              && sudo apt-get install -y \
-                libwebkit2gtk-4.1-dev \
-                libssl-dev \
-                libgtk-3-dev \
-                libayatana-appindicator3-dev \
-                librsvg2-dev \
-                libxkbcommon-dev \
-                libwayland-dev \
-                pkg-config; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "apt-get failed after $attempt attempts" >&2
-              exit 1
-            fi
-            sleep 10
-          done
 
       # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
       # The phase-2 replacement of the web frontend. It is a separate workspace
@@ -495,37 +516,23 @@ jobs:
         working-directory: omniphony-studio-egui
         run: cargo test --workspace --locked
 
-      # ── Studio frontend build (no Tauri bundling / no sidecar) ─────────────
-      - name: Install Studio npm dependencies
-        working-directory: omniphony-studio
-        run: npm ci
-
-      - name: Build Studio frontend
-        working-directory: omniphony-studio
-        run: npm run build
-
-      # Type-check the web host as a consumer of the shared native core. No
-      # sidecar/resource bundle is needed for this compatibility gate.
-      - name: Check Tauri host against the shared core
-        working-directory: omniphony-studio/src-tauri
-        env:
-          TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":null}}'
-        run: cargo check --locked
-
       # `check` only sees the tree at its current version; a copy the bump
       # forgets to move shows up at the next release, when the release build
       # refuses its lockfile (#712 review: the Tauri lock's studio-core
       # entry). So bump for real, resolve the three workspaces `--locked` as
-      # the builds will, then put the tree back. Offline, for this runner's
-      # platform only: the steps above fetched the two Studio workspaces'
-      # dependencies and the fetch below the renderer's (this job builds none
-      # of it), not the Windows/macOS-only ones, and the lockfile is checked
-      # as a whole either way.
+      # the builds will, then put the tree back. The Tauri host is no longer
+      # built by CI but release.yml still packages it, so its lockfile is
+      # checked too. Offline, for this runner's platform only: the native
+      # Studio build fetched its dependencies and the fetches below the other
+      # two workspaces' (this job builds neither), not the Windows/macOS-only
+      # ones, and the lockfile is checked as a whole either way.
       - name: Bump the release version and resolve every lockfile
         run: |
           set -euo pipefail
           host="$(rustc -vV | sed -n 's/^host: //p')"
-          (cd omniphony-renderer && cargo fetch --locked --target "$host")
+          for workspace in omniphony-renderer omniphony-studio/src-tauri; do
+            (cd "$workspace" && cargo fetch --locked --target "$host")
+          done
           trap 'git checkout -- .' EXIT
           python3 scripts/release_version.py set 99.0.0 --player mpv-v99.0.0
           for workspace in omniphony-renderer omniphony-studio/src-tauri omniphony-studio-egui; do
@@ -534,31 +541,13 @@ jobs:
             echo "$workspace: lockfile valid at 99.0.0"
           done
 
-      # Drift pins for the renderer<->Studio mirrors (channel-spelling
-      # normalisation, geometry golden vectors) — hard gates, like knip below.
-      - name: Channel-alias parity tests
-        working-directory: omniphony-studio
-        run: npm run test:labels
-
-      - name: Math golden-vector tests
-        working-directory: omniphony-studio
-        run: npm run test:math
-
-      # Translation parity is reported but never blocks a merge: incomplete
-      # locales fall back to English at runtime, so this is a heads-up, not a
-      # gate. Emits ::warning:: annotations on the PR.
+      # The native Studio's translation parity (omniphony-studio-egui/i18n),
+      # reported but never blocking a merge: incomplete locales fall back to
+      # English at runtime, so this is a heads-up, not a gate. Emits
+      # ::warning:: annotations on the PR. A plain node script, no npm install.
       - name: Check i18n parity (warn-only)
-        working-directory: omniphony-studio
         continue-on-error: true
-        run: npm run i18n:check
-
-      # Dead-code gate (knip): a module with no importer fails the build.
-      # An orphaned ingestion module is how live-option state silently stopped
-      # reaching the UI for months (see docs/live-options-registry.md, "The
-      # incident"); unused *exports* are only warnings for now.
-      - name: Dead-code lint (knip)
-        working-directory: omniphony-studio
-        run: npm run lint:dead
+        run: node omniphony-studio/scripts/check-i18n.mjs
 
   build-macos:
     # macOS arm64 build and test gate. The renderer workspace pulls the
@@ -719,23 +708,9 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --locked --no-fail-fast --manifest-path osc-contract/Cargo.toml
 
-      # The native Studio's core, which the Tauri host depends on. Its Windows
-      # path — the process-tree working-set readout — had never been compiled
-      # for Windows by anything: the Linux job builds the whole egui workspace,
-      # this job built only the renderer, and the Tauri host carried its own
-      # copy of the module. It did not compile, and nothing said so.
-      #
-      # Run from the repository root on purpose. `omniphony-studio-egui` pins a
-      # toolchain for egui's sake; the core does not need it, and the Tauri host
-      # builds it on stable, which is what this checks.
-      - name: Build the native Studio core (Windows x64)
-        if: ${{ !cancelled() }}
-        run: cargo build --locked --manifest-path omniphony-studio-egui/core/Cargo.toml
-
-      # The whole native Studio, on its pinned toolchain this time: it ships
-      # on Windows (release.yml attaches an archive per platform), and the
-      # step above only proves the core. Run from inside the directory so the
-      # pin applies.
+      # The whole native Studio, on its pinned toolchain: it ships on Windows
+      # (release.yml attaches an archive per platform). Run from inside the
+      # directory so the pin applies.
       - name: Build native Studio (Windows x64)
         if: ${{ !cancelled() }}
         working-directory: omniphony-studio-egui
