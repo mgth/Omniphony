@@ -57,7 +57,7 @@ pub const DEFAULT_PROFILE: &str = "default";
 /// an existing key means, or moves or retires one, so that an older build,
 /// which would read and save such a file on its own terms, refuses to write it
 /// instead. Adding a key or an enum value needs no bump: an older build keeps
-/// both through a save (`extra`, [`unknown_values`]).
+/// both through a save (`extra`, `unknown_values`).
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -73,7 +73,7 @@ pub struct GlobalConfig {
 
 /// `Deserialize` and `Serialize` are implemented below, around the derived
 /// ones (`remote = "Self"`): an enum value this build does not know is kept
-/// rather than failing the file (see [`unknown_values`]).
+/// rather than failing the file (see `unknown_values`).
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(remote = "Self")]
 pub struct RenderConfig {
@@ -655,7 +655,7 @@ pub struct LiveInputConfig {
     )]
     pub lfe_mode: Option<InputLfeModeConfig>,
     /// See `Config::extra` — preserve unknown keys through round-trips, and
-    /// the enum values this build does not know (see [`unknown_values`]).
+    /// the enum values this build does not know (see `unknown_values`).
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,
 }
@@ -1019,7 +1019,7 @@ impl Config {
 
     /// Serialize this config to YAML and write it to `path`, keeping the file
     /// it replaces as `<name>.bak` ([`backup_path`]). Parent directories are
-    /// created automatically. The write is atomic (see [`replace_file`]): a
+    /// created automatically. The write is atomic (see `replace_file`): a
     /// crash or a full disk leaves the previous file, never half of the new one.
     ///
     /// Saving realigns the profile mirror first (see [`Config::sync_active_profile`]):

@@ -54,7 +54,7 @@ function getRendererMount() {
   // orbit-drag could otherwise kick off a native drag-and-drop whose drag
   // image is a compositor snapshot; dropping it aliases the sprite textures
   // with the backdrop and corrupts the labels (see
-  // docs/webgl-compositor-aliasing.md). Scoped to the mount, so the speaker
+  // docs/archive/webgl-compositor-aliasing.md). Scoped to the mount, so the speaker
   // list's own drag-to-reorder is unaffected; the mount persists across canvas
   // rebuilds so one listener is enough.
   mount.addEventListener('dragstart', (event) => event.preventDefault());

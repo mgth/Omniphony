@@ -54,6 +54,7 @@ fn linear_to_dbfs(v: f32) -> f32 {
     }
 }
 
+#[derive(Debug, Clone, Default)]
 pub struct MeterSnapshot {
     /// (channel_idx, peak_dbfs, rms_dbfs) — one per input channel, same index as /omniphony/object/{idx}/xyz
     pub object_levels: Vec<(u32, f32, f32)>,
@@ -227,6 +228,15 @@ impl AudioMeter {
 
     /// Returns Some(snapshot) when the send interval has elapsed, resetting accumulators.
     pub fn poll(&mut self) -> Option<MeterSnapshot> {
+        let mut snapshot = MeterSnapshot::default();
+        self.poll_into(&mut snapshot).then_some(snapshot)
+    }
+
+    /// [`poll`](Self::poll) into `out`, reusing its lists: once they have
+    /// grown to the layout, a snapshot on the render path allocates nothing.
+    /// Returns whether the send interval had elapsed; `out` is left as it
+    /// was when it had not.
+    pub fn poll_into(&mut self, out: &mut MeterSnapshot) -> bool {
         if let Some(atomic) = &self.rate_hz_bits {
             let hz = f32::from_bits(atomic.load(Ordering::Relaxed)).max(1.0);
             if (hz - self.last_rate_seen).abs() > 1e-3 {
@@ -235,44 +245,48 @@ impl AudioMeter {
             }
         }
         if self.last_send.elapsed() < self.send_interval {
-            return None;
+            return false;
         }
 
         let obj_count = self.obj_count.max(1);
         let spk_count = self.spk_count.max(1);
 
-        let object_levels = (0..self.num_channels)
-            .map(|i| {
-                let peak = linear_to_dbfs(self.obj_peak[i]);
-                let rms = linear_to_dbfs((self.obj_rms_sq[i] / obj_count as f64).sqrt() as f32);
-                (i as u32, peak, rms)
-            })
-            .collect();
+        out.object_levels.clear();
+        out.object_levels.extend((0..self.num_channels).map(|i| {
+            let peak = linear_to_dbfs(self.obj_peak[i]);
+            let rms = linear_to_dbfs((self.obj_rms_sq[i] / obj_count as f64).sqrt() as f32);
+            (i as u32, peak, rms)
+        }));
 
         // Same interval mean as the full-band RMS: band sums accumulate zeros
         // implicitly for frames where the object was absent, exactly like the
-        // input accumulator does for silent channels.
-        let object_band_levels = self
-            .obj_band_sq
-            .iter()
-            .enumerate()
-            .filter(|(_, sums)| !sums.is_empty())
-            .map(|(i, sums)| {
-                let bands = sums
-                    .iter()
-                    .map(|&sq| linear_to_dbfs((sq / obj_count as f64).sqrt() as f32))
-                    .collect();
-                (i as u32, bands)
-            })
-            .collect();
+        // input accumulator does for silent channels. Each entry keeps its
+        // band list from the last snapshot that held it.
+        let mut listed = 0;
+        for (i, sums) in self.obj_band_sq.iter().enumerate() {
+            if sums.is_empty() {
+                continue;
+            }
+            if listed == out.object_band_levels.len() {
+                out.object_band_levels.push((0, Vec::new()));
+            }
+            let (id, bands) = &mut out.object_band_levels[listed];
+            *id = i as u32;
+            bands.clear();
+            bands.extend(
+                sums.iter()
+                    .map(|&sq| linear_to_dbfs((sq / obj_count as f64).sqrt() as f32)),
+            );
+            listed += 1;
+        }
+        out.object_band_levels.truncate(listed);
 
-        let speaker_levels = (0..self.num_speakers)
-            .map(|i| {
-                let peak = linear_to_dbfs(self.spk_peak[i]);
-                let rms = linear_to_dbfs((self.spk_rms_sq[i] / spk_count as f64).sqrt() as f32);
-                (peak, rms)
-            })
-            .collect();
+        out.speaker_levels.clear();
+        out.speaker_levels.extend((0..self.num_speakers).map(|i| {
+            let peak = linear_to_dbfs(self.spk_peak[i]);
+            let rms = linear_to_dbfs((self.spk_rms_sq[i] / spk_count as f64).sqrt() as f32);
+            (peak, rms)
+        }));
 
         // Master = aggregate of the post-master-gain speaker accumulators.
         // Peak is the loudest speaker sample; RMS is the combined energy across
@@ -326,14 +340,10 @@ impl AudioMeter {
         self.ear_count = 0;
         self.last_send = Instant::now();
 
-        Some(MeterSnapshot {
-            object_levels,
-            object_band_levels,
-            speaker_levels,
-            ear_levels,
-            master_peak,
-            master_rms,
-        })
+        out.ear_levels = ear_levels;
+        out.master_peak = master_peak;
+        out.master_rms = master_rms;
+        true
     }
 }
 

@@ -552,8 +552,8 @@ impl HrirSet {
     /// convolvers' current kernels to find out whether anything moved at all.
     /// Both costs are wasted whenever an object barely turned.
     ///
-    /// The grid is measured every [`AZ_STEP_DEG`](Self::AZ_STEP_DEG) /
-    /// [`EL_STEP_DEG`](Self::EL_STEP_DEG) — 5° — but `fa`/`fe` below are
+    /// The grid is measured every `AZ_STEP_DEG` /
+    /// `EL_STEP_DEG` — 5° — but `fa`/`fe` below are
     /// continuous, so today a 0.01° move yields a numerically different kernel
     /// and arms a full crossfade. That is precision the measurements do not
     /// contain: below the lattice we are only interpolating measurement noise.
@@ -810,7 +810,7 @@ mod tests {
             (
                 "saf",
                 HrirSet::new(
-                    &crate::binaural::measured::MeasuredHrirData::saf_kemar(),
+                    &*crate::binaural::measured::MeasuredHrirData::saf_kemar_shared(48_000),
                     48_000,
                 ),
             ),
@@ -1079,7 +1079,7 @@ mod tests {
     #[test]
     fn a_96k_set_uses_256_taps_and_is_silent_beyond() {
         let set = HrirSet::new(
-            &crate::binaural::measured::MeasuredHrirData::saf_kemar().resampled_to(96_000),
+            &*crate::binaural::measured::MeasuredHrirData::saf_kemar_shared(96_000),
             96_000,
         );
         assert_eq!(set.len(), 256);
@@ -1195,7 +1195,7 @@ mod tests {
     fn five_degree_grid_has_1944_nodes() {
         let t0 = std::time::Instant::now();
         let set = HrirSet::new(
-            &crate::binaural::measured::MeasuredHrirData::saf_kemar(),
+            &*crate::binaural::measured::MeasuredHrirData::saf_kemar_shared(48_000),
             48_000,
         );
         let elapsed = t0.elapsed();
