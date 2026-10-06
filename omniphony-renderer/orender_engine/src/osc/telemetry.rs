@@ -50,7 +50,7 @@ use runtime_control::HostControlHandler;
 use runtime_control::osc_contract;
 
 use super::client_registry::{OscClientRegistry, OscClientState};
-use super::export::build_live_state;
+use super::export::broadcast_live_state;
 use super::metadata_emit::ObjectDeltas;
 use super::{ObjectMeta, WarnLimiter};
 
@@ -147,6 +147,11 @@ pub(super) struct MeterReport {
     pub(super) timings: MeterTimings,
 }
 
+// `Meter` is far larger than the other variants, and stays inline: boxing it
+// would allocate on every metered block, which the recycled `MeterLists`
+// exist to avoid. The ring's slots are allocated once, so the size costs
+// memory at start-up and nothing per block.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Event {
     Objects(ObjectFrame),
     Timestamp {
@@ -169,9 +174,10 @@ pub(super) enum Event {
         schema: Option<String>,
         values: Option<String>,
     },
+    /// The loudness is read when it is published, under the publication
+    /// lock, not when it is queued.
     Loudness {
-        enabled: bool,
-        source: Option<i8>,
+        control: Arc<RendererControl>,
     },
     LiveState {
         control: Arc<RendererControl>,
@@ -420,7 +426,7 @@ pub(super) struct Marks {
 impl Marks {
     /// The block a marker must name before the next stream message of
     /// `block`, if that message is the first of it.
-    fn to_mark(&mut self, block: Block) -> Option<Block> {
+    fn marker_for(&mut self, block: Block) -> Option<Block> {
         if !self.active || self.marked == Some(block) {
             return None;
         }
@@ -464,7 +470,7 @@ impl Out {
     }
 
     fn mark(&mut self, block: Block) {
-        let Some(block) = self.marks.to_mark(block) else {
+        let Some(block) = self.marks.marker_for(block) else {
             return;
         };
         if let Some(bytes) = encode(
@@ -629,15 +635,13 @@ impl Worker {
                     self.out.send_diag(&bytes);
                 }
             }
-            Event::Loudness { enabled, source } => {
-                let bytes = super::state_emit::encode_loudness_state(enabled, source);
-                if let Some(bytes) = bytes {
-                    self.out.send_all(&bytes);
-                }
+            Event::Loudness { control } => {
+                super::transport::publish_state(&self.out.socket, &self.out.clients, || {
+                    vec![super::state_emit::loudness_state_message(&control)]
+                });
             }
             Event::LiveState { control, host } => {
-                build_live_state(&control, host.as_ref())
-                    .broadcast(&self.out.socket, &self.out.clients);
+                broadcast_live_state(&control, host.as_ref(), &self.out.socket, &self.out.clients);
             }
         }
     }
@@ -675,9 +679,9 @@ mod tests {
     #[test]
     fn nothing_is_marked_before_a_heard_position() {
         let mut m = Marks::default();
-        assert_eq!(m.to_mark(block(480)), None);
+        assert_eq!(m.marker_for(block(480)), None);
         m.active = true;
-        assert_eq!(m.to_mark(block(480)), Some(block(480)));
+        assert_eq!(m.marker_for(block(480)), Some(block(480)));
     }
 
     #[test]
@@ -687,13 +691,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            m.to_mark(block(0)),
+            m.marker_for(block(0)),
             Some(block(0)),
             "position 0 is a block too"
         );
-        assert_eq!(m.to_mark(block(0)), None);
-        assert_eq!(m.to_mark(block(960)), Some(block(960)));
-        assert_eq!(m.to_mark(block(960)), None);
+        assert_eq!(m.marker_for(block(0)), None);
+        assert_eq!(m.marker_for(block(960)), Some(block(960)));
+        assert_eq!(m.marker_for(block(960)), None);
     }
 
     #[test]
@@ -702,12 +706,12 @@ mod tests {
             active: true,
             ..Default::default()
         };
-        assert!(m.to_mark(block(0)).is_some());
+        assert!(m.marker_for(block(0)).is_some());
         let again = Block {
             restarts: 1,
             pos: 0,
         };
-        assert_eq!(m.to_mark(again), Some(again));
+        assert_eq!(m.marker_for(again), Some(again));
     }
 
     #[test]
@@ -906,7 +910,7 @@ mod tests {
             .iter()
             .filter(|m| m.addr == "/omniphony/object/0/xyz")
             .filter_map(first_float)
-            .last();
+            .next_back();
         assert_eq!(last_x, Some(1.0));
     }
 

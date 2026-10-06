@@ -770,6 +770,56 @@ impl EvaluationStrategy for RealtimeStrategy {
     }
 }
 
+/// Largest set of precomputed gain tables one evaluation may build, in bytes.
+///
+/// The default grid (62 × 62 × 15, plus 15 below the horizon) samples about
+/// 11 MB of gains on 24 speakers; this leaves room for grids twenty times
+/// finer, and stops a grid size typed into config.yaml or sent over OSC from
+/// allocating gigabytes at the next rebuild — inside the media player, for
+/// liborender. A build past it fails, and the caller keeps the topology it
+/// has (the recompute reports the error to Studio).
+pub const MAX_EVALUATION_TABLE_BYTES: usize = 256 << 20;
+
+/// Refuse a precomputed build whose `tables` tables of `cells` cells, each
+/// holding `speakers` gains, would exceed [`MAX_EVALUATION_TABLE_BYTES`].
+/// Checked before anything is allocated: the axes alone are as long as the
+/// sizes asked for.
+pub(crate) fn check_table_budget(
+    grid: &str,
+    cells: &[usize],
+    speakers: usize,
+    tables: usize,
+) -> Result<()> {
+    let bytes = cells
+        .iter()
+        .try_fold(1usize, |acc, &n| acc.checked_mul(n))
+        .and_then(|n| n.checked_mul(speakers.max(1)))
+        .and_then(|n| n.checked_mul(tables.max(1)))
+        .and_then(|n| n.checked_mul(std::mem::size_of::<f32>()));
+    match bytes {
+        Some(bytes) if bytes <= MAX_EVALUATION_TABLE_BYTES => Ok(()),
+        _ => anyhow::bail!(
+            "the {grid} evaluation grid {cells:?} × {speakers} speakers × {tables} table(s) \
+             would need {} of gains, over the {} MiB budget; use a coarser grid",
+            bytes.map_or_else(
+                || "more than the address space".to_string(),
+                |b| format!("{} MiB", b >> 20)
+            ),
+            MAX_EVALUATION_TABLE_BYTES >> 20
+        ),
+    }
+}
+
+/// How many tables a precomputed strategy builds for `config`: one per
+/// object-size step when the model honours object size, else one.
+fn table_count(model: &dyn GainModel, config: &EvaluationBuildConfig) -> usize {
+    if config.object_size_intervals > 0 && model.capabilities().supports_event_size {
+        config.object_size_intervals.saturating_add(1)
+    } else {
+        1
+    }
+}
+
 pub struct PrecomputedCartesianStrategy;
 
 impl EvaluationStrategy for PrecomputedCartesianStrategy {
@@ -782,6 +832,17 @@ impl EvaluationStrategy for PrecomputedCartesianStrategy {
         model: Arc<dyn GainModel>,
         config: &EvaluationBuildConfig,
     ) -> Result<Box<dyn PreparedEvaluator>> {
+        let c = &config.cartesian;
+        check_table_budget(
+            "cartesian",
+            &[
+                c.x_size.max(2),
+                c.y_size.max(2),
+                c.z_size.max(2).saturating_add(c.z_neg_size),
+            ],
+            model.speaker_count(),
+            table_count(model.as_ref(), config),
+        )?;
         if config.object_size_intervals > 0 && model.capabilities().supports_event_size {
             Ok(Box::new(SizeInterpolatingEvaluator::new(
                 model,
@@ -812,6 +873,17 @@ impl EvaluationStrategy for PrecomputedPolarStrategy {
         model: Arc<dyn GainModel>,
         config: &EvaluationBuildConfig,
     ) -> Result<Box<dyn PreparedEvaluator>> {
+        let p = &config.polar;
+        check_table_budget(
+            "polar",
+            &[
+                p.azimuth_values.max(2),
+                p.elevation_values.max(2),
+                p.distance_values.max(2),
+            ],
+            model.speaker_count(),
+            table_count(model.as_ref(), config),
+        )?;
         if config.object_size_intervals > 0 && model.capabilities().supports_event_size {
             Ok(Box::new(SizeInterpolatingEvaluator::new(
                 model,
@@ -2924,5 +2996,57 @@ mod size_interval_tests {
         let g0 = engine.compute_gains(&request(pos, [0.0; 3])).gains;
         let g1 = engine.compute_gains(&request(pos, [1.0; 3])).gains;
         assert_close(&g0, &g1, 1e-9);
+    }
+
+    /// The table budget: the default grid fits with room to spare, a grid size
+    /// typed by hand is refused before anything is allocated, and the object
+    /// size steps multiply the tables they need.
+    #[test]
+    fn an_oversized_grid_is_refused_before_it_is_allocated() {
+        let model: Arc<dyn GainModel> = Arc::from(make_model());
+        // Every table counts: a grid that fits once is refused four times over.
+        let cells = [128, 128, 128];
+        let one = 128 * 128 * 128 * 12 * 4;
+        assert!(one < MAX_EVALUATION_TABLE_BYTES && 4 * one > MAX_EVALUATION_TABLE_BYTES);
+        check_table_budget("cartesian", &cells, 12, 1).expect("one band fits");
+        assert!(
+            check_table_budget("cartesian", &cells, 12, 4).is_err(),
+            "four do not"
+        );
+        // The default grid on 24 speakers, eight size steps: well inside.
+        check_table_budget("cartesian", &[62, 62, 30], 24, 9).expect("the default grid fits");
+
+        let mut huge = config(0, [0.0; 3]);
+        huge.cartesian.x_size = 1_000_000_000;
+        let err = PrecomputedCartesianStrategy
+            .prepare(Arc::clone(&model), &huge)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(err.contains("budget") && err.contains("cartesian"), "{err}");
+
+        let mut huge = config(0, [0.0; 3]);
+        huge.polar.distance_values = usize::MAX;
+        let err = PrecomputedPolarStrategy
+            .prepare(Arc::clone(&model), &huge)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(
+            err.contains("address space"),
+            "a size that overflows: {err}"
+        );
+
+        // A grid that fits as one table, not as a million size steps.
+        let steps = config(1_000_000, [0.0; 3]);
+        assert!(
+            PrecomputedCartesianStrategy
+                .prepare(Arc::clone(&model), &steps)
+                .is_err()
+        );
+        // And the grids of this module's tests still build.
+        PrecomputedCartesianStrategy
+            .prepare(Arc::clone(&model), &config(4, [0.0; 3]))
+            .expect("a small grid");
     }
 }

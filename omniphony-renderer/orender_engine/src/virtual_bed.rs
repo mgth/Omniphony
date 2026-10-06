@@ -952,7 +952,7 @@ pub fn build_fixed_channel_objects(
         let live = control.live.read();
         (
             OwnedPlacement::from_live(&live, family),
-            live.surround_placement,
+            live.options.surround_placement,
             RoomRatios::from_live(&live),
         )
     };
@@ -1013,7 +1013,7 @@ impl ChannelPlanKey {
             family,
             mode,
             placement: OwnedPlacement::from_live(live, family),
-            surround_placement: live.surround_placement,
+            surround_placement: live.options.surround_placement,
             room: RoomRatios::from_live(live),
             layout_generation,
         }
@@ -1049,7 +1049,7 @@ impl ChannelPlanKey {
 
         *planned_generation == layout_generation
             && *planned_mode == mode
-            && *surround_placement == live.surround_placement
+            && *surround_placement == live.options.surround_placement
             && *room == RoomRatios::from_live(live)
             && *planned_family == family
             && labels.as_slice() == channel_labels

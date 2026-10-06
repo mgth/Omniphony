@@ -353,10 +353,9 @@ mod tests {
     fn parse_euler_and_quat() {
         let e = HeadTrackingFormat::Euler.parse(&[90.0, 0.0, 0.0]).unwrap();
         approx(e, HeadPose::from_euler_deg(90.0, 0.0, 0.0));
-        let q = HeadTrackingFormat::Quat
-            .parse(&[0.0, 0.0, 0.7071, 0.7071])
-            .unwrap();
-        approx(q, HeadPose::from_quat(0.7071, 0.0, 0.0, 0.7071));
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let q = HeadTrackingFormat::Quat.parse(&[0.0, 0.0, h, h]).unwrap();
+        approx(q, HeadPose::from_quat(h, 0.0, 0.0, h));
     }
 
     #[test]

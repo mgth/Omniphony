@@ -8,6 +8,13 @@ resolver = "2"
 # license, and `omniphony_geometry` spells everything out because it is also
 # built from outside this workspace (the Studio projects).
 [workspace.package]
+# The release version (#676), carried by every crate here and by both Studios.
+# Three crates keep a line of their own: `bridge_api`, whose version is the
+# plugin ABI contract (BRIDGE_API.md, "Versioning"), `spdif`, which the decoder
+# bridges require by version from their own repository, and the OSC contract
+# (`../osc-contract`). Never edit it by hand: `scripts/release_version.py set
+# X.Y.Z` moves it with every other copy (Studio manifests, lockfiles, README).
+version = "0.6.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/mgth/Omniphony"
@@ -15,27 +22,35 @@ repository = "https://github.com/mgth/Omniphony"
 # (build-time version stamp) require it too.
 rust-version = "1.89"
 
+# What a release of this tree is paired with, beyond its own crates: the
+# player tag (`mpv-v*`, built from `mgth/mpv-omniphony`) that ships with it.
+# Read by `scripts/release_version.py` for the release manifest and the
+# README's compatibility table.
+[workspace.metadata.release]
+player = "mpv-v0.6.0"
+
 # One version requirement per dependency for the whole workspace. Members
 # inherit with `<dep>.workspace = true` and may add features locally.
 [workspace.dependencies]
-# Workspace crates.
-audio_input = { version = "0.2.4", path = "audio_input" }
-audio_output = { version = "0.2.4", path = "audio_output" }
+# Workspace crates. Those on the release version are required by path alone;
+# a version requirement stays only on the crates with a line of their own.
+audio_input = { path = "audio_input" }
+audio_output = { path = "audio_output" }
 bridge_api = { version = "0.5.0", path = "bridge_api" }
-diag = { version = "0.1.0", path = "diag" }
-dsp_fixtures = { version = "0.1.0", path = "dsp_fixtures" }
-example_backend = { version = "0.1.0", path = "example_backend" }
-host_audio = { version = "0.1.0", path = "host_audio" }
-live_log = { version = "0.1.0", path = "live_log" }
-omniphony_geometry = { version = "0.1.0", path = "omniphony_geometry" }
+diag = { path = "diag" }
+dsp_fixtures = { path = "dsp_fixtures" }
+example_backend = { path = "example_backend" }
+host_audio = { path = "host_audio" }
+live_log = { path = "live_log" }
+omniphony_geometry = { path = "omniphony_geometry" }
 omniphony-osc-contract = { version = "0.1.0", path = "../osc-contract" }
-orender_engine = { version = "0.2.3", path = "orender_engine" }
-reference_bridge = { version = "0.1.0", path = "reference_bridge" }
-renderer = { version = "0.2.4", path = "renderer" }
-runtime_control = { version = "0.2.4", path = "runtime_control" }
-script_backend = { version = "0.1.0", path = "script_backend" }
+orender_engine = { path = "orender_engine" }
+reference_bridge = { path = "reference_bridge" }
+renderer = { path = "renderer" }
+runtime_control = { path = "runtime_control" }
+script_backend = { path = "script_backend" }
 spdif = { version = "0.1.0", path = "spdif" }
-sys = { version = "0.1.0", path = "sys" }
+sys = { path = "sys" }
 
 # Third-party crates.
 abi_stable = "0.11"
@@ -72,7 +87,7 @@ windows = { version = "0.54", features = [
 
 [package]
 name = "omniphony-renderer"
-version = "0.2.5"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Omniphony Renderer: bridge-driven spatial audio decoding and rendering"
@@ -110,6 +125,10 @@ libc.workspace = true
 reference_bridge.workspace = true
 # Reads the live state the CLI publishes (unit and tests/ OSC round trips).
 rosc.workspace = true
+# The host-option bounds test: parses hostile config.yaml texts, reads the
+# host options schema.
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true

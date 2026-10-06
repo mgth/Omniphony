@@ -27,8 +27,9 @@
 //! cargo test --release -p renderer -- spatial_renderer::perf_gate --nocapture
 //! ```
 //!
-//! That keeps them out of the default PR gate, which has no release build to
-//! spare. Their home is the tag-triggered release workflow.
+//! That keeps them out of the debug test run. CI runs them in steps of their
+//! own (`ci.yml`, "Run the perf gate"), on the release build it already makes
+//! for the SIMD bit-identity tests.
 //!
 //! **Run alone.** They are additionally behind the `perf-gate` feature, because
 //! a timing measurement must not share the machine with the rest of the suite
@@ -228,7 +229,7 @@ fn block_time_across_a_topology_change_is_within_budget() {
 #[test]
 fn block_time_across_a_topology_change_with_the_fir_crossover_is_within_budget() {
     let (mut r, pcm) = prepared_crossover(N_OBJECTS, RampMode::Frame);
-    r.renderer_control().live.write().crossover_type = CrossoverType::Fir;
+    r.renderer_control().live.write().options.crossover_type = CrossoverType::Fir;
     // Onto the FIR bank, and past its first blocks.
     let builds = r.speaker_stage_builds();
     let deadline = Instant::now() + std::time::Duration::from_secs(60);

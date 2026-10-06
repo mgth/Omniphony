@@ -12,6 +12,7 @@
 use rosc::{OscMessage, OscType};
 
 use crate::HostControlHandler;
+use crate::command_table::{self, Command};
 use crate::context::RuntimeControlContext;
 use crate::osc::{ControlEffects, Notify, parse_f32_arg};
 use crate::osc_contract;
@@ -28,141 +29,187 @@ pub fn apply_live_control(
     host: Option<&dyn HostControlHandler>,
 ) -> Option<ControlEffects> {
     let addr = msg.addr.as_str();
-    let control = &ctx.renderer;
+    if let Some(run) = command_table::find(LIVE_CONTROL_COMMANDS, addr) {
+        return Some(run(msg, ctx, host));
+    }
+    // The dedicated per-option addresses: aliases of the generic setter.
+    let spec = renderer::options::find_by_legacy_addr(addr)?;
+    let Some(value) = msg.args.get(..spec.kind.arity()) else {
+        return Some(ControlEffects::rejected(format!(
+            "option {}: missing value",
+            spec.key
+        )));
+    };
+    let target = core_target(spec, host);
+    Some(apply_options(
+        ctx,
+        host,
+        &[OptionPair {
+            key: spec.key,
+            kind: spec.kind,
+            target,
+            args: value,
+        }],
+    ))
+}
 
-    // Declared live options (renderer::options registry): the generic setter
-    // `/control/option [key, value]` and the legacy per-option addresses both
-    // land on the same registry-driven path — validate, apply, and on a real
-    // change mark dirty and bump the replan epoch. Options change what is
-    // heard, so they reach config.yaml through the Save button only
-    // (docs/persistence-policy.md); a handoff to another renderer instance
-    // carries them unsaved in the live-handoff sidecar.
-    //
-    // `/control/options [key, value, key, value, …]` writes several at once:
-    // one lock, one rebuild, one notification (`renderer::options` groups).
-    // Both take the host's options too (its audio output and live input).
-    if addr == osc_contract::CONTROL_OPTION || addr == osc_contract::CONTROL_OPTIONS {
-        // `/control/option` takes one pair; anything after it is ignored.
-        let single = addr == osc_contract::CONTROL_OPTION;
-        let Some(pairs) = parse_option_pairs(&msg.args, single, host) else {
-            return Some(ControlEffects::default());
-        };
-        return Some(apply_options(ctx, host, &pairs));
-    }
-    if addr == osc_contract::CONTROL_OPTIONS_APPLY {
-        return Some(apply_option_group(msg, host));
-    }
-    if let Some(spec) = renderer::options::find_by_legacy_addr(addr) {
-        let Some(value) = msg.args.get(..spec.kind.arity()) else {
-            log::warn!("OSC option {}: missing value", spec.key);
-            return Some(ControlEffects::default());
-        };
-        let target = core_target(spec, host);
-        return Some(apply_options(
-            ctx,
-            host,
-            &[OptionPair {
-                key: spec.key,
-                kind: spec.kind,
-                target,
-                args: value,
-            }],
-        ));
-    }
+/// A handler of [`LIVE_CONTROL_COMMANDS`].
+pub type LiveHandler =
+    fn(&OscMessage, &RuntimeControlContext, Option<&dyn HostControlHandler>) -> ControlEffects;
 
-    // Monitoring cadences live on RendererControl (the source of truth): both
-    // CLI and embedded engine read them, and they are broadcast in the
-    // live-state bundle. They shape what clients display, not what anyone
-    // hears, so they are view state: written to config at once, never behind
-    // the Save button. Studio re-sends the diag rate every second while its
-    // plot is open, so an unchanged value must cost nothing.
-    if addr == osc_contract::CONTROL_METERING_RATE_HZ || addr == osc_contract::CONTROL_DIAG_RATE_HZ
-    {
-        let Some(hz) = parse_f32_arg(msg.args.first()).filter(|hz| hz.is_finite()) else {
-            return Some(ControlEffects::default());
-        };
-        let (what, before, applied, persist) = if addr == osc_contract::CONTROL_METERING_RATE_HZ {
-            let before = control.meter_rate_hz();
-            control.set_meter_rate_hz(hz);
-            (
-                "metering",
-                before,
-                control.meter_rate_hz(),
-                PersistOp::METER_RATE,
-            )
-        } else {
-            let before = control.diag_rate_hz();
-            control.set_diag_rate_hz(hz);
-            ("diag", before, control.diag_rate_hz(), PersistOp::DIAG_RATE)
-        };
-        if applied == before {
-            return Some(ControlEffects::default());
-        }
-        let mut effects = ControlEffects::view(Notify::Snapshot, persist);
-        effects.log_message = Some(format!("OSC {what} rate set to {applied:.1} Hz"));
-        return Some(effects);
-    }
-
-    // Object-generator and phantom-extraction parameters: aliases of the
-    // plugin store, as `/backend/param` is for backends. `[key, value]`
-    // addresses the selected generator (the phantom stage);
-    // `[generator_id, key, value]` a named generator, selected or not. The
-    // value is read in the type the parameter declares, so a float-only
-    // client still drives a switch (on at >= 0.5).
-    let generator = addr == osc_contract::CONTROL_OBJECT_GENERATOR_PARAM;
-    if generator || addr == osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM {
-        use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind};
-        let (target, key, value) = if generator && msg.args.len() >= 3 {
-            (
-                crate::osc::parse_string_arg(msg.args.first()),
-                msg.args.get(1),
-                msg.args.get(2),
-            )
-        } else {
-            (None, msg.args.first(), msg.args.get(1))
-        };
-        let key = match key {
-            Some(OscType::String(s)) => s.trim().to_ascii_lowercase(),
-            _ => return Some(ControlEffects::default()),
-        };
-        let Some(value) = value.and_then(crate::osc::parse_param_value) else {
-            return Some(ControlEffects::default());
-        };
-        let (kind, id) = if generator {
-            let id = target
-                .unwrap_or_else(|| control.live.read().object_generator_id.clone())
-                .trim()
-                .to_string();
-            // "No generator" is a selection, not a plugin with values.
-            if id.is_empty() || id.eq_ignore_ascii_case("none") {
-                return Some(ControlEffects::default());
-            }
-            (PluginKind::ObjectGenerator, id)
-        } else {
-            (PluginKind::PhantomExtract, PHANTOM_EXTRACT_ID.to_string())
-        };
-        if key.is_empty() || !control.set_plugin_param(kind, &id, &key, value) {
-            return Some(ControlEffects::default());
-        }
-        // Params are NOT persisted immediately (a slider drag is a burst of
-        // updates — no config write per tick), so the Save button is the only
-        // way to keep them and the dirty state must reach it. The bundle is
-        // coalesced for the same reason.
-        return Some(ControlEffects::dirty(Notify::CoalescedSnapshot));
-    }
-
+/// The live-state writes that are not one option's alias (see
+/// `command_table`): the generic setters themselves, the group apply, the
+/// monitoring cadences, the plugin parameters and the placement.
+pub static LIVE_CONTROL_COMMANDS: &[Command<LiveHandler>] = &[
+    Command::any(
+        &[osc_contract::CONTROL_OPTION, osc_contract::CONTROL_OPTIONS],
+        options,
+    ),
+    Command::exact(osc_contract::CONTROL_OPTIONS_APPLY, |msg, _, host| {
+        apply_option_group(msg, host)
+    }),
+    Command::any(
+        &[
+            osc_contract::CONTROL_METERING_RATE_HZ,
+            osc_contract::CONTROL_DIAG_RATE_HZ,
+        ],
+        monitoring_rate,
+    ),
+    Command::any(
+        &[
+            osc_contract::CONTROL_OBJECT_GENERATOR_PARAM,
+            osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM,
+        ],
+        plugin_param,
+    ),
     // Per-family placement of fixed channels (`renderer::placement`): the
-    // mode a family is placed with, and the family's own entries. Both
-    // live-tunable from Studio's editor; both persist to config on save.
-    // The legacy `virtual_bed` address is the generic family's entries.
-    if addr == osc_contract::CONTROL_PLACEMENT_MODE {
-        return Some(apply_placement_mode(msg, ctx));
-    }
-    if addr == osc_contract::CONTROL_PLACEMENT_LAYOUT || addr == osc_contract::CONTROL_VIRTUAL_BED {
-        return Some(apply_placement_layout(msg, ctx));
-    }
+    // mode a family is placed with, and the family's own entries. The legacy
+    // `virtual_bed` address is the generic family's entries.
+    Command::exact(osc_contract::CONTROL_PLACEMENT_MODE, |msg, ctx, _| {
+        apply_placement_mode(msg, ctx)
+    }),
+    Command::any(
+        &[
+            osc_contract::CONTROL_PLACEMENT_LAYOUT,
+            osc_contract::CONTROL_VIRTUAL_BED,
+        ],
+        |msg, ctx, _| apply_placement_layout(msg, ctx),
+    ),
+];
 
-    None
+/// Declared live options (renderer::options registry): the generic setter
+/// `/control/option [key, value]` and the legacy per-option addresses both
+/// land on the same registry-driven path — validate, apply, and on a real
+/// change mark dirty and bump the replan epoch. Options change what is
+/// heard, so they reach config.yaml through the Save button only
+/// (docs/persistence-policy.md); a handoff to another renderer instance
+/// carries them unsaved in the live-handoff sidecar.
+///
+/// `/control/options [key, value, key, value, …]` writes several at once:
+/// one lock, one rebuild, one notification (`renderer::options` groups).
+/// Both take the host's options too (its audio output and live input).
+fn options(
+    msg: &OscMessage,
+    ctx: &RuntimeControlContext,
+    host: Option<&dyn HostControlHandler>,
+) -> ControlEffects {
+    // `/control/option` takes one pair; anything after it is ignored.
+    let single = msg.addr == osc_contract::CONTROL_OPTION;
+    match parse_option_pairs(&msg.args, single, host) {
+        Ok(pairs) => apply_options(ctx, host, &pairs),
+        Err(reason) => ControlEffects::rejected(reason),
+    }
+}
+
+/// Monitoring cadences live on RendererControl (the source of truth): both
+/// CLI and embedded engine read them, and they are broadcast in the
+/// live-state bundle. They shape what clients display, not what anyone
+/// hears, so they are view state: written to config at once, never behind
+/// the Save button. Studio re-sends the diag rate every second while its
+/// plot is open, so an unchanged value must cost nothing.
+fn monitoring_rate(
+    msg: &OscMessage,
+    ctx: &RuntimeControlContext,
+    _host: Option<&dyn HostControlHandler>,
+) -> ControlEffects {
+    let addr = msg.addr.as_str();
+    let control = &ctx.renderer;
+    let Some(hz) = parse_f32_arg(msg.args.first()).filter(|hz| hz.is_finite()) else {
+        return ControlEffects::rejected("expected a rate in Hz");
+    };
+    let (what, before, applied, persist) = if addr == osc_contract::CONTROL_METERING_RATE_HZ {
+        let before = control.meter_rate_hz();
+        control.set_meter_rate_hz(hz);
+        (
+            "metering",
+            before,
+            control.meter_rate_hz(),
+            PersistOp::METER_RATE,
+        )
+    } else {
+        let before = control.diag_rate_hz();
+        control.set_diag_rate_hz(hz);
+        ("diag", before, control.diag_rate_hz(), PersistOp::DIAG_RATE)
+    };
+    if applied == before {
+        return ControlEffects::default();
+    }
+    let mut effects = ControlEffects::view(Notify::Snapshot, persist);
+    effects.log_message = Some(format!("OSC {what} rate set to {applied:.1} Hz"));
+    effects
+}
+
+/// Object-generator and phantom-extraction parameters: aliases of the
+/// plugin store, as `/backend/param` is for backends. `[key, value]`
+/// addresses the selected generator (the phantom stage);
+/// `[generator_id, key, value]` a named generator, selected or not. The
+/// value is read in the type the parameter declares, so a float-only
+/// client still drives a switch (on at >= 0.5).
+fn plugin_param(
+    msg: &OscMessage,
+    ctx: &RuntimeControlContext,
+    _host: Option<&dyn HostControlHandler>,
+) -> ControlEffects {
+    let control = &ctx.renderer;
+    let generator = msg.addr == osc_contract::CONTROL_OBJECT_GENERATOR_PARAM;
+    use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind};
+    let (target, key, value) = if generator && msg.args.len() >= 3 {
+        (
+            crate::osc::parse_string_arg(msg.args.first()),
+            msg.args.get(1),
+            msg.args.get(2),
+        )
+    } else {
+        (None, msg.args.first(), msg.args.get(1))
+    };
+    let key = match key {
+        Some(OscType::String(s)) => s.trim().to_ascii_lowercase(),
+        _ => return ControlEffects::default(),
+    };
+    let Some(value) = value.and_then(crate::osc::parse_param_value) else {
+        return ControlEffects::default();
+    };
+    let (kind, id) = if generator {
+        let id = target
+            .unwrap_or_else(|| control.live.read().options.object_generator_id.clone())
+            .trim()
+            .to_string();
+        // "No generator" is a selection, not a plugin with values.
+        if id.is_empty() || id.eq_ignore_ascii_case("none") {
+            return ControlEffects::default();
+        }
+        (PluginKind::ObjectGenerator, id)
+    } else {
+        (PluginKind::PhantomExtract, PHANTOM_EXTRACT_ID.to_string())
+    };
+    if key.is_empty() || !control.set_plugin_param(kind, &id, &key, value) {
+        return ControlEffects::default();
+    }
+    // Params are NOT persisted immediately (a slider drag is a burst of
+    // updates — no config write per tick), so the Save button is the only
+    // way to keep them and the dirty state must reach it. The bundle is
+    // coalesced for the same reason.
+    ControlEffects::dirty(Notify::CoalescedSnapshot)
 }
 
 /// Where a key of `/control/option(s)` goes.
@@ -202,30 +249,29 @@ fn core_target(
 /// pair when `single`. A key is a core option or one the host declares.
 /// `None` — the whole message dropped — on an unknown key or a truncated
 /// value: past either, where the next key starts is unknowable.
+/// The `[key, value…]` pairs of an option write, or why the whole message is
+/// refused.
 fn parse_option_pairs<'a>(
     args: &'a [OscType],
     single: bool,
     host: Option<&dyn HostControlHandler>,
-) -> Option<Vec<OptionPair<'a>>> {
+) -> Result<Vec<OptionPair<'a>>, String> {
     let mut pairs = Vec::new();
     let mut rest = args;
     while let Some((key, tail)) = rest.split_first() {
         let OscType::String(key) = key else {
-            log::warn!("OSC options: expected a key, got {key:?}");
-            return None;
+            return Err(format!("options: expected a key, got {key:?}"));
         };
         let (kind, target) = if let Some(spec) = renderer::options::find(key) {
             (spec.kind, core_target(spec, host))
         } else if let Some(kind) = host.and_then(|host| host.option_kind(key)) {
             (kind, OptionTarget::Host)
         } else {
-            log::warn!("OSC option: unknown key '{}'", key);
-            return None;
+            return Err(format!("option: unknown key '{key}'"));
         };
         let arity = kind.arity();
         if tail.len() < arity {
-            log::warn!("OSC option {}: missing value", key);
-            return None;
+            return Err(format!("option {key}: missing value"));
         }
         let (value, next) = tail.split_at(arity);
         pairs.push(OptionPair {
@@ -240,10 +286,9 @@ fn parse_option_pairs<'a>(
         rest = next;
     }
     if pairs.is_empty() {
-        log::warn!("OSC options: no key");
-        return None;
+        return Err("options: no key".to_string());
     }
-    Some(pairs)
+    Ok(pairs)
 }
 
 /// A client value in the owned shape [`RawOptionValue`] borrows from: the
@@ -323,21 +368,29 @@ fn apply_options(
         .collect();
     let mut core_items = Vec::new();
     let mut host_items = Vec::new();
+    // What is refused, pair by pair: the others still apply.
+    let mut refused = Vec::new();
     for (pair, value) in pairs.iter().zip(&values) {
         let Some(raw) = value.raw() else {
-            log::warn!("OSC option {}: rejected value", pair.key);
+            refused.push(format!("{}: rejected value", pair.key));
             continue;
         };
         match pair.target {
             OptionTarget::Core(spec) => core_items.push((spec, raw)),
             OptionTarget::Host => host_items.push((pair.key, raw)),
             OptionTarget::NotOffered => {
-                log::warn!("OSC option {}: not offered by this host", pair.key)
+                refused.push(format!("{}: not offered by this host", pair.key))
             }
         }
     }
+    let refused_reason = |refused: Vec<String>| {
+        (!refused.is_empty()).then(|| format!("option {}", refused.join(", ")))
+    };
     if core_items.is_empty() && host_items.is_empty() {
-        return ControlEffects::default();
+        return ControlEffects {
+            rejected: refused_reason(refused),
+            ..ControlEffects::default()
+        };
     }
     let core = (!core_items.is_empty())
         .then(|| renderer::options::apply_batch(&ctx.renderer, &core_items));
@@ -355,7 +408,7 @@ fn apply_options(
                 applied.push(format!("{} set to '{}'", key, result.canonical));
             }
         }
-        None => log::warn!("OSC option {}: rejected value", key),
+        None => refused.push(format!("{key}: rejected value")),
     };
     if let Some(core) = &core {
         for ((spec, _), result) in core_items.iter().zip(&core.results) {
@@ -374,15 +427,23 @@ fn apply_options(
         ctx.renderer.mark_dirty();
     }
     let changed = core.as_ref().is_some_and(|core| core.changed) || host_changed;
+    let rejected = refused_reason(refused);
     if !changed {
         if !accepted {
-            return ControlEffects::default();
+            return ControlEffects {
+                rejected,
+                ..ControlEffects::default()
+            };
         }
         // Still published: a value clamped back onto the current one must
         // reach the client that typed it.
-        return ControlEffects::transient(Notify::Snapshot);
+        return ControlEffects {
+            rejected,
+            ..ControlEffects::transient(Notify::Snapshot)
+        };
     }
     let mut effects = ControlEffects::dirty(Notify::Snapshot);
+    effects.rejected = rejected;
     effects.log_message = Some(format!("OSC option {}", applied.join(", ")));
     match core.map(|core| core.rebuild).unwrap_or(Rebuild::None) {
         Rebuild::None => {}
@@ -401,8 +462,7 @@ fn apply_options(
 /// bundle.
 fn apply_option_group(msg: &OscMessage, host: Option<&dyn HostControlHandler>) -> ControlEffects {
     let Some(OscType::String(group)) = msg.args.first() else {
-        log::warn!("OSC options/apply: expected a group");
-        return ControlEffects::default();
+        return ControlEffects::rejected("options/apply: expected a group");
     };
     if let Some(effects) = host.and_then(|host| host.apply_option_group(group)) {
         return effects;
@@ -413,8 +473,7 @@ fn apply_option_group(msg: &OscMessage, host: Option<&dyn HostControlHandler>) -
     {
         return ControlEffects::transient(Notify::Snapshot);
     }
-    log::warn!("OSC options/apply: unknown group '{group}'");
-    ControlEffects::default()
+    ControlEffects::rejected(format!("options/apply: unknown group '{group}'"))
 }
 
 fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> ControlEffects {
@@ -422,7 +481,7 @@ fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> Contro
     let (Some(OscType::String(name)), Some(OscType::String(mode))) =
         (msg.args.first(), msg.args.get(1))
     else {
-        return ControlEffects::default();
+        return ControlEffects::rejected("placement mode: expected [family, mode]");
     };
     let mode = if mode.trim().eq_ignore_ascii_case("inherit") {
         None
@@ -430,8 +489,7 @@ fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> Contro
         match PlacementMode::parse(mode) {
             Some(mode) => Some(mode),
             None => {
-                log::warn!("OSC placement mode: unknown mode '{}'", mode);
-                return ControlEffects::default();
+                return ControlEffects::rejected(format!("placement mode: unknown mode '{mode}'"));
             }
         }
     };
@@ -440,8 +498,7 @@ fn apply_placement_mode(msg: &OscMessage, ctx: &RuntimeControlContext) -> Contro
         // The family table is the loaded bridge's: a name it does not hold
         // (a client built for another bridge) is refused, not added.
         let Some(family) = live.placement.find(name) else {
-            log::warn!("OSC placement mode: unknown family '{}'", name);
-            return ControlEffects::default();
+            return ControlEffects::rejected(format!("placement mode: unknown family '{name}'"));
         };
         live.placement.family_mut(family).set_mode(mode)
     };
@@ -697,7 +754,7 @@ mod tests {
         .expect("handled");
         assert!(effects.mark_dirty);
         assert!(!effects.trigger_layout_recompute);
-        assert!(ctx.renderer.live.read().auto_gain);
+        assert!(ctx.renderer.live.read().options.auto_gain);
 
         let effects = apply_live_control(
             &msg(
@@ -1087,7 +1144,7 @@ mod tests {
     fn a_host_with_audio_refuses_the_embedded_engines_options() {
         let ctx = ctx();
         let host = StubHost::new();
-        let before = ctx.renderer.live.read().decode_thread;
+        let before = ctx.renderer.live.read().options.decode_thread;
         for message in [
             msg(osc_contract::CONTROL_DECODE_THREAD, vec![OscType::Int(1)]),
             msg(
@@ -1098,7 +1155,7 @@ mod tests {
             let effects = apply_live_control(&message, &ctx, Some(&host)).expect("handled");
             assert!(!effects.mark_dirty, "{}", message.addr);
         }
-        assert_eq!(ctx.renderer.live.read().decode_thread, before);
+        assert_eq!(ctx.renderer.live.read().options.decode_thread, before);
         let effects = apply_live_control(
             &msg(
                 osc_contract::CONTROL_OPTIONS,
@@ -1114,8 +1171,8 @@ mod tests {
         )
         .expect("handled");
         assert!(effects.mark_dirty);
-        assert_eq!(ctx.renderer.live.read().decode_thread, before);
-        assert!(ctx.renderer.live.read().auto_gain);
+        assert_eq!(ctx.renderer.live.read().options.decode_thread, before);
+        assert!(ctx.renderer.live.read().options.auto_gain);
 
         // The embedded engine (no host) still takes it.
         let effects = apply_live_control(
@@ -1177,7 +1234,7 @@ mod tests {
         use renderer::backend_params::ParamValue;
         use renderer::plugin::{PHANTOM_EXTRACT_ID, PluginKind};
         let ctx = ctx();
-        ctx.renderer.live.write().object_generator_id = "pad".to_string();
+        ctx.renderer.live.write().options.object_generator_id = "pad".to_string();
         let write = |addr: &str, args: Vec<OscType>| {
             apply_live_control(&msg(addr, args), &ctx, None).expect("handled")
         };
@@ -1217,7 +1274,7 @@ mod tests {
         );
 
         // Without a generator selected there is nothing to address.
-        ctx.renderer.live.write().object_generator_id = "none".to_string();
+        ctx.renderer.live.write().options.object_generator_id = "none".to_string();
         let effects = write(
             osc_contract::CONTROL_OBJECT_GENERATOR_PARAM,
             vec![OscType::String("strength".into()), OscType::Float(0.5)],

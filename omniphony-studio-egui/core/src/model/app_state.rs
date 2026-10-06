@@ -693,6 +693,9 @@ pub struct AppState {
     pub render_executable: Option<String>,
     #[serde(rename = "renderAbi")]
     pub render_abi: Option<String>,
+    /// The `bridge_api` version the renderer loads bridges of.
+    #[serde(rename = "renderBridgeApi")]
+    pub render_bridge_api: Option<String>,
     /// Named config profiles (`/omniphony/state/profiles`): the active profile
     /// name and the full name list, mirrored verbatim from the renderer.
     #[serde(rename = "activeProfile")]
@@ -754,6 +757,21 @@ pub struct AppState {
 
 /// Why the connected renderer will not write its configuration file, as its
 /// `render/config_status` says.
+/// The engine and this Studio speak different revisions of the OSC contract
+/// (osc-contract `CONTRACT_REVISION`): controls one side does not know are
+/// refused, and state it does not know is dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContractMismatch {
+    pub engine: u32,
+    pub studio: u32,
+}
+
+impl ContractMismatch {
+    pub fn engine_is_older(self) -> bool {
+        self.engine < self.studio
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigRefusal {
     /// `parse_error`: the file failed to parse, and the renderer runs on its
@@ -774,6 +792,19 @@ impl AppState {
             "newer_schema" => Some(ConfigRefusal::NewerSchema),
             _ => None,
         }
+    }
+
+    /// The engine's OSC contract revision against this build's, when they
+    /// differ. An engine that advertises none predates revisions and counts
+    /// as 0. `None` until the capabilities arrive.
+    pub fn contract_mismatch(&self) -> Option<ContractMismatch> {
+        let caps = self.producer_capabilities.as_ref()?;
+        let engine = caps
+            .get("contractRevision")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(0, |revision| u32::try_from(revision).unwrap_or(u32::MAX));
+        let studio = crate::osc_contract::CONTRACT_REVISION;
+        (engine != studio).then_some(ContractMismatch { engine, studio })
     }
 
     /// The current stream's dialogue tag, when it codes its dialogue apart
@@ -1014,6 +1045,7 @@ impl Default for AppState {
             render_version: None,
             render_executable: None,
             render_abi: None,
+            render_bridge_api: None,
             active_profile: None,
             profile_names: Vec::new(),
             render_bridge_error: None,
@@ -1231,5 +1263,50 @@ mod mirror_axes_tests {
                 z: true
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod contract_mismatch_tests {
+    use super::{AppState, ContractMismatch};
+    use crate::osc_contract::CONTRACT_REVISION;
+    use serde_json::json;
+
+    fn with_caps(caps: Option<serde_json::Value>) -> AppState {
+        let mut app = AppState::new(Vec::new());
+        app.producer_capabilities = caps;
+        app
+    }
+
+    #[test]
+    fn the_same_revision_is_no_mismatch() {
+        let app = with_caps(Some(json!({ "contractRevision": CONTRACT_REVISION })));
+        assert_eq!(app.contract_mismatch(), None);
+    }
+
+    #[test]
+    fn an_engine_that_advertises_none_is_revision_zero() {
+        let mismatch = with_caps(Some(json!({ "variant": "embedded" })))
+            .contract_mismatch()
+            .expect("an engine from before revisions differs");
+        assert_eq!(
+            mismatch,
+            ContractMismatch {
+                engine: 0,
+                studio: CONTRACT_REVISION
+            }
+        );
+        assert!(mismatch.engine_is_older());
+    }
+
+    #[test]
+    fn a_newer_engine_is_reported_newer() {
+        let app = with_caps(Some(json!({ "contractRevision": CONTRACT_REVISION + 1 })));
+        assert!(!app.contract_mismatch().unwrap().engine_is_older());
+    }
+
+    #[test]
+    fn nothing_is_said_before_the_capabilities_arrive() {
+        assert_eq!(with_caps(None).contract_mismatch(), None);
     }
 }

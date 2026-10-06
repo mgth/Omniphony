@@ -2741,6 +2741,23 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 removed_ids,
             ),
 
+            // The web Studio does not track the state generation: it stays on
+            // the registration's snapshot plus the updates it hears, as before.
+            OscEvent::StateGeneration { .. } => (None, removed_ids),
+            OscEvent::StateControlError {
+                address,
+                code,
+                message,
+            } => {
+                log::warn!("[osc] control not applied: {address}: {message} ({code})");
+                (None, removed_ids)
+            }
+            OscEvent::StateOscDiag { .. } => (None, removed_ids),
+            OscEvent::StateRenderEvaluationObjectSizeIntervals { value } => {
+                s.object_size_intervals = value;
+                (None, removed_ids)
+            }
+
             OscEvent::StateSnapshotComplete => {
                 s.osc_snapshot_ready = true;
                 let snapshot = serde_json::to_value(&*s).unwrap_or(serde_json::Value::Null);
@@ -3033,6 +3050,17 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 };
                 (
                     Some(("render:abi", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateRenderBridgeApi { value } => {
+                s.render_bridge_api = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value.clone())
+                };
+                (
+                    Some(("render:bridge_api", serde_json::json!({ "value": value }))),
                     removed_ids,
                 )
             }

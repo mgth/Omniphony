@@ -7,7 +7,8 @@ use runtime_control::snapshot::{build_renderer_state_json, build_speakers_state_
 
 use super::client_registry::OscClientRegistry;
 use super::gaintable::GaintableCache;
-use super::transport::{broadcast_int, broadcast_string, send_update_to_client};
+use super::transport::{broadcast_int, broadcast_string, publish_state, send_update_to_client};
+use rosc::{OscMessage, OscType};
 use runtime_control::osc_contract;
 
 pub(crate) fn trigger_layout_recompute(
@@ -98,63 +99,59 @@ pub(crate) fn trigger_layout_recompute(
                         "Render backend {} updated with new speaker layout",
                         rebuild_plan_for_thread.backend_id()
                     );
-                    let renderer_state_json = {
-                        let live = control_clone.live.read();
-                        let topology = control_clone.active_topology();
-                        let scale_m = control_clone.editable_layout().radius_m;
-                        // Speaker names that don't resolve to a known channel
-                        // label — can't be routed by position in by_name mode.
-                        let unroutable: Vec<String> = topology
-                            .speaker_layout
-                            .speakers
-                            .iter()
-                            .filter(|s| {
-                                crate::channel_layout::label_for_speaker_name(&s.name)
-                                    == bridge_api::RChannelLabel::Unknown
-                            })
-                            .map(|s| s.name.clone())
-                            .collect();
-                        build_renderer_state_json(
-                            &live,
-                            &topology,
-                            scale_m,
-                            control_clone.available_backends(),
-                            control_clone.plugin_params(),
-                            &unroutable,
-                            &control_clone.fixed_channel_catalog(),
-                            &control_clone.fixed_channel_processing(),
-                            control_clone.crossover_info(),
-                            &control_clone.binaural_hrir_status(),
-                            &control_clone.binaural_brir_status(),
-                        )
-                    };
-                    let layout_json = {
-                        let layout = control_clone.editable_layout();
-                        serde_json::to_string(&layout).unwrap_or_else(|_| "{}".to_string())
-                    };
-                    let speakers_state_json = {
-                        let live = control_clone.live.read();
-                        let layout = control_clone.editable_layout();
-                        build_speakers_state_json(&live, &layout)
-                    };
-                    broadcast_string(
-                        &socket_clone,
-                        &clients_clone,
-                        osc_contract::STATE_RENDERER,
-                        &renderer_state_json,
-                    );
-                    broadcast_string(
-                        &socket_clone,
-                        &clients_clone,
-                        osc_contract::STATE_LAYOUT,
-                        &layout_json,
-                    );
-                    broadcast_string(
-                        &socket_clone,
-                        &clients_clone,
-                        osc_contract::STATE_SPEAKERS,
-                        &speakers_state_json,
-                    );
+                    // Read under the publication lock: a snapshot the
+                    // listener publishes meanwhile is either all before
+                    // these or all after, never newer under a lower count.
+                    publish_state(&socket_clone, &clients_clone, || {
+                        let renderer_state_json = {
+                            let live = control_clone.live.read();
+                            let topology = control_clone.active_topology();
+                            let scale_m = control_clone.editable_layout().radius_m;
+                            // Speaker names that don't resolve to a known channel
+                            // label — can't be routed by position in by_name mode.
+                            let unroutable: Vec<String> = topology
+                                .speaker_layout
+                                .speakers
+                                .iter()
+                                .filter(|s| {
+                                    crate::channel_layout::label_for_speaker_name(&s.name)
+                                        == bridge_api::RChannelLabel::Unknown
+                                })
+                                .map(|s| s.name.clone())
+                                .collect();
+                            build_renderer_state_json(
+                                &live,
+                                &topology,
+                                scale_m,
+                                control_clone.available_backends(),
+                                control_clone.plugin_params(),
+                                &unroutable,
+                                &control_clone.fixed_channel_catalog(),
+                                &control_clone.fixed_channel_processing(),
+                                control_clone.crossover_info(),
+                                &control_clone.binaural_hrir_status(),
+                                &control_clone.binaural_brir_status(),
+                            )
+                        };
+                        let layout_json = {
+                            let layout = control_clone.editable_layout();
+                            serde_json::to_string(&layout).unwrap_or_else(|_| "{}".to_string())
+                        };
+                        let speakers_state_json = {
+                            let live = control_clone.live.read();
+                            let layout = control_clone.editable_layout();
+                            build_speakers_state_json(&live, &layout)
+                        };
+                        let message = |addr: &str, json: String| OscMessage {
+                            addr: addr.to_string(),
+                            args: vec![OscType::String(json)],
+                        };
+                        vec![
+                            message(osc_contract::STATE_RENDERER, renderer_state_json),
+                            message(osc_contract::STATE_LAYOUT, layout_json),
+                            message(osc_contract::STATE_SPEAKERS, speakers_state_json),
+                        ]
+                    });
                     broadcast_int(
                         &socket_clone,
                         &clients_clone,
@@ -250,7 +247,7 @@ pub(crate) fn trigger_layout_recompute(
 mod tests {
     use super::*;
     use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
-    use renderer::spatial_renderer::SpatialRenderer;
+    use renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
     use renderer::spatial_vbap::{DistanceModel, MAX_SPEAKERS, VbapTableMode};
     use renderer::speaker_layout::{Speaker, SpeakerLayout};
     use rosc::{OscPacket, OscType};
@@ -259,45 +256,45 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn fixture_control() -> Arc<RendererControl> {
-        SpatialRenderer::new(
-            SpeakerLayout::preset("7.1.4").expect("7.1.4 preset"),
-            48_000,
-            1,
-            1,
-            0.0,
-            2.0,
-            VbapTableMode::Cartesian {
+        SpatialRenderer::new(RendererSpec {
+            speaker_layout: SpeakerLayout::preset("7.1.4").expect("7.1.4 preset"),
+            sample_rate: 48_000,
+            az_res_deg: 1,
+            el_res_deg: 1,
+            spread_resolution: 0.0,
+            distance_max: 2.0,
+            table_mode: VbapTableMode::Cartesian {
                 x_size: 5,
                 y_size: 5,
                 z_size: 3,
                 z_neg_size: 3,
             },
-            false,
-            true,
-            DistanceModel::Linear,
-            false,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            false,
-            [1.0, 1.0, 1.0],
-            1.0,
-            1.0,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            1.0,
-            1.0,
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-            5,
-            5,
-            3,
-            3,
-        )
+            allow_negative_z: false,
+            vbap_position_interpolation: true,
+            distance_model: DistanceModel::Linear,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            spread_min: 0.0,
+            spread_max: 1.0,
+            log_object_positions: false,
+            room_ratio: [1.0, 1.0, 1.0],
+            room_ratio_rear: 1.0,
+            room_ratio_lower: 1.0,
+            room_ratio_center_blend: 0.0,
+            master_gain_db: 0.0,
+            auto_gain: false,
+            use_loudness: false,
+            distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            cartesian_default_x_size: 5,
+            cartesian_default_y_size: 5,
+            cartesian_default_z_size: 3,
+            cartesian_default_z_neg_size: 3,
+        })
         .expect("fixture renderer")
         .renderer_control()
     }
@@ -311,14 +308,26 @@ mod tests {
             let Ok(len) = client.recv(&mut buf) else {
                 continue;
             };
-            let Ok((_, OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len]) else {
-                continue;
+            // A state update travels in a bundle with its generation.
+            let messages = match rosc::decoder::decode_udp(&buf[..len]) {
+                Ok((_, OscPacket::Message(msg))) => vec![msg],
+                Ok((_, OscPacket::Bundle(bundle))) => bundle
+                    .content
+                    .into_iter()
+                    .filter_map(|packet| match packet {
+                        OscPacket::Message(msg) => Some(msg),
+                        OscPacket::Bundle(_) => None,
+                    })
+                    .collect(),
+                Err(_) => continue,
             };
-            if msg.addr == addr
-                && let Some(OscType::String(s)) = msg.args.first()
-                && !s.is_empty()
-            {
-                return Some(s.clone());
+            for msg in messages {
+                if msg.addr == addr
+                    && let Some(OscType::String(s)) = msg.args.first()
+                    && !s.is_empty()
+                {
+                    return Some(s.clone());
+                }
             }
         }
         None
