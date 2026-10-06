@@ -52,6 +52,9 @@ required-features = ["sofa"]
 #   cargo test --release -p renderer --features perf-gate -- --test-threads=1
 perf-gate = []
 saf_vbap = []
+# `renderer::test_support`: renderer fixtures for other crates' tests. Enable it
+# from `[dev-dependencies]` only.
+test-support = []
 # Enables loading external SOFA HRTF files for the binaural stage (adds a SOFA
 # reader dependency). Off by default — the embedded SAF KEMAR set is always available.
 sofa = ["dep:sofar"]
