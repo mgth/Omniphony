@@ -387,7 +387,10 @@ jobs:
           # and what the version-bump step resolves: every manifest and
           # lockfile, and the script itself. This workflow too.
           studio_paths='^(omniphony-studio-egui/|osc-contract/|omniphony-renderer/omniphony_geometry/|omniphony-studio/scripts/check-i18n\.mjs$|omniphony-studio/src-tauri/tauri\.conf\.json$|omniphony-studio/package(-lock)?\.json$|scripts/release_version\.py$|\.github/workflows/ci\.yml$)|(^|/)Cargo\.(toml|lock)$'
-          if printf '%s\n' "$files" | grep -qE "$studio_paths"; then
+          # A here-string, not a pipe: `grep -q` stops at its first match,
+          # and under pipefail the writer it leaves behind dies of SIGPIPE
+          # and turns a match into a miss on a long list.
+          if grep -qE "$studio_paths" <<<"$files"; then
             echo "studio=true" >> "$GITHUB_OUTPUT"
           else
             echo "No native Studio file touched: the studio job is skipped."
