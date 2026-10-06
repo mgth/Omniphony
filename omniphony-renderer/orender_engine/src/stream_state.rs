@@ -194,7 +194,7 @@ impl DrcRamp {
         frame: &RDecodedFrame,
         control: &RendererControl,
     ) {
-        let weight = control.live.read().drc_weight.clamp(0.0, 1.0);
+        let weight = control.live.read().options.drc_weight.clamp(0.0, 1.0);
         self.target_gain = if weight >= 1.0 {
             frame.drc_gain
         } else if weight <= 0.0 {
@@ -307,7 +307,7 @@ impl StreamState {
         frame: &RDecodedFrame,
         control: &RendererControl,
     ) {
-        let dialogue_db = control.live.read().dialogue_gain_db;
+        let dialogue_db = control.live.read().options.dialogue_gain_db;
         self.drc.fill_pcm_f32(out, frame, control);
         self.dialogue.apply(
             out,
@@ -587,7 +587,7 @@ impl StreamState {
             (
                 OwnedPlacement::from_live(&live, self.declaration.family),
                 RoomRatios::from_live(&live),
-                live.surround_placement,
+                live.options.surround_placement,
             )
         };
         let mut objects = build_virtual_bed_objects(

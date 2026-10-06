@@ -30,6 +30,17 @@ pub fn parse_runtime_log_level(value: &str) -> Option<LevelFilter> {
     }
 }
 
+/// The addresses [`parse_process_command`] answers to.
+pub const PROCESS_COMMANDS: &[&str] = &[
+    osc_contract::CONTROL_SAVE_CONFIG,
+    osc_contract::CONTROL_RELOAD_CONFIG,
+    osc_contract::CONTROL_RESTART,
+    osc_contract::CONTROL_QUIT,
+    osc_contract::CONTROL_YIELD_PORT,
+    osc_contract::CONTROL_RESUME,
+    osc_contract::CONTROL_LOG_LEVEL,
+];
+
 pub fn parse_process_command(msg: &OscMessage) -> Option<RuntimeCommand> {
     match msg.addr.as_str() {
         osc_contract::CONTROL_SAVE_CONFIG => Some(RuntimeCommand::SaveConfig),

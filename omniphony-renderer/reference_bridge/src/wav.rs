@@ -13,6 +13,11 @@
 //! i32", but the host actually treats decoded samples as 24-bit-scaled, exactly
 //! as the production decoder bridge emits them.)
 
+/// Largest chunk the header parser buffers before the `data` chunk (`fmt `,
+/// `LIST`, `bext`, `iXML`, `JUNK`… are kilobytes). Bounds the memory a header
+/// can make the bridge hold, on a 32-bit target too.
+const MAX_HEADER_CHUNK_BYTES: usize = 16 * 1024 * 1024;
+
 /// Full-scale magnitude of the renderer's 24-bit-in-`i32` PCM convention.
 const PCM_FULL_SCALE: f32 = 8_388_607.0; // 2^23 - 1
 
@@ -195,7 +200,12 @@ pub(crate) fn parse_header(buf: &[u8]) -> HeaderParse {
         }
 
         // Non-data chunk: its body must be fully buffered before we can skip
-        // past it (or parse it, for `fmt `).
+        // past it (or parse it, for `fmt `). A declared size past the cap is a
+        // broken header, not a large one: waiting for it would buffer the whole
+        // stream and never play it.
+        if size > MAX_HEADER_CHUNK_BYTES {
+            return HeaderParse::Invalid("a chunk before the audio is implausibly large");
+        }
         if body_off + size > buf.len() {
             return HeaderParse::NeedMore;
         }
@@ -285,6 +295,177 @@ mod tests {
             }
             _ => panic!("expected Found"),
         }
+    }
+
+    /// A RIFF/WAVE prefix followed by `chunks` (id, body), each padded to an
+    /// even size, then a `data` chunk header declaring `data_len` bytes.
+    fn header(chunks: &[(&[u8; 4], Vec<u8>)], data_len: u32) -> Vec<u8> {
+        let mut buf = b"RIFF\0\0\0\0WAVE".to_vec();
+        for (id, body) in chunks {
+            buf.extend_from_slice(*id);
+            buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            buf.extend_from_slice(body);
+            if body.len() % 2 == 1 {
+                buf.push(0);
+            }
+        }
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&data_len.to_le_bytes());
+        buf
+    }
+
+    /// A `fmt ` body: 16 bytes, or 40 for `WAVE_FORMAT_EXTENSIBLE` (whose
+    /// sub-format tag is `sub_tag`).
+    fn fmt(tag: u16, channels: u16, rate: u32, bits: u16, sub_tag: u16) -> Vec<u8> {
+        let align = channels * bits / 8;
+        let mut f = Vec::new();
+        f.extend_from_slice(&tag.to_le_bytes());
+        f.extend_from_slice(&channels.to_le_bytes());
+        f.extend_from_slice(&rate.to_le_bytes());
+        f.extend_from_slice(&(rate * align as u32).to_le_bytes());
+        f.extend_from_slice(&align.to_le_bytes());
+        f.extend_from_slice(&bits.to_le_bytes());
+        if tag == 0xFFFE {
+            f.extend_from_slice(&22u16.to_le_bytes()); // cbSize
+            f.extend_from_slice(&bits.to_le_bytes()); // valid bits
+            f.extend_from_slice(&0x3Fu32.to_le_bytes()); // 5.1 mask
+            f.extend_from_slice(&sub_tag.to_le_bytes());
+            f.extend_from_slice(&[0; 14]); // rest of the GUID
+        }
+        f
+    }
+
+    fn invalid_reason(buf: &[u8]) -> &'static str {
+        match parse_header(buf) {
+            HeaderParse::Invalid(reason) => reason,
+            HeaderParse::NeedMore => panic!("expected Invalid, got NeedMore"),
+            HeaderParse::Found { .. } => panic!("expected Invalid, got Found"),
+        }
+    }
+
+    #[test]
+    fn a_malformed_header_is_refused_with_its_reason() {
+        let pcm16 = fmt(1, 2, 48_000, 16, 0);
+        assert_eq!(
+            invalid_reason(b"RIFX\0\0\0\0WAVE"),
+            "missing RIFF/WAVE signature"
+        );
+        assert_eq!(
+            invalid_reason(b"RIFF\0\0\0\0AVI "),
+            "missing RIFF/WAVE signature"
+        );
+        assert_eq!(
+            invalid_reason(&header(&[], 8)),
+            "data chunk before fmt chunk"
+        );
+        let cases: &[(Vec<u8>, &str)] = &[
+            (pcm16[..12].to_vec(), "fmt chunk too short"),
+            (
+                fmt(0xFFFE, 2, 48_000, 16, 1)[..24].to_vec(),
+                "extensible fmt chunk too short",
+            ),
+            (fmt(1, 0, 48_000, 16, 0), "zero channels"),
+            (fmt(1, 2, 0, 16, 0), "zero sample rate"),
+            (
+                fmt(1, 2, 48_000, 8, 0),
+                "unsupported PCM bit depth (need 16/24/32)",
+            ),
+            (
+                fmt(3, 2, 48_000, 64, 0),
+                "unsupported float bit depth (need 32)",
+            ),
+            (
+                fmt(2, 2, 48_000, 16, 0),
+                "unsupported WAVE format tag (need 1, 3, or extensible)",
+            ),
+            (
+                fmt(0xFFFE, 2, 48_000, 16, 2),
+                "unsupported WAVE format tag (need 1, 3, or extensible)",
+            ),
+        ];
+        for (body, reason) in cases {
+            assert_eq!(
+                invalid_reason(&header(&[(b"fmt ", body.clone())], 8)),
+                *reason
+            );
+        }
+    }
+
+    #[test]
+    fn extensible_headers_resolve_their_sub_format_and_mask() {
+        match parse_header(&header(&[(b"fmt ", fmt(0xFFFE, 6, 48_000, 24, 1))], 36)) {
+            HeaderParse::Found { format, .. } => {
+                assert_eq!(format.sample_format, SampleFormat::PcmI24);
+                assert_eq!(format.channel_mask, 0x3F);
+            }
+            _ => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn chunks_before_the_audio_are_skipped_with_their_pad_byte() {
+        let buf = header(
+            &[
+                (b"LIST", vec![1; 5]),
+                (b"fmt ", fmt(3, 1, 44_100, 32, 0)),
+                (b"JUNK", vec![2; 3]),
+            ],
+            0,
+        );
+        match parse_header(&buf) {
+            HeaderParse::Found {
+                format,
+                data_offset,
+                data_len,
+            } => {
+                assert_eq!(format.sample_format, SampleFormat::F32);
+                assert_eq!(format.sample_rate, 44_100);
+                assert_eq!(data_offset, buf.len());
+                assert_eq!(data_len, u64::MAX, "a zero size streams to the end");
+            }
+            _ => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn a_header_can_arrive_in_pieces() {
+        let buf = header(
+            &[(b"LIST", vec![1; 9]), (b"fmt ", fmt(1, 2, 48_000, 16, 0))],
+            u32::MAX,
+        );
+        for cut in 0..buf.len() {
+            assert!(
+                matches!(parse_header(&buf[..cut]), HeaderParse::NeedMore),
+                "cut at {cut} of {}",
+                buf.len()
+            );
+        }
+        assert!(matches!(
+            parse_header(&buf),
+            HeaderParse::Found {
+                data_len: u64::MAX,
+                ..
+            }
+        ));
+    }
+
+    /// A chunk that declares more than the cap would have the bridge buffer
+    /// the whole stream waiting for it: it is refused at once instead.
+    #[test]
+    fn an_implausibly_large_chunk_is_refused_not_waited_for() {
+        let mut buf = header(&[(b"fmt ", fmt(1, 2, 48_000, 16, 0))], 0);
+        buf.truncate(12);
+        buf.extend_from_slice(b"LIST");
+        buf.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            invalid_reason(&buf),
+            "a chunk before the audio is implausibly large"
+        );
+        // At the cap it is still a chunk to wait for.
+        buf.truncate(12);
+        buf.extend_from_slice(b"LIST");
+        buf.extend_from_slice(&(MAX_HEADER_CHUNK_BYTES as u32).to_le_bytes());
+        assert!(matches!(parse_header(&buf), HeaderParse::NeedMore));
     }
 
     #[test]
