@@ -1,25 +1,19 @@
 //! `Engine::set_decode_thread` — decoding on a thread of its own changes when a
 //! packet's audio comes out, never what comes out.
 //!
-//! Skipped unless a real bridge and stream are given, like `process_retry.rs`.
-//! Use a sample that decodes to actual audio (the parity fixture is silent):
-//!
-//! ```sh
-//! ORENDER_BRIDGE=../../harletty-bridge/target/release/libharletty_bridge.so \
-//! ORENDER_SAMPLE=/path/to/stream.thd \
-//! cargo test --release -p orender_engine --test decode_thread -- --nocapture
-//! ```
+//! Runs the reference bridge on the bundled demo unless another bridge and
+//! stream are given (see `common`).
 
 mod common;
 
 use common::{Blocks as Stream, PACKET, collect};
 use orender_engine::Engine;
 
-fn setup(thread: bool) -> Option<(Engine, Vec<u8>)> {
-    let (mut engine, data) = common::real_engine()?;
+fn setup(thread: bool) -> (Engine, Vec<u8>) {
+    let (mut engine, data) = common::real_engine();
     engine.set_decode_thread(thread).expect("set_decode_thread");
     assert_eq!(engine.decode_thread(), thread);
-    Some((engine, data))
+    (engine, data)
 }
 
 /// Feed `packets` with a buffer that always fits, then drain until nothing is
@@ -43,8 +37,8 @@ fn render(engine: &mut Engine, packets: &[&[u8]], into: &mut Stream) -> usize {
 }
 
 /// The whole stream, drained, with the thread off.
-fn reference() -> Option<Stream> {
-    let (mut engine, data) = setup(false)?;
+fn reference() -> Stream {
+    let (mut engine, data) = setup(false);
     let packets: Vec<&[u8]> = data.chunks(PACKET).collect();
     let mut out = Stream::new();
     let drained = render(&mut engine, &packets, &mut out);
@@ -52,13 +46,17 @@ fn reference() -> Option<Stream> {
         drained, 0,
         "with the thread off there is nothing left to drain"
     );
-    Some(out)
+    assert!(
+        !out.is_empty(),
+        "the stream renders no audio: nothing to compare"
+    );
+    out
 }
 
 #[test]
 fn the_thread_changes_when_audio_comes_out_not_what() {
-    let Some(expected) = reference() else { return };
-    let (mut engine, data) = setup(true).unwrap();
+    let expected = reference();
+    let (mut engine, data) = setup(true);
     let packets: Vec<&[u8]> = data.chunks(PACKET).collect();
     let mut out = Stream::new();
     let drained = render(&mut engine, &packets, &mut out);
@@ -77,8 +75,8 @@ fn the_thread_changes_when_audio_comes_out_not_what() {
 /// and the same for the drain, gets exactly the stream of an unbounded buffer.
 #[test]
 fn retries_on_a_short_buffer_lose_nothing_with_the_thread() {
-    let Some(expected) = reference() else { return };
-    let (mut engine, data) = setup(true).unwrap();
+    let expected = reference();
+    let (mut engine, data) = setup(true);
 
     let mut out = Stream::new();
     let mut capacity = 64usize;
@@ -121,24 +119,28 @@ fn retries_on_a_short_buffer_lose_nothing_with_the_thread() {
 /// position — and the stream after it is the same as with the thread off.
 #[test]
 fn a_reset_discards_what_was_in_flight() {
-    let run = |thread: bool| -> Option<(Stream, Stream)> {
-        let (mut engine, data) = setup(thread)?;
+    let run = |thread: bool| -> (Stream, Stream) {
+        let (mut engine, data) = setup(thread);
         let packets: Vec<&[u8]> = data.chunks(PACKET).collect();
-        let (first, second) = packets.split_at(packets.len() / 2);
         let mut before = Stream::new();
-        for p in first {
+        for p in &packets[..packets.len() / 2] {
             let chunks = engine.process_raw_within(p, usize::MAX).unwrap().unwrap();
             collect(&mut engine, chunks, &mut before);
         }
         engine.reset();
+        // A reset is a seek: what follows must be decodable from where it
+        // starts. The stream from its beginning is, for any bridge — the
+        // second half of a WAV is not, its header is in the first.
         let mut after = Stream::new();
-        render(&mut engine, second, &mut after);
-        Some((before, after))
+        render(&mut engine, &packets, &mut after);
+        (before, after)
     };
-    let Some((inline_before, inline_after)) = run(false) else {
-        return;
-    };
-    let (threaded_before, threaded_after) = run(true).unwrap();
+    let (inline_before, inline_after) = run(false);
+    let (threaded_before, threaded_after) = run(true);
+    assert!(
+        !inline_before.is_empty() && !inline_after.is_empty(),
+        "audio on both sides of the reset, or the comparisons below prove nothing"
+    );
     assert!(
         inline_before.starts_with(&threaded_before),
         "before the reset the thread may hold packets back, never change them"
@@ -153,8 +155,8 @@ fn a_reset_discards_what_was_in_flight() {
 /// first packet, and after a reset.
 #[test]
 fn switching_between_streams() {
-    let run = |switch_to: Option<bool>| -> Option<Stream> {
-        let (mut engine, data) = setup(true)?;
+    let run = |switch_to: Option<bool>| -> Stream {
+        let (mut engine, data) = setup(true);
         let packets: Vec<&[u8]> = data.chunks(PACKET).take(200).collect();
         let mut first = Stream::new();
         render(&mut engine, &packets, &mut first);
@@ -165,11 +167,15 @@ fn switching_between_streams() {
         }
         let mut second = Stream::new();
         render(&mut engine, &packets, &mut second);
-        Some(second)
+        second
     };
-    let Some(kept_on) = run(None) else { return };
+    let kept_on = run(None);
     assert!(
-        run(Some(false)).unwrap() == kept_on,
+        !kept_on.is_empty(),
+        "no audio after the reset: nothing to compare"
+    );
+    assert!(
+        run(Some(false)) == kept_on,
         "turning the thread off after a reset changed the audio"
     );
 }
