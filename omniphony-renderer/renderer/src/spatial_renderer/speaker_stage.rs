@@ -17,7 +17,8 @@
 //! the cascade must give the virtual stage its own slew/interp storage.
 
 use crate::crossover::{
-    CrossoverBank, CrossoverStates, FirCrossoverBank, FreqBand, LR4CrossoverBank, compute_bands,
+    CrossoverBank, CrossoverStates, FirCrossoverBank, FreqBand, LANES, LR4CrossoverBank,
+    LaneStates, compute_bands,
 };
 use crate::delay_line::IntegerDelay;
 use crate::live_params::{
@@ -189,6 +190,13 @@ pub(super) struct SpeakerRenderStage {
     /// for every object (and for the object test). The band meters read the
     /// last object's block back from here.
     pub(super) crossover_band_scratch: [Vec<f32>; 8],
+    /// Each channel's slewed gain for this block, `(start, step)`: computed
+    /// for every channel before the mix loop, so a whole LR4 lane group's
+    /// inputs are known when its first channel comes up (#750). Grown with
+    /// the channel count, never per block.
+    pub(super) slew_scratch: Vec<(f32, f32)>,
+    /// The LR4 crossover's lane groups (#750), see [`LaneScratch`].
+    pub(super) lanes: LaneScratch,
     /// The speaker-major bus the block is mixed on before it is interleaved
     /// into the output: `num_speakers` blocks back to back. Grown when the
     /// block length rises, never per block.
@@ -485,6 +493,97 @@ pub(super) struct GainCarry {
     pass: u64,
 }
 
+/// The LR4 crossover runs [`LANES`] object channels at once (#750): channels
+/// `[k·LANES, (k+1)·LANES)` form group `k`, lane = channel index mod `LANES`.
+/// The group's lane-major filter memory, its interleaved input block, and
+/// each lane's band blocks, which that channel's mix reads.
+pub(super) struct LaneScratch {
+    states: LaneStates,
+    inputs: Vec<[f32; LANES]>,
+    pub(super) bands: Vec<[Vec<f32>; 8]>,
+}
+
+impl Default for LaneScratch {
+    fn default() -> Self {
+        Self {
+            states: LaneStates::new(0),
+            inputs: Vec::new(),
+            bands: (0..LANES)
+                .map(|_| std::array::from_fn(|_| Vec::new()))
+                .collect(),
+        }
+    }
+}
+
+impl LaneScratch {
+    /// Split the object channels of lane group `first..first + LANES` for
+    /// this block: each one's own filter states (`filter_states`, created
+    /// on first use as before) are loaded into its lane, the bank runs all
+    /// the lanes at once, and the states go back. A lane whose channel is
+    /// directly routed, or past the last channel, runs on silence and is
+    /// neither read nor stored. Each object's band blocks are then exactly
+    /// what filtering it alone gave, in `bands[channel % LANES]`. Does
+    /// nothing unless `bank` is LR4.
+    #[allow(clippy::too_many_arguments)]
+    fn filter_group(
+        &mut self,
+        bank: &CrossoverBank,
+        filter_states: &mut Vec<Option<CrossoverStates>>,
+        slew: &[(f32, f32)],
+        first: usize,
+        input_channel_count: usize,
+        input_pcm: &[f32],
+        sample_length: usize,
+        channel_routing: &[ChannelRoute],
+    ) {
+        let CrossoverBank::Lr4(lr4) = bank else {
+            return;
+        };
+        let active: [bool; LANES] = std::array::from_fn(|lane| {
+            let channel = first + lane;
+            channel < input_channel_count
+                && !matches!(channel_routing.get(channel), Some(ChannelRoute::Direct(_)))
+        });
+        if !active.contains(&true) {
+            return;
+        }
+        let count = lr4.state_count();
+        self.states.ensure(count);
+        let end = (first + LANES).min(input_channel_count);
+        if filter_states.len() < end {
+            filter_states.resize_with(end, || None);
+        }
+        for (lane, &on) in active.iter().enumerate() {
+            let channel = first + lane;
+            match on.then(|| bank.ensure_channel_states(&mut filter_states[channel], channel)) {
+                Some(CrossoverStates::Lr4(states)) => self.states.load(lane, states),
+                _ => self.states.clear(lane, count),
+            }
+        }
+        self.inputs.clear();
+        self.inputs.extend((0..sample_length).map(|sample_idx| {
+            std::array::from_fn(|lane| {
+                let channel = first + lane;
+                if active[lane] {
+                    let (gain_start, gain_step) = slew[channel];
+                    input_pcm[sample_idx * input_channel_count + channel]
+                        * (gain_start + gain_step * sample_idx as f32)
+                } else {
+                    0.0
+                }
+            })
+        }));
+        lr4.process_block_lanes(&self.inputs, &mut self.states, active, &mut self.bands);
+        for (lane, &on) in active.iter().enumerate() {
+            if let (true, Some(Some(CrossoverStates::Lr4(states)))) =
+                (on, filter_states.get_mut(first + lane))
+            {
+                self.states.store(lane, states);
+            }
+        }
+    }
+}
+
 /// `RampMode::Sample`: advance the position ramp sample by sample and mix the
 /// block with gains that follow the ramped position.
 ///
@@ -729,7 +828,11 @@ impl SpeakerRenderStage {
         self.mix_bus.resize(self.num_speakers * sample_length, 0.0);
         let mut bus = MixBus::silent(&mut self.mix_bus, output, sample_length, self.num_speakers);
 
-        // Process each channel
+        // Every channel's slewed gain for the block, before the loop: the
+        // LR4 lane groups filter several channels' inputs at once (#750).
+        // Each channel's slew depends on its own state only, so computing them
+        // all first changes nothing.
+        self.slew_scratch.clear();
         for input_channel_idx in 0..input_channel_count {
             // Per-channel mute (applies to beds and objects), as a 0/1 factor.
             let obj_gain = match object_params.get(input_channel_idx) {
@@ -739,15 +842,45 @@ impl SpeakerRenderStage {
 
             // Get gain from cached metadata (common for ALL channels - beds and objects)
             let state = SpatialRenderer::state_mut(channel_states, input_channel_idx);
-            let gain_db = state.gain_db;
 
             // Convert gain from dB to linear (−inf floor honoured).
-            let gain_linear = super::components::gain_db_to_linear(gain_db);
+            let gain_linear = super::components::gain_db_to_linear(state.gain_db);
             // Slewed per-sample gain factor (includes the mute 0/1 factor):
             // factor(s) = gain_start + gain_step * s.
             let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
-            let (gain_start, gain_step) =
-                state.slew_gain(gain_linear * obj_gain, sample_length, ramp_samples);
+            self.slew_scratch.push(state.slew_gain(
+                gain_linear * obj_gain,
+                sample_length,
+                ramp_samples,
+            ));
+        }
+        let lr4_lanes = matches!(self.crossover_filter_bank, Some(CrossoverBank::Lr4(_)));
+
+        // Process each channel
+        for input_channel_idx in 0..input_channel_count {
+            let gain_db = SpatialRenderer::state_mut(channel_states, input_channel_idx).gain_db;
+            let (gain_start, gain_step) = self.slew_scratch[input_channel_idx];
+
+            // First channel of an LR4 lane group: filter the group's object
+            // channels together (#750); each one's mix below reads its lane.
+            if lr4_lanes && input_channel_idx % LANES == 0 {
+                let started_at = profile_crossover.then(std::time::Instant::now);
+                if let Some(fb) = self.crossover_filter_bank.as_ref() {
+                    self.lanes.filter_group(
+                        fb,
+                        &mut self.crossover_filter_states,
+                        &self.slew_scratch,
+                        input_channel_idx,
+                        input_channel_count,
+                        input_pcm,
+                        sample_length,
+                        channel_routing,
+                    );
+                }
+                if let Some(started_at) = started_at {
+                    crossover_elapsed += started_at.elapsed();
+                }
+            }
 
             // A channel is directly routed when its routing entry is
             // `Direct` (channels beyond the routing table are trailing object
@@ -858,19 +991,21 @@ impl SpeakerRenderStage {
                 // which speakers a band feeds.
 
                 // Lazily allocate per-object filter state only when crossover is active.
-                let obj_filter_states: Option<&mut CrossoverStates> =
-                    if let Some(fb) = self.crossover_filter_bank.as_ref() {
-                        if self.crossover_filter_states.len() <= input_channel_idx {
-                            self.crossover_filter_states
-                                .resize_with(input_channel_idx + 1, || None);
-                        }
-                        Some(fb.ensure_channel_states(
-                            &mut self.crossover_filter_states[input_channel_idx],
-                            input_channel_idx,
-                        ))
-                    } else {
-                        None
-                    };
+                // The LR4 lane groups did it, and filtered, already.
+                let obj_filter_states: Option<&mut CrossoverStates> = if lr4_lanes {
+                    None
+                } else if let Some(fb) = self.crossover_filter_bank.as_ref() {
+                    if self.crossover_filter_states.len() <= input_channel_idx {
+                        self.crossover_filter_states
+                            .resize_with(input_channel_idx + 1, || None);
+                    }
+                    Some(fb.ensure_channel_states(
+                        &mut self.crossover_filter_states[input_channel_idx],
+                        input_channel_idx,
+                    ))
+                } else {
+                    None
+                };
 
                 let render_params = ramp_context.render_params();
 
@@ -890,6 +1025,9 @@ impl SpeakerRenderStage {
                 // crossover split when a bank is active (timed as one block
                 // under metering), else the input as the single full band.
                 let n_bands = match (self.crossover_filter_bank.as_ref(), obj_filter_states) {
+                    (Some(fb), None) if lr4_lanes => {
+                        fb.num_bands().min(self.crossover_band_scratch.len())
+                    }
                     (Some(fb), Some(states)) => {
                         let started_at = profile_crossover.then(std::time::Instant::now);
                         fb.process_block(
@@ -910,7 +1048,11 @@ impl SpeakerRenderStage {
                         1
                     }
                 };
-                let bands = &self.crossover_band_scratch[..n_bands];
+                let bands = if lr4_lanes {
+                    &self.lanes.bands[input_channel_idx % LANES][..n_bands]
+                } else {
+                    &self.crossover_band_scratch[..n_bands]
+                };
 
                 // Reuse the per-object band-gain buffer (pooled in the renderer) so
                 // the hot render path does not allocate a fresh Vec per object per
@@ -1107,7 +1249,11 @@ impl SpeakerRenderStage {
                     // Per-band energy for the meters, from this object's block
                     // of band samples.
                     if profile_crossover {
-                        let crossover_band_scratch = &self.crossover_band_scratch;
+                        let crossover_band_scratch = if lr4_lanes {
+                            &self.lanes.bands[input_channel_idx % LANES]
+                        } else {
+                            &self.crossover_band_scratch
+                        };
                         pooled_entry(
                             &mut meters.object_band_sq,
                             &mut band_sq_filled,
@@ -1186,6 +1332,8 @@ impl SpeakerRenderStage {
             object_test_prev_gains: Vec::new(),
             object_test_end_gains: Vec::new(),
             crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
+            slew_scratch: Vec::new(),
+            lanes: LaneScratch::default(),
             mix_bus: Vec::new(),
             block_fractions: Vec::new(),
             gain_carries: Vec::new(),
@@ -1413,13 +1561,58 @@ impl SpeakerRenderStage {
         self.test_direct_bank = None;
         self.object_test_filter_states = None;
         self.crossover_band_scratch.iter_mut().for_each(Vec::clear);
+        self.lanes
+            .bands
+            .iter_mut()
+            .flat_map(|lane| lane.iter_mut())
+            .for_each(Vec::clear);
     }
 
     /// Build the band set `key` describes, on whichever thread calls it.
     /// `previous` are the bands it can start from (see [`PreviousBands`]);
     /// `filtered_channels` the channels to allocate crossover filter memory
     /// for (see [`Self::filtered_channels`]).
+    ///
+    /// A backend that panics while its table is sampled is an error like any
+    /// failed build, on every thread that builds: the worker must outlive it
+    /// to answer later changes, and the synchronous builds (start-up, a host
+    /// that did not prepare the stage, offline renders) must not take the
+    /// engine or the render thread down with it.
     fn build_band_set(
+        control: &Arc<RendererControl>,
+        topology: Arc<RenderTopology>,
+        key: BandSetKey,
+        num_speakers: usize,
+        sample_rate: u32,
+        previous: PreviousBands<'_>,
+        filtered_channels: Range<usize>,
+    ) -> Result<BandSet> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Self::build_band_set_unguarded(
+                control,
+                topology,
+                key,
+                num_speakers,
+                sample_rate,
+                previous,
+                filtered_channels,
+            )
+        }))
+        .unwrap_or_else(|payload| {
+            let detail = if let Some(msg) = payload.downcast_ref::<&'static str>() {
+                (*msg).to_string()
+            } else if let Some(msg) = payload.downcast_ref::<String>() {
+                msg.clone()
+            } else {
+                "panic with non-string payload".to_string()
+            };
+            Err(anyhow::anyhow!(
+                "render backend panicked during the band build: {detail}"
+            ))
+        })
+    }
+
+    fn build_band_set_unguarded(
         control: &Arc<RendererControl>,
         topology: Arc<RenderTopology>,
         key: BandSetKey,

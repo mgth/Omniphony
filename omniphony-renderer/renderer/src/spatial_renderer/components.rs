@@ -133,6 +133,12 @@ pub(super) fn evaluation_build_config(
     }
 }
 
+/// Channels an event may address. Far above any stream format (the largest
+/// carry 128); it bounds the per-channel state an event from a broken or
+/// hostile bridge can make the render thread allocate — an index of a billion
+/// would otherwise grow it to hundreds of gigabytes.
+pub const MAX_EVENT_CHANNELS: usize = 1024;
+
 /// Event/channel gain floor: at or below this the channel is −inf dB (silent).
 ///
 /// Inherited from the decoder side's `i8` convention where −128 is the mute

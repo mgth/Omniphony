@@ -1,7 +1,7 @@
 # Studio native UI, phase 2: panels
 
 Date: 10 September 2026. Branch `feat/studio-egui-panels`, crate
-[`omniphony-studio-egui/`](../omniphony-studio-egui/). Follows phase 1
+[`omniphony-studio-egui/`](../../omniphony-studio-egui/). Follows phase 1
 ([viewport parity](studio-native-ui-phase1.md)). Goal of the phase: replace the
 web frontend's panels — the controls, lists, meters and the log — with native
 ones driving the same renderer over the same OSC.
@@ -594,7 +594,7 @@ a transient stays readable after it has passed.
 ## Not covered by this pass
 
 Specifications for all of it were extracted from the web sources first and are
-in [`studio-native-ui-specs/`](studio-native-ui-specs/).
+in [`studio-native-ui-specs/`](../studio-native-ui-specs/).
 
 - **Left overlay**: the dead rows of the audio input panel (backend, imported
   layout, channel count, sample rate, map, LFE mode), which belong to the legacy
