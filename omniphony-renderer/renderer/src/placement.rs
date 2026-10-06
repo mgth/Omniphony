@@ -140,7 +140,7 @@ pub struct FamilyInfo {
 ///
 /// `Deserialize` and `Serialize` wrap the derived ones (`remote = "Self"`): a
 /// mode this build does not know is kept rather than failing the file (see
-/// [`unknown_values`]).
+/// `unknown_values`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct FamilyPlacement {

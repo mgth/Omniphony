@@ -107,7 +107,7 @@ pub fn room_containing_scene(room_m: [f32; 3], unit_scale_m: f32) -> [f32; 3] {
 }
 
 /// `src` (listener-relative metres, listener at the room centre) pulled just
-/// inside the walls of `room`, by [`WALL_MARGIN_M`]. The image-source
+/// inside the walls of `room`, by `WALL_MARGIN_M`. The image-source
 /// geometry is only meaningful for a source inside the room; this is the
 /// source [`first_order_images`] actually mirrors, and therefore the one the
 /// direct-path reference (distance, hence the relative delays) must use too

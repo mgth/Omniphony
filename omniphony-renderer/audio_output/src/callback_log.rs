@@ -54,7 +54,7 @@ impl CallbackEvent {
         }
     }
 
-    /// Add a named number. Beyond [`MAX_FIELDS`] it is ignored.
+    /// Add a named number. Beyond `MAX_FIELDS` it is ignored.
     pub fn with(mut self, name: &'static str, value: impl Into<f64>) -> Self {
         if self.len < MAX_FIELDS {
             self.fields[self.len] = (name, value.into());

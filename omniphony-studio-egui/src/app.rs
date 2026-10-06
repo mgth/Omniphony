@@ -397,6 +397,11 @@ impl StudioSpike {
             osc_stats.clone(),
             waker.clone(),
         ));
+        // A shipped Studio hands its engine library to mpv; file copies, so
+        // off the first paint.
+        let _ = crate::host::services::jobs::run(&host, || {
+            crate::host::engine_deploy::deploy(crate::host::bundle::resource_dir().as_deref())
+        });
         if startup.passive {
             crate::host::commands::app::suppress_autostart(&host);
         }

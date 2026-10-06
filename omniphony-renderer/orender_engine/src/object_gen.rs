@@ -2275,7 +2275,7 @@ mod tests {
         let fs = 48_000.0f32;
 
         let lf = |s: usize| (std::f32::consts::TAU * 150.0 * s as f32 / fs).sin() * 0.4;
-        let mut build = |with_lf: bool, with_hf: bool| -> f32 {
+        let build = |with_lf: bool, with_hf: bool| -> f32 {
             let (mut g, _) = dirac_on_7_1_4();
             g.set_param("amount", &ParamValue::Float(1.0), 48_000);
             let (mut na, mut nb) = (xorshift(11), xorshift(22));

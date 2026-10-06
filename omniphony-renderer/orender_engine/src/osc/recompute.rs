@@ -69,6 +69,8 @@ pub(crate) fn trigger_layout_recompute(
     std::thread::Builder::new()
         .name("render-backend-recompute".into())
         .spawn(move || {
+            #[cfg(test)]
+            hold::wait_while_held(&control_clone);
             log::info!(
                 "Render backend recompute started ({})",
                 rebuild_plan_for_thread.log_summary()
@@ -176,9 +178,9 @@ pub(crate) fn trigger_layout_recompute(
                                 {
                                     if client_version != Some(version) {
                                         for update in gaintable_chunk_broadcasts(&bytes, None) {
-                                            send_update_to_client(&socket_clone, addr, &update);
+                                            send_update_to_client(&socket_clone, &addr, &update);
                                         }
-                                        clients_clone.set_gaintable_version(addr, target, version);
+                                        clients_clone.set_gaintable_version(&addr, target, version);
                                     }
                                 }
                             }
@@ -243,61 +245,56 @@ pub(crate) fn trigger_layout_recompute(
         .expect("failed to spawn vbap-recompute thread");
 }
 
+/// Tests that need a recompute still running at a given moment hold the
+/// worker of one engine (one `RendererControl`) at its start until the guard
+/// is dropped; every other engine's workers run as usual.
+#[cfg(test)]
+pub(crate) mod hold {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    use renderer::live_params::RendererControl;
+
+    static HELD: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    static RELEASED: Condvar = Condvar::new();
+
+    fn key(control: &Arc<RendererControl>) -> usize {
+        Arc::as_ptr(control) as usize
+    }
+
+    pub(crate) struct Held(usize);
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            HELD.lock().unwrap().retain(|&k| k != self.0);
+            RELEASED.notify_all();
+        }
+    }
+
+    /// Hold `control`'s recompute workers until the returned guard drops.
+    pub(crate) fn hold(control: &Arc<RendererControl>) -> Held {
+        HELD.lock().unwrap().push(key(control));
+        Held(key(control))
+    }
+
+    pub(super) fn wait_while_held(control: &Arc<RendererControl>) {
+        let key = key(control);
+        let mut held = HELD.lock().unwrap();
+        while held.contains(&key) {
+            held = RELEASED.wait(held).unwrap();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
-    use renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
-    use renderer::spatial_vbap::{DistanceModel, MAX_SPEAKERS, VbapTableMode};
+    use renderer::spatial_vbap::MAX_SPEAKERS;
     use renderer::speaker_layout::{Speaker, SpeakerLayout};
+    use renderer::test_support::fixture_control;
     use rosc::{OscPacket, OscType};
     use std::net::UdpSocket;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
-
-    fn fixture_control() -> Arc<RendererControl> {
-        SpatialRenderer::new(RendererSpec {
-            speaker_layout: SpeakerLayout::preset("7.1.4").expect("7.1.4 preset"),
-            sample_rate: 48_000,
-            az_res_deg: 1,
-            el_res_deg: 1,
-            spread_resolution: 0.0,
-            distance_max: 2.0,
-            table_mode: VbapTableMode::Cartesian {
-                x_size: 5,
-                y_size: 5,
-                z_size: 3,
-                z_neg_size: 3,
-            },
-            allow_negative_z: false,
-            vbap_position_interpolation: true,
-            distance_model: DistanceModel::Linear,
-            spread_from_distance: false,
-            spread_distance_range: 1.0,
-            spread_distance_curve: 1.0,
-            spread_min: 0.0,
-            spread_max: 1.0,
-            log_object_positions: false,
-            room_ratio: [1.0, 1.0, 1.0],
-            room_ratio_rear: 1.0,
-            room_ratio_lower: 1.0,
-            room_ratio_center_blend: 0.0,
-            master_gain_db: 0.0,
-            auto_gain: false,
-            use_loudness: false,
-            distance_diffuse: false,
-            distance_diffuse_threshold: 1.0,
-            distance_diffuse_curve: 1.0,
-            preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
-            initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-            cartesian_default_x_size: 5,
-            cartesian_default_y_size: 5,
-            cartesian_default_z_size: 3,
-            cartesian_default_z_neg_size: 3,
-        })
-        .expect("fixture renderer")
-        .renderer_control()
-    }
 
     /// The string a client receives on `addr`, waiting for the first
     /// non-empty one (a recompute first clears the previous error).
@@ -333,15 +330,22 @@ mod tests {
         None
     }
 
-    /// Studio grows the layout past what the barycenter solver holds while
-    /// that backend is selected: the recompute fails with the backend's own
-    /// reason on the recompute-error broadcast — not a caught out-of-bounds
-    /// panic — and the engine keeps rendering the previous topology.
+    /// Studio grows the layout past what the renderer's gains hold
+    /// (`MAX_SPEAKERS`, LFE included), whichever backend is selected: the
+    /// recompute fails with a reason on the recompute-error broadcast — not a
+    /// caught out-of-bounds panic — and the engine keeps rendering the
+    /// previous topology.
     #[test]
-    fn an_oversized_barycenter_layout_reports_a_recompute_error() {
+    fn an_oversized_layout_reports_a_recompute_error_with_every_backend() {
+        for backend in ["vbap", "barycenter", "experimental_distance", "hybrid"] {
+            oversized_layout_reports_a_recompute_error(backend);
+        }
+    }
+
+    fn oversized_layout_reports_a_recompute_error(backend: &str) {
         let control = fixture_control();
         let before = control.active_topology();
-        control.live.write().backend_id = "barycenter".to_string();
+        control.live.write().backend_id = backend.to_string();
         let n = MAX_SPEAKERS + 2;
         let layout = SpeakerLayout::from_speakers(
             (0..n)
@@ -364,7 +368,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_millis(200)))
             .unwrap();
         let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
-        clients.insert_permanent(client.local_addr().unwrap());
+        clients.insert_permanent(&crate::osc::peer::Peer::Udp(client.local_addr().unwrap()));
 
         trigger_layout_recompute(
             &control,
@@ -374,19 +378,19 @@ mod tests {
         );
 
         let error = next_non_empty_string(&client, osc_contract::STATE_SPEAKERS_RECOMPUTE_ERROR)
-            .expect("a recompute error is broadcast");
+            .unwrap_or_else(|| panic!("{backend}: a recompute error is broadcast"));
         assert!(
             error.contains(&format!("at most {MAX_SPEAKERS}")) && !error.contains("panicked"),
-            "got: {error}"
+            "{backend}: {error}"
         );
         let deadline = Instant::now() + Duration::from_secs(10);
         while control.recomputing.load(Ordering::Relaxed) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(!control.recomputing.load(Ordering::Relaxed));
+        assert!(!control.recomputing.load(Ordering::Relaxed), "{backend}");
         assert!(
             Arc::ptr_eq(&before, &control.active_topology()),
-            "the previous topology stays active"
+            "{backend}: the previous topology stays active"
         );
     }
 }

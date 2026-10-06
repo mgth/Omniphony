@@ -9,9 +9,11 @@ name: Integration Build
 # release (Latest = newest non-prerelease, non-draft). Testers always grab the
 # same URL; assets are replaced each run, not accumulated.
 #
-# Assets are renamed to `Omniphony-Studio-integration-<os>-x86_64.<ext>` rather
-# than the version-stamped names tauri-action emits, so they can't be mistaken
-# for a stable release (consistent with mpv-omniphony's integration bundles).
+# Assets are renamed to `Omniphony-Studio-integration-<os>-x86_64.<ext>` (the
+# Tauri Studio) and `Omniphony-Studio-native-integration-<os>-x86_64.<ext>` (the
+# native one) rather than the version-stamped names the bundlers emit, so they
+# can't be mistaken for a stable release (consistent with mpv-omniphony's
+# integration bundles).
 on:
   workflow_dispatch:
   schedule:
@@ -157,6 +159,28 @@ jobs:
           # Passed through to the cargo Tauri runs for src-tauri; see release.yml.
           args: -- --locked
 
+      # The native Studio's installers (#677), from the orender and engine
+      # library prepare-sidecar just built in omniphony-renderer/target/release.
+      # Its own build tree and toolchain (rust-toolchain.toml in the crate).
+      - name: Cache the native Studio build
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        continue-on-error: true
+        with:
+          path: omniphony-studio-egui/target
+          key: ${{ runner.os }}-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-studio-egui-
+
+      - name: Build the native Studio
+        working-directory: omniphony-studio-egui
+        run: cargo build --release --locked
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+
+      - name: Build the native Studio installers
+        shell: bash
+        run: omniphony-studio-egui/scripts/package.sh
+
       # Rename to clear, version-less `integration` names so testers don't mistake
       # them for a stable release. Each platform emits a distinct set of extensions.
       - name: Stage renamed bundles
@@ -178,6 +202,11 @@ jobs:
           copy_one "$B/rpm/*.rpm"            "Omniphony-Studio-integration-linux-x86_64.rpm"
           copy_one "$B/msi/*.msi"            "Omniphony-Studio-integration-windows-x86_64.msi"
           copy_one "$B/nsis/*-setup.exe"     "Omniphony-Studio-integration-windows-x86_64-setup.exe"
+          N=omniphony-studio-egui/target/packages
+          copy_one "$N/*.deb"                "Omniphony-Studio-native-integration-linux-x86_64.deb"
+          copy_one "$N/*.AppImage"           "Omniphony-Studio-native-integration-linux-x86_64.AppImage"
+          copy_one "$N/*.msi"                "Omniphony-Studio-native-integration-windows-x86_64.msi"
+          copy_one "$N/*-setup.exe"          "Omniphony-Studio-native-integration-windows-x86_64-setup.exe"
           ls -la staging/
 
       - name: Upload bundles

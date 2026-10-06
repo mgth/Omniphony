@@ -26,6 +26,6 @@ Each document ends with a section listing what its author could not determine
 from the sources. Those are open questions, not settled facts.
 
 The port itself is documented in
-[`../studio-native-ui-spike.md`](../studio-native-ui-spike.md) (phase 0),
-[`../studio-native-ui-phase1.md`](../studio-native-ui-phase1.md) (viewport) and
-[`../studio-native-ui-phase2.md`](../studio-native-ui-phase2.md) (panels).
+[`../archive/studio-native-ui-spike.md`](../archive/studio-native-ui-spike.md) (phase 0),
+[`../archive/studio-native-ui-phase1.md`](../archive/studio-native-ui-phase1.md) (viewport) and
+[`../archive/studio-native-ui-phase2.md`](../archive/studio-native-ui-phase2.md) (panels).

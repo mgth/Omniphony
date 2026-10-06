@@ -15,7 +15,7 @@
 //! is then covered by the `registry` nets.
 //!
 //! Known gaps this net does NOT cover yet (see the RFC and
-//! `docs/option-surface-parity.fr.md`):
+//! `docs/option-surface-parity.md`):
 //! * CLI-vs-FFI seed parity for the remaining CLI-specific options, while
 //!   `Engine::from_paths` (FFI) seeds the whole family — exercising both boot
 //!   paths needs an engine fixture that doesn't exist yet.
@@ -26,8 +26,8 @@ use std::sync::Arc;
 
 use renderer::config::{Config, RenderConfig};
 use renderer::live_params::{
-    LiveEvaluationMode, LiveParams, OutputChannelMapping, PhantomExtractMode,
-    PreferredEvaluationMode, RendererControl, SurroundPlacement,
+    LiveEvaluationMode, LiveParams, OutputChannelMapping, PhantomExtractMode, RendererControl,
+    SurroundPlacement,
 };
 use renderer::placement::{PlacementMode, SourceFamily};
 use renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
@@ -155,48 +155,27 @@ const HAND_WIRED_OPTIONS: &[LiveOptionRow] = &[
 fn fixture_control() -> Arc<RendererControl> {
     let layout = SpeakerLayout::preset("7.1.4").expect("7.1.4 preset");
     let renderer = SpatialRenderer::new(RendererSpec {
-        speaker_layout: layout,
-        sample_rate: 48_000,
-        az_res_deg: 1,
-        el_res_deg: 1,
         // 8 distance cells over 2 units: the declared polar defaults.
         spread_resolution: 0.25,
-        distance_max: 2.0,
         table_mode: VbapTableMode::Cartesian {
             x_size: 5,
             y_size: 5,
             z_size: 3,
             z_neg_size: 3,
         },
-        allow_negative_z: false,
-        vbap_position_interpolation: true,
         // The declared default (`config_fields::vbap_distance_model`).
         distance_model: DistanceModel::None,
-        spread_from_distance: false,
-        spread_distance_range: 1.0,
-        spread_distance_curve: 1.0,
-        spread_min: 0.0,
-        spread_max: 1.0,
-        log_object_positions: false,
         // The declared room defaults (`renderer::config_fields::room`), so
         // the snapshot-vs-schema default net holds for the room rows.
         room_ratio: [1.0, 2.0, 1.0],
-        room_ratio_rear: 2.0,
-        room_ratio_lower: 0.5,
         room_ratio_center_blend: 0.5,
-        master_gain_db: 0.0,
-        auto_gain: false,
-        use_loudness: false,
-        distance_diffuse: false,
-        distance_diffuse_threshold: 1.0,
-        distance_diffuse_curve: 1.0,
-        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
         // The declared default mode.
         initial_evaluation_mode: LiveEvaluationMode::Auto,
         cartesian_default_x_size: 5,
         cartesian_default_y_size: 5,
         cartesian_default_z_size: 3,
         cartesian_default_z_neg_size: 3,
+        ..renderer::test_support::spec(layout)
     })
     .expect("fixture renderer");
     renderer.renderer_control()

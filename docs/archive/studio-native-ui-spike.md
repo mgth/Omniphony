@@ -1,7 +1,7 @@
 # Studio native UI spike — phase 0 results (egui/eframe)
 
 Date: 10 September 2026. Branch `spike/studio-egui`, crate
-[`omniphony-studio-egui/`](../omniphony-studio-egui/). Follow-up to the
+[`omniphony-studio-egui/`](../../omniphony-studio-egui/). Follow-up to the
 frontend replacement study that ranked egui/eframe first among ten Rust UI
 frameworks for hosting Studio's wgpu viewport.
 
@@ -9,7 +9,7 @@ The spike answers the phase 0 questions with numbers measured on one machine.
 It is not a Studio replacement: no energy volumes, no trails, no option
 round-trips to the renderer, no Windows or macOS build.
 
-![egui spike, 64 synthetic objects at 100 Hz](../omniphony-studio-egui/spike-screenshot.png)
+![egui spike, 64 synthetic objects at 100 Hz](../../omniphony-studio-egui/spike-screenshot.png)
 
 ## What was built
 
