@@ -521,11 +521,11 @@ fn the_live_option_switches_the_thread_both_ways_mid_stream() {
     run(&mut engine, 20);
     assert!(!engine.decode_thread());
 
-    control.live.write().decode_thread = true;
+    control.live.write().options.decode_thread = true;
     run(&mut engine, 60);
     assert!(engine.decode_thread(), "on at the next packet");
 
-    control.live.write().decode_thread = false;
+    control.live.write().options.decode_thread = false;
     run(&mut engine, 1);
     assert!(
         engine.decode_thread(),
@@ -550,7 +550,7 @@ fn the_live_option_switches_the_thread_both_ways_mid_stream() {
 #[test]
 fn a_host_that_forces_the_thread_ignores_the_option() {
     let (mut engine, _, control) = engine_with_control();
-    control.live.write().decode_thread = true;
+    control.live.write().options.decode_thread = true;
     engine
         .set_decode_thread_mode(DecodeThreadMode::Off)
         .unwrap();
