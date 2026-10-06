@@ -78,11 +78,27 @@ that cost.
 
 **Request/response.** A new session message, `/omniphony/sync [token]`,
 which the engine answers with `/omniphony/sync/ack [token]` once every
-earlier packet on the connection has been dispatched. With in-order
-delivery, a client that sends a batch of controls then a sync knows that
-each one was either applied or answered by a `control_error`, which also
-arrives before the ack. One address pair gives the barrier a control API
-needs, and no per-message id has to be threaded through 164 handlers.
+earlier packet on the connection has been dispatched. One address pair
+gives the barrier a control API needs, and no per-message id has to be
+threaded through 164 handlers.
+
+What the ack guarantees is **dispatch**, not completion. When it arrives,
+every earlier control has gone through its handler and has one of three
+outcomes:
+- it was applied, and the state it changed has been published, so that
+  state reached this client before the ack;
+- it was refused, and its `control_error` arrived before the ack;
+- it started asynchronous work, and that work has not finished.
+
+The third case is real: a layout or speaker change starts a recompute on
+the `render-backend-recompute` worker and returns at once. That build can
+still fail after the ack. Its completion is reported the way it is today:
+`/state/speakers/recomputing` goes to 1 when the build starts and back to 0
+when it ends, followed by `/state/speakers/recompute_error` (empty on
+success). A client that needs completion waits for `recomputing` to return
+to 0 after the ack. It does not take the ack as success. Making the barrier
+wait for the worker would block every later packet on the connection for
+the length of a table build, telemetry subscriptions included.
 
 UDP clients (automation, a remote Studio, mpv's overlay script) keep the
 whole current mechanism. Nothing is removed from the UDP path.
@@ -149,7 +165,9 @@ whole current mechanism. Nothing is removed from the UDP path.
 - A slow-reader test: a TCP client that never reads is disconnected, and
   telemetry publication timing does not move.
 - A sync test: controls followed by a sync arrive applied or refused before
-  the ack.
+  the ack. A layout change followed by a sync gets its ack with
+  `recomputing = 1` already sent, and the build's outcome
+  (`recomputing = 0`, `recompute_error`) after it.
 - Studio: the conformance test against `shapes::STATE` runs on a TCP-fed
   parser too.
 - The persistence-policy tripwire (`runtime_control/tests/persistence_policy.rs`)
