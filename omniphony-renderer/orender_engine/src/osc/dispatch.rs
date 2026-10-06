@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,6 +23,7 @@ use runtime_control::osc_contract;
 use super::client_registry::OscClientRegistry;
 use super::export::{broadcast_live_state, export_current_layout, save_live_config};
 use super::gaintable::GaintableCache;
+use super::peer::Peer;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
     broadcast_blob, broadcast_fff, broadcast_float, broadcast_int, broadcast_string,
@@ -59,7 +60,7 @@ pub(crate) struct RealtimeSeqState {
 pub(crate) struct Dispatch<'a> {
     msg: &'a OscMessage,
     /// The sender, for the handlers that reply point-to-point.
-    src: SocketAddr,
+    src: &'a Peer,
     control: &'a Arc<RendererControl>,
     host: Option<&'a Arc<dyn HostControlHandler>>,
     realtime_seq: &'a mut RealtimeSeqState,
@@ -154,7 +155,7 @@ fn profile(d: &mut Dispatch) -> ControlOutcome {
 
 pub(crate) fn handle_control_message(
     msg: &OscMessage,
-    src: SocketAddr,
+    src: &Peer,
     control: &Arc<RendererControl>,
     host: Option<&Arc<dyn HostControlHandler>>,
     realtime_seq: &mut RealtimeSeqState,
@@ -235,7 +236,7 @@ pub(crate) fn handle_control_message(
                             if let Ok(bytes) =
                                 rosc::encoder::encode(&rosc::OscPacket::Message(reply))
                             {
-                                let _ = socket.send_to(&bytes, src);
+                                let _ = src.send(socket, &bytes);
                             }
                             log::info!(
                                 "OSC yield_port: entering standby; resume port {resume_port}"
@@ -403,7 +404,7 @@ fn backend_file_reply(mut args: Vec<OscType>, request_id: Option<&str>) -> Vec<O
 
 fn send_backend_file_error(
     socket: &UdpSocket,
-    src: SocketAddr,
+    src: &Peer,
     backend_id: &str,
     key: &str,
     request_id: Option<&str>,
@@ -433,7 +434,7 @@ fn send_backend_file_error(
 /// [`backend_files::resolve`]).
 fn handle_backend_file_get(
     msg: &OscMessage,
-    src: SocketAddr,
+    src: &Peer,
     control: &Arc<RendererControl>,
     socket: &UdpSocket,
 ) {
@@ -453,7 +454,7 @@ fn handle_backend_file_get(
             .unwrap_or_default(),
     };
     let config_dir = backend_file_config_dir(control);
-    let allow_absolute = src.ip().is_loopback();
+    let allow_absolute = src.is_loopback();
     let Some(path) =
         backend_files::resolve(config_dir.as_deref(), &backend_id, &handle, allow_absolute)
     else {
@@ -498,7 +499,7 @@ fn handle_backend_file_get(
 /// remote (no native Browse).
 fn handle_backend_file_list(
     msg: &OscMessage,
-    src: SocketAddr,
+    src: &Peer,
     control: &Arc<RendererControl>,
     socket: &UdpSocket,
 ) {
@@ -522,7 +523,7 @@ fn handle_backend_file_list(
 /// errors surface through the usual recompute-error banner.
 fn handle_backend_file_put(
     msg: &OscMessage,
-    src: SocketAddr,
+    src: &Peer,
     control: &Arc<RendererControl>,
     host: Option<&Arc<dyn HostControlHandler>>,
     socket: &Arc<UdpSocket>,
@@ -552,7 +553,7 @@ fn handle_backend_file_put(
         return;
     }
     let config_dir = backend_file_config_dir(control);
-    let allow_absolute = src.ip().is_loopback();
+    let allow_absolute = src.is_loopback();
     let Some(path) =
         backend_files::resolve(config_dir.as_deref(), &backend_id, &name, allow_absolute)
     else {
@@ -652,7 +653,7 @@ fn push_gaintable_subscribe(
     clients: &OscClientRegistry,
     gaintable_cache: &GaintableCache,
     ctx: &RuntimeControlContext,
-    client: SocketAddr,
+    client: &Peer,
     speaker: i64,
     have_version: Option<u32>,
 ) {
@@ -723,7 +724,7 @@ mod backend_file_request_tests {
         for id in [None, Some("id-a")] {
             send_backend_file_error(
                 &socket,
-                receiver.local_addr().unwrap(),
+                &Peer::Udp(receiver.local_addr().unwrap()),
                 "script",
                 "file",
                 id,
@@ -767,7 +768,7 @@ mod notify_tests {
     struct Wire {
         engine: Arc<UdpSocket>,
         clients: Arc<OscClientRegistry>,
-        writer: SocketAddr,
+        writer: std::net::SocketAddr,
         bystander: UdpSocket,
         gaintable_cache: Arc<GaintableCache>,
     }
@@ -784,8 +785,8 @@ mod notify_tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(60)));
-        clients.register(writer.local_addr().unwrap());
-        clients.register(bystander.local_addr().unwrap());
+        clients.register(&Peer::Udp(writer.local_addr().unwrap()));
+        clients.register(&Peer::Udp(bystander.local_addr().unwrap()));
         Wire {
             engine,
             clients,
@@ -806,7 +807,7 @@ mod notify_tests {
                 addr: addr.to_string(),
                 args,
             },
-            wire.writer,
+            &Peer::Udp(wire.writer),
             control,
             None,
             &mut RealtimeSeqState::default(),
@@ -1423,7 +1424,7 @@ mod notify_tests {
             None,
             &wire.engine,
             &wire.clients,
-            wire.bystander.local_addr().unwrap(),
+            &Peer::Udp(wire.bystander.local_addr().unwrap()),
         );
         let messages = received(&wire.bystander);
         assert_eq!(generations(&messages), [(start + 3, 1, 0, 1)]);
@@ -1813,7 +1814,7 @@ fn debug_speaker_gaintable_subscribe(d: &mut Dispatch) -> ControlOutcome {
         Some(OscType::Int(_)) => renderer::band_gaintable::GLOBAL_ENERGY_INDEX,
         _ => 0,
     };
-    let client = resolve_register_addr(src, &[]);
+    let client = &resolve_register_addr(src, &[]);
     // Ensure the client exists in the registry (refreshes liveness) so the
     // subscribe flag sticks and the 5 s heartbeat keeps it alive.
     clients.register(client);
@@ -1836,7 +1837,7 @@ fn debug_speaker_gaintable_subscribe(d: &mut Dispatch) -> ControlOutcome {
 fn debug_speaker_gaintable_unsubscribe(d: &mut Dispatch) -> ControlOutcome {
     let src = d.src;
     let clients = d.clients;
-    let client = resolve_register_addr(src, &[]);
+    let client = &resolve_register_addr(src, &[]);
     clients.set_gaintable(client, false);
     // Drop the targets too: the next subscribe declares what it wants, and
     // keeping them would push fields nobody is displaying any more.
@@ -1860,7 +1861,7 @@ fn debug_speaker_gaintable_nack(d: &mut Dispatch) -> ControlOutcome {
     if let Some(version) = ints.next() {
         let missing: Vec<u32> = ints.collect();
         if !missing.is_empty() {
-            let client = resolve_register_addr(src, &[]);
+            let client = &resolve_register_addr(src, &[]);
             // Resolve the target from the version the client is missing
             // chunks for, so a NACK is answered with the right field even
             // when several transfers are in flight.
@@ -1886,7 +1887,7 @@ fn metering(d: &mut Dispatch) -> ControlOutcome {
         Some(v) => v,
         None => return ControlOutcome::invalid("expected a boolean"),
     };
-    let client = resolve_register_addr(src, &[]);
+    let client = &resolve_register_addr(src, &[]);
     if clients.set_metering(client, enabled) {
         send_metering_state(socket, client, enabled);
     }
@@ -1902,7 +1903,7 @@ fn diag_enabled(d: &mut Dispatch) -> ControlOutcome {
         Some(v) => v,
         None => return ControlOutcome::invalid("expected a boolean"),
     };
-    let client = resolve_register_addr(src, &[]);
+    let client = &resolve_register_addr(src, &[]);
     if clients.set_diag(client, enabled) {
         send_diag_state(socket, client, enabled);
     }

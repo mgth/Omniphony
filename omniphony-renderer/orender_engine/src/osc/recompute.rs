@@ -176,9 +176,9 @@ pub(crate) fn trigger_layout_recompute(
                                 {
                                     if client_version != Some(version) {
                                         for update in gaintable_chunk_broadcasts(&bytes, None) {
-                                            send_update_to_client(&socket_clone, addr, &update);
+                                            send_update_to_client(&socket_clone, &addr, &update);
                                         }
-                                        clients_clone.set_gaintable_version(addr, target, version);
+                                        clients_clone.set_gaintable_version(&addr, target, version);
                                     }
                                 }
                             }
@@ -326,7 +326,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_millis(200)))
             .unwrap();
         let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
-        clients.insert_permanent(client.local_addr().unwrap());
+        clients.insert_permanent(&crate::osc::peer::Peer::Udp(client.local_addr().unwrap()));
 
         trigger_layout_recompute(
             &control,

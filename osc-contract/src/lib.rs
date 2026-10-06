@@ -58,7 +58,15 @@ pub mod shapes;
 /// a change to arguments only is for the author to remember.
 ///
 /// An engine that predates this advertises none, which a client reads as 0.
-pub const CONTRACT_REVISION: u32 = 1;
+pub const CONTRACT_REVISION: u32 = 2;
+
+/// The port the engine's stream transport listens on is the OSC/UDP control
+/// port's number, on loopback (TCP and UDP ports are separate spaces). A
+/// connection carries the same packets as the datagrams, each preceded by its
+/// size as a big-endian int32 (OSC 1.0 stream framing); a connected client is
+/// registered with [`REGISTER`] like a datagram client and needs no heartbeat:
+/// the connection is the session. Revision 2 onwards; `docs/control-transport.md`.
+pub const STREAM_FRAME_SIZE_BYTES: usize = 4;
 
 // ── Control: client → engine ────────────────────────────────────────────────
 
@@ -633,6 +641,16 @@ pub const LOG: &str = "/omniphony/log";
 pub const METER_DRC_GAIN: &str = "/omniphony/meter/drc_gain";
 pub const METER_MASTER: &str = "/omniphony/meter/master";
 pub const REGISTER: &str = "/omniphony/register";
+/// Barrier, revision 2: the engine answers [`SYNC_ACK`] with the same
+/// arguments once every packet the client sent before it has been dispatched.
+/// On a stream connection, whose packets are handled in order, the ack means
+/// each earlier control was applied (and the state it changed published
+/// before the ack), refused (its [`STATE_CONTROL_ERROR`] before the ack), or
+/// started asynchronous work, whose completion keeps its own signal (a layout
+/// change's [`STATE_SPEAKERS_RECOMPUTING`] going back to 0). Over UDP the ack
+/// only says the engine heard the sync.
+pub const SYNC: &str = "/omniphony/sync";
+pub const SYNC_ACK: &str = "/omniphony/sync/ack";
 pub const SPATIAL_FRAME: &str = "/omniphony/spatial/frame";
 /// Suffix for the per-object lifecycle message: `/omniphony/object/{id}/remove`.
 ///
@@ -946,6 +964,8 @@ pub const ALL_SESSION: &[&str] = &[
     PLAYOUT_HEARD,
     REGISTER,
     SPATIAL_FRAME,
+    SYNC,
+    SYNC_ACK,
     TIMESTAMP,
     YIELD_RESUME_PORT,
 ];
@@ -1134,7 +1154,7 @@ mod tests {
     /// `(revision, fingerprint)`. Change both together, and only together with
     /// a bump: a new fingerprint under the old revision tells clients nothing
     /// changed when it did.
-    const PINNED_ADDRESS_SET: (u32, u64) = (1, 0x6ef3_1994_e50f_d48d);
+    const PINNED_ADDRESS_SET: (u32, u64) = (2, 0x9e77_a313_a880_fc97);
 
     /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
     /// and not the order the lists happen to be written in.

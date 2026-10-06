@@ -443,8 +443,15 @@ pub(super) struct Out {
 }
 
 impl Out {
+    /// Telemetry is droppable: a stream client too slow for it loses it,
+    /// as a datagram client would (see [`super::peer::Delivery`]).
     fn send_filtered(&self, bytes: &[u8], predicate: impl Fn(&OscClientState) -> bool) {
-        self.clients.send_filtered(&self.socket, bytes, predicate);
+        self.clients.send_filtered(
+            &self.socket,
+            bytes,
+            super::peer::Delivery::Droppable,
+            predicate,
+        );
     }
 
     /// To every live client, unmarked.

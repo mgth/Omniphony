@@ -14,11 +14,15 @@ mod decode;
 mod dispatch;
 mod export;
 mod gaintable;
+mod inbound;
 mod metadata_emit;
+mod peer;
 mod playout;
 mod profiles;
 mod recompute;
 mod state_emit;
+#[cfg(test)]
+mod stream_tests;
 mod telemetry;
 mod transport;
 
@@ -28,6 +32,7 @@ use self::client_registry::OscClientRegistry;
 use self::dispatch::{ControlOutcome, RealtimeSeqState, handle_control_message};
 use self::export::{broadcast_live_state, send_live_state_to};
 use self::gaintable::GaintableCache;
+use self::peer::Peer;
 use self::transport::{
     broadcast_string, ensure_send_buffer, flush_pending_logs, resolve_register_addr,
     send_buffered_logs_to_client, send_control_error, send_metering_state, send_raw_filtered,
@@ -488,7 +493,7 @@ impl WarnLimiter {
 /// know would otherwise fill it.
 fn report_control_outcome(
     socket: &UdpSocket,
-    src: SocketAddr,
+    src: &Peer,
     addr: &str,
     outcome: ControlOutcome,
     limiter: &mut WarnLimiter,
@@ -517,7 +522,7 @@ impl OscSender {
         // Every state bundle and every reply leaves through this socket.
         ensure_send_buffer(&socket);
         let clients = Arc::new(OscClientRegistry::new(CLIENT_TIMEOUT));
-        clients.insert_permanent(SocketAddr::V4(default_target));
+        clients.insert_permanent(&Peer::Udp(SocketAddr::V4(default_target)));
         // Per-instance id: mixes pid and a sub-second timestamp so it differs
         // both across processes (CLI vs the mpv-embedded host) and across
         // successive instances in the same process. Only its *change* matters,
@@ -607,7 +612,25 @@ impl OscSender {
                 return Ok(());
             }
         };
-        let _ = rx_socket.set_read_timeout(Some(Duration::from_millis(200)));
+        // The stream transport on the same port number, loopback only (#680).
+        // Without it the engine runs on datagrams, as before revision 2.
+        let bound_port = rx_socket.local_addr().map(|a| a.port()).unwrap_or(rx_port);
+        let tcp_listener = match std::net::TcpListener::bind(("127.0.0.1", bound_port)) {
+            Ok(listener) => Some(listener),
+            Err(e) => {
+                log::warn!(
+                    "OSC: stream transport unavailable on 127.0.0.1:{bound_port} ({e}); \
+                     datagrams only"
+                );
+                None
+            }
+        };
+        let (feeds, inbound) = inbound::spawn_feeds(
+            rx_socket,
+            tcp_listener,
+            Arc::clone(&clients),
+            Arc::clone(&stop),
+        )?;
         // Register this listener so a same-process successor (mpv track switch)
         // can reclaim the port instantly instead of timing out the UDP yield.
         *LOCAL_RX_RELEASE.lock().unwrap() = Some(Arc::clone(&stop));
@@ -656,19 +679,13 @@ impl OscSender {
                     }
                 }
 
-                // Large enough for any UDP datagram, allocated once: a
-                // truncated control message (a backend file, a layout) would
-                // fail to decode and be lost.
-                let mut buf = vec![0u8; RX_DATAGRAM_MAX];
                 let mut decode_errors = WarnLimiter::default();
-                let mut recv_errors = WarnLimiter::default();
                 let mut control_errors = WarnLimiter::default();
                 loop {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
                     decode_errors.flush("undecodable datagram(s) dropped");
-                    recv_errors.flush("recv error(s)");
                     control_errors.flush("control message(s) not applied");
                     flush_pending_logs(&socket, &clients, &mut last_log_seq);
                     if let Some(host) = host_handler.as_ref() {
@@ -733,14 +750,16 @@ impl OscSender {
                             );
                         }
                     }
-                    match rx_socket.recv_from(&mut buf) {
-                        Ok((len, src)) => {
-                            match decode::decode_datagram(&buf[..len]) {
+                    match inbound.recv_timeout(Duration::from_millis(200)) {
+                        Ok(inbound::Inbound { bytes, from }) => {
+                            let src = &from;
+                            let len = bytes.len();
+                            match decode::decode_datagram(&bytes) {
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr == osc_contract::REGISTER =>
                                 {
                                     let client = resolve_register_addr(src, &msg.args);
-                                    let (is_new, metering_enabled) = clients.register(client);
+                                    let (is_new, metering_enabled) = clients.register(&client);
                                     if is_new {
                                         log::info!("OSC client registered: {}", client);
                                     }
@@ -748,16 +767,16 @@ impl OscSender {
                                     force_full_next.store(true, Ordering::Relaxed);
                                     // Send the current state bundle, including layout and speakers.
                                     if let Some(ref ctrl) = control {
-                                        send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, client);
+                                        send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, &client);
                                     }
-                                    send_buffered_logs_to_client(&socket, client, 0);
-                                    send_metering_state(&socket, client, metering_enabled);
+                                    send_buffered_logs_to_client(&socket, &client, 0);
+                                    send_metering_state(&socket, &client, metering_enabled);
                                 }
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr == osc_contract::HEARTBEAT =>
                                 {
                                     let client = resolve_register_addr(src, &msg.args);
-                                    let is_known = clients.heartbeat(client);
+                                    let is_known = clients.heartbeat(&client);
                                     let reply_addr = if is_known {
                                         log::trace!("OSC heartbeat/ack → {}", client);
                                         osc_contract::HEARTBEAT_ACK
@@ -779,7 +798,7 @@ impl OscSender {
                                     };
                                     match rosc::encoder::encode(&OscPacket::Message(reply)) {
                                         Ok(bytes) => {
-                                            if let Err(e) = socket.send_to(&bytes, client) {
+                                            if let Err(e) = client.send(&socket, &bytes) {
                                                 log::warn!(
                                                     "Failed to send heartbeat reply to {}: {}",
                                                     client,
@@ -801,7 +820,24 @@ impl OscSender {
                                     let client = resolve_register_addr(src, &msg.args);
                                     if let Some(ref ctrl) = control {
                                         log::debug!("OSC state refresh → {client}");
-                                        send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, client);
+                                        send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, &client);
+                                    }
+                                }
+
+                                // A barrier: everything this client sent before
+                                // has been dispatched (see osc_contract::SYNC).
+                                Ok((_, OscPacket::Message(msg)))
+                                    if msg.addr == osc_contract::SYNC =>
+                                {
+                                    let ack = OscMessage {
+                                        addr: osc_contract::SYNC_ACK.to_string(),
+                                        args: msg.args,
+                                    };
+                                    if let Ok(bytes) =
+                                        rosc::encoder::encode(&OscPacket::Message(ack))
+                                        && let Err(e) = src.send(&socket, &bytes)
+                                    {
+                                        log::debug!("Failed to send sync ack to {src}: {e}");
                                     }
                                 }
 
@@ -859,18 +895,13 @@ impl OscSender {
                                 }
                             }
                         }
-                        Err(e)
-                            if matches!(
-                                e.kind(),
-                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                            ) => {}
-                        // A failing socket returns at once, every pass: the
-                        // same limit as for a misbehaving sender.
-                        Err(e) => {
-                            recv_errors.report(format_args!("OSC recv error: {e}"));
-                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
+                // Release the ports before this thread ends: whoever joins it
+                // (a standby, a successor in this process) binds them next.
+                feeds.join();
             })?;
 
         *self.listener_thread.lock().unwrap() = Some(handle);
