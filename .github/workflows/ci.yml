@@ -284,15 +284,18 @@ jobs:
       # a fraction of the block period rather than in microseconds, so a slow
       # runner does not fail it. Steady and all-moving measured 2-5 % of real
       # time on these runners against a 25 % budget. The topology-change cases
-      # time the render thread while the band worker builds: they hold on a
-      # 4-vCPU runner because background builds run in the idle scheduling
-      # class (renderer/src/background_pool.rs); without it the render thread
-      # lost whole 3 ms scheduler slices to them. Release only, behind the
-      # perf-gate feature and on one test thread: a timing measurement must
-      # not share the machine with the rest of the suite, and in this step it
-      # does not. The optimised library step built this same test binary (same
-      # features: perf-gate only adds the gate's module, wide-matrix only test
-      # sweeps) and skipped the gate, so this step compiles nothing.
+      # time the render thread while the band worker builds, and gate what a
+      # change adds over as many blocks rendered with no change (the FIR
+      # crossover's own slowest block varies 10-32 % by runner CPU): they
+      # hold on a 4-vCPU runner because background builds run in the idle
+      # scheduling class (renderer/src/background_pool.rs); without it the
+      # render thread lost whole 3 ms scheduler slices to them. Release only,
+      # behind the perf-gate feature and on one test thread: a timing
+      # measurement must not share the machine with the rest of the suite,
+      # and in this step it does not. The optimised library step built this
+      # same test binary (same features: perf-gate only adds the gate's
+      # module, wide-matrix only test sweeps) and skipped the gate, so this
+      # step compiles nothing.
       - name: Run the perf gate (release)
         working-directory: omniphony-renderer
         run: cargo test --release -p renderer --features perf-gate,wide-matrix --lib --locked -- spatial_renderer::perf_gate --test-threads=1 --nocapture
