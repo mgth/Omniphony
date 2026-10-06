@@ -334,7 +334,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mapfile -t installers < omniphony-studio-egui/target/packages/list.txt
+          # Bash 3.2 on the macOS runner: no mapfile. One path per line,
+          # spaces kept.
+          installers=()
+          while IFS= read -r installer; do
+            installers+=("$installer")
+          done < omniphony-studio-egui/target/packages/list.txt
           gh release upload "$GITHUB_REF_NAME" "$archive" "$liborender_archive" \
             "${installers[@]}" --clobber --repo "$GITHUB_REPOSITORY"
 
