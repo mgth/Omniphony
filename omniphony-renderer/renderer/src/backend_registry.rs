@@ -845,7 +845,7 @@ pub struct BackendBuildCtx<'a> {
     pub backend_rebuild_params: Option<BackendRebuildParams>,
     /// The registry the active backend was looked up in. A composite backend
     /// (hybrid) resolves its inner models through this so any registered backend
-    /// can be composed, not just a hard-coded set. See [`resolve_hybrid_inner_plan`].
+    /// can be composed, not just a hard-coded set. See `resolve_hybrid_inner_plan`.
     pub registry: &'a BackendRegistry,
     /// All host-set backend param values, keyed by backend id then param key
     /// (see [`crate::backend_params`]). Read at build time only — never on the

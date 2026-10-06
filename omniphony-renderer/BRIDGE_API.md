@@ -212,10 +212,16 @@ pub struct RDecodedFrame {
 ```
 
 PCM rules:
-- interleaved signed 32-bit integer samples
-- layout:
+- **24-bit samples, sign-extended into an `i32`**: full scale is
+  `I32_PCM_FULL_SCALE` = 2^23, not `i32::MAX`. A bridge that fills the whole
+  32-bit range plays 256 times (+48 dB) too loud.
+- interleaved, layout:
   `[s0c0, s0c1, …, s1c0, s1c1, …]`
 - `channel_labels.len()` must match `channel_count`
+
+The listings in this document are checked against `bridge_api/src/lib.rs`
+by `bridge_api/tests/doc_listings.rs`: a field or a method changed in the code
+and not here fails CI.
 
 ## Spatial Metadata
 
@@ -332,7 +338,7 @@ A usable bridge plugin must:
 - export the `format_bridge` root module
 - create a valid bridge object in `new_bridge`
 - accept input through `push_packet(...)`
-- emit interleaved PCM frames
+- emit interleaved PCM frames, scaled to `I32_PCM_FULL_SCALE`
 - emit one channel label per PCM channel
 - expose coherent metadata when spatial objects are present
 - support `reset()`

@@ -123,16 +123,23 @@ The tag push triggers `release.yml`:
   `omniphony-studio-egui-vX.Y.Z-{linux-x86_64.tar.gz,windows-x86_64.zip,macos-arm64.zip}`
   to the draft with `gh release upload` — the Studio, `orender` (built by its
   own step with the same command as the Tauri sidecar, so it finds that build
-  done), `layouts/`, `assets/` and the licence, in one directory. Three more
-  assets. The Studio
-  finds those files next to its executable (`core/src/host/bundle.rs`); no
-  installer, no engine deploy for mpv (that stays the Tauri bundle's job, or
-  the `orender` package's).
+  done), `engine/` (the engine library), `layouts/`, `assets/` and the
+  licence, in one directory. Three more assets. The Studio finds those files
+  next to its executable (`core/src/host/bundle.rs`).
+- **native Studio installers**, same job, before the archive (#677):
+  `omniphony-studio-egui/scripts/package.sh` runs cargo-packager (configured
+  in `omniphony-studio-egui/Cargo.toml`) and attaches
+  `omniphony-studio-egui_X.Y.Z_amd64.deb`, `…_x86_64.AppImage`,
+  `…_x64-setup.exe`, `…_x64_en-US.msi` and `…_aarch64.dmg` (the .app signed ad
+  hoc, without the hardened runtime, as the Tauri bundle). Five more assets.
+  Every form ships `orender` and the engine library; the Studio copies the
+  library to `<local data>/omniphony/lib/` on startup for mpv
+  (`core/src/host/engine_deploy.rs`), as the Tauri Studio does.
 - **standalone liborender**, same job: the engine library (built by the
   same step as the native Studio's `orender`), with `orender.h`, as `liborender-vX.Y.Z-{linux-x86_64,windows-x86_64,macos-arm64}.zip`
   (flat, like the old `liborender-v*` archives). Three more assets.
 - **manifest**, after the three builds: `omniphony-vX.Y.Z-manifest.json` —
-  the README row as JSON, plus the commit. One more asset, **fourteen** in
+  the README row as JSON, plus the commit. One more asset, **nineteen** in
   all.
 
 The draft's URL is `releases/tag/untagged-<hash>` until it is published —

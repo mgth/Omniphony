@@ -807,8 +807,8 @@ fn sinc(x: f64) -> f64 {
 /// cepstrum does not alias onto itself. Build-time only (`f64`, four
 /// transforms per response).
 ///
-/// One-shot; to run it over a set of responses, hold a [`MinPhase`] and call
-/// [`MinPhase::run`] so the plans and buffers are built once.
+/// One-shot; to run it over a set of responses, hold a `MinPhase` and call
+/// `MinPhase::run` so the plans and buffers are built once.
 pub fn minimum_phase(ir: &[f32]) -> Vec<f32> {
     if ir.is_empty() {
         return Vec::new();
@@ -958,7 +958,7 @@ mod tests {
     #[test]
     fn measured_right_source_is_louder_in_right_ear() {
         // Validates the SAF→renderer azimuth handedness (+az = right).
-        let set = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
+        let set = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
         let mut p = HrirPair {
             left: [0.0; HRIR_LEN],
             right: [0.0; HRIR_LEN],
@@ -972,7 +972,7 @@ mod tests {
 
     #[test]
     fn measured_front_is_roughly_symmetric() {
-        let set = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
+        let set = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
         let mut p = HrirPair {
             left: [0.0; HRIR_LEN],
             right: [0.0; HRIR_LEN],
@@ -1062,7 +1062,7 @@ mod tests {
     /// the origin. That is the property the three-nearest blend relies on.
     #[test]
     fn stored_kemar_responses_start_at_the_origin() {
-        let d = MeasuredHrirData::saf_kemar();
+        let d = MeasuredHrirData::saf_kemar_shared(48_000);
         let late = d
             .irs
             .iter()
@@ -1144,7 +1144,7 @@ mod tests {
     /// every rate the engine builds the set for.
     #[test]
     fn the_kernel_table_matches_the_per_sample_kernel() {
-        let set = MeasuredHrirData::saf_kemar();
+        let set = MeasuredHrirData::saf_kemar_shared(48_000);
         for to in [44_100u32, 96_000, 192_000] {
             let kernel = ResampleKernel::new(48_000, to);
             for (i, (l, r)) in set.irs.iter().enumerate().step_by(37) {
@@ -1178,7 +1178,7 @@ mod tests {
     /// one-shot calls give — no state may leak from the previous response.
     #[test]
     fn a_reused_min_phase_matches_one_shot_calls() {
-        let set = MeasuredHrirData::saf_kemar();
+        let set = MeasuredHrirData::saf_kemar_shared(48_000);
         let kernel = ResampleKernel::new(48_000, 44_100);
         let mut state = MinPhase::new(kernel.out_len(set.irs[0].0.len()));
         let mut buf = Vec::new();
@@ -1210,12 +1210,12 @@ mod tests {
     /// keeping their energy in the same ballpark.
     #[test]
     fn saf_resampled_to_441_differs_and_preserves_energy() {
-        let native = MeasuredHrirData::saf_kemar();
+        let native = MeasuredHrirData::saf_kemar_shared(48_000);
         let resampled = MeasuredHrirData::saf_kemar().resampled_to(44_100);
         assert_eq!(resampled.sample_rate, 44_100);
         assert_eq!(resampled.len(), native.len());
 
-        let grid_native = HrirSet::new(&native, 48_000);
+        let grid_native = HrirSet::new(&*native, 48_000);
         let grid_resampled = HrirSet::new(&resampled, 44_100);
         let mut a = HrirPair {
             left: [0.0; HRIR_LEN],
@@ -1388,7 +1388,7 @@ mod tests {
     /// (aligned), not a blend — interpolation only fills the space between.
     #[test]
     fn render_is_exact_on_measurement_points() {
-        let d = MeasuredHrirData::saf_kemar();
+        let d = MeasuredHrirData::saf_kemar_shared(48_000);
         let (az, el) = d.dirs[100];
         let got = d.render(az, el, 48_000);
         let mut expected = HrirPair {
@@ -1407,7 +1407,7 @@ mod tests {
     /// decorrelation between neighbours (issue #158).
     #[test]
     fn between_points_blends_and_preserves_energy() {
-        let d = MeasuredHrirData::saf_kemar();
+        let d = MeasuredHrirData::saf_kemar_shared(48_000);
         // Midpoint between two real directions, at ear level-ish.
         let (az0, el0) = d.dirs[100];
         let near = d.nearest3(az0 + 2.0, el0 + 2.0);
@@ -1558,7 +1558,7 @@ mod tests {
     /// reference for "this is what a usable set looks like".
     #[test]
     fn a_usable_set_passes_the_guard() {
-        let set = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
+        let set = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
         assert!(check_loaded_set(&set, "kemar", 128).is_ok());
         assert!(!set.is_direction_invariant());
     }
@@ -1566,9 +1566,9 @@ mod tests {
     /// At the native rate the resample must be a strict no-op.
     #[test]
     fn resample_is_noop_at_native_rate() {
-        let native = MeasuredHrirData::saf_kemar();
+        let native = MeasuredHrirData::saf_kemar_shared(48_000);
         let same = MeasuredHrirData::saf_kemar().resampled_to(48_000);
-        let grid_a = HrirSet::new(&native, 48_000);
+        let grid_a = HrirSet::new(&*native, 48_000);
         let grid_b = HrirSet::new(&same, 48_000);
         let mut a = HrirPair {
             left: [0.0; HRIR_LEN],

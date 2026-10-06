@@ -3,7 +3,7 @@
 //! This is a **parallel render path**, not a [`GainModel`] backend: a backend
 //! only emits per-speaker gains and cannot carry the per-ear delay (ITD) or the
 //! stateful HRTF convolution a binaural renderer needs. When
-//! [`OutputMode::Binaural`] is selected, `SpatialRenderer::render_frame` skips
+//! [`OutputMode::Binaural`](crate::live_params::OutputMode::Binaural) is selected, `SpatialRenderer::render_frame` skips
 //! the whole VBAP / crossover / speaker chain and calls [`BinauralRenderer`]
 //! instead, producing a 2-channel (L/R) interleaved frame.
 //!

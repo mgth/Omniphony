@@ -1,5 +1,7 @@
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 
+use super::peer::{Delivery, Peer};
+
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 use runtime_control::osc::{BroadcastUpdate, BroadcastValue};
 
@@ -164,7 +166,7 @@ pub(crate) fn broadcast_ffff(
         ],
     };
     if let Ok(bytes) = rosc::encoder::encode(&OscPacket::Message(msg)) {
-        send_raw(socket, clients, &bytes);
+        send_raw_droppable(socket, clients, &bytes);
     }
 }
 
@@ -212,10 +214,10 @@ pub(crate) fn encode_log_record(record: &live_log::BufferedLogRecord) -> Option<
     rosc::encoder::encode(&packet).ok()
 }
 
-pub(crate) fn send_buffered_logs_to_client(socket: &UdpSocket, client: SocketAddr, last_seq: u64) {
+pub(crate) fn send_buffered_logs_to_client(socket: &UdpSocket, client: &Peer, last_seq: u64) {
     for record in live_log::records_since(last_seq) {
         if let Some(bytes) = encode_log_record(&record) {
-            if let Err(e) = socket.send_to(&bytes, client) {
+            if let Err(e) = client.send_with(socket, &bytes, Delivery::Droppable) {
                 log::warn!("Failed to send log record to {}: {}", client, e);
                 break;
             }
@@ -234,7 +236,7 @@ pub(crate) fn flush_pending_logs(
     }
     for record in &records {
         if let Some(bytes) = encode_log_record(record) {
-            send_raw(socket, clients, &bytes);
+            send_raw_droppable(socket, clients, &bytes);
         }
     }
     if let Some(last) = records.last() {
@@ -254,28 +256,34 @@ pub(crate) fn send_raw_filtered<F>(
 ) where
     F: Fn(&super::client_registry::OscClientState) -> bool,
 {
-    clients.send_filtered(socket, bytes, predicate);
+    clients.send_filtered(socket, bytes, Delivery::Reliable, predicate);
 }
 
-pub(crate) fn send_metering_state(socket: &UdpSocket, client: SocketAddr, enabled: bool) {
+/// Telemetry to every client: a stream client too slow to take it loses it,
+/// as a datagram client would (see [`Delivery`]).
+pub(crate) fn send_raw_droppable(socket: &UdpSocket, clients: &OscClientRegistry, bytes: &[u8]) {
+    clients.send_filtered(socket, bytes, Delivery::Droppable, |_| true);
+}
+
+pub(crate) fn send_metering_state(socket: &UdpSocket, client: &Peer, enabled: bool) {
     let packet = OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_OSC_METERING.to_string(),
         args: vec![OscType::Int(if enabled { 1 } else { 0 })],
     });
     if let Ok(bytes) = rosc::encoder::encode(&packet) {
-        if let Err(e) = socket.send_to(&bytes, client) {
+        if let Err(e) = client.send(socket, &bytes) {
             log::warn!("Failed to send metering state to {}: {}", client, e);
         }
     }
 }
 
-pub(crate) fn send_diag_state(socket: &UdpSocket, client: SocketAddr, enabled: bool) {
+pub(crate) fn send_diag_state(socket: &UdpSocket, client: &Peer, enabled: bool) {
     let packet = OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_OSC_DIAG.to_string(),
         args: vec![OscType::Int(if enabled { 1 } else { 0 })],
     });
     if let Ok(bytes) = rosc::encoder::encode(&packet) {
-        if let Err(e) = socket.send_to(&bytes, client) {
+        if let Err(e) = client.send(socket, &bytes) {
             log::warn!("Failed to send diag state to {}: {}", client, e);
         }
     }
@@ -284,11 +292,7 @@ pub(crate) fn send_diag_state(socket: &UdpSocket, client: SocketAddr, enabled: b
 /// Send a single [`BroadcastUpdate`] to one specific client (unicast), bypassing
 /// the registry fan-out. Used to push the gain table only to the subscriber(s)
 /// that asked for it.
-pub(crate) fn send_update_to_client(
-    socket: &UdpSocket,
-    client: SocketAddr,
-    update: &BroadcastUpdate,
-) {
+pub(crate) fn send_update_to_client(socket: &UdpSocket, client: &Peer, update: &BroadcastUpdate) {
     let args = match &update.value {
         BroadcastValue::Int(i) => vec![OscType::Int(*i)],
         BroadcastValue::Float(f) => vec![OscType::Float(*f)],
@@ -303,7 +307,7 @@ pub(crate) fn send_update_to_client(
         args,
     });
     if let Ok(bytes) = rosc::encoder::encode(&packet) {
-        if let Err(e) = socket.send_to(&bytes, client) {
+        if let Err(e) = client.send(socket, &bytes) {
             log::warn!("Failed to send {} to {}: {}", update.addr, client, e);
         }
     }
@@ -315,7 +319,7 @@ pub(crate) fn send_update_to_client(
 /// editor that asked.
 pub(crate) fn send_message_to_client(
     socket: &UdpSocket,
-    client: SocketAddr,
+    client: &Peer,
     addr: &str,
     args: Vec<OscType>,
 ) {
@@ -324,7 +328,7 @@ pub(crate) fn send_message_to_client(
         args,
     });
     if let Ok(bytes) = rosc::encoder::encode(&packet) {
-        if let Err(e) = socket.send_to(&bytes, client) {
+        if let Err(e) = client.send(socket, &bytes) {
             log::warn!("Failed to send {addr} to {client}: {e}");
         }
     }
@@ -334,7 +338,7 @@ pub(crate) fn send_message_to_client(
 /// a control the engine did not apply.
 pub(crate) fn send_control_error(
     socket: &UdpSocket,
-    client: SocketAddr,
+    client: &Peer,
     address: &str,
     code: &str,
     message: &str,
@@ -351,19 +355,25 @@ pub(crate) fn send_control_error(
     );
 }
 
-pub(crate) fn resolve_register_addr(src: SocketAddr, args: &[OscType]) -> SocketAddr {
+/// The client a register, heartbeat or refresh speaks for: a datagram
+/// client's listening port may differ from its source port and is given as
+/// the first argument. A stream client is its connection, whatever it says.
+pub(crate) fn resolve_register_addr(src: &Peer, args: &[OscType]) -> Peer {
+    let Peer::Udp(src) = src else {
+        return src.clone();
+    };
     if let Some(OscType::Int(port)) = args.first() {
         if let Ok(port) = u16::try_from(*port) {
-            return match src {
+            return Peer::Udp(match *src {
                 SocketAddr::V4(v4) => SocketAddr::V4(SocketAddrV4::new(*v4.ip(), port)),
                 SocketAddr::V6(mut v6) => {
                     v6.set_port(port);
                     SocketAddr::V6(v6)
                 }
-            };
+            });
         }
     }
-    src
+    Peer::Udp(*src)
 }
 
 #[cfg(test)]

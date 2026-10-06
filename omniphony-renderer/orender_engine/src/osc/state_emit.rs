@@ -9,7 +9,7 @@ use runtime_control::osc_contract;
 use std::sync::Arc;
 
 /// What the render path reports to clients besides the objects. Each call
-/// queues plain values for the telemetry thread ([`super::telemetry`]), which
+/// queues plain values for the telemetry thread (`telemetry`), which
 /// encodes and sends them; none of them sends anything itself.
 impl OscSender {
     /// Queue a refresh of the whole live state, built and sent on the
@@ -58,14 +58,16 @@ impl OscSender {
     /// frame is recycled: nothing is copied or allocated here.
     pub fn send_meter_bundle(
         &mut self,
-        snapshot: renderer::metering::MeterSnapshot,
+        snapshot: &mut renderer::metering::MeterSnapshot,
         rendered: &mut renderer::spatial_renderer::RenderedFrame,
         timings: MeterTimings,
     ) {
-        let (gains, band_gains) = self.telemetry.meter_lists();
+        // The report takes the snapshot and the renderer's lists; the render
+        // path gets spare ones back, refilled on its next metered frame.
+        let (gains, band_gains, spare) = self.telemetry.meter_lists();
         let report = MeterReport {
             block: self.telemetry.block,
-            snapshot,
+            snapshot: std::mem::replace(snapshot, spare),
             object_gains: std::mem::replace(&mut rendered.object_gains, gains),
             object_band_gains: std::mem::replace(&mut rendered.object_band_gains, band_gains),
             // Where the object test's source is, orbit and room clamp applied.
