@@ -49,6 +49,11 @@ const PLAYOUT_TICK: Duration = Duration::from_millis(4);
 /// While `osc_snapshot_ready` is false, re-register this often (host value).
 const SNAPSHOT_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_BUF: usize = 65_536;
+/// While a local renderer is reached by datagrams, how often the stream is
+/// tried again: after a stream closed (the next one may already be up), and
+/// for an engine that came up with the stream after this client registered.
+/// A refused loopback connection costs next to nothing.
+const TCP_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 /// Send buffer both sending sockets must have: larger than any UDP payload,
 /// like [`RECV_BUF`].
 const SEND_BUF: usize = 65_536;
@@ -270,6 +275,7 @@ fn listener_loop(
     // serves one, datagrams otherwise (see `link`).
     let mut link = Link::Datagram;
     let mut backoff = Backoff::default();
+    let mut next_tcp_probe = Instant::now() + TCP_PROBE_INTERVAL;
 
     if let Some(addr) = register {
         register_with(&mut link, &backoff, &socket, addr, port, metering);
@@ -490,6 +496,17 @@ fn listener_loop(
         }
         if let Some(addr) = register {
             let now = Instant::now();
+            // On datagrams with a renderer on this machine: try the stream
+            // again on a timer of its own. Nothing else would once the
+            // session is up, since a healthy datagram session never needs to
+            // register again.
+            if !link.is_stream() && now >= next_tcp_probe {
+                next_tcp_probe = now + TCP_PROBE_INTERVAL;
+                if link.prepare(addr, &backoff) {
+                    last_snapshot_request = now;
+                    register_with(&mut link, &backoff, &socket, addr, port, metering);
+                }
+            }
             // Until the renderer's state bundle has fully arrived, keep asking
             // for it (the host's `SNAPSHOT_REQUEST_INTERVAL`).
             if now.duration_since(last_snapshot_request) >= SNAPSHOT_REQUEST_INTERVAL
@@ -1584,11 +1601,17 @@ mod stream_link_tests {
     }
 
     fn start(engine: &FakeEngine) -> (Arc<OscStats>, ControlTx, Worker) {
+        let (stats, tx, worker, _) = start_with_model(engine);
+        (stats, tx, worker)
+    }
+
+    fn start_with_model(engine: &FakeEngine) -> (Arc<OscStats>, ControlTx, Worker, SharedLive) {
         let stats = OscStats::new();
+        let live: SharedLive = Arc::new(Mutex::new(Live::new(
+            crate::model::app_state::AppState::new(Vec::new()),
+        )));
         let (_, tx, worker) = spawn_listener(
-            Arc::new(Mutex::new(Live::new(
-                crate::model::app_state::AppState::new(Vec::new()),
-            ))),
+            live.clone(),
             Arc::new(|| {}),
             stats.clone(),
             ListenerConfig {
@@ -1599,7 +1622,7 @@ mod stream_link_tests {
             },
         )
         .unwrap();
-        (stats, tx, worker)
+        (stats, tx, worker, live)
     }
 
     fn wait_for(what: &str, done: impl Fn() -> bool) {
@@ -1722,6 +1745,67 @@ mod stream_link_tests {
                 == Some(crate::osc_contract::REGISTER);
         }
         assert!(registered_by_udp, "datagrams once the stream proved silent");
+        worker.shutdown();
+    }
+
+    /// A session that was fully up over TCP (snapshot complete) loses its
+    /// stream and carries on over datagrams, answered there: nothing about
+    /// that session asks to register again, yet the stream is tried again
+    /// and taken back.
+    #[test]
+    fn an_initialized_session_goes_back_to_the_stream() {
+        let engine = FakeEngine::new(true);
+        let (stats, _tx, mut worker, live) = start_with_model(&engine);
+        let mut stream = engine.accept(Duration::from_secs(5)).unwrap();
+        let _ = read_message(&mut stream);
+        send_message(
+            &mut stream,
+            crate::osc_contract::HEARTBEAT_ACK,
+            vec![OscType::Int(7), OscType::Int(0)],
+        );
+        send_message(
+            &mut stream,
+            crate::osc_contract::STATE_SNAPSHOT_COMPLETE,
+            vec![],
+        );
+        wait_for("registered with the snapshot", || {
+            stats.registered.load(Ordering::Relaxed) && live.lock().unwrap().app.osc_snapshot_ready
+        });
+        drop(stream);
+
+        // The engine answers by datagrams from now on: every heartbeat or
+        // registration gets an ack and the snapshot's end, so the datagram
+        // session is healthy.
+        let udp = engine.udp.try_clone().unwrap();
+        let answering = Arc::new(AtomicBool::new(true));
+        let answer = {
+            let answering = answering.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let reply = |addr: &str, args: Vec<OscType>| {
+                    encoder::encode(&OscPacket::Message(OscMessage {
+                        addr: addr.into(),
+                        args,
+                    }))
+                    .unwrap()
+                };
+                while answering.load(Ordering::Relaxed) {
+                    if let Ok((_, from)) = udp.recv_from(&mut buf) {
+                        let ack = reply(
+                            crate::osc_contract::HEARTBEAT_ACK,
+                            vec![OscType::Int(7), OscType::Int(0)],
+                        );
+                        let done = reply(crate::osc_contract::STATE_SNAPSHOT_COMPLETE, vec![]);
+                        let _ = udp.send_to(&ack, from);
+                        let _ = udp.send_to(&done, from);
+                    }
+                }
+            })
+        };
+        let again = engine.accept(Duration::from_secs(8));
+        answering.store(false, Ordering::Relaxed);
+        answer.join().unwrap();
+        assert!(again.is_some(), "the stream is taken back");
         worker.shutdown();
     }
 }
