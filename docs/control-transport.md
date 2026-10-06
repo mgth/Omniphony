@@ -36,8 +36,8 @@ Two more things surfaced while taking this inventory:
 ## Proposal
 
 **OSC 1.0 stream framing over loopback TCP, on the same port number as the
-OSC/UDP socket.** Studio's control and state move to it; telemetry and
-public automation stay on UDP.
+OSC/UDP socket.** Studio moves to it, telemetry included. Public automation
+and remote clients stay on UDP.
 
 ### Why this transport
 
@@ -109,27 +109,31 @@ whole current mechanism. Nothing is removed from the UDP path.
   For each connection it spawns a reader thread and a writer thread. Clients
   are few (a Studio, a test), so one thread each is cheaper to reason about
   than an event loop.
-- **Reader:** reads size-prefixed packets with a size bound (the UDP maximum,
-  64 KiB, except the opt-in large uploads), applies the nesting bound, and
-  calls the existing `handle_control_message`. The dispatcher's `src:
-  SocketAddr` becomes a `ClientId`: `Udp(SocketAddr)` or `Tcp(u64)`.
-- **Writer:** each TCP client in the registry owns a bounded queue
-  (`rtrb` or `crossbeam` channel; packets are already encoded bytes). Fan-out
-  (`send_filtered`) pushes and never writes to a socket. If the queue is
-  full, the client is too slow: it is disconnected, and on reconnecting gets
-  a fresh snapshot, rather than ever making the publisher wait.
+- **Reader:** reads size-prefixed packets with a size bound (1 MiB, which a
+  whole snapshot fits in), and hands them to the listener thread through the
+  channel the datagrams now go through too. The listener dispatches both one
+  at a time, so its state stays single-threaded and a connection's packets
+  are handled in order. The decode, the nesting bound and
+  `handle_control_message` are the datagrams'. The dispatcher's `src:
+  SocketAddr` becomes a `Peer`: `Udp(SocketAddr)` or `Tcp(connection)`, and
+  every reply goes through `Peer::send`.
+- **Writer:** each TCP client owns a bounded queue (8 MiB of encoded
+  packets) and a writer thread. Fan-out (`send_filtered`) pushes and never
+  writes to a socket. When the queue is full, telemetry is dropped, as a
+  datagram would be. State is never dropped: the client is too slow, so it is
+  disconnected, and on reconnecting gets a fresh snapshot. Either way the
+  publisher never waits.
   - Today a publisher holds the clients mutex and the publication lock while
     it calls `send_to`, a non-blocking datagram send. A blocking stream write
     there would stall the telemetry thread. The queue keeps every lock hold
     as short as it is now.
   - The render thread is unaffected: it never touches the registry (#670).
-- **Registry:** `HashMap<ClientId, OscClientState>`, with a transport tag per
-  client. Interest flags (metering, diag, gain-table targets) stay per
-  client. Telemetry addresses (`/object/*`, `/meter/*`, `spatial/frame`,
-  timing, latency, head pose) keep going over UDP to a TCP client's
-  `reply_port` when it asks for them, so the stream carries only control and
-  state. Whether a TCP client wants telemetry is given in its connect
-  message.
+- **Registry:** `HashMap<Peer, OscClientState>`. Interest flags (metering,
+  diag, gain-table targets) stay per client. A TCP client is not timed out;
+  it goes when its connection closes. It receives everything a datagram
+  client does, telemetry included, on the one connection: one socket, and
+  no reply port to agree on. Telemetry is marked droppable, so it keeps the
+  loss semantics it has on UDP.
 - **Yield/resume:** yielding the port closes the TCP listener with the UDP
   socket, and a resume reopens both. Clients reconnect, as they re-register
   today.
@@ -151,12 +155,13 @@ whole current mechanism. Nothing is removed from the UDP path.
 ### Compatibility
 
 - **Contract revision.** `CONTRACT_REVISION` 1 → 2 for the new session
-  addresses (`/omniphony/sync`, its ack, and a capability flag
-  `transport.tcp` in the capabilities message). The address fingerprint test
-  moves with it.
+  addresses (`/omniphony/sync` and its ack) and the stream transport. The
+  address fingerprint test moves with it. No separate capability flag: a
+  revision-2 engine whose TCP bind failed refuses the connection, which a
+  client handles the same way as an older engine.
 - **Old Studio, new engine:** UDP, as today.
 - **New Studio, old engine:** the TCP connect is refused, so Studio stays on
-  UDP. It can tell from the capabilities message.
+  UDP.
 
 ### Tests
 
@@ -194,6 +199,6 @@ step 2.
 - Does mpv's overlay or any user's automation rely on controls only Studio
   sends today? If so, those stay reachable over UDP; nothing above removes
   them.
-- Should telemetry for a TCP client go over the stream when it is light
-  (meters at 10 Hz), to need one socket only? The proposal keeps UDP for all
-  telemetry, which is simpler and keeps late packets droppable.
+- Telemetry for a TCP client: settled in step 1 (#763). It goes over the
+  stream, droppable when the client falls behind, rather than over UDP to a
+  reply port.
