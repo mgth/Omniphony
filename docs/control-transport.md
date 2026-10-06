@@ -88,17 +88,28 @@ outcomes:
 - it was applied, and the state it changed has been published, so that
   state reached this client before the ack;
 - it was refused, and its `control_error` arrived before the ack;
-- it started asynchronous work, and that work has not finished.
+- it started asynchronous work, about which the ack says nothing: that work
+  may have ended before the ack or end after it.
 
 The third case is real: a layout or speaker change starts a recompute on
-the `render-backend-recompute` worker and returns at once. That build can
-still fail after the ack. Its completion is reported the way it is today:
-`/state/speakers/recomputing` goes to 1 when the build starts and back to 0
-when it ends, followed by `/state/speakers/recompute_error` (empty on
-success). A client that needs completion waits for `recomputing` to return
-to 0 after the ack. It does not take the ack as success. Making the barrier
-wait for the worker would block every later packet on the connection for
-the length of a table build, telemetry subscriptions included.
+the `render-backend-recompute` worker and returns at once, and that build
+can still fail. It reports itself as it does today, in this order:
+- at the start: `/state/speakers/recomputing 1`, then
+  `/state/speakers/recompute_error ""` (the previous error cleared);
+- at the end, on failure: `recompute_error <message>`, then
+  `recomputing 0`; on success: the new renderer/layout/speakers state, then
+  `recomputing 0`.
+
+A change that arrives while a build runs queues one follow-up build, which
+starts right after the first one's `0`. A `0` therefore says that a build
+ended, not that every earlier change is built, and the signals carry no
+reference to the control that started them. A client that needs completion
+keeps the last `recomputing` value it saw, before or after the ack, and
+treats a `0` not followed at once by a `1` as idle. Correlating a build
+with the control that caused it is not part of revision 2. Making the
+barrier wait for the worker instead would block every later packet on the
+connection for the length of a table build, telemetry subscriptions
+included.
 
 UDP clients (automation, a remote Studio, mpv's overlay script) keep the
 whole current mechanism. Nothing is removed from the UDP path.
@@ -170,9 +181,9 @@ whole current mechanism. Nothing is removed from the UDP path.
 - A slow-reader test: a TCP client that never reads is disconnected, and
   telemetry publication timing does not move.
 - A sync test: controls followed by a sync arrive applied or refused before
-  the ack. A layout change followed by a sync gets its ack with
-  `recomputing = 1` already sent, and the build's outcome
-  (`recomputing = 0`, `recompute_error`) after it.
+  the ack. A layout change followed by a sync, with the worker held, gets
+  its ack with `recomputing = 1` already sent and its end after the release;
+  without the hold, a build that ended first has its end before the ack.
 - Studio: the conformance test against `shapes::STATE` runs on a TCP-fed
   parser too.
 - The persistence-policy tripwire (`runtime_control/tests/persistence_policy.rs`)
