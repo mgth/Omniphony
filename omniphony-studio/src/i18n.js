@@ -2,14 +2,14 @@
  * Internationalization (i18n) module.
  */
 
-import enTranslations from './i18n/en.json';
-import frTranslations from './i18n/fr.json';
-import deTranslations from './i18n/de.json';
-import jaTranslations from './i18n/ja.json';
-import esTranslations from './i18n/es.json';
-import itTranslations from './i18n/it.json';
-import ptBrTranslations from './i18n/pt-BR.json';
-import zhCnTranslations from './i18n/zh-CN.json';
+import enTranslations from '../../omniphony-studio-egui/i18n/en.json';
+import frTranslations from '../../omniphony-studio-egui/i18n/fr.json';
+import deTranslations from '../../omniphony-studio-egui/i18n/de.json';
+import jaTranslations from '../../omniphony-studio-egui/i18n/ja.json';
+import esTranslations from '../../omniphony-studio-egui/i18n/es.json';
+import itTranslations from '../../omniphony-studio-egui/i18n/it.json';
+import ptBrTranslations from '../../omniphony-studio-egui/i18n/pt-BR.json';
+import zhCnTranslations from '../../omniphony-studio-egui/i18n/zh-CN.json';
 
 const LOCALE_STORAGE_KEY = 'spatialviz.locale';
 

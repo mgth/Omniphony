@@ -16,7 +16,7 @@ cargo test --workspace --features renderer/wide-matrix  # full validation matrix
 cargo test --workspace -- --ignored                     # known-failing gates only
 ```
 
-`--ignored` is **not** how you run the wide matrix. `#[ignore]` is reserved for
+CI runs the wide matrix in its optimised renderer step. `--ignored` is **not** how you run the wide matrix. `#[ignore]` is reserved for
 gates the engine currently misses, each carrying its measured value and an issue
 reference. That command shows the outstanding DSP backlog.
 
