@@ -121,14 +121,15 @@ The tag push triggers `release.yml`:
 - **native Studio**, same job, after tauri-action: builds
   `omniphony-studio-egui` on its pinned toolchain and attaches
   `omniphony-studio-egui-vX.Y.Z-{linux-x86_64.tar.gz,windows-x86_64.zip,macos-arm64.zip}`
-  to the draft with `gh release upload` — the Studio, the `orender` sidecar
-  the Tauri build just prepared (same commit), `layouts/`, `assets/` and the
-  licence, in one directory. Three more assets. The Studio
+  to the draft with `gh release upload` — the Studio, `orender` (built by its
+  own step with the same command as the Tauri sidecar, so it finds that build
+  done), `layouts/`, `assets/` and the licence, in one directory. Three more
+  assets. The Studio
   finds those files next to its executable (`core/src/host/bundle.rs`); no
   installer, no engine deploy for mpv (that stays the Tauri bundle's job, or
   the `orender` package's).
-- **standalone liborender**, same job: the engine library the sidecar step
-  built, with `orender.h`, as `liborender-vX.Y.Z-{linux-x86_64,windows-x86_64,macos-arm64}.zip`
+- **standalone liborender**, same job: the engine library (built by the
+  same step as the native Studio's `orender`), with `orender.h`, as `liborender-vX.Y.Z-{linux-x86_64,windows-x86_64,macos-arm64}.zip`
   (flat, like the old `liborender-v*` archives). Three more assets.
 - **manifest**, after the three builds: `omniphony-vX.Y.Z-manifest.json` —
   the README row as JSON, plus the commit. One more asset, **fourteen** in

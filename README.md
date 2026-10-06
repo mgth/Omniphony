@@ -145,8 +145,8 @@ runtime state, and control selected live parameters.
 ### `omniphony-studio` — the Tauri Studio (deprecated)
 
 The previous, web-based Studio. Deprecated in favour of
-`omniphony-studio-egui`: it still ships, but gets no new features. Its
-`src/i18n/` catalogues are shared with the native Studio.
+`omniphony-studio-egui`: it still ships, but gets no new features. It reads
+the native Studio's `i18n/` catalogues and `assets/`.
 
 ## Repository layout
 
