@@ -1362,4 +1362,190 @@ mod tests {
         assert_eq!(d.adaptive_band, d.step.band);
         assert!((d.displayed_rate_adjust as f64 - d.step.consume_adjust).abs() < 1e-5);
     }
+
+    // ── update_far_mode_state transitions ─────────────────────────────────
+    //
+    // Stereo at 48 kHz: 96 interleaved samples per ms. Target 100 ms; entry
+    // 20 ms below it, exit 5 ms below, settle band ±10 ms, settled after
+    // 50 ms of 10 ms callbacks.
+
+    const PER_MS: usize = 96;
+    const TARGET: usize = 100 * PER_MS;
+    const CALLBACK: usize = 10 * PER_MS;
+
+    fn recover_cfg() -> AdaptiveResamplingConfig {
+        AdaptiveResamplingConfig {
+            enable_far_mode: true,
+            hard_recover_low_in_far_mode: true,
+            hard_recover_high_in_far_mode: true,
+            force_silence_in_far_mode: false,
+            far_mode_return_fade_in_ms: 20,
+            low_recover_entry_margin_ms: 20.0,
+            low_recover_exit_margin_ms: 5.0,
+            low_recover_settle_margin_ms: 10.0,
+            low_recover_settle_stable_ms: 50.0,
+            low_recover_refill_delta_alpha: 0.5,
+            ..Default::default()
+        }
+    }
+
+    /// One callback at raw level `level` and smoothed level `smoothed`.
+    fn step_at(
+        state: &mut AdaptiveRuntimeState,
+        cfg: &AdaptiveResamplingConfig,
+        far: bool,
+        level: usize,
+        smoothed: usize,
+    ) -> FarModeDecision {
+        update_far_mode_state(
+            state, cfg, far, level, smoothed, TARGET, CALLBACK, 1.0, 2, 48_000, 48_000,
+        )
+    }
+
+    #[test]
+    fn low_recover_enters_refill_below_the_entry_threshold_and_mutes() {
+        let cfg = recover_cfg();
+        let mut state = AdaptiveRuntimeState::new(1.0);
+        // 15 ms short: inside the entry margin, nothing happens.
+        let d = step_at(&mut state, &cfg, false, TARGET - 15 * PER_MS, TARGET);
+        assert_eq!(state.low_recover_phase, LowRecoverPhase::Inactive);
+        assert!(!d.mute_far_output && !d.hold_low_recover);
+        // 25 ms short: refill, muted while it refills.
+        let d = step_at(&mut state, &cfg, false, TARGET - 25 * PER_MS, TARGET);
+        assert_eq!(state.low_recover_phase, LowRecoverPhase::Refill);
+        assert!(d.mute_far_output && d.hold_low_recover);
+    }
+
+    /// Refill, then settling, then stable after the dwell. Settling plays
+    /// unless silence is forced, so only a forced-silent recovery asks to
+    /// re-acquire the stream when it ends.
+    #[test]
+    fn refill_settles_then_returns_to_stable() {
+        for force_silence in [false, true] {
+            let cfg = AdaptiveResamplingConfig {
+                force_silence_in_far_mode: force_silence,
+                ..recover_cfg()
+            };
+            let mut state = AdaptiveRuntimeState::new(1.0);
+            step_at(&mut state, &cfg, false, TARGET - 25 * PER_MS, TARGET);
+            // Still refilling below the exit threshold, with no rise yet.
+            step_at(&mut state, &cfg, false, TARGET - 25 * PER_MS, TARGET);
+            assert_eq!(state.low_recover_phase, LowRecoverPhase::Refill);
+            // Past the exit threshold: settling.
+            let d = step_at(&mut state, &cfg, false, TARGET - 2 * PER_MS, TARGET);
+            assert_eq!(state.low_recover_phase, LowRecoverPhase::Settling);
+            assert_eq!(d.mute_far_output, force_silence);
+            // Four stable callbacks (40 ms) are not enough; the fifth is.
+            for _ in 0..4 {
+                step_at(&mut state, &cfg, false, TARGET, TARGET);
+                assert_eq!(state.low_recover_phase, LowRecoverPhase::Settling);
+            }
+            let d = step_at(&mut state, &cfg, false, TARGET, TARGET);
+            assert_eq!(state.low_recover_phase, LowRecoverPhase::Inactive);
+            assert!(!d.hold_low_recover && !d.mute_far_output);
+            assert_eq!(
+                d.recovery_reacquire_pending, force_silence,
+                "force_silence {force_silence}: re-acquire after a silent recovery only"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rising_refill_exits_on_its_prediction() {
+        let cfg = recover_cfg();
+        let mut state = AdaptiveRuntimeState::new(1.0);
+        step_at(&mut state, &cfg, false, TARGET - 30 * PER_MS, TARGET);
+        // Rising 10 ms per callback: the EMA of the rise predicts the exit
+        // threshold one callback early.
+        step_at(&mut state, &cfg, false, TARGET - 20 * PER_MS, TARGET);
+        assert_eq!(state.low_recover_phase, LowRecoverPhase::Refill);
+        step_at(&mut state, &cfg, false, TARGET - 10 * PER_MS, TARGET);
+        assert_eq!(
+            state.low_recover_phase,
+            LowRecoverPhase::Settling,
+            "10 ms short and rising past the 5 ms exit: settle now"
+        );
+    }
+
+    #[test]
+    fn settling_falls_back_below_its_band_and_trims_above_it() {
+        let cfg = recover_cfg();
+        let settling = || {
+            let mut state = AdaptiveRuntimeState::new(1.0);
+            step_at(&mut state, &cfg, false, TARGET - 25 * PER_MS, TARGET);
+            step_at(&mut state, &cfg, false, TARGET, TARGET);
+            assert_eq!(state.low_recover_phase, LowRecoverPhase::Settling);
+            state
+        };
+        // The smoothed level, not the raw one, judges the dwell.
+        let mut state = settling();
+        step_at(&mut state, &cfg, false, TARGET, TARGET - 15 * PER_MS);
+        assert_eq!(state.low_recover_phase, LowRecoverPhase::Refill);
+
+        let mut state = settling();
+        step_at(&mut state, &cfg, false, TARGET, TARGET);
+        let d = step_at(&mut state, &cfg, false, TARGET, TARGET + 25 * PER_MS);
+        assert_eq!(state.low_recover_phase, LowRecoverPhase::Settling);
+        assert_eq!(
+            state.low_recover_settle_stable_ms, 0.0,
+            "the dwell restarts"
+        );
+        // 25 ms over, 10 ms of it tolerated: trim 15 ms, whole frames.
+        assert_eq!(d.low_recover_trim_input_samples, 15 * PER_MS);
+        assert_eq!(d.low_recover_trim_input_samples % 2, 0);
+        assert_eq!(d.low_recover_trim_output_samples, 15 * PER_MS);
+    }
+
+    #[test]
+    fn hard_recover_high_enters_and_leaves_with_a_clean_integrator() {
+        let cfg = recover_cfg();
+        let mut state = AdaptiveRuntimeState::new(1.0);
+        state.controller_state.accumulated_drift = 3.0;
+        // Far and above the target: hard recover, integrator cleared.
+        let d = step_at(&mut state, &cfg, true, TARGET + 300 * PER_MS, TARGET);
+        assert!(d.hard_recover_high && state.hard_recover_high_active);
+        assert_eq!(state.controller_state.accumulated_drift, 0.0);
+        assert!(!d.recovery_reacquire_pending);
+        // Far but below the target: not a high recover.
+        let mut below = AdaptiveRuntimeState::new(1.0);
+        assert!(!step_at(&mut below, &cfg, true, TARGET - 10 * PER_MS, TARGET).hard_recover_high);
+        // Back near: leaves it, asks to re-acquire, integrator cleared again.
+        state.controller_state.accumulated_drift = 2.0;
+        let d = step_at(&mut state, &cfg, false, TARGET, TARGET);
+        assert!(!d.hard_recover_high && !state.hard_recover_high_active);
+        assert!(d.recovery_reacquire_pending);
+        assert_eq!(state.controller_state.accumulated_drift, 0.0);
+    }
+
+    #[test]
+    fn without_far_mode_nothing_recovers_or_mutes() {
+        let cfg = AdaptiveResamplingConfig {
+            enable_far_mode: false,
+            ..recover_cfg()
+        };
+        let mut state = AdaptiveRuntimeState::new(1.0);
+        state.low_recover_phase = LowRecoverPhase::Refill;
+        for level in [0, TARGET - 25 * PER_MS, TARGET + 300 * PER_MS] {
+            let d = step_at(&mut state, &cfg, true, level, level);
+            assert_eq!(state.low_recover_phase, LowRecoverPhase::Inactive);
+            assert!(!d.mute_far_output && !d.hard_recover_high && !d.hold_low_recover);
+        }
+    }
+
+    #[test]
+    fn a_mute_that_ends_arms_the_return_fade() {
+        let cfg = AdaptiveResamplingConfig {
+            force_silence_in_far_mode: true,
+            ..recover_cfg()
+        };
+        let mut state = AdaptiveRuntimeState::new(1.0);
+        let d = step_at(&mut state, &cfg, true, TARGET + 300 * PER_MS, TARGET);
+        assert!(d.mute_far_output && state.far_mode_was_muted);
+        assert_eq!(state.far_mode_fade_total_frames, 0);
+        let d = step_at(&mut state, &cfg, false, TARGET, TARGET);
+        assert!(!d.mute_far_output && !state.far_mode_was_muted);
+        // 20 ms at 48 kHz.
+        assert_eq!(state.far_mode_fade_total_frames, 960);
+        assert_eq!(state.far_mode_fade_remaining_frames, 960);
+    }
 }

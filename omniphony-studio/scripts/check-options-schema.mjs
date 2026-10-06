@@ -7,7 +7,7 @@
 //   - the schema is well-formed (key, kind, default, flags, and for a grouped
 //     option its group's key, mode and effect),
 //   - every i18nKey / helpI18nKey — the group's too — resolves in
-//     src/i18n/en.json (the reference locale — per-locale parity is
+//     omniphony-studio-egui/i18n/en.json (the reference locale — per-locale parity is
 //     check-i18n.mjs's job).
 //
 // Unlike the warn-only i18n parity check, this is a hard gate: an option
@@ -29,7 +29,7 @@ if (!schemaPath) {
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
-const en = JSON.parse(readFileSync(join(here, '..', 'src', 'i18n', 'en.json'), 'utf8'));
+const en = JSON.parse(readFileSync(join(here, '..', '..', 'omniphony-studio-egui', 'i18n', 'en.json'), 'utf8'));
 
 // en.json uses flat, literally-dotted keys; tolerate nested objects too.
 function resolvesInEn(key) {

@@ -437,6 +437,37 @@ mod tests {
         assert!(delete_local(dir, &[PathBuf::from("/cache/other/a.sofa")]).is_err());
     }
 
+    /// A downloaded file is the network's: a corrupt one leaves the licence
+    /// line blank, it never panics (sofar's parser did, in debug builds).
+    #[test]
+    fn file_meta_reads_a_set_and_shrugs_off_a_corrupt_one() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../omniphony-renderer/renderer/tests/sofa");
+        let dir = tempfile::tempdir().unwrap();
+        let copy = |from: &Path| {
+            let to = dir.path().join(from.file_name().unwrap());
+            std::fs::copy(from, &to).unwrap();
+            to
+        };
+        let meta = file_meta(&copy(&fixtures.join("Pulse.sofa")));
+        assert!(!meta.license.is_empty(), "{meta:?}");
+
+        let mut corrupt: Vec<_> = std::fs::read_dir(fixtures.join("malformed"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        corrupt.sort();
+        assert!(!corrupt.is_empty());
+        for file in corrupt {
+            file_meta(&copy(&file));
+        }
+        let bytes = std::fs::read(fixtures.join("Pulse.sofa")).unwrap();
+        let cut = dir.path().join("cut.sofa");
+        std::fs::write(&cut, &bytes[..bytes.len() / 3]).unwrap();
+        let meta = file_meta(&cut);
+        assert!(meta.license.is_empty() && meta.organization.is_empty());
+    }
+
     #[test]
     fn sizes_switch_unit_at_a_megabyte() {
         assert_eq!(human_size(1024 * 1024), "1.0 MB");

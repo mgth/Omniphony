@@ -34,9 +34,10 @@ memory-stats = "1"
 # targets build the same way.
 ureq = { version = "2", default-features = false, features = ["tls", "json", "gzip"] }
 # SOFA global attributes for the HRTF browser's licence line. Same pin as the
-# renderer and the Tauri host; pure Rust, and without the default features it
-# brings no DSP (we read three strings, never convolve).
-sofar = { git = "https://github.com/mgth/sofar", rev = "c03ff5cfd997d316ae330e2735e82311769b45a3", default-features = false }
+# renderer (fix/no-debug-panics: a corrupt download is an error, not a panic,
+# in debug builds too); pure Rust, and without the default features it brings
+# no DSP (we read three strings, never convolve).
+sofar = { git = "https://github.com/mgth/sofar", rev = "26ca8670b09bd55febc19fbdd73be5af06825ddb", default-features = false }
 
 # The stats panel sums the process tree's working set on Windows, which needs
 # ToolHelp to walk the children and ProcessStatus to read each one. Declared
