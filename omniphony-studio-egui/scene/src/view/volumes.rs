@@ -461,9 +461,10 @@ fn band_table(table: &GainTable) -> Option<BandTable<'_>> {
         return None;
     };
     let (nx, ny, nz, nb) = (*x_count, *y_count, *z_count, *band_count);
-    let cells = nx * ny * nz;
-    let off = nx + ny + nz;
-    if nx == 0 || ny == 0 || nz == 0 || nb == 0 || data.len() < off + nb * cells {
+    let cells = nx.checked_mul(ny)?.checked_mul(nz)?;
+    let off = nx.checked_add(ny)?.checked_add(nz)?;
+    let end = nb.checked_mul(cells)?.checked_add(off)?;
+    if nx == 0 || ny == 0 || nz == 0 || nb == 0 || data.len() < end {
         return None;
     }
     let z_positions = &data[nx + ny..off];
@@ -1023,6 +1024,37 @@ mod performance_tests {
                     durations[10], durations[18]
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod band_table_tests {
+    use super::*;
+
+    /// The table's dimensions are the network's: an announced size the
+    /// payload cannot hold is refused, never sliced past or overflowed.
+    #[test]
+    fn a_band_table_larger_than_its_payload_is_refused() {
+        let table = |nx: usize, nb: usize, data: Vec<f32>| GainTable::CartesianBands {
+            version: 1,
+            speaker_index: 0,
+            x_count: nx,
+            y_count: 1,
+            z_count: 1,
+            band_count: nb,
+            bands: Vec::new(),
+            data,
+        };
+        // 2 x 1 x 1 cells, 2 bands: 4 positions, 4 gains.
+        let good = table(2, 2, vec![0.5; 8]);
+        assert_eq!(band_table(&good).map(|t| t.bands.len()), Some(2));
+        for bad in [
+            table(1, usize::MAX, vec![0.0; 4]),
+            table(usize::MAX, 1, vec![0.0; 4]),
+            table(2, 3, vec![0.5; 8]),
+        ] {
+            assert!(band_table(&bad).is_none());
         }
     }
 }

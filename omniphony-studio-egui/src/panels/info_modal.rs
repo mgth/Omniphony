@@ -113,9 +113,8 @@ mod tests {
     /// The tallest help in the catalogue, and its title, so the dialog is
     /// measured against what it actually has to show.
     fn longest_help() -> (String, String) {
-        let json: serde_json::Value =
-            serde_json::from_str(include_str!("../../../omniphony-studio/src/i18n/fr.json"))
-                .expect("the French catalogue parses");
+        let json: serde_json::Value = serde_json::from_str(include_str!("../../i18n/fr.json"))
+            .expect("the French catalogue parses");
         let mut best = (0.0f32, String::new());
         for (key, value) in json.as_object().expect("a flat catalogue") {
             if !(key.ends_with("infoBody") || key.starts_with("help.")) {

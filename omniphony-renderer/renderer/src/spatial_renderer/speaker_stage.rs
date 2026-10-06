@@ -60,9 +60,9 @@ impl BandSetKey {
         let live = control.live.read();
         Self {
             topology: Arc::as_ptr(topology) as usize,
-            crossover_type: live.crossover_type,
-            fir_ratio: if live.crossover_type == CrossoverType::Fir {
-                live.crossover_fir_transition_ratio
+            crossover_type: live.options.crossover_type,
+            fir_ratio: if live.options.crossover_type == CrossoverType::Fir {
+                live.options.crossover_fir_transition_ratio
             } else {
                 0.0
             },
@@ -512,12 +512,12 @@ pub(super) struct GainCarry {
 /// are those of its position; `segment_end` is scratch.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn mix_sample_ramp(
+fn mix_sample_ramp<S: RampStrategy + ?Sized>(
     bus: &mut MixBus<'_>,
     bands: &[Vec<f32>],
     sample_length: usize,
     ramp: &mut crate::ramp_strategy::ChannelRampState,
-    ramp_strategy: &dyn RampStrategy,
+    ramp_strategy: &S,
     ramp_context: &RampContext,
     stride: usize,
     carry: &mut GainCarry,
@@ -974,30 +974,51 @@ impl SpeakerRenderStage {
                         let unified_table = &self.unified_table;
                         let table_cache = &mut self.table_caches[input_channel_idx];
                         let render_bands = &self.render_bands;
-                        mix_sample_ramp(
-                            &mut bus,
-                            bands,
-                            sample_length,
-                            &mut state.ramp,
-                            ramp_strategy,
-                            ramp_context,
-                            sample_ramp_stride,
-                            &mut self.gain_carries[input_channel_idx],
-                            self.mix_pass,
-                            &mut band_gains,
-                            &mut self.segment_end_scratch,
-                            |position, size, out| {
-                                Self::fill_band_gains(
-                                    unified_table,
-                                    Some(&mut *table_cache),
-                                    render_bands,
-                                    render_params,
-                                    position,
-                                    size,
-                                    out,
-                                )
-                            },
-                        );
+                        let lookup = |position, size, out: &mut Vec<Gains>| {
+                            Self::fill_band_gains(
+                                unified_table,
+                                Some(&mut *table_cache),
+                                render_bands,
+                                render_params,
+                                position,
+                                size,
+                                out,
+                            )
+                        };
+                        let carry = &mut self.gain_carries[input_channel_idx];
+                        let segment_end = &mut self.segment_end_scratch;
+                        // The built-in ramp is called directly, so its
+                        // per-sample evaluation inlines into the loop.
+                        match ramp_strategy.as_position() {
+                            Some(position) => mix_sample_ramp(
+                                &mut bus,
+                                bands,
+                                sample_length,
+                                &mut state.ramp,
+                                position,
+                                ramp_context,
+                                sample_ramp_stride,
+                                carry,
+                                self.mix_pass,
+                                &mut band_gains,
+                                segment_end,
+                                lookup,
+                            ),
+                            None => mix_sample_ramp(
+                                &mut bus,
+                                bands,
+                                sample_length,
+                                &mut state.ramp,
+                                ramp_strategy,
+                                ramp_context,
+                                sample_ramp_stride,
+                                carry,
+                                self.mix_pass,
+                                &mut band_gains,
+                                segment_end,
+                                lookup,
+                            ),
+                        }
                     }
                     RampMode::Interp => {
                         // Destination gains for this block: one VBAP evaluation per
@@ -1398,6 +1419,12 @@ impl SpeakerRenderStage {
     /// `previous` are the bands it can start from (see [`PreviousBands`]);
     /// `filtered_channels` the channels to allocate crossover filter memory
     /// for (see [`Self::filtered_channels`]).
+    ///
+    /// A backend that panics while its table is sampled is an error like any
+    /// failed build, on every thread that builds: the worker must outlive it
+    /// to answer later changes, and the synchronous builds (start-up, a host
+    /// that did not prepare the stage, offline renders) must not take the
+    /// engine or the render thread down with it.
     fn build_band_set(
         control: &Arc<RendererControl>,
         topology: Arc<RenderTopology>,
@@ -1407,7 +1434,54 @@ impl SpeakerRenderStage {
         previous: PreviousBands<'_>,
         filtered_channels: Range<usize>,
     ) -> Result<BandSet> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Self::build_band_set_unguarded(
+                control,
+                topology,
+                key,
+                num_speakers,
+                sample_rate,
+                previous,
+                filtered_channels,
+            )
+        }))
+        .unwrap_or_else(|payload| {
+            let detail = if let Some(msg) = payload.downcast_ref::<&'static str>() {
+                (*msg).to_string()
+            } else if let Some(msg) = payload.downcast_ref::<String>() {
+                msg.clone()
+            } else {
+                "panic with non-string payload".to_string()
+            };
+            Err(anyhow::anyhow!(
+                "render backend panicked during the band build: {detail}"
+            ))
+        })
+    }
+
+    fn build_band_set_unguarded(
+        control: &Arc<RendererControl>,
+        topology: Arc<RenderTopology>,
+        key: BandSetKey,
+        num_speakers: usize,
+        sample_rate: u32,
+        previous: PreviousBands<'_>,
+        filtered_channels: Range<usize>,
+    ) -> Result<BandSet> {
         let layout = &topology.speaker_layout;
+        // The output was opened with `num_speakers` channels and keeps that
+        // width; a smaller layout fills the first of them. A larger one has
+        // speakers with no channel to go to: its gains would be written past
+        // the stage's gain sets (a panic in debug, speakers silently dropped
+        // in release). Refused like any failed build — reported to the
+        // clients, the previous bands keep rendering — until the host reopens
+        // its output at the new width.
+        anyhow::ensure!(
+            layout.speakers.len() <= num_speakers,
+            "the layout has {} speakers but the output was opened with {num_speakers} \
+             channels; restart the renderer to use it",
+            layout.speakers.len()
+        );
         let same_topology = previous.topology.is_some_and(|p| Arc::ptr_eq(p, &topology));
         let (render_bands, crossover_filter_bank, crossover_info) = Self::build_crossover(
             control,
@@ -1985,14 +2059,18 @@ impl SpeakerRenderStage {
         Ok((render_bands, Some(filter_bank), info))
     }
 
-    /// Merge the per-band cartesian tables into a single multi-band table so a
-    /// lookup localises the cell once for all bands. Returns `None` (→ per-band
-    /// path) unless there are several bands all backed by a cartesian evaluator.
+    /// Merge the per-band tables into a single multi-band table so a lookup
+    /// localises the cell once for all bands, and reads the per-object corner
+    /// cache. A layout without crossover gets one too, for its single band:
+    /// the same bits as its evaluator
+    /// (`a_single_band_renders_the_same_bits_through_the_unified_table`) at a
+    /// cheaper read. Returns `None` (→ per-band path) unless every band is
+    /// backed by a precomputed cartesian, or every one by a polar, table.
     fn build_unified_table(
         render_bands: &[BandRenderer],
         num_speakers: usize,
     ) -> Option<MultiBandTable> {
-        if render_bands.len() <= 1 {
+        if render_bands.is_empty() {
             return None;
         }
         // Every band shares the active evaluation mode, so they are all cartesian
@@ -2015,7 +2093,7 @@ impl SpeakerRenderStage {
             let table = MultiBandTable::build_cartesian(&cartesian, num_speakers);
             if table.is_some() {
                 log::info!(
-                    "Crossover: unified cartesian table built for {} bands",
+                    "Speaker stage: unified cartesian table built for {} band(s)",
                     render_bands.len()
                 );
             }
@@ -2031,7 +2109,7 @@ impl SpeakerRenderStage {
         let table = MultiBandTable::build_polar(&polar, num_speakers);
         if table.is_some() {
             log::info!(
-                "Crossover: unified polar table built for {} bands",
+                "Speaker stage: unified polar table built for {} band(s)",
                 render_bands.len()
             );
         }

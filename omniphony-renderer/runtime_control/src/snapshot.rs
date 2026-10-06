@@ -156,13 +156,13 @@ pub fn build_renderer_state_json(
         "renderEvaluationModeEffective": effective_evaluation_mode,
         "objectSizeIntervals": live.evaluation.object_size_intervals,
         "masterGain": live.master_gain,
-        "autoGain": live.auto_gain,
-        "autoGainCeilingDb": live.auto_gain_ceiling_db,
-        "rampMode": live.ramp_mode.as_str(),
+        "autoGain": live.options.auto_gain,
+        "autoGainCeilingDb": live.options.auto_gain_ceiling_db,
+        "rampMode": live.options.ramp_mode.as_str(),
         "channelRenderMode": live.channel_render_mode.as_str(),
-        "syntheticObjectsEnabled": live.synthetic_objects_enabled,
+        "syntheticObjectsEnabled": live.options.synthetic_objects_enabled,
         // Active fixed-bed→height object generator id; empty = off.
-        "objectGeneratorId": live.object_generator_id.as_str(),
+        "objectGeneratorId": live.options.object_generator_id.as_str(),
         // Stored param values of every generator (`{ id: { key: value } }`),
         // as `renderBackendState.backendParamValuesById` carries the
         // backends'. The listings are published separately by the engine on
@@ -180,9 +180,9 @@ pub fn build_renderer_state_json(
             .any(|s| s.spatialize && s.z > 1.0e-3),
         // Canonical three-position mode plus the old derived boolean spelling
         // for clients that have not migrated yet.
-        "phantomExtractMode": live.phantom_extract_mode.as_str(),
-        "phantomEnabled": live.synthetic_objects_enabled
-            && live.phantom_extract_mode != renderer::live_params::PhantomExtractMode::Off,
+        "phantomExtractMode": live.options.phantom_extract_mode.as_str(),
+        "phantomEnabled": live.options.synthetic_objects_enabled
+            && live.options.phantom_extract_mode != renderer::live_params::PhantomExtractMode::Off,
         // Stored param values of the phantom stage (`{ key: value }`); its
         // listing is published on `/omniphony/state/phantom`.
         "phantomParamValues": serde_json::to_value(
@@ -192,8 +192,8 @@ pub fn build_renderer_state_json(
                 .unwrap_or_default(),
         )
         .unwrap_or(serde_json::Value::Null),
-        "surroundPlacement": live.surround_placement.as_str(),
-        "outputChannelMapping": live.output_channel_mapping.as_str(),
+        "surroundPlacement": live.options.surround_placement.as_str(),
+        "outputChannelMapping": live.options.output_channel_mapping.as_str(),
         "outputChannelMappingUnroutable": unroutable_speaker_names,
         "fixedChannelCatalog": fixed_channel_catalog,
         "fixedChannelProcessing": fixed_channel_processing,
@@ -589,7 +589,7 @@ pub fn build_live_state_bundle_with_host(
     let editable_layout = control.editable_layout();
     let layout_json = serde_json::to_string(&editable_layout).unwrap_or_else(|_| "{}".to_string());
     let speakers_state_json = build_speakers_state_json(&live, &editable_layout);
-    let loudness_gain: f32 = match (live.use_loudness, live.dialogue_level) {
+    let loudness_gain: f32 = match (live.options.use_loudness, live.dialogue_level) {
         (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
         _ => 1.0,
     };
@@ -646,7 +646,7 @@ pub fn build_live_state_bundle_with_host(
             addr: crate::osc_contract::STATE_LOUDNESS.to_string(),
             args: vec![OscType::String(
                 json!({
-                    "enabled": live.use_loudness,
+                    "enabled": live.options.use_loudness,
                     "source": live.dialogue_level,
                     "gain": loudness_gain
                 })
@@ -842,8 +842,8 @@ pub fn build_live_state_bundle_with_host(
         addr: crate::osc_contract::STATE_INPUT.to_string(),
         args: vec![OscType::String(
             json!({
-                "drcMode": live.drc_mode,
-                "drcWeight": live.drc_weight,
+                "drcMode": live.options.drc_mode,
+                "drcWeight": live.options.drc_weight,
                 "supportedDrcModes": control.bridge_supported_drc_modes(),
                 // What the stream tags among its channels (the dialogue a
                 // format codes apart): `[{kind, language, label, channels}]`.

@@ -11,56 +11,56 @@
 //! Run:  cargo run -p renderer --example gain_modes --release
 
 use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode, RampMode};
-use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
+use renderer::spatial_renderer::{RendererSpec, SpatialChannelEvent, SpatialRenderer};
 use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
 use renderer::speaker_layout::SpeakerLayout;
 
 const N: usize = 40; // samples per decode block (TrueHD @ 48 kHz)
 
 fn make_cartesian_renderer() -> SpatialRenderer {
-    let r = SpatialRenderer::new(
-        SpeakerLayout::preset("7.1.4").unwrap(),
-        48_000,
-        1,
-        1,
-        0.0,
-        2.0,
-        VbapTableMode::Cartesian {
+    let r = SpatialRenderer::new(RendererSpec {
+        speaker_layout: SpeakerLayout::preset("7.1.4").unwrap(),
+        sample_rate: 48_000,
+        az_res_deg: 1,
+        el_res_deg: 1,
+        spread_resolution: 0.0,
+        distance_max: 2.0,
+        table_mode: VbapTableMode::Cartesian {
             x_size: 31,
             y_size: 31,
             z_size: 15,
             z_neg_size: 15,
         },
-        false,
-        true, // position_interpolation: trilinear table lookup → true G(p), as real Sample mode
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
-        0.0,
-        0.0,
-        false,
-        false,
-        false,
-        1.0,
-        1.0,
-        PreferredEvaluationMode::PrecomputedCartesian,
-        LiveEvaluationMode::PrecomputedCartesian,
-        31,
-        31,
-        15,
-        15,
-    )
+        allow_negative_z: false,
+        vbap_position_interpolation: true, // position_interpolation: trilinear table lookup → true G(p), as real Sample mode
+        distance_model: DistanceModel::Linear,
+        spread_from_distance: false,
+        spread_distance_range: 1.0,
+        spread_distance_curve: 1.0,
+        spread_min: 0.0,
+        spread_max: 1.0,
+        log_object_positions: false,
+        room_ratio: [1.0, 2.0, 0.5],
+        room_ratio_rear: 2.0,
+        room_ratio_lower: 0.5,
+        room_ratio_center_blend: 0.0,
+        master_gain_db: 0.0,
+        auto_gain: false,
+        use_loudness: false,
+        distance_diffuse: false,
+        distance_diffuse_threshold: 1.0,
+        distance_diffuse_curve: 1.0,
+        preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+        initial_evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+        cartesian_default_x_size: 31,
+        cartesian_default_y_size: 31,
+        cartesian_default_z_size: 15,
+        cartesian_default_z_neg_size: 15,
+    })
     .unwrap();
     {
         let ctrl = r.renderer_control();
-        ctrl.live.write().ramp_mode = RampMode::Off;
+        ctrl.live.write().options.ramp_mode = RampMode::Off;
     }
     r
 }
