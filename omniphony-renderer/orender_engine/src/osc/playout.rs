@@ -34,7 +34,7 @@ impl OscSender {
 
     /// The listener is hearing sample `pos` of the timeline [`render_at`]
     /// counts, which plays at `rate` samples a second. Published at most every
-    /// [`HEARD_INTERVAL_MS`](super::telemetry::HEARD_INTERVAL_MS); the first
+    /// `HEARD_INTERVAL_MS`; the first
     /// one turns the block markers on.
     ///
     /// [`render_at`]: Self::render_at

@@ -14,7 +14,7 @@
 //! PAD/copy_up afterwards). Zero latency.
 //!
 //! **Per-band (spectral).** STFT/intensity-vector analysis
-//! ([`crate::phantom_spectral`]): each frequency bin gets its own direction of
+//! (`phantom_spectral`): each frequency bin gets its own direction of
 //! arrival and directness, routed to eight azimuth sector objects — simultaneous
 //! sources at different positions and frequencies are extracted independently.
 //! Adds one FFT frame (1024 samples ≈ 21 ms at 48 kHz) of latency to the whole
@@ -22,7 +22,7 @@
 //! only; `heights` (spectral only) opts the input's height channels into a 3D
 //! analysis — up dipole, per-bin elevation, and a 4-sector high ring — so 3D
 //! inputs get intra-plane *and* inter-plane extraction in the same pass (see
-//! [`crate::phantom_spectral`]). The broadband method always leaves height
+//! `phantom_spectral`). The broadband method always leaves height
 //! channels untouched.
 //!
 //! Like the object generators it runs in the realtime audio thread: all setup is

@@ -170,10 +170,10 @@ prebuilt download for it.
 | macOS arm64 (Apple Silicon) | tested | tested | yes — Studio bundle, `liborender` |
 | Linux arm64 (aarch64) | tested | not built | no — build from source |
 
-The Tauri Studio is built on Linux only. Tests that need a sound device or a
-running PipeWire session are skipped by CI on every platform, so the audio
-backends themselves (PipeWire, ASIO, CoreAudio) are compiled but not exercised
-there. Anything not listed — macOS on Intel, 32-bit targets — is not built by
+The deprecated Tauri Studio is no longer built by CI; releases still package
+it until it is removed. Tests that need a sound device or a running PipeWire
+session are skipped by CI on every platform, so the audio backends themselves
+(PipeWire, ASIO, CoreAudio) are compiled but not exercised there. Anything not listed — macOS on Intel, 32-bit targets — is not built by
 CI.
 
 ## License

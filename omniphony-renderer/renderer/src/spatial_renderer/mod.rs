@@ -542,10 +542,19 @@ impl SpatialRenderer {
         ctx: &RampContext,
     ) -> Result<()> {
         for event in events {
+            if event.channel_idx >= components::MAX_EVENT_CHANNELS {
+                continue;
+            }
             let state = Self::state_mut(states, event.channel_idx);
             state.initialized = true;
 
-            if let Some(gain) = event.gain_db {
+            // A gain no linear factor stands for (NaN, +inf, past ~770 dB) is
+            // a broken event, not an instruction: the channel keeps the gain it
+            // had. -inf is the mute it means (see `gain_db_to_linear`).
+            if let Some(gain) = event
+                .gain_db
+                .filter(|&g| components::gain_db_to_linear(g).is_finite())
+            {
                 state.gain_db = gain;
             }
             if let Some(ramp_length) = event.ramp_length {
@@ -608,14 +617,14 @@ impl SpatialRenderer {
     ///
     /// # Arguments
     ///
-    /// * `pcm_data` - Decoded PCM samples [sample_idx][channel_idx]
+    /// * `pcm_data` - Decoded PCM samples `[sample_idx][channel_idx]`
     /// * `metadata` - Spatial object metadata (positions, gains, etc.)
     /// * `total_channels` - Total number of channels in pcm_data (bed + objects)
-    /// * `bed_indices` - Indices of channels that are bed channels (e.g., [3] for LFE only)
+    /// * `bed_indices` - Indices of channels that are bed channels (e.g., `[3]` for LFE only)
     ///
     /// # Returns
     ///
-    /// Interleaved speaker samples: [sample_idx][speaker_idx]
+    /// Interleaved speaker samples: `[sample_idx][speaker_idx]`
     ///
     /// # Notes
     ///
