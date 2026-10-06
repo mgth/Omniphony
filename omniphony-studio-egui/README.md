@@ -22,7 +22,7 @@ records current acceptance gaps; the phase reports above are historical.
 | `core/src/osc/` | UDP listener, register/heartbeat, control channel; `dispatch.rs` applies events to the model |
 | `core/src/model/` | `AppState`, `RoomRatio`, layouts (copied from `src-tauri`) |
 | `core/src/host/` | What the Tauri host did outside the listener: the command handlers (ported), the OSC config, the preferences file, peak hold, timing stats |
-| `core/src/i18n.rs` | Strings, resolved against the web Studio's catalogues |
+| `core/src/i18n.rs` | Strings, resolved against the catalogues in `i18n/` |
 | `src/main.rs` | CLI, fonts (system CJK fallback face), eframe launch |
 | `src/app.rs` | Panels, camera input, picking, gain-table subscriptions, stats |
 | `src/prefs/` | What the UI remembers across launches (the file I/O is the core's) |
@@ -31,6 +31,8 @@ records current acceptance gaps; the phase reports above are historical.
 | `PANELS.md` | How a panel is laid out: the section, its groups, their insets and rows |
 | `scene/src/view/` | Model → frame: objects, speakers, room, trails, volumes |
 | `scene/src/render/` | wgpu renderer hosted by an `egui_wgpu::Callback`; camera; head glTF; volumes |
+| `i18n/` | The string catalogues, one JSON file per locale (the deprecated web Studio imports them too) |
+| `assets/` | The head model and the desktop icons |
 
 The core is its own crate so that egui can be replaced the way the web
 frontend was: see [`ARCHITECTURE.md`](ARCHITECTURE.md). CI keeps UI crates out of
@@ -55,7 +57,8 @@ Flags: `--register host:port` (live renderer; controls can modify it),
 The layouts and the head model default to the copies shipped next to the
 executable (`layouts/`, `assets/` — the release archive's layout, or a
 package's `share/omniphony-studio-egui/`) and, for a checkout build, to the
-checkout's own; the working directory plays no part. The renderer is found
+checkout's `layouts/` and this crate's `assets/`; the working directory plays
+no part. The renderer is found
 the same way: next to the executable, then on `PATH`, then the checkout's
 build.
 
