@@ -1288,6 +1288,18 @@ mod yield_tests {
     use super::test_support::{SERIAL, free_port, test_sender};
     use super::*;
 
+    /// A socket of the test's own to send to, held for the test's duration:
+    /// a sender's drop broadcasts its goodbye to its target, which must never
+    /// be a port a live instance listens on (9000 is the default one).
+    fn sink() -> (UdpSocket, SocketAddrV4) {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        (
+            socket,
+            SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port),
+        )
+    }
+
     /// A same-process holder (the previous track's listener) is reclaimed via the
     /// direct release registry, not the multi-second external yield dance.
     #[test]
@@ -1428,7 +1440,7 @@ mod yield_tests {
     #[test]
     fn superseded_drop_preserves_resume_target() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let target: SocketAddrV4 = "127.0.0.1:9000".parse().unwrap();
+        let (_sink, target) = sink();
         let sender = OscSender::new(target).unwrap();
 
         // A successor reclaimed the port: the registry points at a *different*
@@ -1457,12 +1469,16 @@ mod yield_tests {
     #[test]
     fn owner_drop_resumes_standby_and_clears_registry() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let target: SocketAddrV4 = "127.0.0.1:9000".parse().unwrap();
+        let (_sink, target) = sink();
         let sender = OscSender::new(target).unwrap();
 
         // This sender is still the current registrant (no handoff happened).
         *LOCAL_RX_RELEASE.lock().unwrap() = Some(Arc::clone(&sender.listener_stop));
-        *RESUME_TARGET.lock().unwrap() = Some(23456);
+        let (standby, standby_addr) = sink();
+        standby
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        *RESUME_TARGET.lock().unwrap() = Some(standby_addr.port());
 
         drop(sender);
 
@@ -1470,6 +1486,14 @@ mod yield_tests {
             RESUME_TARGET.lock().unwrap().is_none(),
             "a real release fires resume to (and clears) the standby target"
         );
+        let mut buf = [0u8; 256];
+        let (len, _) = standby.recv_from(&mut buf).expect("the resume datagram");
+        match rosc::decoder::decode_udp(&buf[..len]).expect("valid OSC").1 {
+            OscPacket::Message(msg) => {
+                assert_eq!(msg.addr, runtime_control::osc_contract::CONTROL_RESUME)
+            }
+            other => panic!("expected a message, got {other:?}"),
+        }
         assert!(
             LOCAL_RX_RELEASE.lock().unwrap().is_none(),
             "the owner deregisters itself on drop"
