@@ -79,68 +79,56 @@ pub fn reduce_size_to_spread(size: [f32; 3], pos: [f32; 3], mode: SizeToSpreadMo
 mod tests {
     use super::*;
 
-    fn approx(a: f32, b: f32, eps: f32) {
-        assert!((a - b).abs() < eps, "expected {b}, got {a}");
-    }
-
+    /// One case per mode, and the projection's two limits and fallback.
     #[test]
-    fn max_picks_dominant_axis() {
-        approx(
-            reduce_size_to_spread([0.5, 0.1, 0.1], [1.0, 0.0, 0.0], SizeToSpreadMode::Max),
-            0.5,
-            1e-6,
-        );
-    }
-
-    #[test]
-    fn mean_averages_all_axes() {
-        approx(
-            reduce_size_to_spread([0.6, 0.3, 0.0], [1.0, 0.0, 0.0], SizeToSpreadMode::Mean),
-            0.3,
-            1e-6,
-        );
-    }
-
-    #[test]
-    fn projection_collapses_along_axis_when_size_lies_on_axis() {
-        // Object on +X axis, size only along X: perceived width is 0.
-        approx(
-            reduce_size_to_spread(
+    fn each_mode_reduces_size_as_documented() {
+        use SizeToSpreadMode::{Max, Mean, ProjectionPerpendicular as Projection};
+        let cases = [
+            (
+                "max picks the dominant axis",
+                [0.5, 0.1, 0.1],
                 [1.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                SizeToSpreadMode::ProjectionPerpendicular,
+                Max,
+                0.5,
             ),
-            0.0,
-            1e-6,
-        );
-    }
-
-    #[test]
-    fn projection_preserves_perpendicular_extent() {
-        // Object on +X axis, size only on Y and Z: full perpendicular extent.
-        // Expected: sqrt(0² + 1² + 1²) / sqrt(3) = sqrt(2/3) ≈ 0.8165.
-        approx(
-            reduce_size_to_spread(
+            (
+                "mean averages all axes",
+                [0.6, 0.3, 0.0],
+                [1.0, 0.0, 0.0],
+                Mean,
+                0.3,
+            ),
+            // Object on +X, size only along X: no perceived width.
+            (
+                "projection collapses along the axis",
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                Projection,
+                0.0,
+            ),
+            // Object on +X, size on Y and Z: sqrt(0² + 1² + 1²) / sqrt(3).
+            (
+                "projection keeps the perpendicular extent",
                 [0.0, 1.0, 1.0],
                 [1.0, 0.0, 0.0],
-                SizeToSpreadMode::ProjectionPerpendicular,
+                Projection,
+                (2.0_f32 / 3.0).sqrt(),
             ),
-            (2.0_f32 / 3.0).sqrt(),
-            1e-6,
-        );
-    }
-
-    #[test]
-    fn projection_falls_back_to_max_at_origin() {
-        approx(
-            reduce_size_to_spread(
+            (
+                "projection falls back to max at the origin",
                 [0.4, 0.7, 0.2],
                 [0.0, 0.0, 0.0],
-                SizeToSpreadMode::ProjectionPerpendicular,
+                Projection,
+                0.7,
             ),
-            0.7,
-            1e-6,
-        );
+        ];
+        for (what, size, pos, mode, want) in cases {
+            let got = reduce_size_to_spread(size, pos, mode);
+            assert!(
+                (got - want).abs() < 1e-6,
+                "{what}: expected {want}, got {got}"
+            );
+        }
     }
 
     #[test]
@@ -162,11 +150,8 @@ mod tests {
             SizeToSpreadMode::Mean,
             SizeToSpreadMode::ProjectionPerpendicular,
         ] {
-            approx(
-                reduce_size_to_spread([0.0; 3], [1.0, 0.0, 0.0], m),
-                0.0,
-                1e-6,
-            );
+            let got = reduce_size_to_spread([0.0; 3], [1.0, 0.0, 0.0], m);
+            assert!(got.abs() < 1e-6, "{m:?}: expected 0, got {got}");
         }
     }
 }

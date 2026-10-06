@@ -1082,6 +1082,236 @@ mod notify_tests {
         drop(sender);
     }
 
+    /// Argument lists: a few a control plausibly accepts, so that changes are
+    /// applied, and the ways a sender gets them wrong — none at all, too few,
+    /// the wrong type, a non-finite number, out of range, and many.
+    fn argument_lists() -> Vec<Vec<OscType>> {
+        vec![
+            vec![OscType::Int(0)],
+            vec![OscType::Float(0.5)],
+            vec![OscType::String("1".into())],
+            vec![],
+            vec![OscType::Int(1)],
+            vec![OscType::Int(-1)],
+            vec![OscType::Int(i32::MAX)],
+            vec![OscType::Float(f32::NAN)],
+            vec![OscType::Float(f32::INFINITY)],
+            vec![OscType::Double(-1e300)],
+            vec![OscType::String(String::new())],
+            vec![OscType::String("x".into())],
+            vec![OscType::Nil],
+            vec![OscType::Blob(vec![0; 3])],
+            (0..32).map(OscType::Int).collect(),
+            (0..32).map(|i| OscType::String(i.to_string())).collect(),
+        ]
+    }
+
+    /// Process lifecycle commands act on the whole test process (shutdown,
+    /// restart and standby flags) and read no argument but the log level's.
+    const PROCESS_COMMANDS: &[&str] = &[
+        osc_contract::CONTROL_RELOAD_CONFIG,
+        osc_contract::CONTROL_RESTART,
+        osc_contract::CONTROL_QUIT,
+        osc_contract::CONTROL_YIELD_PORT,
+        osc_contract::CONTROL_RESUME,
+    ];
+
+    /// Every control address a sender can reach: the contract's, minus the
+    /// process lifecycle commands, plus each prefixed family's real fields —
+    /// the registry's prefixed rows and the hand-wired ones — and a few
+    /// malformed instances of each family. The contract lists the families by
+    /// prefix only, so without the real fields their handlers go unswept.
+    fn control_addresses() -> Vec<String> {
+        let mut addresses: Vec<String> = osc_contract::ALL_CONTROL
+            .iter()
+            .filter(|address| !PROCESS_COMMANDS.contains(address))
+            .map(|address| address.to_string())
+            .collect();
+        let registry_fields = renderer::options::LIVE_OPTIONS
+            .iter()
+            .filter_map(|spec| match spec.legacy_control_addr {
+                renderer::options::LegacyAddr::Prefixed { prefix, tail } => {
+                    Some(format!("{prefix}{tail}"))
+                }
+                _ => None,
+            });
+        addresses.extend(registry_fields);
+        // Hand-wired fields, outside the registry.
+        for (prefix, tail) in [
+            (osc_contract::CONTROL_HYBRID_PREFIX, "curve"),
+            (osc_contract::CONTROL_HYBRID_PREFIX, "external_backend"),
+            (osc_contract::CONTROL_HYBRID_PREFIX, "internal_backend"),
+            (osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX, "threshold"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "1/mute"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "0/mute"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "-1/mute"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "4294967296/mute"),
+        ] {
+            addresses.push(format!("{prefix}{tail}"));
+        }
+        // And what a sender gets wrong under each family.
+        for prefix in [
+            osc_contract::CONTROL_OBJECT_PREFIX,
+            osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            osc_contract::CONTROL_HYBRID_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+        ] {
+            for suffix in ["", "1", "x", "x/y/z", "x/mute"] {
+                addresses.push(format!("{prefix}{suffix}"));
+            }
+        }
+        addresses.sort();
+        addresses.dedup();
+        addresses
+    }
+
+    /// The address list reaches the prefixed families' real fields, not only
+    /// the contract's exact addresses: one per registry row with a prefixed
+    /// address, and the hand-wired hybrid curve.
+    #[test]
+    fn the_sweeps_reach_every_prefixed_field() {
+        let addresses = control_addresses();
+        let prefixed = renderer::options::LIVE_OPTIONS
+            .iter()
+            .filter(|spec| {
+                matches!(
+                    spec.legacy_control_addr,
+                    renderer::options::LegacyAddr::Prefixed { .. }
+                )
+            })
+            .count();
+        assert!(
+            prefixed > 5,
+            "the registry declares prefixed fields: {prefixed}"
+        );
+        let in_families = |prefix: &str| {
+            addresses
+                .iter()
+                .filter(|a| a.starts_with(prefix) && a.len() > prefix.len() + 1)
+                .count()
+        };
+        assert!(in_families(osc_contract::CONTROL_HYBRID_PREFIX) > 3);
+        assert!(addresses.contains(&format!("{}curve", osc_contract::CONTROL_HYBRID_PREFIX)));
+        assert!(in_families(osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX) >= 4);
+    }
+
+    /// A control datagram is untrusted: whatever its arguments, the handler
+    /// ignores or applies it and never panics, which would end the control
+    /// listener thread and leave the engine deaf to every client.
+    #[test]
+    fn no_control_address_panics_on_malformed_arguments() {
+        // The sweep drives the process-global overlay and port registry too.
+        let _overlay = crate::overlay::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::osc::test_support::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile_dir("control-sweep");
+        let control = fixture_control();
+        // Save, profiles and backend files write beside the config: here.
+        control.set_config_path(dir.join("config.yaml"));
+        let wire = wire();
+
+        let addresses = control_addresses();
+
+        let mut sent = 0;
+        for address in &addresses {
+            for args in argument_lists() {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    send(&wire, &control, address, args.clone())
+                }));
+                assert!(
+                    outcome.is_ok(),
+                    "{address} with {args:?} panicked the control handler"
+                );
+                sent += 1;
+            }
+        }
+        assert!(sent > 1000, "too few cases to mean anything: {sent}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What may write `config.yaml` without the Save button
+    /// (docs/persistence-policy.md): the Save itself, the profile operations,
+    /// and the view-state exceptions — head-tracker recenter and calibration,
+    /// and the monitoring cadences.
+    const WRITES_CONFIG: &[&str] = &[
+        osc_contract::CONTROL_SAVE_CONFIG,
+        osc_contract::CONTROL_PROFILE_SWITCH,
+        osc_contract::CONTROL_PROFILE_CREATE,
+        osc_contract::CONTROL_PROFILE_DELETE,
+        osc_contract::CONTROL_PROFILE_RENAME,
+        osc_contract::CONTROL_HEAD_RECENTER,
+        osc_contract::CONTROL_HEAD_CALIBRATE,
+        osc_contract::CONTROL_METERING_RATE_HZ,
+        osc_contract::CONTROL_DIAG_RATE_HZ,
+    ];
+
+    /// The persistence policy, checked where it is enforced: no control
+    /// message but the ones it names changes `config.yaml`, whatever its
+    /// arguments. A render or engine change marks the config dirty and waits
+    /// for the Save. The source tripwire (runtime_control's
+    /// persistence_policy.rs) lists the writers; this watches the file.
+    #[test]
+    fn only_save_profiles_and_view_state_change_the_config_file() {
+        let _overlay = crate::overlay::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::osc::test_support::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile_dir("persistence-net");
+        let config = dir.join("config.yaml");
+        let original = "render:\n  ramp_mode: sample\n";
+        std::fs::write(&config, original).unwrap();
+        let control = fixture_control();
+        control.set_config_path(config.clone());
+        let wire = wire();
+
+        let addresses = control_addresses();
+        let mut writers_seen = Vec::new();
+        let mut violations = Vec::new();
+        for address in &addresses {
+            let address = address.as_str();
+            for args in argument_lists() {
+                let _ = send(&wire, &control, address, args.clone());
+                let now = std::fs::read_to_string(&config).unwrap_or_default();
+                if now != original {
+                    if WRITES_CONFIG.contains(&address) {
+                        writers_seen.push(address);
+                    } else {
+                        violations.push(format!("{address} {args:?}"));
+                    }
+                    std::fs::write(&config, original).unwrap();
+                }
+                // A profile operation may move the control to another file.
+                control.set_config_path(config.clone());
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "these controls wrote config.yaml without the Save button; mark the config \
+             dirty instead, or name the write in docs/persistence-policy.md's \
+             exceptions with its reason:\n{}",
+            violations.join("\n")
+        );
+        // The net must see a write when one happens, or it proves nothing.
+        assert!(
+            writers_seen.contains(&osc_contract::CONTROL_SAVE_CONFIG),
+            "Save never changed the file: the check is not watching the right file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tempfile_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("orender-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     /// What a control came to, as its sender is told: taken, refused with a
     /// reason, or taken by nobody.
     #[test]

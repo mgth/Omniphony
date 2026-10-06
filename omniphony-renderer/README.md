@@ -110,7 +110,7 @@ its per-backend parameters (`--barycenter-localize`, `--hybrid-*`,
 `--experimental-distance-*`), the distance metrics (`--distance-model-metric`,
 `--distance-diffuse-metric`), `--size-to-spread-mode` and the adaptive-resampling
 PI tuning (`--adaptive-resampling-*`) are all exposable on the CLI as well as via
-OSC/Studio. See `docs/option-surface-parity.fr.md` for the full per-surface
+OSC/Studio. See `docs/option-surface-parity.md` for the full per-surface
 parity matrix. Run `orender render --help` for the complete flag list.
 
 ## Binaural Headphone Output

@@ -29,7 +29,7 @@
 //!   kernel is stored reversed to match, so the loop is a plain forward dot
 //!   product over two contiguous slices — no wrap test and no descending index
 //!   in the way of the load/store units.
-//! * **The accumulation is split across [`ACC_LANES`] independent partial
+//! * **The accumulation is split across `ACC_LANES` independent partial
 //!   sums** (see that constant).
 //! * **A crossfade is two plain dot products over the same window**, not one
 //!   loop feeding both kernels' partial sums. The single-kernel loop is the

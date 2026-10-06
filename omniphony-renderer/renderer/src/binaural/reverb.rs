@@ -20,7 +20,7 @@
 //! **weights**, not signs — sign patterns alone cannot lateralise a
 //! broadband signal, since delayed copies with opposite signs do not
 //! cancel: each ear reads the lines of its own side at full weight and the
-//! other side's at [`SIDE_WEIGHT`]. On the first lap a source on the right
+//! other side's at `SIDE_WEIGHT`. On the first lap a source on the right
 //! is therefore heard mostly on the right; the Householder mixing then
 //! spreads it over every line and the tail goes diffuse and balanced. The
 //! weighted rows keep the properties issue #145 relies on: zero-sum, equal
@@ -51,15 +51,15 @@
 //!   21…62 ms set, allocated for the maximum): shorter lines make a small,
 //!   dense room, longer ones a sparser, larger one. The feedback gains are
 //!   recomputed with the lengths so the RT60 stays what was asked, and the
-//!   lines stretch at no more than [`SIZE_SLEW`] samples per sample — a
+//!   lines stretch at no more than `SIZE_SLEW` samples per sample — a
 //!   size change is a second-long ±2 % pitch drift, not a splice.
 //! - **per-band decay**: the loop gain of each line is a broadband value
-//!   plus two first-order shelves, one below [`LOW_BAND_HZ`] and one above
-//!   [`HIGH_BAND_HZ`], whose gains are the RT60 ratios of those bands
+//!   plus two first-order shelves, one below `LOW_BAND_HZ` and one above
+//!   `HIGH_BAND_HZ`, whose gains are the RT60 ratios of those bands
 //!   (`rt60_low_ratio`, `rt60_high_ratio`, relative to the broadband
 //!   RT60). A ratio of 1 leaves a shelf at exactly zero: the default tail
 //!   is arithmetically the one before the shelves existed. The fixed
-//!   one-pole [`DAMPING_48K`] stays underneath as the wall's own
+//!   one-pole `DAMPING_48K` stays underneath as the wall's own
 //!   high-frequency loss; the high ratio acts on top of it.
 //!
 //! In a real room the reverberant field level is roughly independent of

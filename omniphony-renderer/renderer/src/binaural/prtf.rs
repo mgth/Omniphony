@@ -13,7 +13,7 @@
 //! for Real-Time Customized 3-D Sound Rendering", SITIS 2011 (eqs 2–9).
 //! Their parameters used to be a population average read off that paper's
 //! mean PRTF plots, as linear ramps in elevation. They are now **fitted to
-//! the embedded KEMAR set**: [`KEMAR_TRACKS`] holds, per 10° of elevation
+//! the embedded KEMAR set**: `KEMAR_TRACKS` holds, per 10° of elevation
 //! in the median plane, the resonance envelope's first peak and its level
 //! around 12 kHz, and the three notch tracks (centre, depth, width) of the
 //! ear-averaged KEMAR response over the analytic head shadow — what the PRTF
