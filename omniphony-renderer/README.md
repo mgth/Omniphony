@@ -30,35 +30,14 @@ The repository also contains the supporting runtime stack:
 
 ## Build
 
-Rust `1.87.0` or newer is required.
-
-Minimal build:
-
 ```bash
 cargo build --release
 ```
 
-Linux with PipeWire output:
-
-```bash
-cargo build --release --features pipewire
-```
-
-Linux or Windows with runtime VBAP table generation:
-
-```bash
-export SAF_ROOT="/path/to/Spatial_Audio_Framework"
-cargo build --release --features saf_vbap
-```
-
-Windows with ASIO output:
-
-```bash
-set CPAL_ASIO_DIR=C:\path\to\asio_sdk
-cargo build --release --features asio
-```
-
-See [BUILD.md](BUILD.md) and [BUILDING_WINDOWS.md](BUILDING_WINDOWS.md) for the full dependency setup.
+builds `orender` with the platform's realtime backend (PipeWire, ASIO or
+CoreAudio) and the native VBAP backend; no feature flag is needed. The system
+packages each platform needs, the engine library, the reference bridge and the
+optional SAF-backed VBAP are in [QUICKSTART.md](QUICKSTART.md#2-build).
 
 ## Runtime Model
 
@@ -153,17 +132,16 @@ Global and render settings are loaded from a YAML config file.
 
 Default path:
 
-- Linux: `~/.config/omniphony/config.yaml`
+- Linux and macOS: `~/.config/omniphony/config.yaml`
 - Windows: `%ProgramData%\\omniphony\\config.yaml` (machine-wide, so the user-mode renderer and a service share one file)
 
 You can point to another file with `--config`, and persist the current effective settings with `--save-config`.
 
 ## Repository Pointers
 
-- [BUILD.md](BUILD.md): build profiles and feature flags
 - [BINAURAL.md](BINAURAL.md): binaural headphone output, head tracking, tuning
 - [OSC_PROTOCOL.md](OSC_PROTOCOL.md): OSC session handshake and streams
 - [../docs/osc-control-contract.md](../docs/osc-control-contract.md): every OSC control and state address
-- [QUICKSTART.md](QUICKSTART.md): local bring-up notes
+- [QUICKSTART.md](QUICKSTART.md): build (per platform), demo and local bring-up
 - [../layouts/README.md](../layouts/README.md): speaker layout format
 - [BRIDGE_API.md](BRIDGE_API.md): runtime bridge ABI
