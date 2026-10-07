@@ -3380,6 +3380,58 @@ fn a_brir_set_wider_than_the_renderer_keeps_the_editable_layout() {
     assert!(!r.control.active_topology().brir_layout);
 }
 
+/// A set landing makes the next rebuild another layout, whatever asked for
+/// it: an evaluation-only one (which does not bump the geometry) must not
+/// reuse the editable layout's gain model for the set's loudspeakers.
+#[test]
+fn a_rebuild_onto_a_brir_set_never_reuses_the_editable_layouts_model() {
+    let r = brir_layout_test_renderer(false);
+    let current = r.control.active_topology();
+    assert!(!current.brir_layout);
+    let plan = r.control.prepare_topology_rebuild().expect("plan");
+    assert!(plan.brir_layout);
+    let topology = plan
+        .build_topology_reusing(Some(&current))
+        .expect("the set's layout gets a gain model of its own");
+    assert!(topology.brir_layout);
+    assert_eq!(topology.num_speakers, 8);
+}
+
+/// A real-time host with no OSC listener still moves onto a set's
+/// loudspeakers: the renderer's own follower rebuilds the topology off the
+/// render thread. While a host claims the rebuilds, it stands down.
+#[test]
+fn a_real_time_host_without_osc_moves_onto_the_brir_set() {
+    let render_until =
+        |r: &mut SpatialRenderer, secs: f32, done: &dyn Fn(&SpatialRenderer) -> bool| {
+            let pcm = vec![0.0f32; 40];
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f32(secs);
+            while std::time::Instant::now() < deadline {
+                r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+                if done(r) {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            false
+        };
+
+    let mut r = brir_layout_test_renderer(false);
+    assert!(
+        render_until(&mut r, 5.0, &|r| r.control.active_topology().brir_layout),
+        "the follower publishes the set's layout"
+    );
+    assert!(!r.control.render_layout_outdated());
+
+    let mut r = brir_layout_test_renderer(false);
+    r.control.set_relayout_by_host(true);
+    assert!(
+        !render_until(&mut r, 0.5, &|r| r.control.active_topology().brir_layout),
+        "a host that claims the rebuilds is left to do them"
+    );
+    assert!(r.control.render_layout_outdated());
+}
+
 /// Synchronous stage builds (offline renders): a source change is live on the
 /// frame that requests it, and the setting survives the stage rebuild a
 /// sample-rate change does. Without it the same frame still renders the old

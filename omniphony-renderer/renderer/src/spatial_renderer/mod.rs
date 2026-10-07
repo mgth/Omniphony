@@ -55,6 +55,7 @@ use std::sync::Arc;
 mod cascade;
 mod components;
 mod construction;
+mod layout_follower;
 pub use construction::RendererSpec;
 mod speaker_stage;
 use components::{ChannelState, evaluation_build_config};
@@ -240,6 +241,9 @@ pub struct SpatialRenderer {
     /// The BRIR stage of the cascaded path, used while the HRIR source is a
     /// room response ([`crate::binaural::HrirSource::Brir`]).
     brir: crate::binaural::BrirStage,
+    /// Rebuilds the topology on a BRIR set's loudspeakers (or back) for a
+    /// real-time host that does not ([`layout_follower`]).
+    layout_follower: layout_follower::LayoutFollower,
     /// Whether the two stages above build on the render thread — see
     /// [`Self::set_synchronous_stage_builds`]. Kept here so a sample-rate
     /// change, which rebuilds them, carries it over.
@@ -444,14 +448,12 @@ impl SpatialRenderer {
                 self.brir.ensure_loaded(path, &opts, buses);
             }
         }
-        if self.control.render_layout_outdated() {
-            // Another layout: the gain model cannot be reused.
-            self.control.bump_geometry_generation();
-            if let Some(plan) = self.control.prepare_topology_rebuild() {
-                let current = self.control.active_topology();
-                let topology = plan.build_topology_reusing(Some(&current))?;
-                self.control.publish_topology(topology);
-            }
+        if self.control.render_layout_outdated()
+            && let Some(plan) = self.control.prepare_topology_rebuild()
+        {
+            let current = self.control.active_topology();
+            let topology = plan.build_topology_reusing(Some(&current))?;
+            self.control.publish_topology(topology);
         }
         Ok(())
     }
@@ -729,6 +731,16 @@ impl SpatialRenderer {
                 brir_source,
             )
         };
+        // A real-time host without a relayout of its own: the follower asks
+        // its worker when the layout to pan onto changed (offline renders
+        // settled it above).
+        if !self.synchronous_stage_builds {
+            self.layout_follower.poll(
+                &self.control,
+                requested_output_mode == crate::live_params::OutputMode::Binaural,
+                brir_source,
+            );
+        }
         // A mode change does not take effect here: it arms a cross-fade and the
         // OLD mode keeps rendering until the ramp reaches zero (see
         // `apply_output_mode_fade`). Rendering the branch that is on its way out

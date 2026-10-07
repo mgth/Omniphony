@@ -795,9 +795,9 @@ impl SpeakerLayout {
 mod tests {
     use super::*;
 
-    /// The 13 loudspeakers of a 9+4 listening room (the BBC R&D System G set),
-    /// as the BRIR loader reports them: renderer frame, metres.
-    fn system_g_emitters() -> Vec<[f32; 3]> {
+    /// The 13 loudspeakers of a generic 9+4 measured room, as the BRIR loader
+    /// reports them: renderer frame, metres.
+    fn nine_plus_four_room_emitters() -> Vec<[f32; 3]> {
         [
             (0.0, 0.0, 1.99),
             (-45.0, 0.0, 3.01),
@@ -823,7 +823,7 @@ mod tests {
 
     #[test]
     fn a_brir_layout_has_one_speaker_per_emitter_pointing_at_it() {
-        let emitters = system_g_emitters();
+        let emitters = nine_plus_four_room_emitters();
         let layout = SpeakerLayout::from_brir_emitters(&emitters).unwrap();
         assert_eq!(layout.num_speakers(), emitters.len() + 1);
         for (speaker, e) in layout.speakers.iter().zip(&emitters) {
@@ -853,7 +853,7 @@ mod tests {
 
     #[test]
     fn brir_emitters_take_the_nearest_free_standard_name() {
-        let layout = SpeakerLayout::from_brir_emitters(&system_g_emitters()).unwrap();
+        let layout = SpeakerLayout::from_brir_emitters(&nine_plus_four_room_emitters()).unwrap();
         assert_eq!(
             layout.speaker_names(),
             [

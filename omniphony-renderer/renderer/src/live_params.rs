@@ -1576,6 +1576,10 @@ pub struct RendererControl {
     /// Width the speaker stage was opened with (0 until a renderer reports
     /// it): a BRIR layout wider than this cannot be installed.
     speaker_stage_width: std::sync::atomic::AtomicUsize,
+    /// A host rebuilds the topology when [`Self::render_layout_outdated`]
+    /// says so (the OSC listener, which also tells its clients). While
+    /// `false`, the renderer's own layout follower does it.
+    relayout_by_host: AtomicBool,
 
     /// Bumped whenever per-object live params change.
     /// Render sample rate, published so control-thread work that has to produce
@@ -1778,6 +1782,7 @@ impl RendererControl {
             brir_status_generation: std::sync::atomic::AtomicU64::new(0),
             render_layout_key: std::sync::atomic::AtomicU64::new(0),
             speaker_stage_width: std::sync::atomic::AtomicUsize::new(0),
+            relayout_by_host: AtomicBool::new(false),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
             live_state_generation: std::sync::atomic::AtomicU64::new(0),
@@ -2305,6 +2310,28 @@ impl RendererControl {
         self.bump_live_state();
     }
 
+    /// Whether a host follows [`Self::render_layout_outdated`] itself (see
+    /// the field). The OSC listener claims it while it runs.
+    pub fn set_relayout_by_host(&self, on: bool) {
+        self.relayout_by_host.store(on, Ordering::Release);
+    }
+
+    pub fn relayout_by_host(&self) -> bool {
+        self.relayout_by_host.load(Ordering::Acquire)
+    }
+
+    /// What [`Self::render_layout_outdated`] depends on that can move without
+    /// the live params changing: the BRIR status generation, the layout the
+    /// last rebuild was for, and whether a host follows it. The render thread
+    /// compares it each frame (three loads) and only then asks the question.
+    pub fn render_layout_fingerprint(&self) -> (u64, u64, bool) {
+        (
+            self.brir_status_generation.load(Ordering::Acquire),
+            self.render_layout_key.load(Ordering::Acquire),
+            self.relayout_by_host(),
+        )
+    }
+
     /// Record the width the speaker stage was opened with (see the field).
     pub fn set_speaker_stage_width(&self, width: usize) {
         self.speaker_stage_width.store(width, Ordering::Relaxed);
@@ -2426,12 +2453,19 @@ impl RendererControl {
     /// Plan a rebuild of the render topology on the layout the render pans
     /// onto: the resident BRIR set's emitters while a headphone render uses
     /// one ([`Self::brir_layout`]), the editable layout otherwise. Records
-    /// which, for [`Self::render_layout_outdated`].
+    /// which, for [`Self::render_layout_outdated`], and invalidates the gain
+    /// model when that is another layout than the last rebuild's: whatever
+    /// asked for the rebuild (an evaluation-only edit reuses the model), the
+    /// previous layout's triangulation cannot serve this one.
     pub fn prepare_topology_rebuild(&self) -> Option<TopologyBuildPlan> {
         let key = self.wanted_render_layout_key();
         // Recorded whatever comes of it: a set whose layout cannot be built
         // falls back to the editable layout once, not on every poll.
-        self.render_layout_key.store(key, Ordering::Release);
+        let previous = self.render_layout_key.swap(key, Ordering::AcqRel);
+        if previous != key {
+            // Before the plan below captures the generation.
+            self.bump_geometry_generation();
+        }
         let brir = if key == 0 {
             None
         } else {

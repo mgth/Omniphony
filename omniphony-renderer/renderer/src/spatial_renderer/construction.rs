@@ -515,6 +515,7 @@ impl SpatialRenderer {
 
         let binaural = Self::build_binaural_stage(&control, sample_rate);
         let brir = Self::build_brir_stage(&control, sample_rate);
+        let layout_follower = super::layout_follower::LayoutFollower::spawn(Arc::clone(&control));
 
         Ok(Self {
             num_speakers,
@@ -548,6 +549,7 @@ impl SpatialRenderer {
             ramp_strategy_override: None,
             binaural,
             brir,
+            layout_follower,
             synchronous_stage_builds: false,
             cascade: None,
             last_mix_num_speakers: 0,
