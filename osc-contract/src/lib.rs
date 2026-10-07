@@ -58,7 +58,7 @@ pub mod shapes;
 /// a change to arguments only is for the author to remember.
 ///
 /// An engine that predates this advertises none, which a client reads as 0.
-pub const CONTRACT_REVISION: u32 = 2;
+pub const CONTRACT_REVISION: u32 = 3;
 
 /// The port the engine's stream transport listens on is the OSC/UDP control
 /// port's number, on loopback (TCP and UDP ports are separate spaces). A
@@ -495,6 +495,11 @@ pub const CONTROL_ERROR_NOT_APPLIED: &str = "not_applied";
 /// The datagram is not OSC the engine can decode, or nests deeper than
 /// [`nesting::MAX_NESTING`]. Its address is unknown, so the reply's is empty.
 pub const CONTROL_ERROR_UNDECODABLE: &str = "undecodable";
+/// Revision 3: a process-lifecycle control (`quit`, `yield_port`, `resume`)
+/// from another machine. The OSC/UDP socket listens on the network (head
+/// tracking from a phone, a remote Studio), but only a client on this
+/// machine may stop the engine or take its port.
+pub const CONTROL_ERROR_NOT_ALLOWED: &str = "not_allowed";
 
 // ── State: engine → clients ─────────────────────────────────────────────────
 
@@ -1155,7 +1160,7 @@ mod tests {
     /// `(revision, fingerprint)`. Change both together, and only together with
     /// a bump: a new fingerprint under the old revision tells clients nothing
     /// changed when it did.
-    const PINNED_ADDRESS_SET: (u32, u64) = (2, 0x9e77_a313_a880_fc97);
+    const PINNED_ADDRESS_SET: (u32, u64) = (3, 0x9e77_a313_a880_fc97);
 
     /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
     /// and not the order the lists happen to be written in.

@@ -201,9 +201,16 @@ step 2.
    loops on TCP.
 3. **Large payloads over TCP:** gain tables in one packet, and the HRTF
    upload without pacing.
-4. **Housekeeping:** fix the 10/15 s timeout drift in the contract doc, and
-   decide whether the UDP control socket should bind loopback by default
-   (a remote Studio would then need an opt-in).
+4. **Housekeeping:** fix the 10/15 s timeout drift in the contract doc
+   (done in step 1). The UDP control socket keeps listening on the network:
+   head tracking from a phone (Sensors2OSC) and a remote Studio reach the
+   engine that way, and loopback by default would break both. What a remote
+   sender may not do is stop the engine or take its port: `quit`,
+   `yield_port` and `resume` from another machine are refused with
+   `control_error … not_allowed` (contract revision 3).
+
+Status: steps 1 to 3 are #763, #764 and #765; step 4 is the pull request
+that adds this paragraph.
 
 ## Open questions
 

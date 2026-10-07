@@ -86,7 +86,7 @@ than discarded.
 UDP loses datagrams and the engine answers nothing by default, so the session
 carries what a client needs to notice either. The contract crate's
 `CONTRACT_REVISION` (`osc-contract`) is the revision this section describes:
-**2**.
+**3**.
 
 - **Stream transport** (revision 2) — the engine also listens on TCP, on
   loopback, on the OSC/UDP control port's number. A connection carries the
@@ -141,7 +141,11 @@ carries what a client needs to notice either. The contract crate's
   arguments were refused without a reason, or the host does not implement it,
   such as an audio-output control sent to an engine embedded in mpv) and
   `undecodable` (not OSC the engine can read; `address` is empty, and these
-  are answered at most once per 5 s). `message` is for a person. A control
+  are answered at most once per 5 s) and, from revision 3, `not_allowed` (a
+  process-lifecycle control, `quit`, `yield_port` or `resume`, from another
+  machine: the OSC/UDP socket listens on the network for head tracking and
+  remote clients, but only a client on this machine may stop the engine or
+  take its port). `message` is for a person. A control
   taken and found to change nothing is not answered.
 - **Sync** (revision 2) — `/omniphony/sync [args…]` is answered with
   `/omniphony/sync/ack [args…]` (the same arguments) once every packet the
