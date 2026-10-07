@@ -5,6 +5,15 @@
 //! `OMNIPHONY_OSC_PORT` turned OSC on in one host only, and `render.osc_metering`
 //! was honoured by the other only. Both now call [`OscSettings::resolve`], each
 //! passing its own overrides (command-line flags, or the C config struct).
+//!
+//! The one thing the hosts choose differently is the last resort, when neither
+//! they, the config nor the environment decide: the embedded engine turns OSC
+//! on when no config file exists, the CLI keeps it off. A player has no
+//! terminal to report a failure in and nobody to pass it a flag on a first
+//! start, so without OSC Studio could neither see the engine nor show why the
+//! bridge did not load. The CLI is typed in a terminal, which shows its errors;
+//! Studio launches it with `--osc`; and with OSC on, a CLI whose bridge is
+//! missing waits for Studio to set one instead of exiting with the error.
 
 use crate::engine::OscOptions;
 use renderer::config::RenderConfig;
@@ -44,13 +53,25 @@ impl OscSettings {
     /// it assigns this renderer a control port, so it supplies both port
     /// defaults AND turns OSC on when neither the host nor the config decides.
     /// An explicit `render.osc: false` (or `--no-osc`) still wins.
-    pub fn resolve(render_cfg: Option<&RenderConfig>, overrides: &OscOverrides) -> Self {
+    ///
+    /// `default_enabled` is the host's own last resort for OSC being on, when
+    /// neither its overrides, the config nor the environment decide (see the
+    /// module documentation): the embedded engine passes "no config file
+    /// exists", the CLI `false`. A config that exists but has no `osc` key
+    /// does not decide either, so it gets this default too: the embedded
+    /// engine gives it OSC off, as before, since a save with OSC off leaves
+    /// the key out (`osc` is stored skip-if-default).
+    pub fn resolve(
+        render_cfg: Option<&RenderConfig>,
+        overrides: &OscOverrides,
+        default_enabled: bool,
+    ) -> Self {
         let env_port = renderer::runtime_env::osc_port();
         Self {
             enabled: overrides
                 .enabled
                 .or_else(|| render_cfg.and_then(config_fields::osc::get))
-                .unwrap_or(env_port.is_some()),
+                .unwrap_or(default_enabled || env_port.is_some()),
             host: overrides
                 .host
                 .clone()
@@ -109,7 +130,7 @@ mod tests {
     #[test]
     fn defaults_are_off_on_the_built_in_ports() {
         with_env_port(None, || {
-            let s = OscSettings::resolve(None, &OscOverrides::default());
+            let s = OscSettings::resolve(None, &OscOverrides::default(), false);
             assert!(!s.enabled);
             assert!(!s.metering);
             assert_eq!(s.host, config_fields::osc_host::DEFAULT);
@@ -122,7 +143,7 @@ mod tests {
     #[test]
     fn a_workflow_port_turns_osc_on_unless_the_config_says_no() {
         with_env_port(Some("9010"), || {
-            let s = OscSettings::resolve(None, &OscOverrides::default());
+            let s = OscSettings::resolve(None, &OscOverrides::default(), false);
             assert!(s.enabled);
             assert_eq!((s.port_in, s.port_out), (9010, 9010));
 
@@ -130,7 +151,7 @@ mod tests {
                 osc: Some(false),
                 ..RenderConfig::default()
             };
-            assert!(!OscSettings::resolve(Some(&off), &OscOverrides::default()).enabled);
+            assert!(!OscSettings::resolve(Some(&off), &OscOverrides::default(), false).enabled);
         });
     }
 
@@ -143,7 +164,7 @@ mod tests {
                 osc_metering: Some(true),
                 ..RenderConfig::default()
             };
-            let s = OscSettings::resolve(Some(&cfg), &OscOverrides::default());
+            let s = OscSettings::resolve(Some(&cfg), &OscOverrides::default(), false);
             assert!(!s.enabled);
             assert_eq!(s.port_in, 9005);
             assert_eq!(s.port_out, 9010);
@@ -157,6 +178,7 @@ mod tests {
                     metering: Some(false),
                     ..OscOverrides::default()
                 },
+                false,
             );
             assert!(s.enabled);
             assert_eq!(s.port_in, 9020);
@@ -165,6 +187,33 @@ mod tests {
                 s.options()
                     .is_some_and(|o| o.port_in == 9020 && !o.metering)
             );
+        });
+    }
+
+    #[test]
+    fn the_host_default_applies_only_when_nothing_else_decides() {
+        with_env_port(None, || {
+            // Nothing decides: the host's default.
+            let s = OscSettings::resolve(None, &OscOverrides::default(), true);
+            assert!(s.enabled);
+            assert_eq!(s.port_in, config_fields::osc_rx_port::DEFAULT);
+            assert_eq!(s.port_out, config_fields::osc_port::DEFAULT);
+            // A config without the key does not decide either.
+            let no_key = RenderConfig::default();
+            assert!(OscSettings::resolve(Some(&no_key), &OscOverrides::default(), true).enabled);
+            assert!(!OscSettings::resolve(Some(&no_key), &OscOverrides::default(), false).enabled);
+
+            // An explicit `osc: false` and a host override off both win.
+            let off = RenderConfig {
+                osc: Some(false),
+                ..RenderConfig::default()
+            };
+            assert!(!OscSettings::resolve(Some(&off), &OscOverrides::default(), true).enabled);
+            let no_osc = OscOverrides {
+                enabled: Some(false),
+                ..OscOverrides::default()
+            };
+            assert!(!OscSettings::resolve(None, &no_osc, true).enabled);
         });
     }
 }

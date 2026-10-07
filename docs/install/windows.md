@@ -139,6 +139,11 @@ It creates the folder `omniphony-studio-egui-v0.6.0-windows-x86_64` holding
 1. Start the player first, with OSC on:
    `.\mpv --ad=orender --ad-orender-osc "D:\Films\film.mkv"`
    (or set `osc: true` under `render:` in the config).
+   From the next release, the flag is only needed with a config file that
+   leaves OSC off: with no config file the engine turns OSC on by itself, and
+   the config Studio then writes when you press Save keeps it on. (A config
+   that says `osc: false`, or one saved before that release without
+   `osc: true`, leaves it off.)
 2. Then start
    `C:\omniphony\omniphony-studio-egui-v0.6.0-windows-x86_64\omniphony-studio-egui.exe`
    (double-click it, or from another terminal). It connects by itself. Allow it

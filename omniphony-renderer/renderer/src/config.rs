@@ -970,16 +970,17 @@ impl Config {
         }
     }
 
-    /// Load the file a write is about to amend. A missing file starts from the
-    /// defaults, as [`Config::load_or_default`] does; a file that is present
-    /// but fails to parse is an error instead, so the write that follows
-    /// cannot replace the user's layout, profiles and unknown keys with
-    /// defaults. A file a newer build wrote is an error too: this build would
-    /// save it on its own terms (see [`CONFIG_SCHEMA_VERSION`]). Every writer
-    /// of the persistent config starts here.
+    /// Load the file a write is about to amend. A missing file starts from
+    /// [`Config::for_new_file`]: the defaults [`Config::load_or_default`]
+    /// reads, with the OSC state the engine had without a file; a file that
+    /// is present but fails to parse is an error instead, so the write that
+    /// follows cannot replace the user's layout, profiles and unknown keys
+    /// with defaults. A file a newer build wrote is an error too: this build
+    /// would save it on its own terms (see [`CONFIG_SCHEMA_VERSION`]). Every
+    /// writer of the persistent config starts here.
     pub fn load_for_update(path: &Path) -> anyhow::Result<Self> {
         let config = Self::load_if_present(path)
-            .map(Option::unwrap_or_default)
+            .map(|config| config.unwrap_or_else(Self::for_new_file))
             .map_err(|e| {
                 anyhow::anyhow!(
                     "{} failed to parse, so it was left untouched; fix or remove it first ({e})",
@@ -995,6 +996,22 @@ impl Config {
             );
         }
         Ok(config)
+    }
+
+    /// What a write starts from when no config file exists yet: the
+    /// defaults, plus `render.osc: true`. Without a file, the engine embedded
+    /// in a player runs with OSC on (`orender_engine::osc_settings`), but a
+    /// file without the key means off. Recording the state the engine was in
+    /// keeps whatever creates the file (Studio's first Save, a view write, a
+    /// profile operation) from switching OSC off for the next start.
+    fn for_new_file() -> Self {
+        Self {
+            render: Some(RenderConfig {
+                osc: Some(true),
+                ..RenderConfig::default()
+            }),
+            ..Self::default()
+        }
     }
 
     /// Whether a build newer than this one saved the file this was read from.
@@ -2528,6 +2545,33 @@ mod save_tests {
         assert!(err.contains("left untouched"), "{err}");
         // A missing file is a fresh start, not an error.
         assert!(Config::load_for_update(&dir.join("absent.yaml")).is_ok());
+    }
+
+    /// The file a write creates records OSC on, the state the embedded engine
+    /// runs in without a file; a file that exists keeps what it says,
+    /// including saying nothing.
+    #[test]
+    fn a_write_that_creates_the_file_records_osc_on() {
+        let dir = dir("new-file-osc");
+        let path = dir.join("config.yaml");
+        let fresh = Config::load_for_update(&path).unwrap();
+        assert_eq!(fresh.render.as_ref().and_then(|r| r.osc), Some(true));
+        fresh.save(&path).unwrap();
+        let saved = Config::load(&path).unwrap();
+        assert_eq!(saved.render.as_ref().and_then(|r| r.osc), Some(true));
+
+        for existing in ["render:\n  output_file: kept\n", "render:\n  osc: false\n"] {
+            std::fs::write(&path, existing).unwrap();
+            let config = Config::load_for_update(&path).unwrap();
+            let osc = config.render.as_ref().and_then(|r| r.osc);
+            assert_ne!(osc, Some(true), "{existing}");
+        }
+        // Reading a missing file is still the plain defaults.
+        assert!(
+            Config::load_or_default(&dir.join("absent.yaml"))
+                .render
+                .is_none()
+        );
     }
 
     #[test]
