@@ -146,7 +146,8 @@ a single header is always claimed within a known distance:
 |---|---|---|
 | TrueHD | access-unit header, major sync, `major_sync_info` checksum | 32 bytes |
 | E-AC-3 / AC-3 | sync word, valid frame size and rate codes, frame CRC | one frame (4 KiB) |
-| DTS core / DTS-HD | sync word, valid header fields, the next frame's sync at the declared frame size | one frame + 4 bytes (16 KiB + 4) |
+| DTS core | sync word, valid header fields, the next frame's sync at the declared frame size (its header CRC is optional) | one frame + 4 bytes (16 KiB + 4) |
+| DTS-HD substream with no core | substream sync word, header size and fields, header CRC (the frame itself can exceed the buffer) | the substream header (4 KiB) |
 | IAMF | IA Sequence Header OBU: OBU header type 31, LEB128 size within bound, `iamf` code, known primary and additional profiles; then the next OBU header well framed (a codec config OBU) | 64 bytes |
 
 IAMF has no CRC and need not repeat its sequence header, so its criteria are
