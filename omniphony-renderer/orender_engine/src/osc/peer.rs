@@ -87,6 +87,16 @@ impl Peer {
     pub(crate) fn is_stream(&self) -> bool {
         matches!(self, Self::Tcp(_))
     }
+
+    /// Gain-table payload per chunk for this client: datagram-sized, or a
+    /// few large packets on a stream (#680, step 3).
+    pub(crate) fn gaintable_chunk_bytes(&self) -> usize {
+        if self.is_stream() {
+            runtime_control::osc::GAINTABLE_STREAM_CHUNK_BYTES
+        } else {
+            runtime_control::osc::GAINTABLE_CHUNK_BYTES
+        }
+    }
 }
 
 impl From<SocketAddr> for Peer {

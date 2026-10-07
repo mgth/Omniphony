@@ -58,6 +58,13 @@ pub enum OscControlMsg {
         address: String,
         args: Vec<OscType>,
     },
+    /// A chunk of a large transfer, `bytes` of it reserved in the listener's
+    /// send window (see `crate::osc::SendWindow`).
+    SendArgsCounted {
+        address: String,
+        args: Vec<OscType>,
+        bytes: usize,
+    },
     Reconnect {
         request: u64,
         host: String,
@@ -240,6 +247,15 @@ pub fn send_control(tx: &ControlTx, msg: OscControlMsg) {
             args: vec![OscType::Float(a), OscType::Float(b), OscType::Float(c)],
         },
         OscControlMsg::SendArgs { address, args } => Control::Send { address, args },
+        OscControlMsg::SendArgsCounted {
+            address,
+            args,
+            bytes,
+        } => Control::SendCounted {
+            address,
+            args,
+            bytes,
+        },
         OscControlMsg::Reconnect {
             host,
             rx_port,

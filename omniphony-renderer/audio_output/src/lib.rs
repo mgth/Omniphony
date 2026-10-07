@@ -4,6 +4,7 @@ pub mod callback_log;
 pub mod callback_state;
 pub mod control;
 pub mod file_sink;
+pub mod host_choice;
 pub mod iir;
 pub mod output_telemetry;
 pub mod pacer;
@@ -266,11 +267,15 @@ pub use pipewire::{PipewireBufferConfig, PipewireWriter, list_pipewire_output_de
 #[cfg(target_os = "linux")]
 pub type PipewireAdaptiveResamplingConfig = AdaptiveResamplingConfig;
 
-// On Windows the cpal writer is the ASIO backend; on macOS it is CoreAudio.
-// Both share `cpal_output::CpalWriter`; expose them under platform-specific
-// aliases so the CLI keeps stable, descriptive names.
+// On Windows the cpal writer is the ASIO backend (falling back to WASAPI
+// shared mode when ASIO has no device, see `host_choice`); on macOS it is
+// CoreAudio. Both share `cpal_output::CpalWriter`; expose them under
+// platform-specific aliases so the CLI keeps stable, descriptive names.
 #[cfg(target_os = "windows")]
 pub use cpal_output::{CpalWriter as AsioWriter, list_output_devices as list_asio_devices};
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use cpal_output::list_output_host_devices;
 
 #[cfg(target_os = "macos")]
 pub use cpal_output::{

@@ -744,6 +744,7 @@
   "status.foreignRendererTitle": "この Studio が起動していないレンダラーに接続しています",
   "status.foreignRendererDetail": "実装されていないコントロールは黙って破棄されます。\n実行中: {running}\n想定:   {expected}",
   "status.audioFormat": "audio: {rate} / {format}",
+  "status.outputHost": "ホスト: {host}",
   "status.latencyFallback": "latency: raw {raw} | ctrl {ctrl}",
   "status.minValue": "min {value}",
   "status.maxValue": "max {value}",

@@ -119,7 +119,8 @@ pub enum Commands {
     #[command(hide = true)]
     SyncPlay(crate::cli::sync_host::SyncPlayArgs),
 
-    /// List available ASIO output devices (Windows only)
+    /// List the realtime output devices (Windows only): the ASIO ones, or the
+    /// WASAPI ones when no ASIO driver is installed
     #[cfg(target_os = "windows")]
     ListAsioDevices,
 
