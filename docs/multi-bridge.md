@@ -79,6 +79,9 @@ passes and the old bridge silently keeps decoding.
   found in the same folder, whether the old file is still there or not, and
   logs the substitution. If that folder holds none, it falls back to
   auto-discovery with a warning. The next Save writes the resolved list.
+  This is a transition rule, the only place where the host knows a plugin's
+  file name: it is removed in the minor release after the one that ships
+  the family libraries.
   Every other path keeps the strict rule: it must exist and load.
 - **Partial failure**: a bridge that fails to load (missing file, ABI
   mismatch) is reported in `bridge_error` and skipped; the host runs if at
