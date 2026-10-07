@@ -1,5 +1,5 @@
 use crate::decode_step::LogLevelSync;
-use abi_stable::library::{RootModule, lib_header_from_path};
+use abi_stable::library::{LibHeader, RootModule, lib_header_from_path};
 use abi_stable::sabi_types::VersionNumber;
 use abi_stable::std_types::RStr;
 use anyhow::{Context, Result, bail};
@@ -33,9 +33,7 @@ impl LoadedBridge {
     /// Format-specific options (e.g. presentation index) are applied afterwards via
     /// [`FormatBridgeBox::configure`] before the first [`FormatBridgeBox::push_packet`].
     pub fn load_with_params(path: &Path) -> Result<Self> {
-        check_bridge_api_version(path)?;
-        let lib = BridgeLibRef::load_from_file(path)
-            .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
+        let lib = load_bridge_library(path)?;
         let (bridge, log_level) = open_bridge(&lib);
         Ok(Self {
             lib,
@@ -68,6 +66,26 @@ impl LoadedBridge {
     }
 }
 
+/// Open the bridge plugin at `path` and return its root module.
+///
+/// Not `BridgeLibRef::load_from_file`: abi_stable's `RootModule::load_from`
+/// keeps the first root module it loads in a process-wide static and returns
+/// it for every later path, so a second, different bridge (a config reloaded
+/// with another `bridge_path`, another engine in the same player) would
+/// silently be the first one again. Initialising the root module from the
+/// library's own header runs the same version and layout checks without that
+/// cache: each library keeps its root module in its header, so opening one
+/// file twice still yields one module, and two files yield two.
+pub fn load_bridge_library(path: &Path) -> Result<BridgeLibRef> {
+    let header = lib_header_from_path(path)
+        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
+    check_bridge_api_version(path, header)?;
+    header
+        .init_root_module::<BridgeLibRef>()
+        .and_then(RootModule::initialization)
+        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))
+}
+
 /// Refuse a plugin built against another `bridge_api` minor than this host,
 /// with a message naming both versions (`BRIDGE_API.md`, "Versioning").
 ///
@@ -76,9 +94,7 @@ impl LoadedBridge {
 /// plugin of another minor fails with a layout error ("too many fields",
 /// "package version") that says nothing a user can act on. So the version
 /// the plugin declares in its header is read first.
-fn check_bridge_api_version(path: &Path) -> Result<()> {
-    let header = lib_header_from_path(path)
-        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
+fn check_bridge_api_version(path: &Path, header: &LibHeader) -> Result<()> {
     let host = host_bridge_api_version();
     let bridge = header.version_strings().parsed().with_context(|| {
         format!(
@@ -176,10 +192,7 @@ pub fn configure_presentation(bridge: &mut FormatBridgeBox, presentation: &str) 
 /// per loaded plugin, after the renderer is built (seeding the config keeps
 /// the table, so the order does not matter).
 pub fn declare_source_families(lib: &BridgeLibRef, control: &RendererControl) {
-    let Some(source_families) = lib.source_families() else {
-        return;
-    };
-    let families = source_families();
+    let families = lib.source_families()();
     let mut live = control.live.write();
     for family in families.iter() {
         let mode =
@@ -198,10 +211,7 @@ pub fn declare_source_families(lib: &BridgeLibRef, control: &RendererControl) {
 }
 
 pub fn install_bridge_host_log_sink(lib: &BridgeLibRef) {
-    let Some(set_host_log_sink) = lib.set_host_log_sink() else {
-        return;
-    };
-    set_host_log_sink(forward_bridge_log_to_host as BridgeHostLogSink as usize);
+    lib.set_host_log_sink()(forward_bridge_log_to_host as BridgeHostLogSink as usize);
 }
 
 extern "C" fn forward_bridge_log_to_host(level: RLogLevel, target: RStr<'_>, message: RStr<'_>) {
