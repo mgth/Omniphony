@@ -10,15 +10,15 @@
 // any problem exit non-zero for local enforcement. In GitHub Actions it also
 // emits ::warning:: annotations so problems surface on the PR.
 //
-//   node scripts/check-i18n.mjs            # report, exit 0
-//   node scripts/check-i18n.mjs --strict   # report, exit 1 if any problem
+//   node omniphony-studio-egui/scripts/check-i18n.mjs            # report, exit 0
+//   node omniphony-studio-egui/scripts/check-i18n.mjs --strict   # report, exit 1 if any problem
 
 import { readFileSync, readdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const i18nDir = join(scriptDir, '..', '..', 'omniphony-studio-egui', 'i18n');
+const i18nDir = join(scriptDir, '..', 'i18n');
 const REFERENCE = 'en';
 
 const strict = process.argv.includes('--strict');
@@ -118,7 +118,7 @@ for (const locale of localeFiles) {
 
   if (inActions && count) {
     console.log(
-      `::warning title=i18n ${locale}::${missing.length} missing, ${orphaned.length} orphaned, ${leftover.length} untranslated keys (run \`npm run i18n:check\`)`
+      `::warning title=i18n ${locale}::${missing.length} missing, ${orphaned.length} orphaned, ${leftover.length} untranslated keys (run \`node omniphony-studio-egui/scripts/check-i18n.mjs\`)`
     );
   }
 }
