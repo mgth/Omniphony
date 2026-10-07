@@ -113,27 +113,33 @@ mod tests {
     }
 
     /// A reader racing the writer never sees a pair that was not published
-    /// together.
+    /// together. The writer publishes until the reader is done, so every read
+    /// below races it, whatever order the threads are scheduled in.
     #[test]
     fn pairs_are_never_torn() {
+        use std::sync::atomic::{AtomicBool, Ordering};
         let tap = Arc::new(SourceTap::new());
+        let stop = Arc::new(AtomicBool::new(false));
         let writer = {
             let tap = Arc::clone(&tap);
+            let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
-                for n in 1..200_000u64 {
+                let mut n = 1u64;
+                while !stop.load(Ordering::Relaxed) {
                     // t is always received / 1000.
                     tap.publish(n as f64 / 1000.0, n);
+                    n += 1;
                 }
             })
         };
-        let mut seen = 0;
-        while !writer.is_finished() {
+        let coherent = |obs: SourceObservation| assert_eq!(obs.t, obs.received / 1000.0);
+        for _ in 0..200_000 {
             if let Some(obs) = tap.latest() {
-                assert_eq!(obs.t, obs.received / 1000.0);
-                seen += 1;
+                coherent(obs);
             }
         }
+        stop.store(true, Ordering::Relaxed);
         writer.join().unwrap();
-        assert!(seen > 0);
+        coherent(tap.latest().expect("the writer published"));
     }
 }
