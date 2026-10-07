@@ -1,6 +1,6 @@
 [package]
 name = "orender_engine"
-version = "0.2.3"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -27,7 +27,14 @@ abi_stable.workspace = true
 anyhow.workspace = true
 log.workspace = true
 rosc.workspace = true
+# The wait-free queue the render path hands its OSC telemetry over (#670).
+# Pure Rust, no system library: safe for the liborender cdylib.
+rtrb = "0.4"
 serde_json.workspace = true
+# The OSC sockets' send buffer, which std cannot set (see osc::transport).
+# Pure Rust over libc / windows-sys, no system library: safe for the
+# liborender cdylib and its cross builds.
+socket2.workspace = true
 # Real-input FFT for the DirAC diffuse→height object generator (pure Rust, no
 # system deps — safe for the liborender cdylib). Already in the workspace lock.
 realfft.workspace = true
@@ -38,3 +45,12 @@ sofa = ["renderer/sofa"]
 # Register the demonstration backend (`backend_id = "example"`), for contributors
 # trying the render-backend frontier end to end. Off in release builds.
 example-backend = ["dep:example_backend"]
+
+[dev-dependencies]
+# Shared renderer fixtures (`renderer::test_support`).
+renderer = { workspace = true, features = ["test-support"] }
+# Parses the hostile config.yaml texts of the boot-path test.
+serde_yaml_ng.workspace = true
+# Not linked by the tests: depending on it makes `cargo test` build its cdylib,
+# the bridge the tests under tests/ load when no other one is given.
+reference_bridge.workspace = true

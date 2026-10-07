@@ -71,10 +71,15 @@ pub struct MeasuredHrirData {
     vert_tris: Vec<Vec<u32>>,
 }
 
+/// Determinant of a row-major 3×3 matrix.
+fn det3x3(m: &[f32; 9]) -> f32 {
+    m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
+        + m[2] * (m[3] * m[7] - m[4] * m[6])
+}
+
 /// Inverse of a row-major 3×3 matrix, or `None` when singular.
 fn inv3x3(m: &[f32; 9]) -> Option<[f32; 9]> {
-    let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
-        + m[2] * (m[3] * m[7] - m[4] * m[6]);
+    let det = det3x3(m);
     if det.abs() < 1e-9 {
         return None;
     }
@@ -99,7 +104,7 @@ fn triangulate(vecs: &[[f32; 3]]) -> (Vec<[usize; 3]>, Vec<[f32; 9]>, Vec<Vec<u3
         .iter()
         .map(|v| [v[0] as f64, v[1] as f64, v[2] as f64])
         .collect();
-    let Some(faces) = crate::spatial_vbap::convhull::convhull_3d_build(&pts) else {
+    let Some(faces) = crate::spatial_vbap::quickhull::quickhull_3d(&pts) else {
         return (Vec::new(), Vec::new(), Vec::new());
     };
     let mut tri = Vec::with_capacity(faces.len());
@@ -109,6 +114,16 @@ fn triangulate(vecs: &[[f32; 3]]) -> (Vec<[usize; 3]>, Vec<[f32; 9]>, Vec<Vec<u3
         let (a, b, c) = (vecs[f[0]], vecs[f[1]], vecs[f[2]]);
         // Columns are the vertex directions: V·w = q.
         let m = [a[0], b[0], c[0], a[1], b[1], c[1], a[2], b[2], c[2]];
+        // det(V) = ((b - a) × (c - a)) · a, and the hull's faces are wound
+        // outward, so it is positive exactly when a face turns away from the
+        // listener. A set that does not surround the listener - every
+        // direction above the horizon, say - has an underside that faces
+        // them, and seen from the origin it covers the same directions as
+        // the faces above it: a query would be blended from whichever came
+        // first, measurements from behind included. Those faces go.
+        if det3x3(&m) <= 0.0 {
+            continue;
+        }
         let Some(inv) = inv3x3(&m) else { continue };
         let t = tri.len() as u32;
         tri.push(f);
@@ -126,11 +141,26 @@ impl MeasuredHrirData {
     /// doc); the measurement's own bulk delay, and any pre-alignment it was
     /// given, are discarded.
     pub fn new(sample_rate: u32, dirs: Vec<(f32, f32)>, irs: Vec<(Vec<f32>, Vec<f32>)>) -> Self {
+        use rayon::prelude::*;
+
         let vecs: Vec<[f32; 3]> = dirs.iter().map(|&(az, el)| dir_vec(az, el)).collect();
-        let irs = irs
-            .into_iter()
-            .map(|(l, r)| (minimum_phase(&l), minimum_phase(&r)))
-            .collect();
+        // Spread over the cores as `resampled_to` does: the reconstructions
+        // are independent, and on a dense SOFA set they are most of the load.
+        // One set of plans per worker rather than per response - every
+        // response of a set has the same length, and planning for each again
+        // was about 40 % of the step. `collect` on an indexed parallel
+        // iterator keeps the input order, which `dirs` and `vecs` share.
+        // Consuming the input frees each raw pair once it is converted, so
+        // the set is never held twice.
+        let len = irs.first().map_or(0, |(l, _)| l.len());
+        let irs = crate::background_pool::install(|| {
+            irs.into_par_iter()
+                .map_init(
+                    || MinPhase::new(len),
+                    |min_phase, (l, r)| (min_phase.run(&l), min_phase.run(&r)),
+                )
+                .collect()
+        });
         let (tri, tri_inv, vert_tris) = triangulate(&vecs);
         Self {
             sample_rate,
@@ -249,19 +279,20 @@ impl MeasuredHrirData {
         let out_len = self.irs.first().map_or(0, |(l, _)| kernel.out_len(l.len()));
         // `collect` on an indexed parallel iterator restores the input order,
         // which `dirs`, `vecs` and `tri` index into.
-        let irs = self
-            .irs
-            .par_iter()
-            .map_init(
-                || (MinPhase::new(out_len), Vec::new()),
-                |(min_phase, buf), (l, r)| {
-                    kernel.resample_into(l, buf);
-                    let left = min_phase.run(buf);
-                    kernel.resample_into(r, buf);
-                    (left, min_phase.run(buf))
-                },
-            )
-            .collect();
+        let irs = crate::background_pool::install(|| {
+            self.irs
+                .par_iter()
+                .map_init(
+                    || (MinPhase::new(out_len), Vec::new()),
+                    |(min_phase, buf), (l, r)| {
+                        kernel.resample_into(l, buf);
+                        let left = min_phase.run(buf);
+                        kernel.resample_into(r, buf);
+                        (left, min_phase.run(buf))
+                    },
+                )
+                .collect()
+        });
         Self {
             sample_rate: target,
             dirs: self.dirs,
@@ -488,36 +519,61 @@ impl MeasuredHrirData {
             dims.n as usize,
             dims.c as usize,
         );
-        if r < 2 {
-            anyhow::bail!("{r} receiver(s); a binaural set needs the two ears");
-        }
-        if m == 0 || n == 0 {
-            anyhow::bail!("no measurements (M = {m}, N = {n})");
-        }
         let pos = &hrtf.source_position.values;
         let ir = &hrtf.data_ir.values;
-        if pos.len() < m * c || c < 3 {
-            anyhow::bail!("SourcePosition holds {} values for M = {m}", pos.len());
-        }
-        if ir.len() < m * r * n {
-            anyhow::bail!(
-                "Data.IR holds {} values for M×R×N = {}",
-                ir.len(),
-                m * r * n
-            );
-        }
-        let mut positions = Vec::with_capacity(m);
-        let mut irs = Vec::with_capacity(m);
-        for i in 0..m {
-            positions.push([pos[i * c], pos[i * c + 1], pos[i * c + 2]]);
-            let base = i * r * n;
-            irs.push((
-                ir[base..base + n].to_vec(),
-                ir[base + n..base + 2 * n].to_vec(),
-            ));
-        }
+        let (positions, irs) = measurements_from_arrays(m, r, n, c, pos, ir)?;
         Ok(Self::from_sofa_measurements(sample_rate, &positions, irs))
     }
+}
+
+/// One measurement's `(left, right)` impulse responses.
+#[cfg(any(test, feature = "sofa"))]
+type IrPair = (Vec<f32>, Vec<f32>);
+
+/// The `(position, (left, right))` measurements of a SOFA file's arrays:
+/// `pos` holds `M × C` coordinates, `ir` holds `M × R × N` samples (only the
+/// first two receivers are read). Everything in them comes from the file, so
+/// the shape is checked without overflow and a non-finite value is refused:
+/// a NaN response would survive the silence check and render as NaN, a NaN
+/// position has no direction.
+#[cfg(any(test, feature = "sofa"))]
+fn measurements_from_arrays(
+    m: usize,
+    r: usize,
+    n: usize,
+    c: usize,
+    pos: &[f32],
+    ir: &[f32],
+) -> anyhow::Result<(Vec<[f32; 3]>, Vec<IrPair>)> {
+    if r < 2 {
+        anyhow::bail!("{r} receiver(s); a binaural set needs the two ears");
+    }
+    if m == 0 || n == 0 {
+        anyhow::bail!("no measurements (M = {m}, N = {n})");
+    }
+    if c < 3 || m.checked_mul(c).is_none_or(|need| pos.len() < need) {
+        anyhow::bail!("SourcePosition holds {} values for M = {m}", pos.len());
+    }
+    let need = m.checked_mul(r).and_then(|v| v.checked_mul(n));
+    if need.is_none_or(|need| ir.len() < need) {
+        anyhow::bail!("Data.IR holds {} values for M×R×N = {m}×{r}×{n}", ir.len());
+    }
+    let mut positions = Vec::with_capacity(m);
+    let mut irs = Vec::with_capacity(m);
+    for i in 0..m {
+        let p = [pos[i * c], pos[i * c + 1], pos[i * c + 2]];
+        if !p.iter().all(|v| v.is_finite()) {
+            anyhow::bail!("SourcePosition {i} is not finite ({p:?})");
+        }
+        let base = i * r * n;
+        let (left, right) = (&ir[base..base + n], &ir[base + n..base + 2 * n]);
+        if let Some(v) = left.iter().chain(right).find(|v| !v.is_finite()) {
+            anyhow::bail!("Data.IR of measurement {i} holds a non-finite value ({v})");
+        }
+        positions.push(p);
+        irs.push((left.to_vec(), right.to_vec()));
+    }
+    Ok((positions, irs))
 }
 
 impl MeasuredHrirData {
@@ -751,8 +807,8 @@ fn sinc(x: f64) -> f64 {
 /// cepstrum does not alias onto itself. Build-time only (`f64`, four
 /// transforms per response).
 ///
-/// One-shot; to run it over a set of responses, hold a [`MinPhase`] and call
-/// [`MinPhase::run`] so the plans and buffers are built once.
+/// One-shot; to run it over a set of responses, hold a `MinPhase` and call
+/// `MinPhase::run` so the plans and buffers are built once.
 pub fn minimum_phase(ir: &[f32]) -> Vec<f32> {
     if ir.is_empty() {
         return Vec::new();
@@ -902,7 +958,7 @@ mod tests {
     #[test]
     fn measured_right_source_is_louder_in_right_ear() {
         // Validates the SAF→renderer azimuth handedness (+az = right).
-        let set = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
+        let set = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
         let mut p = HrirPair {
             left: [0.0; HRIR_LEN],
             right: [0.0; HRIR_LEN],
@@ -916,7 +972,7 @@ mod tests {
 
     #[test]
     fn measured_front_is_roughly_symmetric() {
-        let set = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
+        let set = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
         let mut p = HrirPair {
             left: [0.0; HRIR_LEN],
             right: [0.0; HRIR_LEN],
@@ -1006,7 +1062,7 @@ mod tests {
     /// the origin. That is the property the three-nearest blend relies on.
     #[test]
     fn stored_kemar_responses_start_at_the_origin() {
-        let d = MeasuredHrirData::saf_kemar();
+        let d = MeasuredHrirData::saf_kemar_shared(48_000);
         let late = d
             .irs
             .iter()
@@ -1088,7 +1144,7 @@ mod tests {
     /// every rate the engine builds the set for.
     #[test]
     fn the_kernel_table_matches_the_per_sample_kernel() {
-        let set = MeasuredHrirData::saf_kemar();
+        let set = MeasuredHrirData::saf_kemar_shared(48_000);
         for to in [44_100u32, 96_000, 192_000] {
             let kernel = ResampleKernel::new(48_000, to);
             for (i, (l, r)) in set.irs.iter().enumerate().step_by(37) {
@@ -1122,7 +1178,7 @@ mod tests {
     /// one-shot calls give — no state may leak from the previous response.
     #[test]
     fn a_reused_min_phase_matches_one_shot_calls() {
-        let set = MeasuredHrirData::saf_kemar();
+        let set = MeasuredHrirData::saf_kemar_shared(48_000);
         let kernel = ResampleKernel::new(48_000, 44_100);
         let mut state = MinPhase::new(kernel.out_len(set.irs[0].0.len()));
         let mut buf = Vec::new();
@@ -1154,12 +1210,12 @@ mod tests {
     /// keeping their energy in the same ballpark.
     #[test]
     fn saf_resampled_to_441_differs_and_preserves_energy() {
-        let native = MeasuredHrirData::saf_kemar();
+        let native = MeasuredHrirData::saf_kemar_shared(48_000);
         let resampled = MeasuredHrirData::saf_kemar().resampled_to(44_100);
         assert_eq!(resampled.sample_rate, 44_100);
         assert_eq!(resampled.len(), native.len());
 
-        let grid_native = HrirSet::new(&native, 48_000);
+        let grid_native = HrirSet::new(&*native, 48_000);
         let grid_resampled = HrirSet::new(&resampled, 44_100);
         let mut a = HrirPair {
             left: [0.0; HRIR_LEN],
@@ -1270,6 +1326,47 @@ mod tests {
         assert!(front > 0.8, "front vertex should dominate: {w:?}");
     }
 
+    /// A set that does not surround the listener - every direction above the
+    /// horizon here - has a hull whose underside faces the origin. Seen from
+    /// the origin those faces cover the same directions as the top ones, so a
+    /// query must never be blended from them: they would mix measurements
+    /// from behind into a frontal response.
+    #[test]
+    fn a_partial_sphere_blends_only_the_faces_toward_the_listener() {
+        let dirs = vec![
+            (60.0f32, 10.0f32),
+            (240.0, 10.0),
+            (0.0, 10.0),
+            (60.0, 70.0),
+            (180.0, 10.0),
+            (120.0, 70.0),
+        ];
+        let irs = (0..dirs.len())
+            .map(|k| {
+                let mut v = vec![0.0f32; 16];
+                v[0] = 1.0 + k as f32;
+                (v.clone(), v)
+            })
+            .collect();
+        let d = MeasuredHrirData::new(48_000, dirs, irs);
+        assert!(d.is_triangulated());
+        for f in &d.tri {
+            let (a, b, c) = (d.vecs[f[0]], d.vecs[f[1]], d.vecs[f[2]]);
+            let m = [a[0], b[0], c[0], a[1], b[1], c[1], a[2], b[2], c[2]];
+            assert!(det3x3(&m) > 0.0, "face {f:?} faces the origin");
+        }
+        let q = dir_vec(5.0, 20.0);
+        for (i, w) in d.support(5.0, 20.0) {
+            let v = d.vecs[i];
+            let facing = q[0] * v[0] + q[1] * v[1] + q[2] * v[2];
+            assert!(
+                w < 1e-6 || facing > 0.0,
+                "{:?} is behind the query and still weighs {w}",
+                d.dirs[i]
+            );
+        }
+    }
+
     /// A set too small to triangulate keeps the nearest-three fallback.
     #[test]
     fn a_tiny_set_falls_back_to_nearest_three() {
@@ -1291,7 +1388,7 @@ mod tests {
     /// (aligned), not a blend — interpolation only fills the space between.
     #[test]
     fn render_is_exact_on_measurement_points() {
-        let d = MeasuredHrirData::saf_kemar();
+        let d = MeasuredHrirData::saf_kemar_shared(48_000);
         let (az, el) = d.dirs[100];
         let got = d.render(az, el, 48_000);
         let mut expected = HrirPair {
@@ -1310,7 +1407,7 @@ mod tests {
     /// decorrelation between neighbours (issue #158).
     #[test]
     fn between_points_blends_and_preserves_energy() {
-        let d = MeasuredHrirData::saf_kemar();
+        let d = MeasuredHrirData::saf_kemar_shared(48_000);
         // Midpoint between two real directions, at ear level-ish.
         let (az0, el0) = d.dirs[100];
         let near = d.nearest3(az0 + 2.0, el0 + 2.0);
@@ -1461,7 +1558,7 @@ mod tests {
     /// reference for "this is what a usable set looks like".
     #[test]
     fn a_usable_set_passes_the_guard() {
-        let set = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
+        let set = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
         assert!(check_loaded_set(&set, "kemar", 128).is_ok());
         assert!(!set.is_direction_invariant());
     }
@@ -1469,9 +1566,9 @@ mod tests {
     /// At the native rate the resample must be a strict no-op.
     #[test]
     fn resample_is_noop_at_native_rate() {
-        let native = MeasuredHrirData::saf_kemar();
+        let native = MeasuredHrirData::saf_kemar_shared(48_000);
         let same = MeasuredHrirData::saf_kemar().resampled_to(48_000);
-        let grid_a = HrirSet::new(&native, 48_000);
+        let grid_a = HrirSet::new(&*native, 48_000);
         let grid_b = HrirSet::new(&same, 48_000);
         let mut a = HrirPair {
             left: [0.0; HRIR_LEN],
@@ -1482,5 +1579,61 @@ mod tests {
         grid_b.at(37.0, 12.0, &mut b);
         assert_eq!(a.left, b.left);
         assert_eq!(a.right, b.right);
+    }
+
+    /// Two measurements, two receivers, four samples, three coordinates.
+    fn arrays() -> (Vec<f32>, Vec<f32>) {
+        let pos = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let ir = (0..16).map(|i| i as f32 / 16.0).collect();
+        (pos, ir)
+    }
+
+    fn arrays_refusal(m: usize, r: usize, n: usize, c: usize, pos: &[f32], ir: &[f32]) -> String {
+        match measurements_from_arrays(m, r, n, c, pos, ir) {
+            Ok(_) => panic!("the arrays were accepted"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn sofa_arrays_are_split_per_measurement_and_ear() {
+        let (pos, ir) = arrays();
+        let (positions, irs) = measurements_from_arrays(2, 2, 4, 3, &pos, &ir).expect("valid");
+        assert_eq!(positions, vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
+        assert_eq!(irs[1].0, ir[8..12].to_vec(), "second measurement, left ear");
+        assert_eq!(
+            irs[1].1,
+            ir[12..16].to_vec(),
+            "second measurement, right ear"
+        );
+    }
+
+    #[test]
+    fn malformed_sofa_arrays_are_refused_with_their_reason() {
+        let (pos, ir) = arrays();
+        assert!(arrays_refusal(2, 1, 4, 3, &pos, &ir).contains("two ears"));
+        assert!(arrays_refusal(0, 2, 4, 3, &pos, &ir).contains("no measurements"));
+        assert!(arrays_refusal(2, 2, 0, 3, &pos, &ir).contains("no measurements"));
+        assert!(arrays_refusal(2, 2, 4, 2, &pos, &ir).contains("SourcePosition holds"));
+        assert!(arrays_refusal(3, 2, 4, 3, &pos, &ir).contains("SourcePosition holds"));
+        assert!(arrays_refusal(2, 2, 5, 3, &pos, &ir).contains("Data.IR holds"));
+        // Dimensions whose product wraps around are refused, not trusted.
+        assert!(arrays_refusal(2, usize::MAX / 2 + 1, 4, 3, &pos, &ir).contains("Data.IR holds"));
+        assert!(arrays_refusal(usize::MAX / 2 + 1, 2, 4, 3, &pos, &ir).contains("SourcePosition"));
+
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut p = pos.clone();
+            p[4] = bad;
+            assert!(
+                arrays_refusal(2, 2, 4, 3, &p, &ir).contains("SourcePosition 1"),
+                "{bad}"
+            );
+            let mut i = ir.clone();
+            i[13] = bad;
+            assert!(
+                arrays_refusal(2, 2, 4, 3, &pos, &i).contains("measurement 1"),
+                "{bad}"
+            );
+        }
     }
 }

@@ -478,11 +478,37 @@ pub struct LiveOptionsState {
     /// the generic family's entries; `placement` is the real thing.
     pub virtual_bed: Option<serde_json::Value>,
     /// Per-family placement of fixed channels (`renderer::placement`), the
-    /// renderer's `placement` block passed through: one object per family
-    /// (`generic`, `dolby`, `dts`, `auro`, `pcm`) with its own `mode` and
-    /// `layout` (null when inherited), `effectiveMode` and `layoutSource`.
-    /// Read through `host::channels::family_placement`.
+    /// renderer's `placement` block passed through: one object per family of
+    /// its table, keyed by name, with its `label`, `defaultMode`, own `mode`
+    /// and `layout` (null when inherited), `effectiveMode`, `modeSource`
+    /// (absent from renderers older than the headphones default) and
+    /// `layoutSource`. Read through `host::channels::family_placement`.
     pub placement: Option<serde_json::Value>,
+    /// The families to offer, by name, in the renderer's order: the generic
+    /// family, the loaded bridge's, the renderer's PCM input. Studio knows
+    /// no family by name; these are what it shows (`host::channels::families`).
+    pub placement_families: Option<Vec<String>>,
+}
+
+/// A tag the stream's bridge puts on some of its channels (`channelTags` on
+/// `/state/input`): the dialogue a format codes apart from the rest.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChannelTag {
+    /// `dialogue`, or a kind this Studio does not know yet.
+    pub kind: String,
+    /// BCP 47, empty when the stream states none.
+    #[serde(default)]
+    pub language: String,
+    /// The stream's name for the channels, empty when it states none.
+    #[serde(default)]
+    pub label: String,
+    /// Indices into the stream's channels.
+    #[serde(default)]
+    pub channels: Vec<u32>,
+}
+
+impl ChannelTag {
+    pub const DIALOGUE: &'static str = "dialogue";
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -638,6 +664,9 @@ pub struct AppState {
     pub diag_rate_hz: Option<f32>,
     #[serde(rename = "supportedDrcModes")]
     pub supported_drc_modes: Vec<String>,
+    /// What the current stream tags among its channels.
+    #[serde(rename = "channelTags")]
+    pub channel_tags: Vec<ChannelTag>,
     #[serde(rename = "inputBackend")]
     pub input_backend: Option<String>,
     #[serde(rename = "inputChannels")]
@@ -664,6 +693,9 @@ pub struct AppState {
     pub render_executable: Option<String>,
     #[serde(rename = "renderAbi")]
     pub render_abi: Option<String>,
+    /// The `bridge_api` version the renderer loads bridges of.
+    #[serde(rename = "renderBridgeApi")]
+    pub render_bridge_api: Option<String>,
     /// Named config profiles (`/omniphony/state/profiles`): the active profile
     /// name and the full name list, mirrored verbatim from the renderer.
     #[serde(rename = "activeProfile")]
@@ -723,7 +755,66 @@ pub struct AppState {
     pub last_overlay_emit_hash: Option<u64>,
 }
 
+/// Why the connected renderer will not write its configuration file, as its
+/// `render/config_status` says.
+/// The engine and this Studio speak different revisions of the OSC contract
+/// (osc-contract `CONTRACT_REVISION`): controls one side does not know are
+/// refused, and state it does not know is dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContractMismatch {
+    pub engine: u32,
+    pub studio: u32,
+}
+
+impl ContractMismatch {
+    pub fn engine_is_older(self) -> bool {
+        self.engine < self.studio
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigRefusal {
+    /// `parse_error`: the file failed to parse, and the renderer runs on its
+    /// built-in defaults.
+    ParseError,
+    /// `newer_schema`: a newer build wrote the file, and the renderer runs on
+    /// what it understands of it.
+    NewerSchema,
+}
+
 impl AppState {
+    /// Why the renderer will not write its configuration file, if it said so.
+    /// A Reload that reads the file publishes the status again, which lifts
+    /// it.
+    pub fn config_refusal(&self) -> Option<ConfigRefusal> {
+        match self.render_config_status.as_deref()? {
+            "parse_error" => Some(ConfigRefusal::ParseError),
+            "newer_schema" => Some(ConfigRefusal::NewerSchema),
+            _ => None,
+        }
+    }
+
+    /// The engine's OSC contract revision against this build's, when they
+    /// differ. An engine that advertises none predates revisions and counts
+    /// as 0. `None` until the capabilities arrive.
+    pub fn contract_mismatch(&self) -> Option<ContractMismatch> {
+        let caps = self.producer_capabilities.as_ref()?;
+        let engine = caps
+            .get("contractRevision")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(0, |revision| u32::try_from(revision).unwrap_or(u32::MAX));
+        let studio = crate::osc_contract::CONTRACT_REVISION;
+        (engine != studio).then_some(ContractMismatch { engine, studio })
+    }
+
+    /// The current stream's dialogue tag, when it codes its dialogue apart
+    /// (the dialogue level only means something then).
+    pub fn dialogue_tag(&self) -> Option<&ChannelTag> {
+        self.channel_tags
+            .iter()
+            .find(|tag| tag.kind == ChannelTag::DIALOGUE)
+    }
+
     pub fn new(layouts: Vec<Layout>) -> Self {
         Self {
             layouts,
@@ -940,6 +1031,7 @@ impl Default for AppState {
             meter_rate_hz: None,
             diag_rate_hz: None,
             supported_drc_modes: Vec::new(),
+            channel_tags: Vec::new(),
             input_backend: None,
             input_channels: None,
             input_sample_rate: None,
@@ -953,6 +1045,7 @@ impl Default for AppState {
             render_version: None,
             render_executable: None,
             render_abi: None,
+            render_bridge_api: None,
             active_profile: None,
             profile_names: Vec::new(),
             render_bridge_error: None,
@@ -1170,5 +1263,50 @@ mod mirror_axes_tests {
                 z: true
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod contract_mismatch_tests {
+    use super::{AppState, ContractMismatch};
+    use crate::osc_contract::CONTRACT_REVISION;
+    use serde_json::json;
+
+    fn with_caps(caps: Option<serde_json::Value>) -> AppState {
+        let mut app = AppState::new(Vec::new());
+        app.producer_capabilities = caps;
+        app
+    }
+
+    #[test]
+    fn the_same_revision_is_no_mismatch() {
+        let app = with_caps(Some(json!({ "contractRevision": CONTRACT_REVISION })));
+        assert_eq!(app.contract_mismatch(), None);
+    }
+
+    #[test]
+    fn an_engine_that_advertises_none_is_revision_zero() {
+        let mismatch = with_caps(Some(json!({ "variant": "embedded" })))
+            .contract_mismatch()
+            .expect("an engine from before revisions differs");
+        assert_eq!(
+            mismatch,
+            ContractMismatch {
+                engine: 0,
+                studio: CONTRACT_REVISION
+            }
+        );
+        assert!(mismatch.engine_is_older());
+    }
+
+    #[test]
+    fn a_newer_engine_is_reported_newer() {
+        let app = with_caps(Some(json!({ "contractRevision": CONTRACT_REVISION + 1 })));
+        assert!(!app.contract_mismatch().unwrap().engine_is_older());
+    }
+
+    #[test]
+    fn nothing_is_said_before_the_capabilities_arrive() {
+        assert_eq!(with_caps(None).contract_mismatch(), None);
     }
 }

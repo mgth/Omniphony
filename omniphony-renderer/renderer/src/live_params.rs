@@ -3,9 +3,9 @@
 //! # Design
 //!
 //! `RendererControl` is wrapped in an `Arc` and held by both the `SpatialRenderer`
-//! (reads) and the `OscSender` listener thread (writes).  The render thread takes a
-//! snapshot at the beginning of each frame so that the `RwLock` on `LiveParams` is
-//! held for the shortest possible time.
+//! (reads) and the `OscSender` listener thread (writes). `LiveParams` sits in a
+//! [`LiveCell`]: the render thread loads it without a lock, so no control write
+//! can make it wait.
 //!
 //! Speaker position updates (via `/omniphony/control/speaker/{idx}/{az|el|distance}` +
 //! `/omniphony/control/speakers/apply`) trigger a background recompute of the VBAP
@@ -21,12 +21,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::backend_registry::{BackendRegistry, TopologyBuildPlan, prepare_topology_build_plan};
+pub use crate::live_cell::LiveCell;
 use crate::render_backend::{EvaluationBuildConfig, PreparedRenderEngine, RenderRequest};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LiveEvaluationMode {
+    #[default]
     Auto,
     Realtime,
     PrecomputedPolar,
@@ -74,6 +76,10 @@ impl PreferredEvaluationMode {
 pub enum RampMode {
     Off,
     Frame,
+    /// The object's position advances every sample. While it moves, its gains
+    /// are evaluated every few samples (`LiveParams::sample_ramp_stride`) and
+    /// interpolated linearly in between; while it holds, they are evaluated
+    /// once per block.
     Sample,
     /// One VBAP evaluation per object per frame (the destination gains), then a
     /// per-sample linear interpolation of the gains from the previous block's
@@ -82,8 +88,12 @@ pub enum RampMode {
     Interp,
 }
 
+/// The widest `LiveParams::sample_ramp_stride`: 0.67 ms at 48 kHz. Bounds the
+/// speaker stage's per-segment scratch, which lives on the stack.
+pub const MAX_SAMPLE_RAMP_STRIDE: usize = 32;
+
 impl RampMode {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Frame => "frame",
@@ -168,7 +178,7 @@ pub enum PhantomExtractMode {
 }
 
 impl PhantomExtractMode {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Broadband => "broadband",
@@ -207,7 +217,7 @@ pub enum CrossoverType {
 }
 
 impl CrossoverType {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Lr4 => "lr4",
             Self::Fir => "fir",
@@ -264,7 +274,7 @@ pub enum SurroundPlacement {
 }
 
 impl SurroundPlacement {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Side => "side",
             Self::Back => "back",
@@ -300,7 +310,7 @@ pub enum OutputChannelMapping {
 }
 
 impl OutputChannelMapping {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::ByIndex => "by_index",
             Self::ByName => "by_name",
@@ -1048,7 +1058,7 @@ pub fn speaker_gain_linear(gain_db: f32) -> f32 {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct CartesianEvaluationParams {
     pub x_size: usize,
     pub y_size: usize,
@@ -1056,7 +1066,7 @@ pub struct CartesianEvaluationParams {
     pub z_neg_size: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct PolarEvaluationParams {
     pub azimuth_values: i32,
     pub elevation_values: i32,
@@ -1064,7 +1074,7 @@ pub struct PolarEvaluationParams {
     pub distance_max: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct EvaluationLiveParams {
     pub mode: LiveEvaluationMode,
     pub position_interpolation: bool,
@@ -1150,9 +1160,18 @@ impl Default for HybridLiveParams {
 
 /// Live-tunable rendering parameters.
 ///
-/// Written (exclusively) by the OSC listener thread, read via snapshot by the
-/// render thread.
+/// Written by the control threads (OSC listener, config seeding), read
+/// lock-free by the render thread through [`LiveCell`]. `Clone` because a
+/// write edits a copy and publishes it. `Default` is a blank state with no
+/// renderer behind it (no speakers, the declared options at their
+/// defaults): a scratch for code that edits a config through the option
+/// rows (`options::store_client_values`), never what a renderer starts with.
+#[derive(Clone, Default)]
 pub struct LiveParams {
+    /// The options declared in `options::declared` (one field per option,
+    /// defaulted from its row).
+    pub options: crate::options::DeclaredOptions,
+
     /// Master output gain, linear scale (1.0 = unity, 0.5 ≈ −6 dB).
     pub master_gain: f32,
 
@@ -1179,28 +1198,11 @@ pub struct LiveParams {
     /// (w, d, h) to derive a scalar spread for backends that consume it.
     pub size_to_spread_mode: crate::render_backend::SizeToSpreadMode,
 
-    /// Ramp processing mode for object moves and gain transitions.
-    pub ramp_mode: RampMode,
-
     /// Requested spatial render backend identifier.
     pub backend_id: String,
 
     /// Requested evaluation parameters for the current gain model.
     pub evaluation: EvaluationLiveParams,
-
-    /// Apply dialogue normalisation gain stored in the renderer.
-    pub use_loudness: bool,
-
-    /// Automatic gain reduction: when set, the gain stage permanently lowers
-    /// output gain on detected clipping (peak hold, no recovery). Live-tunable
-    /// via `/omniphony/control/auto_gain`.
-    pub auto_gain: bool,
-
-    /// Target ceiling (dBFS) that auto-gain corrects detected peaks down to.
-    /// Clipping is detected at 0 dBFS (peak > 1.0); when it fires, the master
-    /// gain is lowered so the peak lands at this level instead of exactly 0 dBFS,
-    /// leaving headroom so corrections fire less often. Default −1 dBFS.
-    pub auto_gain_ceiling_db: f32,
 
     /// Distance attenuation model currently applied by the renderer.
     pub distance_model: crate::spatial_vbap::DistanceModel,
@@ -1302,13 +1304,6 @@ pub struct LiveParams {
     /// Runtime tuning parameters for the hybrid backend.
     pub hybrid: HybridLiveParams,
 
-    /// Selected Dynamic Range Control mode (as string).
-    pub drc_mode: String,
-    /// DRC weighting in [0.0, 1.0]. 1.0 applies the full bridge-decoded DRC gain;
-    /// 0.0 bypasses it entirely. Intermediate values scale the dB reduction
-    /// linearly (effective_gain = bridge_gain.powf(drc_weight)).
-    pub drc_weight: f32,
-
     /// Binaural (headphone) output stage parameters. When
     /// `binaural.output_mode == OutputMode::Binaural`, the renderer bypasses the
     /// speaker/VBAP path and emits a 2-channel frame instead.
@@ -1320,63 +1315,12 @@ pub struct LiveParams {
     /// is an internal/host override, not a Studio or persistent live option.
     pub channel_render_mode: ChannelRenderMode,
 
-    /// Where the 4.x/5.x surround pair (`Ls`/`Rs`) is placed: side vs back.
-    /// Consulted only for channel content without dedicated back channels;
-    /// 7.x sources ignore it. Live-tunable via
-    /// `/omniphony/control/surround_placement`.
-    pub surround_placement: SurroundPlacement,
-
-    /// How output channels map to device ports: positionless `ByIndex` (default,
-    /// port N = layout speaker N) or positional `ByName`. Consulted when the
-    /// output stream is (re)configured. Live-tunable via
-    /// `/omniphony/control/output_channel_mapping`.
-    pub output_channel_mapping: OutputChannelMapping,
-
-    /// Crossover filter implementation: minimum-latency IIR (`lr4`) or
-    /// linear-phase FIR (`fir`). The speaker stage compares this against the
-    /// bank it built every frame, so a flip takes effect without a topology
-    /// change. Live-tunable via `/omniphony/control/crossover_type`.
-    pub crossover_type: CrossoverType,
-
-    /// FIR crossover transition width as a fraction of the lowest cutoff
-    /// (the Kaiser design's `transition_ratio`): smaller = steeper bands but
-    /// more taps, latency and ringing; larger = the opposite. Only consulted
-    /// by the `fir` engine; the speaker stage rebuilds the bank live when it
-    /// moves. Clamped to [0.05, 2.0]. Live-tunable via
-    /// `/omniphony/control/crossover_fir_transition_ratio`.
-    pub crossover_fir_transition_ratio: f32,
-
     /// Where fixed channels go, per source family (consulted only when
     /// `channel_render_mode == Spatial`): each family's mode — sphere, room
     /// or manual — and its entries (`spatialize` virtual/direct, `gain_db`
     /// trim, and the pose in manual mode). See `crate::placement`.
     /// Live-tunable via the `placement` OSC controls.
     pub placement: crate::placement::PlacementState,
-
-    /// Selects the bed→height object generator (2D upmix): synthesizes height
-    /// objects from channel-based content so a height-capable layout (7.1.4, …)
-    /// is exercised when the source has no height. Empty / `"none"` = disabled
-    /// (the default). Consulted only for channel content without spatial objects;
-    /// object streams ignore it. Live-tunable via
-    /// `/omniphony/control/object_generator`.
-    pub object_generator_id: String,
-
-    /// Global permission for renderer-synthesized objects. When false, both the
-    /// phantom extractor and height generator are bypassed without clearing
-    /// their configured selections or parameters.
-    pub synthetic_objects_enabled: bool,
-
-    /// Decode on a thread of its own, overlapping the render (a performance
-    /// switch, off by default). Honoured by the liborender engine only when
-    /// its host lets the option decide (`orender_set_option("decode_thread",
-    /// "live")`), since the host must then stamp its output from the input
-    /// timestamps carried with the audio and drain at end of stream. The
-    /// standalone renderer always decodes on its own thread and ignores it.
-    pub decode_thread: bool,
-
-    /// Phantom-source extraction algorithm. `Off` disables only this stage;
-    /// the global synthesized-object master may independently suppress it.
-    pub phantom_extract_mode: PhantomExtractMode,
 }
 
 impl LiveParams {
@@ -1474,10 +1418,17 @@ fn evaluation_build_config_from_live(
 /// Immutable render-time snapshot published atomically to the audio thread.
 ///
 /// This is the only topology state the renderer should consume during a frame:
-/// the speaker layout, the VBAP panner built for that layout, and the derived
+/// the speaker layout, the backend built for that layout, and the derived
 /// mappings that tie both together.
 pub struct RenderTopology {
     pub speaker_layout: SpeakerLayout,
+    /// The backend built for `speaker_layout`. In a topology published on the
+    /// control it samples no gain table (see
+    /// [`crate::render_backend::wrap_unsampled_engine`]): it names the backend
+    /// and the effective evaluation mode, and carries the decorated model a
+    /// recompute reuses. Audio gains come from the speaker stage's band
+    /// engines, each a topology of its own built with
+    /// [`crate::backend_registry::TopologyBuildPlan::build_band_topology_reusing`].
     pub backend: Arc<PreparedRenderEngine>,
     pub backend_to_speaker_mapping: Option<Vec<usize>>,
     /// Per-label speaker lookup for the channel-routing table (re-resolved on
@@ -1562,13 +1513,14 @@ impl RenderTopology {
 
 /// Shared control object held by both `SpatialRenderer` and `OscSender`.
 ///
-/// The renderer reads `live` via a snapshot and loads the current immutable
-/// `RenderTopology` lock-free at the start of each frame. The OSC listener writes
+/// The renderer loads `live` and the current immutable `RenderTopology`
+/// lock-free. The OSC listener writes
 /// `live`, edits the staging layout, rebuilds a new `RenderTopology` in the
 /// background, then publishes it atomically.
 pub struct RendererControl {
-    /// Live-tunable parameters (protected by a readers-writer lock).
-    pub live: RwLock<LiveParams>,
+    /// Live-tunable parameters: read lock-free, written under a mutex that
+    /// only writers take (see [`LiveCell`]).
+    pub live: LiveCell<LiveParams>,
 
     /// Current render topology, shared between render thread (reads) and OSC
     /// listener (writes on recompute).  Lock-free: the render thread loads an
@@ -1668,12 +1620,20 @@ pub struct RendererControl {
     /// next to the build fingerprint.
     pub host_abi: Mutex<Option<(u32, u32)>>,
 
-    /// Facts about the crossover bank the speaker stage actually built
-    /// (engine, bands, cutoffs, taps, latency). Written by the render thread
-    /// on every bank (re)build, broadcast in the `/state/renderer` snapshot so
+    /// Facts about the crossover bank the speaker stage is rendering with
+    /// (engine, bands, cutoffs, taps, latency). Written when the stage
+    /// installs a band set, broadcast in the `/state/renderer` snapshot so
     /// Studio can annotate the crossover control. `None` until the first
     /// build.
     crossover_info: Mutex<Option<CrossoverInfo>>,
+
+    /// A band-build outcome of the speaker stage not broadcast yet: the
+    /// reason its worker could not build the band engines for a topology or
+    /// crossover change (the previous ones keep rendering), or an empty
+    /// string once a later build went through. The OSC listener takes it and
+    /// broadcasts it on the recompute-error address, where a failed topology
+    /// rebuild is reported too. Coalesced: only the latest outcome is kept.
+    band_build_error: Mutex<Option<String>>,
 
     /// Actual renderer input path used for this process.
     pub input_path: Mutex<Option<String>>,
@@ -1733,6 +1693,11 @@ pub struct RendererControl {
     /// crate in the dependency graph.
     fixed_channel_catalog: RwLock<String>,
 
+    /// The current stream's channel tags (`FormatBridge::channel_tags`) as a
+    /// JSON array, supplied by the engine when they change: Studio shows the
+    /// dialogue level only while a stream tags dialogue.
+    channel_tags: RwLock<String>,
+
     /// Current fixed-channel/synthesized-object applicability state supplied by
     /// the engine on declaration/topology/option changes (never per sample).
     fixed_channel_processing: RwLock<String>,
@@ -1760,6 +1725,16 @@ impl Default for ProfilesInfo {
     }
 }
 
+/// A generation that tells readers the live params changed must be bumped
+/// once they are published, not while the write guard is still held.
+#[track_caller]
+fn debug_assert_bumped_after_publish() {
+    debug_assert!(
+        !crate::live_cell::write_held_on_this_thread(),
+        "live params generation bumped while their write guard is held: drop it first"
+    );
+}
+
 impl RendererControl {
     /// Create a new `RendererControl` and wrap it in an `Arc`.
     ///
@@ -1774,7 +1749,7 @@ impl RendererControl {
         backend_rebuild_params: Option<BackendRebuildParams>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            live: RwLock::new(live),
+            live: LiveCell::new(live),
             topology: ArcSwap::new(Arc::new(initial_topology)),
             editable_layout: Mutex::new(editable_layout),
             backend_rebuild_params: RwLock::new(backend_rebuild_params),
@@ -1794,6 +1769,7 @@ impl RendererControl {
             bridge_error: Mutex::new(None),
             host_abi: Mutex::new(None),
             crossover_info: Mutex::new(None),
+            band_build_error: Mutex::new(None),
             input_path: Mutex::new(None),
             bridge_path: Mutex::new(None),
             bridge_supported_drc_modes: Mutex::new(Vec::new()),
@@ -1810,6 +1786,7 @@ impl RendererControl {
             object_generator_listings: RwLock::new(Vec::new()),
             phantom_listing: RwLock::new(None),
             fixed_channel_catalog: RwLock::new("[]".to_string()),
+            channel_tags: RwLock::new("[]".to_string()),
             fixed_channel_processing: RwLock::new(
                 r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
                     .to_string(),
@@ -1935,6 +1912,20 @@ impl RendererControl {
 
     pub fn fixed_channel_catalog(&self) -> String {
         self.fixed_channel_catalog.read().clone()
+    }
+
+    /// Publish the stream's channel tags only when they actually changed.
+    pub fn set_channel_tags(&self, json: String) {
+        let mut current = self.channel_tags.write();
+        if *current != json {
+            *current = json;
+            drop(current);
+            self.bump_live_state();
+        }
+    }
+
+    pub fn channel_tags(&self) -> String {
+        self.channel_tags.read().clone()
     }
 
     /// Publish a new applicability snapshot only when it actually changed.
@@ -2194,10 +2185,10 @@ impl RendererControl {
         *self.host_abi.lock() = Some((major, minor));
     }
 
-    /// Publish the crossover bank the speaker stage just built. Bumps the
-    /// live-state generation only when the facts actually changed, so the
-    /// per-frame refresh path can call this unconditionally without
-    /// re-broadcast churn (a bank rebuild is rare: topology or engine flip).
+    /// Publish the crossover bank the speaker stage just installed. Bumps the
+    /// live-state generation only when the facts actually changed, so an
+    /// install can call this unconditionally without re-broadcast churn (a
+    /// bank swap is rare: topology or engine flip).
     pub fn set_crossover_info(&self, info: CrossoverInfo) {
         let mut guard = self.crossover_info.lock();
         if guard.as_ref() != Some(&info) {
@@ -2207,9 +2198,21 @@ impl RendererControl {
         }
     }
 
-    /// Facts about the last crossover bank built (see [`CrossoverInfo`]).
+    /// Facts about the crossover bank in use (see [`CrossoverInfo`]).
     pub fn crossover_info(&self) -> Option<CrossoverInfo> {
         self.crossover_info.lock().clone()
+    }
+
+    /// Record why the speaker stage could not build its band engines, for
+    /// the OSC listener to broadcast; an empty string clears the error on
+    /// the clients. See the field.
+    pub fn report_band_build_error(&self, message: String) {
+        *self.band_build_error.lock() = Some(message);
+    }
+
+    /// Take the band-build outcome reported since the last call, if any.
+    pub fn take_band_build_error(&self) -> Option<String> {
+        self.band_build_error.lock().take()
     }
 
     pub fn host_abi(&self) -> Option<(u32, u32)> {
@@ -2245,14 +2248,22 @@ impl RendererControl {
         *self.backend_rebuild_params.write() = params;
     }
 
+    /// Tell the render thread the per-object live params changed. Call it
+    /// after the write guard is dropped: the render thread loads the live
+    /// params after this generation, so a bump it sees comes with the data
+    /// (see [`LiveCell`]).
     pub fn mark_object_params_dirty(&self) {
+        debug_assert_bumped_after_publish();
         self.object_params_generation
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Release);
     }
 
+    /// [`mark_object_params_dirty`](Self::mark_object_params_dirty) for the
+    /// per-speaker live params.
     pub fn mark_speaker_params_dirty(&self) {
+        debug_assert_bumped_after_publish();
         self.speaker_params_generation
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Release);
     }
 
     /// The last binaural HRIR build's outcome (see the field).
@@ -2286,12 +2297,15 @@ impl RendererControl {
 
     /// Bump the options epoch: a `REPLAN`-flagged live option changed, so the
     /// synthesized-object plan signatures must invalidate (see [`crate::options`]).
+    /// Like the params generations, bumped after the write guard is dropped
+    /// and read before the live params are loaded.
     pub fn bump_options_epoch(&self) {
-        self.options_epoch.fetch_add(1, Ordering::Relaxed);
+        debug_assert_bumped_after_publish();
+        self.options_epoch.fetch_add(1, Ordering::Release);
     }
 
     pub fn options_epoch(&self) -> u64 {
-        self.options_epoch.load(Ordering::Relaxed)
+        self.options_epoch.load(Ordering::Acquire)
     }
 
     /// Flag that output clipping was detected this frame on `speaker_idx`
@@ -2358,6 +2372,9 @@ impl RendererControl {
         let layout = topology.speaker_layout.clone();
         let speaker_count = layout.speakers.len();
 
+        // Every band's gains are kept, so all of them count in the budget.
+        let bands = crate::crossover::compute_bands(&layout);
+
         // Same cartesian grid the full gain table uses.
         let (x_positions, y_positions, z_positions, template) = {
             let live = self.live.read();
@@ -2366,6 +2383,19 @@ impl RendererControl {
                 &live,
                 rebuild_params_allow_negative_z(rebuild_params),
             );
+            // The axes below are as long as the sizes asked for: refuse a
+            // grid past the table budget before allocating them.
+            let c = &config.cartesian;
+            crate::render_backend::check_table_budget(
+                "cartesian",
+                &[
+                    c.x_size.max(2),
+                    c.y_size.max(2),
+                    c.z_size.max(2).saturating_add(c.z_neg_size),
+                ],
+                speaker_count,
+                bands.len(),
+            )?;
             (
                 crate::render_backend::evenly_spaced_axis(
                     config.cartesian.x_size.max(2),
@@ -2387,8 +2417,6 @@ impl RendererControl {
         let (nx, ny, nz) = (x_positions.len(), y_positions.len(), z_positions.len());
         let cell_count = nx * ny * nz;
 
-        let bands = crate::crossover::compute_bands(&layout);
-
         let mut band_meta: Vec<(f32, f32)> = Vec::with_capacity(bands.len());
         let mut band_gains_all: Vec<Vec<f32>> = Vec::with_capacity(bands.len());
         for band in &bands {
@@ -2407,22 +2435,25 @@ impl RendererControl {
                 let band_topology = self
                     .prepare_topology_rebuild_for_layout(band_layout)
                     .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology"))?
-                    .build_topology()?;
-                let per_cell: Vec<crate::spatial_vbap::Gains> = (0..cell_count)
-                    .into_par_iter()
-                    .map(|idx| {
-                        let xi = idx % nx;
-                        let yi = (idx / nx) % ny;
-                        let zi = idx / (nx * ny);
-                        let mut req = template;
-                        req.adm_position = [
-                            x_positions[xi] as f64,
-                            y_positions[yi] as f64,
-                            z_positions[zi] as f64,
-                        ];
-                        band_topology.backend.compute_gains(&req).gains
-                    })
-                    .collect();
+                    .build_band_topology_reusing(None)?;
+                let per_cell: Vec<crate::spatial_vbap::Gains> =
+                    crate::background_pool::install(|| {
+                        (0..cell_count)
+                            .into_par_iter()
+                            .map(|idx| {
+                                let xi = idx % nx;
+                                let yi = (idx / nx) % ny;
+                                let zi = idx / (nx * ny);
+                                let mut req = template;
+                                req.adm_position = [
+                                    x_positions[xi] as f64,
+                                    y_positions[yi] as f64,
+                                    z_positions[zi] as f64,
+                                ];
+                                band_topology.backend.compute_gains(&req).gains
+                            })
+                            .collect()
+                    });
                 for (idx, cell) in per_cell.iter().enumerate() {
                     let base = idx * speaker_count;
                     for (gi, &g) in cell.iter().enumerate() {

@@ -1,7 +1,7 @@
 {
   "name": "omniphony-studio",
   "version": "0.6.0",
-  "description": "Visualisation 3D d'objets audio spatialisés via OSC",
+  "description": "Deprecated: superseded by omniphony-studio-egui. Visualisation 3D d'objets audio spatialisés via OSC",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

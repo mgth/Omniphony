@@ -12,12 +12,17 @@ or to **binaural headphones**, in real time. Open source, GPL-3.0.
 [![Download mpv-omniphony](https://img.shields.io/badge/Download-mpv--omniphony-1f6feb?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.6.0)
 [![Download mpv-omniphony FEL](https://img.shields.io/badge/Download-mpv--omniphony%20FEL-8957e5?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.6.0-fel-beta.2)
 
+**Play a film through Omniphony, step by step:**
+[Linux](docs/install/linux.md) · [Windows](docs/install/windows.md) · [macOS](docs/install/macos.md)
+— what to download, where each file goes, how to check each step, and the usual
+failures.
+
 ![Omniphony Studio rendering a spatial mix](Omniphony_capture.png)
 
 - 🎧 **Hear it on headphones** — binaural output (HRTF + ITD + live head-tracking),
   no surround rig required.
 - 🔊 **Render to any layout** — stereo, 5.1, 7.1, 7.1.4 and beyond, via VBAP.
-- 🧩 **Pluggable decoders** — a small, stable ABI (`bridge_api`) loads decoder
+- 🧩 **Pluggable decoders** — a small, versioned ABI (`bridge_api`) loads decoder
   bridges at runtime; bring your own format.
 - 🛰️ **Live control + 3D visualization** — Omniphony Studio supervises the engine
   over OSC.
@@ -25,7 +30,8 @@ or to **binaural headphones**, in real time. Open source, GPL-3.0.
 ## Hear it in 2 minutes — no media player needed
 
 The engine ships a self-contained demo: a reference WAV decoder bridge plus a
-short multichannel clip. From a fresh clone:
+short multichannel clip. From a fresh clone, with a Rust toolchain, on Linux,
+macOS or Windows (Git Bash; the device modes need an ASIO driver there):
 
 ```sh
 cd omniphony-renderer
@@ -74,6 +80,25 @@ instead of the plain player package: same spatial decoder on an mpv master
 snapshot, plus Dolby Vision Profile 7 FEL reconstruction. Decoder bridges install
 the same way — search the AUR for the one your format needs.
 
+## Which versions go together
+
+One release number covers Omniphony Studio (both hosts), the `orender` engine
+and `liborender`. The player and the decoder bridges are released on their own,
+and each must match the engine it runs with: the player needs a `liborender`
+with its ABI major version, and a decoder bridge loads only in an engine built
+against the same `bridge_api` minor version (the engine says which one it
+expects in its log and in Studio's About box). Each release also carries this
+row as `omniphony-<release>-manifest.json`.
+
+<!-- compat-table:start -->
+| Release (Studio, orender, liborender) | liborender ABI | Player | Decoder bridge built against `bridge_api` |
+| --- | --- | --- | --- |
+| [v0.6.0](https://github.com/mgth/Omniphony/releases/tag/v0.6.0) | 0.8 | [mpv-v0.6.0](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.6.0) | 0.4.x |
+| [v0.5.2](https://github.com/mgth/Omniphony/releases/tag/v0.5.2) | 0.7 | [mpv-v0.5.2](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.5.2) | 0.3.x |
+| [v0.5.1](https://github.com/mgth/Omniphony/releases/tag/v0.5.1) | 0.6 | [mpv-v0.5.0](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.5.0) | 0.3.x |
+| [v0.5.0](https://github.com/mgth/Omniphony/releases/tag/v0.5.0) | 0.6 | [mpv-v0.5.0](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.5.0) | 0.3.x |
+<!-- compat-table:end -->
+
 ## How it works
 
 `omniphony-renderer` loads a **format bridge** at runtime (a `.so` / `.dll`
@@ -100,7 +125,9 @@ The core engine (executable: `orender`) and its supporting crates:
 - `renderer` — VBAP engine, layouts, binaural, OSC output, runtime config
 - `audio_output` — PipeWire / ASIO / CoreAudio / file backends
 - `audio_input` — live PCM / bridge input
-- `bridge_api` — the stable ABI for external decoder bridges
+- `bridge_api` — the versioned ABI for external decoder bridges (a bridge
+  loads in a host built against the same `bridge_api` minor; see
+  [`BRIDGE_API.md`](omniphony-renderer/BRIDGE_API.md))
 - `reference_bridge` — a reference WAV/PCM decoder bridge (powers the demo)
 - `spdif` — IEC 61937 / S/PDIF parsing
 - `sys` — platform integration (incl. Windows service)
@@ -109,20 +136,45 @@ The core engine (executable: `orender`) and its supporting crates:
 
 Start with [`omniphony-renderer/QUICKSTART.md`](omniphony-renderer/QUICKSTART.md).
 
-### `omniphony-studio` — supervision & control
+### `omniphony-studio-egui` — supervision & control
 
-A desktop app that does **not** render audio itself; it connects to the engine
-over OSC to visualize objects in a 3D scene, monitor runtime state, and control
-selected live parameters. It accepts several OSC input conventions (cartesian,
-identifier-in-address, spherical `azimuth/elevation/distance`, explicit removal).
+A native (egui/wgpu) desktop app that does **not** render audio itself; it
+connects to the engine over OSC to visualize objects in a 3D scene, monitor
+runtime state, and control selected live parameters.
+
+### `omniphony-studio` — the Tauri Studio (deprecated)
+
+The previous, web-based Studio. Deprecated in favour of
+`omniphony-studio-egui`: it still ships, but gets no new features. It reads
+the native Studio's `i18n/` catalogues and `assets/`.
 
 ## Repository layout
 
 - `omniphony-renderer/` — engine, CLI, crates, reference bridge
-- `omniphony-studio/` — supervision / visualization app
+- `omniphony-studio-egui/` — supervision / visualization app (native)
+- `omniphony-studio/` — the deprecated Tauri Studio
 - `docs/` — frontend usage guides (e.g. [mpv-omniphony](docs/mpv-omniphony.md))
 - `assets/` — demo clip, logo, captures
 - `scripts/` — helpers
+
+## Supported platforms
+
+"Tested" means the CI gate on every pull request to `main` builds the code and
+runs its test suite on that platform; "packaged" means a release ships a
+prebuilt download for it.
+
+| Platform | Engine (`orender`, `liborender`) | Native Studio | Packaged |
+| --- | --- | --- | --- |
+| Linux x86_64 | tested | tested | yes — Studio bundle, `liborender`, AUR (from source) |
+| Windows x86_64 | tested | tested | yes — Studio bundle, `liborender` |
+| macOS arm64 (Apple Silicon) | tested | tested | yes — Studio bundle, `liborender` |
+| Linux arm64 (aarch64) | tested | not built | no — build from source |
+
+The deprecated Tauri Studio is no longer built by CI; releases still package
+it until it is removed. Tests that need a sound device or a running PipeWire
+session are skipped by CI on every platform, so the audio backends themselves
+(PipeWire, ASIO, CoreAudio) are compiled but not exercised there. Anything not listed — macOS on Intel, 32-bit targets — is not built by
+CI.
 
 ## License
 

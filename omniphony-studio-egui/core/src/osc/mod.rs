@@ -13,8 +13,11 @@
 
 pub mod apply;
 pub mod dispatch;
+mod link;
 #[allow(dead_code)]
 pub mod parser;
+mod playout;
+pub mod state_sync;
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -22,11 +25,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, decoder, encoder};
+use rosc::{OscBundle, OscError, OscMessage, OscPacket, OscTime, OscType, decoder, encoder};
 
 use crate::host::runtime::{StopToken, Worker};
 use dispatch::{Change, Live, apply_event};
+use link::{Backoff, Link, Received};
 use parser::{CoordinateFormat, HeartbeatResponse, is_heartbeat_address, parse_osc_message};
+use playout::{Offer, Playout};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// Re-register when no heartbeat ack came back for this long. The host's
@@ -36,9 +41,22 @@ const REPAINT_COALESCE: Duration = Duration::from_micros(2500);
 /// How long a receive waits when no change is waiting to be shown, so the
 /// heartbeat, the snapshot requests and the control channel keep running.
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
+/// How often the receive wakes while messages are held, to release the ones
+/// the listener has reached. Fixed rather than the exact time to the next one,
+/// which would change the socket's timeout (a syscall) on every pass; a
+/// quarter of a 60 Hz frame is as late as a release can be.
+const PLAYOUT_TICK: Duration = Duration::from_millis(4);
 /// While `osc_snapshot_ready` is false, re-register this often (host value).
 const SNAPSHOT_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_BUF: usize = 65_536;
+/// While a local renderer is reached by datagrams, how often the stream is
+/// tried again: after a stream closed (the next one may already be up), and
+/// for an engine that came up with the stream after this client registered.
+/// A refused loopback connection costs next to nothing.
+const TCP_PROBE_INTERVAL: Duration = Duration::from_secs(2);
+/// Send buffer both sending sockets must have: larger than any UDP payload,
+/// like [`RECV_BUF`].
+const SEND_BUF: usize = 65_536;
 
 pub type SharedLive = Arc<Mutex<Live>>;
 
@@ -115,6 +133,9 @@ pub struct ListenerConfig {
     /// Ask the renderer for meter streams right after registering
     /// (`/omniphony/control/metering`, the host's `osc_metering_enabled`).
     pub metering: bool,
+    /// Hold what describes a block of audio until it is heard (`playout`),
+    /// the user's "follow the sound" switch.
+    pub playout_sync: bool,
 }
 
 /// Messages the UI sends to the renderer through the listener's socket: the
@@ -136,6 +157,10 @@ pub enum Control {
     },
     /// Toggle the meter streams (sent now and again after every register).
     SetMetering {
+        enabled: bool,
+    },
+    /// Follow the sound: show each block when it is heard (see `playout`).
+    SetPlayoutSync {
         enabled: bool,
     },
     SubscribeGainTable {
@@ -165,6 +190,27 @@ pub fn resolve(target: &str) -> Option<SocketAddr> {
         .find(std::net::SocketAddr::is_ipv4)
 }
 
+/// Make sure `socket` can send the largest datagram the protocol carries.
+///
+/// macOS and the BSDs refuse a UDP send larger than the socket's send buffer
+/// (`EMSGSIZE`), and that buffer starts at `net.inet.udp.maxdgram`: 9,216
+/// bytes, where a backend script runs to 60,000. The buffer is only ever
+/// raised: Linux starts well above this, and setting it there would shrink it.
+///
+/// A failure is logged and the socket kept, since everything under the old
+/// limit still goes through.
+fn ensure_send_buffer(socket: &UdpSocket) {
+    let socket = socket2::SockRef::from(socket);
+    if socket.send_buffer_size().is_ok_and(|size| size >= SEND_BUF) {
+        return;
+    }
+    if let Err(e) = socket.set_send_buffer_size(SEND_BUF) {
+        log::warn!(
+            "[osc] could not raise the send buffer to {SEND_BUF} bytes, larger messages may be refused: {e}"
+        );
+    }
+}
+
 /// Bind the socket and start the listener thread. Returns the bound port so a
 /// `0` request can be reported (and fed by the synthetic generator).
 pub fn spawn_listener(
@@ -174,6 +220,8 @@ pub fn spawn_listener(
     cfg: ListenerConfig,
 ) -> std::io::Result<(u16, ControlTx, Worker)> {
     let socket = UdpSocket::bind(("0.0.0.0", cfg.listen_port))?;
+    // Every control message leaves through this socket, backend files included.
+    ensure_send_buffer(&socket);
     let port = socket.local_addr()?.port();
     socket.set_read_timeout(Some(READ_TIMEOUT))?;
     stats.listen_port.store(u64::from(port), Ordering::Relaxed);
@@ -187,6 +235,7 @@ pub fn spawn_listener(
             stats,
             cfg.register,
             cfg.metering,
+            cfg.playout_sync,
             rx,
             stop,
         )
@@ -203,10 +252,12 @@ fn listener_loop(
     stats: Arc<OscStats>,
     register: Option<SocketAddr>,
     metering: bool,
+    playout_sync: bool,
     control: Receiver<Control>,
     stop: StopToken,
 ) {
     let mut buf = vec![0u8; RECV_BUF];
+    let mut playout = Playout::new(playout_sync);
     let mut last_heartbeat = Instant::now();
     let mut last_ack = Instant::now();
     let mut last_repaint = Instant::now() - REPAINT_COALESCE;
@@ -220,26 +271,85 @@ fn listener_loop(
     let mut register = register;
     let mut metering = metering;
     *stats.target.lock().unwrap() = register;
+    // The way to the renderer: a stream when it is on this machine and
+    // serves one, datagrams otherwise (see `link`).
+    let mut link = Link::Datagram;
+    let mut backoff = Backoff::default();
+    let mut next_tcp_probe = Instant::now() + TCP_PROBE_INTERVAL;
 
     if let Some(addr) = register {
-        send_register(&socket, addr, port, metering);
+        register_with(&mut link, &backoff, &socket, addr, port, metering);
     }
 
     loop {
-        match socket.recv_from(&mut buf) {
+        let stream_packet: Vec<u8>;
+        let incoming = match link.receive(&socket, &mut buf, read_timeout, &mut backoff) {
+            Ok(Received::Datagram(n, from)) => Some((&buf[..n], from)),
+            Ok(Received::Packet(packet, from)) => {
+                stream_packet = packet;
+                Some((&stream_packet[..], from))
+            }
+            Ok(Received::Timeout) => None,
+            Ok(Received::StreamClosed) => {
+                // The renderer went away, or the port was not an engine's:
+                // register again, which tries the stream again when allowed.
+                stats.registered.store(false, Ordering::Relaxed);
+                repaint_pending = true;
+                if let Some(addr) = register {
+                    register_with(&mut link, &backoff, &socket, addr, port, metering);
+                }
+                None
+            }
+            Err(e) => {
+                log::error!("[osc] recv failed: {e}");
+                std::thread::sleep(Duration::from_millis(50));
+                None
+            }
+        };
+        match incoming {
             // Replies use a separate ephemeral socket; reject other IPs
             // without starving control draining or shutdown below.
-            Ok((n, from)) if accepts_sender(register, from) => {
+            Some((packet, from)) if accepts_sender(register, from) => {
+                let n = packet.len();
                 stats.packets.fetch_add(1, Ordering::Relaxed);
                 stats
                     .last_packet_ms
                     .store(stats.start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                match decoder::decode_udp(&buf[..n]) {
-                    Ok((_, packet)) => {
+                match decode_datagram(packet) {
+                    Ok(packet) => {
                         let mut outcome = PacketOutcome::default();
                         {
                             let mut model = live.lock().unwrap();
-                            handle_packet(&packet, &mut model, &stats, &mut outcome);
+                            handle_packet(
+                                &packet,
+                                &mut model,
+                                &stats,
+                                &mut outcome,
+                                &mut playout,
+                                Instant::now(),
+                            );
+                            if outcome.producer_changed {
+                                playout.reset();
+                            }
+                            model.playout_delay = playout.delay(Instant::now());
+                            // Asked here, where the model is locked anyway:
+                            // packets keep coming (meters, the heartbeat
+                            // acks), so a lost reply is asked again soon.
+                            outcome.refresh = model.state_sync.refresh_due(Instant::now());
+                        }
+                        // A state update went missing: the snapshot again,
+                        // and nothing else.
+                        if outcome.refresh
+                            && let Some(addr) = register
+                        {
+                            log::debug!("[osc] state generation fell behind, asking for a refresh");
+                            send_int(
+                                &mut link,
+                                &socket,
+                                addr,
+                                crate::osc_contract::CONTROL_STATE_REFRESH,
+                                i32::from(port),
+                            );
                         }
                         if outcome.reregister
                             && let Some(addr) = register
@@ -258,7 +368,7 @@ fn listener_loop(
                                     "[osc] renderer does not know this client; re-registering"
                                 );
                             }
-                            send_register(&socket, addr, port, metering);
+                            register_with(&mut link, &backoff, &socket, addr, port, metering);
                         }
                         if outcome.ack {
                             last_ack = Instant::now();
@@ -270,15 +380,23 @@ fn listener_loop(
                     Err(e) => log::debug!("[osc] undecodable packet ({n} bytes): {e:?}"),
                 }
             }
-            Ok(_) => {}
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(e) => {
-                log::error!("[osc] recv failed: {e}");
-                std::thread::sleep(Duration::from_millis(50));
+            Some(_) | None => {}
+        }
+
+        // What the listener has now reached, out of the queue and into the
+        // model.
+        let now = Instant::now();
+        if playout.next_due_in(now) == Some(Duration::ZERO) {
+            let mut outcome = PacketOutcome::default();
+            {
+                let mut model = live.lock().unwrap();
+                playout.release_due(now, |m| {
+                    handle_message(&m, &mut model, &stats, &mut outcome);
+                });
+                model.playout_delay = playout.delay(now);
+            }
+            if outcome.change != Change::None {
+                repaint_pending = true;
             }
         }
 
@@ -287,11 +405,15 @@ fn listener_loop(
             last_repaint = Instant::now();
             waker();
         }
-        let wanted = if repaint_pending {
+        let mut wanted = if repaint_pending {
             REPAINT_COALESCE
         } else {
             READ_TIMEOUT
         };
+        // Wake for the held messages, not only for the next packet.
+        if playout.next_due_in(Instant::now()).is_some() {
+            wanted = wanted.min(PLAYOUT_TICK);
+        }
         if wanted != read_timeout {
             match socket.set_read_timeout(Some(wanted)) {
                 Ok(()) => read_timeout = wanted,
@@ -310,17 +432,22 @@ fn listener_loop(
                     stats.registered.store(false, Ordering::Relaxed);
                     last_ack = Instant::now();
                     last_snapshot_request = Instant::now();
+                    playout.reset();
                     {
                         let mut model = live.lock().unwrap();
                         apply_connection_reset(&mut model, request);
                     }
                     repaint_pending = true;
-                    send_register(&socket, target, port, metering);
+                    // Another renderer: its own stream, if it serves one.
+                    link.close();
+                    backoff.reset();
+                    register_with(&mut link, &backoff, &socket, target, port, metering);
                 }
                 Control::SetMetering { enabled } => {
                     metering = enabled;
                     if let Some(addr) = register {
                         send_ints(
+                            &mut link,
                             &socket,
                             addr,
                             "/omniphony/control/metering",
@@ -328,9 +455,10 @@ fn listener_loop(
                         );
                     }
                 }
+                Control::SetPlayoutSync { enabled } => playout.set_enabled(enabled),
                 Control::Send { address, args } => {
                     if let Some(addr) = register {
-                        send_args(&socket, addr, &address, args);
+                        send_args(&mut link, &socket, addr, &address, args);
                     }
                 }
                 Control::SubscribeGainTable {
@@ -339,6 +467,7 @@ fn listener_loop(
                 } => {
                     if let Some(addr) = register {
                         send_ints(
+                            &mut link,
                             &socket,
                             addr,
                             "/omniphony/control/debug/speaker_gaintable/subscribe",
@@ -349,6 +478,7 @@ fn listener_loop(
                 Control::UnsubscribeGainTable => {
                     if let Some(addr) = register {
                         send_ints(
+                            &mut link,
                             &socket,
                             addr,
                             "/omniphony/control/debug/speaker_gaintable/unsubscribe",
@@ -361,10 +491,22 @@ fn listener_loop(
 
         if stop.cancelled() {
             stats.registered.store(false, Ordering::Relaxed);
+            link.close();
             return;
         }
         if let Some(addr) = register {
             let now = Instant::now();
+            // On datagrams with a renderer on this machine: try the stream
+            // again on a timer of its own. Nothing else would once the
+            // session is up, since a healthy datagram session never needs to
+            // register again.
+            if !link.is_stream() && now >= next_tcp_probe {
+                next_tcp_probe = now + TCP_PROBE_INTERVAL;
+                if link.prepare(addr, &backoff) {
+                    last_snapshot_request = now;
+                    register_with(&mut link, &backoff, &socket, addr, port, metering);
+                }
+            }
             // Until the renderer's state bundle has fully arrived, keep asking
             // for it (the host's `SNAPSHOT_REQUEST_INTERVAL`).
             if now.duration_since(last_snapshot_request) >= SNAPSHOT_REQUEST_INTERVAL
@@ -372,18 +514,26 @@ fn listener_loop(
             {
                 last_snapshot_request = now;
                 log::debug!("[osc] snapshot not ready yet, re-requesting the live state bundle");
-                send_register(&socket, addr, port, metering);
+                register_with(&mut link, &backoff, &socket, addr, port, metering);
             }
             if now.duration_since(last_heartbeat) >= HEARTBEAT_INTERVAL {
                 last_heartbeat = now;
-                send_int(&socket, addr, "/omniphony/heartbeat", i32::from(port));
+                send_int(
+                    &mut link,
+                    &socket,
+                    addr,
+                    "/omniphony/heartbeat",
+                    i32::from(port),
+                );
                 if stats.registered.load(Ordering::Relaxed)
                     && now.duration_since(last_ack) >= HEARTBEAT_TIMEOUT
                 {
                     log::warn!("[osc] heartbeat timeout, re-registering");
                     stats.registered.store(false, Ordering::Relaxed);
                     repaint_pending = true;
-                    send_register(&socket, addr, port, metering);
+                    // A stream that stopped answering is dead too.
+                    link.close();
+                    register_with(&mut link, &backoff, &socket, addr, port, metering);
                 }
             }
             // Recover lost gain-table chunks (remote renderer case).
@@ -392,13 +542,15 @@ fn listener_loop(
                     "[osc] gaintable {version}: re-requesting {} chunks",
                     missing.len()
                 );
-                apply::send_gaintable_nack(
-                    &socket,
-                    &addr.ip().to_string(),
-                    addr.port(),
-                    version,
-                    &missing,
-                );
+                for args in apply::gaintable_nack_messages(version, &missing) {
+                    send_args(
+                        &mut link,
+                        &socket,
+                        addr,
+                        "/omniphony/control/debug/speaker_gaintable/nack",
+                        args,
+                    );
+                }
             }
         }
     }
@@ -406,6 +558,19 @@ fn listener_loop(
 
 fn accepts_sender(target: Option<SocketAddr>, sender: SocketAddr) -> bool {
     target.is_none_or(|target| target.ip() == sender.ip())
+}
+
+/// Decode a datagram the listener accepted: `rosc`'s decoder, refusing first
+/// what nests deeper than the contract allows.
+///
+/// `rosc` decodes nested bundles by recursion and frees nested arrays by
+/// recursion, and [`RECV_BUF`] holds thousands of levels of either. Decoded,
+/// one such datagram overflows the listener thread's stack, which aborts the
+/// whole Studio. The contract's walk reads the nesting off the raw bytes
+/// instead, without recursing, as the engine's listener has it do.
+fn decode_datagram(datagram: &[u8]) -> Result<OscPacket, OscError> {
+    crate::osc_contract::nesting::check(datagram).map_err(OscError::BadPacket)?;
+    decoder::decode_udp(datagram).map(|(_, packet)| packet)
 }
 
 fn apply_connection_reset(model: &mut Live, request: u64) {
@@ -464,6 +629,10 @@ struct PacketOutcome {
     /// The unknown-client reply that set `reregister` ended a registered
     /// episode (as opposed to repeating while one is already lost).
     lost_registration: bool,
+    /// Another renderer answers now: nothing held is about its stream.
+    producer_changed: bool,
+    /// The state generation fell behind: ask for the snapshot.
+    refresh: bool,
 }
 
 impl Default for Change {
@@ -472,14 +641,27 @@ impl Default for Change {
     }
 }
 
-fn handle_packet(packet: &OscPacket, live: &mut Live, stats: &OscStats, out: &mut PacketOutcome) {
+/// Recurses into bundles, which [`decode_datagram`] lets through no deeper
+/// than the contract's `MAX_NESTING`.
+fn handle_packet(
+    packet: &OscPacket,
+    live: &mut Live,
+    stats: &OscStats,
+    out: &mut PacketOutcome,
+    playout: &mut Playout,
+    now: Instant,
+) {
     match packet {
         OscPacket::Bundle(OscBundle { content, .. }) => {
             for p in content {
-                handle_packet(p, live, stats, out);
+                handle_packet(p, live, stats, out, playout, now);
             }
         }
-        OscPacket::Message(m) => handle_message(m, live, stats, out),
+        OscPacket::Message(m) => match playout.offer(m, now) {
+            Offer::Apply => handle_message(m, live, stats, out),
+            // Counted when released, if it is held.
+            Offer::Taken => {}
+        },
     }
 }
 
@@ -493,21 +675,30 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
     }
     match is_heartbeat_address(&m.addr) {
         HeartbeatResponse::Ack => {
-            if let Some(epoch) = m.args.iter().find_map(|arg| match arg {
-                OscType::Int(epoch) => Some(*epoch),
+            // `[epoch, state_generation]`; an engine older than contract
+            // revision 1 sends the epoch alone.
+            let mut ints = m.args.iter().filter_map(|arg| match arg {
+                OscType::Int(value) => Some(*value),
                 _ => None,
-            }) {
+            });
+            let epoch = ints.next();
+            let generation = ints.next();
+            if let Some(epoch) = epoch {
                 let changed = live
                     .app
                     .producer_epoch
                     .is_some_and(|previous| previous != epoch);
                 if changed {
                     reset_connection_model(live);
+                    out.producer_changed = true;
                     stats.registered.store(false, Ordering::Relaxed);
                     out.reregister = true;
                     out.change = out.change.max(Change::Snapshot);
                 }
                 live.app.producer_epoch = Some(epoch);
+            }
+            if let Some(generation) = generation {
+                live.state_sync.on_ack(generation);
             }
             if !stats.registered.swap(true, Ordering::Relaxed) {
                 stats.connection_epoch.fetch_add(1, Ordering::Relaxed);
@@ -547,9 +738,47 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
 /// Register with a renderer: `/omniphony/register <listen_port>` followed by
 /// the metering choice, exactly like the host's `send_register` +
 /// `send_metering_enabled` pair.
-fn send_register(socket: &UdpSocket, to: SocketAddr, listen_port: u16, metering: bool) {
-    send_int(socket, to, "/omniphony/register", i32::from(listen_port));
+/// (Re)register with `to`, over a stream when one can be opened (see
+/// [`Link::prepare`]). On a stream, a heartbeat follows at once: its ack is
+/// what marks the client connected, and a stream has no reason to wait the
+/// heartbeat interval for it.
+fn register_with(
+    link: &mut Link,
+    backoff: &Backoff,
+    socket: &UdpSocket,
+    to: SocketAddr,
+    listen_port: u16,
+    metering: bool,
+) {
+    link.prepare(to, backoff);
+    send_register(link, socket, to, listen_port, metering);
+    if link.is_stream() {
+        send_int(
+            link,
+            socket,
+            to,
+            "/omniphony/heartbeat",
+            i32::from(listen_port),
+        );
+    }
+}
+
+fn send_register(
+    link: &mut Link,
+    socket: &UdpSocket,
+    to: SocketAddr,
+    listen_port: u16,
+    metering: bool,
+) {
     send_int(
+        link,
+        socket,
+        to,
+        "/omniphony/register",
+        i32::from(listen_port),
+    );
+    send_int(
+        link,
         socket,
         to,
         "/omniphony/control/metering",
@@ -562,12 +791,13 @@ fn send_register(socket: &UdpSocket, to: SocketAddr, listen_port: u16, metering:
     log::debug!("[osc] register sent to {to} (listen_port={listen_port}, metering={metering})");
 }
 
-fn send_int(socket: &UdpSocket, to: SocketAddr, addr: &str, value: i32) {
-    send_ints(socket, to, addr, &[value]);
+fn send_int(link: &mut Link, socket: &UdpSocket, to: SocketAddr, addr: &str, value: i32) {
+    send_ints(link, socket, to, addr, &[value]);
 }
 
-fn send_ints(socket: &UdpSocket, to: SocketAddr, addr: &str, values: &[i32]) {
+fn send_ints(link: &mut Link, socket: &UdpSocket, to: SocketAddr, addr: &str, values: &[i32]) {
     send_args(
+        link,
         socket,
         to,
         addr,
@@ -575,14 +805,14 @@ fn send_ints(socket: &UdpSocket, to: SocketAddr, addr: &str, values: &[i32]) {
     );
 }
 
-fn send_args(socket: &UdpSocket, to: SocketAddr, addr: &str, args: Vec<OscType>) {
+fn send_args(link: &mut Link, socket: &UdpSocket, to: SocketAddr, addr: &str, args: Vec<OscType>) {
     let msg = OscPacket::Message(OscMessage {
         addr: addr.to_owned(),
         args,
     });
     match encoder::encode(&msg) {
         Ok(bytes) => {
-            if let Err(e) = socket.send_to(&bytes, to) {
+            if let Err(e) = link.send(socket, to, &bytes) {
                 log::warn!("[osc] send {addr} to {to} failed: {e}");
             }
         }
@@ -619,6 +849,9 @@ pub fn spawn_synthetic(
     stop_after: Option<Duration>,
 ) -> std::io::Result<Worker> {
     let socket = UdpSocket::bind(("127.0.0.1", 0))?;
+    // One bundle per tick: past some fifty objects it outgrows the default
+    // send buffer of macOS.
+    ensure_send_buffer(&socket);
     socket.connect(("127.0.0.1", target_port))?;
     let period = Duration::from_secs_f32(1.0 / rate_hz.max(1.0));
     Worker::spawn("osc-synthetic", move |stop| {
@@ -716,6 +949,89 @@ pub fn spawn_synthetic(
     })
 }
 
+/// The contract's bound on nesting, where the Studio's datagrams arrive.
+#[cfg(test)]
+mod nesting_tests {
+    use super::*;
+    use crate::osc_contract::nesting::{MAX_NESTING, nested_arrays, nested_bundles};
+
+    #[test]
+    fn the_decoder_refuses_what_nests_past_the_contracts_limit() {
+        for nested in [nested_bundles, nested_arrays] {
+            assert!(decode_datagram(&nested(MAX_NESTING)).is_ok());
+            let refused = decode_datagram(&nested(MAX_NESTING + 1)).unwrap_err();
+            assert!(refused.to_string().contains("nested too deep"), "{refused}");
+        }
+    }
+
+    /// Datagrams nested thousands of levels deep, in bundles and in arrays,
+    /// are dropped and the listener goes on listening. Decoded, either one
+    /// overflows the listener thread's stack, which aborts the whole process.
+    /// A datagram one level past the limit is dropped the same way; one at
+    /// the limit is decoded and its message handled.
+    #[test]
+    fn a_deeply_nested_datagram_does_not_take_the_listener_down() {
+        let renderer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let stats = OscStats::new();
+        let (port, _control, mut worker) = spawn_listener(
+            Arc::new(Mutex::new(Live::new(
+                crate::model::app_state::AppState::new(Vec::new()),
+            ))),
+            Arc::new(|| {}),
+            stats.clone(),
+            ListenerConfig {
+                listen_port: 0,
+                register: Some(renderer.local_addr().unwrap()),
+                metering: false,
+                playout_sync: false,
+            },
+        )
+        .unwrap();
+
+        // Any socket at the renderer's address is listened to.
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // The two large datagrams have the same send limit to get past as
+        // the Studio's own.
+        ensure_send_buffer(&sender);
+        let awaited = |what: &str, counter: &AtomicU64, count: u64| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while counter.load(Ordering::Relaxed) != count {
+                assert!(Instant::now() < deadline, "{what}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        // One at a time, so that none waits in the socket's buffer behind
+        // another and all of them reach the decoder.
+        let mut sent = 0;
+        let mut send = |datagram: &[u8]| {
+            sender.send_to(datagram, ("127.0.0.1", port)).unwrap();
+            sent += 1;
+            awaited("the listener receives the datagram", &stats.packets, sent);
+        };
+
+        for nested in [nested_bundles(3_000), nested_arrays(30_000)] {
+            assert_eq!(nested.len(), 60_008);
+            send(&nested);
+        }
+        send(&nested_bundles(MAX_NESTING + 1));
+        send(&nested_arrays(MAX_NESTING + 1));
+        send(&nested_bundles(MAX_NESTING));
+        send(&nested_arrays(MAX_NESTING));
+        let ack = encoder::encode(&OscPacket::Message(OscMessage {
+            addr: crate::osc_contract::HEARTBEAT_ACK.into(),
+            args: vec![],
+        }))
+        .unwrap();
+        send(&ack);
+
+        awaited("the ack is handled", &stats.heartbeat_acks, 1);
+        // The one message of each datagram at the limit, and the ack: nothing
+        // of the four refused ones was handled.
+        assert_eq!(stats.messages.load(Ordering::Relaxed), 3);
+        worker.shutdown();
+    }
+}
+
 #[cfg(test)]
 mod connection_tests {
     use super::*;
@@ -738,6 +1054,7 @@ mod connection_tests {
                     listen_port: 0,
                     register: Some(renderer.local_addr().unwrap()),
                     metering: false,
+                    playout_sync: true,
                 },
             )
             .unwrap();
@@ -819,6 +1136,74 @@ mod connection_tests {
             &mut PacketOutcome::default(),
         );
         assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
+    }
+
+    /// The review's loss case, through the real parser and dispatch: the
+    /// first datagram of a two-part snapshot is lost and the last one arrives,
+    /// `snapshot_complete` and all. The acknowledgement that follows reports
+    /// the snapshot's generation, and the client still asks again, and is
+    /// current once the refresh is in.
+    #[test]
+    fn a_split_snapshot_missing_its_first_part_is_asked_again() {
+        use crate::osc_contract;
+        let stats = OscStats::new();
+        *stats.target.lock().unwrap() = Some("127.0.0.1:9000".parse().unwrap());
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        let message = |addr: &str, args: Vec<OscType>| OscMessage {
+            addr: addr.into(),
+            args,
+        };
+        let generation = |part, parts| {
+            message(
+                osc_contract::STATE_GENERATION,
+                vec![
+                    OscType::Int(4),
+                    OscType::Int(1),
+                    OscType::Int(part),
+                    OscType::Int(parts),
+                ],
+            )
+        };
+        let mut handle = |m: &OscMessage, live: &mut Live| {
+            handle_message(m, live, &stats, &mut PacketOutcome::default())
+        };
+        // Part 0 of 2, carrying the log level, never arrives.
+        handle(&generation(1, 2), &mut live);
+        handle(
+            &message(osc_contract::STATE_SNAPSHOT_COMPLETE, vec![OscType::Int(1)]),
+            &mut live,
+        );
+        handle(
+            &message(
+                osc_contract::HEARTBEAT_ACK,
+                vec![OscType::Int(7), OscType::Int(4)],
+            ),
+            &mut live,
+        );
+        assert!(live.app.osc_snapshot_ready);
+        assert_ne!(
+            live.app.log_level.as_deref(),
+            Some("debug"),
+            "the lost part's state is missing"
+        );
+        assert!(
+            live.state_sync.refresh_due(Instant::now()),
+            "and the client knows it"
+        );
+
+        // The refresh: the same generation, whole.
+        for m in [
+            generation(0, 1),
+            message(
+                osc_contract::STATE_LOG_LEVEL,
+                vec![OscType::String("debug".into())],
+            ),
+            message(osc_contract::STATE_SNAPSHOT_COMPLETE, vec![OscType::Int(1)]),
+        ] {
+            handle(&m, &mut live);
+        }
+        assert_eq!(live.app.log_level.as_deref(), Some("debug"));
+        assert!(!live.state_sync.is_stale());
     }
 
     #[test]
@@ -996,5 +1381,431 @@ mod connection_tests {
             ));
             assert!(app::take_backend_file_error(&state, "script", "file").is_none());
         }
+    }
+}
+
+/// What the two sending sockets must get past the operating system. macOS and
+/// the BSDs refuse a UDP send larger than the socket's send buffer, which
+/// starts at 9,216 bytes there, so these only pass on them when the socket has
+/// had it raised.
+#[cfg(test)]
+mod send_size_tests {
+    use super::*;
+
+    /// The largest file the renderer accepts in a `backend/file/put` (its
+    /// `BACKEND_FILE_MAX_BYTES`).
+    const LARGEST_BACKEND_FILE: usize = 60_000;
+    /// `net.inet.udp.maxdgram` as macOS ships it.
+    const MACOS_DEFAULT_SEND_BUFFER: usize = 9_216;
+
+    fn send_buffer(socket: &UdpSocket) -> usize {
+        socket2::SockRef::from(socket).send_buffer_size().unwrap()
+    }
+
+    fn socket_with_send_buffer(size: usize) -> UdpSocket {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket2::SockRef::from(&socket)
+            .set_send_buffer_size(size)
+            .unwrap();
+        socket
+    }
+
+    /// "At least", since Linux reports twice what it was asked for.
+    #[test]
+    fn a_small_send_buffer_is_raised() {
+        let socket = socket_with_send_buffer(8_192);
+        assert!(send_buffer(&socket) < SEND_BUF);
+        ensure_send_buffer(&socket);
+        assert!(send_buffer(&socket) >= SEND_BUF);
+    }
+
+    /// Asking for the minimum on a socket already past it would shrink it,
+    /// which is what a plain `set` does to the Linux default.
+    #[test]
+    fn a_large_send_buffer_is_left_alone() {
+        let socket = socket_with_send_buffer(2 * SEND_BUF);
+        let before = send_buffer(&socket);
+        assert!(before > SEND_BUF);
+        ensure_send_buffer(&socket);
+        assert_eq!(send_buffer(&socket), before);
+    }
+
+    #[test]
+    fn a_maximum_size_backend_file_put_leaves_the_listener_socket() {
+        let renderer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        renderer
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let live = Arc::new(Mutex::new(Live::new(
+            crate::model::app_state::AppState::new(Vec::new()),
+        )));
+        let (_, tx, mut worker) = spawn_listener(
+            live,
+            Arc::new(|| {}),
+            OscStats::new(),
+            ListenerConfig {
+                listen_port: 0,
+                register: Some(renderer.local_addr().unwrap()),
+                metering: false,
+                playout_sync: true,
+            },
+        )
+        .unwrap();
+        let content = "x".repeat(LARGEST_BACKEND_FILE);
+        tx.send(Control::Send {
+            address: crate::osc_contract::CONTROL_BACKEND_FILE_PUT.into(),
+            args: vec![
+                OscType::String("script".into()),
+                OscType::String("file".into()),
+                OscType::String("big.lua".into()),
+                OscType::String(content.clone()),
+                OscType::String("request".into()),
+            ],
+        })
+        .unwrap();
+        // Shutting down sends what is still queued.
+        worker.shutdown();
+
+        let mut buf = vec![0u8; RECV_BUF];
+        let mut sent = None;
+        // The registration messages come first.
+        while let Ok(len) = renderer.recv(&mut buf) {
+            if let Ok((_, OscPacket::Message(message))) = decoder::decode_udp(&buf[..len])
+                && message.addr == crate::osc_contract::CONTROL_BACKEND_FILE_PUT
+            {
+                sent = Some(message);
+                break;
+            }
+        }
+        let sent = sent.expect("the put reaches the renderer");
+        assert_eq!(sent.args.get(3), Some(&OscType::String(content)));
+    }
+
+    #[test]
+    fn a_synthetic_bundle_over_the_default_send_buffer_leaves_the_feed_socket() {
+        // Every tick's bundle is then several times that default, and still
+        // one datagram.
+        const OBJECTS: u32 = 256;
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut worker = spawn_synthetic(OBJECTS, 50.0, port, None).unwrap();
+
+        let mut buf = vec![0u8; RECV_BUF];
+        let received = listener.recv(&mut buf);
+        worker.shutdown();
+
+        let len = received.expect("a bundle reaches the listener");
+        let Ok((_, OscPacket::Bundle(bundle))) = decoder::decode_udp(&buf[..len]) else {
+            panic!("the feed sends bundles");
+        };
+        let positions = bundle
+            .content
+            .iter()
+            .filter(|packet| matches!(packet, OscPacket::Message(m) if m.addr.ends_with("/xyz")))
+            .count();
+        assert_eq!(positions, OBJECTS as usize);
+        assert!(len > 2 * MACOS_DEFAULT_SEND_BUFFER, "only {len} bytes");
+    }
+}
+
+/// The stream transport from Studio's side (#680, step 2), against a fake
+/// engine: a UDP socket and, when the test wants one, a TCP listener on the
+/// same port number.
+#[cfg(test)]
+mod stream_link_tests {
+    use super::*;
+    use crate::osc_contract::stream::{MAX_PACKET, frame, read_frame};
+    use std::net::{TcpListener, TcpStream};
+
+    struct FakeEngine {
+        udp: UdpSocket,
+        tcp: Option<TcpListener>,
+    }
+
+    impl FakeEngine {
+        /// A UDP socket and, with `stream`, a TCP listener on its port number
+        /// (another port is taken when that number is busy over TCP).
+        fn new(stream: bool) -> Self {
+            for _ in 0..16 {
+                let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+                udp.set_read_timeout(Some(Duration::from_millis(100)))
+                    .unwrap();
+                if !stream {
+                    return Self { udp, tcp: None };
+                }
+                let port = udp.local_addr().unwrap().port();
+                if let Ok(tcp) = TcpListener::bind(("127.0.0.1", port)) {
+                    return Self {
+                        udp,
+                        tcp: Some(tcp),
+                    };
+                }
+            }
+            panic!("no port free over both UDP and TCP");
+        }
+
+        fn addr(&self) -> SocketAddr {
+            self.udp.local_addr().unwrap()
+        }
+
+        fn accept(&self, within: Duration) -> Option<TcpStream> {
+            let tcp = self.tcp.as_ref()?;
+            tcp.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + within;
+            while Instant::now() < deadline {
+                if let Ok((stream, _)) = tcp.accept() {
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    return Some(stream);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            None
+        }
+
+        /// The address of the next datagram that arrives within `within`.
+        fn datagram(&self, within: Duration) -> Option<String> {
+            let deadline = Instant::now() + within;
+            let mut buf = [0u8; 4096];
+            while Instant::now() < deadline {
+                if let Ok((n, _)) = self.udp.recv_from(&mut buf) {
+                    if let Ok((_, OscPacket::Message(m))) = decoder::decode_udp(&buf[..n]) {
+                        return Some(m.addr);
+                    }
+                }
+            }
+            None
+        }
+    }
+
+    fn read_message(stream: &mut TcpStream) -> Option<OscMessage> {
+        let packet = read_frame(stream, MAX_PACKET).ok()??;
+        match decoder::decode_udp(&packet).ok()?.1 {
+            OscPacket::Message(m) => Some(m),
+            OscPacket::Bundle(_) => None,
+        }
+    }
+
+    fn send_message(stream: &mut TcpStream, addr: &str, args: Vec<OscType>) {
+        let bytes = encoder::encode(&OscPacket::Message(OscMessage {
+            addr: addr.into(),
+            args,
+        }))
+        .unwrap();
+        stream.write_all(&frame(&bytes).unwrap()).unwrap();
+    }
+
+    fn start(engine: &FakeEngine) -> (Arc<OscStats>, ControlTx, Worker) {
+        let (stats, tx, worker, _) = start_with_model(engine);
+        (stats, tx, worker)
+    }
+
+    fn start_with_model(engine: &FakeEngine) -> (Arc<OscStats>, ControlTx, Worker, SharedLive) {
+        let stats = OscStats::new();
+        let live: SharedLive = Arc::new(Mutex::new(Live::new(
+            crate::model::app_state::AppState::new(Vec::new()),
+        )));
+        let (_, tx, worker) = spawn_listener(
+            live.clone(),
+            Arc::new(|| {}),
+            stats.clone(),
+            ListenerConfig {
+                listen_port: 0,
+                register: Some(engine.addr()),
+                metering: false,
+                playout_sync: false,
+            },
+        )
+        .unwrap();
+        (stats, tx, worker, live)
+    }
+
+    fn wait_for(what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    use std::io::Write;
+
+    /// An engine on this machine that serves the stream gets the
+    /// registration, the heartbeat and the controls over TCP, and nothing
+    /// over UDP; its heartbeat ack marks the client connected at once.
+    #[test]
+    fn a_local_engine_with_a_stream_is_reached_over_tcp() {
+        let engine = FakeEngine::new(true);
+        let (stats, tx, mut worker) = start(&engine);
+        let mut stream = engine
+            .accept(Duration::from_secs(5))
+            .expect("Studio connects over TCP");
+        let first: Vec<_> = (0..3)
+            .map(|_| read_message(&mut stream).expect("a framed message").addr)
+            .collect();
+        assert_eq!(
+            first,
+            [
+                crate::osc_contract::REGISTER,
+                crate::osc_contract::CONTROL_METERING,
+                crate::osc_contract::HEARTBEAT,
+            ]
+        );
+        send_message(
+            &mut stream,
+            crate::osc_contract::HEARTBEAT_ACK,
+            vec![OscType::Int(7), OscType::Int(0)],
+        );
+        wait_for("the ack over TCP registers the client", || {
+            stats.registered.load(Ordering::Relaxed)
+        });
+
+        tx.send(Control::Send {
+            address: "/test/over-the-stream".into(),
+            args: vec![],
+        })
+        .unwrap();
+        let mut seen = false;
+        for _ in 0..16 {
+            match read_message(&mut stream) {
+                Some(m) if m.addr == "/test/over-the-stream" => {
+                    seen = true;
+                    break;
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        assert!(seen, "controls go over the stream");
+        assert_eq!(
+            engine.datagram(Duration::from_millis(300)),
+            None,
+            "nothing by UDP"
+        );
+        worker.shutdown();
+    }
+
+    /// No stream at the engine's port: datagrams, as before revision 2.
+    #[test]
+    fn an_engine_without_a_stream_is_reached_by_datagrams() {
+        let engine = FakeEngine::new(false);
+        let (_stats, _tx, mut worker) = start(&engine);
+        assert_eq!(
+            engine.datagram(Duration::from_secs(2)).as_deref(),
+            Some(crate::osc_contract::REGISTER)
+        );
+        worker.shutdown();
+    }
+
+    /// The engine closes the stream (a restart, a handoff): the client is no
+    /// longer connected, and it connects again.
+    #[test]
+    fn a_closed_stream_is_opened_again() {
+        let engine = FakeEngine::new(true);
+        let (stats, _tx, mut worker) = start(&engine);
+        let mut stream = engine.accept(Duration::from_secs(5)).unwrap();
+        let _ = read_message(&mut stream);
+        send_message(
+            &mut stream,
+            crate::osc_contract::HEARTBEAT_ACK,
+            vec![OscType::Int(7), OscType::Int(0)],
+        );
+        wait_for("registered", || stats.registered.load(Ordering::Relaxed));
+        drop(stream);
+        wait_for("the close is noticed", || {
+            !stats.registered.load(Ordering::Relaxed)
+        });
+        let mut again = engine
+            .accept(Duration::from_secs(5))
+            .expect("Studio connects again");
+        assert_eq!(
+            read_message(&mut again).map(|m| m.addr).as_deref(),
+            Some(crate::osc_contract::REGISTER)
+        );
+        worker.shutdown();
+    }
+
+    /// Something that is not an engine owns the port number over TCP: it
+    /// accepts and never speaks OSC. Studio gives up on it and registers by
+    /// datagrams.
+    #[test]
+    fn a_silent_stream_is_left_for_datagrams() {
+        let engine = FakeEngine::new(true);
+        let (_stats, _tx, mut worker) = start(&engine);
+        let _held = engine.accept(Duration::from_secs(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut registered_by_udp = false;
+        while !registered_by_udp && Instant::now() < deadline {
+            registered_by_udp = engine.datagram(Duration::from_millis(200)).as_deref()
+                == Some(crate::osc_contract::REGISTER);
+        }
+        assert!(registered_by_udp, "datagrams once the stream proved silent");
+        worker.shutdown();
+    }
+
+    /// A session that was fully up over TCP (snapshot complete) loses its
+    /// stream and carries on over datagrams, answered there: nothing about
+    /// that session asks to register again, yet the stream is tried again
+    /// and taken back.
+    #[test]
+    fn an_initialized_session_goes_back_to_the_stream() {
+        let engine = FakeEngine::new(true);
+        let (stats, _tx, mut worker, live) = start_with_model(&engine);
+        let mut stream = engine.accept(Duration::from_secs(5)).unwrap();
+        let _ = read_message(&mut stream);
+        send_message(
+            &mut stream,
+            crate::osc_contract::HEARTBEAT_ACK,
+            vec![OscType::Int(7), OscType::Int(0)],
+        );
+        send_message(
+            &mut stream,
+            crate::osc_contract::STATE_SNAPSHOT_COMPLETE,
+            vec![],
+        );
+        wait_for("registered with the snapshot", || {
+            stats.registered.load(Ordering::Relaxed) && live.lock().unwrap().app.osc_snapshot_ready
+        });
+        drop(stream);
+
+        // The engine answers by datagrams from now on: every heartbeat or
+        // registration gets an ack and the snapshot's end, so the datagram
+        // session is healthy.
+        let udp = engine.udp.try_clone().unwrap();
+        let answering = Arc::new(AtomicBool::new(true));
+        let answer = {
+            let answering = answering.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let reply = |addr: &str, args: Vec<OscType>| {
+                    encoder::encode(&OscPacket::Message(OscMessage {
+                        addr: addr.into(),
+                        args,
+                    }))
+                    .unwrap()
+                };
+                while answering.load(Ordering::Relaxed) {
+                    if let Ok((_, from)) = udp.recv_from(&mut buf) {
+                        let ack = reply(
+                            crate::osc_contract::HEARTBEAT_ACK,
+                            vec![OscType::Int(7), OscType::Int(0)],
+                        );
+                        let done = reply(crate::osc_contract::STATE_SNAPSHOT_COMPLETE, vec![]);
+                        let _ = udp.send_to(&ack, from);
+                        let _ = udp.send_to(&done, from);
+                    }
+                }
+            })
+        };
+        let again = engine.accept(Duration::from_secs(8));
+        answering.store(false, Ordering::Relaxed);
+        answer.join().unwrap();
+        assert!(again.is_some(), "the stream is taken back");
+        worker.shutdown();
     }
 }

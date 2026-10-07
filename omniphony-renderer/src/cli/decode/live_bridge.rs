@@ -11,7 +11,7 @@ use super::decoder_thread::{DecodedAudioData, DecodedSource, DecoderMessage};
 use anyhow::{Result, anyhow};
 use bridge_api::{FormatBridgeBox, RInputTransport};
 use orender_engine::decode_step::{
-    Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, decode_packet,
+    Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, mpsc};
@@ -38,10 +38,12 @@ pub struct LiveBridgeDiag {
 /// handler has no room for is dropped. A declaration it carried is not: it
 /// rides on the next frame that is delivered, unless a newer one replaced it.
 ///
-/// `requested_drc_mode` is the DRC mode the handler asks for; it reaches the
-/// bridge before the next packet whenever it changes.
+/// `requested_drc_mode` is the DRC mode the handler asks for, and
+/// `log_level` holds the log level the bridge was opened with (`open_bridge`);
+/// each reaches the bridge before the next packet whenever it changes.
 pub fn spawn_live_bridge_decoder(
     bridge: FormatBridgeBox,
+    log_level: LogLevelSync,
     raw_rx: mpsc::Receiver<(u8, Vec<u8>)>,
     requested_drc_mode: Option<Arc<RwLock<String>>>,
     diag: Option<LiveBridgeDiag>,
@@ -50,13 +52,14 @@ pub fn spawn_live_bridge_decoder(
     thread::Builder::new()
         .name("bridge-decode".to_string())
         .spawn(move || {
-            run_live_bridge_decoder(bridge, raw_rx, requested_drc_mode, diag, tx);
+            run_live_bridge_decoder(bridge, log_level, raw_rx, requested_drc_mode, diag, tx);
         })
         .map_err(|e| anyhow!("Failed to spawn bridge decode worker: {e}"))
 }
 
 fn run_live_bridge_decoder(
     mut bridge: FormatBridgeBox,
+    mut log_level: LogLevelSync,
     raw_rx: mpsc::Receiver<(u8, Vec<u8>)>,
     requested_drc_mode: Option<Arc<RwLock<String>>>,
     diag: Option<LiveBridgeDiag>,
@@ -75,6 +78,8 @@ fn run_live_bridge_decoder(
             let requested = requested.read().unwrap_or_else(|e| e.into_inner());
             drc_mode.apply(&requested, &mut bridge);
         }
+        // The bridge's diagnostics follow `log_level` changes made over OSC.
+        log_level.apply(live_log::current_runtime_level(), &mut bridge);
         let push_packet_at = Instant::now();
         let push_packet_dt_us = last_push_packet_at
             .map(|prev| push_packet_at.saturating_duration_since(prev).as_micros() as u64)
@@ -200,6 +205,8 @@ mod tests {
     struct ScriptedBridge {
         labels: Vec<RChannelLabel>,
         drc_modes: Arc<Mutex<Vec<String>>>,
+        /// Every `configure` call, as `key=value`.
+        configured: Arc<Mutex<Vec<String>>>,
     }
 
     impl FormatBridge for ScriptedBridge {
@@ -235,7 +242,11 @@ mod tests {
         fn has_objects(&self) -> bool {
             false
         }
-        fn configure(&mut self, _: RStr<'_>, _: RStr<'_>) -> bool {
+        fn configure(&mut self, key: RStr<'_>, value: RStr<'_>) -> bool {
+            self.configured
+                .lock()
+                .unwrap()
+                .push(format!("{key}={value}"));
             true
         }
         fn coordinate_format(&self) -> RCoordinateFormat {
@@ -281,13 +292,38 @@ mod tests {
     }
 
     fn bridge(drc_modes: &Arc<Mutex<Vec<String>>>) -> FormatBridgeBox {
+        bridge_recording(drc_modes, &Arc::default())
+    }
+
+    fn bridge_recording(
+        drc_modes: &Arc<Mutex<Vec<String>>>,
+        configured: &Arc<Mutex<Vec<String>>>,
+    ) -> FormatBridgeBox {
         FormatBridge_TO::from_value(
             ScriptedBridge {
                 labels: Vec::new(),
                 drc_modes: Arc::clone(drc_modes),
+                configured: Arc::clone(configured),
             },
             TD_Opaque,
         )
+    }
+
+    /// The worker hands the bridge the host's log level before its first
+    /// packet, and not again while it stays the same (no logger is installed
+    /// in tests, so the host's level is `info`).
+    #[test]
+    fn the_bridge_gets_the_host_log_level_once() {
+        let configured = Arc::default();
+        let (raw_tx, raw_rx) = mpsc::sync_channel(3);
+        let (tx, _rx) = mpsc::sync_channel(8);
+        for p in [0, 1, 0] {
+            raw_tx.send((0x0B, vec![p])).unwrap();
+        }
+        drop(raw_tx);
+        let bridge = bridge_recording(&Arc::default(), &configured);
+        run_live_bridge_decoder(bridge, LogLevelSync::new(), raw_rx, None, None, tx);
+        assert_eq!(*configured.lock().unwrap(), ["log_level=info"]);
     }
 
     /// Run the worker over `packets` (byte 0 of each: its layout) with a
@@ -304,7 +340,14 @@ mod tests {
             raw_tx.send((0x0B, vec![p])).unwrap();
         }
         drop(raw_tx);
-        run_live_bridge_decoder(bridge(&drc_modes), raw_rx, drc, None, tx);
+        run_live_bridge_decoder(
+            bridge(&drc_modes),
+            LogLevelSync::new(),
+            raw_rx,
+            drc,
+            None,
+            tx,
+        );
         let frames = rx
             .try_iter()
             .map(|m| match m.unwrap() {
@@ -417,7 +460,8 @@ mod tests {
     #[test]
     fn the_sinks_pcm_does_not_inherit_the_bitstreams_declaration() {
         use super::super::state::SpatialState;
-        use renderer::placement::SourceFamily;
+        use orender_engine::stream_state::StreamDeclaration;
+        use renderer::placement::{PlacementMode, PlacementState, SourceFamily};
 
         let (bitstream, _) = run_frames(&[1, 1, 1], 8, None);
         assert_eq!(
@@ -434,6 +478,8 @@ mod tests {
         };
         let mut bitstream = bitstream.into_iter();
         let mut spatial = SpatialState::default();
+        let mut table = PlacementState::default();
+        table.declare("dts", "DTS", PlacementMode::Room);
         let mut seen = Vec::new();
         for data in [
             bitstream.next().unwrap(),
@@ -442,16 +488,23 @@ mod tests {
             live_pcm(),
             bitstream.next().unwrap(),
         ] {
-            spatial.take_declaration(data.source, data.declaration);
-            let declared = &spatial.stream.declaration;
+            let declaration = data
+                .declaration
+                .map(|declaration| StreamDeclaration::new(declaration, &table));
+            spatial.take_declaration(data.source, declaration);
+            let declared = &spatial.pipeline.stream.declaration;
             seen.push((
                 declared.family,
                 declared.poses.len(),
                 declared.label.clone(),
             ));
         }
-        let dts = (SourceFamily::Dts, 6, "6 channels".to_owned());
-        let pcm = (SourceFamily::Pcm, 0, "PCM".to_owned());
+        let dts = (
+            table.find("dts").expect("declared"),
+            6,
+            "6 channels".to_owned(),
+        );
+        let pcm = (SourceFamily::PCM, 0, "PCM".to_owned());
         assert_eq!(seen, [dts.clone(), dts.clone(), pcm.clone(), pcm, dts]);
     }
 

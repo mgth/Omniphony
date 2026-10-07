@@ -10,22 +10,32 @@ use renderer::live_params::RendererControl;
 use runtime_control::HostControlHandler;
 
 mod client_registry;
+mod decode;
 mod dispatch;
 mod export;
 mod gaintable;
+mod inbound;
 mod metadata_emit;
+mod peer;
+mod playout;
 mod profiles;
 mod recompute;
 mod state_emit;
+#[cfg(test)]
+mod stream_tests;
+mod telemetry;
 mod transport;
 
+pub use self::telemetry::MeterTimings;
+
 use self::client_registry::OscClientRegistry;
-use self::dispatch::{RealtimeSeqState, handle_control_message};
-use self::export::build_live_state;
+use self::dispatch::{ControlOutcome, RealtimeSeqState, handle_control_message};
+use self::export::{broadcast_live_state, send_live_state_to};
 use self::gaintable::GaintableCache;
+use self::peer::Peer;
 use self::transport::{
-    flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client, send_metering_state,
-    send_raw_filtered,
+    broadcast_string, ensure_send_buffer, flush_pending_logs, resolve_register_addr,
+    send_buffered_logs_to_client, send_control_error, send_metering_state, send_raw_filtered,
 };
 use runtime_control::osc_contract;
 
@@ -225,7 +235,7 @@ fn bind_rx_socket(
 /// port *before* loading config (the FFI host consumes the live-state sidecar
 /// a yielded instance writes on shutdown). On success the bound socket is kept
 /// as a process-wide reservation, released when the real listener (or the
-/// degraded reporter) binds via [`bind_rx_socket`] — so the port is never
+/// degraded reporter) binds via `bind_rx_socket` — so the port is never
 /// observably free between negotiation and the listener coming up.
 pub fn negotiate_rx_port(rx_port: u16) -> bool {
     match bind_rx_socket(rx_port, true, YIELD_REBIND_BUDGET) {
@@ -239,7 +249,6 @@ pub fn negotiate_rx_port(rx_port: u16) -> bool {
 
 /// Generic description of a single spatial audio object for OSC broadcast.
 /// Built by the caller from whatever source format it uses.
-#[derive(Clone)]
 pub struct ObjectMeta {
     pub name: String,
     pub x: f32,
@@ -265,6 +274,34 @@ pub struct ObjectMeta {
     /// the same reason as `fixed`: clients used to read it off the name with a
     /// regular expression, so a rename silently reclassified everything.
     pub kind: crate::object_gen::ObjectKind,
+}
+
+impl Clone for ObjectMeta {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            coord_mode: self.coord_mode.clone(),
+            label: self.label.clone(),
+            ..*self
+        }
+    }
+
+    /// Field by field, so the strings reuse their buffers: the render path
+    /// copies each object frame into a list the telemetry thread handed back.
+    fn clone_from(&mut self, source: &Self) {
+        self.name.clone_from(&source.name);
+        self.x = source.x;
+        self.y = source.y;
+        self.z = source.z;
+        self.coord_mode.clone_from(&source.coord_mode);
+        self.direct_speaker_index = source.direct_speaker_index;
+        self.gain = source.gain;
+        self.priority = source.priority;
+        self.size = source.size;
+        self.fixed = source.fixed;
+        self.label.clone_from(&source.label);
+        self.kind = source.kind;
+    }
 }
 
 /// Epsilon for position/float comparison in delta OSC sending.
@@ -341,12 +378,12 @@ pub struct OscSender {
     /// Receives /control/{audio,input}/* messages the core doesn't handle and
     /// contributes /state/audio + /state/input to the live-state bundle.
     host_handler: Option<Arc<dyn HostControlHandler>>,
-    /// Previous frame's object snapshots for delta detection.
-    prev_objects: Option<Vec<ObjectSnapshot>>,
-    /// Force next send_object_frame call to emit all objects.
+    /// Set by the listener when a client registers: the telemetry thread sends
+    /// the next object frame in full.
     force_full_next: Arc<AtomicBool>,
-    /// Monotonic identifier for the current logical content generation.
-    content_generation: u64,
+    /// The stream telemetry's queue to its thread (#670): what the render path
+    /// reports goes out from there, never from the caller.
+    telemetry: telemetry::Telemetry,
     /// Random identifier for THIS producer instance, echoed in every
     /// `/omniphony/heartbeat/ack`. A client that sees this value change knows a
     /// *different* renderer instance now answers on the same RX port (a CLI⇄mpv
@@ -376,11 +413,117 @@ pub struct OscSender {
     adopt_live_on_listen: bool,
 }
 
+/// Receive buffer of the control listener: larger than any UDP payload, so no
+/// datagram is ever truncated on receipt. Control messages run to tens of
+/// kilobytes (a backend file of up to 60 000 bytes, a whole-layout JSON).
+const RX_DATAGRAM_MAX: usize = 65_536;
+
+/// Rate limit for a warning the listener would otherwise log once per
+/// datagram, so a lost control message is visible without a misbehaving
+/// sender flooding the log. One occurrence is logged at `warn`; the ones that
+/// follow within [`Self::INTERVAL`] are held back (logged at `debug` only) and
+/// their count is reported with the next warning, or on its own once the
+/// interval is over.
+#[derive(Default)]
+struct WarnLimiter {
+    last: Option<std::time::Instant>,
+    held_back: u32,
+}
+
+impl WarnLimiter {
+    const INTERVAL: Duration = Duration::from_secs(5);
+
+    /// Counts one occurrence at `now`: `Some(n)` when it is to be logged, `n`
+    /// being the occurrences held back since the last one that was; `None`
+    /// when it is held back itself.
+    fn record(&mut self, now: std::time::Instant) -> Option<u32> {
+        if self
+            .last
+            .is_some_and(|last| now.duration_since(last) < Self::INTERVAL)
+        {
+            self.held_back = self.held_back.saturating_add(1);
+            return None;
+        }
+        self.last = Some(now);
+        Some(std::mem::take(&mut self.held_back))
+    }
+
+    /// The count still held back once the interval is over, for when no
+    /// further occurrence comes to carry it. Returned once.
+    fn overdue(&mut self, now: std::time::Instant) -> Option<u32> {
+        if self.held_back == 0 {
+            return None;
+        }
+        let last = self.last?;
+        (now.duration_since(last) >= Self::INTERVAL).then(|| std::mem::take(&mut self.held_back))
+    }
+
+    /// Logs `message` at `warn`, or at `debug` when it is held back. Whether
+    /// it was logged at `warn`, so a reply can be held to the same rate.
+    fn report(&mut self, message: std::fmt::Arguments<'_>) -> bool {
+        match self.record(std::time::Instant::now()) {
+            Some(0) => log::warn!("{message}"),
+            Some(held_back) => {
+                log::warn!("{message} ({held_back} more since the last report)")
+            }
+            None => {
+                log::debug!("{message}");
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Reports the occurrences still held back when the interval ended with
+    /// none to carry them: the tail of a burst. `what` names them.
+    fn flush(&mut self, what: &str) {
+        if self.held_back == 0 {
+            return;
+        }
+        if let Some(held_back) = self.overdue(std::time::Instant::now()) {
+            log::warn!("OSC: {held_back} more {what} since the last report");
+        }
+    }
+}
+
+/// Tell the sender of a control message what became of it, when it was not
+/// applied ([`osc_contract::STATE_CONTROL_ERROR`]). Every refusal is answered:
+/// the reply goes to the one sender, the way the message came. The log is held
+/// to `limiter`'s rate, since a client retrying a control the engine does not
+/// know would otherwise fill it.
+fn report_control_outcome(
+    socket: &UdpSocket,
+    src: &Peer,
+    addr: &str,
+    outcome: ControlOutcome,
+    limiter: &mut WarnLimiter,
+) {
+    let (code, message) = match outcome {
+        ControlOutcome::Handled => return,
+        ControlOutcome::Invalid(reason) => (osc_contract::CONTROL_ERROR_INVALID_ARGUMENTS, reason),
+        ControlOutcome::NotAllowed(reason) => (osc_contract::CONTROL_ERROR_NOT_ALLOWED, reason),
+        ControlOutcome::Unhandled if osc_contract::is_known_control(addr) => (
+            osc_contract::CONTROL_ERROR_NOT_APPLIED,
+            "not applied: its arguments were refused, or this engine host does not \
+             implement it"
+                .to_string(),
+        ),
+        ControlOutcome::Unhandled => (
+            osc_contract::CONTROL_ERROR_UNKNOWN_ADDRESS,
+            "unknown control address".to_string(),
+        ),
+    };
+    limiter.report(format_args!("OSC: {addr} from {src}: {message}"));
+    send_control_error(socket, src, addr, code, &message);
+}
+
 impl OscSender {
     pub fn new(default_target: SocketAddrV4) -> Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
+        // Every state bundle and every reply leaves through this socket.
+        ensure_send_buffer(&socket);
         let clients = Arc::new(OscClientRegistry::new(CLIENT_TIMEOUT));
-        clients.insert_permanent(SocketAddr::V4(default_target));
+        clients.insert_permanent(&Peer::Udp(SocketAddr::V4(default_target)));
         // Per-instance id: mixes pid and a sub-second timestamp so it differs
         // both across processes (CLI vs the mpv-embedded host) and across
         // successive instances in the same process. Only its *change* matters,
@@ -392,14 +535,20 @@ impl OscSender {
                 .unwrap_or(0);
             (std::process::id() ^ nanos.rotate_left(13)) as i32
         };
+        let socket = Arc::new(socket);
+        let force_full_next = Arc::new(AtomicBool::new(true));
+        let telemetry = telemetry::Telemetry::spawn(
+            Arc::clone(&socket),
+            Arc::clone(&clients),
+            Arc::clone(&force_full_next),
+        )?;
         Ok(Self {
-            socket: Arc::new(socket),
+            socket,
             clients,
             control: None,
             host_handler: None,
-            prev_objects: None,
-            force_full_next: Arc::new(AtomicBool::new(true)),
-            content_generation: 0,
+            force_full_next,
+            telemetry,
             instance_epoch,
             listener_stop: Arc::new(AtomicBool::new(false)),
             listener_thread: Mutex::new(None),
@@ -464,7 +613,25 @@ impl OscSender {
                 return Ok(());
             }
         };
-        let _ = rx_socket.set_read_timeout(Some(Duration::from_millis(200)));
+        // The stream transport on the same port number, loopback only (#680).
+        // Without it the engine runs on datagrams, as before revision 2.
+        let bound_port = rx_socket.local_addr().map(|a| a.port()).unwrap_or(rx_port);
+        let tcp_listener = match std::net::TcpListener::bind(("127.0.0.1", bound_port)) {
+            Ok(listener) => Some(listener),
+            Err(e) => {
+                log::warn!(
+                    "OSC: stream transport unavailable on 127.0.0.1:{bound_port} ({e}); \
+                     datagrams only"
+                );
+                None
+            }
+        };
+        let (feeds, inbound) = inbound::spawn_feeds(
+            Arc::new(rx_socket),
+            tcp_listener,
+            Arc::clone(&clients),
+            Arc::clone(&stop),
+        )?;
         // Register this listener so a same-process successor (mpv track switch)
         // can reclaim the port instantly instead of timing out the UDP yield.
         *LOCAL_RX_RELEASE.lock().unwrap() = Some(Arc::clone(&stop));
@@ -513,18 +680,21 @@ impl OscSender {
                     }
                 }
 
-                let mut buf = [0u8; 4096];
+                let mut decode_errors = WarnLimiter::default();
+                let mut control_errors = WarnLimiter::default();
                 loop {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
+                    decode_errors.flush("undecodable datagram(s) dropped");
+                    control_errors.flush("control message(s) not applied");
                     flush_pending_logs(&socket, &clients, &mut last_log_seq);
                     if let Some(host) = host_handler.as_ref() {
                         let generation = host.state_generation();
                         if last_host_state_generation != Some(generation) {
                             last_host_state_generation = Some(generation);
                             if let Some(ref ctrl) = control {
-                                build_live_state(ctrl, Some(host)).broadcast(&socket, &clients);
+                                broadcast_live_state(ctrl, Some(host), &socket, &clients);
                             }
                         }
                     }
@@ -532,16 +702,16 @@ impl OscSender {
                         let generation = crate::overlay::state_generation();
                         if last_overlay_generation != Some(generation) {
                             last_overlay_generation = Some(generation);
-                            if let Ok(bytes) =
-                                rosc::encoder::encode(&OscPacket::Message(OscMessage {
-                                    addr: runtime_control::osc_contract::STATE_OVERLAY.to_string(),
+                            // Read under the publication lock: mpv writes the
+                            // overlay prefs from its own thread.
+                            transport::publish_state(&socket, &clients, || {
+                                vec![OscMessage {
+                                    addr: osc_contract::STATE_OVERLAY.to_string(),
                                     args: vec![rosc::OscType::String(
                                         crate::overlay::display_state_json(),
                                     )],
-                                }))
-                            {
-                                send_raw_filtered(&socket, &clients, &bytes, |_| true);
-                            }
+                                }]
+                            });
                         }
                     }
                     // Re-broadcast when core live state changed asynchronously on the
@@ -551,8 +721,7 @@ impl OscSender {
                         let generation = ctrl.live_state_generation();
                         if last_live_state_generation != Some(generation) {
                             last_live_state_generation = Some(generation);
-                            build_live_state(ctrl, host_handler.as_ref())
-                                .broadcast(&socket, &clients);
+                            broadcast_live_state(ctrl, host_handler.as_ref(), &socket, &clients);
                         }
                         // One-shot clip notification carrying the offending speaker
                         // index (set on the audio thread on any detected clip,
@@ -568,15 +737,30 @@ impl OscSender {
                                 send_raw_filtered(&socket, &clients, &bytes, |_| true);
                             }
                         }
+                        // A band set the speaker stage's worker could not
+                        // build (the previous bands keep rendering), or the
+                        // empty string once a later build went through: on
+                        // the address a failed topology rebuild reports to,
+                        // which is what it is to a client.
+                        if let Some(message) = ctrl.take_band_build_error() {
+                            broadcast_string(
+                                &socket,
+                                &clients,
+                                osc_contract::STATE_SPEAKERS_RECOMPUTE_ERROR,
+                                &message,
+                            );
+                        }
                     }
-                    match rx_socket.recv_from(&mut buf) {
-                        Ok((len, src)) => {
-                            match rosc::decoder::decode_udp(&buf[..len]) {
+                    match inbound.recv_timeout(Duration::from_millis(200)) {
+                        Ok(inbound::Inbound { bytes, from }) => {
+                            let src = &from;
+                            let len = bytes.len();
+                            match decode::decode_datagram(&bytes) {
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr == osc_contract::REGISTER =>
                                 {
                                     let client = resolve_register_addr(src, &msg.args);
-                                    let (is_new, metering_enabled) = clients.register(client);
+                                    let (is_new, metering_enabled) = clients.register(&client);
                                     if is_new {
                                         log::info!("OSC client registered: {}", client);
                                     }
@@ -584,17 +768,16 @@ impl OscSender {
                                     force_full_next.store(true, Ordering::Relaxed);
                                     // Send the current state bundle, including layout and speakers.
                                     if let Some(ref ctrl) = control {
-                                        build_live_state(ctrl, host_handler.as_ref())
-                                            .send_to(&socket, client);
+                                        send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, &client);
                                     }
-                                    send_buffered_logs_to_client(&socket, client, 0);
-                                    send_metering_state(&socket, client, metering_enabled);
+                                    send_buffered_logs_to_client(&socket, &client, 0);
+                                    send_metering_state(&socket, &client, metering_enabled);
                                 }
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr == osc_contract::HEARTBEAT =>
                                 {
                                     let client = resolve_register_addr(src, &msg.args);
-                                    let is_known = clients.heartbeat(client);
+                                    let is_known = clients.heartbeat(&client);
                                     let reply_addr = if is_known {
                                         log::trace!("OSC heartbeat/ack → {}", client);
                                         osc_contract::HEARTBEAT_ACK
@@ -602,14 +785,21 @@ impl OscSender {
                                         osc_contract::HEARTBEAT_UNKNOWN
                                     };
                                     // Echo this instance's epoch so the client can
-                                    // detect a producer swap behind the same port.
+                                    // detect a producer swap behind the same port,
+                                    // and the state generation so it can tell it
+                                    // missed the last update of a burst.
                                     let reply = OscMessage {
                                         addr: reply_addr.to_string(),
-                                        args: vec![rosc::OscType::Int(instance_epoch)],
+                                        args: vec![
+                                            rosc::OscType::Int(instance_epoch),
+                                            rosc::OscType::Int(
+                                                clients.state_generation() as i32,
+                                            ),
+                                        ],
                                     };
                                     match rosc::encoder::encode(&OscPacket::Message(reply)) {
                                         Ok(bytes) => {
-                                            if let Err(e) = socket.send_to(&bytes, client) {
+                                            if let Err(e) = client.send(&socket, &bytes) {
                                                 log::warn!(
                                                     "Failed to send heartbeat reply to {}: {}",
                                                     client,
@@ -623,12 +813,41 @@ impl OscSender {
                                     }
                                 }
 
+                                // A client whose state generation fell behind:
+                                // the snapshot again, and nothing else.
+                                Ok((_, OscPacket::Message(msg)))
+                                    if msg.addr == osc_contract::CONTROL_STATE_REFRESH =>
+                                {
+                                    let client = resolve_register_addr(src, &msg.args);
+                                    if let Some(ref ctrl) = control {
+                                        log::debug!("OSC state refresh → {client}");
+                                        send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, &client);
+                                    }
+                                }
+
+                                // A barrier: everything this client sent before
+                                // has been dispatched (see osc_contract::SYNC).
+                                Ok((_, OscPacket::Message(msg)))
+                                    if msg.addr == osc_contract::SYNC =>
+                                {
+                                    let ack = OscMessage {
+                                        addr: osc_contract::SYNC_ACK.to_string(),
+                                        args: msg.args,
+                                    };
+                                    if let Ok(bytes) =
+                                        rosc::encoder::encode(&OscPacket::Message(ack))
+                                        && let Err(e) = src.send(&socket, &bytes)
+                                    {
+                                        log::debug!("Failed to send sync ack to {src}: {e}");
+                                    }
+                                }
+
                                 // ── Live-parameter control messages ─────────────────────────────────
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr.starts_with("/omniphony/control/") =>
                                 {
                                     if let Some(ref ctrl) = control {
-                                        handle_control_message(
+                                        let outcome = handle_control_message(
                                             &msg,
                                             src,
                                             ctrl,
@@ -637,6 +856,13 @@ impl OscSender {
                                             &socket,
                                             &clients,
                                             &gaintable_cache,
+                                        );
+                                        report_control_outcome(
+                                            &socket,
+                                            src,
+                                            &msg.addr,
+                                            outcome,
+                                            &mut control_errors,
                                         );
                                     }
                                 }
@@ -652,18 +878,31 @@ impl OscSender {
                                     }
                                 }
                                 Err(e) => {
-                                    log::debug!("OSC decode error from {}: {}", src, e)
+                                    // Answered at the rate it is logged: the
+                                    // sender is unknown, and may be no client
+                                    // at all.
+                                    let reason = format!("{e}");
+                                    if decode_errors.report(format_args!(
+                                        "OSC: dropped an undecodable {len}-byte datagram from {src}: {reason}"
+                                    )) {
+                                        send_control_error(
+                                            &socket,
+                                            src,
+                                            "",
+                                            osc_contract::CONTROL_ERROR_UNDECODABLE,
+                                            &reason,
+                                        );
+                                    }
                                 }
                             }
                         }
-                        Err(e)
-                            if matches!(
-                                e.kind(),
-                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                            ) => {}
-                        Err(e) => log::warn!("OSC recv error: {}", e),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
+                // Release the ports before this thread ends: whoever joins it
+                // (a standby, a successor in this process) binds them next.
+                feeds.join();
             })?;
 
         *self.listener_thread.lock().unwrap() = Some(handle);
@@ -701,7 +940,7 @@ impl OscSender {
             Ok(()) => {
                 // A fresh sidecar invalidates any overlay this process consumed
                 // earlier (destroy→create cycles of the FFI host re-read it).
-                renderer::config::clear_live_overlay_cache();
+                renderer::config::clear_live_overlay_cache(&path);
                 log::info!("live state handed off to {}", sidecar.display());
             }
             Err(e) => log::warn!("failed to write live-state sidecar: {e}"),
@@ -796,32 +1035,15 @@ impl OscSender {
     }
 
     /// Whether the OSC RX listener is currently bound and running. After
-    /// [`resume`], `false` means the port could not be re-acquired (still held
+    /// [`resume`](Self::resume), `false` means the port could not be re-acquired (still held
     /// by mpv): the caller should re-arm standby rather than run portless.
     pub fn is_listening(&self) -> bool {
         self.listener_bound
     }
 
-    /// Send bytes to every live client.
-    ///
-    /// Clients with a timed entry (`Some(t)`) are dropped if `t.elapsed() >= CLIENT_TIMEOUT`.
-    /// Permanent clients (`None`) are never dropped.
-    fn send_to_all(&self, bytes: &[u8]) {
-        send_raw_filtered(&self.socket, &self.clients, bytes, |_| true);
-    }
-
-    fn send_to_metering_clients(&self, bytes: &[u8]) {
-        send_raw_filtered(&self.socket, &self.clients, bytes, |client| {
-            client.metering_enabled
-        });
-    }
-
-    pub(crate) fn send_to_diag_clients(&self, bytes: &[u8]) {
-        send_raw_filtered(&self.socket, &self.clients, bytes, |client| {
-            client.diag_enabled
-        });
-    }
-
+    /// Whether any client is live. Lock-free, for the render path: the
+    /// answer is refreshed on every registry change and every telemetry tick,
+    /// so a client that timed out is noticed within one.
     pub fn has_osc_clients(&self) -> bool {
         self.clients.is_any_live()
     }
@@ -844,6 +1066,9 @@ impl OscSender {
 
 impl Drop for OscSender {
     fn drop(&mut self) {
+        // What the render path queued goes out before the goodbye below.
+        self.telemetry.shutdown();
+
         // Are we still the current same-process RX-port registrant? A successor
         // engine (mpv switching audio tracks) overwrites LOCAL_RX_RELEASE with
         // its own stop flag when it reclaims the port in `start_listener`, which
@@ -921,7 +1146,7 @@ fn collect_f32(args: &[rosc::OscType]) -> Vec<f32> {
 
 /// Apply a head-tracking packet if its address matches the configured tracking
 /// address. Recurses into bundles (sensor apps often batch readings). Reads the
-/// config under a short read lock and only takes the write lock on a match.
+/// config from the live params and writes them only on a match.
 /// Returns `true` if the pose was updated.
 fn apply_head_tracking_packet(packet: &OscPacket, ctrl: &RendererControl) -> bool {
     match packet {
@@ -1006,19 +1231,105 @@ fn maybe_broadcast_head_pose(
     );
 }
 
+/// Scaffolding shared by the tests, here and in the submodules, that start a
+/// real listener or otherwise reach the process-wide port state.
 #[cfg(test)]
-mod yield_tests {
+mod test_support {
     use super::*;
 
-    /// Serialises the tests that exercise a port-contention path, since they
-    /// share the process-global [`LOCAL_RX_RELEASE`] registry and
-    /// [`RESUME_TARGET`] slot.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    /// Serialises the tests that exercise a port-contention path or start a
+    /// listener, since they share the process-global [`LOCAL_RX_RELEASE`]
+    /// registry and [`RESUME_TARGET`] slot.
+    pub(super) static SERIAL: Mutex<()> = Mutex::new(());
 
     /// Grab a free UDP port by binding port 0, then release it.
-    fn free_port() -> u16 {
+    pub(super) fn free_port() -> u16 {
         let s = UdpSocket::bind("127.0.0.1:0").unwrap();
         s.local_addr().unwrap().port()
+    }
+
+    pub(super) fn test_sender() -> OscSender {
+        OscSender::new(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1)).unwrap()
+    }
+
+    /// A sender driving `control` whose listener is bound, and its port.
+    ///
+    /// [`free_port`] leaves the port unclaimed until the listener binds it,
+    /// and a test that does not hold [`SERIAL`] may be handed it meanwhile.
+    /// `start_listener` reports that as "not listening": take another port.
+    pub(super) fn listening_sender(control: &Arc<RendererControl>) -> (OscSender, u16) {
+        let mut sender = test_sender();
+        sender.attach_renderer_control(Arc::clone(control));
+        for _ in 0..8 {
+            let port = free_port();
+            sender.start_listener(port, false).unwrap();
+            if sender.is_listening() {
+                return (sender, port);
+            }
+        }
+        panic!("no free port for the test listener");
+    }
+}
+
+#[cfg(test)]
+mod warn_limiter_tests {
+    use super::*;
+    use std::time::Instant;
+
+    const INTERVAL: Duration = WarnLimiter::INTERVAL;
+
+    #[test]
+    fn one_warning_per_interval_carries_the_count_held_back() {
+        let start = Instant::now();
+        let mut limiter = WarnLimiter::default();
+        assert_eq!(limiter.record(start), Some(0), "the first one is logged");
+        assert_eq!(limiter.record(start + INTERVAL / 4), None);
+        assert_eq!(limiter.record(start + INTERVAL / 2), None);
+        assert_eq!(
+            limiter.record(start + INTERVAL),
+            Some(2),
+            "the next one past the interval reports the two held back"
+        );
+        // The interval runs again from that warning, with a fresh count.
+        assert_eq!(limiter.record(start + INTERVAL + INTERVAL / 2), None);
+        assert_eq!(limiter.record(start + INTERVAL * 2), Some(1));
+    }
+
+    #[test]
+    fn the_tail_of_a_burst_is_reported_once_the_interval_is_over() {
+        let start = Instant::now();
+        let mut limiter = WarnLimiter::default();
+        assert_eq!(limiter.overdue(start), None, "nothing happened yet");
+        assert_eq!(limiter.record(start), Some(0));
+        assert_eq!(limiter.record(start + INTERVAL / 4), None);
+        assert_eq!(limiter.record(start + INTERVAL / 2), None);
+        assert_eq!(
+            limiter.overdue(start + INTERVAL / 2),
+            None,
+            "a later occurrence may still carry the count"
+        );
+        assert_eq!(limiter.overdue(start + INTERVAL), Some(2));
+        assert_eq!(limiter.overdue(start + INTERVAL * 2), None, "reported once");
+        // The count went out on its own: the next occurrence has none to carry.
+        assert_eq!(limiter.record(start + INTERVAL * 2), Some(0));
+    }
+}
+
+#[cfg(test)]
+mod yield_tests {
+    use super::test_support::{SERIAL, free_port, test_sender};
+    use super::*;
+
+    /// A socket of the test's own to send to, held for the test's duration:
+    /// a sender's drop broadcasts its goodbye to its target, which must never
+    /// be a port a live instance listens on (9000 is the default one).
+    fn sink() -> (UdpSocket, SocketAddrV4) {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        (
+            socket,
+            SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port),
+        )
     }
 
     /// A same-process holder (the previous track's listener) is reclaimed via the
@@ -1048,10 +1359,6 @@ mod yield_tests {
 
         *LOCAL_RX_RELEASE.lock().unwrap() = None;
         h.join().unwrap();
-    }
-
-    fn test_sender() -> OscSender {
-        OscSender::new(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1)).unwrap()
     }
 
     /// A resume that re-acquires the port must arm the handoff adoption and then
@@ -1165,7 +1472,7 @@ mod yield_tests {
     #[test]
     fn superseded_drop_preserves_resume_target() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let target: SocketAddrV4 = "127.0.0.1:9000".parse().unwrap();
+        let (_sink, target) = sink();
         let sender = OscSender::new(target).unwrap();
 
         // A successor reclaimed the port: the registry points at a *different*
@@ -1194,12 +1501,16 @@ mod yield_tests {
     #[test]
     fn owner_drop_resumes_standby_and_clears_registry() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let target: SocketAddrV4 = "127.0.0.1:9000".parse().unwrap();
+        let (_sink, target) = sink();
         let sender = OscSender::new(target).unwrap();
 
         // This sender is still the current registrant (no handoff happened).
         *LOCAL_RX_RELEASE.lock().unwrap() = Some(Arc::clone(&sender.listener_stop));
-        *RESUME_TARGET.lock().unwrap() = Some(23456);
+        let (standby, standby_addr) = sink();
+        standby
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        *RESUME_TARGET.lock().unwrap() = Some(standby_addr.port());
 
         drop(sender);
 
@@ -1207,6 +1518,14 @@ mod yield_tests {
             RESUME_TARGET.lock().unwrap().is_none(),
             "a real release fires resume to (and clears) the standby target"
         );
+        let mut buf = [0u8; 256];
+        let (len, _) = standby.recv_from(&mut buf).expect("the resume datagram");
+        match rosc::decoder::decode_udp(&buf[..len]).expect("valid OSC").1 {
+            OscPacket::Message(msg) => {
+                assert_eq!(msg.addr, runtime_control::osc_contract::CONTROL_RESUME)
+            }
+            other => panic!("expected a message, got {other:?}"),
+        }
         assert!(
             LOCAL_RX_RELEASE.lock().unwrap().is_none(),
             "the owner deregisters itself on drop"
@@ -1253,6 +1572,9 @@ mod yield_tests {
 
     #[test]
     fn negotiation_reservation_holds_the_port_until_the_listener_binds() {
+        // Losing the `free_port` window makes the negotiation ask the local
+        // listener to release the port: whichever one a sibling test started.
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let port = free_port();
         assert!(negotiate_rx_port(port), "free port must negotiate");
         // The reservation keeps the port held: an external bind must fail …
@@ -1285,5 +1607,38 @@ mod yield_tests {
             bind_rx_socket(port, true, Duration::from_secs(5)).expect("port freed after yield");
         assert_eq!(socket.local_addr().unwrap().port(), port);
         t.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod send_size_tests {
+    use super::export::MAX_STATE_DATAGRAM;
+    use super::*;
+
+    /// A datagram of the largest size the live state is split into leaves the
+    /// sender's own socket and arrives whole. macOS and the BSDs refuse a UDP
+    /// send larger than the socket's send buffer, which starts at 9,216 bytes
+    /// there, so this only passes on them when the sender has raised it.
+    #[test]
+    fn a_maximum_size_state_datagram_leaves_the_sender_socket() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let SocketAddr::V4(target) = receiver.local_addr().unwrap() else {
+            unreachable!("bound to an IPv4 address");
+        };
+        let sender = OscSender::new(target).unwrap();
+
+        send_raw_filtered(
+            &sender.socket,
+            &sender.clients,
+            &vec![0x5a; MAX_STATE_DATAGRAM],
+            |_| true,
+        );
+
+        let mut buf = vec![0u8; 70_000];
+        let len = receiver.recv(&mut buf).expect("the datagram arrives");
+        assert_eq!(len, MAX_STATE_DATAGRAM);
     }
 }

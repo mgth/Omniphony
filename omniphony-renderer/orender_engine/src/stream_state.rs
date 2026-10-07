@@ -5,9 +5,10 @@
 //! Each host used to keep its own copy of these fields with its own update
 //! code, and a per-stream rule honoured in one host only was a recurring bug
 //! (a segment start without the content-generation bump, synthetic objects
-//! rendered by one host only). The data and the rules now live here; the
-//! hosts keep only their plumbing (decode thread, output buffers, sinks, OSC
-//! and overlay emission) and what only one of them needs.
+//! rendered by one host only). The data and the rules now live here, and the
+//! sequence that applies them frame by frame in [`crate::frame_pipeline`];
+//! the hosts keep only their plumbing (decode thread, output buffers, sinks)
+//! and what only one of them needs.
 //!
 //! Nothing here allocates on a steady stream: the event buffers and the
 //! object↔channel declaration are reused, and the planners cache their plans.
@@ -18,14 +19,14 @@ use std::collections::HashMap;
 
 use bridge_api::{RChannelLabel, RChannelPose, RCoordinateFormat, RDecodedFrame, RMetadataFrame};
 use renderer::live_params::RendererControl;
-use renderer::placement::SourceFamily;
+use renderer::placement::{PlacementState, SourceFamily};
 use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
 use renderer::speaker_layout::SpeakerLayout;
 
 use crate::channel_objects::{
     ChannelObjectStages, FixedProcessingReport, FixedProcessingState, StageCounts, StageSync,
 };
-use crate::decode_step::Declaration;
+use crate::decode_step::{ChannelTag, Declaration};
 use crate::events::Configuration;
 use crate::object_gen::{PrepareCtx, layout_has_height};
 use crate::osc::{ObjectMeta, OscSender};
@@ -36,32 +37,127 @@ use crate::virtual_bed::{
 
 /// What the bridge declares about the current presentation, as the host
 /// applies it: the family whose placement policy the fixed channels are
-/// planned with, the poses it states for its channels, and its name for the
-/// format (empty when it states none).
+/// planned with, the poses it states for its channels, its name for the
+/// format (empty when it states none) and the tags on its channels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamDeclaration {
     pub family: SourceFamily,
     pub poses: Vec<RChannelPose>,
     pub label: String,
+    pub tags: Vec<ChannelTag>,
+    /// The channels tagged as dialogue, from `tags`: worked out once here so
+    /// the per-frame gain compares no strings.
+    pub dialogue_channels: Vec<usize>,
 }
 
 impl Default for StreamDeclaration {
     /// A stream whose bridge has declared nothing yet.
     fn default() -> Self {
         Self {
-            family: SourceFamily::Generic,
+            family: SourceFamily::GENERIC,
             poses: Vec::new(),
             label: String::new(),
+            tags: Vec::new(),
+            dialogue_channels: Vec::new(),
         }
     }
 }
 
-impl From<Declaration> for StreamDeclaration {
-    fn from(declaration: Declaration) -> Self {
+impl StreamDeclaration {
+    /// The bridge's declaration as the stream applies it, its family name
+    /// resolved against the renderer's family table (once per declaration,
+    /// so planning a frame compares no strings).
+    pub fn new(declaration: Declaration, placement: &PlacementState) -> Self {
+        let mut dialogue_channels: Vec<usize> = declaration
+            .tags
+            .iter()
+            .filter(|tag| tag.kind == ChannelTag::DIALOGUE)
+            .flat_map(|tag| tag.channels.iter().copied())
+            .collect();
+        dialogue_channels.sort_unstable();
+        dialogue_channels.dedup();
         Self {
-            family: SourceFamily::from_declared(&declaration.family),
+            family: placement.resolve(&declaration.family),
             poses: declaration.poses,
             label: declaration.label,
+            tags: declaration.tags,
+            dialogue_channels,
+        }
+    }
+}
+
+/// How long a dialogue level change takes to reach the sound: the renderer's
+/// own gain slew, short enough to follow a slider, long enough not to click.
+const TAG_GAIN_RAMP_SECS: f32 = 0.02;
+
+/// The gain on the channels tagged as dialogue: the live dialogue level,
+/// reached over `TAG_GAIN_RAMP_SECS` whenever it changes. Applied to the
+/// converted PCM before the upmix stages, so what phantom extraction takes
+/// out of a dialogue channel carries the level too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TagGain {
+    /// The gain applied to the last sample.
+    pub gain: f32,
+    target: f32,
+    ramp_remaining: u32,
+}
+
+impl Default for TagGain {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            target: 1.0,
+            ramp_remaining: 0,
+        }
+    }
+}
+
+impl TagGain {
+    /// Scale `channels` of the interleaved `pcm` toward `target_db`. Nothing
+    /// to do — no tagged channel, or the level at 0 dB and settled — costs a
+    /// comparison. A stream without tagged channels takes the level as it
+    /// stands, so the next one that has some starts at it rather than
+    /// fading in from wherever the last one left off.
+    #[inline]
+    pub fn apply(
+        &mut self,
+        pcm: &mut [f32],
+        channel_count: usize,
+        channels: &[usize],
+        target_db: f32,
+        sample_rate: u32,
+    ) {
+        let target = renderer::dsp::db::db_to_linear(target_db);
+        if channels.is_empty() || channel_count == 0 {
+            *self = Self {
+                gain: target,
+                target,
+                ramp_remaining: 0,
+            };
+            return;
+        }
+        if target != self.target {
+            self.target = target;
+            self.ramp_remaining = ((sample_rate as f32 * TAG_GAIN_RAMP_SECS) as u32).max(1);
+        }
+        if self.ramp_remaining == 0 && self.gain == 1.0 {
+            return;
+        }
+        // A declaration that does not fit the frame (it is read with the
+        // labels, so this is a bridge bug) leaves the frame alone.
+        if channels.iter().any(|&c| c >= channel_count) {
+            return;
+        }
+        for frame in pcm.chunks_exact_mut(channel_count) {
+            if self.ramp_remaining > 0 {
+                self.gain += (self.target - self.gain) / self.ramp_remaining as f32;
+                self.ramp_remaining -= 1;
+            } else {
+                self.gain = self.target;
+            }
+            for &c in channels {
+                frame[c] *= self.gain;
+            }
         }
     }
 }
@@ -98,7 +194,7 @@ impl DrcRamp {
         frame: &RDecodedFrame,
         control: &RendererControl,
     ) {
-        let weight = control.live.read().drc_weight.clamp(0.0, 1.0);
+        let weight = control.live.read().options.drc_weight.clamp(0.0, 1.0);
         self.target_gain = if weight >= 1.0 {
             frame.drc_gain
         } else if weight <= 0.0 {
@@ -166,6 +262,11 @@ pub struct StreamState {
     pub dialnorm: Option<i8>,
     /// The DRC gain ramp.
     pub drc: DrcRamp,
+    /// The dialogue level on the tagged channels.
+    pub dialogue: TagGain,
+    /// The tags last published to the control, so they are published (and
+    /// allocated) only when they change.
+    published_tags: Option<Vec<ChannelTag>>,
 }
 
 impl Default for StreamState {
@@ -191,12 +292,63 @@ impl StreamState {
             fixed_processing: FixedProcessingState::default(),
             dialnorm: None,
             drc: DrcRamp::default(),
+            dialogue: TagGain::default(),
+            published_tags: None,
         }
     }
 
+    /// Convert `frame`'s PCM to `f32` into `out`: the DRC gain ramp, then the
+    /// dialogue level on the channels the declaration tags as dialogue. Also
+    /// publishes the declaration's tags to `control` when they changed.
+    #[inline]
+    pub fn fill_pcm_f32(
+        &mut self,
+        out: &mut Vec<f32>,
+        frame: &RDecodedFrame,
+        control: &RendererControl,
+    ) {
+        let dialogue_db = control.live.read().options.dialogue_gain_db;
+        self.drc.fill_pcm_f32(out, frame, control);
+        self.dialogue.apply(
+            out,
+            frame.channel_count as usize,
+            &self.declaration.dialogue_channels,
+            dialogue_db,
+            frame.sampling_frequency,
+        );
+        self.publish_tags(control);
+    }
+
+    /// Tell `control` (and through it Studio) what the stream tags, when it
+    /// changed since the last time.
+    fn publish_tags(&mut self, control: &RendererControl) {
+        if self.published_tags.as_ref() == Some(&self.declaration.tags) {
+            return;
+        }
+        let tags = self.declaration.tags.clone();
+        let json: Vec<serde_json::Value> = tags
+            .iter()
+            .map(|tag| {
+                serde_json::json!({
+                    "kind": tag.kind,
+                    "language": tag.language,
+                    "label": tag.label,
+                    "channels": tag.channels,
+                })
+            })
+            .collect();
+        control.set_channel_tags(serde_json::Value::Array(json).to_string());
+        self.published_tags = Some(tags);
+    }
+
     /// Take on the bridge's declaration for this frame and the ones after it.
-    pub fn apply_declaration(&mut self, declaration: Declaration) {
-        self.declaration = declaration.into();
+    pub fn apply_declaration(&mut self, declaration: Declaration, placement: &PlacementState) {
+        self.declaration = StreamDeclaration::new(declaration, placement);
+    }
+
+    /// Take on a declaration already resolved against the family table.
+    pub fn set_declaration(&mut self, declaration: StreamDeclaration) {
+        self.declaration = declaration;
     }
 
     /// A segment starts (the bridge's `is_new_segment`, or it reset itself):
@@ -435,7 +587,7 @@ impl StreamState {
             (
                 OwnedPlacement::from_live(&live, self.declaration.family),
                 RoomRatios::from_live(&live),
-                live.surround_placement,
+                live.options.surround_placement,
             )
         };
         let mut objects = build_virtual_bed_objects(
@@ -497,11 +649,18 @@ mod tests {
     #[test]
     fn a_segment_reset_keeps_the_declaration_and_the_drc_ramp() {
         let mut stream = StreamState::default();
-        stream.apply_declaration(Declaration {
-            poses: Vec::new(),
-            family: "dts".to_owned(),
-            label: "DTS".to_owned(),
-        });
+        let mut placement = PlacementState::default();
+        placement.declare("dts", "DTS", renderer::placement::PlacementMode::Room);
+        let dts = placement.find("dts").expect("declared");
+        stream.apply_declaration(
+            Declaration {
+                poses: Vec::new(),
+                family: "dts".to_owned(),
+                label: "DTS".to_owned(),
+                tags: Vec::new(),
+            },
+            &placement,
+        );
         stream.note_object_metadata(&meta(&[(1, 0)], &[(1, "A")]));
         stream.dialnorm = Some(-27);
         stream.drc.gain = 0.5;
@@ -510,8 +669,121 @@ mod tests {
         assert!(stream.object_channels.is_empty());
         assert!(stream.object_names.is_empty());
         assert_eq!(stream.dialnorm, None);
-        assert_eq!(stream.declaration.family, SourceFamily::Dts);
+        assert_eq!(stream.declaration.family, dts);
         assert_eq!(stream.declaration.label, "DTS");
         assert_eq!(stream.drc.gain, 0.5);
+    }
+
+    fn tagged(tags: Vec<ChannelTag>) -> StreamDeclaration {
+        StreamDeclaration::new(
+            Declaration {
+                tags,
+                ..Declaration::default()
+            },
+            &PlacementState::default(),
+        )
+    }
+
+    fn tag(kind: &str, channels: &[usize]) -> ChannelTag {
+        ChannelTag {
+            kind: kind.to_owned(),
+            channels: channels.to_vec(),
+            ..ChannelTag::default()
+        }
+    }
+
+    /// Only the dialogue tags make the channels the level applies to, in
+    /// order and once each; a kind this renderer does not know is kept for
+    /// Studio but scales nothing.
+    #[test]
+    fn the_dialogue_channels_come_from_the_dialogue_tags() {
+        let declaration = tagged(vec![
+            tag("dialogue", &[14, 12]),
+            tag("commentary", &[20]),
+            tag("dialogue", &[13, 12]),
+        ]);
+        assert_eq!(declaration.dialogue_channels, [12, 13, 14]);
+        assert_eq!(declaration.tags.len(), 3);
+    }
+
+    /// The level reaches the tagged channels over the ramp and then holds;
+    /// the other channels are left as they are.
+    #[test]
+    fn the_dialogue_level_ramps_onto_the_tagged_channels_only() {
+        let rate = 48_000;
+        let ramp = (rate as f32 * TAG_GAIN_RAMP_SECS) as usize;
+        let mut gain = TagGain::default();
+        let mut pcm = vec![1.0f32; 3 * (ramp + 100)];
+        gain.apply(&mut pcm, 3, &[1, 2], -6.0, rate);
+        let target = renderer::dsp::db::db_to_linear(-6.0);
+        let frames: Vec<&[f32]> = pcm.chunks_exact(3).collect();
+        assert!(frames.iter().all(|f| f[0] == 1.0));
+        assert!(
+            frames[0][1] < 1.0 && frames[0][1] > 0.99,
+            "{}",
+            frames[0][1]
+        );
+        assert!(frames[ramp / 2][1] > target && frames[ramp / 2][1] < 1.0);
+        assert!((frames[ramp - 1][1] - target).abs() < 1e-6);
+        assert!(
+            frames[ramp..]
+                .iter()
+                .all(|f| f[1] == target && f[2] == target)
+        );
+        // Steady: the next frame is scaled throughout.
+        let mut next = vec![1.0f32; 30];
+        gain.apply(&mut next, 3, &[1, 2], -6.0, rate);
+        assert!(next.chunks_exact(3).all(|f| f == [1.0, target, target]));
+    }
+
+    /// No tagged channel, or 0 dB settled: the PCM is not touched, and a
+    /// stream that tags its dialogue later starts at the level, not from
+    /// 0 dB.
+    #[test]
+    fn nothing_tagged_or_zero_db_leaves_the_pcm_alone() {
+        let mut gain = TagGain::default();
+        let mut pcm = vec![0.5f32; 64];
+        gain.apply(&mut pcm, 2, &[], -6.0, 48_000);
+        assert!(pcm.iter().all(|&s| s == 0.5));
+        gain.apply(&mut pcm, 2, &[1], -6.0, 48_000);
+        let target = renderer::dsp::db::db_to_linear(-6.0);
+        assert!(pcm.chunks_exact(2).all(|f| f == [0.5, 0.5 * target]));
+
+        let mut settled = TagGain::default();
+        let mut pcm = vec![0.5f32; 64];
+        settled.apply(&mut pcm, 2, &[1], 0.0, 48_000);
+        assert!(pcm.iter().all(|&s| s == 0.5));
+        // A tag past the frame's channels is a bridge bug: left alone.
+        settled.apply(&mut pcm, 2, &[2], -6.0, 48_000);
+        assert!(pcm.iter().all(|&s| s == 0.5));
+    }
+
+    /// The tags reach the control when they change, and only then.
+    #[test]
+    fn the_tags_are_published_when_they_change() {
+        let renderer = crate::channel_objects::tests::renderer_7_1_4();
+        let control = renderer.renderer_control();
+        let mut stream = StreamState::default();
+        stream.declaration = tagged(vec![ChannelTag {
+            kind: "dialogue".to_owned(),
+            language: "fr".to_owned(),
+            label: "Dialogue".to_owned(),
+            channels: vec![12, 13],
+        }]);
+        stream.publish_tags(&control);
+        let published: serde_json::Value = serde_json::from_str(&control.channel_tags()).unwrap();
+        assert_eq!(
+            published,
+            serde_json::json!([{
+                "kind": "dialogue", "language": "fr", "label": "Dialogue", "channels": [12, 13]
+            }])
+        );
+        let generation = control.live_state_generation();
+        stream.publish_tags(&control);
+        assert_eq!(control.live_state_generation(), generation);
+        stream.declaration = StreamDeclaration::default();
+        stream.publish_tags(&control);
+        assert_eq!(control.channel_tags(), "[]");
+        assert_ne!(control.live_state_generation(), generation);
     }
 }

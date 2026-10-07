@@ -238,11 +238,21 @@ Rules:
 - 0.3 → 0.4 is an ABI break for bridges (the enum grew, the trait grew; a
   0.3 bridge is refused at load). `fixed_channel_poses` marks the end of the
   0.4 method prefix: methods added after it in later 0.4.x releases must
-  carry a default body.
+  carry a default body, so a bridge that does not implement them still
+  builds. At load abi_stable accepts a bridge built against a newer 0.4.x
+  than the host, never an older one (its vtable is shorter than the host's:
+  "too many fields") — each method added here means rebuilding the bridge
+  against it, as for `source_family`, `source_label` and `channel_tags`.
 - `FormatBridge::source_family` (0.4.x, after the prefix, default body:
-  empty) names the family of the current presentation — `dolby`, `dts`,
-  `auro`, `pcm` — as a string, so a new format costs no ABI change. The
-  renderer chooses the placement policy per family: **Sphere** (the
+  empty) names the family of the current presentation as a string — one of
+  the names the plugin declares in `BridgeLib::source_families` (0.4.x, a
+  root-module field after the prefix: name, label, default mode, read once
+  at load), or `pcm`, the renderer's own. The renderer knows no format by
+  name: its family table is that catalogue plus `generic` and `pcm`, and a
+  name it lacks is `generic`. Like a trait method, the root-module field
+  makes an older bridge refused at load ("too many fields", measured), so
+  it too means rebuilding the bridges with the host. The renderer chooses
+  the placement policy per family: **Sphere** (the
   declared angles, else its nominal angle table), **Room** (its corner
   model, declared angles ignored) or **Manual** (the family's own entries),
   each family inheriting from `generic`. Declared poses are therefore read
@@ -260,6 +270,22 @@ Rules:
   such as mpv shows the format the engine decoded instead of what it could
   infer from the codec id and the object count; empty means the bridge
   states none and the host composes its own.
+- `FormatBridge::channel_tags` (0.4.x, after the prefix, default body:
+  empty) tags some of the presentation's channels with what they carry
+  (`RChannelTag { kind, language, label, channels }`): today `dialogue`, for
+  a format that codes its dialogue apart from music and effects — IAMF's
+  dialogue element, which the bridge hands out beside the bed instead of
+  rendering it into it. Channels are named by **index**, since tagged
+  channels usually repeat the bed's labels (a dialogue `L`/`R`/`C` next to
+  the bed's own). The kind and the language are strings, so a new kind (a
+  commentary, music and effects) or telling an original-version dialogue
+  from a dub costs no ABI change; a host ignores a kind it does not know,
+  and a host that ignores tags altogether sums the channels with the bed,
+  which is the mix again — a bridge only splits out what still sums back.
+  Read with the declaration (labels change, reset, segment start), never
+  per frame. The engine applies the live `dialogue_gain_db` option to the
+  dialogue channels with the PCM conversion, ramped over 20 ms, before the
+  upmix stages, and publishes the tags as `channelTags` on `/state/input`.
 
 ### Rendering (engine/CLI)
 

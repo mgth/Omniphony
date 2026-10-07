@@ -67,65 +67,90 @@ Progress:
 
 Declared options (`renderer::options::LIVE_OPTIONS`):
 
-| Key | Kind | Default | Flags | Legacy alias |
-|---|---|---|---|---|
-| `surround_placement` | `Enum` side / back | `side` | REPLAN | `/control/surround_placement` |
-| `synthetic_objects_enabled` | `Bool` | `false` | REPLAN | `/control/synthetic_objects` |
-| `decode_thread` | `Bool` | `false` | — | `/control/decode_thread` |
-| `output_channel_mapping` | `Enum` by_index / by_name | `by_index` | — | `/control/output_channel_mapping` |
-| `object_generator_id` | `Str` | `""` | REPLAN | `/control/object_generator` |
-| `phantom_extract_mode` | `Enum` off / broadband / spectral | `off` | REPLAN | `/control/phantom_extract` |
-| `crossover_type` | `Enum` lr4 / fir | `lr4` | — | `/control/crossover_type` |
-| `crossover_fir_transition_ratio` | `Float` 0.05–2.0, step 0.05 | `0.5` | — | `/control/crossover_fir_transition_ratio` |
-| `hrir_update_lattice` | `Enum` exact / fine / balanced / coarse | `exact` | — | `/control/binaural/hrir_update_lattice` |
-| `auto_gain` | `Bool` | `false` | — | `/control/auto_gain` |
-| `auto_gain_ceiling_db` | `Float` −12–0 dBFS, step 0.1 | `-1` | — | `/control/auto_gain_ceiling` |
-| `use_loudness` | `Bool` | `false` | — | `/control/loudness` |
-| `ramp_mode` | `Enum` off / frame / interp / sample | `frame` | — | `/control/ramp_mode` |
-| `drc_mode` | `Str` (the bridge's modes) | `Off` | — | `/control/input/drc_mode` |
-| `drc_weight` | `Float` 0–1, step 0.01 | `1` | — | `/control/input/drc_weight` |
-| `room_ratio` | `FloatArray` ×3, 0.01–100, step 0.01 | `[1, 2, 1]` | group `room` | `/control/room_ratio` |
-| `room_ratio_rear` | `Float` 0.01–100, step 0.01 | `2` | group `room` | `/control/room_ratio_rear` |
-| `room_ratio_lower` | `Float` 0.01–100, step 0.01 | `0.5` | group `room` | `/control/room_ratio_lower` |
-| `room_ratio_center_blend` | `Float` 0–1, step 0.01 | `0.5` | group `room` | `/control/room_ratio_center_blend` |
-| `vbap_distance_model` | `Enum` none / linear / quadratic / inverse-square | `none` | group `distance_model` | `/control/distance_model` |
-| `distance_model_metric` | `Enum` spherical / chebyshev | `spherical` | group `distance_model` | `/control/distance_model_metric` |
-| `distance_diffuse` | `Bool` | `false` | group `distance_diffuse` | `/control/distance_diffuse/enabled` |
-| `distance_diffuse_threshold` | `Float` 1e-6–100 | `1` | group `distance_diffuse` | `/control/distance_diffuse/threshold` |
-| `distance_diffuse_curve` | `Float` 0–100 | `1` | group `distance_diffuse` | `/control/distance_diffuse/curve` |
-| `distance_diffuse_metric` | `Enum` spherical / chebyshev | `spherical` | group `distance_diffuse` | `/control/distance_diffuse/metric` |
-| `distance_diffuse_mirror_axes` | `Enum` none / x / … / xyz | `xy` | group `distance_diffuse` | `/control/distance_diffuse/mirror_axes` |
-| `render_evaluation_mode` | `Enum` auto / realtime / precomputed_polar / precomputed_cartesian | `auto` | group `evaluation` | `/control/render_evaluation_mode` |
-| `evaluation_object_size_intervals` | `Int` ≥ 0 | `0` | group `evaluation` | `/control/render_evaluation/object_size_intervals` |
-| `evaluation_cartesian_{x,y,z,z_neg}_size` | `Int` ≥ 1 | build | group `evaluation` | `/control/render_evaluation/cartesian/…` |
-| `vbap_azimuth_resolution` | `Int` ≥ 1 | `360` | group `evaluation` | `/control/render_evaluation/polar/azimuth_resolution` |
-| `vbap_elevation_resolution` | `Int` ≥ 1 | build | group `evaluation` | `/control/render_evaluation/polar/elevation_resolution` |
-| `vbap_distance_res` | `Int` ≥ 1 | `8` | group `evaluation` | `/control/render_evaluation/polar/distance_res` |
-| `vbap_distance_max` | `Float` 0.01–1000 | `2` | group `evaluation` | `/control/render_evaluation/polar/distance_max` |
-| `render_evaluation_position_interpolation` | `Bool` | `true` | — | `/control/render_evaluation/position_interpolation` |
-| `render_backend` | `DynamicEnum` backends | `vbap` | group `backend` | `/control/render_backend` |
-| `hybrid_external_backend` | `DynamicEnum` backends | `vbap` | group `backend` | `/control/hybrid/external_backend` |
-| `hybrid_internal_backend` | `DynamicEnum` backends | `barycenter` | group `backend` | `/control/hybrid/internal_backend` |
-| `hybrid_curve_smoothing` | `Float` 0–1 | `0` | group `backend` | `/control/hybrid/curve_smoothing` |
-| `hybrid_metric` | `Enum` spherical / chebyshev | `chebyshev` | group `backend` | `/control/hybrid/metric` |
-| `output_mode` | `Enum` speaker / binaural | `speaker` | — | `/control/output_mode` |
-| `binaural_mode` | `Enum` direct / cascaded | `direct` | — | `/control/binaural_mode` |
-| `hrir_source` | `Str` (a selector: `saf`, `sofa:<path>`, `pinna:<preset>:<d>:<depth>`, …) | `saf` | group `hrir_source` | `/control/binaural/hrir_source` |
-| `hrir_update_lattice` (above) | | | group `hrir_source` | |
-| `crossover_type`, `crossover_fir_transition_ratio` (above) | | | group `crossover` | |
-| `brir_head_tracking` | `Enum` auto / on / off | `auto` | group `brir` | `/control/binaural/brir/head_tracking` |
-| `brir_max_length_s` | `Float` 0–10 | `2` | group `brir` | `/control/binaural/brir/max_length` |
-| `brir_tail_floor_db` | `Float` 20–120 | `60` | group `brir` | `/control/binaural/brir/tail_floor` |
-| `head_tracking_osc_address` | `Str` (empty = off) | `""` | group `head_tracking` | `/control/head/tracking/address` |
-| `head_tracking_format` | `Enum` auto / quat / rotvec / euler | `auto` | group `head_tracking` | `/control/head/tracking/format` |
-| `head_tracking_smoothing` | `Float` 0–0.999 | `0.2` | group `head_tracking` | `/control/head/tracking/smoothing` |
-| `head_tracking_invert` | `Bool` | `false` | group `head_tracking` | `/control/head/tracking/invert` |
-| `binaural_unit_scale_m`, `binaural_head_radius_m` | `Float` | `1`, `0.0875` | — | `/control/binaural/{unit_scale,head_radius}` |
-| `binaural_air_absorption`, `binaural_diffuse_field_eq` | `Bool` | `true`, `false` | — | `/control/binaural/{air_absorption,diffuse_field_eq}` |
-| `reflections_{enabled,level,wall_cutoff_hz,room_width_m,room_depth_m,room_height_m}` | `Bool` / `Float` | off, 0.5, 6 kHz, 4 × 5 × 2.7 m | — | `/control/binaural/reflections/…` |
-| `reverb_{enabled,level,rt60_s,predelay_ms,size,rt60_low_ratio,rt60_high_ratio}` | `Bool` / `Float` | off, 0.25, 0.35 s, 20 ms, 1, 1, 1 | — | `/control/binaural/reverb/…` |
-| `binaural_ear_gains` | `FloatArray` ×2, 0–4 | `[1, 1]` | — | none (`/control/binaural/ear_gain` sets one ear and stays hand-wired) |
-| `master_gain` | `Float` 0–1000, linear | `1` | — | `/control/gain` |
+<!-- BEGIN GENERATED live-options -->
+| Key | Value | Default | Group (mode, effect) | Flags | Alias |
+|---|---|---|---|---|---|
+| `surround_placement` | `side` \| `back` | `"side"` | — | replan | `/control/surround_placement` |
+| `synthetic_objects_enabled` | bool | `false` | — | replan | `/control/synthetic_objects` |
+| `decode_thread` | bool | `false` | — | embedded only | `/control/decode_thread` |
+| `output_channel_mapping` | `by_index` \| `by_name` | `"by_index"` | — | — | `/control/output_channel_mapping` |
+| `object_generator_id` | string | `""` | — | replan | `/control/object_generator` |
+| `phantom_extract_mode` | `off` \| `broadband` \| `spectral` | `"off"` | — | replan | `/control/phantom_extract` |
+| `crossover_type` | `lr4` \| `fir` | `"lr4"` | `crossover` (live, reload) | — | `/control/crossover_type` |
+| `crossover_fir_transition_ratio` | float [0.05, 2], step 0.05 | `0.5` | `crossover` (live, reload) | — | `/control/crossover_fir_transition_ratio` |
+| `auto_gain` | bool | `false` | — | — | `/control/auto_gain` |
+| `auto_gain_ceiling_db` | float [-12, 0], step 0.1 | `-1` | — | — | `/control/auto_gain_ceiling` |
+| `use_loudness` | bool | `false` | — | — | `/control/loudness` |
+| `ramp_mode` | `off` \| `frame` \| `interp` \| `sample` | `"frame"` | — | — | `/control/ramp_mode` |
+| `sample_ramp_stride` | int [1, 32] | `8` | — | — | — |
+| `drc_mode` | string | `"Off"` | — | — | `/control/input/drc_mode` |
+| `drc_weight` | float [0, 1], step 0.01 | `1` | — | — | `/control/input/drc_weight` |
+| `dialogue_gain_db` | float [-12, 12], step 0.5 | `0` | — | — | — |
+| `hrir_update_lattice` | `exact` \| `fine` \| `balanced` \| `coarse` | `"exact"` | `hrir_source` (live, reload) | — | `/control/binaural/hrir_update_lattice` |
+| `room_ratio` | 3 floats [0.01, 100], step 0.01 | `[1, 2, 1]` | `room` (live, topology) | — | `/control/room_ratio` |
+| `room_ratio_rear` | float [0.01, 100], step 0.01 | `2` | `room` (live, topology) | — | `/control/room_ratio_rear` |
+| `room_ratio_lower` | float [0.01, 100], step 0.01 | `0.5` | `room` (live, topology) | — | `/control/room_ratio_lower` |
+| `room_ratio_center_blend` | float [0, 1], step 0.01 | `0.5` | `room` (live, topology) | — | `/control/room_ratio_center_blend` |
+| `vbap_distance_model` | `none` \| `linear` \| `quadratic` \| `inverse-square` | `"none"` | `distance_model` (live, topology) | — | `/control/distance_model` |
+| `distance_model_metric` | `spherical` \| `chebyshev` | `"spherical"` | `distance_model` (live, topology) | — | `/control/distance_model_metric` |
+| `distance_diffuse` | bool | `false` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/enabled` |
+| `distance_diffuse_threshold` | float [0.000001, 100], step 0.01 | `1` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/threshold` |
+| `distance_diffuse_curve` | float [0, 100], step 0.05 | `1` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/curve` |
+| `distance_diffuse_metric` | `spherical` \| `chebyshev` | `"spherical"` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/metric` |
+| `distance_diffuse_mirror_axes` | `none` \| `x` \| `y` \| `z` \| `xy` \| `xz` \| `yz` \| `xyz` | `"xy"` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/mirror_axes` |
+| `render_evaluation_mode` | `auto` \| `realtime` \| `precomputed_polar` \| `precomputed_cartesian` | `"auto"` | `evaluation` (live, evaluation) | — | `/control/render_evaluation_mode` |
+| `evaluation_object_size_intervals` | int ≥ 0 | `0` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/object_size_intervals` |
+| `evaluation_cartesian_x_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/x_size` |
+| `evaluation_cartesian_y_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/y_size` |
+| `evaluation_cartesian_z_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/z_size` |
+| `evaluation_cartesian_z_neg_size` | int ≥ 0 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/z_neg_size` |
+| `vbap_azimuth_resolution` | int ≥ 1 | `360` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/azimuth_resolution` |
+| `vbap_elevation_resolution` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/elevation_resolution` |
+| `vbap_distance_res` | int ≥ 1 | `8` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/distance_res` |
+| `vbap_distance_max` | float [0.01, 1000], step 0.1 | `2` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/distance_max` |
+| `render_evaluation_position_interpolation` | bool | `true` | — | — | `/control/render_evaluation/position_interpolation` |
+| `render_backend` | one of `backends` | `"vbap"` | `backend` (live, topology) | — | `/control/render_backend` |
+| `hybrid_external_backend` | one of `backends` | `"vbap"` | `backend` (live, topology) | — | `/control/hybrid/external_backend` |
+| `hybrid_internal_backend` | one of `backends` | `"barycenter"` | `backend` (live, topology) | — | `/control/hybrid/internal_backend` |
+| `hybrid_curve_smoothing` | float [0, 1], step 0.01 | `0` | `backend` (live, topology) | — | `/control/hybrid/curve_smoothing` |
+| `hybrid_metric` | `spherical` \| `chebyshev` | `"chebyshev"` | `backend` (live, topology) | — | `/control/hybrid/metric` |
+| `output_mode` | `speaker` \| `binaural` | `"speaker"` | — | — | `/control/output_mode` |
+| `binaural_mode` | `direct` \| `cascaded` | `"direct"` | — | — | `/control/binaural_mode` |
+| `hrir_source` | string | `"saf"` | `hrir_source` (live, reload) | — | `/control/binaural/hrir_source` |
+| `brir_head_tracking` | `auto` \| `on` \| `off` | `"auto"` | `brir` (live, reload) | — | `/control/binaural/brir/head_tracking` |
+| `brir_max_length_s` | float [0, 10], step 0.1 | `2` | `brir` (live, reload) | — | `/control/binaural/brir/max_length` |
+| `brir_tail_floor_db` | float [20, 120], step 1 | `60` | `brir` (live, reload) | — | `/control/binaural/brir/tail_floor` |
+| `binaural_unit_scale_m` | float [0.01, 100], step 0.01 | `1` | — | — | `/control/binaural/unit_scale` |
+| `binaural_head_radius_m` | float [0.05, 0.15], step 0.001 | `0.0875` | — | — | `/control/binaural/head_radius` |
+| `binaural_air_absorption` | bool | `true` | — | — | `/control/binaural/air_absorption` |
+| `binaural_diffuse_field_eq` | bool | `false` | — | — | `/control/binaural/diffuse_field_eq` |
+| `reflections_enabled` | bool | `false` | — | — | `/control/binaural/reflections/enabled` |
+| `reflections_level` | float [0, 1], step 0.01 | `0.5` | — | — | `/control/binaural/reflections/level` |
+| `reflections_wall_cutoff_hz` | float [1000, 20000], step 100 | `6000` | — | — | `/control/binaural/reflections/wall_cutoff` |
+| `reflections_room_width_m` | float [1, 20], step 0.1 | `4` | — | — | `/control/binaural/reflections/room_width` |
+| `reflections_room_depth_m` | float [1, 20], step 0.1 | `5` | — | — | `/control/binaural/reflections/room_depth` |
+| `reflections_room_height_m` | float [1, 20], step 0.1 | `2.7` | — | — | `/control/binaural/reflections/room_height` |
+| `reverb_enabled` | bool | `false` | — | — | `/control/binaural/reverb/enabled` |
+| `reverb_level` | float [0, 1], step 0.01 | `0.25` | — | — | `/control/binaural/reverb/level` |
+| `reverb_rt60_s` | float [0.1, 3], step 0.01 | `0.35` | — | — | `/control/binaural/reverb/rt60` |
+| `reverb_predelay_ms` | float [0, 100], step 1 | `20` | — | — | `/control/binaural/reverb/predelay` |
+| `reverb_size` | float [0.5, 2], step 0.05 | `1` | — | — | `/control/binaural/reverb/size` |
+| `reverb_rt60_low_ratio` | float [0.25, 4], step 0.05 | `1` | — | — | `/control/binaural/reverb/rt60_low_ratio` |
+| `reverb_rt60_high_ratio` | float [0.25, 4], step 0.05 | `1` | — | — | `/control/binaural/reverb/rt60_high_ratio` |
+| `head_tracking_smoothing` | float [0, 0.999], step 0.01 | `0.2` | `head_tracking` (live, none) | — | `/control/head/tracking/smoothing` |
+| `head_tracking_invert` | bool | `false` | `head_tracking` (live, none) | — | `/control/head/tracking/invert` |
+| `head_tracking_osc_address` | string | `""` | `head_tracking` (live, none) | — | `/control/head/tracking/address` |
+| `head_tracking_format` | `auto` \| `quat` \| `rotvec` \| `euler` | `"auto"` | `head_tracking` (live, none) | — | `/control/head/tracking/format` |
+| `binaural_ear_gains` | 2 floats [0, 4], step 0.01 | `[1, 1]` | — | — | — |
+| `master_gain` | float [0, 1000], step 0.01 | `1` | — | — | `/control/gain` |
+<!-- END GENERATED live-options -->
+
+Generated from the registry (`renderer::options::doc_table`; a test fails
+when the table drifts, `UPDATE_DOC_TABLES=1 cargo test -p host_audio
+doc_tables` rewrites it). `hrir_source` takes a selector: `saf`,
+`sofa:<path>`, `pinna:<preset>:<d>:<depth>`, …; `binaural_ear_gains` has no
+address of its own (`/control/binaural/ear_gain` sets one ear and stays
+hand-wired).
 
 (Aliases are under `/omniphony`; the contract constants live in
 `osc-contract/src/lib.rs`.) Every other live setting is still a hand-wired
@@ -149,8 +174,8 @@ What the implementation settled on, where it differs from the proposal below:
 - **Environment**: every `set` / `config_seed` / `config_store` receives an
   `OptionEnv`: the registered backends (`has_backend`) and the facts the
   running renderer was built with (`build_facts`: preferred evaluation mode,
-  negative elevations). Never the live params — a setter runs under their
-  write lock. `OptionEnv::detached()` serves code without a control.
+  negative elevations). Never the live params — a setter runs inside their
+  write guard. `OptionEnv::detached()` serves code without a control.
 - **Aliases**: `LegacyAddr::Exact(addr)` for a whole address,
   `LegacyAddr::Prefixed { prefix, tail }` for the contract's prefix families
   (`distance_diffuse/…`, `hybrid/…`, `render_evaluation/{cartesian,polar}/…`).
@@ -168,6 +193,21 @@ What the implementation settled on, where it differs from the proposal below:
   `set` / `get_json` / `config_store` / `config_seed` function pointers that
   reach them. The registry is the declaration and plumbing layer, not the
   storage — which is what the realtime rules asked for anyway.
+- **Declared rows** (#682): an option whose live value is a top-level field
+  is one row of `declared_options!` (`renderer/src/options/declared.rs`):
+  `key: Category = default => { kind, flags, group, i18n, help, alias }`,
+  the category being `Bool`, `Float`, `Int`, `Str` or `Enum(Type)`. The
+  macro generates the `LiveParams::options` field and its default, the
+  `RenderConfig::options` field (flattened: the YAML key is the option key;
+  an enum is read through its `from_str`, aliases included, and an unknown
+  value is kept like any other enum key's), the `options::defaults`
+  constant and the registry row, whose four functions follow from the
+  category (a float is saved to six decimals and omitted within 1e-4 of its
+  default; a config value is bounded like a client write). A row may
+  replace any of them (`set:` / `store:` / `seed:`) for a legacy wire shape
+  or a value always written. The other options sit inside a larger structure
+  (binaural, room, evaluation, hybrid) and stay hand-written rows
+  (`HAND_WIRED_ROWS`); `LIVE_OPTIONS` is the declared rows, then those.
 - **Per-row extras**: `help_i18n_key` is optional; `legacy_control_addr` names
   the pre-registry address kept as an alias.
 - **Profile switch**: `reset_live_to_defaults` puts every declared option (and
@@ -201,8 +241,8 @@ rows (`OptionSpec::group`). It carries:
   evaluation) or `Evaluation` (rebuild the evaluation layer, reuse the gain
   models). Reload and restart effects join with the groups that need them.
 
-`options::apply_batch` applies a list of (option, value) pairs under one
-write lock, then — only if something changed — marks the config dirty once,
+`options::apply_batch` applies a list of (option, value) pairs in one
+write of the live params (published once), then — only if something changed — marks the config dirty once,
 bumps the options epoch at most once, and returns the widest `Rebuild` any
 changed option's group asks for. `/control/option`, the legacy aliases and
 `/control/options` all go through it (`runtime_control::live_control`), so a
@@ -253,6 +293,49 @@ group, i18n, legacy alias) and functions reaching the host's state: `set`
 force, for a `Staged` group) and `config_store`. It has no seed: the host
 seeds its state at its own bootstrap (the CLI's argument resolution).
 
+<!-- BEGIN GENERATED host-options -->
+| Key | Value | Default | Group (mode, effect) | Flags | Alias |
+|---|---|---|---|---|---|
+| `output_device` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_device` |
+| `output_backend` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_backend` |
+| `output_file` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_file` |
+| `output_file_format` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_file_format` |
+| `output_sample_rate` | int or null [1, 768000] | unset | `audio_output` (live, restart_output) | — | `/control/audio/sample_rate` |
+| `latency_target` | int or null [1, 10000] | unset | `audio_output` (live, restart_output) | — | `/control/latency_target` |
+| `enable_adaptive_resampling` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling` |
+| `adaptive_resampling_enable_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/enable_far_mode` |
+| `adaptive_resampling_force_silence_in_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/force_silence_in_far_mode` |
+| `adaptive_resampling_hard_recover_high_in_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/hard_recover_high_in_far_mode` |
+| `adaptive_resampling_hard_recover_low_in_far_mode` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/hard_recover_low_in_far_mode` |
+| `adaptive_resampling_far_mode_return_fade_in_ms` | int ≥ 0 | `500` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/far_mode_return_fade_in_ms` |
+| `adaptive_resampling_kp_near` | float [0, 1000000], step 0.01 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/kp_near` |
+| `adaptive_resampling_ki` | float [0, 1000000], step 0.01 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/ki` |
+| `adaptive_resampling_integral_discharge_ratio` | float [0, 1], step 0.01 | `0.25` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/integral_discharge_ratio` |
+| `adaptive_resampling_max_adjust` | float [0, 1000000], step 0.01 | `0.01` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/max_adjust` |
+| `adaptive_resampling_update_interval_callbacks` | int ≥ 1 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/update_interval_callbacks` |
+| `adaptive_resampling_high_recover_entry_margin_ms` | int ≥ 1 | `1000` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/high_recover_entry_margin_ms` |
+| `adaptive_resampling_low_recover_settle_stable_ms` | float [0, 1000000], step 0.1 | `200` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_entry_margin_ms` | float [0, 1000000], step 0.1 | `18` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_exit_margin_ms` | float [0, 1000000], step 0.1 | `6` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_settle_margin_ms` | float [0, 1000000], step 0.1 | `6` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_refill_delta_alpha` | float [0, 1], step 0.01 | `0.5` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_control_smoothing_cutoff_hz` | float [0.001, 1000], step 0.001 | `0.5` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_control_smoothing_order` | int [1, 2] | `1` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_use_pre_bridge_clock` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_use_output_pacing` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_disable_backpressure` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `input_mode` | `pipe_bridge` \| `pipewire` | `"pipe_bridge"` | `live_input` (staged, restart_input) | — | `/control/input/mode` |
+| `live_input_backend` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/backend` |
+| `live_input_node` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/node` |
+| `live_input_description` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/description` |
+| `live_input_layout` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/layout` |
+| `live_input_clock_mode` | `dac` \| `pipewire` \| `upstream` | `"dac"` | `live_input` (staged, restart_input) | — | `/control/input/live/clock_mode` |
+| `live_input_channels` | int or null [1, 64] | unset | `live_input` (staged, restart_input) | — | `/control/input/live/channels` |
+| `live_input_sample_rate` | int or null [1, 768000] | unset | `live_input` (staged, restart_input) | — | `/control/input/live/sample_rate` |
+| `live_input_map` | string | `"7.1-fixed"` | `live_input` (staged, restart_input) | — | `/control/input/live/map` |
+| `live_input_lfe_mode` | `object` \| `direct` \| `drop` | `"direct"` | `live_input` (staged, restart_input) | — | `/control/input/live/lfe_mode` |
+<!-- END GENERATED host-options -->
+
 The host exposes its rows through `runtime_control::HostControlHandler`'s
 option methods — `option_kind`, `apply_options`, `apply_option_group`,
 `options_schema`, `options_json`, `options_applied_json`,
@@ -294,18 +377,82 @@ reads ratios back through `room::resolve`, the single reading shared by the
 renderer build, the live seed and the profile switch — so the dependent
 default (an absent rear follows the length) lives in one place.
 
-## Adding a live option today (post-phase-2)
+### Command-line flags
 
-1. Add the typed field to `LiveParams` (+ its `RenderConfig`/`config_fields`
-   descriptor).
-2. Add ONE `OptionSpec` row in `renderer/src/options.rs` (+ Studio i18n keys).
-3. Add the control markup with its `data-option` attribute (a switch, a
+`orender render` takes every registered option as a flag generated from the
+registries (`src/cli/options.rs`): `--<key>` with `-` for `_`, or the pair
+`--<key>` / `--no-<key>` for a boolean; an enum lists its values, a float
+array takes `n,n,n`, an optional integer takes `none`. Core rows offered on
+a host with audio I/O and the standalone host's rows (`HOST_OPTIONS`) are
+generated; `master_gain` stays a hand-written flag in decibels (the option's
+wire value is linear) and `adaptive_resampling_integral_discharge_ratio` has
+no flag. A value given goes into the run's config through its row, as a
+save of the same live change writes it (`options::store_client_values`, on
+a scratch `LiveParams` seeded from the file; `host_audio::store_host_values`
+on a blank `HostIo`): validated and bounded as an OSC write, refused with an
+error naming the flag, kept by `--save-config`. A room flag is pinned as its
+ratio key rather than stored in metres as a save does: the metres carry a
+width other than 1 in the layout radius, folded in only when the file is
+loaded again, and a launch reads the ratio keys.
+
+### Outside the registry: the command tables
+
+Not every control address is an option. The rest are declared in one table
+per layer (`runtime_control::command_table`: an address, or several handled
+alike, or a prefix, and its handler), instead of a chain of address
+comparisons:
+
+| Table | Layer | What it holds |
+|---|---|---|
+| `LIVE_CONTROL_COMMANDS` | `runtime_control::live_control` | the generic setters and the group apply; the metering and diag cadences; the generator and phantom parameters; the placement |
+| `SIMPLE_CONTROL_COMMANDS` | `runtime_control::osc` | layout and speaker patches; the test signals; ear gain and mute; the manual head pose, recenter and calibration; the SOFA upload; backend parameters and the spread aliases; the layout radius; the hybrid curve; object mutes |
+| `ENGINE_COMMANDS` | `orender_engine::osc::dispatch` | the mpv overlay; metering, diag and gain-table subscriptions; the realtime gains; the bridge and input paths; the profiles; the backend files; the layout export |
+| `HOST_COMMANDS` | `host_audio` | the audio and input JSON patches and group applies; the device refresh; the input layout import; the resampling hold and reset |
+
+The process commands (save, reload, restart, quit, yield, resume, log
+level) stay one `match` (`runtime_control::command::PROCESS_COMMANDS`). Each
+table is checked by a test: every address is in `osc_contract::ALL_CONTROL`,
+none is claimed twice or by another layer, and none is a registry option's
+alias (an option is reached through the registry only).
+
+Why these are not options:
+
+- **Commands**: save, apply, refresh, upload, recenter, calibrate, a profile
+  switch, a file get/put, an export. They do something; they hold no value.
+- **Transient state**: the test signals, speaker / ear / object mutes, the
+  manual head pose, the resampling hold. A listening gesture, published and
+  never saved (`docs/persistence-policy.md`).
+- **Per-client subscriptions**: metering, diag, gain tables. They belong to
+  the client that asked, not to the renderer.
+- **View state**: the overlay switches and the monitoring cadences. Saved as
+  they change, never behind the Save button, which is the only way an option
+  reaches the file.
+- **Values of another shape**: a gain per speaker (`realtime/speaker_gain`,
+  the speaker patch's delay), a mode or a layout per family (placement), a
+  point list (the hybrid curve), a dynamic key/value bag (backend, generator
+  and phantom parameters), a value on the engine rather than the live params
+  (bridge and input paths, layout radius). Each would need an indexed,
+  variable-length or engine-side option kind; none is planned.
+
+## Adding a live option today
+
+1. Add ONE row to `declared_options!` in `renderer/src/options/declared.rs`
+   (+ Studio i18n keys). It generates the live field, the config key, the
+   default and the registry row. (An option inside the binaural, room,
+   evaluation or hybrid structures is a hand-written `OptionSpec` in
+   `HAND_WIRED_ROWS`, next to the field it reaches.) Regenerate the options
+   tables of this RFC and of the OSC contract:
+   `UPDATE_DOC_TABLES=1 cargo test -p host_audio doc_tables` (the same test
+   fails in CI when they drift).
+2. Add the control markup with its `data-option` attribute (a switch, a
    toggle-btn pair or a select — no JS).
-4. Done: OSC (generic + schema), persistence, CLI/FFI seeding, replan
+3. Done: OSC (generic + schema), the `orender render --<key>` flag,
+   persistence, CLI/FFI seeding, replan
    invalidation, the snapshot block, the UI wiring and the CI contract checks
    all derive from the row + the markup. The conformance net fails if a layer
-   is missing. Only an option with bespoke UI side effects needs code (one
-   entry in the binder's `AFTER_SET`).
+   is missing, and derives its non-default sample from the row (only a
+   free-form string needs one listed). Only an option with bespoke UI side
+   effects needs code (one entry in the binder's `AFTER_SET`).
 
 ## The problem
 

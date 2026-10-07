@@ -30,7 +30,21 @@ pub struct ViewPrefs {
     pub display_panel_open: Option<bool>,
     pub log_expanded: Option<bool>,
     pub resample_plot_open: Option<bool>,
+    /// The Display panel's "Follow the sound" switch.
+    pub follow_sound: Option<bool>,
+    /// The Advanced switch: the full control board, or the Essentials view.
+    pub advanced: Option<bool>,
     pub speaker_test: SpeakerTestPrefs,
+}
+
+impl ViewPrefs {
+    /// Whether the Studio opens on the full board. A file that predates the
+    /// Advanced switch belongs to someone who has been using the full board,
+    /// so they keep it; a first run (no file, so no window either) opens on
+    /// the Essentials view.
+    fn opens_advanced(&self) -> bool {
+        self.advanced.unwrap_or(self.window.is_some())
+    }
 }
 
 /// The orbit camera at rest.
@@ -95,6 +109,7 @@ impl StudioSpike {
     /// Put the saved view back, before the first frame.
     pub(crate) fn restore_view(&mut self, ctx: &egui::Context) {
         let view = self.prefs.view.clone();
+        self.advanced = view.opens_advanced();
         if let Some(camera) = &view.camera {
             camera.apply(&mut self.camera);
         }
@@ -140,6 +155,11 @@ impl StudioSpike {
         if let Some(open) = view.resample_plot_open {
             self.resample_plot_open = open;
         }
+        if let Some(on) = view.follow_sound {
+            self.follow_sound = on;
+        }
+        // The listener started following the sound; tell it what was chosen.
+        crate::host::commands::app::set_playout_sync(&self.host, self.follow_sound);
         if let Some(mode) = view.speaker_test.mode {
             self.speaker_test_mode = mode;
         }
@@ -212,6 +232,8 @@ impl StudioSpike {
         keep!(view.display_panel_open, self.display_panel_open);
         keep!(view.log_expanded, self.log_expanded);
         keep!(view.resample_plot_open, self.resample_plot_open);
+        keep!(view.follow_sound, self.follow_sound);
+        keep!(view.advanced, self.advanced);
         let test = &mut view.speaker_test;
         if test.mode.as_deref() != Some(self.speaker_test_mode.as_str()) {
             test.mode = Some(self.speaker_test_mode.clone());
@@ -267,5 +289,23 @@ mod tests {
         assert_eq!(view.renderer_tab, Some(RendererTab::Binaural));
         assert_eq!(view.sections.get("diagSection"), Some(&true));
         assert!(view.camera.is_none());
+        assert!(view.advanced.is_none());
+    }
+
+    /// A first run opens on Essentials; a file from before the switch keeps
+    /// the full board; after that, the switch decides.
+    #[test]
+    fn the_essentials_view_is_the_first_runs_default() {
+        assert!(!ViewPrefs::default().opens_advanced());
+        let upgraded: ViewPrefs = serde_json::from_str(
+            r#"{"window":{"size":[1200,800],"position":null,"maximized":false}}"#,
+        )
+        .unwrap();
+        assert!(upgraded.opens_advanced());
+        let chosen = ViewPrefs {
+            advanced: Some(false),
+            ..upgraded
+        };
+        assert!(!chosen.opens_advanced());
     }
 }

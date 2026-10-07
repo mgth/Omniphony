@@ -13,7 +13,8 @@ use egui::Ui;
 
 use crate::app::StudioSpike;
 use crate::host::channels::{
-    Family, LayoutSource, PlacementMode, family_placement, playing_family,
+    Family, LayoutSource, ModeSource, PlacementMode, families, family_label, family_placement,
+    playing_family,
 };
 use crate::host::commands::engine;
 use crate::i18n::t;
@@ -146,39 +147,27 @@ impl StudioSpike {
     /// entries. Picking Manual seeds the family's entries with the poses it
     /// renders right now, so nothing jumps.
     fn placement_group(&mut self, ui: &mut Ui) {
-        let (family, placement, generic_has_mode, playing) = {
+        let (family, placement, tabs) = {
             let live = self.host.read();
             let family = live.editing_family;
-            (
-                family,
-                family_placement(&live.app, family),
-                family_placement(&live.app, Family::Generic)
-                    .own_mode
-                    .is_some(),
-                playing_family(&live.app),
-            )
+            let playing = playing_family(&live.app);
+            // The renderer's families, named as it names them; the one it is
+            // playing is marked.
+            let tabs: Vec<(Family, String, bool)> = families(&live.app)
+                .into_iter()
+                .map(|f| (f, family_label(&live.app, f), playing == Some(f)))
+                .collect();
+            (family, family_placement(&live.app, family), tabs)
         };
         let mode_name = t(placement.effective_mode.i18n_key());
         Group::new(t("placement.title"))
             .help("help.placement")
             .show(ui, |ui| {
-                // The family tabs; the one the renderer is playing is marked.
-                let labels: Vec<String> = Family::ALL
+                let options: Vec<(Family, &str, bool)> = tabs
                     .iter()
-                    .map(|f| {
-                        if playing == Some(*f) {
-                            format!("{} ●", t(f.i18n_key()))
-                        } else {
-                            t(f.i18n_key()).to_owned()
-                        }
-                    })
+                    .map(|(f, label, playing)| (*f, label.as_str(), *playing))
                     .collect();
-                let options: Vec<(Family, &str)> = Family::ALL
-                    .iter()
-                    .copied()
-                    .zip(labels.iter().map(String::as_str))
-                    .collect();
-                if let Some(picked) = widgets::tab_bar(ui, &family, &options) {
+                if let Some(picked) = widgets::wrapping_tab_bar(ui, &family, &options) {
                     engine::select_placement_family(&self.host, picked);
                 }
 
@@ -186,7 +175,7 @@ impl StudioSpike {
                 // the generic one can leave the choice to it).
                 let current = placement.own_mode;
                 let mut choices: Vec<(Option<PlacementMode>, &str)> = Vec::new();
-                if family != Family::Generic {
+                if !family.is_generic() {
                     choices.push((None, t("placement.mode.inherit")));
                 }
                 for mode in PlacementMode::ALL {
@@ -202,12 +191,13 @@ impl StudioSpike {
                         }
                     }
                 });
-                if placement.own_mode.is_none() {
-                    let text = if family != Family::Generic && generic_has_mode {
-                        t("placement.inherited")
-                    } else {
-                        t("placement.builtin")
-                    };
+                let why = match placement.mode_source {
+                    ModeSource::Own => None,
+                    ModeSource::Generic => Some(t("placement.inherited")),
+                    ModeSource::Headphones => Some(t("placement.headphonesDefault")),
+                    ModeSource::Family => Some(t("placement.builtin")),
+                };
+                if let Some(text) = why {
                     widgets::note(ui, &text.replace("{mode}", mode_name));
                 }
                 widgets::note(
@@ -226,7 +216,7 @@ impl StudioSpike {
                 if placement.layout_source == LayoutSource::Own {
                     ui.add_space(4.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        let label = if family == Family::Generic {
+                        let label = if family.is_generic() {
                             t("virtualBed.reset")
                         } else {
                             t("placement.useGeneric")
@@ -397,8 +387,9 @@ impl StudioSpike {
         };
         let mut run = false;
         let mut cancel = false;
-        let text = t("confirm.resetPlacement").replace("{family}", t(family.i18n_key()));
-        let action = if family == Family::Generic {
+        let family_name = family_label(&self.host.read().app, family);
+        let text = t("confirm.resetPlacement").replace("{family}", &family_name);
+        let action = if family.is_generic() {
             t("virtualBed.reset")
         } else {
             t("placement.useGeneric")

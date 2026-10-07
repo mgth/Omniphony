@@ -57,12 +57,20 @@ fn iec958_codec_for_channels(channels: u16) -> u32 {
 ///
 /// Callbacks receive pods that only live for the duration of the call, so a pod
 /// that must outlive the callback has to be cloned out first.
-pub fn clone_spa_pod_bytes(param: *const spa::sys::spa_pod) -> Option<Vec<u8>> {
+///
+/// # Safety
+///
+/// `param` must be null or point to a valid SPA pod whose header and
+/// `size`-byte body are readable for the duration of the call, as PipeWire
+/// guarantees for the pods it hands to a callback.
+pub unsafe fn clone_spa_pod_bytes(param: *const spa::sys::spa_pod) -> Option<Vec<u8>> {
     if param.is_null() {
         return None;
     }
+    // SAFETY: non-null, and valid per this function's contract.
     let pod = unsafe { &*param };
     let total_size = std::mem::size_of::<spa::sys::spa_pod>() + pod.size as usize;
+    // SAFETY: the contract covers the header plus `pod.size` body bytes.
     Some(unsafe { std::slice::from_raw_parts(param.cast::<u8>(), total_size) }.to_vec())
 }
 

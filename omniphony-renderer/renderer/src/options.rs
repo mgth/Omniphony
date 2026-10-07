@@ -23,10 +23,13 @@
 //! remain typed fields on [`LiveParams`], read directly per frame. The
 //! registry is the declaration + plumbing layer, not the storage.
 //!
-//! Adding a live option = one row here (+ the `LiveParams`/`RenderConfig`
-//! fields it points at, + Studio i18n keys). The conformance net in
-//! `runtime_control/tests/live_options_conformance.rs` fails when a row is
-//! missing a layer.
+//! Adding a live option = one row of `declared_options!` (`declared`),
+//! which generates its `LiveParams::options` and `RenderConfig::options`
+//! fields, its default and its registry row, + the Studio i18n keys. An
+//! option whose value lives inside a larger structure (binaural, room,
+//! evaluation, hybrid) is a hand-written row in `HAND_WIRED_ROWS` instead.
+//! The conformance net in `runtime_control/tests/live_options_conformance.rs`
+//! fails when a row is missing a layer.
 //!
 //! Options that only make sense together belong to an [`OptionGroup`], which
 //! declares what applying a change costs (an [`ApplyEffect`]: a topology
@@ -36,11 +39,15 @@
 //! rebuild never starts on a half-written group.
 
 use crate::config::RenderConfig;
-use crate::live_params::{
-    CrossoverType, HrirUpdateLattice, LiveParams, OutputChannelMapping, PhantomExtractMode,
-    RampMode, SurroundPlacement,
-};
+use crate::live_params::{HrirUpdateLattice, LiveParams, PhantomExtractMode};
 use omniphony_osc_contract as osc_contract;
+
+mod declared;
+pub mod doc_table;
+pub(crate) use declared::DECLARED_ENUM_KEYS;
+pub use declared::{
+    DeclaredEnum, DeclaredOptions, DeclaredOptionsConfig, DeclaredValue, defaults, store,
+};
 
 /// What kind of value an option takes. Drives wire validation, the published
 /// schema, and (later) which Studio control the binder renders.
@@ -88,6 +95,30 @@ impl OptionKind {
         match self {
             Self::FloatArray { len, .. } => len,
             _ => 1,
+        }
+    }
+
+    /// Whether `value`, as an option's `get_json` reports it, is one this
+    /// kind allows: a finite number within the bounds, a member of the set.
+    /// A non-finite float reports as `null`, so it is never admitted.
+    pub fn admits(self, value: &serde_json::Value) -> bool {
+        let number_in = |v: &serde_json::Value, min: f64, max: f64| {
+            v.as_f64()
+                .is_some_and(|x| x.is_finite() && x >= min && x <= max)
+        };
+        match self {
+            Self::Bool => value.is_boolean(),
+            Self::Enum(allowed) => value.as_str().is_some_and(|s| allowed.contains(&s)),
+            // Validated against the running host by the setter.
+            Self::Str | Self::DynamicEnum { .. } => value.is_string(),
+            Self::Float { min, max, .. } => number_in(value, min as f64, max as f64),
+            Self::OptionalInt { min, max } => {
+                value.is_null() || number_in(value, min as f64, max as f64)
+            }
+            Self::Int { min, max } => number_in(value, min as f64, max as f64),
+            Self::FloatArray { len, min, max, .. } => value.as_array().is_some_and(|a| {
+                a.len() == len && a.iter().all(|v| number_in(v, min as f64, max as f64))
+            }),
         }
     }
 }
@@ -345,6 +376,7 @@ pub enum RawOptionValue<'a> {
 }
 
 /// One live option, declared once.
+#[derive(Clone, Copy)]
 pub struct OptionSpec {
     /// The single canonical name (see the module docs).
     pub key: &'static str,
@@ -446,7 +478,11 @@ impl<'a> OptionEnv<'a> {
 
     /// Whether a backend with this id is registered.
     pub fn has_backend(&self, id: &str) -> bool {
-        self.control.is_some_and(|control| control.has_backend(id))
+        match self.control {
+            Some(control) => control.has_backend(id),
+            // Detached: the built-in backends only.
+            None => crate::render_backend::canonical_builtin_backend_id(id).is_some(),
+        }
     }
 
     /// What the running renderer was built with (preferred evaluation mode,
@@ -574,6 +610,13 @@ const DRC_WEIGHT_KIND: OptionKind = OptionKind::Float {
     max: 1.0,
     step: 0.01,
 };
+/// Dialogue level: the ±12 dB a stream's own dialogue control spans (IAMF's
+/// RANGE element gain offset as harlettizer writes it).
+const DIALOGUE_GAIN_DB_KIND: OptionKind = OptionKind::Float {
+    min: -12.0,
+    max: 12.0,
+    step: 0.5,
+};
 
 /// Room ratios: floored like the geometry floors them, bounded far above any
 /// real room so a typo cannot blow the scene up.
@@ -610,10 +653,20 @@ const DISTANCE_DIFFUSE_CURVE_KIND: OptionKind = OptionKind::Float {
     step: 0.05,
 };
 
+/// The cells below the horizon: none is a grid that stops at it.
+const GRID_CELLS_OR_NONE_KIND: OptionKind = OptionKind::Int {
+    min: 0,
+    max: i32::MAX as i64,
+};
 /// Grid sizes and counts: at least one cell, as the old handlers floored them.
 const GRID_CELLS_KIND: OptionKind = OptionKind::Int {
     min: 1,
     max: i32::MAX as i64,
+};
+/// `ramp_mode: sample`: from a lookup per sample to the stage's widest stride.
+const SAMPLE_RAMP_STRIDE_KIND: OptionKind = OptionKind::Int {
+    min: 1,
+    max: crate::live_params::MAX_SAMPLE_RAMP_STRIDE as i64,
 };
 const OBJECT_SIZE_INTERVALS_KIND: OptionKind = OptionKind::Int {
     min: 0,
@@ -680,11 +733,12 @@ fn cartesian_in_force(live: &LiveParams, env: &OptionEnv) -> bool {
     match live.requested_evaluation_mode() {
         LiveEvaluationMode::PrecomputedCartesian => true,
         LiveEvaluationMode::PrecomputedPolar | LiveEvaluationMode::Realtime => false,
-        LiveEvaluationMode::Auto => matches!(
-            env.build_facts()
-                .map(|facts| facts.preferred_evaluation_mode),
-            Some(PreferredEvaluationMode::PrecomputedCartesian)
-        ),
+        // No renderer to ask (a config edited on its own, such as the
+        // command line's): a size given is kept, as the build may well be
+        // cartesian.
+        LiveEvaluationMode::Auto => env.build_facts().is_none_or(|facts| {
+            facts.preferred_evaluation_mode == PreferredEvaluationMode::PrecomputedCartesian
+        }),
     }
 }
 
@@ -903,242 +957,32 @@ fn round6(v: f32) -> f32 {
     (v * 1_000_000.0).round() / 1_000_000.0
 }
 
-/// Every declared live option. Iterated by the OSC dispatcher, persistence,
-/// seeding, the snapshot, the schema dump, and the conformance net.
-pub static LIVE_OPTIONS: &[OptionSpec] = &[
-    OptionSpec {
-        key: "surround_placement",
-        kind: OptionKind::Enum(&["side", "back"]),
-        default: OptionDefault::Str("side"),
-        flags: OptionFlags::REPLAN,
-        group: None,
-        i18n_key: "twoDSources.surroundLabel",
-        help_i18n_key: None,
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_SURROUND_PLACEMENT),
-        set: |live, raw, _env| {
-            let placement = SurroundPlacement::from_str(raw_str(raw)?)?;
-            live.surround_placement = placement;
-            Some(placement.as_str().to_string())
-        },
-        get_json: |live| live.surround_placement.as_str().into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::surround_placement::store(render, live.surround_placement)
-        },
-        config_seed: |live, render, _env| {
-            if let Some(placement) = crate::config_fields::surround_placement::get(render) {
-                live.surround_placement = placement;
-            }
-        },
-    },
-    OptionSpec {
-        key: "synthetic_objects_enabled",
-        kind: OptionKind::Bool,
-        default: OptionDefault::Bool(false),
-        flags: OptionFlags::REPLAN,
-        group: None,
-        i18n_key: "twoDSources.syntheticObjectsLabel",
-        help_i18n_key: Some("help.syntheticObjects"),
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_SYNTHETIC_OBJECTS),
-        set: |live, raw, _env| {
-            let enabled = raw_bool(raw)?;
-            live.synthetic_objects_enabled = enabled;
-            Some(bool_canonical(enabled))
-        },
-        get_json: |live| live.synthetic_objects_enabled.into(),
-        // Always persist this master, including false: an explicit false must
-        // continue to suppress remembered non-off child selections after reload.
-        config_store: |render, live, _env| {
-            render.synthetic_objects_enabled = Some(live.synthetic_objects_enabled);
-        },
-        config_seed: |live, render, _env| {
-            if let Some(enabled) = render.synthetic_objects_enabled {
-                live.synthetic_objects_enabled = enabled;
-            }
-        },
-    },
-    OptionSpec {
-        key: "decode_thread",
-        kind: OptionKind::Bool,
-        default: OptionDefault::Bool(false),
-        // No REPLAN: nothing synthesized depends on where decoding runs.
-        // Embedded only: the standalone renderer always decodes on a thread
-        // of its own, so there the option is inert.
-        flags: OptionFlags::EMBEDDED_ONLY,
-        group: None,
-        i18n_key: "renderer.decodeThreadLabel",
-        help_i18n_key: Some("help.decodeThread"),
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_DECODE_THREAD),
-        set: |live, raw, _env| {
-            let enabled = raw_bool(raw)?;
-            live.decode_thread = enabled;
-            Some(bool_canonical(enabled))
-        },
-        get_json: |live| live.decode_thread.into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::decode_thread::store(render, live.decode_thread)
-        },
-        config_seed: |live, render, _env| {
-            if let Some(enabled) = crate::config_fields::decode_thread::get(render) {
-                live.decode_thread = enabled;
-            }
-        },
-    },
-    OptionSpec {
-        key: "output_channel_mapping",
-        kind: OptionKind::Enum(&["by_index", "by_name"]),
-        default: OptionDefault::Str("by_index"),
-        flags: OptionFlags::NONE,
-        group: None,
-        i18n_key: "audio.channelMapping",
-        help_i18n_key: None,
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_OUTPUT_CHANNEL_MAPPING),
-        set: |live, raw, _env| {
-            let mapping = OutputChannelMapping::from_str(raw_str(raw)?)?;
-            live.output_channel_mapping = mapping;
-            Some(mapping.as_str().to_string())
-        },
-        get_json: |live| live.output_channel_mapping.as_str().into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::output_channel_mapping::store(render, live.output_channel_mapping)
-        },
-        config_seed: |live, render, _env| {
-            if let Some(mapping) = crate::config_fields::output_channel_mapping::get(render) {
-                live.output_channel_mapping = mapping;
-            }
-        },
-    },
-    OptionSpec {
-        key: "object_generator_id",
-        kind: OptionKind::Str,
-        default: OptionDefault::Str(""),
-        flags: OptionFlags::REPLAN,
-        group: None,
-        i18n_key: "twoDSources.objectGeneratorLabel",
-        help_i18n_key: Some("help.objectGenerator"),
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_OBJECT_GENERATOR),
-        set: |live, raw, _env| {
-            // Each generator keeps its own parameter values (the plugin
-            // store is keyed by generator id), so a change of selection has
-            // nothing to clear.
-            let id = raw_str(raw)?;
-            live.object_generator_id = id.to_string();
-            Some(id.to_string())
-        },
-        get_json: |live| live.object_generator_id.as_str().into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::object_generator_id::store(render, &live.object_generator_id)
-        },
-        config_seed: |live, render, _env| {
-            if let Some(id) = crate::config_fields::object_generator_id::get(render) {
-                live.object_generator_id = id;
-            }
-        },
-    },
-    OptionSpec {
-        key: "phantom_extract_mode",
-        kind: OptionKind::Enum(&["off", "broadband", "spectral"]),
-        default: OptionDefault::Str("off"),
-        flags: OptionFlags::REPLAN,
-        group: None,
-        i18n_key: "twoDSources.phantomLabel",
-        help_i18n_key: Some("help.phantomExtract"),
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_PHANTOM_EXTRACT),
-        set: |live, raw, _env| {
-            let mode = match raw {
-                RawOptionValue::Str(s) => PhantomExtractMode::from_str(s)?,
-                // Backward compatibility for the old boolean legacy OSC
-                // address: enabling selects the historical broadband default.
-                RawOptionValue::Number(n) => {
-                    if *n == 0.0 {
-                        PhantomExtractMode::Off
-                    } else {
-                        PhantomExtractMode::Broadband
-                    }
-                }
-                RawOptionValue::Bool(false) => PhantomExtractMode::Off,
-                RawOptionValue::Bool(true) => PhantomExtractMode::Broadband,
-                RawOptionValue::Numbers(_) | RawOptionValue::Null => return None,
-            };
-            live.phantom_extract_mode = mode;
-            Some(mode.as_str().to_string())
-        },
-        get_json: |live| live.phantom_extract_mode.as_str().into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::phantom_extract_mode::store(render, live.phantom_extract_mode);
-            render.phantom_enabled = None;
-            if let Some(params) = render.phantom_params.as_mut() {
-                params.remove("method");
-                if params.is_empty() {
-                    render.phantom_params = None;
-                }
-            }
-        },
-        config_seed: |live, render, _env| {
-            if let Some(mode) = crate::config_fields::phantom_extract_mode::get(render) {
-                live.phantom_extract_mode = mode;
-            }
-        },
-    },
-    OptionSpec {
-        key: "crossover_type",
-        kind: OptionKind::Enum(&["lr4", "fir"]),
-        default: OptionDefault::Str("lr4"),
-        // No REPLAN: the speaker stage compares the live value against the
-        // bank it built every frame and rebuilds the filter bank itself; no
-        // synthesized-object topology depends on it.
-        flags: OptionFlags::NONE,
-        group: Some(&CROSSOVER),
-        i18n_key: "renderer.crossoverTypeLabel",
-        help_i18n_key: Some("help.crossoverType"),
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_CROSSOVER_TYPE),
-        set: |live, raw, _env| {
-            let crossover_type = CrossoverType::from_str(raw_str(raw)?)?;
-            live.crossover_type = crossover_type;
-            Some(crossover_type.as_str().to_string())
-        },
-        get_json: |live| live.crossover_type.as_str().into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::crossover_type::store(render, live.crossover_type)
-        },
-        config_seed: |live, render, _env| {
-            if let Some(crossover_type) = crate::config_fields::crossover_type::get(render) {
-                live.crossover_type = crossover_type;
-            }
-        },
-    },
-    OptionSpec {
-        key: "crossover_fir_transition_ratio",
-        kind: CROSSOVER_FIR_TRANSITION_RATIO_KIND,
-        default: OptionDefault::Float(0.5),
-        // No REPLAN, same as crossover_type: the speaker stage compares the
-        // live value against the bank it built every frame and rebuilds the
-        // FIR bank itself when it moves.
-        flags: OptionFlags::NONE,
-        group: Some(&CROSSOVER),
-        i18n_key: "renderer.crossoverTransitionLabel",
-        help_i18n_key: Some("help.crossoverFirTransition"),
-        legacy_control_addr: LegacyAddr::Exact(
-            osc_contract::CONTROL_CROSSOVER_FIR_TRANSITION_RATIO,
-        ),
-        set: |live, raw, _env| {
-            let v = raw_float(raw, CROSSOVER_FIR_TRANSITION_RATIO_KIND)?;
-            live.crossover_fir_transition_ratio = v;
-            Some(format!("{v}"))
-        },
-        get_json: |live| live.crossover_fir_transition_ratio.into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::crossover_fir_transition_ratio::store(
-                render,
-                live.crossover_fir_transition_ratio,
-            )
-        },
-        config_seed: |live, render, _env| {
-            if let Some(ratio) = crate::config_fields::crossover_fir_transition_ratio::get(render) {
-                live.crossover_fir_transition_ratio =
-                    clamp_to(CROSSOVER_FIR_TRANSITION_RATIO_KIND, ratio);
-            }
-        },
-    },
+/// Every live option: the `declared` rows, then the rows written by hand.
+/// Iterated by the OSC dispatcher, persistence, seeding, the snapshot, the
+/// schema dump, and the conformance net.
+pub static LIVE_OPTIONS: &[OptionSpec] = &concat_rows::<
+    { declared::DECLARED_ROWS.len() + HAND_WIRED_ROWS.len() },
+>(declared::DECLARED_ROWS, HAND_WIRED_ROWS);
+
+const fn concat_rows<const N: usize>(a: &[OptionSpec], b: &[OptionSpec]) -> [OptionSpec; N] {
+    let mut rows = [a[0]; N];
+    let mut i = 0;
+    while i < b.len() {
+        rows[a.len() + i] = b[i];
+        i += 1;
+    }
+    i = 0;
+    while i < a.len() {
+        rows[i] = a[i];
+        i += 1;
+    }
+    rows
+}
+
+/// The options whose live value sits inside a larger structure (the binaural
+/// stage, the room, the evaluation layer, the hybrid backend), so that they
+/// cannot be [`declared`].
+const HAND_WIRED_ROWS: &[OptionSpec] = &[
     OptionSpec {
         key: "hrir_update_lattice",
         kind: OptionKind::Enum(&["exact", "fine", "balanced", "coarse"]),
@@ -1165,168 +1009,6 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         config_seed: |live, render, _env| {
             if let Some(lattice) = crate::config_fields::hrir_update_lattice::get(render) {
                 live.binaural.hrir_update_lattice = lattice;
-            }
-        },
-    },
-    // ── Gain stage, loudness, transitions, DRC ──────────────────────────
-    //
-    // Migrated from dedicated handlers; the dedicated addresses stay as
-    // aliases and the flat snapshot keys (`autoGain`, `autoGainCeilingDb`,
-    // `rampMode`, `/state/loudness` `enabled`, `/state/input` `drcMode` /
-    // `drcWeight`) are still emitted. Like every option they reach
-    // `config.yaml` on an explicit Save. None re-plans anything: they
-    // are read per frame (gain stage, ramps) or pushed to the decoder.
-    OptionSpec {
-        key: "auto_gain",
-        kind: OptionKind::Bool,
-        default: OptionDefault::Bool(crate::config_fields::auto_gain::DEFAULT),
-        flags: OptionFlags::NONE,
-        group: None,
-        i18n_key: "autoGain.title",
-        help_i18n_key: Some("help.master.autoGain"),
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_AUTO_GAIN),
-        set: |live, raw, _env| {
-            let enabled = raw_bool(raw)?;
-            live.auto_gain = enabled;
-            Some(bool_canonical(enabled))
-        },
-        get_json: |live| live.auto_gain.into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::auto_gain::store(render, live.auto_gain)
-        },
-        config_seed: |live, render, _env| {
-            if let Some(enabled) = crate::config_fields::auto_gain::get(render) {
-                live.auto_gain = enabled;
-            }
-        },
-    },
-    OptionSpec {
-        key: "auto_gain_ceiling_db",
-        kind: AUTO_GAIN_CEILING_DB_KIND,
-        default: OptionDefault::Float(crate::config_fields::auto_gain_ceiling_db::DEFAULT),
-        flags: OptionFlags::NONE,
-        group: None,
-        i18n_key: "autoGain.ceiling",
-        help_i18n_key: Some("help.master.ceiling"),
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_AUTO_GAIN_CEILING),
-        set: |live, raw, _env| {
-            let db = raw_float(raw, AUTO_GAIN_CEILING_DB_KIND)?;
-            live.auto_gain_ceiling_db = db;
-            Some(format!("{db}"))
-        },
-        get_json: |live| live.auto_gain_ceiling_db.into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::auto_gain_ceiling_db::store(render, live.auto_gain_ceiling_db)
-        },
-        // Seeded as configured (not clamped), exactly as before the
-        // migration; only a client write is bounded.
-        config_seed: |live, render, _env| {
-            if let Some(db) = crate::config_fields::auto_gain_ceiling_db::get(render) {
-                live.auto_gain_ceiling_db = db;
-            }
-        },
-    },
-    OptionSpec {
-        key: "use_loudness",
-        kind: OptionKind::Bool,
-        default: OptionDefault::Bool(crate::config_fields::use_loudness::DEFAULT),
-        flags: OptionFlags::NONE,
-        group: None,
-        i18n_key: "section.loudness",
-        help_i18n_key: Some("help.drc.loudness"),
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_LOUDNESS),
-        set: |live, raw, _env| {
-            let enabled = raw_bool(raw)?;
-            live.use_loudness = enabled;
-            Some(bool_canonical(enabled))
-        },
-        get_json: |live| live.use_loudness.into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::use_loudness::store(render, live.use_loudness)
-        },
-        config_seed: |live, render, _env| {
-            if let Some(enabled) = crate::config_fields::use_loudness::get(render) {
-                live.use_loudness = enabled;
-            }
-        },
-    },
-    OptionSpec {
-        key: "ramp_mode",
-        kind: OptionKind::Enum(&["off", "frame", "interp", "sample"]),
-        default: OptionDefault::Str(crate::config_fields::ramp_mode::DEFAULT),
-        flags: OptionFlags::NONE,
-        group: None,
-        i18n_key: "audio.rampMode",
-        help_i18n_key: None,
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_RAMP_MODE),
-        set: |live, raw, _env| {
-            let mode = RampMode::from_str(raw_str(raw)?)?;
-            live.ramp_mode = mode;
-            Some(mode.as_str().to_string())
-        },
-        get_json: |live| live.ramp_mode.as_str().into(),
-        config_store: |render, live, _env| {
-            crate::config_fields::ramp_mode::store(render, live.ramp_mode.as_str())
-        },
-        config_seed: |live, render, _env| {
-            if let Some(mode) = crate::config_fields::ramp_mode::get(render)
-                .as_deref()
-                .and_then(RampMode::from_str)
-            {
-                live.ramp_mode = mode;
-            }
-        },
-    },
-    OptionSpec {
-        key: "drc_mode",
-        // Free-form: the modes are the bridge's (`supportedDrcModes` on
-        // `/state/input`), not a closed set the renderer knows.
-        kind: OptionKind::Str,
-        default: OptionDefault::Str("Off"),
-        flags: OptionFlags::NONE,
-        group: None,
-        i18n_key: "input.drc",
-        help_i18n_key: Some("help.drc.mode"),
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_INPUT_DRC_MODE),
-        set: |live, raw, _env| {
-            let mode = raw_str(raw)?;
-            if live.drc_mode != mode {
-                live.drc_mode = mode.to_string();
-            }
-            Some(mode.to_string())
-        },
-        get_json: |live| live.drc_mode.as_str().into(),
-        config_store: |render, live, _env| {
-            render.drc_mode = (live.drc_mode != "Off").then(|| live.drc_mode.clone());
-        },
-        config_seed: |live, render, _env| {
-            if let Some(mode) = render.drc_mode.as_ref() {
-                live.drc_mode = mode.clone();
-            }
-        },
-    },
-    OptionSpec {
-        key: "drc_weight",
-        kind: DRC_WEIGHT_KIND,
-        default: OptionDefault::Float(1.0),
-        flags: OptionFlags::NONE,
-        group: None,
-        i18n_key: "input.drc_weight",
-        help_i18n_key: Some("help.drc.weight"),
-        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_INPUT_DRC_WEIGHT),
-        set: |live, raw, _env| {
-            let weight = raw_float(raw, DRC_WEIGHT_KIND)?;
-            live.drc_weight = weight;
-            Some(format!("{weight}"))
-        },
-        get_json: |live| live.drc_weight.into(),
-        config_store: |render, live, _env| {
-            render.drc_weight =
-                ((live.drc_weight - 1.0).abs() > 1e-4).then(|| round6(live.drc_weight));
-        },
-        config_seed: |live, render, _env| {
-            if let Some(weight) = render.drc_weight {
-                live.drc_weight = clamp_to(DRC_WEIGHT_KIND, weight);
             }
         },
     },
@@ -1798,7 +1480,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
     },
     OptionSpec {
         key: "evaluation_cartesian_z_neg_size",
-        kind: GRID_CELLS_KIND,
+        kind: GRID_CELLS_OR_NONE_KIND,
         default: OptionDefault::Build,
         flags: OptionFlags::NONE,
         group: Some(&EVALUATION),
@@ -1809,7 +1491,7 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
             tail: "z_neg_size",
         },
         set: |live, raw, _env| {
-            let cells = raw_int(raw, GRID_CELLS_KIND)?;
+            let cells = raw_int(raw, GRID_CELLS_OR_NONE_KIND)?;
             live.evaluation.cartesian.z_neg_size = cells as usize;
             Some(cells.to_string())
         },
@@ -2101,8 +1783,10 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         },
         set: |live, raw, _env| {
             let v = raw_float(raw, HYBRID_CURVE_SMOOTHING_KIND)?;
-            // The old handler's tolerance: float noise is no change.
-            if (live.hybrid.curve_smoothing - v).abs() > 1e-6 {
+            // The old handler's tolerance: float noise is no change. A NaN
+            // compares unequal to nothing, so it is replaced outright.
+            let current = live.hybrid.curve_smoothing;
+            if current.is_nan() || (current - v).abs() > 1e-6 {
                 live.hybrid.curve_smoothing = v;
             }
             Some(format!("{v}"))
@@ -3176,7 +2860,104 @@ pub fn reset_live_to_defaults(live: &mut LiveParams, env: &OptionEnv) {
             log::warn!("live option '{}' rejected its declared default", spec.key);
         }
     }
-    live.placement = crate::placement::PlacementState::default();
+    // The family table is the loaded bridge's, not a setting: only the
+    // families' own settings go back to their defaults.
+    live.placement.reset_settings();
+}
+
+/// Seed one option from a loaded config, within the bounds its setter
+/// enforces on the wire.
+///
+/// `config.yaml` is edited by hand and copied between machines, so its values
+/// are no more trusted than an OSC argument; but the rows' `config_seed`
+/// copy them as they are. A value the option's kind does not admit goes
+/// through the setter instead, which clamps a finite number as it would one
+/// from the wire; what the setter refuses (NaN, an infinity) leaves the
+/// option as it was before the file was read. A NaN gain read from the file
+/// would otherwise render NaN on every speaker. If the option already held
+/// an unsound value — a host's boot copied it from the same file before the
+/// seed — it gets its declared default.
+fn seed_option(spec: &OptionSpec, live: &mut LiveParams, render: &RenderConfig, env: &OptionEnv) {
+    let before = (spec.get_json)(live);
+    (spec.config_seed)(live, render, env);
+    let seeded = (spec.get_json)(live);
+    if spec.kind.admits(&seeded) {
+        return;
+    }
+    let clamped = set_from_json(spec, live, &seeded, env).is_some()
+        && spec.kind.admits(&(spec.get_json)(live));
+    // What the option held before is not necessarily sound either: a host's
+    // boot copies some values from the same file before seeding (the master
+    // gain into the renderer it builds, say). Failing that, the declared
+    // default.
+    if !clamped
+        && !(set_from_json(spec, live, &before, env).is_some()
+            && spec.kind.admits(&(spec.get_json)(live)))
+    {
+        let _ = set_from_json(spec, live, &spec.default.to_json(), env);
+    }
+    log::warn!(
+        "config: {} = {seeded} is outside what the option accepts; using {}",
+        spec.key,
+        (spec.get_json)(live)
+    );
+}
+
+/// Apply a `get_json`-shaped value through the option's setter.
+fn set_from_json(
+    spec: &OptionSpec,
+    live: &mut LiveParams,
+    value: &serde_json::Value,
+    env: &OptionEnv,
+) -> Option<String> {
+    with_raw_of(value, |raw| (spec.set)(live, raw, env))
+}
+
+/// Run `f` on the raw form of a `get_json`-shaped value.
+fn with_raw_of<T>(
+    value: &serde_json::Value,
+    f: impl FnOnce(&RawOptionValue) -> Option<T>,
+) -> Option<T> {
+    use serde_json::Value;
+    match value {
+        Value::Null => f(&RawOptionValue::Null),
+        Value::Bool(b) => f(&RawOptionValue::Bool(*b)),
+        Value::Number(n) => f(&RawOptionValue::Number(n.as_f64()?)),
+        Value::String(s) => f(&RawOptionValue::Str(s)),
+        Value::Array(items) => {
+            let numbers: Option<Vec<f64>> = items.iter().map(Value::as_f64).collect();
+            f(&RawOptionValue::Numbers(&numbers?))
+        }
+        Value::Object(_) => None,
+    }
+}
+
+/// Bring every host option back within its kind: `seed_option`'s guard,
+/// for a host whose state was built straight from the config (the standalone
+/// renderer's audio output and live input are) rather than seeded through
+/// the rows. A value its kind does not admit goes through the row's setter,
+/// which clamps a finite number; what the setter refuses gets the declared
+/// default. Returns the keys it changed, each also logged.
+pub fn bound_host_options<H>(host: &H, specs: &[HostOptionSpec<H>]) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    for spec in specs {
+        let value = (spec.get_json)(host);
+        if spec.kind.admits(&value) {
+            continue;
+        }
+        let clamped = with_raw_of(&value, |raw| (spec.set)(host, raw)).is_some()
+            && spec.kind.admits(&(spec.get_json)(host));
+        if !clamped {
+            let _ = with_raw_of(&spec.default.to_json(), |raw| (spec.set)(host, raw));
+        }
+        log::warn!(
+            "config: {} = {value} is outside what the option accepts; using {}",
+            spec.key,
+            (spec.get_json)(host)
+        );
+        changed.push(spec.key);
+    }
+    changed
 }
 
 /// Seed every declared live option — plus the document-valued companion the
@@ -3186,17 +2967,17 @@ pub fn reset_live_to_defaults(live: &mut LiveParams, env: &OptionEnv) {
 /// two boot paths cannot drift (the FFI/CLI parity bug class).
 pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig, env: &OptionEnv) {
     for spec in LIVE_OPTIONS {
-        (spec.config_seed)(live, render, env);
+        seed_option(spec, live, render, env);
     }
     // Migrate the old phantom boolean + `phantom_params.method` split into the
     // explicit three-position mode. A remembered method remains available even
     // if the old enable switch was off.
-    if render.phantom_extract_mode.is_none() {
+    if render.options.phantom_extract_mode.is_none() {
         let legacy_method = render
             .phantom_params
             .as_ref()
             .and_then(|params| params.get("method").copied());
-        live.phantom_extract_mode = match (render.phantom_enabled, legacy_method) {
+        live.options.phantom_extract_mode = match (render.phantom_enabled, legacy_method) {
             (Some(true), Some(v)) if v >= 0.5 => PhantomExtractMode::Spectral,
             (Some(true), _) => PhantomExtractMode::Broadband,
             (_, Some(v)) if v >= 0.5 => PhantomExtractMode::Spectral,
@@ -3208,22 +2989,27 @@ pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig, env: 
     // Old configs had no global master. Infer it once from an active child so
     // upgrading preserves audible behaviour; new configs always persist the
     // master explicitly, including false.
-    if render.synthetic_objects_enabled.is_none() {
-        let generator_active = !live.object_generator_id.trim().is_empty()
-            && !live.object_generator_id.eq_ignore_ascii_case("none");
-        live.synthetic_objects_enabled = render.phantom_enabled.unwrap_or(false)
+    if render.options.synthetic_objects_enabled.is_none() {
+        let generator_active = !live.options.object_generator_id.trim().is_empty()
+            && !live
+                .options
+                .object_generator_id
+                .eq_ignore_ascii_case("none");
+        live.options.synthetic_objects_enabled = render.phantom_enabled.unwrap_or(false)
             || generator_active
             || render
+                .options
                 .phantom_extract_mode
                 .is_some_and(|m| m != PhantomExtractMode::Off);
     }
-    // Placement: absent = every family at its built-in defaults. A config
-    // from before placement existed carries the single `virtual_bed` that
-    // applied to every stream: that is the generic family in manual mode.
+    // Placement: absent = every family at its defaults. A config from before
+    // placement existed carries the single `virtual_bed` that applied to
+    // every stream: that is the generic family in manual mode. The family
+    // table (the bridge's catalogue) is kept either way.
     if let Some(placement) = render.placement.as_ref() {
-        live.placement = crate::placement::PlacementState::from_config(placement);
+        live.placement.load_config(placement);
     } else if let Some(bed) = render.virtual_bed.clone() {
-        live.placement = crate::placement::PlacementState::from_legacy_virtual_bed(bed);
+        live.placement.load_legacy_virtual_bed(bed);
     }
 }
 
@@ -3245,12 +3031,64 @@ pub fn seed_rebuilding_rows_from_config(
             continue;
         }
         let before = (spec.get_json)(live);
-        (spec.config_seed)(live, render, env);
+        seed_option(spec, live, render, env);
         if (spec.get_json)(live) != before {
             rebuild = rebuild.max(effect);
         }
     }
     rebuild
+}
+
+/// Write client values into a config as a save of a live change would: each
+/// value through its row's `set` (validated and bounded exactly as an OSC
+/// write), then its row's `config_store`. Rows not named keep what the config
+/// says. For a config edited without a renderer (the command line): the rows
+/// work on a scratch [`LiveParams`] seeded from `render`. Returns the keys
+/// that are unknown, not offered on this host, or whose value was refused.
+pub fn store_client_values(
+    render: &mut RenderConfig,
+    values: &[(&str, RawOptionValue)],
+    env: &OptionEnv,
+) -> Vec<String> {
+    let mut live = LiveParams::default();
+    reset_live_to_defaults(&mut live, env);
+    seed_live_from_config(&mut live, render, env);
+    let mut refused = Vec::new();
+    let mut applied = Vec::new();
+    for (key, raw) in values {
+        match find(key).filter(|spec| env.offers(spec)) {
+            Some(spec) if (spec.set)(&mut live, raw, env).is_some() => applied.push(spec),
+            _ => refused.push((*key).to_string()),
+        }
+    }
+    for spec in applied {
+        if !pin_room_ratio(render, &live, spec.key) {
+            (spec.config_store)(render, &live, env);
+        }
+    }
+    refused
+}
+
+/// A room value given on its own is pinned as its ratio key, not stored as a
+/// save writes it. A save stores the room in metres against the layout
+/// radius, width being the reference, so a width other than 1 is folded into
+/// the radius when the file is loaded again; a launch never reloads, and the
+/// renderer build reads the ratio keys (which win over the metres in a loaded
+/// config, `config_fields::room::resolve`). `false` for any other key.
+fn pin_room_ratio(render: &mut RenderConfig, live: &LiveParams, key: &str) -> bool {
+    match key {
+        "room_ratio" => {
+            let [width, length, height] = live.room_ratio;
+            render.room_ratio = Some(format!("{width},{length},{height}"));
+        }
+        "room_ratio_rear" => render.room_ratio_rear = Some(live.room_ratio_rear),
+        "room_ratio_lower" => render.room_ratio_lower = Some(live.room_ratio_lower),
+        "room_ratio_center_blend" => {
+            render.room_ratio_center_blend = Some(live.room_ratio_center_blend)
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// Write every declared live option — plus the placement — into a config

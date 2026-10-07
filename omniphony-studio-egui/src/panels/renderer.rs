@@ -103,7 +103,7 @@ pub enum OutputMode {
 }
 
 impl OutputMode {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             OutputMode::Speaker => t("outputMode.speakers"),
             OutputMode::BinauralDirect => t("outputMode.headphones"),
@@ -282,7 +282,7 @@ impl StudioSpike {
         });
     }
 
-    fn output_mode_row(&mut self, ui: &mut Ui) {
+    pub(crate) fn output_mode_row(&mut self, ui: &mut Ui) {
         let (current, room) = {
             let live = self.host.read();
             let binaural = live.app.binaural.as_ref();
@@ -1226,15 +1226,19 @@ impl StudioSpike {
         }
     }
 
-    /// A group that is its select: how gains move between frames.
+    /// Bar: how gains move between frames. Inset, per sample only: how many
+    /// samples apart a moving object's gains are looked up.
     fn ramp_group(&mut self, ui: &mut Ui) {
-        let current = {
+        let (current, stride) = {
             let live = self.host.read();
-            live.app
-                .audio
-                .ramp_mode
-                .clone()
-                .unwrap_or_else(|| "frame".into())
+            (
+                live.app
+                    .audio
+                    .ramp_mode
+                    .clone()
+                    .unwrap_or_else(|| "frame".into()),
+                live.option_f64("sample_ramp_stride").unwrap_or(8.0),
+            )
         };
         let current = if RAMP_MODES.iter().any(|(id, _)| *id == current) {
             current
@@ -1242,7 +1246,8 @@ impl StudioSpike {
             "frame".to_owned()
         };
         let mut chosen = current.clone();
-        Group::new(t("renderer.rampTitle"))
+        let mut stride = stride as f32;
+        let stride_changed = Group::new(t("renderer.rampTitle"))
             .info("rampMode")
             .actions(|ui| {
                 widgets::bounded_combo(ui, 140.0, |ui, w| {
@@ -1261,9 +1266,26 @@ impl StudioSpike {
                         })
                 });
             })
-            .bar(ui);
+            .show(ui, |ui| {
+                current == "sample"
+                    && widgets::value_slider_help(
+                        ui,
+                        t("audio.sampleRampStride"),
+                        "help.audio.sampleRampStride",
+                        &mut stride,
+                        1.0..=32.0,
+                        1.0,
+                        |v| format!("{v:.0}"),
+                    )
+            });
         if chosen != current {
             engine::control_ramp_mode(&self.host, chosen);
+        }
+        if stride_changed {
+            self.set_option(
+                "sample_ramp_stride",
+                serde_json::json!(stride.round() as i64),
+            );
         }
     }
 

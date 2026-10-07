@@ -660,6 +660,11 @@ impl SpeakerLayout {
     /// corners of the default 1:2 room (fronts ±26.57°, wides ±63.4°, backs
     /// ±153.4°, heights on the ceiling corners) rather than at the
     /// recommendation's angles.
+    // The TSL/TSR distance `1.4142136` parses to the f32 one ULP above
+    // `std::f32::consts::SQRT_2` (0x3fb504f4 against 0x3fb504f3). Swapping in
+    // the constant would move those two speakers and so change this preset's
+    // render, so the literal stays and the lint is silenced here only.
+    #[allow(clippy::approx_constant)]
     pub fn preset_9_1_6() -> Result<Self> {
         Self::from_speakers(vec![
             // Bed layer (9.1)
@@ -815,15 +820,6 @@ mod tests {
     }
 
     #[test]
-    fn test_speaker_creation() {
-        let speaker = Speaker::new("FL", -30.0, 0.0);
-        assert_eq!(speaker.name, "FL");
-        assert_eq!(speaker.azimuth, -30.0);
-        assert_eq!(speaker.elevation, 0.0);
-        assert!(speaker.validate().is_ok());
-    }
-
-    #[test]
     fn test_speaker_validation() {
         // Valid speaker
         assert!(Speaker::new("FL", -30.0, 0.0).validate().is_ok());
@@ -935,31 +931,19 @@ mod integration_tests {
             .join(name)
     }
 
+    /// The shipped layouts load, with the speakers their names promise. The
+    /// height-less ones live under `layouts/legacy/`.
     #[test]
-    fn test_load_5_1_yaml() {
-        // The height-less layouts now live under layouts/legacy/.
-        let layout = SpeakerLayout::from_file(layout_path("legacy/5.1.yaml"));
-        assert!(
-            layout.is_ok(),
-            "Failed to load legacy/5.1.yaml: {:?}",
-            layout.err()
-        );
-
-        let layout = layout.unwrap();
-        assert_eq!(layout.num_speakers(), 6);
-    }
-
-    #[test]
-    fn test_load_7_1_4_yaml() {
-        let layout = SpeakerLayout::from_file(layout_path("7.1.4.yaml"));
-        assert!(
-            layout.is_ok(),
-            "Failed to load 7.1.4.yaml: {:?}",
-            layout.err()
-        );
-
-        let layout = layout.unwrap();
-        assert_eq!(layout.num_speakers(), 12);
+    fn bundled_layouts_load_with_their_speaker_counts() {
+        for (file, speakers) in [
+            ("legacy/5.1.yaml", 6),
+            ("7.1.4.yaml", 12),
+            ("9.1.6.yaml", 16),
+        ] {
+            let layout = SpeakerLayout::from_file(layout_path(file))
+                .unwrap_or_else(|e| panic!("{file}: {e:?}"));
+            assert_eq!(layout.num_speakers(), speakers, "{file}");
+        }
     }
 
     #[test]
@@ -983,18 +967,5 @@ mod integration_tests {
                 (y.x, y.y, y.z)
             );
         }
-    }
-
-    #[test]
-    fn test_load_9_1_6_yaml() {
-        let layout = SpeakerLayout::from_file(layout_path("9.1.6.yaml"));
-        assert!(
-            layout.is_ok(),
-            "Failed to load 9.1.6.yaml: {:?}",
-            layout.err()
-        );
-
-        let layout = layout.unwrap();
-        assert_eq!(layout.num_speakers(), 16);
     }
 }

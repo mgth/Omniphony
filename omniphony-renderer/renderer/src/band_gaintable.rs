@@ -388,9 +388,9 @@ mod tests {
 
     #[test]
     fn gain_discontinuity_measures_the_configuration_jump_not_the_level() {
-        let h = std::f32::consts::FRAC_1_SQRT_2;
-        // cell 0 normalises to (h, h), cell 1 to (1, 0): the jump is the chord
-        // ‖(h−1, h)‖ = √(2 − √2), independent of cell 1 being at half level.
+        // cell 0 normalises to (h, h) with h = 1/√2, cell 1 to (1, 0): the jump
+        // is the chord ‖(h−1, h)‖ = √(2 − √2), independent of cell 1 being at
+        // half level.
         let (metadata, values) = decode(&fixture().serialize_gain_discontinuity(), 4);
         assert_eq!(metadata["speaker_index"], GAIN_DISCONTINUITY_INDEX);
         let expected = (2.0f32 - std::f32::consts::SQRT_2).sqrt();

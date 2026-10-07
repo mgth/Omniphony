@@ -18,7 +18,7 @@ use egui::{RichText, Ui};
 use crate::app::StudioSpike;
 use crate::host::channels::{
     Channel, CoordMode, PlacementMode, adm_to_meters, adm_to_polar, build_layout_payload,
-    effective_channels_for, family_placement, meters_to_adm, polar_to_adm,
+    effective_channels_for, family_label, family_placement, meters_to_adm, polar_to_adm,
 };
 use crate::host::commands::engine;
 use crate::i18n::t;
@@ -50,7 +50,7 @@ impl StudioSpike {
         let Some(name) = self.selected_channel() else {
             return;
         };
-        let (channel, room, scale_m, direct, family, mode) = {
+        let (channel, room, scale_m, direct, family, family_name, mode) = {
             let live = self.host.read();
             let family = live.editing_family;
             let channels = effective_channels_for(&live.channels, &live.app, family);
@@ -64,10 +64,11 @@ impl StudioSpike {
                 live.app.room_ratio.scale_m.max(0.001),
                 direct,
                 family,
+                family_label(&live.app, family),
                 family_placement(&live.app, family).effective_mode,
             )
         };
-        let trailing = format!("{name} · {}", t(family.i18n_key()));
+        let trailing = format!("{name} · {family_name}");
         section::pinned_header(ui, t("channelEdit.title"), Some(&trailing));
 
         // The gain first, before the routing: an input trim that applies in

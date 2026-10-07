@@ -18,11 +18,12 @@ mod bridge;
 mod logging;
 mod wav;
 
+use abi_stable::std_types::RVec;
 use abi_stable::{
     export_root_module, prefix_type::PrefixTypeTrait, sabi_trait::prelude::TD_Opaque,
 };
 use bridge::WavBridge;
-use bridge_api::{BridgeLib, BridgeLibRef, FormatBridge_TO, FormatBridgeBox};
+use bridge_api::{BridgeLib, BridgeLibRef, FormatBridge_TO, FormatBridgeBox, RSourceFamily};
 
 // `FormatBridge` is used through the proc-macro generated trait object impl.
 #[allow(unused_imports)]
@@ -34,6 +35,7 @@ fn get_library() -> BridgeLibRef {
     BridgeLib {
         new_bridge: create_bridge,
         set_host_log_sink,
+        source_families,
     }
     .leak_into_prefix()
 }
@@ -44,4 +46,9 @@ extern "C" fn create_bridge(strict: bool) -> FormatBridgeBox {
 
 extern "C" fn set_host_log_sink(sink: usize) {
     logging::register_host_log_sink(sink);
+}
+
+/// None of its own: its streams are `pcm`, the renderer's own family.
+extern "C" fn source_families() -> RVec<RSourceFamily> {
+    RVec::new()
 }

@@ -20,6 +20,10 @@ use crate::binaural::measured::ResampleKernel;
 /// loaded.
 const MAX_SECONDS: usize = 120;
 
+/// Input samples kept past the cap so the resampler's kernel still has its
+/// support at the last output sample it produces.
+const RESAMPLE_MARGIN: usize = 64;
+
 /// A file loaded and ready to play: mono, at the render rate, peak-normalised.
 ///
 /// Peak-normalised so the level control keeps meaning what it means everywhere
@@ -36,7 +40,7 @@ pub struct ObjectTestClip {
     /// What the file itself was, for the UI.
     pub source_rate: u32,
     pub source_channels: u16,
-    /// True when the tail was dropped at [`MAX_SECONDS`].
+    /// True when the tail was dropped at `MAX_SECONDS`.
     pub truncated: bool,
 }
 
@@ -49,17 +53,40 @@ impl ObjectTestClip {
 /// Read `path` and prepare it for playback at `target_rate`.
 pub fn load(path: &str, target_rate: u32) -> Result<ObjectTestClip, String> {
     let bytes = std::fs::read(Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
-    let wav = parse_wav(&bytes)?;
+    from_bytes(path, &bytes, target_rate)
+}
+
+/// Cut `mono` at the cap, in its own rate, before it is resampled; true when
+/// something was dropped.
+///
+/// Cutting only after resampling is not enough: the output is the input times
+/// target/source, and a header declaring a rate of a few hertz would have a
+/// short file expand to gigabytes first. The kernel's width of extra input
+/// keeps the last sample kept after resampling exact.
+fn cut_before_resampling(mut mono: Vec<f32>, source_rate: u32) -> (Vec<f32>, bool) {
+    // The rate is the file's own u32: on a 32-bit target 120 s of a header
+    // claiming tens of megahertz would wrap a plain multiplication.
+    let cap = MAX_SECONDS
+        .saturating_mul(source_rate as usize)
+        .saturating_add(RESAMPLE_MARGIN);
+    let truncated = mono.len() > cap;
+    mono.truncate(cap);
+    (mono, truncated)
+}
+
+/// [`load`] on the file's bytes; `path` only names it.
+fn from_bytes(path: &str, bytes: &[u8], target_rate: u32) -> Result<ObjectTestClip, String> {
+    let wav = parse_wav(bytes)?;
     let mono = downmix(&wav.samples, wav.channels);
-    let resampled = if wav.sample_rate == target_rate {
+    let (mono, mut truncated) = cut_before_resampling(mono, wav.sample_rate);
+    let mut samples = if wav.sample_rate == target_rate {
         mono
     } else {
         resample(&mono, wav.sample_rate, target_rate)
     };
     let max_len = MAX_SECONDS * target_rate.max(1) as usize;
-    let truncated = resampled.len() > max_len;
-    let mut samples = resampled;
-    if truncated {
+    if samples.len() > max_len {
+        truncated = true;
         samples.truncate(max_len);
     }
     if samples.is_empty() {
@@ -94,6 +121,10 @@ fn u16le(b: &[u8], at: usize) -> u16 {
 }
 fn u32le(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+}
+
+fn finite_or_silence(v: f32) -> f32 {
+    if v.is_finite() { v } else { 0.0 }
 }
 
 fn parse_wav(b: &[u8]) -> Result<Wav, String> {
@@ -149,13 +180,20 @@ fn parse_wav(b: &[u8]) -> Result<Wav, String> {
             .chunks_exact(4)
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2_147_483_648.0)
             .collect(),
+        // A float file can hold NaN or infinities; they read as silence; else
+        // one would survive the peak normalisation (f32::max skips NaN) and
+        // reach the render, or an infinite peak would zero the whole clip.
         (3, 32) => data
             .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .map(|c| finite_or_silence(f32::from_le_bytes([c[0], c[1], c[2], c[3]])))
             .collect(),
         (3, 64) => data
             .chunks_exact(8)
-            .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32)
+            .map(|c| {
+                finite_or_silence(f64::from_le_bytes([
+                    c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
+                ]) as f32)
+            })
             .collect(),
         _ => {
             return Err(format!(
@@ -378,5 +416,168 @@ mod tests {
     #[test]
     fn a_file_that_is_not_a_wav_is_refused_rather_than_guessed_at() {
         assert!(parse_wav(b"not a wav at all").is_err());
+    }
+
+    /// A WAV of `chunks` (id, body) after the RIFF/WAVE header, each padded to
+    /// an even size as the format requires.
+    fn riff(chunks: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut body = b"WAVE".to_vec();
+        for (id, data) in chunks {
+            body.extend_from_slice(*id);
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(data);
+            if data.len() % 2 == 1 {
+                body.push(0);
+            }
+        }
+        let mut b = b"RIFF".to_vec();
+        b.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        b.extend_from_slice(&body);
+        b
+    }
+
+    /// A 16-byte `fmt ` body.
+    fn fmt(tag: u16, channels: u16, rate: u32, bits: u16) -> Vec<u8> {
+        let align = channels * bits / 8;
+        let mut f = Vec::new();
+        f.extend_from_slice(&tag.to_le_bytes());
+        f.extend_from_slice(&channels.to_le_bytes());
+        f.extend_from_slice(&rate.to_le_bytes());
+        f.extend_from_slice(&(rate * align as u32).to_le_bytes());
+        f.extend_from_slice(&align.to_le_bytes());
+        f.extend_from_slice(&bits.to_le_bytes());
+        f
+    }
+
+    fn error_of(bytes: &[u8]) -> String {
+        match parse_wav(bytes) {
+            Ok(_) => panic!("the file was accepted"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn a_malformed_header_is_refused_with_its_reason() {
+        let pcm = vec![0u8; 8];
+        assert!(error_of(&riff(&[(b"data", pcm.clone())])).contains("no fmt chunk"));
+        assert!(error_of(&riff(&[(b"fmt ", fmt(1, 1, 48_000, 16))])).contains("no data chunk"));
+        let zero_channels = riff(&[(b"fmt ", fmt(1, 0, 48_000, 16)), (b"data", pcm.clone())]);
+        assert!(error_of(&zero_channels).contains("no channels or no sample rate"));
+        let zero_rate = riff(&[(b"fmt ", fmt(1, 1, 0, 16)), (b"data", pcm.clone())]);
+        assert!(error_of(&zero_rate).contains("no channels or no sample rate"));
+        for (tag, bits) in [(1, 12), (3, 16), (2, 16), (0x55, 0)] {
+            let file = riff(&[(b"fmt ", fmt(tag, 1, 48_000, bits)), (b"data", pcm.clone())]);
+            assert!(
+                error_of(&file).contains("unsupported WAVE format"),
+                "tag {tag}, {bits}-bit"
+            );
+        }
+        // A fmt chunk too short to hold a format is no fmt chunk at all.
+        let short = riff(&[(b"fmt ", vec![1, 0, 1, 0]), (b"data", pcm)]);
+        assert!(error_of(&short).contains("no fmt chunk"));
+    }
+
+    #[test]
+    fn odd_chunks_are_skipped_with_their_pad_byte() {
+        let pcm: Vec<u8> = [16_384i16, -16_384]
+            .iter()
+            .flat_map(|s| s.to_le_bytes())
+            .collect();
+        let file = riff(&[
+            (b"LIST", vec![7; 5]),
+            (b"fmt ", fmt(1, 1, 48_000, 16)),
+            (b"data", pcm),
+        ]);
+        let w = parse_wav(&file).expect("parse");
+        assert_eq!(w.samples.len(), 2);
+        assert!((w.samples[0] - 0.5).abs() < 1e-3 && (w.samples[1] + 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_data_chunk_longer_than_the_file_reads_what_is_there() {
+        let mut file = riff(&[
+            (b"fmt ", fmt(1, 1, 48_000, 16)),
+            (b"data", vec![0, 64, 0, 64]),
+        ]);
+        // Claim far more data than follows, as a truncated download would.
+        let at = file.len() - 4 - 4;
+        file[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let w = parse_wav(&file).expect("parse");
+        assert_eq!(w.samples.len(), 2);
+        // A trailing partial sample is dropped, not read past the end.
+        file.push(0x40);
+        assert_eq!(parse_wav(&file).expect("parse").samples.len(), 2);
+    }
+
+    #[test]
+    fn non_finite_float_samples_read_as_silence() {
+        let samples = [0.5f32, f32::NAN, f32::INFINITY, -0.25, f32::NEG_INFINITY];
+        let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let file = riff(&[(b"fmt ", fmt(3, 1, 48_000, 32)), (b"data", data)]);
+        let clip = from_bytes("nan.wav", &file, 48_000).expect("load");
+        assert!(
+            clip.samples.iter().all(|s| s.is_finite()),
+            "{:?}",
+            clip.samples
+        );
+        // The finite samples keep their shape: peak-normalised to 1.0.
+        assert_eq!(clip.samples, vec![1.0, 0.0, 0.0, -0.5, 0.0]);
+
+        let big = [1e300f64, -0.5];
+        let data: Vec<u8> = big.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let file = riff(&[(b"fmt ", fmt(3, 1, 48_000, 64)), (b"data", data)]);
+        let clip = from_bytes("big.wav", &file, 48_000).expect("load");
+        assert_eq!(
+            clip.samples,
+            vec![0.0, -1.0],
+            "out of f32 range reads as silence"
+        );
+    }
+
+    #[test]
+    fn an_all_invalid_or_silent_file_is_refused() {
+        let data: Vec<u8> = [f32::NAN; 4].iter().flat_map(|s| s.to_le_bytes()).collect();
+        let file = riff(&[(b"fmt ", fmt(3, 1, 48_000, 32)), (b"data", data)]);
+        assert!(
+            from_bytes("nan.wav", &file, 48_000)
+                .err()
+                .unwrap()
+                .contains("silent")
+        );
+        let file = riff(&[(b"fmt ", fmt(1, 1, 48_000, 16)), (b"data", Vec::new())]);
+        assert!(
+            from_bytes("empty.wav", &file, 48_000)
+                .err()
+                .unwrap()
+                .contains("no audio")
+        );
+    }
+
+    /// A header declaring a rate of a few hertz must not make a small file
+    /// expand past the cap while resampling: the input is cut first.
+    #[test]
+    fn a_tiny_declared_rate_is_cut_before_resampling() {
+        let source_rate = 2u32;
+        // Ten times the cap at the declared rate.
+        let frames = MAX_SECONDS * source_rate as usize * 10;
+        let data: Vec<u8> = (0..frames).map(|i| (i % 255) as u8 + 1).collect();
+        let file = riff(&[(b"fmt ", fmt(1, 1, source_rate, 8)), (b"data", data)]);
+        let clip = from_bytes("slow.wav", &file, 48_000).expect("load");
+        assert!(clip.truncated);
+        assert_eq!(clip.samples.len(), MAX_SECONDS * 48_000);
+
+        // What reaches the resampler: the cap in the source's own rate.
+        let (cut, truncated) = cut_before_resampling(vec![0.0; frames], source_rate);
+        assert!(truncated);
+        assert_eq!(
+            cut.len(),
+            MAX_SECONDS * source_rate as usize + RESAMPLE_MARGIN
+        );
+        let (kept, truncated) = cut_before_resampling(vec![0.0; 10], 48_000);
+        assert!(!truncated && kept.len() == 10, "a short clip is left whole");
+        // The largest rate a header can declare saturates the cap instead of
+        // wrapping it (it would wrap on a 32-bit target).
+        let (kept, truncated) = cut_before_resampling(vec![0.0; 10], u32::MAX);
+        assert!(!truncated && kept.len() == 10);
     }
 }

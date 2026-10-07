@@ -1,6 +1,5 @@
 use crate::cli::command::{
-    Cli, EvaluationModeArg, LogFormat, LogLevel, OutputBackend, OutputFileFormatArg, RampModeArg,
-    RenderArgSources, RenderArgs,
+    Cli, LogFormat, LogLevel, OutputBackend, OutputFileFormatArg, RenderArgSources, RenderArgs,
 };
 use anyhow::Result;
 use orender_engine::osc_settings::{OscOverrides, OscSettings};
@@ -23,39 +22,18 @@ fn output_file_format_str(fmt: OutputFileFormatArg) -> &'static str {
     }
 }
 
-/// Apply the override-only render args onto a `RenderConfig`.
-///
-/// These options (backend selection + backend-specific params, distance
-/// metrics, size-to-spread) are sourced by the renderer from the *config*
-/// rather than from `RenderArgs` directly (`build_spatial_renderer` reads
-/// `render_cfg`). Each arg is `Option`: `Some` overrides, `None` keeps whatever
-/// the on-disk config (or another host) already set. Shared by the save path
-/// (`effective_to_config`) and the runtime path (`render_config_from_path`) so
-/// a CLI flag takes effect on a live run and on `--save-config` identically.
+/// Apply the override-only render args onto a `RenderConfig`: the backend
+/// parameters and the size-to-spread policy, which are not registry options
+/// (the registered options' flags are folded by
+/// [`crate::cli::options::store_given_values`]). Each arg is `Option`: `Some`
+/// overrides, `None` keeps whatever the on-disk config already set. Shared by
+/// the save path (`effective_to_config`) and the run.
 pub(super) fn apply_render_cfg_overrides(
     render: &mut renderer::config::RenderConfig,
     args: &RenderArgs,
 ) {
-    if let Some(backend) = args.render_backend {
-        render.render_backend = Some(backend.as_config_str().to_string());
-    }
     if let Some(localize) = args.barycenter_localize {
         render.barycenter_localize = Some(localize);
-    }
-    if let Some(ceiling) = args.auto_gain_ceiling {
-        render.auto_gain_ceiling_db = Some(ceiling);
-    }
-    if let Some(b) = args.hybrid_external_backend {
-        render.hybrid_external_backend = Some(b.as_config_str().to_string());
-    }
-    if let Some(b) = args.hybrid_internal_backend {
-        render.hybrid_internal_backend = Some(b.as_config_str().to_string());
-    }
-    if let Some(s) = args.hybrid_curve_smoothing {
-        render.hybrid_curve_smoothing = Some(s);
-    }
-    if let Some(m) = args.hybrid_metric {
-        render.hybrid_metric = Some(m.as_config_str().to_string());
     }
     if let Some(v) = args.experimental_distance_distance_floor {
         render.experimental_distance_distance_floor = Some(v);
@@ -75,89 +53,14 @@ pub(super) fn apply_render_cfg_overrides(
     if let Some(v) = args.experimental_distance_position_error_span_scale {
         render.experimental_distance_position_error_span_scale = Some(v);
     }
-    if let Some(m) = args.distance_model_metric {
-        render.distance_model_metric = Some(m.as_config_str().to_string());
-    }
-    if let Some(m) = args.distance_diffuse_metric {
-        render.distance_diffuse_metric = Some(m.as_config_str().to_string());
-    }
-    if let Some(axes) = args.distance_diffuse_mirror_axes.as_deref() {
-        render.distance_diffuse_mirror_axes = Some(axes.to_string());
-    }
     if let Some(mode) = args.size_to_spread_mode {
         render.size_to_spread_mode = Some(mode.into());
     }
-    apply_adaptive_resampling_overrides(render, args);
 }
 
-/// Apply the override-only adaptive-resampling PI tuning args onto a config.
-/// Standalone (host-audio) only; `build_adaptive_resampling_config` reads these
-/// from `render_cfg`. `integral_discharge_ratio` is intentionally not exposed.
-fn apply_adaptive_resampling_overrides(
-    render: &mut renderer::config::RenderConfig,
-    args: &RenderArgs,
-) {
-    if let Some(v) = args.adaptive_resampling_kp_near {
-        render.adaptive_resampling_kp_near = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_ki {
-        render.adaptive_resampling_ki = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_max_adjust {
-        render.adaptive_resampling_max_adjust = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_enable_far_mode {
-        render.adaptive_resampling_enable_far_mode = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_force_silence_in_far_mode {
-        render.adaptive_resampling_force_silence_in_far_mode = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_hard_recover_high_in_far_mode {
-        render.adaptive_resampling_hard_recover_high_in_far_mode = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_hard_recover_low_in_far_mode {
-        render.adaptive_resampling_hard_recover_low_in_far_mode = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_far_mode_return_fade_in_ms {
-        render.adaptive_resampling_far_mode_return_fade_in_ms = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_high_recover_entry_margin_ms {
-        render.adaptive_resampling_high_recover_entry_margin_ms = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_low_recover_settle_stable_ms {
-        render.adaptive_resampling_low_recover_settle_stable_ms = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_low_recover_entry_margin_ms {
-        render.adaptive_resampling_low_recover_entry_margin_ms = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_low_recover_exit_margin_ms {
-        render.adaptive_resampling_low_recover_exit_margin_ms = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_low_recover_settle_margin_ms {
-        render.adaptive_resampling_low_recover_settle_margin_ms = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_low_recover_refill_delta_alpha {
-        render.adaptive_resampling_low_recover_refill_delta_alpha = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_control_smoothing_cutoff_hz {
-        render.adaptive_resampling_control_smoothing_cutoff_hz = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_control_smoothing_order {
-        render.adaptive_resampling_control_smoothing_order = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_use_pre_bridge_clock {
-        render.adaptive_resampling_use_pre_bridge_clock = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_use_output_pacing {
-        render.adaptive_resampling_use_output_pacing = Some(v);
-    }
-    if let Some(v) = args.adaptive_resampling_disable_backpressure {
-        render.adaptive_resampling_disable_backpressure = Some(v);
-    }
-}
-
-/// Write the renderer flags given explicitly on the command line into a render
-/// config, over whatever the file says.
+/// Write the renderer flags given explicitly on the command line that are not
+/// registry options (the VBAP build switches and spread keys, the master gain
+/// in dB) into a render config, over whatever the file says.
 ///
 /// The CLI's renderer params are [`renderer_params`] of the result, which is
 /// [`SpatialRendererParams::from_render_config`] — the resolution the embedded
@@ -176,61 +79,10 @@ pub(super) fn apply_explicit_renderer_args(
     sources: &RenderArgSources<'_>,
 ) {
     let explicit = |id: &str| sources.is_explicit(id);
-    if explicit("evaluation_polar_azimuth_resolution") {
-        render.vbap_azimuth_resolution = Some(args.evaluation_polar_azimuth_resolution);
-    }
-    if explicit("evaluation_polar_elevation_resolution") {
-        render.vbap_elevation_resolution = Some(args.evaluation_polar_elevation_resolution);
-    }
-    if explicit("evaluation_polar_distance_res") {
-        render.vbap_distance_res = Some(args.evaluation_polar_distance_res);
-    }
-    if explicit("evaluation_polar_distance_max") {
-        render.vbap_distance_max = Some(args.evaluation_polar_distance_max);
-    }
-    if explicit("render_evaluation_position_interpolation") {
-        render.render_evaluation_position_interpolation = Some(true);
-    } else if explicit("no_render_evaluation_position_interpolation") {
-        render.render_evaluation_position_interpolation = Some(false);
-    }
-    if explicit("render_evaluation_mode") {
-        let mode = match args.render_evaluation_mode {
-            EvaluationModeArg::Polar => renderer::live_params::LiveEvaluationMode::PrecomputedPolar,
-            EvaluationModeArg::Cartesian => {
-                renderer::live_params::LiveEvaluationMode::PrecomputedCartesian
-            }
-        };
-        render.render_evaluation_mode = Some(mode.as_str().to_string());
-    }
-    for (arg, field) in [
-        (
-            args.evaluation_cartesian_x_size,
-            &mut render.evaluation_cartesian_x_size,
-        ),
-        (
-            args.evaluation_cartesian_y_size,
-            &mut render.evaluation_cartesian_y_size,
-        ),
-        (
-            args.evaluation_cartesian_z_size,
-            &mut render.evaluation_cartesian_z_size,
-        ),
-        (
-            args.evaluation_cartesian_z_neg_size,
-            &mut render.evaluation_cartesian_z_neg_size,
-        ),
-    ] {
-        if arg.is_some() {
-            *field = arg;
-        }
-    }
     if explicit("vbap_allow_negative_z") {
         render.vbap_allow_negative_z = Some(true);
     } else if explicit("no_vbap_allow_negative_z") {
         render.vbap_allow_negative_z = Some(false);
-    }
-    if explicit("vbap_distance_model") {
-        render.vbap_distance_model = Some(args.vbap_distance_model.clone());
     }
     if explicit("spread_from_distance") {
         render.spread_from_distance = Some(true);
@@ -249,39 +101,8 @@ pub(super) fn apply_explicit_renderer_args(
     if explicit("vbap_spread_max") {
         render.vbap_spread_max = Some(args.vbap_spread_max);
     }
-    if explicit("room_ratio") {
-        render.room_ratio = Some(args.room_ratio.clone());
-    }
-    if args.room_ratio_rear.is_some() {
-        render.room_ratio_rear = args.room_ratio_rear;
-    }
-    if args.room_ratio_lower.is_some() {
-        render.room_ratio_lower = args.room_ratio_lower;
-    }
-    if args.room_ratio_center_blend.is_some() {
-        render.room_ratio_center_blend = args.room_ratio_center_blend;
-    }
     if explicit("master_gain") {
         render.master_gain = Some(args.master_gain);
-    }
-    if explicit("auto_gain") {
-        render.auto_gain = Some(true);
-    } else if explicit("no_auto_gain") {
-        render.auto_gain = Some(false);
-    }
-    if explicit("use_loudness") {
-        render.use_loudness = Some(true);
-    } else if explicit("no_loudness") {
-        render.use_loudness = Some(false);
-    }
-    if explicit("distance_diffuse") {
-        render.distance_diffuse = Some(true);
-    }
-    if explicit("distance_diffuse_threshold") {
-        render.distance_diffuse_threshold = Some(args.distance_diffuse_threshold);
-    }
-    if explicit("distance_diffuse_curve") {
-        render.distance_diffuse_curve = Some(args.distance_diffuse_curve);
     }
 }
 
@@ -353,29 +174,9 @@ pub(super) fn merge_render_config(
     if args.vbap_table.is_none() {
         args.vbap_table = cfg.vbap_table.clone();
     }
-    if args.output_sample_rate.is_none() {
-        args.output_sample_rate = cfg.output_sample_rate;
-    }
-    if !arg_sources.is_explicit("ramp_mode") {
-        if let Some(v) = renderer::config_fields::ramp_mode::get(cfg) {
-            if let Some(mode) = renderer::live_params::RampMode::from_str(&v) {
-                args.ramp_mode = match mode {
-                    renderer::live_params::RampMode::Off => RampModeArg::Off,
-                    renderer::live_params::RampMode::Frame => RampModeArg::Frame,
-                    renderer::live_params::RampMode::Sample => RampModeArg::Sample,
-                    renderer::live_params::RampMode::Interp => RampModeArg::Interp,
-                };
-            }
-        }
-    }
-    // `render.channel_render_mode` is a read-only legacy key. Fixed-channel
-    // processing defaults to Omniphony; an explicit CLI flag remains available
-    // for diagnostics/raw sink passthrough without becoming global config.
-    if !arg_sources.is_explicit("surround_placement") {
-        if let Some(placement) = renderer::config_fields::surround_placement::get(cfg) {
-            args.surround_placement = placement.into();
-        }
-    }
+    // The registered options' flags are already folded into `cfg`, so the
+    // fields below that mirror them are read from it unconditionally.
+    args.output_sample_rate = cfg.output_sample_rate;
     if args.bridge_path.is_none() {
         args.bridge_path = cfg.bridge_path.clone();
     }
@@ -389,23 +190,19 @@ pub(super) fn merge_render_config(
     // Note: drc_mode currently doesn't have a CLI arg, it's OSC/config only.
     // --- Fields with defaults: apply config only when value equals the clap default ---
     // (If the user explicitly passes the default value, config is ignored — acceptable edge case.)
-    if !arg_sources.is_explicit("output_backend") {
-        if let Some(ref s) = cfg.output_backend {
-            if let Ok(f) = OutputBackend::from_str(s) {
-                args.output_backend = Some(f);
-            }
+    if let Some(ref s) = cfg.output_backend {
+        match OutputBackend::from_str(s) {
+            Ok(backend) => args.output_backend = Some(backend),
+            Err(err) => log::warn!("{err}; using the platform default"),
         }
     }
-    if !arg_sources.is_explicit("output_file") {
-        if let Some(ref s) = cfg.output_file {
-            args.output_file = s.clone();
-        }
+    if let Some(ref s) = cfg.output_file {
+        args.output_file = s.clone();
     }
-    if !arg_sources.is_explicit("output_file_format") {
-        if let Some(ref s) = cfg.output_file_format {
-            if let Some(fmt) = parse_output_file_format(s) {
-                args.output_file_format = fmt;
-            }
+    if let Some(ref s) = cfg.output_file_format {
+        match parse_output_file_format(s) {
+            Some(fmt) => args.output_file_format = fmt,
+            None => log::warn!("Unknown output file format `{s}`; writing raw_f32"),
         }
     }
     if !arg_sources.is_explicit("presentation") {
@@ -421,14 +218,9 @@ pub(super) fn merge_render_config(
 
     // Platform-specific Option fields
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-    if args.latency_target_ms.is_none() {
+    {
         args.latency_target_ms = cfg.latency_target;
-    }
-    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-    if args.output_device.is_none() {
-        if let Some(ref s) = cfg.output_device {
-            args.output_device = Some(s.clone());
-        }
+        args.output_device = cfg.output_device.clone();
     }
 
     // --- Bool fields: CLI enable/disable flags override config; absent → use config ---
@@ -453,16 +245,8 @@ pub(super) fn merge_render_config(
     } else if args.no_bed_conform {
         args.bed_conform = false;
     }
-    // enable_adaptive_resampling
-    if !arg_sources.is_explicit("enable_adaptive_resampling")
-        && !arg_sources.is_explicit("disable_adaptive_resampling")
-    {
-        args.enable_adaptive_resampling =
-            renderer::config_fields::enable_adaptive_resampling::get(cfg)
-                .unwrap_or(renderer::config_fields::enable_adaptive_resampling::DEFAULT);
-    } else if args.disable_adaptive_resampling {
-        args.enable_adaptive_resampling = false;
-    }
+    args.enable_adaptive_resampling = renderer::config_fields::enable_adaptive_resampling::get(cfg)
+        .unwrap_or(renderer::config_fields::enable_adaptive_resampling::DEFAULT);
     // The file/FIFO/stdout backend has no device clock to track, so adaptive
     // resampling is meaningless there — force it off (warn if it was asked for).
     if args.output_backend == Some(OutputBackend::File) && args.enable_adaptive_resampling {
@@ -501,12 +285,8 @@ pub(super) fn effective_to_config(
     };
 
     // Start from the existing config so every field the CLI cannot express
-    // (live_input, embedded current_layout, render_backend, hybrid_*,
-    // experimental_*, distance metrics, adaptive tuning, DRC, monitoring
-    // cadences, size_to_spread, and any unknown `extra` keys) is preserved
-    // verbatim instead of being erased. `merge_render_config` has already
-    // folded the on-disk config into `args`, so re-storing the args value
-    // re-persists anything the user did not explicitly override on the CLI.
+    // (live_input, embedded current_layout, DRC, monitoring cadences, any
+    // unknown `extra` keys) is preserved verbatim instead of being erased.
     let mut render = existing_render_cfg.cloned().unwrap_or_default();
 
     render.input_pipe = if args.continuous {
@@ -514,39 +294,30 @@ pub(super) fn effective_to_config(
     } else {
         None
     };
-    render.output_backend = match args.output_backend {
-        Some(value) if Some(value) != OutputBackend::platform_default() => {
-            Some(format!("{:?}", value).to_lowercase())
-        }
-        _ => None,
-    };
-    // Persist file-backend destination/format only when non-default, mirroring
-    // the skip-if-default policy used for `output_backend` above.
-    render.output_file = (args.output_file != "-").then(|| args.output_file.clone());
-    render.output_file_format = (args.output_file_format != OutputFileFormatArg::RawF32)
-        .then(|| output_file_format_str(args.output_file_format).to_string());
     renderer::config_fields::presentation::store(&mut render, &args.presentation);
     render.bridge_path = args.bridge_path.clone();
     renderer::config_fields::enable_vbap::store(&mut render, args.enable_vbap);
     // Persist the embedded layout instead of a path link. Only override when a
     // layout path is supplied on the CLI; otherwise keep the config's existing
-    // embedded `current_layout` (Studio-saved) intact.
+    // embedded `current_layout` (Studio-saved) intact. Before the options
+    // below: the room is stored in metres against this layout's radius.
     if let Some(ref layout_path) = args.speaker_layout {
         render.current_layout = Some(SpeakerLayout::from_file(layout_path)?);
         render.speaker_layout = None;
     }
     render.vbap_table = args.vbap_table.clone();
     renderer::config_fields::vbap_spread::store(&mut render, args.vbap_spread);
-    // The CLI works in ratios; metres are a save-time representation only, so
-    // clear any metre fields a prior Studio save left behind to keep the ratio
-    // representation authoritative on the next load.
+    // The room was loaded as ratios (metres are derived into them at load);
+    // drop the metre fields so the ratios stay authoritative, unless a room
+    // flag below stores the room again (in metres, as a live save does).
     render.room_width_m = None;
     render.room_front_m = None;
     render.room_rear_m = None;
     render.room_height_m = None;
     render.room_lower_m = None;
-    // Renderer params: the file's values (ratios already derived from any
-    // metres at load) with the explicit flags over them — the same effective
+    // The registered options given as flags, through their rows.
+    crate::cli::options::store_given_values(&mut render, &sources.option_values())?;
+    // The other renderer flags over the file's values — the same effective
     // config the run builds its renderer from.
     apply_explicit_renderer_args(&mut render, args, sources);
     if render.room_ratio.as_deref() == Some(DEFAULT_ROOM_RATIO) {
@@ -562,33 +333,11 @@ pub(super) fn effective_to_config(
     renderer::config_fields::osc_rx_port::store(&mut render, args.osc_rx_port);
     renderer::config_fields::osc_host::store(&mut render, &args.osc_host);
     renderer::config_fields::osc_port::store(&mut render, args.osc_port);
-    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-    {
-        render.output_device = args.output_device.clone();
-        render.latency_target = args.latency_target_ms;
-    }
     renderer::config_fields::continuous::store(&mut render, args.continuous);
     renderer::config_fields::bed_conform::store(&mut render, args.bed_conform);
-    renderer::config_fields::enable_adaptive_resampling::store(
-        &mut render,
-        args.enable_adaptive_resampling,
-    );
-    render.adaptive_resampling_update_interval_callbacks =
-        args.adaptive_resampling_update_interval_callbacks;
-    render.output_sample_rate = args.output_sample_rate;
-    renderer::config_fields::ramp_mode::store(
-        &mut render,
-        match args.ramp_mode {
-            RampModeArg::Off => "off",
-            RampModeArg::Frame => "frame",
-            RampModeArg::Sample => "sample",
-            RampModeArg::Interp => "interp",
-        },
-    );
     render.channel_render_mode = None;
-    renderer::config_fields::surround_placement::store(&mut render, args.surround_placement.into());
-    // Backend selection, backend-specific params, distance metrics and
-    // size-to-spread: override-only fields shared with the runtime path.
+    // Backend parameters and size-to-spread: override-only fields shared
+    // with the runtime path.
     apply_render_cfg_overrides(&mut render, args);
 
     let global_opt = if global.loglevel.is_none() && global.log_format.is_none() {
@@ -601,11 +350,15 @@ pub(super) fn effective_to_config(
     // profiles (docs/config-profiles.md — wiping them here would destroy
     // every non-active profile on `--save-config`) and unknown keys.
     Ok(Config {
+        // A save stamps this build's own.
+        schema_version: existing.and_then(|c| c.schema_version),
         global: global_opt,
         render: Some(render),
         active_profile: existing.and_then(|c| c.active_profile.clone()),
         profiles: existing.map(|c| c.profiles.clone()).unwrap_or_default(),
         extra: existing.map(|c| c.extra.clone()).unwrap_or_default(),
+        // A sidecar mark, never written to the persistent file.
+        live_from_parse_error: false,
     })
 }
 
@@ -761,7 +514,7 @@ mod tests {
     /// existing config.
     #[test]
     fn save_config_persists_pilot_field_from_args() {
-        let (cli, args) = render_invocation(&["--evaluation-polar-distance-res", "12"]);
+        let (cli, args) = render_invocation(&["--vbap-distance-res", "12"]);
         let existing = renderer::config::Config {
             render: Some(renderer::config::RenderConfig {
                 vbap_distance_res: Some(4),
@@ -875,7 +628,10 @@ mod tests {
         let file = renderer::config::RenderConfig {
             master_gain: Some(-6.0),
             room_ratio: Some("1.0,1.5,0.8".to_string()),
-            auto_gain: Some(true),
+            options: renderer::options::DeclaredOptionsConfig {
+                auto_gain: Some(true),
+                ..Default::default()
+            },
             render_evaluation_mode: Some("precomputed_cartesian".to_string()),
             vbap_distance_model: Some("linear".to_string()),
             ..Default::default()
@@ -883,6 +639,11 @@ mod tests {
         let resolve = |extra: &[&str]| {
             let (cli, args) = render_invocation(extra);
             let mut render = file.clone();
+            crate::cli::options::store_given_values(
+                &mut render,
+                &cli.render_sources().option_values(),
+            )
+            .expect("valid flags");
             super::apply_explicit_renderer_args(&mut render, &args, &cli.render_sources());
             super::renderer_params(&render, &args)
         };
@@ -896,7 +657,7 @@ mod tests {
             "0",
             "--no-auto-gain",
             "--render-evaluation-mode",
-            "polar",
+            "precomputed_polar",
         ]);
         // An explicit default still beats the file.
         assert_eq!(cli.master_gain, 0.0);
@@ -908,6 +669,53 @@ mod tests {
         // Untouched by the flags: the file's.
         assert_eq!(cli.room_ratio, "1.0,1.5,0.8");
         assert_eq!(cli.vbap_distance_model, "linear");
+    }
+
+    /// Room flags reach the renderer as given, a width other than 1 and
+    /// explicit rear and lower ratios included, whether the file sets no room
+    /// or one in metres (which a load derives into ratios).
+    #[test]
+    fn room_flags_reach_the_renderer_as_given() {
+        let flags = [
+            "--room-ratio",
+            "2,6,2",
+            "--room-ratio-rear",
+            "4",
+            "--room-ratio-lower",
+            "1",
+        ];
+        let mut in_metres = renderer::config::RenderConfig {
+            room_width_m: Some(4.0),
+            room_front_m: Some(5.0),
+            room_rear_m: Some(3.0),
+            room_height_m: Some(2.5),
+            room_lower_m: Some(1.0),
+            ..Default::default()
+        };
+        in_metres.normalize_room_meters();
+        for file in [renderer::config::RenderConfig::default(), in_metres] {
+            let (cli, args) = render_invocation(&flags);
+            let mut render = file.clone();
+            crate::cli::options::store_given_values(
+                &mut render,
+                &cli.render_sources().option_values(),
+            )
+            .expect("valid flags");
+            super::apply_explicit_renderer_args(&mut render, &args, &cli.render_sources());
+            let params = super::renderer_params(&render, &args);
+            let room = renderer::config_fields::room::parse(
+                &params.room_ratio,
+                params.room_ratio_rear,
+                params.room_ratio_lower,
+                params.room_ratio_center_blend,
+            )
+            .expect("room parses");
+            assert_eq!(room.ratio, [2.0, 6.0, 2.0], "{file:?}");
+            assert_eq!(room.rear, 4.0);
+            assert_eq!(room.lower, 1.0);
+            // The live seed reads the same room.
+            assert_eq!(renderer::config_fields::room::resolve(&render), Ok(room));
+        }
     }
 
     /// The `file` output backend destination + format survive a save → load

@@ -101,7 +101,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                     self.output
                         .bootstrap_started_at
                         .get_or_insert_with(Instant::now);
-                    if !self.spatial.stream.has_objects {
+                    if !self.spatial.pipeline.stream.has_objects {
                         self.output.bootstrap_frames_seen =
                             self.output.bootstrap_frames_seen.saturating_add(1);
                         if self.output.bootstrap_frames_seen < 8 {
@@ -125,7 +125,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                     sample_rate,
                     channel_count,
                     self.output.bootstrap_frames_seen,
-                    self.spatial.stream.has_objects,
+                    self.spatial.pipeline.stream.has_objects,
                     self.spatial.bed_indices,
                     self.session.decoded_frames,
                     self.session.decoded_samples,
@@ -145,7 +145,13 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                 // map for their count.
                 let mapping = self
                     .spatial_renderer
-                    .map(|r| r.renderer_control().live.read().output_channel_mapping)
+                    .map(|r| {
+                        r.renderer_control()
+                            .live
+                            .read()
+                            .options
+                            .output_channel_mapping
+                    })
                     .unwrap_or_default();
                 let channel_names = match mapping {
                     renderer::live_params::OutputChannelMapping::ByName => {
@@ -277,15 +283,13 @@ impl<'a> WriterLifecycleCoordinator<'a> {
             let osc_sender = self
                 .telemetry
                 .osc_sender
-                .as_ref()
+                .as_mut()
                 .expect("osc_sender present");
             // The audio-state broadcast lives in host_audio's extend_snapshot;
             // re-emit the full live-state bundle to refresh it after the
             // output stream is (re)configured.
             let _ = (effective_rate, sample_format);
-            if let Err(e) = osc_sender.send_live_state_bundle() {
-                log::warn!("Failed to send OSC state bundle: {}", e);
-            }
+            osc_sender.send_live_state_bundle();
         }
     }
 
@@ -396,9 +400,13 @@ impl<'a> WriterLifecycleCoordinator<'a> {
         // FIFO on its next tick. Done here rather than by the callers so every
         // path that builds a writer (first frame, live switch, stream restart)
         // installs the handle of the writer it is about to play through, and
-        // none leaves the input thread draining the one just retired.
-        if let (Some(control), Some(handle)) = (self.input_control, writer.pacer_handle()) {
-            control.install_output_pacer(handle);
+        // none leaves the input thread draining the one just retired — a
+        // writer without a pacer (pacing off, or another backend) included.
+        if let Some(control) = self.input_control {
+            match writer.pacer_handle() {
+                Some(handle) => control.install_output_pacer(handle),
+                None => control.clear_output_pacer(),
+            }
         }
         Ok(writer)
     }

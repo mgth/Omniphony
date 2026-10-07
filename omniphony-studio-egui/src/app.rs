@@ -66,6 +66,13 @@ pub struct StudioSpike {
     pub(crate) prefs_writer: crate::host::json_store::Writer<Prefs>,
     /// Log overlay: expanded state and the filter box's text.
     pub(crate) log_expanded: bool,
+    /// "Follow the sound": the scene shows each block when it is heard. View
+    /// state, kept in the prefs; the core holds the stream (`osc::playout`).
+    pub(crate) follow_sound: bool,
+    /// The full control board (`true`) or the Essentials view: what most
+    /// listeners need, the rest behind the switch. View state, kept in the
+    /// prefs; see `panels::essentials`.
+    pub(crate) advanced: bool,
     pub(crate) log_filter: String,
     /// OSC form fields (`osc_config.json`, shared with the Tauri Studio).
     pub(crate) osc_host: String,
@@ -332,6 +339,9 @@ impl StudioSpike {
                 listen_port: startup.listen_port,
                 register: None,
                 metering: osc_config.osc_metering_enabled,
+                // The prefs' choice follows in `restore_view`, before the
+                // first frame.
+                playout_sync: true,
             },
         )?;
         log::info!("[osc] listening on udp/{port}");
@@ -387,6 +397,11 @@ impl StudioSpike {
             osc_stats.clone(),
             waker.clone(),
         ));
+        // A shipped Studio hands its engine library to mpv; file copies, so
+        // off the first paint.
+        let _ = crate::host::services::jobs::run(&host, || {
+            crate::host::engine_deploy::deploy(crate::host::bundle::resource_dir().as_deref())
+        });
         if startup.passive {
             crate::host::commands::app::suppress_autostart(&host);
         }
@@ -436,6 +451,8 @@ impl StudioSpike {
             prefs_dirty: false,
             prefs_writer,
             log_expanded: false,
+            follow_sound: true,
+            advanced: false,
             log_filter: String::new(),
             osc_host,
             osc_port,
@@ -835,6 +852,7 @@ impl StudioSpike {
             self.profiles_row(ui);
             self.updates_panel(ui);
             self.language_row(ui);
+            self.view_mode_row(ui);
             // What comes *in* sits on the left and what goes *out* on the
             // right, as in the web: the objects are the program arriving, so
             // they follow the input sections here, and their two editors take
@@ -855,11 +873,15 @@ impl StudioSpike {
                         "overlay-left-scroll",
                         Some(height),
                         |ui| {
-                            self.osc_section(ui);
-                            self.audio_input_section(ui);
-                            self.sources_2d_section(ui);
-                            self.room_geometry_section(ui);
-                            self.drc_section(ui);
+                            // The Essentials view keeps what a listener
+                            // needs (`panels::essentials`).
+                            if self.advanced {
+                                self.osc_section(ui);
+                                self.audio_input_section(ui);
+                                self.sources_2d_section(ui);
+                                self.room_geometry_section(ui);
+                                self.drc_section(ui);
+                            }
                             self.objects_section(ui);
                         },
                     );
@@ -881,10 +903,16 @@ impl StudioSpike {
                         Some(height),
                         |ui| {
                             self.audio_output_section(ui);
-                            self.latency_section(ui);
-                            self.diagnostics_section(ui);
+                            if self.advanced {
+                                self.latency_section(ui);
+                                self.diagnostics_section(ui);
+                            }
                             self.master_section(ui);
-                            self.renderer_section(ui);
+                            if self.advanced {
+                                self.renderer_section(ui);
+                            } else {
+                                self.listening_section(ui);
+                            }
                             self.headphones_section(ui);
                             self.speakers_section(ui);
                         },
@@ -892,6 +920,7 @@ impl StudioSpike {
                 });
         });
         self.log_overlay(ctx, &layout);
+        self.config_banner(ctx, &layout);
         self.scene_fx_bar(ctx);
         self.save_footer(ctx);
         self.band_cursor(ctx, &layout);

@@ -52,6 +52,8 @@ pub trait GainModel: Send + Sync + 'static {
     fn capabilities(&self) -> BackendCapabilities;
     fn speaker_count(&self) -> usize;
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
+    // Optional: defaults to `compute_gains`.
+    fn compute_gains_with_hint(&self, req: &RenderRequest, hint: &mut NeighbourHint) -> RenderResponse;
     fn save_to_file(&self, path: &Path, speaker_layout: &SpeakerLayout) -> Result<()>;
 }
 ```
@@ -59,6 +61,13 @@ pub trait GainModel: Send + Sync + 'static {
 `backend_id` is the stable selection key (e.g. `"my_model"`); `backend_label` is
 what the UI shows. The audio hot path runs `compute_gains` through a
 `PreparedRenderEngine` wrapping your model — you never wire that up yourself.
+
+`compute_gains_with_hint` only matters to a model with an iterative solver. A
+precomputed table is built row by row, the cells of a row in order, and this is
+the method the build calls: `hint` holds whatever the model stored at the
+previous cell of the row (empty at the first), so a solver can start from its
+neighbour's solution. The result must depend on nothing but the request and the
+hint. Leave the default in place otherwise — it ignores the hint.
 
 ### The hot-path contract (read before writing `compute_gains`)
 

@@ -73,16 +73,22 @@ impl DynamicLogger {
         });
     }
 
+    /// A record from outside this process's `log` (a bridge plugin's sink),
+    /// gated exactly like a native one in [`Log::log`]: a record the current
+    /// level drops is neither printed nor buffered, so it costs no allocation
+    /// and cannot evict a record that passed from the ring the Studio's log
+    /// view reads.
     fn emit_external_record(&self, level: Level, target: &str, message: &str) {
-        if self.accepts(level) {
-            let args = format_args!("{message}");
-            let record = Record::builder()
-                .args(args)
-                .level(level)
-                .target(target)
-                .build();
-            self.inner.log(&record);
+        let metadata = Metadata::builder().level(level).target(target).build();
+        if !self.enabled(&metadata) {
+            return;
         }
+        self.inner.log(
+            &Record::builder()
+                .metadata(metadata)
+                .args(format_args!("{message}"))
+                .build(),
+        );
         self.push_external_record(level, target, message);
     }
 
@@ -220,7 +226,13 @@ pub fn current_runtime_level() -> LevelFilter {
 }
 
 pub fn current_runtime_level_name() -> &'static str {
-    match current_runtime_level() {
+    level_name(current_runtime_level())
+}
+
+/// `level` as the OSC `log_level` command and a bridge's `log_level`
+/// configure key spell it: `off`, `error`, `warn`, `info`, `debug`, `trace`.
+pub fn level_name(level: LevelFilter) -> &'static str {
+    match level {
         LevelFilter::Off => "off",
         LevelFilter::Error => "error",
         LevelFilter::Warn => "warn",
@@ -260,5 +272,83 @@ mod quiet_module_tests {
         assert!(is_quiet_module("sofar::hdf::btree"));
         assert!(!is_quiet_module("sofarlike"));
         assert!(!is_quiet_module("renderer::binaural"));
+    }
+}
+
+#[cfg(test)]
+mod external_record_tests {
+    use super::*;
+
+    /// A logger at `level` that prints nowhere, so only its ring is observed.
+    fn logger(level: LevelFilter) -> DynamicLogger {
+        let inner = env_logger::Builder::new()
+            .filter_level(LevelFilter::Trace)
+            .target(env_logger::Target::Pipe(Box::new(std::io::sink())))
+            .build();
+        DynamicLogger::new(inner, level)
+    }
+
+    fn buffered(logger: &DynamicLogger) -> Vec<(String, String)> {
+        logger
+            .records_since(0)
+            .into_iter()
+            .map(|r| (r.level, r.message))
+            .collect()
+    }
+
+    #[test]
+    fn below_level_external_records_are_not_buffered() {
+        let logger = logger(LevelFilter::Warn);
+        logger.emit_external_record(Level::Warn, "bridge", "kept");
+        // More dropped records than the ring holds: none may evict the warning.
+        for _ in 0..LOG_BUFFER_CAPACITY + 1 {
+            logger.emit_external_record(Level::Debug, "bridge", "dropped");
+        }
+        assert_eq!(buffered(&logger), [("warn".into(), "kept".into())]);
+    }
+
+    #[test]
+    fn external_records_follow_the_runtime_level() {
+        let logger = logger(LevelFilter::Info);
+        logger.emit_external_record(Level::Debug, "bridge", "before");
+        logger.set_level(LevelFilter::Debug);
+        logger.emit_external_record(Level::Debug, "bridge", "after");
+        logger.set_level(LevelFilter::Off);
+        logger.emit_external_record(Level::Error, "bridge", "off");
+        assert_eq!(buffered(&logger), [("debug".into(), "after".into())]);
+    }
+
+    #[test]
+    fn external_and_native_records_pass_the_same_gate() {
+        let logger = logger(LevelFilter::Info);
+        for (level, target) in [
+            (Level::Info, "bridge"),
+            (Level::Debug, "bridge"),
+            (Level::Warn, "sofar::hdf"),
+            (Level::Error, "sofar::hdf"),
+        ] {
+            let native = Record::builder()
+                .level(level)
+                .target(target)
+                .args(format_args!("native"))
+                .build();
+            logger.log(&native);
+            logger.emit_external_record(level, target, "external");
+        }
+        let kept: Vec<_> = logger
+            .records_since(0)
+            .into_iter()
+            .map(|r| (r.level, r.target, r.message))
+            .collect();
+        let pair = |level: &str, target: &str| {
+            [
+                (level.to_owned(), target.to_owned(), "native".to_owned()),
+                (level.to_owned(), target.to_owned(), "external".to_owned()),
+            ]
+        };
+        assert_eq!(
+            kept,
+            [pair("info", "bridge"), pair("error", "sofar::hdf")].concat()
+        );
     }
 }

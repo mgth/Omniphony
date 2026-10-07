@@ -1,0 +1,79 @@
+# Clippy warnings per crate and lint in the renderer workspace, checked by
+# scripts/clippy-ratchet.sh (CI job `lint`). A crate or lint not listed is
+# allowed none.
+#
+# Counts only ever go down. After removing warnings, regenerate with
+#   UPDATE_CLIPPY_BASELINE=1 omniphony-renderer/scripts/clippy-ratchet.sh
+# and commit this file with the change.
+#
+# toolchain: 1.99.0
+# total: 263
+#
+# crate lint count
+audio_input clippy::doc_lazy_continuation 6
+audio_input clippy::manual_c_str_literals 8
+audio_input clippy::too_many_arguments 1
+audio_output clippy::chunks_exact_to_as_chunks 1
+audio_output clippy::collapsible_if 3
+audio_output clippy::derivable_impls 1
+audio_output clippy::manual_is_multiple_of 4
+audio_output clippy::needless_borrow 1
+audio_output clippy::too_many_arguments 8
+audio_output clippy::type_complexity 1
+diag clippy::collapsible_if 2
+dsp_fixtures clippy::chunks_exact_to_as_chunks 2
+dsp_fixtures clippy::identity_op 2
+omniphony-renderer clippy::chunks_exact_to_as_chunks 3
+omniphony-renderer clippy::clone_on_copy 1
+omniphony-renderer clippy::collapsible_if 15
+omniphony-renderer clippy::derivable_impls 5
+omniphony-renderer clippy::large_enum_variant 2
+omniphony-renderer clippy::single_match 1
+omniphony-renderer clippy::too_many_arguments 3
+orender_engine clippy::assign_op_pattern 1
+orender_engine clippy::chunks_exact_to_as_chunks 5
+orender_engine clippy::collapsible_if 30
+orender_engine clippy::field_reassign_with_default 1
+orender_engine clippy::manual_contains 1
+orender_engine clippy::manual_is_multiple_of 1
+orender_engine clippy::needless_range_loop 6
+orender_engine clippy::too_many_arguments 5
+orender_engine clippy::type_complexity 1
+orender_engine clippy::unnecessary_cast 4
+orender_engine clippy::unnecessary_lazy_evaluations 1
+orender_engine clippy::unnecessary_map_or 4
+orender_ffi clippy::unnecessary_cast 2
+reference_bridge clippy::collapsible_if 1
+renderer clippy::chunks_exact_to_as_chunks 24
+renderer clippy::collapsible_if 9
+renderer clippy::derivable_impls 4
+renderer clippy::doc_lazy_continuation 1
+renderer clippy::get_first 1
+renderer clippy::identity_op 1
+renderer clippy::int_plus_one 1
+renderer clippy::large_enum_variant 1
+renderer clippy::len_without_is_empty 1
+renderer clippy::let_and_return 1
+renderer clippy::manual_checked_ops 2
+renderer clippy::manual_is_multiple_of 3
+renderer clippy::manual_range_contains 1
+renderer clippy::manual_range_patterns 2
+renderer clippy::manual_slice_fill 4
+renderer clippy::needless_borrow 2
+renderer clippy::needless_question_mark 1
+renderer clippy::needless_range_loop 19
+renderer clippy::ptr_arg 1
+renderer clippy::redundant_closure 2
+renderer clippy::should_implement_trait 19
+renderer clippy::too_many_arguments 6
+renderer clippy::type_complexity 5
+renderer clippy::unnecessary_to_owned 1
+runtime_control clippy::chunks_exact_to_as_chunks 1
+runtime_control clippy::collapsible_if 8
+runtime_control clippy::field_reassign_with_default 1
+runtime_control clippy::manual_is_multiple_of 1
+runtime_control clippy::single_match 1
+runtime_control clippy::too_many_arguments 1
+script_backend clippy::collapsible_if 2
+spdif clippy::enum_variant_names 1
+sys clippy::collapsible_if 1

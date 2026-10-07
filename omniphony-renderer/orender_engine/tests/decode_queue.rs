@@ -3,13 +3,14 @@
 //! declaration is read after a seek. Needs no bridge library or sample, unlike
 //! `decode_thread.rs`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use abi_stable::std_types::{ROption, RSlice, RStr, RString, RVec};
 use abi_stable::{prefix_type::PrefixTypeTrait, sabi_trait::prelude::TD_Opaque};
 use bridge_api::*;
 use orender_engine::bridge_loader::LoadedBridge;
+use orender_engine::decode_step::LogLevelSync;
 use orender_engine::renderer_build::{SpatialRendererParams, build_spatial_renderer};
 use orender_engine::{DecodeThreadMode, Engine, RenderedAudio};
 use renderer::live_params::RendererControl;
@@ -23,7 +24,8 @@ fn packet(frames: u16, decode_ms: u8) -> [u8; 3] {
     [lo, hi, decode_ms]
 }
 
-/// [`packet`] with its layout (`0`: stereo, `1`: L R C) and, with `restart`,
+/// [`packet`] with its layout (`0`: stereo, `1`: L R C, `3`: an L R bed and
+/// two objects, left and right) and, with `restart`,
 /// a second frame of it that starts a segment.
 fn packet_in(frames: u16, layout: u8, restart: bool) -> [u8; 5] {
     let [lo, hi, ms] = packet(frames, 0);
@@ -45,12 +47,41 @@ struct ScriptedBridge {
 
 impl FormatBridge for ScriptedBridge {
     fn push_packet(&mut self, data: RSlice<'_, u8>, _: RInputTransport, _: u8) -> RPushResult {
-        use RChannelLabel::{C, L, R};
+        use RChannelLabel::{C, L, Object, R};
         std::thread::sleep(Duration::from_millis(u64::from(data[2])));
         let frames = u16::from_le_bytes([data[0], data[1]]) as u32;
         self.labels = match data.get(3) {
             Some(1) => vec![L, R, C],
+            Some(3) => vec![L, R, Object, Object],
             _ => vec![L, R],
+        };
+        // The objects' positions, as an object format's metadata carries
+        // them: object 0 hard left, object 1 hard right (ADM cartesian).
+        let has_objects = self.labels.contains(&Object);
+        let metadata = || -> RVec<RMetadataFrame> {
+            if !has_objects {
+                return RVec::new();
+            }
+            let event = |id: u32, x: f64| REvent {
+                id,
+                sample_pos: 0,
+                has_pos: true,
+                pos: [x, 1.0, 0.0],
+                gain_db: 0,
+                size: [0.0; 3],
+                ramp_duration: 0,
+            };
+            RVec::from(vec![RMetadataFrame {
+                events: RVec::from(vec![event(0, -1.0), event(1, 1.0)]),
+                object_channels: RVec::from(vec![
+                    RObjectChannel { id: 0, channel: 2 },
+                    RObjectChannel { id: 1, channel: 3 },
+                ]),
+                channel_gains: RVec::new(),
+                name_updates: RVec::new(),
+                sample_pos: 0,
+                ramp_duration: 0,
+            }])
         };
         let restart = data.get(4) == Some(&1);
         let channels = self.labels.len() as u32;
@@ -58,9 +89,20 @@ impl FormatBridge for ScriptedBridge {
             sampling_frequency: 48_000,
             sample_count: frames,
             channel_count: channels,
-            pcm: RVec::from(vec![1_000_000; (channels * frames) as usize]),
+            // With objects, only the objects carry signal: what comes out is
+            // theirs, not the bed's.
+            pcm: (0..frames)
+                .flat_map(|_| self.labels.iter())
+                .map(|&label| {
+                    if has_objects && label != Object {
+                        0
+                    } else {
+                        1_000_000
+                    }
+                })
+                .collect(),
             channel_labels: self.labels.iter().copied().collect(),
-            metadata: RVec::new(),
+            metadata: metadata(),
             drc_gain: 1.0,
             drc_ramp_duration: 0,
             dialogue_level: ROption::RNone,
@@ -88,7 +130,7 @@ impl FormatBridge for ScriptedBridge {
         true
     }
     fn has_objects(&self) -> bool {
-        false
+        self.labels.contains(&RChannelLabel::Object)
     }
     fn configure(&mut self, _: RStr<'_>, _: RStr<'_>) -> bool {
         true
@@ -137,6 +179,10 @@ extern "C" fn new_bridge(_: bool) -> FormatBridgeBox {
 }
 extern "C" fn log_sink(_: usize) {}
 
+extern "C" fn source_families() -> RVec<bridge_api::RSourceFamily> {
+    RVec::new()
+}
+
 /// An engine on a [`ScriptedBridge`] with the decode thread on, and the log of
 /// the bridge's declaration reads.
 fn engine() -> (Engine, Arc<Mutex<Vec<String>>>) {
@@ -169,9 +215,18 @@ fn engine_with_control() -> (Engine, Arc<Mutex<Vec<String>>>, Arc<RendererContro
     let lib = BridgeLib {
         new_bridge,
         set_host_log_sink: log_sink,
+        source_families,
     }
     .leak_into_prefix();
-    let engine = Engine::new(LoadedBridge { lib, bridge }, renderer, 48_000);
+    let engine = Engine::new(
+        LoadedBridge {
+            lib,
+            bridge,
+            log_level: LogLevelSync::new(),
+        },
+        renderer,
+        48_000,
+    );
     (engine, declaration_reads, control)
 }
 
@@ -466,11 +521,11 @@ fn the_live_option_switches_the_thread_both_ways_mid_stream() {
     run(&mut engine, 20);
     assert!(!engine.decode_thread());
 
-    control.live.write().decode_thread = true;
+    control.live.write().options.decode_thread = true;
     run(&mut engine, 60);
     assert!(engine.decode_thread(), "on at the next packet");
 
-    control.live.write().decode_thread = false;
+    control.live.write().options.decode_thread = false;
     run(&mut engine, 1);
     assert!(
         engine.decode_thread(),
@@ -495,7 +550,7 @@ fn the_live_option_switches_the_thread_both_ways_mid_stream() {
 #[test]
 fn a_host_that_forces_the_thread_ignores_the_option() {
     let (mut engine, _, control) = engine_with_control();
-    control.live.write().decode_thread = true;
+    control.live.write().options.decode_thread = true;
     engine
         .set_decode_thread_mode(DecodeThreadMode::Off)
         .unwrap();
@@ -508,4 +563,238 @@ fn a_host_that_forces_the_thread_ignores_the_option() {
         engine.decode_thread(),
         "live mode picks the option up at once"
     );
+}
+
+/// The render path never waits for the live parameters (#670): with a control
+/// write held open on another thread, mid-edit as an OSC handler is, packets
+/// still decode and render — the engine's DRC and decode-thread sync, the
+/// stream's DRC and dialogue gains, the channel stages and the renderer all
+/// read them.
+#[test]
+fn a_control_write_in_progress_does_not_stall_the_render_path() {
+    let (mut engine, _, control) = engine_with_control();
+    feed(&mut engine, (0..4).map(|_| packet_in(40, 1, false)));
+
+    let (held_tx, held_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let writer = {
+        let control = Arc::clone(&control);
+        std::thread::spawn(move || {
+            let mut live = control.live.write();
+            live.master_gain = 0.5;
+            held_tx.send(()).unwrap();
+            // Held until the render below is done. A render that waits for
+            // it gets it after the timeout, so the test fails, not hangs.
+            done_rx.recv_timeout(Duration::from_secs(5)).is_err()
+        })
+    };
+    held_rx.recv().unwrap();
+    let rendered = feed(&mut engine, (0..20).map(|_| packet_in(40, 1, false)));
+    let _ = done_tx.send(());
+    let timed_out = writer.join().unwrap();
+
+    assert!(!timed_out, "the render path waited for the live write");
+    assert_eq!(rendered, 20 * 40);
+    assert_eq!(control.live.read().master_gain, 0.5, "published on release");
+}
+
+/// A params generation bumped while the live write guard is still held could
+/// be seen with the params from before the write, and the render thread's
+/// cache would keep them under the new generation: debug builds refuse it.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "while their write guard is held")]
+fn a_params_generation_bumped_inside_the_write_guard_is_refused() {
+    let (_engine, _, control) = engine_with_control();
+    let mut live = control.live.write();
+    live.objects.entry(0).or_default().muted = true;
+    control.mark_object_params_dirty();
+}
+
+/// Every OSC message that reached `socket` within `wait`, bundles flattened,
+/// in arrival order.
+fn osc_messages(socket: &std::net::UdpSocket, wait: Duration) -> Vec<rosc::OscMessage> {
+    fn flatten(packet: rosc::OscPacket, out: &mut Vec<rosc::OscMessage>) {
+        match packet {
+            rosc::OscPacket::Message(m) => out.push(m),
+            rosc::OscPacket::Bundle(b) => b.content.into_iter().for_each(|p| flatten(p, out)),
+        }
+    }
+    let deadline = std::time::Instant::now() + wait;
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; 65_536];
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        socket
+            .set_read_timeout(Some(left.max(Duration::from_millis(1))))
+            .unwrap();
+        let Ok(n) = socket.recv(&mut buf) else { break };
+        if let Ok((_, packet)) = rosc::decoder::decode_udp(&buf[..n]) {
+            flatten(packet, &mut out);
+        }
+    }
+    out
+}
+
+/// Feed `count` 1536-sample packets slowly enough for the meter cadence to
+/// publish, and collect what the OSC target received meanwhile.
+fn feed_and_listen(
+    engine: &mut Engine,
+    socket: &std::net::UdpSocket,
+    count: usize,
+) -> Vec<rosc::OscMessage> {
+    let mut messages = Vec::new();
+    for _ in 0..count {
+        feed(engine, [packet(1536, 0)]);
+        messages.extend(osc_messages(socket, Duration::from_millis(60)));
+    }
+    messages
+}
+
+fn long_arg(m: &rosc::OscMessage, i: usize) -> Option<i64> {
+    match m.args.get(i) {
+        Some(rosc::OscType::Long(v)) => Some(*v),
+        _ => None,
+    }
+}
+
+/// The engine says where each block starts and where the listener is, once a
+/// host has said the latter, and never holds anything back: a client of a host
+/// that does not report sees the stream exactly as before.
+#[test]
+fn heard_us_publishes_the_listener_and_marks_each_block() {
+    use runtime_control::osc_contract::{METER_MASTER, PLAYOUT_BLOCK, PLAYOUT_HEARD};
+
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let (mut engine, _, _) = engine_with_control();
+    engine
+        .enable_osc(orender_engine::OscOptions {
+            host: "127.0.0.1".into(),
+            port_out: socket.local_addr().unwrap().port(),
+            port_in: 0,
+            metering: true,
+        })
+        .unwrap();
+
+    let before = feed_and_listen(&mut engine, &socket, 8);
+    assert!(
+        before.iter().any(|m| m.addr == METER_MASTER),
+        "the meters must flow for this test to mean anything"
+    );
+    assert!(
+        !before
+            .iter()
+            .any(|m| m.addr == PLAYOUT_BLOCK || m.addr == PLAYOUT_HEARD),
+        "nothing about playout before a host reports"
+    );
+
+    // Half a second in: 24 000 samples at 48 kHz.
+    engine.set_heard_us(500_000);
+    let after = feed_and_listen(&mut engine, &socket, 8);
+    let heard: Vec<_> = after.iter().filter(|m| m.addr == PLAYOUT_HEARD).collect();
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    assert_eq!(long_arg(heard[0], 0), Some(24_000));
+    assert_eq!(heard[0].args.get(1), Some(&rosc::OscType::Int(48_000)));
+
+    // Every meter bundle is preceded by the marker of its block, and the
+    // markers name 1536-sample blocks, in order, each once. From the heard
+    // message on: the telemetry thread sends what the render path queued in
+    // order, so a meter of a block rendered before the report, late past
+    // the listening window above on a slow runner, comes first, unmarked.
+    let mut last_block = None;
+    let mut blocks = Vec::new();
+    for m in after.iter().skip_while(|m| m.addr != PLAYOUT_HEARD) {
+        if m.addr == PLAYOUT_BLOCK {
+            let pos = long_arg(m, 0).unwrap();
+            assert_eq!(pos % 1536, 0, "{pos}");
+            last_block = Some(pos);
+            blocks.push(pos);
+        } else if m.addr == METER_MASTER {
+            assert!(last_block.is_some(), "a meter bundle before any marker");
+        }
+    }
+    assert!(!blocks.is_empty());
+    assert!(blocks.windows(2).all(|w| w[0] < w[1]), "{blocks:?}");
+    assert!(blocks[0] >= 8 * 1536, "the timeline runs on: {blocks:?}");
+
+    // A reset starts the timeline again, and its first block is marked even
+    // though it starts where an earlier one did. Markers of blocks rendered
+    // before the reset can still arrive first, for the same reason as above
+    // (block 15 on a macOS runner): they carry on the old timeline, past the
+    // last block heard from it, so the new timeline's first marker is the
+    // first one at or before that.
+    let last_before = *blocks.last().unwrap();
+    engine.reset();
+    let again = feed_and_listen(&mut engine, &socket, 4);
+    let first = again
+        .iter()
+        .filter(|m| m.addr == PLAYOUT_BLOCK)
+        .filter_map(|m| long_arg(m, 0))
+        .find(|&pos| pos <= last_before);
+    assert!(first.is_some_and(|pos| pos < 4 * 1536), "{first:?}");
+}
+
+/// The object path, end to end on the engine: a stream whose frames carry
+/// objects is declared and counted as one, its bed is reported as the bed,
+/// its objects render and their positions go out over OSC; the same stream
+/// turning into plain channels drops the object state — a live fact, not a
+/// latched one (docs/channel-object-contract.md).
+#[test]
+fn an_object_stream_is_rendered_counted_and_broadcast() {
+    use runtime_control::osc_contract::SPATIAL_FRAME;
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let (mut engine, _, _) = engine_with_control();
+    engine
+        .enable_osc(orender_engine::OscOptions {
+            host: "127.0.0.1".into(),
+            port_out: socket.local_addr().unwrap().port(),
+            port_in: 0,
+            metering: false,
+        })
+        .unwrap();
+
+    let mut peak = 0.0f32;
+    for _ in 0..8 {
+        let chunks = engine.process_raw(&packet_in(480, 3, false)).unwrap();
+        for c in &chunks {
+            assert!(c.samples.iter().all(|s| s.is_finite()), "non-finite output");
+            peak = c.samples.iter().fold(peak, |m, s| m.max(s.abs()));
+        }
+        engine.recycle(chunks);
+    }
+    assert!(engine.has_objects(), "the stream carries objects");
+    assert_eq!(engine.object_count(), 2);
+    assert_eq!(engine.bed_labels(), &[RChannelLabel::L, RChannelLabel::R]);
+    assert!(peak > 0.0, "the objects render (the bed is silent)");
+    let messages = osc_messages(&socket, Duration::from_millis(300));
+    // The frame announces the bed's two channels and the two objects, and the
+    // objects' positions follow it: an empty object list would still send
+    // the frame header.
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.addr == SPATIAL_FRAME && m.args.get(2) == Some(&rosc::OscType::Int(4))),
+        "the objects' frame is broadcast with four entries"
+    );
+    let position = |id: usize| {
+        messages
+            .iter()
+            .rev()
+            .find(|m| m.addr == format!("/omniphony/object/{id}/xyz"))
+            .map(|m| {
+                m.args[..3]
+                    .iter()
+                    .map(|a| match a {
+                        rosc::OscType::Float(v) => *v,
+                        other => panic!("position argument {other:?}"),
+                    })
+                    .collect::<Vec<_>>()
+            })
+    };
+    assert_eq!(position(2), Some(vec![-1.0, 1.0, 0.0]), "{messages:?}");
+    assert_eq!(position(3), Some(vec![1.0, 1.0, 0.0]), "{messages:?}");
+
+    // The same stream, now plain stereo: no objects left.
+    feed(&mut engine, (0..4).map(|_| packet_in(480, 0, false)));
+    assert!(!engine.has_objects(), "has_objects follows the stream");
+    assert_eq!(engine.object_count(), 0);
 }

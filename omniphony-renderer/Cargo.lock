@@ -217,7 +217,7 @@ checksum = "f93ebbf82d06013f4c41fe71303feb980cddd78496d904d06be627972de51a24"
 
 [[package]]
 name = "audio_input"
-version = "0.2.4"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "audio_output",
@@ -233,29 +233,29 @@ dependencies = [
 
 [[package]]
 name = "audio_output"
-version = "0.2.4"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "audio_rt",
  "audio_sync",
  "cpal",
- "crossbeam",
  "diag",
  "libc",
  "log",
  "parking_lot",
  "pipewire",
+ "rtrb",
  "rubato 0.14.1",
  "serde",
 ]
 
 [[package]]
 name = "audio_rt"
-version = "0.1.0"
+version = "0.6.0"
 
 [[package]]
 name = "audio_sync"
-version = "0.1.0"
+version = "0.6.0"
 
 [[package]]
 name = "audioadapter"
@@ -350,7 +350,7 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
 name = "bridge_api"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "abi_stable",
 ]
@@ -700,19 +700,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crossbeam"
-version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e71406cd8807725f7ac2f999a4cdd32e98f829fdf65f528343cebf945e41df1e"
-dependencies = [
- "crossbeam-channel",
- "crossbeam-deque",
- "crossbeam-epoch",
- "crossbeam-queue",
- "crossbeam-utils",
-]
-
-[[package]]
 name = "crossbeam-channel"
 version = "0.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -736,15 +723,6 @@ name = "crossbeam-epoch"
 version = "0.9.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc74980687109a3b14c72fd458107bf0baa1da1a1a805e178d15501ba9b86d9d"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-queue"
-version = "0.3.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -872,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "diag"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -880,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "dsp_fixtures"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "realfft",
  "renderer",
@@ -939,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "example_backend"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "renderer",
@@ -1061,7 +1039,7 @@ checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
 name = "host_audio"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "audio_input",
  "audio_output",
@@ -1324,7 +1302,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "live_log"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "env_logger",
  "log",
@@ -1596,7 +1574,7 @@ version = "0.1.0"
 
 [[package]]
 name = "omniphony-renderer"
-version = "0.2.5"
+version = "0.6.0"
 dependencies = [
  "abi_stable",
  "anyhow",
@@ -1618,6 +1596,8 @@ dependencies = [
  "renderer",
  "rosc",
  "runtime_control",
+ "serde_json",
+ "serde_yaml_ng",
  "spdif",
  "sys",
  "vergen-gitcl",
@@ -1625,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "omniphony_geometry"
-version = "0.1.0"
+version = "0.6.0"
 
 [[package]]
 name = "once_cell"
@@ -1647,7 +1627,7 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "orender_engine"
-version = "0.2.3"
+version = "0.6.0"
 dependencies = [
  "abi_stable",
  "anyhow",
@@ -1657,11 +1637,15 @@ dependencies = [
  "log",
  "omniphony_geometry",
  "realfft",
+ "reference_bridge",
  "renderer",
  "rosc",
+ "rtrb",
  "runtime_control",
  "script_backend",
  "serde_json",
+ "serde_yaml_ng",
+ "socket2",
  "sys",
 ]
 
@@ -1675,6 +1659,7 @@ dependencies = [
  "env_logger",
  "log",
  "orender_engine",
+ "reference_bridge",
  "runtime_control",
 ]
 
@@ -1897,7 +1882,7 @@ dependencies = [
 
 [[package]]
 name = "reference_bridge"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "abi_stable",
  "bridge_api",
@@ -1935,7 +1920,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "renderer"
-version = "0.2.4"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1978,6 +1963,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtrb"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9278fb35b3e730abe136e9b395b5b81b96d06b9f5478a50f0c8430a2237b22de"
+
+[[package]]
 name = "rubato"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2007,9 +1998,10 @@ dependencies = [
 
 [[package]]
 name = "runtime_control"
-version = "0.2.4"
+version = "0.6.0"
 dependencies = [
  "anyhow",
+ "bridge_api",
  "chrono",
  "live_log",
  "log",
@@ -2100,7 +2092,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "script_backend"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "mlua",
@@ -2218,9 +2210,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 
 [[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "sofar"
 version = "0.3.0"
-source = "git+https://github.com/mgth/sofar?rev=4c91bea0b752c6d2b2bde4e8954c2e114182c297#4c91bea0b752c6d2b2bde4e8954c2e114182c297"
+source = "git+https://github.com/mgth/sofar?rev=26ca8670b09bd55febc19fbdd73be5af06825ddb#26ca8670b09bd55febc19fbdd73be5af06825ddb"
 dependencies = [
  "arrayvec",
  "audioadapter-buffers",
@@ -2287,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "sys"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "libc",

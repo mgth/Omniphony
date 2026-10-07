@@ -3,7 +3,7 @@
 //! `pub(super)` (or `pub` for the renderer's public API types) so the
 //! `SpatialRenderer` impl in the parent module can use them.
 
-use crate::crossover::{CrossoverBank, CrossoverStates, FreqBand};
+use crate::crossover::FreqBand;
 use crate::live_params::{RenderTopology, RendererControl};
 use crate::ramp_strategy::ChannelRampState;
 use crate::render_backend::{
@@ -29,9 +29,15 @@ pub struct RenderedFrame {
     /// `n_frames * 12` floats out of a buffer holding a sixth of that — heap
     /// read past the end, played as PCM.
     pub n_channels: usize,
-    /// VBAP gains at the final sample for each rendered object channel.
-    /// `(channel_idx, gains)` — `gains[speaker_idx]` is the gain applied to that speaker.
-    /// Ordered by `channel_idx`. Empty if no objects were spatialized this frame.
+    /// VBAP gains at the final sample for each rendered channel: summed over
+    /// the bands for an object, one-hot on its speaker for a direct (bed)
+    /// channel. `(channel_idx, gains)` — `gains[speaker_idx]` is the gain
+    /// applied to that speaker. Ordered by `channel_idx`. Only filled on a
+    /// metered frame (`measure_breakdown`), empty otherwise.
+    ///
+    /// This list and the two below are lent by the renderer: hand the frame
+    /// back with [`SpatialRenderer::recycle_frame`](super::SpatialRenderer::recycle_frame)
+    /// and the next metered frame refills them instead of allocating.
     pub object_gains: Vec<(usize, Gains)>,
     /// Per-band VBAP gains for crossover objects.
     /// `(channel_idx, [band0_gains, band1_gains, ...])` — each `Gains` is full-size
@@ -126,6 +132,12 @@ pub(super) fn evaluation_build_config(
         object_size_mode: crate::render_backend::SizeToSpreadMode::default(),
     }
 }
+
+/// Channels an event may address. Far above any stream format (the largest
+/// carry 128); it bounds the per-channel state an event from a broken or
+/// hostile bridge can make the render thread allocate — an index of a billion
+/// would otherwise grow it to hundreds of gigabytes.
+pub const MAX_EVENT_CHANNELS: usize = 1024;
 
 /// Event/channel gain floor: at or below this the channel is −inf dB (silent).
 ///
@@ -251,6 +263,9 @@ impl Default for ChannelState {
 /// `position_interpolation`).  `compute_gains` always returns full-size `Gains`
 /// (`num_speakers` entries) with zeros for speakers outside this band, enabling
 /// uniform SIMD-friendly accumulation in the render loop.
+/// Cloning is cheap: the engine is shared, so a clone is a handle the band
+/// worker keeps to reuse the gain model.
+#[derive(Clone)]
 pub(super) struct BandRenderer {
     /// Global speaker indices for the speakers in this band.
     pub(super) speaker_indices: Vec<usize>,
@@ -271,9 +286,14 @@ pub(super) struct BandRenderer {
 }
 
 impl BandRenderer {
+    /// The engine for `band` of `layout`. `geometry_generation` is the one of
+    /// the published topology `layout` comes from: the band's gain model is
+    /// recorded as built for that geometry, not for whatever generation the
+    /// control has reached by the time this runs.
     pub(super) fn from_band(
         band: &FreqBand,
         layout: &crate::speaker_layout::SpeakerLayout,
+        geometry_generation: u64,
         num_speakers: usize,
         control: &Arc<RendererControl>,
         prev: Option<&BandRenderer>,
@@ -317,16 +337,22 @@ impl BandRenderer {
                     .map(|&idx| layout.speakers[idx].clone())
                     .collect(),
             };
-            let plan = control
+            let mut plan = control
                 .prepare_topology_rebuild_for_layout(band_layout)
                 .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology rebuild"))?;
+            // The plan carries the control's generation as of now, which an
+            // edit made since `layout` was published has already moved on:
+            // a model of this layout recorded under it would be reused, at
+            // the same generation, for the layout of that edit. Bands are
+            // built on the stage's worker, so "since" can be a whole build.
+            plan.geometry_generation = geometry_generation;
             // Reuse the previous band's geometry when it covers the same speakers
             // and the geometry generation is unchanged: `build_topology_reusing`
             // then re-wraps the model (no re-triangulation).
             let prev_topology = prev
                 .filter(|p| p.speaker_indices == speaker_indices)
                 .and_then(|p| p.topology.as_deref());
-            Some(Arc::new(plan.build_topology_reusing(prev_topology)?))
+            Some(Arc::new(plan.build_band_topology_reusing(prev_topology)?))
         } else {
             None
         };
@@ -377,22 +403,5 @@ impl BandRenderer {
             full.set(self.speaker_indices[gi], g);
         }
         full
-    }
-}
-
-/// Split one sample into frequency bands.
-///
-/// When a crossover filter bank is active, runs the sample through the active
-/// engine (LR4 or linear-phase FIR).
-/// Otherwise returns a 1-band passthrough so the caller's band loop is identical.
-#[inline]
-pub(super) fn split_bands(
-    raw: f32,
-    filter_bank: &Option<CrossoverBank>,
-    states: Option<&mut CrossoverStates>,
-) -> crate::crossover::SmallBands {
-    match (filter_bank.as_ref(), states) {
-        (Some(fb), Some(s)) => fb.process_sample(raw, s),
-        _ => crate::crossover::SmallBands::single(raw),
     }
 }

@@ -156,13 +156,13 @@ pub fn build_renderer_state_json(
         "renderEvaluationModeEffective": effective_evaluation_mode,
         "objectSizeIntervals": live.evaluation.object_size_intervals,
         "masterGain": live.master_gain,
-        "autoGain": live.auto_gain,
-        "autoGainCeilingDb": live.auto_gain_ceiling_db,
-        "rampMode": live.ramp_mode.as_str(),
+        "autoGain": live.options.auto_gain,
+        "autoGainCeilingDb": live.options.auto_gain_ceiling_db,
+        "rampMode": live.options.ramp_mode.as_str(),
         "channelRenderMode": live.channel_render_mode.as_str(),
-        "syntheticObjectsEnabled": live.synthetic_objects_enabled,
+        "syntheticObjectsEnabled": live.options.synthetic_objects_enabled,
         // Active fixed-bed→height object generator id; empty = off.
-        "objectGeneratorId": live.object_generator_id.as_str(),
+        "objectGeneratorId": live.options.object_generator_id.as_str(),
         // Stored param values of every generator (`{ id: { key: value } }`),
         // as `renderBackendState.backendParamValuesById` carries the
         // backends'. The listings are published separately by the engine on
@@ -180,9 +180,9 @@ pub fn build_renderer_state_json(
             .any(|s| s.spatialize && s.z > 1.0e-3),
         // Canonical three-position mode plus the old derived boolean spelling
         // for clients that have not migrated yet.
-        "phantomExtractMode": live.phantom_extract_mode.as_str(),
-        "phantomEnabled": live.synthetic_objects_enabled
-            && live.phantom_extract_mode != renderer::live_params::PhantomExtractMode::Off,
+        "phantomExtractMode": live.options.phantom_extract_mode.as_str(),
+        "phantomEnabled": live.options.synthetic_objects_enabled
+            && live.options.phantom_extract_mode != renderer::live_params::PhantomExtractMode::Off,
         // Stored param values of the phantom stage (`{ key: value }`); its
         // listing is published on `/omniphony/state/phantom`.
         "phantomParamValues": serde_json::to_value(
@@ -192,8 +192,8 @@ pub fn build_renderer_state_json(
                 .unwrap_or_default(),
         )
         .unwrap_or(serde_json::Value::Null),
-        "surroundPlacement": live.surround_placement.as_str(),
-        "outputChannelMapping": live.output_channel_mapping.as_str(),
+        "surroundPlacement": live.options.surround_placement.as_str(),
+        "outputChannelMapping": live.options.output_channel_mapping.as_str(),
         "outputChannelMappingUnroutable": unroutable_speaker_names,
         "fixedChannelCatalog": fixed_channel_catalog,
         "fixedChannelProcessing": fixed_channel_processing,
@@ -213,11 +213,14 @@ pub fn build_renderer_state_json(
         // the legacy spellings, kept while clients migrate to this block.
         "options": renderer::options::options_json(live),
         // Per-family placement of fixed channels (`renderer::placement`):
-        // each family's own settings and what they resolve to.
-        "placement": placement_json(&live.placement),
+        // each family's own settings and what they resolve to, keyed by
+        // name; `placementFamilies` lists the families a client offers, in
+        // order (the renderer's own and the loaded bridge's).
+        "placement": placement_json(&live.placement, live.binaural.output_mode),
+        "placementFamilies": placement_families_json(&live.placement),
         // Legacy mirror of the generic family's own entries (null = none),
         // for clients that predate `placement`.
-        "virtualBed": live.placement.family(renderer::placement::SourceFamily::Generic)
+        "virtualBed": live.placement.family(renderer::placement::SourceFamily::GENERIC)
             .layout.as_ref()
             .map(|bed| serde_json::to_value(bed).unwrap_or(serde_json::Value::Null)),
         "distanceModel": live.distance_model.to_string(),
@@ -457,7 +460,9 @@ fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String 
         "spatial": true,
         "metering": true,
         "fileRequestIds": true,
-        "controlConfig": control_config
+        "controlConfig": control_config,
+        // What a client compares its own contract with (osc-contract).
+        "contractRevision": crate::osc_contract::CONTRACT_REVISION
     })
     .to_string()
 }
@@ -468,6 +473,17 @@ mod capability_tests {
 
     fn parse(json: &str) -> serde_json::Value {
         serde_json::from_str(json).expect("valid capabilities JSON")
+    }
+
+    #[test]
+    fn both_variants_advertise_the_contract_revision() {
+        for has_host in [true, false] {
+            let v = parse(&build_renderer_capabilities_json(has_host, has_host));
+            assert_eq!(
+                v["contractRevision"],
+                crate::osc_contract::CONTRACT_REVISION
+            );
+        }
     }
 
     #[test]
@@ -573,7 +589,7 @@ pub fn build_live_state_bundle_with_host(
     let editable_layout = control.editable_layout();
     let layout_json = serde_json::to_string(&editable_layout).unwrap_or_else(|_| "{}".to_string());
     let speakers_state_json = build_speakers_state_json(&live, &editable_layout);
-    let loudness_gain: f32 = match (live.use_loudness, live.dialogue_level) {
+    let loudness_gain: f32 = match (live.options.use_loudness, live.dialogue_level) {
         (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
         _ => 1.0,
     };
@@ -630,7 +646,7 @@ pub fn build_live_state_bundle_with_host(
             addr: crate::osc_contract::STATE_LOUDNESS.to_string(),
             args: vec![OscType::String(
                 json!({
-                    "enabled": live.use_loudness,
+                    "enabled": live.options.use_loudness,
                     "source": live.dialogue_level,
                     "gain": loudness_gain
                 })
@@ -792,6 +808,13 @@ pub fn build_live_state_bundle_with_host(
             )],
         }),
         OscPacket::Message(OscMessage {
+            // The bridge_api this engine loads bridges of (same minor only).
+            // Studio shows it in About next to the ABI, so "installed and no
+            // sound" can be matched against the bridge's own version (#676).
+            addr: crate::osc_contract::STATE_RENDER_BRIDGE_API.to_string(),
+            args: vec![OscType::String(bridge_api::VERSION.to_string())],
+        }),
+        OscPacket::Message(OscMessage {
             // Non-empty when this renderer came up in the degraded "no decoder"
             // state because the bridge couldn't be resolved/loaded. The embedded
             // (mpv) host returns NULL from orender_create in that case (so mpv
@@ -819,9 +842,13 @@ pub fn build_live_state_bundle_with_host(
         addr: crate::osc_contract::STATE_INPUT.to_string(),
         args: vec![OscType::String(
             json!({
-                "drcMode": live.drc_mode,
-                "drcWeight": live.drc_weight,
+                "drcMode": live.options.drc_mode,
+                "drcWeight": live.options.drc_weight,
                 "supportedDrcModes": control.bridge_supported_drc_modes(),
+                // What the stream tags among its channels (the dialogue a
+                // format codes apart): `[{kind, language, label, channels}]`.
+                "channelTags": serde_json::from_str::<serde_json::Value>(&control.channel_tags())
+                    .unwrap_or_else(|_| serde_json::Value::Array(Vec::new())),
             })
             .to_string(),
         )],
@@ -843,34 +870,67 @@ pub fn build_live_state_bundle_with_host(
     all_messages
 }
 
-/// The `placement` block of the renderer snapshot: per family, its own
-/// `mode`/`layout` (null when unset, i.e. inherited) and the effective
-/// result — `effectiveMode`, and `layoutSource` saying whose entries apply
+/// The `placement` block of the renderer snapshot: per family of the table,
+/// its `label`, whether it is `declared` (by the renderer or the loaded
+/// bridge, else known only from the config), its `defaultMode` (the mode on
+/// speakers when neither it nor the generic family sets one; headphones
+/// default to sphere), its own `mode`/`layout` (null
+/// when unset, i.e. inherited) and the effective result on the current
+/// output — `effectiveMode`, `modeSource` saying why (`own`, `generic`,
+/// `headphones` or `family`), and `layoutSource` saying whose entries apply
 /// (`own`, `generic` or `none`).
-fn placement_json(state: &renderer::placement::PlacementState) -> serde_json::Value {
+fn placement_json(
+    state: &renderer::placement::PlacementState,
+    output: renderer::live_params::OutputMode,
+) -> serde_json::Value {
     use renderer::placement::SourceFamily;
+    let generic_has_layout = state.family(SourceFamily::GENERIC).layout.is_some();
     let mut families = serde_json::Map::new();
-    for family in SourceFamily::ALL {
+    for (family, info) in state.families() {
         let own = state.family(family);
+        let (effective_mode, mode_source) = state.resolve_mode(family, output);
         let layout_source = if own.layout.is_some() {
             "own"
-        } else if state.family(SourceFamily::Generic).layout.is_some() {
+        } else if generic_has_layout {
             "generic"
         } else {
             "none"
         };
         families.insert(
-            family.as_str().to_string(),
+            info.name.clone(),
             json!({
+                "label": info.label,
+                "declared": info.declared,
+                "defaultMode": info.default_mode.as_str(),
                 "mode": own.mode.map(|m| m.as_str()),
                 "layout": own.layout.as_ref()
                     .map(|bed| serde_json::to_value(bed).unwrap_or(serde_json::Value::Null)),
-                "effectiveMode": state.effective_mode(family).as_str(),
+                "effectiveMode": effective_mode.as_str(),
+                "modeSource": mode_source.as_str(),
                 "layoutSource": layout_source,
             }),
         );
     }
     serde_json::Value::Object(families)
+}
+
+/// The families a client offers, by name, in order: the generic family, the
+/// loaded bridge's in its catalogue order, then the renderer's PCM input.
+/// A family known only from the config is left out — no stream can have it.
+fn placement_families_json(state: &renderer::placement::PlacementState) -> serde_json::Value {
+    use renderer::placement::SourceFamily;
+    let name = |family| state.info(family).name.as_str();
+    let bridge = state
+        .families()
+        .filter(|(family, info)| {
+            info.declared && *family != SourceFamily::GENERIC && *family != SourceFamily::PCM
+        })
+        .map(|(_, info)| info.name.as_str());
+    let names: Vec<&str> = std::iter::once(name(SourceFamily::GENERIC))
+        .chain(bridge)
+        .chain(std::iter::once(name(SourceFamily::PCM)))
+        .collect();
+    json!(names)
 }
 
 #[cfg(test)]

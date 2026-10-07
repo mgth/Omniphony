@@ -1,6 +1,6 @@
 [package]
 name = "audio_output"
-version = "0.2.4"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,9 +18,9 @@ cpal-check = ["dep:cpal"]
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
-crossbeam = "0.8"
 parking_lot.workspace = true
 rubato = "0.14"
+rtrb = "0.4"
 diag.workspace = true
 serde.workspace = true
 audio_rt.workspace = true

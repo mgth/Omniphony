@@ -208,7 +208,7 @@ pub struct OwnedPlacement {
 
 impl OwnedPlacement {
     pub fn from_live(live: &renderer::live_params::LiveParams, family: SourceFamily) -> Self {
-        let effective = live.placement.effective(family);
+        let effective = live.placement.effective(family, live.binaural.output_mode);
         Self {
             mode: effective.mode,
             layout: effective.layout.cloned(),
@@ -952,7 +952,7 @@ pub fn build_fixed_channel_objects(
         let live = control.live.read();
         (
             OwnedPlacement::from_live(&live, family),
-            live.surround_placement,
+            live.options.surround_placement,
             RoomRatios::from_live(&live),
         )
     };
@@ -1013,7 +1013,7 @@ impl ChannelPlanKey {
             family,
             mode,
             placement: OwnedPlacement::from_live(live, family),
-            surround_placement: live.surround_placement,
+            surround_placement: live.options.surround_placement,
             room: RoomRatios::from_live(live),
             layout_generation,
         }
@@ -1049,12 +1049,15 @@ impl ChannelPlanKey {
 
         *planned_generation == layout_generation
             && *planned_mode == mode
-            && *surround_placement == live.surround_placement
+            && *surround_placement == live.options.surround_placement
             && *room == RoomRatios::from_live(live)
             && *planned_family == family
             && labels.as_slice() == channel_labels
             && planned_poses.as_slice() == declared_poses
-            && placement.mode == live.placement.effective_mode(family)
+            && placement.mode
+                == live
+                    .placement
+                    .effective_mode(family, live.binaural.output_mode)
             && placement.layout.as_ref() == live.placement.effective_layout(family)
     }
 }
@@ -1368,7 +1371,7 @@ impl FixedChannelPlanner {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const UNIT_ROOM: [f32; 3] = [1.0, 1.0, 1.0];
@@ -2561,6 +2564,8 @@ mod tests {
         )
         .expect("renderer");
         let control = renderer.renderer_control();
+        let dolby = test_family(&control, "dolby");
+        let dts = test_family(&control, "dts");
         let labels = [
             RChannelLabel::L,
             RChannelLabel::R,
@@ -2571,7 +2576,7 @@ mod tests {
 
         let mut planner = FixedChannelPlanner::new();
         let mut out = Vec::new();
-        planner.plan_object_stream_fixed(&labels, SourceFamily::Dolby, &[], &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
         assert!(!out.is_empty(), "initial plan emits the prefix events");
         assert_eq!(
             planner.fixed_trims(),
@@ -2585,7 +2590,7 @@ mod tests {
             .expect("L event");
 
         out.clear();
-        planner.plan_object_stream_fixed(&labels, SourceFamily::Dolby, &[], &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
         assert!(out.is_empty(), "nothing changed → cached plan");
 
         // The edit: LFE trimmed to −6.5 dB in the generic entries, which the
@@ -2597,7 +2602,7 @@ mod tests {
             .live
             .write()
             .placement
-            .family_mut(SourceFamily::Generic)
+            .family_mut(SourceFamily::GENERIC)
             .layout = Some(vbed(vec![
             Speaker::new("L", -30.0, 0.0),
             Speaker::new("C", 0.0, 0.0),
@@ -2606,7 +2611,7 @@ mod tests {
         ]));
 
         out.clear();
-        planner.plan_object_stream_fixed(&labels, SourceFamily::Dolby, &[], &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
         let lfe_event = out
             .iter()
             .find(|e| e.channel_idx == 3)
@@ -2630,14 +2635,9 @@ mod tests {
         assert_eq!(l_after, l_room, "room mode ignores the entry's pose");
 
         // Switching the family to manual replans too, and now L is the entry.
-        control
-            .live
-            .write()
-            .placement
-            .family_mut(SourceFamily::Dolby)
-            .mode = Some(PlacementMode::Manual);
+        control.live.write().placement.family_mut(dolby).mode = Some(PlacementMode::Manual);
         out.clear();
-        planner.plan_object_stream_fixed(&labels, SourceFamily::Dolby, &[], &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
         let l_manual = out
             .iter()
             .find(|e| e.channel_idx == 0)
@@ -2647,8 +2647,24 @@ mod tests {
 
         // Another family is another plan, even with the same labels.
         out.clear();
-        planner.plan_object_stream_fixed(&labels, SourceFamily::Dts, &[], &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, dts, &[], &renderer, &mut out);
         assert!(!out.is_empty(), "a family change replans");
+    }
+
+    /// A family as a bridge's catalogue declares it (the renderer knows none
+    /// by name): `auro` a sphere, the rest a room.
+    pub(crate) fn test_family(
+        control: &renderer::live_params::RendererControl,
+        name: &str,
+    ) -> SourceFamily {
+        let mode = if name == "auro" {
+            PlacementMode::Sphere
+        } else {
+            PlacementMode::Room
+        };
+        let mut live = control.live.write();
+        live.placement.declare(name, name, mode);
+        live.placement.find(name).expect("declared")
     }
 
     fn small_renderer(layout: SpeakerLayout) -> renderer::spatial_renderer::SpatialRenderer {
@@ -2689,12 +2705,8 @@ mod tests {
         use renderer::placement::PlacementMode;
         let renderer = small_renderer(SpeakerLayout::preset("7.1.4").expect("preset layout"));
         let control = renderer.renderer_control();
-        control
-            .live
-            .write()
-            .placement
-            .family_mut(SourceFamily::Dolby)
-            .mode = Some(PlacementMode::Sphere);
+        let dolby = test_family(&control, "dolby");
+        control.live.write().placement.family_mut(dolby).mode = Some(PlacementMode::Sphere);
         let labels = [
             RChannelLabel::L,
             RChannelLabel::R,
@@ -2705,7 +2717,7 @@ mod tests {
 
         let mut planner = FixedChannelPlanner::new();
         let mut out = Vec::new();
-        planner.plan_object_stream_fixed(&labels, SourceFamily::Dolby, &[], &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
         let l_cube = event_position(&out, 0).expect("L event");
 
         // What the room OSC handler does: new ratios, then a geometry bump.
@@ -2716,13 +2728,58 @@ mod tests {
         }
         control.bump_geometry_generation();
         out.clear();
-        planner.plan_object_stream_fixed(&labels, SourceFamily::Dolby, &[], &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
         let l_deep = event_position(&out, 0).expect("L event after the room edit");
         assert_ne!(l_deep, l_cube, "a deeper room moves the sphere-mode L");
 
         out.clear();
-        planner.plan_object_stream_fixed(&labels, SourceFamily::Dolby, &[], &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
         assert!(out.is_empty(), "nothing changed since → cached plan");
+    }
+
+    /// Switching the output to headphones moves a family nobody chose a mode
+    /// for from its room corners to the sphere, on the next frame and without
+    /// an epoch bump; a family with a mode of its own stays where it was.
+    #[test]
+    fn headphones_replan_a_default_family_onto_the_sphere() {
+        use renderer::live_params::OutputMode;
+        use renderer::placement::PlacementMode;
+        let renderer = small_renderer(SpeakerLayout::preset("7.1.4").expect("preset layout"));
+        let control = renderer.renderer_control();
+        let dolby = test_family(&control, "dolby");
+        let dts = test_family(&control, "dts");
+        control.live.write().placement.family_mut(dts).mode = Some(PlacementMode::Room);
+        let labels = [
+            RChannelLabel::L,
+            RChannelLabel::R,
+            RChannelLabel::C,
+            RChannelLabel::LFE,
+            RChannelLabel::Object,
+        ];
+        let plan = |planner: &mut FixedChannelPlanner, family| {
+            let mut out = Vec::new();
+            planner.plan_object_stream_fixed(&labels, family, &[], &renderer, &mut out);
+            out
+        };
+
+        let mut dolby_planner = FixedChannelPlanner::new();
+        let mut dts_planner = FixedChannelPlanner::new();
+        let l_room = event_position(&plan(&mut dolby_planner, dolby), 0).expect("L event");
+        assert!(!plan(&mut dts_planner, dts).is_empty(), "initial plan");
+
+        control.live.write().binaural.output_mode = OutputMode::Binaural;
+        let l_headphones =
+            event_position(&plan(&mut dolby_planner, dolby), 0).expect("L event after the switch");
+        assert_ne!(l_headphones, l_room, "the default family left the room");
+        control.live.write().placement.family_mut(dolby).mode = Some(PlacementMode::Sphere);
+        assert!(
+            plan(&mut dolby_planner, dolby).is_empty(),
+            "the default on headphones is the sphere itself → cached plan"
+        );
+        assert!(
+            plan(&mut dts_planner, dts).is_empty(),
+            "a chosen room is not the output's to change"
+        );
     }
 
     /// A route that depends on the output layout — here `LFE2`, which folds
@@ -2739,6 +2796,7 @@ mod tests {
         let layout = SpeakerLayout::preset("7.1.4").expect("preset layout");
         let renderer = small_renderer(layout.clone());
         let control = renderer.renderer_control();
+        let dolby = test_family(&control, "dolby");
         let prefix = [
             RChannelLabel::L,
             RChannelLabel::R,
@@ -2753,15 +2811,9 @@ mod tests {
         let mut out = Vec::new();
         let plan_both =
             |fixed: &mut FixedChannelPlanner, bed: &mut BedChannelPlanner, out: &mut Vec<_>| {
-                fixed.plan_object_stream_fixed(
-                    &object_labels,
-                    SourceFamily::Dolby,
-                    &[],
-                    &renderer,
-                    out,
-                );
+                fixed.plan_object_stream_fixed(&object_labels, dolby, &[], &renderer, out);
                 assert_eq!(
-                    bed.plan(&renderer, &prefix, SourceFamily::Dolby, &[]),
+                    bed.plan(&renderer, &prefix, dolby, &[]),
                     BedPlanKind::Events
                 );
                 (
@@ -2805,15 +2857,11 @@ mod tests {
         use renderer::placement::PlacementMode;
         let renderer = small_renderer(SpeakerLayout::preset("7.1.4").expect("preset layout"));
         let control = renderer.renderer_control();
-        control
-            .live
-            .write()
-            .placement
-            .family_mut(SourceFamily::Dts)
-            .mode = Some(PlacementMode::Sphere);
+        let dts = test_family(&control, "dts");
+        control.live.write().placement.family_mut(dts).mode = Some(PlacementMode::Sphere);
         let mut planner = BedChannelPlanner::new();
         assert_eq!(
-            planner.plan(&renderer, &BED_5_1, SourceFamily::Dts, &[]),
+            planner.plan(&renderer, &BED_5_1, dts, &[]),
             BedPlanKind::Events
         );
         let poses = planner.poses().to_vec();
@@ -2827,7 +2875,7 @@ mod tests {
 
         control.live.write().channel_render_mode = renderer::live_params::ChannelRenderMode::Host;
         assert_eq!(
-            planner.plan(&renderer, &BED_5_1, SourceFamily::Dts, &[]),
+            planner.plan(&renderer, &BED_5_1, dts, &[]),
             BedPlanKind::HostPassthrough
         );
         assert!(planner.poses().is_empty());

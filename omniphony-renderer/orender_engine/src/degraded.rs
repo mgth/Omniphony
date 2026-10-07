@@ -224,7 +224,7 @@ fn resolve_layout(
 const BRIDGE_ERROR_MAX_BYTES: usize = 2048;
 
 /// Shorten a bridge load error to what a UI can show (see
-/// [`BRIDGE_ERROR_MAX_BYTES`]); a short error passes through unchanged.
+/// `BRIDGE_ERROR_MAX_BYTES`); a short error passes through unchanged.
 pub fn summarize_bridge_error(text: &str) -> String {
     if text.len() <= BRIDGE_ERROR_MAX_BYTES {
         return text.to_string();
@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(control.config_status().as_deref(), Some("loaded"));
         assert_eq!(control.host_abi(), Some((0, 7)));
         assert_eq!(
-            control.live.read().ramp_mode,
+            control.live.read().options.ramp_mode,
             renderer::live_params::RampMode::Sample
         );
         assert_eq!(

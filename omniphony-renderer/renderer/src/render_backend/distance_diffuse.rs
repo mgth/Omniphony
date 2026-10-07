@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
+use super::{BackendCapabilities, GainModel, NeighbourHint, RenderRequest, RenderResponse};
 use crate::spatial_vbap::{DistanceMetric, Gains};
 use crate::speaker_layout::SpeakerLayout;
 
@@ -53,14 +53,42 @@ impl GainModel for DistanceDiffuseModel {
     }
 
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        self.evaluate(req, |inner_req| self.inner.compute_gains(inner_req))
+    }
+
+    fn compute_gains_with_hint(
+        &self,
+        req: &RenderRequest,
+        hint: &mut NeighbourHint,
+    ) -> RenderResponse {
+        // The source and its mirror image each walk their own row of
+        // neighbours, and claim their slots in this order at every cell.
+        self.evaluate(req, |inner_req| {
+            self.inner.compute_gains_with_hint(inner_req, hint)
+        })
+    }
+
+    fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
+        self.inner.save_to_file(path, speaker_layout)
+    }
+}
+
+impl DistanceDiffuseModel {
+    /// Blend the source with its mirror image, reaching the inner model through
+    /// `inner_gains` (once for the source, then once for the mirror).
+    fn evaluate(
+        &self,
+        req: &RenderRequest,
+        mut inner_gains: impl FnMut(&RenderRequest) -> RenderResponse,
+    ) -> RenderResponse {
         // No flip means the mirror is the source itself, so the blend would
         // renormalize straight back to the direct gains: skip both the second
         // evaluation and the mixing.
         if !req.use_distance_diffuse || req.diffuse_mirror_axes.is_identity() {
-            return self.inner.compute_gains(req);
+            return inner_gains(req);
         }
 
-        let direct = self.inner.compute_gains(req).gains;
+        let direct = inner_gains(req).gains;
 
         // Mirror in ADM space, i.e. on the authored position, before the room
         // scaling the backend applies downstream. Note the warp is only an odd
@@ -71,7 +99,7 @@ impl GainModel for DistanceDiffuseModel {
         // room proportions.
         let mut mirror_req = *req;
         mirror_req.adm_position = req.diffuse_mirror_axes.reflect(req.adm_position);
-        let mirror = self.inner.compute_gains(&mirror_req).gains;
+        let mirror = inner_gains(&mirror_req).gains;
 
         // Blend weight from the (raw) ADM distance, under the selected metric.
         let adm_dist = self.metric.measure(req.adm_position.map(|v| v as f32));
@@ -101,10 +129,6 @@ impl GainModel for DistanceDiffuseModel {
         }
 
         RenderResponse { gains: blended }
-    }
-
-    fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
-        self.inner.save_to_file(path, speaker_layout)
     }
 }
 

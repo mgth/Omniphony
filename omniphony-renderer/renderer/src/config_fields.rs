@@ -216,33 +216,6 @@ render_field! {
     eq = |a: &f32, b: &f32| (a - b).abs() <= 0.01
 }
 
-render_field! {
-    /// Automatic gain reduction to avoid clipping (`render.auto_gain`).
-    /// Persisted by both the CLI writer and the live path (it is a live param,
-    /// tunable at runtime via `/omniphony/control/auto_gain`).
-    pub auto_gain: bool = false,
-    field = auto_gain,
-    eq = bool::eq
-}
-
-render_field! {
-    /// Target ceiling, in dBFS, that auto-gain corrects peaks down to
-    /// (`render.auto_gain_ceiling_db`). Clipping is still *detected* at 0 dBFS;
-    /// this is only the level peaks are brought back to, providing headroom so
-    /// the correction fires less often. Live param, tunable via
-    /// `/omniphony/control/auto_gain_ceiling`. Default −1 dBFS.
-    pub auto_gain_ceiling_db: f32 = -1.0,
-    field = auto_gain_ceiling_db,
-    eq = |a: &f32, b: &f32| (a - b).abs() <= 0.01
-}
-
-render_field! {
-    /// Loudness metadata correction toward -31 dBFS (`render.use_loudness`).
-    pub use_loudness: bool = false,
-    field = use_loudness,
-    eq = bool::eq
-}
-
 // ── Lot 4: OSC ──
 
 render_field! {
@@ -307,14 +280,6 @@ render_field! {
 }
 
 render_field! {
-    /// Decode on a thread of its own in the liborender engine
-    /// (`render.decode_thread`), when its host lets the option decide.
-    pub decode_thread: bool = false,
-    field = decode_thread,
-    eq = bool::eq
-}
-
-render_field! {
     /// Bed conformance for spatial content (`render.bed_conform`).
     pub bed_conform: bool = false,
     field = bed_conform,
@@ -328,56 +293,6 @@ render_field! {
         crate::live_params::ChannelRenderMode::Spatial,
     field = channel_render_mode,
     eq = crate::live_params::ChannelRenderMode::eq
-}
-
-render_field! {
-    /// Where the 4.x/5.x surround pair (`Ls`/`Rs`) is placed: side vs back
-    /// (`render.surround_placement`). Default `Side`.
-    pub surround_placement: crate::live_params::SurroundPlacement =
-        crate::live_params::SurroundPlacement::Side,
-    field = surround_placement,
-    eq = crate::live_params::SurroundPlacement::eq
-}
-
-render_field! {
-    /// How output channels map to device ports: by_index vs by_name
-    /// (`render.output_channel_mapping`). Default `ByIndex`.
-    pub output_channel_mapping: crate::live_params::OutputChannelMapping =
-        crate::live_params::OutputChannelMapping::ByIndex,
-    field = output_channel_mapping,
-    eq = crate::live_params::OutputChannelMapping::eq
-}
-
-render_field! {
-    /// Crossover filter implementation: lr4 (IIR, zero latency) vs fir
-    /// (linear-phase, constant latency) (`render.crossover_type`). Default `Lr4`.
-    pub crossover_type: crate::live_params::CrossoverType =
-        crate::live_params::CrossoverType::Lr4,
-    field = crossover_type,
-    eq = crate::live_params::CrossoverType::eq
-}
-
-render_field! {
-    /// FIR crossover transition width as a fraction of the lowest cutoff
-    /// (`render.crossover_fir_transition_ratio`). Default 0.5.
-    pub crossover_fir_transition_ratio: f32 = 0.5,
-    field = crossover_fir_transition_ratio,
-    eq = |a: &f32, b: &f32| a == b
-}
-
-render_field_str! {
-    /// Bed→height object generator id for channel content
-    /// (`render.object_generator_id`). Empty / absent = off.
-    pub object_generator_id = "",
-    field = object_generator_id
-}
-
-render_field! {
-    /// Phantom extraction algorithm (`render.phantom_extract_mode`).
-    pub phantom_extract_mode: crate::live_params::PhantomExtractMode =
-        crate::live_params::PhantomExtractMode::Off,
-    field = phantom_extract_mode,
-    eq = crate::live_params::PhantomExtractMode::eq
 }
 
 render_field! {
@@ -395,15 +310,6 @@ render_field! {
 }
 
 // ── Lot 5c: special-cased options (custom descriptors) ──
-
-render_field_str! {
-    /// Object-transition ramp mode (`render.ramp_mode`): "off" | "frame" |
-    /// "sample". Default "frame". Note: this fixes a CLI/live disagreement —
-    /// the old CLI writer treated `Sample` as the default (persisted `Frame`!),
-    /// while the live writer (correctly) treats `Frame` as the default.
-    pub ramp_mode = "frame",
-    field = ramp_mode
-}
 
 /// Presentation / substream selector (`render.presentation`). Special-cased:
 /// the CLI works in strings ("best" or a number) while the config stores a
@@ -467,7 +373,7 @@ pub mod hrir_update_lattice {
 /// `room_ratio_lower`) are still read. `room_ratio_center_blend` is stored as
 /// is.
 ///
-/// [`resolve`] is the one reading of a render section into ratios: the
+/// `Room::resolve` is the one reading of a render section into ratios: the
 /// renderer construction, the live seed and the profile switch all go through
 /// it, so they cannot disagree on a default (rear falls back to the length,
 /// lower and the centre blend to one half).

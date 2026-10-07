@@ -30,13 +30,38 @@
 //! is `(taps−1)/2 + BLOCK − 1` samples — constant, reported by
 //! [`FirCrossoverBank::latency_samples`] so other signal paths can be
 //! delay-compensated against the filtered ones.
+//!
+//! All of a hop's work lands on the sample that completes it, so channels
+//! hopping in step would pile their transforms onto one host block out of
+//! `BLOCK / host block`. Each channel's state therefore starts its first hop
+//! partly filled ([`FirCrossoverBank::make_state_for_channel`]), which moves
+//! where its hops are cut without moving its output: the latency is the same
+//! at every phase.
 
 use super::filter::SmallBands;
 use crate::partitioned_conv::{ConvolutionPlan, InputHistory, OutputScratch, PartitionedKernel};
 
 /// Internal hop size (samples). Each hop triggers one forward FFT of
 /// `2 * BLOCK`; the filter kernels are partitioned into `BLOCK`-sized chunks.
-const BLOCK: usize = 1024;
+pub(crate) const BLOCK: usize = 1024;
+
+/// Hop phase step between consecutive channels, in samples: ≈ 5 · `BLOCK` / 24.
+///
+/// Any 24 consecutive channels then sit at least 41 samples apart — more than
+/// a 40-sample host block, the shortest the decoders deliver, so each of them
+/// completes its hop in a host block of its own — and channel `k + 24` lands
+/// 8 samples before channel `k`, so larger counts keep filling the hop evenly
+/// (120 channels: 8 samples apart). Odd, so the phases of `BLOCK` consecutive
+/// channels are all different.
+const PHASE_STEP: usize = 213;
+
+/// Hop phase of a channel: how many samples into a hop its stream starts.
+/// A pure function of the index, so a channel hops at the same phase on every
+/// run; the spacing of a run of channels depends on their count only, not on
+/// where the run starts (objects usually follow a bed).
+fn hop_phase(channel: usize) -> usize {
+    (channel % BLOCK) * PHASE_STEP % BLOCK
+}
 
 /// Design parameters for [`FirCrossoverBank::new`].
 #[derive(Clone, Copy)]
@@ -152,6 +177,9 @@ pub struct FirCrossoverState {
     /// Current band output blocks, `[band][sample]`, read by `read_idx`.
     out: Vec<Vec<f32>>,
     read_idx: usize,
+    /// Zeros the first hop starts with (`0..BLOCK`), see [`hop_phase`]. Kept
+    /// so [`Self::reset`] restores the same phase.
+    phase: usize,
 }
 
 impl FirCrossoverBank {
@@ -233,9 +261,23 @@ impl FirCrossoverBank {
         self.kernel_delay + self.plan.latency_samples()
     }
 
-    /// Allocate the streaming state for one channel.
+    /// Allocate the streaming state for one channel, hopping in phase with
+    /// the stream's first sample.
     pub fn make_state(&self) -> FirCrossoverState {
-        FirCrossoverState {
+        self.make_state_at_phase(0)
+    }
+
+    /// Allocate the streaming state for input channel `channel`, hopping at
+    /// that channel's own phase so the channels of a mix do not all complete
+    /// a hop on the same sample. The output is the one [`Self::make_state`]
+    /// gives up to FFT rounding, at the same latency.
+    pub fn make_state_for_channel(&self, channel: usize) -> FirCrossoverState {
+        self.make_state_at_phase(hop_phase(channel))
+    }
+
+    fn make_state_at_phase(&self, phase: usize) -> FirCrossoverState {
+        debug_assert!(phase < BLOCK);
+        let mut state = FirCrossoverState {
             input: self.plan.make_input(self.partitions),
             scratch: self.plan.make_scratch(),
             delay_hist: vec![0.0; self.kernel_delay],
@@ -243,7 +285,10 @@ impl FirCrossoverBank {
             lp_out: vec![vec![0.0; BLOCK]; self.num_bands - 1],
             out: vec![vec![0.0; BLOCK]; self.num_bands],
             read_idx: 0,
-        }
+            phase,
+        };
+        state.enter_phase();
+        state
     }
 
     /// Split `input` into `num_bands` band samples using the per-channel
@@ -295,6 +340,7 @@ impl FirCrossoverBank {
             lp_out,
             out,
             read_idx,
+            phase: _,
         } = state;
 
         // Overlap-save forward transform of [previous block | new block].
@@ -345,6 +391,19 @@ impl FirCrossoverState {
             band.fill(0.0);
         }
         self.read_idx = 0;
+        self.enter_phase();
+    }
+
+    /// Start the empty first hop `phase` samples in, as if that much silence
+    /// had already been pushed. The hop then completes `phase` samples early
+    /// and its output block starts `phase` samples before the stream does, so
+    /// the two shifts cancel: the first input sample still comes out
+    /// `latency_samples()` later.
+    fn enter_phase(&mut self) {
+        debug_assert_eq!(self.input.pending_len(), 0);
+        for _ in 0..self.phase {
+            self.input.push(0.0);
+        }
     }
 }
 
@@ -416,6 +475,127 @@ mod tests {
             (peak - 1.0).abs() < 1e-5,
             "impulse must survive with unit gain, got {peak}"
         );
+    }
+
+    /// The latency does not depend on where a channel's hops are cut: at
+    /// every phase a unit impulse comes back as a unit impulse at exactly
+    /// `latency_samples()`, and nowhere else.
+    #[test]
+    fn impulse_lands_at_latency_at_every_phase() {
+        let bank = FirCrossoverBank::with_taps(&[120.0], 48000, 1023, 90.0);
+        let lat = bank.latency_samples();
+        let run = lat + BLOCK + 1;
+        for phase in 0..BLOCK {
+            let mut state = bank.make_state_at_phase(phase);
+            assert_eq!(state.input.pending_len(), phase);
+            for i in 0..run {
+                let x = if i == 0 { 1.0 } else { 0.0 };
+                let bands = bank.process_sample(x, &mut state);
+                let sum: f32 = (0..bands.len()).map(|b| bands.get(b)).sum();
+                let want = if i == lat { 1.0 } else { 0.0 };
+                assert!(
+                    (sum - want).abs() < 1e-5,
+                    "phase {phase}: sample {i} is {sum}, the impulse belongs at {lat}"
+                );
+            }
+        }
+    }
+
+    /// A channel's phase moves its hops, not its signal: every band matches
+    /// the phase-0 state's sample for sample, up to FFT rounding.
+    #[test]
+    fn channel_phase_leaves_every_band_unchanged() {
+        let bank = FirCrossoverBank::with_taps(&[120.0, 2000.0], 48000, 1023, 90.0);
+        let x = noise(6 * BLOCK);
+        let split = |mut state: FirCrossoverState| -> Vec<SmallBands> {
+            x.iter()
+                .map(|&s| bank.process_sample(s, &mut state))
+                .collect()
+        };
+        let reference = split(bank.make_state());
+        for channel in [1, 2, 3, 5, 10, 15, 31, 117, BLOCK - 1] {
+            let staggered = split(bank.make_state_for_channel(channel));
+            for (i, (a, b)) in staggered.iter().zip(&reference).enumerate() {
+                for band in 0..bank.num_bands {
+                    let err = (a.get(band) - b.get(band)).abs();
+                    assert!(
+                        err < 1e-5,
+                        "channel {channel}, band {band}, sample {i}: off by {err}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The spread itself, for any run of consecutive channels (the distance
+    /// between two phases depends on the index difference only): up to 24
+    /// channels never complete two hops within a 40-sample host block, larger
+    /// counts stay within one hop of the best any spread could do, and no two
+    /// channels share a phase.
+    #[test]
+    fn channel_phases_are_distinct_and_well_spread() {
+        const HOST_BLOCK: usize = 40;
+        // Most hops completing inside any HOST_BLOCK consecutive samples.
+        let busiest = |start: usize, count: usize| -> usize {
+            let mut phases: Vec<usize> = (start..start + count).map(hop_phase).collect();
+            phases.sort_unstable();
+            (0..count)
+                .map(|i| {
+                    (0..count)
+                        .take_while(|&k| {
+                            let next = phases[(i + k) % count] + BLOCK * ((i + k) / count);
+                            next - phases[i] < HOST_BLOCK
+                        })
+                        .count()
+                })
+                .max()
+                .unwrap()
+        };
+        for start in [0, 1, 10, 12, 16, 37] {
+            for count in 1..=128 {
+                // No spread can do better than the pigeonhole bound.
+                let floor = (count * HOST_BLOCK).div_ceil(BLOCK);
+                let got = busiest(start, count);
+                assert!(
+                    got <= floor + 1,
+                    "{count} channels from {start}: {got} hops in one host block (floor {floor})"
+                );
+                if count <= 24 || [32, 48, 64, 118].contains(&count) {
+                    assert_eq!(got, floor, "{count} channels from {start}");
+                }
+            }
+        }
+        let mut all: Vec<usize> = (0..BLOCK).map(hop_phase).collect();
+        all.sort_unstable();
+        assert!(all.iter().copied().eq(0..BLOCK), "phases must not collide");
+        assert_eq!(hop_phase(BLOCK + 5), hop_phase(5), "the spread wraps");
+    }
+
+    /// `reset` puts a channel back at its own phase with no memory: what
+    /// follows is bit for bit what a fresh state of that channel produces.
+    #[test]
+    fn reset_restores_the_channel_phase() {
+        let bank = FirCrossoverBank::with_taps(&[120.0, 2000.0], 48000, 1023, 90.0);
+        let x = noise(4 * BLOCK);
+        let split = |state: &mut FirCrossoverState| -> Vec<u32> {
+            x.iter()
+                .flat_map(|&s| {
+                    let bands = bank.process_sample(s, state);
+                    (0..bands.len()).map(move |b| bands.get(b).to_bits())
+                })
+                .collect()
+        };
+        let channel = 5;
+        let mut state = bank.make_state_for_channel(channel);
+        assert_eq!(state.input.pending_len(), hop_phase(channel));
+        let fresh = split(&mut state);
+        // Stop mid-hop, so the reset has pending input and a read position to undo.
+        for &s in &x[..BLOCK / 3] {
+            bank.process_sample(s, &mut state);
+        }
+        state.reset();
+        assert_eq!(state.input.pending_len(), hop_phase(channel));
+        assert_eq!(split(&mut state), fresh);
     }
 
     /// Steady-state amplitude of one band for a unit sine, RMS·√2 over the

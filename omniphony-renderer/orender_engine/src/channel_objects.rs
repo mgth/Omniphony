@@ -249,9 +249,9 @@ impl ChannelObjectStages {
         let options_epoch = control.options_epoch();
         let live = control.live.read();
         let selection = StageSelection {
-            synthetic_objects_enabled: live.synthetic_objects_enabled,
-            phantom_mode: live.phantom_extract_mode,
-            generator_id: &live.object_generator_id,
+            synthetic_objects_enabled: live.options.synthetic_objects_enabled,
+            phantom_mode: live.options.phantom_extract_mode,
+            generator_id: &live.options.object_generator_id,
         };
         StageSync {
             counts: StageCounts::default(),
@@ -262,18 +262,20 @@ impl ChannelObjectStages {
         }
     }
 
-    /// Read the stage selection off the live params (one read lock, nothing
+    /// Read the stage selection off the live params (one lock-free read, nothing
     /// cloned), (re)plan both stages and hand them their parameters when those
     /// changed or the generator was rebuilt — what both hosts do on every
     /// channel frame. In steady state that is one atomic load: the plugin
     /// store is only locked when something moved.
     pub fn sync_from_control(&mut self, control: &RendererControl, ctx: &PrepareCtx) -> StageSync {
+        // The epoch before the params, so a bump seen here comes with its
+        // write (see `renderer::live_cell`).
         let options_epoch = control.options_epoch();
         let live = control.live.read();
         let selection = StageSelection {
-            synthetic_objects_enabled: live.synthetic_objects_enabled,
-            phantom_mode: live.phantom_extract_mode,
-            generator_id: &live.object_generator_id,
+            synthetic_objects_enabled: live.options.synthetic_objects_enabled,
+            phantom_mode: live.options.phantom_extract_mode,
+            generator_id: &live.options.object_generator_id,
         };
         let counts = self.sync(ctx, &selection, options_epoch);
         if counts.any() {
@@ -533,9 +535,10 @@ impl FixedProcessingState {
             .iter()
             .map(|&label| bridge_api::labels::canonical_name(label))
             .collect();
+        let family_name = control.live.read().placement.info(family).name.clone();
         let state = serde_json::json!({
             "stream": if stream_has_objects { "objects" } else { "fixed" },
-            "family": family.as_str(),
+            "family": family_name,
             "label": source_label,
             "labels": names,
             "inputHasHeight": input_has_height,
@@ -548,7 +551,7 @@ impl FixedProcessingState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn selection(master: bool, id: &str) -> StageSelection<'_> {
@@ -589,7 +592,7 @@ mod tests {
         assert_eq!(counts.total(), 5);
     }
 
-    fn renderer_7_1_4() -> renderer::spatial_renderer::SpatialRenderer {
+    pub(crate) fn renderer_7_1_4() -> renderer::spatial_renderer::SpatialRenderer {
         crate::renderer_build::build_spatial_renderer(
             &crate::renderer_build::SpatialRendererParams::from_render_config(None),
             renderer::speaker_layout::SpeakerLayout::preset("7.1.4").expect("preset layout"),
@@ -617,9 +620,9 @@ mod tests {
         let control = renderer.renderer_control();
         {
             let mut live = control.live.write();
-            live.synthetic_objects_enabled = true;
-            live.phantom_extract_mode = PhantomExtractMode::Broadband;
-            live.object_generator_id = "copy_up".to_string();
+            live.options.synthetic_objects_enabled = true;
+            live.options.phantom_extract_mode = PhantomExtractMode::Broadband;
+            live.options.object_generator_id = "copy_up".to_string();
         }
         let labels = [L, R, C, LFE, Ls, Rs];
         let poses = crate::virtual_bed::room_bed_poses(
@@ -692,6 +695,7 @@ mod tests {
         use bridge_api::RChannelLabel::*;
         let renderer = renderer_7_1_4();
         let control = renderer.renderer_control();
+        let dts = crate::virtual_bed::tests::test_family(&control, "dts");
         let mut state = FixedProcessingState::default();
         let stages = StageSync {
             counts: StageCounts {
@@ -706,7 +710,7 @@ mod tests {
         let labels = [L, R, C, LFE, Ls, Rs];
         let report = FixedProcessingReport {
             stream_has_objects: false,
-            family: SourceFamily::Dts,
+            family: dts,
             source_label: "DTS-HD MA",
             labels: &labels,
             output_has_height: false,

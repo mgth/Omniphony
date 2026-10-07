@@ -22,12 +22,36 @@ address is missing from it. Keep this document and that crate in sync.
 
 - **Booleans** are accepted as OSC `int` (`0`/non-zero), `float`, or `bool`; the
   engine coerces. Most togglish controls take a single int `0`/`1`.
-- **Enums** are lowercase strings; an unrecognised value is ignored (the engine
-  validates and drops bad input rather than erroring).
+- **Enums** are lowercase strings; an unrecognised value is refused, and the
+  sender told so on `/state/control_error` (see
+  [Session and reliability](#session-and-reliability)).
+- **Nesting** is bounded: bundles may nest 8 deep, and so may arrays within a
+  message's arguments. The engine and the Studio each drop a datagram that
+  goes deeper, whole and before decoding it (logged as undecodable); the limit
+  and the check are the contract crate's (`osc-contract`, module `nesting`),
+  for any other listener to use. The engine's own bundles are one level deep
+  and it sends no array.
 - **Realtime gain** controls (`/control/realtime/*`) carry a trailing monotonic
   **sequence int** so the engine can drop stale updates that arrive out of order.
 - Larger structured payloads (layout / speakers / audio / input config) are sent
   as a single **JSON string** argument.
+
+## Datagram size
+
+Every OSC packet travels as one UDP datagram, and some are large: a snapshot
+bundle runs up to 65 000 bytes, and `/control/backend/file/put` and its
+`/state/backend/file/content` reply carry a file of up to 60 000 bytes. A
+client therefore needs to:
+
+- **receive** into a buffer that fits any UDP payload (65 536 bytes): a shorter
+  one truncates or loses the datagram;
+- **raise its socket's send buffer** (`SO_SNDBUF`) to 65 536 bytes when it is
+  lower, before sending a large message. macOS and the BSDs refuse a UDP send
+  larger than that buffer (`EMSGSIZE`, "Message too long"), and it starts at
+  `net.inet.udp.maxdgram`: 9 216 bytes. Only ever raise it: Linux starts
+  higher, and setting it there would shrink it.
+
+The engine and Studio do both on their own sockets.
 
 ## Notification
 
@@ -56,6 +80,98 @@ commit unsaved edits either: a switch discards them unless it is sent with
 delete are bookkeeping. A targeted write never touches the other unsaved edits:
 they stay pending, and a live-handoff sidecar holding them is amended rather
 than discarded.
+
+## Session and reliability
+
+UDP loses datagrams and the engine answers nothing by default, so the session
+carries what a client needs to notice either. The contract crate's
+`CONTRACT_REVISION` (`osc-contract`) is the revision this section describes:
+**3**.
+
+- **Stream transport** (revision 2) — the engine also listens on TCP, on
+  loopback, on the OSC/UDP control port's number. A connection carries the
+  same packets, each preceded by its size as a big-endian int32 (OSC 1.0
+  stream framing), up to 1 MiB each way. A connected client registers with
+  `/omniphony/register` like a datagram client (its argument is ignored: the
+  connection is the reply address) and sends no heartbeat: the connection is
+  the session, and closing it unregisters the client. It is sent everything a
+  datagram client is, in order and without loss, except telemetry and the log
+  relay, which it loses as a datagram client would when it falls behind
+  (8 MiB queued); a
+  client too slow for the state is disconnected instead, and gets a fresh
+  snapshot when it reconnects. Its snapshot comes in one part. An engine that
+  cannot bind the port runs on datagrams only. See
+  `docs/control-transport.md`.
+
+- **Registration** — `/omniphony/register [reply_port]` registers the sender
+  (the port is optional; the source port otherwise) and sends it the
+  live-state snapshot, its log backlog and its metering state. A registered
+  datagram client sends `/omniphony/heartbeat [reply_port]` every 5 s and is
+  dropped after 15 s of silence.
+- **Heartbeat acknowledgement** — `/omniphony/heartbeat/ack [epoch,
+  generation]`, or `/omniphony/heartbeat/unknown` to a client the engine does
+  not know (it re-registers). `epoch` is random per engine instance: when it
+  changes, another engine answers on the port. `generation` is the state
+  generation below. An engine before revision 1 sends `epoch` alone.
+- **State generation** — `/omniphony/state/generation [generation, full,
+  part, parts]`. The engine counts the control-plane state it publishes: every
+  state update (`config/saved`, `log_level`, `speakers/recomputing`, a
+  control's echo, `overlay`, a recompute's `renderer`/`layout`/`speakers`, …)
+  travels in a bundle with the next count, `full = 0`, part 0 of 1. Every
+  datagram of a snapshot opens on the count with `full = 1`, its index and the
+  snapshot's datagram count (a broadcast snapshot advances the count, one sent
+  to a single client does not). A client holding `g` expects `g + 1` next, and
+  holds a snapshot's generation only once it has every part of it; anything
+  else — a count that skips, a snapshot whose last part arrives with an
+  earlier one missing, an acknowledgement reporting another count — means it
+  missed something. It then sends `/omniphony/control/state/refresh
+  [reply_port]`, which resends the snapshot to it and nothing else. The engine
+  takes the count with the state it captures, under one lock, so a later count
+  never carries an older state. Telemetry is not counted: the meter bundle
+  (timings, latencies, the object test position), diagnostics, the head pose,
+  the realtime gain echoes (sequenced on their own), the gain-table stream
+  (versioned and resent on its own) and the object and meter streams. The
+  count wraps; compare it for equality only.
+- **Control errors** — a control the engine does not apply is answered, to
+  its sender only, with `/omniphony/state/control_error [address, code,
+  message]`. `code` is one of `unknown_address` (no handler knows it),
+  `invalid_arguments` (its handler refused the arguments; a grouped
+  `/control/options` write reports the pairs it dropped and applies the
+  rest), `not_applied` (a catalogued address nothing on this engine took: its
+  arguments were refused without a reason, or the host does not implement it,
+  such as an audio-output control sent to an engine embedded in mpv) and
+  `undecodable` (not OSC the engine can read; `address` is empty, and these
+  are answered at most once per 5 s) and, from revision 3, `not_allowed` (a
+  process-lifecycle control, `quit`, `yield_port` or `resume`, from another
+  machine: the OSC/UDP socket listens on the network for head tracking and
+  remote clients, but only a client on this machine may stop the engine or
+  take its port). `message` is for a person. A control
+  taken and found to change nothing is not answered.
+- **Sync** (revision 2) — `/omniphony/sync [args…]` is answered with
+  `/omniphony/sync/ack [args…]` (the same arguments) once every packet the
+  client sent before it has been dispatched. On a stream connection, whose
+  packets are handled in order, the ack is a dispatch barrier: each earlier
+  control was applied (the state it changed published before the ack),
+  refused (its `control_error` before the ack), or started asynchronous work.
+  The ack says nothing about that work: it may have ended before the ack or
+  end after it. A layout or speaker rebuild reports itself as it always has:
+  `speakers/recomputing 1` then `speakers/recompute_error ""` when a build
+  starts; `speakers/recompute_error <message>` on failure, then
+  `speakers/recomputing 0`, when it ends. A change that arrives while a build
+  runs queues one follow-up build, which starts right after the first one's
+  `0`: a `0` says that a build ended, not that every earlier change is built.
+  Over UDP the ack only says the engine heard the sync.
+- **Contract revision** — `/state/capabilities` carries `contractRevision`.
+  A client compares it with its own and says so when they differ; an engine
+  that advertises none predates revisions and counts as 0. The revision moves
+  with any change to the wire surface: an address added, removed or renamed,
+  or an address's arguments. The contract crate pins the address set to the
+  revision, so a catalogue change without a bump fails its tests.
+- **Argument shapes** — `osc_contract::shapes::STATE` gives the arguments of
+  every state address. The engine's tests hold what it sends to it, and
+  Studio's conformance test parses a message of every shape, so a state
+  address Studio cannot read fails a test rather than being dropped at run
+  time.
 
 ---
 
@@ -179,6 +295,7 @@ same wire format; `null` unsets a nullable field.
 | `/control/input/refresh` | — | Re-enumerate input sources. |
 | `/control/input/drc_mode` | s | Dynamic-range-control mode (one of the bridge's `supportedDrcModes`). Registry option alias. |
 | `/control/input/drc_weight` | f `[0,1]` | DRC weight. Registry option alias. |
+| `/control/option dialogue_gain_db <f>` | f `[-12,12]` | Level of the channels the bridge tags as dialogue (`channelTags` on `/state/input`: `[{kind, language, label, channels}]`, empty when the stream tags nothing). Registry option, no alias. |
 | `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,clock_mode,map,lfe_mode}` | varies | Live-capture parameters, staged. `backend` accepts only `pipewire`; the retired `asio` value (never implemented) and any other value are rejected with a warning, leaving the staged backend unchanged. All but `layout_import` (an imported layout, structured) are host options `live_input_*`; a non-positive `channels` / `sample_rate` sent here is ignored, as before (through `/control/option(s)` it unsets the value, as the JSON patch does). |
 | `/control/render/bridge_path` | s | Path to the format bridge library. |
 | `/control/render/input_pipe` | s | Named-pipe input path. |
@@ -280,6 +397,87 @@ nearest integer; a `dynamic_enum` takes one of the ids of the set its
 `source` names (`backends`: `renderBackendState.available_backends` in
 `/state/renderer`). See `docs/live-options-registry.md`.
 
+The declared options (generated from the registry; the alias is the
+dedicated address, under `/omniphony`):
+
+<!-- BEGIN GENERATED live-options -->
+| Key | Value | Default | Group (mode, effect) | Flags | Alias |
+|---|---|---|---|---|---|
+| `surround_placement` | `side` \| `back` | `"side"` | — | replan | `/control/surround_placement` |
+| `synthetic_objects_enabled` | bool | `false` | — | replan | `/control/synthetic_objects` |
+| `decode_thread` | bool | `false` | — | embedded only | `/control/decode_thread` |
+| `output_channel_mapping` | `by_index` \| `by_name` | `"by_index"` | — | — | `/control/output_channel_mapping` |
+| `object_generator_id` | string | `""` | — | replan | `/control/object_generator` |
+| `phantom_extract_mode` | `off` \| `broadband` \| `spectral` | `"off"` | — | replan | `/control/phantom_extract` |
+| `crossover_type` | `lr4` \| `fir` | `"lr4"` | `crossover` (live, reload) | — | `/control/crossover_type` |
+| `crossover_fir_transition_ratio` | float [0.05, 2], step 0.05 | `0.5` | `crossover` (live, reload) | — | `/control/crossover_fir_transition_ratio` |
+| `auto_gain` | bool | `false` | — | — | `/control/auto_gain` |
+| `auto_gain_ceiling_db` | float [-12, 0], step 0.1 | `-1` | — | — | `/control/auto_gain_ceiling` |
+| `use_loudness` | bool | `false` | — | — | `/control/loudness` |
+| `ramp_mode` | `off` \| `frame` \| `interp` \| `sample` | `"frame"` | — | — | `/control/ramp_mode` |
+| `sample_ramp_stride` | int [1, 32] | `8` | — | — | — |
+| `drc_mode` | string | `"Off"` | — | — | `/control/input/drc_mode` |
+| `drc_weight` | float [0, 1], step 0.01 | `1` | — | — | `/control/input/drc_weight` |
+| `dialogue_gain_db` | float [-12, 12], step 0.5 | `0` | — | — | — |
+| `hrir_update_lattice` | `exact` \| `fine` \| `balanced` \| `coarse` | `"exact"` | `hrir_source` (live, reload) | — | `/control/binaural/hrir_update_lattice` |
+| `room_ratio` | 3 floats [0.01, 100], step 0.01 | `[1, 2, 1]` | `room` (live, topology) | — | `/control/room_ratio` |
+| `room_ratio_rear` | float [0.01, 100], step 0.01 | `2` | `room` (live, topology) | — | `/control/room_ratio_rear` |
+| `room_ratio_lower` | float [0.01, 100], step 0.01 | `0.5` | `room` (live, topology) | — | `/control/room_ratio_lower` |
+| `room_ratio_center_blend` | float [0, 1], step 0.01 | `0.5` | `room` (live, topology) | — | `/control/room_ratio_center_blend` |
+| `vbap_distance_model` | `none` \| `linear` \| `quadratic` \| `inverse-square` | `"none"` | `distance_model` (live, topology) | — | `/control/distance_model` |
+| `distance_model_metric` | `spherical` \| `chebyshev` | `"spherical"` | `distance_model` (live, topology) | — | `/control/distance_model_metric` |
+| `distance_diffuse` | bool | `false` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/enabled` |
+| `distance_diffuse_threshold` | float [0.000001, 100], step 0.01 | `1` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/threshold` |
+| `distance_diffuse_curve` | float [0, 100], step 0.05 | `1` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/curve` |
+| `distance_diffuse_metric` | `spherical` \| `chebyshev` | `"spherical"` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/metric` |
+| `distance_diffuse_mirror_axes` | `none` \| `x` \| `y` \| `z` \| `xy` \| `xz` \| `yz` \| `xyz` | `"xy"` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/mirror_axes` |
+| `render_evaluation_mode` | `auto` \| `realtime` \| `precomputed_polar` \| `precomputed_cartesian` | `"auto"` | `evaluation` (live, evaluation) | — | `/control/render_evaluation_mode` |
+| `evaluation_object_size_intervals` | int ≥ 0 | `0` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/object_size_intervals` |
+| `evaluation_cartesian_x_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/x_size` |
+| `evaluation_cartesian_y_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/y_size` |
+| `evaluation_cartesian_z_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/z_size` |
+| `evaluation_cartesian_z_neg_size` | int ≥ 0 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/z_neg_size` |
+| `vbap_azimuth_resolution` | int ≥ 1 | `360` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/azimuth_resolution` |
+| `vbap_elevation_resolution` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/elevation_resolution` |
+| `vbap_distance_res` | int ≥ 1 | `8` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/distance_res` |
+| `vbap_distance_max` | float [0.01, 1000], step 0.1 | `2` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/distance_max` |
+| `render_evaluation_position_interpolation` | bool | `true` | — | — | `/control/render_evaluation/position_interpolation` |
+| `render_backend` | one of `backends` | `"vbap"` | `backend` (live, topology) | — | `/control/render_backend` |
+| `hybrid_external_backend` | one of `backends` | `"vbap"` | `backend` (live, topology) | — | `/control/hybrid/external_backend` |
+| `hybrid_internal_backend` | one of `backends` | `"barycenter"` | `backend` (live, topology) | — | `/control/hybrid/internal_backend` |
+| `hybrid_curve_smoothing` | float [0, 1], step 0.01 | `0` | `backend` (live, topology) | — | `/control/hybrid/curve_smoothing` |
+| `hybrid_metric` | `spherical` \| `chebyshev` | `"chebyshev"` | `backend` (live, topology) | — | `/control/hybrid/metric` |
+| `output_mode` | `speaker` \| `binaural` | `"speaker"` | — | — | `/control/output_mode` |
+| `binaural_mode` | `direct` \| `cascaded` | `"direct"` | — | — | `/control/binaural_mode` |
+| `hrir_source` | string | `"saf"` | `hrir_source` (live, reload) | — | `/control/binaural/hrir_source` |
+| `brir_head_tracking` | `auto` \| `on` \| `off` | `"auto"` | `brir` (live, reload) | — | `/control/binaural/brir/head_tracking` |
+| `brir_max_length_s` | float [0, 10], step 0.1 | `2` | `brir` (live, reload) | — | `/control/binaural/brir/max_length` |
+| `brir_tail_floor_db` | float [20, 120], step 1 | `60` | `brir` (live, reload) | — | `/control/binaural/brir/tail_floor` |
+| `binaural_unit_scale_m` | float [0.01, 100], step 0.01 | `1` | — | — | `/control/binaural/unit_scale` |
+| `binaural_head_radius_m` | float [0.05, 0.15], step 0.001 | `0.0875` | — | — | `/control/binaural/head_radius` |
+| `binaural_air_absorption` | bool | `true` | — | — | `/control/binaural/air_absorption` |
+| `binaural_diffuse_field_eq` | bool | `false` | — | — | `/control/binaural/diffuse_field_eq` |
+| `reflections_enabled` | bool | `false` | — | — | `/control/binaural/reflections/enabled` |
+| `reflections_level` | float [0, 1], step 0.01 | `0.5` | — | — | `/control/binaural/reflections/level` |
+| `reflections_wall_cutoff_hz` | float [1000, 20000], step 100 | `6000` | — | — | `/control/binaural/reflections/wall_cutoff` |
+| `reflections_room_width_m` | float [1, 20], step 0.1 | `4` | — | — | `/control/binaural/reflections/room_width` |
+| `reflections_room_depth_m` | float [1, 20], step 0.1 | `5` | — | — | `/control/binaural/reflections/room_depth` |
+| `reflections_room_height_m` | float [1, 20], step 0.1 | `2.7` | — | — | `/control/binaural/reflections/room_height` |
+| `reverb_enabled` | bool | `false` | — | — | `/control/binaural/reverb/enabled` |
+| `reverb_level` | float [0, 1], step 0.01 | `0.25` | — | — | `/control/binaural/reverb/level` |
+| `reverb_rt60_s` | float [0.1, 3], step 0.01 | `0.35` | — | — | `/control/binaural/reverb/rt60` |
+| `reverb_predelay_ms` | float [0, 100], step 1 | `20` | — | — | `/control/binaural/reverb/predelay` |
+| `reverb_size` | float [0.5, 2], step 0.05 | `1` | — | — | `/control/binaural/reverb/size` |
+| `reverb_rt60_low_ratio` | float [0.25, 4], step 0.05 | `1` | — | — | `/control/binaural/reverb/rt60_low_ratio` |
+| `reverb_rt60_high_ratio` | float [0.25, 4], step 0.05 | `1` | — | — | `/control/binaural/reverb/rt60_high_ratio` |
+| `head_tracking_smoothing` | float [0, 0.999], step 0.01 | `0.2` | `head_tracking` (live, none) | — | `/control/head/tracking/smoothing` |
+| `head_tracking_invert` | bool | `false` | `head_tracking` (live, none) | — | `/control/head/tracking/invert` |
+| `head_tracking_osc_address` | string | `""` | `head_tracking` (live, none) | — | `/control/head/tracking/address` |
+| `head_tracking_format` | `auto` \| `quat` \| `rotvec` \| `euler` | `"auto"` | `head_tracking` (live, none) | — | `/control/head/tracking/format` |
+| `binaural_ear_gains` | 2 floats [0, 4], step 0.01 | `[1, 1]` | — | — | — |
+| `master_gain` | float [0, 1000], step 0.01 | `1` | — | — | `/control/gain` |
+<!-- END GENERATED live-options -->
+
 The standalone renderer's host declares its own options (audio output,
 adaptive resampling, live input — see [Audio output & live
 input](#audio-output--live-input)): the same setters take their keys, their
@@ -290,6 +488,51 @@ go out in `/state/host_options` (`{"options": {key: requested}, "applied":
 options only the embedded engine offers (`decode_thread`, flagged
 `embedded_only`): not in its schema, a write refused, a save keeps the
 file's value.
+
+The host's options (standalone renderer):
+
+<!-- BEGIN GENERATED host-options -->
+| Key | Value | Default | Group (mode, effect) | Flags | Alias |
+|---|---|---|---|---|---|
+| `output_device` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_device` |
+| `output_backend` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_backend` |
+| `output_file` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_file` |
+| `output_file_format` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_file_format` |
+| `output_sample_rate` | int or null [1, 768000] | unset | `audio_output` (live, restart_output) | — | `/control/audio/sample_rate` |
+| `latency_target` | int or null [1, 10000] | unset | `audio_output` (live, restart_output) | — | `/control/latency_target` |
+| `enable_adaptive_resampling` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling` |
+| `adaptive_resampling_enable_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/enable_far_mode` |
+| `adaptive_resampling_force_silence_in_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/force_silence_in_far_mode` |
+| `adaptive_resampling_hard_recover_high_in_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/hard_recover_high_in_far_mode` |
+| `adaptive_resampling_hard_recover_low_in_far_mode` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/hard_recover_low_in_far_mode` |
+| `adaptive_resampling_far_mode_return_fade_in_ms` | int ≥ 0 | `500` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/far_mode_return_fade_in_ms` |
+| `adaptive_resampling_kp_near` | float [0, 1000000], step 0.01 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/kp_near` |
+| `adaptive_resampling_ki` | float [0, 1000000], step 0.01 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/ki` |
+| `adaptive_resampling_integral_discharge_ratio` | float [0, 1], step 0.01 | `0.25` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/integral_discharge_ratio` |
+| `adaptive_resampling_max_adjust` | float [0, 1000000], step 0.01 | `0.01` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/max_adjust` |
+| `adaptive_resampling_update_interval_callbacks` | int ≥ 1 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/update_interval_callbacks` |
+| `adaptive_resampling_high_recover_entry_margin_ms` | int ≥ 1 | `1000` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/high_recover_entry_margin_ms` |
+| `adaptive_resampling_low_recover_settle_stable_ms` | float [0, 1000000], step 0.1 | `200` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_entry_margin_ms` | float [0, 1000000], step 0.1 | `18` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_exit_margin_ms` | float [0, 1000000], step 0.1 | `6` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_settle_margin_ms` | float [0, 1000000], step 0.1 | `6` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_low_recover_refill_delta_alpha` | float [0, 1], step 0.01 | `0.5` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_control_smoothing_cutoff_hz` | float [0.001, 1000], step 0.001 | `0.5` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_control_smoothing_order` | int [1, 2] | `1` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_use_pre_bridge_clock` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_use_output_pacing` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `adaptive_resampling_disable_backpressure` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `input_mode` | `pipe_bridge` \| `pipewire` | `"pipe_bridge"` | `live_input` (staged, restart_input) | — | `/control/input/mode` |
+| `live_input_backend` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/backend` |
+| `live_input_node` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/node` |
+| `live_input_description` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/description` |
+| `live_input_layout` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/layout` |
+| `live_input_clock_mode` | `dac` \| `pipewire` \| `upstream` | `"dac"` | `live_input` (staged, restart_input) | — | `/control/input/live/clock_mode` |
+| `live_input_channels` | int or null [1, 64] | unset | `live_input` (staged, restart_input) | — | `/control/input/live/channels` |
+| `live_input_sample_rate` | int or null [1, 768000] | unset | `live_input` (staged, restart_input) | — | `/control/input/live/sample_rate` |
+| `live_input_map` | string | `"7.1-fixed"` | `live_input` (staged, restart_input) | — | `/control/input/live/map` |
+| `live_input_lfe_mode` | `object` \| `direct` \| `drop` | `"direct"` | `live_input` (staged, restart_input) | — | `/control/input/live/lfe_mode` |
+<!-- END GENERATED host-options -->
 
 `/control/options/apply [group]` applies a group: a `staged` group
 (`live_input`) hands over every value staged since its last apply; a `live`
@@ -461,6 +704,7 @@ and heatmap configuration.
 | `/control/quit` | — | Shut the engine down. |
 | `/control/yield_port` | — | Ask this instance to free the OSC RX port. Honoured only by instances started with `--osc-yield` (a Studio-launched standby renderer); ignored otherwise, so an embedded (mpv) renderer can never be evicted. Sent automatically by a starting instance that finds the port busy. The instance replies `/omniphony/yield/resume_port [port]` and stands by. |
 | `/control/resume` | — | Sent to a standing-by instance, on the resume port it advertised, to re-acquire the OSC port and audio. |
+| `/control/state/refresh` | int reply port (optional) | Resend the live-state snapshot to the sender, and nothing else: for a client whose state generation fell behind (see [Session and reliability](#session-and-reliability)). |
 
 `/control/unknown` is a sentinel for tests (an address no handler takes).
 
@@ -485,7 +729,10 @@ individual deltas use the addresses below. `osc_contract::ALL_STATE` is the
 exhaustive machine-readable list.
 
 - **Snapshot / lifecycle** — `renderer` (full JSON), `snapshot_complete`,
-  `capabilities`, `config/saved`, `config/save_error`, `shutdown` (goodbye
+  `generation` (the state count, see
+  [Session and reliability](#session-and-reliability)), `capabilities`
+  (including `contractRevision`), `control_error` (to the sender of a control
+  that was not applied), `config/saved`, `config/save_error`, `shutdown` (goodbye
   broadcast on graceful engine teardown, one string arg with the reason;
   clients should treat the connection as gone and re-register with the next
   instance). The snapshot travels as one OSC bundle, or as several
@@ -494,7 +741,12 @@ exhaustive machine-readable list.
   marker, never on the bundle boundary.
 - **Render** — `render/version`, `render/executable` (path of the process
   serving the engine), `render/abi` (C-ABI `major.minor` of the liborender
-  shim, `""` for the CLI), `render/config_path`, `render/config_status`,
+  shim, `""` for the CLI), `render/bridge_api` (the `bridge_api` version the
+  engine was built against; a decoder bridge loads only if built against the
+  same minor), `render/config_path`, `render/config_status`
+  (`loaded`, `missing`, `parse_error` — running on built-in defaults — or
+  `newer_schema` — written by a newer build, read as far as this one
+  understands it and never written; `""` without a config path),
   `render/bridge_path`, `render/bridge_error` (bounded to 2 KB: the first
   line and the distinct verdicts of a plugin load failure, the full report
   stays in the renderer log), `vbap/allow_negative_z`,
@@ -526,20 +778,41 @@ exhaustive machine-readable list.
 - **Gain-table stream** — `debug/speaker_gaintable/{meta,chunk,uptodate,
   unavailable}`.
 
+### The stream's rate
+
+The stream messages (`spatial/frame` and the `object/*` messages it
+precedes, `timestamp`, the meter and timing bundles, `playout/*`, `loudness`)
+leave from a thread of their own, every 10 ms, in the order the engine
+produced them. Of the object frames and the timestamps, which the engine
+produces for every block it renders, only the latest of each 480-sample
+window of the timeline goes out: at most 100 per second of audio each at
+48 kHz. The window is one of audio, not of wall-clock time, so a host that
+renders ahead of playback in bursts still sends a pose for every window of
+what will be heard. Nothing a client holds goes stale for it: the object
+messages are sent for what changed since the last frame *sent*, and a frame
+that forces a full resend (a new content generation, a seek, a client
+registering) passes that on to the frame that supersedes it. The meter and
+diag bundles keep the rates set by `/control/metering/rate_hz` and
+`/control/diag/rate_hz`.
+
 ---
 
 ## Adding or changing an address
 
 1. Add/rename the constant in `osc-contract/src/lib.rs` (and to `ALL_CONTROL`,
-   `ALL_STATE` or `ALL_SESSION`).
-2. Reference the constant from the dispatcher / producer instead of a literal.
-3. Document it above, and list it in the [address index](#address-index).
+   `ALL_STATE` or `ALL_SESSION`). A state address also gets its arguments in
+   `osc-contract/src/shapes.rs`, and Studio's parser an arm that reads them.
+2. Bump `CONTRACT_REVISION` — for any change to an address or its arguments —
+   and pin the new address set where the contract's test says.
+3. Reference the constant from the dispatcher / producer instead of a literal.
+4. Document it above, and list it in the [address index](#address-index).
 
 The contract crate's tests guard the structural invariants (every control const
 is a control address, every state const a state address, no duplicate wire
 addresses), that the engine and Studio sources reference constants instead of
-spelling addresses, and that every catalogued address appears in the index
-below.
+spelling addresses, that every catalogued address appears in the index
+below, that every state address has a shape, and that the address set has not
+changed under the same `CONTRACT_REVISION`.
 
 ## Address index
 
@@ -553,7 +826,7 @@ not catalogued: `/omniphony/control/object/{id}/mute`,
 `/omniphony/control/render_evaluation/polar/…` (see above), plus the
 per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id}`.
 
-<details><summary>Control (161)</summary>
+<details><summary>Control (162)</summary>
 
 - `/omniphony/control/adaptive_resampling`
 - `/omniphony/control/adaptive_resampling/enable_far_mode`
@@ -714,6 +987,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/control/spread/max`
 - `/omniphony/control/spread/min`
 - `/omniphony/control/spread/size_to_spread_mode`
+- `/omniphony/control/state/refresh`
 - `/omniphony/control/surround_placement`
 - `/omniphony/control/synthetic_objects`
 - `/omniphony/control/unknown`
@@ -722,7 +996,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 
 </details>
 
-<details><summary>State (73)</summary>
+<details><summary>State (77)</summary>
 
 - `/omniphony/state/adaptive_resampling/band`
 - `/omniphony/state/adaptive_resampling/state`
@@ -734,6 +1008,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/clip`
 - `/omniphony/state/config/save_error`
 - `/omniphony/state/config/saved`
+- `/omniphony/state/control_error`
 - `/omniphony/state/crossover_time_ms`
 - `/omniphony/state/debug/speaker_gaintable/chunk`
 - `/omniphony/state/debug/speaker_gaintable/meta`
@@ -743,6 +1018,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/diag_schema`
 - `/omniphony/state/diag_values`
 - `/omniphony/state/frame_duration_ms`
+- `/omniphony/state/generation`
 - `/omniphony/state/head_pose`
 - `/omniphony/state/input`
 - `/omniphony/state/input_pipe`
@@ -772,6 +1048,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/realtime/master_gain`
 - `/omniphony/state/realtime/speaker_gain`
 - `/omniphony/state/render/abi`
+- `/omniphony/state/render/bridge_api`
 - `/omniphony/state/render/bridge_error`
 - `/omniphony/state/render/bridge_path`
 - `/omniphony/state/render/config_path`
@@ -801,7 +1078,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 
 </details>
 
-<details><summary>Session and streams (11)</summary>
+<details><summary>Session and streams (15)</summary>
 
 - `/omniphony/bed/config`
 - `/omniphony/heartbeat`
@@ -810,8 +1087,12 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/log`
 - `/omniphony/meter/drc_gain`
 - `/omniphony/meter/master`
+- `/omniphony/playout/block`
+- `/omniphony/playout/heard`
 - `/omniphony/register`
 - `/omniphony/spatial/frame`
+- `/omniphony/sync`
+- `/omniphony/sync/ack`
 - `/omniphony/timestamp`
 - `/omniphony/yield/resume_port`
 

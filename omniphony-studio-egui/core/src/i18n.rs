@@ -1,6 +1,6 @@
-//! Studio strings. The catalogues are the web Studio's own `i18n/*.json`,
-//! embedded at build time so both hosts stay key-for-key identical until the
-//! cutover moves them into this crate.
+//! Studio strings. The catalogues are `omniphony-studio-egui/i18n/*.json`,
+//! embedded at build time. The deprecated web Studio imports the same files,
+//! so both hosts stay key-for-key identical while both ship.
 //!
 //! Every locale is English overridden by its own entries, exactly as the web
 //! spreads `{...enTranslations, ...frTranslations}`: a key a translator has not
@@ -14,38 +14,14 @@ use std::sync::{Mutex, OnceLock};
 /// The locales, in the order the language picker offers them. The first is the
 /// base every other one falls back to.
 const CATALOGUES: &[(&str, &str)] = &[
-    (
-        "en",
-        include_str!("../../../omniphony-studio/src/i18n/en.json"),
-    ),
-    (
-        "fr",
-        include_str!("../../../omniphony-studio/src/i18n/fr.json"),
-    ),
-    (
-        "de",
-        include_str!("../../../omniphony-studio/src/i18n/de.json"),
-    ),
-    (
-        "ja",
-        include_str!("../../../omniphony-studio/src/i18n/ja.json"),
-    ),
-    (
-        "es",
-        include_str!("../../../omniphony-studio/src/i18n/es.json"),
-    ),
-    (
-        "it",
-        include_str!("../../../omniphony-studio/src/i18n/it.json"),
-    ),
-    (
-        "pt-BR",
-        include_str!("../../../omniphony-studio/src/i18n/pt-BR.json"),
-    ),
-    (
-        "zh-CN",
-        include_str!("../../../omniphony-studio/src/i18n/zh-CN.json"),
-    ),
+    ("en", include_str!("../../i18n/en.json")),
+    ("fr", include_str!("../../i18n/fr.json")),
+    ("de", include_str!("../../i18n/de.json")),
+    ("ja", include_str!("../../i18n/ja.json")),
+    ("es", include_str!("../../i18n/es.json")),
+    ("it", include_str!("../../i18n/it.json")),
+    ("pt-BR", include_str!("../../i18n/pt-BR.json")),
+    ("zh-CN", include_str!("../../i18n/zh-CN.json")),
 ];
 
 /// Which catalogue `t` reads. An index rather than a name, so resolving a key
@@ -115,8 +91,14 @@ pub fn active_locale() -> &'static str {
 /// catalogues — Brazilian Portuguese and simplified Chinese — so those are
 /// matched on the full tag and everything else on the language alone.
 fn detect_system_locale() -> String {
+    locale_from(|key| std::env::var(key).ok())
+}
+
+/// [`detect_system_locale`] over any variable lookup, so its rules are tested
+/// without touching the process environment.
+fn locale_from(var: impl Fn(&str) -> Option<String>) -> String {
     for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        let Ok(value) = std::env::var(key) else {
+        let Some(value) = var(key) else {
             continue;
         };
         let tag = value
@@ -251,19 +233,25 @@ mod tests {
 
     #[test]
     fn the_two_region_sensitive_tags_are_matched_on_the_full_tag() {
+        let lc_all =
+            |value: &'static str| locale_from(move |k| (k == "LC_ALL").then(|| value.into()));
         // Region matters for exactly these two catalogues.
-        unsafe { std::env::set_var("LC_ALL", "pt_BR.UTF-8") };
-        assert_eq!(detect_system_locale(), "pt-BR");
-        unsafe { std::env::set_var("LC_ALL", "zh_CN.UTF-8") };
-        assert_eq!(detect_system_locale(), "zh-CN");
+        assert_eq!(lc_all("pt_BR.UTF-8"), "pt-BR");
+        assert_eq!(lc_all("zh_CN.UTF-8"), "zh-CN");
         // Everything else matches on the language alone.
-        unsafe { std::env::set_var("LC_ALL", "fr_CA.UTF-8") };
-        assert_eq!(detect_system_locale(), "fr");
+        assert_eq!(lc_all("fr_CA.UTF-8"), "fr");
         // The C locale says nothing about a language.
-        unsafe { std::env::set_var("LC_ALL", "C") };
-        unsafe { std::env::remove_var("LC_MESSAGES") };
-        unsafe { std::env::remove_var("LANG") };
-        assert_eq!(detect_system_locale(), "en");
-        unsafe { std::env::remove_var("LC_ALL") };
+        assert_eq!(lc_all("C"), "en");
+    }
+
+    #[test]
+    fn a_silent_variable_defers_to_the_next_one() {
+        let vars = |k: &str| match k {
+            "LC_ALL" => Some("C".to_owned()),
+            "LANG" => Some("de_DE.UTF-8".to_owned()),
+            _ => None,
+        };
+        assert_eq!(locale_from(vars), "de");
+        assert_eq!(locale_from(|_| None), "en");
     }
 }

@@ -1,3 +1,4 @@
+use crate::command_table::{self, Command};
 use crate::context::RuntimeControlContext;
 use crate::osc_contract;
 use omniphony_geometry::f32 as geometry;
@@ -96,6 +97,11 @@ pub struct ControlEffects {
     /// Save. The engine layer performs the I/O in
     /// `apply_control_effects`.
     pub persist: Vec<crate::persist::PersistOp>,
+    /// Why the message, or part of it, was refused: returned to its sender
+    /// (`/state/control_error`, `invalid_arguments`). The rest of the effects
+    /// still apply, so a grouped write reports the pairs it dropped and keeps
+    /// the ones it took.
+    pub rejected: Option<String>,
 }
 
 impl ControlEffects {
@@ -125,6 +131,14 @@ impl ControlEffects {
         Self {
             publish_only: true,
             notify,
+            ..Self::default()
+        }
+    }
+
+    /// A message refused whole, for `reason`: nothing changes.
+    pub fn rejected(reason: impl Into<String>) -> Self {
+        Self {
+            rejected: Some(reason.into()),
             ..Self::default()
         }
     }
@@ -642,891 +656,182 @@ pub fn apply_simple_osc_control(
     msg: &OscMessage,
     ctx: &RuntimeControlContext,
 ) -> Option<ControlEffects> {
-    let addr = msg.addr.as_str();
-    let mut effects = ControlEffects::default();
+    command_table::find(SIMPLE_CONTROL_COMMANDS, &msg.addr).and_then(|run| run(msg, ctx))
+}
 
-    if addr == osc_contract::CONTROL_CONFIG_LAYOUT {
-        let patch = parse_json_string_arg::<LayoutConfigPatch>(msg.args.first());
-        if let Some(patch) = patch {
-            let mut changed = false;
+/// A handler of [`SIMPLE_CONTROL_COMMANDS`]; `None` passes the message on
+/// (to the host).
+pub type SimpleHandler = fn(&OscMessage, &RuntimeControlContext) -> Option<ControlEffects>;
 
-            // Wholesale layout replacement must run first: it resets the whole
-            // speaker set, so any add/remove/edit in the same message would apply
-            // against the new layout (Studio never combines them, but the order
-            // keeps the semantics well-defined).
-            if let Some(replace) = patch.replace_layout {
-                let new_speakers: Vec<renderer::speaker_layout::Speaker> = replace
-                    .speakers
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, sp)| build_layout_speaker_from_patch(sp, format!("spk-{idx}")))
-                    .collect();
-                // Per-speaker live params are keyed by position, so a wholesale
-                // swap invalidates every entry: reseed them from the new
-                // speakers' delays and gains.
-                // (The live lock is taken after the layout's is released: the
-                // save path holds the live lock while it reads the layout.)
-                let speakers = ctx.renderer.with_editable_layout(|layout| {
-                    if let Some(radius_m) = replace.radius_m {
-                        layout.radius_m = radius_m.max(0.01);
-                    }
-                    layout.speakers = new_speakers;
-                    renderer::live_params::speaker_live_from_layout(layout)
-                });
-                ctx.renderer.live.write().speakers = speakers;
-                ctx.renderer.mark_speaker_params_dirty();
-                changed = true;
-            }
-
-            if let Some(radius_m) = patch.radius_m {
-                let radius_m = radius_m.max(0.01);
-                changed |= ctx.renderer.with_editable_layout(|layout| {
-                    if (layout.radius_m - radius_m).abs() > f32::EPSILON {
-                        layout.radius_m = radius_m;
-                        true
-                    } else {
-                        false
-                    }
-                });
-            }
-
-            if let Some(add_speaker) = patch.add_speaker {
-                let idx = ctx.renderer.editable_layout().speakers.len();
-                let speaker = build_layout_speaker_from_patch(add_speaker, format!("spk-{idx}"));
-                let delay_ms = speaker.delay_ms;
-                ctx.renderer.with_editable_layout(|layout| {
-                    layout.speakers.push(speaker);
-                });
-                if delay_ms > 0.0 {
-                    ctx.renderer
-                        .live
-                        .write()
-                        .speakers
-                        .entry(idx)
-                        .or_default()
-                        .delay_ms = delay_ms;
-                    ctx.renderer.mark_speaker_params_dirty();
-                }
-                changed = true;
-            }
-
-            if let Some(remove_idx) = patch.remove_speaker {
-                let removed = ctx.renderer.with_editable_layout(|layout| {
-                    if remove_idx >= layout.speakers.len() {
-                        false
-                    } else {
-                        layout.speakers.remove(remove_idx);
-                        true
-                    }
-                });
-                if removed {
-                    {
-                        let mut live = ctx.renderer.live.write();
-                        remap_live_speakers_remove(&mut live.speakers, remove_idx);
-                    }
-                    ctx.renderer.mark_speaker_params_dirty();
-                    changed = true;
-                }
-            }
-
-            if let Some(move_speaker) = patch.move_speaker {
-                let moved = ctx.renderer.with_editable_layout(|layout| {
-                    let len = layout.speakers.len();
-                    if move_speaker.from >= len
-                        || move_speaker.to >= len
-                        || move_speaker.from == move_speaker.to
-                    {
-                        false
-                    } else {
-                        let speaker = layout.speakers.remove(move_speaker.from);
-                        layout.speakers.insert(move_speaker.to, speaker);
-                        true
-                    }
-                });
-                if moved {
-                    {
-                        let mut live = ctx.renderer.live.write();
-                        remap_live_speakers_move(
-                            &mut live.speakers,
-                            move_speaker.from,
-                            move_speaker.to,
-                        );
-                    }
-                    ctx.renderer.mark_speaker_params_dirty();
-                    changed = true;
-                }
-            }
-
-            if let Some(speaker_edits) = patch.speaker_edits {
-                changed |= ctx.renderer.with_editable_layout(|layout| {
-                    let mut any = false;
-                    for speaker_patch in &speaker_edits {
-                        if let Some(speaker) = layout.speakers.get_mut(speaker_patch.id) {
-                            any |= apply_layout_speaker_patch(speaker, speaker_patch);
-                        }
-                    }
-                    any
-                });
-            }
-
-            // Stage-only: do NOT broadcast the full state bundle here. The change is
-            // pending until /omniphony/control/config/layout/apply commits it; the
-            // apply path is responsible for the broadcast. This avoids a 3x
-            // amplification (stage → broadcast, apply → broadcast, recompute →
-            // broadcast) for a single user edit, which previously fed back into the
-            // studio's heatmap pull and saturated the renderer.
-            let _ = changed;
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_CONFIG_LAYOUT_APPLY {
-        effects.mark_dirty = true;
-        effects.trigger_layout_recompute = true;
-        effects.log_message = Some("OSC: layout config apply".to_string());
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_CONFIG_SPEAKERS {
-        let patch = parse_json_string_arg::<SpeakersConfigPatch>(msg.args.first());
-        if let Some(patch) = patch {
-            let mut changed = false;
-            if let Some(speaker_edits) = patch.speaker_edits {
-                for speaker_patch in speaker_edits {
-                    if let Some(delay_ms) = speaker_patch.delay_ms.map(|value| value.max(0.0)) {
-                        ctx.renderer
-                            .live
-                            .write()
-                            .speakers
-                            .entry(speaker_patch.id)
-                            .or_default()
-                            .delay_ms = delay_ms;
-                        ctx.renderer.with_editable_layout(|layout| {
-                            if let Some(speaker) = layout.speakers.get_mut(speaker_patch.id) {
-                                speaker.delay_ms = delay_ms;
-                            }
-                        });
-                        ctx.renderer.mark_speaker_params_dirty();
-                        changed = true;
-                    }
-                    // A mute is a listening gesture, not a setting: it is
-                    // published, never saved (docs/persistence-policy.md).
-                    if let Some(muted) = speaker_patch.muted {
-                        ctx.renderer
-                            .live
-                            .write()
-                            .speakers
-                            .entry(speaker_patch.id)
-                            .or_default()
-                            .muted = muted;
-                        ctx.renderer.mark_speaker_params_dirty();
-                        effects.publish_only = true;
-                    }
-                }
-            }
-            if changed {
-                effects.mark_dirty = true;
-            }
-        }
-        return Some(effects);
-    }
-
-    // metering/rate_hz and diag/rate_hz are handled by `live_control` against
-    // RendererControl — the single source of truth for both, persisted to
-    // config as view state.
-
-    if addr == osc_contract::CONTROL_SPEAKER_TEST {
-        // Start/stop the per-speaker test signal. A negative index stops: the
-        // client owns the trigger policy (hold, fixed burst, toggle), so the
-        // renderer only ever sees "play this" or "stop".
-        let idx = match msg.args.first() {
-            Some(OscType::Int(v)) => *v,
-            _ => {
-                log::warn!("OSC {addr}: expected [speaker_idx, level, isolation]");
-                return Some(effects);
-            }
-        };
-        let next = if idx < 0 {
-            None
-        } else {
-            let level = match msg.args.get(1) {
-                Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
-                _ => 0.1,
-            };
-            let isolation = parse_string_arg(msg.args.get(2))
-                .and_then(|v| renderer::live_params::TestIsolation::from_str(&v))
-                .unwrap_or_default();
-            Some(renderer::live_params::SpeakerTest {
-                speaker_idx: idx as usize,
-                level,
-                isolation,
-            })
-        };
-        let mut live = ctx.renderer.live.write();
-        if live.speaker_test != next {
-            live.speaker_test = next;
-            // Deliberately NOT mark_dirty: the test is transient and must never
-            // reach the config or a live-handoff sidecar.
-            effects.log_message = Some(match next {
-                Some(t) => format!(
-                    "OSC: speaker_test -> speaker {} at {:.3} ({})",
-                    t.speaker_idx,
-                    t.level,
-                    t.isolation.as_str()
-                ),
-                None => "OSC: speaker_test -> off".to_string(),
-            });
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_OBJECT_TEST {
-        // Start/move/stop the object test. Studio sends one of these per pointer
-        // move while dragging, so the common case is a position update on an
-        // already-running test: keep it allocation-free and let the renderer
-        // ramp, rather than treating a move as a stop-then-start.
-        let Some(on) = parse_bool_arg(msg.args.first()) else {
-            log::warn!("OSC {addr}: expected [on, x, y, z, level, size, isolation]");
-            return Some(effects);
-        };
-        let next = if !on {
-            None
-        } else {
-            let axis = |i: usize| match msg.args.get(i) {
-                Some(OscType::Float(v)) => v.clamp(-1.0, 1.0),
-                _ => 0.0,
-            };
-            // Default y = 1.0 (front centre) rather than 0.0 if absent, matching
-            // the renderer's neutral object position.
-            let position = [
-                axis(1),
-                match msg.args.get(2) {
-                    Some(OscType::Float(v)) => v.clamp(-1.0, 1.0),
-                    _ => 1.0,
-                },
-                axis(3),
-            ];
-            let level = match msg.args.get(4) {
-                Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
-                _ => 0.1,
-            };
-            let size = match msg.args.get(5) {
-                Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
-                _ => 0.0,
-            };
-            let isolation = parse_string_arg(msg.args.get(6))
-                .and_then(|v| renderer::live_params::TestIsolation::from_str(&v))
-                .unwrap_or_default();
-            // Absent = pink noise, so a client that predates the signal
-            // selector keeps getting exactly what it used to.
-            let signal = parse_string_arg(msg.args.get(7))
-                .and_then(|v| renderer::live_params::ObjectTestSignal::from_str(&v))
-                .unwrap_or_default();
-            Some(renderer::live_params::ObjectTest {
-                position,
-                size: [size; 3],
-                level,
-                isolation,
-                signal,
-            })
-        };
-        let mut live = ctx.renderer.live.write();
-        if live.object_test != next {
-            let was_running = live.object_test.is_some();
-            let was_signal = live.object_test.map(|t| t.signal);
-            live.object_test = next;
-            // Deliberately NOT mark_dirty: transient like `speaker_test`, and it
-            // must never reach the config or a live-handoff sidecar.
-            //
-            // Log only the edges. A drag is a burst of position updates, and
-            // logging each one would bury the session log in noise about noise.
-            effects.log_message = match (was_running, next) {
-                (false, Some(t)) => Some(format!(
-                    "OSC: object_test -> on at [{:.2}, {:.2}, {:.2}] {:.3} ({}, {})",
-                    t.position[0],
-                    t.position[1],
-                    t.position[2],
-                    t.level,
-                    t.isolation.as_str(),
-                    t.signal.as_str()
-                )),
-                (true, None) => Some("OSC: object_test -> off".to_string()),
-                (true, Some(t)) => was_signal
-                    .filter(|prev| *prev != t.signal)
-                    .map(|_| format!("OSC: object_test signal -> {}", t.signal.as_str())),
-                _ => None,
-            };
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_OBJECT_TEST_ROTATION {
-        let Some(axis_name) = parse_string_arg(msg.args.first()) else {
-            log::warn!("OSC {addr}: expected [axis, radius, period, azimuth, elevation]");
-            return Some(effects);
-        };
-        let float_at = |i: usize, fallback: f32| match msg.args.get(i) {
-            Some(OscType::Float(v)) => *v,
-            _ => fallback,
-        };
-        let axis = match renderer::live_params::RotationAxis::from_str(&axis_name) {
-            Some(renderer::live_params::RotationAxis::Free { .. }) => {
-                renderer::live_params::RotationAxis::Free {
-                    azimuth_deg: float_at(3, 0.0),
-                    elevation_deg: float_at(4, 0.0),
-                }
-            }
-            Some(other) => other,
-            None => {
-                log::warn!("OSC {addr}: unknown axis {axis_name:?}");
-                return Some(effects);
-            }
-        };
-        let next = renderer::live_params::ObjectTestRotation {
-            axis,
-            // 4 covers every distance worth reaching: √3 gets to a room corner
-            // from the centre, 2√3 gets there from the opposite one.
-            radius: float_at(1, 0.0).clamp(0.0, 4.0),
-            // Floored well above zero: a period approaching it is not a fast
-            // orbit, it is a discontinuity.
-            period_s: float_at(2, 4.0).clamp(0.05, 600.0),
-        };
-        let mut live = ctx.renderer.live.write();
-        if live.object_test_rotation != next {
-            let was_active = live.object_test_rotation.is_active();
-            live.object_test_rotation = next;
-            // Deliberately NOT mark_dirty: transient like the test itself.
-            // Log only the edges — a diameter slider drag is a burst.
-            effects.log_message = match (was_active, next.is_active()) {
-                (false, true) => Some(format!(
-                    "OSC: object_test rotation -> {} axis, radius {:.2}, {:.2} s/turn",
-                    next.axis.as_str(),
-                    next.radius,
-                    next.period_s
-                )),
-                (true, false) => Some("OSC: object_test rotation -> off".to_string()),
-                _ => None,
-            };
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_OBJECT_TEST_CLIP {
-        // Choosing the file the `clip` signal plays. Everything expensive
-        // happens here, on the control thread: read, downmix, resample,
-        // normalise. The render path gets an array and an index.
-        let path = parse_string_arg(msg.args.first()).unwrap_or_default();
-        let path = path.trim().to_string();
-        let state = if path.is_empty() {
-            ctx.renderer.live.write().object_test_clip = None;
-            effects.log_message = Some("OSC: object_test clip -> cleared".to_string());
-            "{}".to_string()
-        } else {
-            let rate = ctx
-                .renderer
-                .sample_rate
-                .load(std::sync::atomic::Ordering::Relaxed)
-                .max(1);
-            match renderer::object_test::clip::load(&path, rate) {
-                Ok(clip) => {
-                    let name = std::path::Path::new(&clip.path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| clip.path.clone());
-                    effects.log_message = Some(format!(
-                        "OSC: object_test clip -> {} ({:.1} s, {} Hz, {} ch{})",
-                        name,
-                        clip.duration_s(),
-                        clip.source_rate,
-                        clip.source_channels,
-                        if clip.truncated { ", truncated" } else { "" }
-                    ));
-                    let json = format!(
-                        "{{\"name\":{},\"path\":{},\"seconds\":{:.3},\"sourceRate\":{},\"channels\":{},\"truncated\":{}}}",
-                        serde_json::Value::from(name.as_str()),
-                        serde_json::Value::from(clip.path.as_str()),
-                        clip.duration_s(),
-                        clip.source_rate,
-                        clip.source_channels,
-                        clip.truncated
-                    );
-                    ctx.renderer.live.write().object_test_clip = Some(std::sync::Arc::new(clip));
-                    json
-                }
-                Err(e) => {
-                    // Left as it was on failure: dropping a working clip because
-                    // the next pick was unreadable would be a second surprise on
-                    // top of the first.
-                    effects.log_message = Some(format!("OSC: object_test clip refused: {e}"));
-                    format!("{{\"error\":{}}}", serde_json::Value::from(e.as_str()))
-                }
-            }
-        };
-        effects.broadcasts.push(BroadcastUpdate {
-            addr: osc_contract::STATE_OBJECT_TEST_CLIP.to_string(),
-            value: BroadcastValue::String(state),
-        });
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_SPEAKER_TEST_IDLE_FEED {
-        // Arm/disarm the idle feed that keeps the output chain warm while the
-        // client's test pane is open. Arming always bumps the generation (even
-        // when already armed) so the decode loop refreshes its keepalive
-        // deadline on every re-arm.
-        let Some(on) = parse_bool_arg(msg.args.first()) else {
-            log::warn!("OSC {addr}: expected [on]");
-            return Some(effects);
-        };
-        // Deliberately NOT mark_dirty: transient like speaker_test. Log only
-        // the arm/disarm edges, not the periodic re-arms.
-        let mut live = ctx.renderer.live.write();
-        if on {
-            if live.speaker_test_idle_feed_gen == 0 {
-                effects.log_message = Some("OSC: speaker_test idle feed -> armed".to_string());
-            }
-            live.speaker_test_idle_feed_gen =
-                live.speaker_test_idle_feed_gen.wrapping_add(1).max(1);
-        } else if live.speaker_test_idle_feed_gen != 0 {
-            live.speaker_test_idle_feed_gen = 0;
-            effects.log_message = Some("OSC: speaker_test idle feed -> off".to_string());
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_EAR_GAIN {
-        // Headphone L/R output gain: [ear_idx (0|1), linear_gain]. Dedicated
-        // params — the ears no longer ride the first two per-speaker slots
-        // (those drive the virtual FL/FR in cascaded mode).
-        let idx = parse_nonnegative_u32_arg(msg.args.first());
-        let gain = parse_f32_arg(msg.args.get(1));
-        if let (Some(idx @ 0..=1), Some(gain)) = (idx, gain) {
-            if gain.is_finite() && (0.0..=4.0).contains(&gain) {
-                let mut live = ctx.renderer.live.write();
-                let ear = &mut live.binaural.ears[idx as usize];
-                if ear.gain != gain {
-                    ear.gain = gain;
-                    effects.mark_dirty = true;
-                    effects.log_message = Some(format!("OSC: binaural ear_gain {idx} -> {gain}"));
-                }
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_EAR_MUTE {
-        // Headphone L/R mute: [ear_idx (0|1), 0|1].
-        let idx = parse_nonnegative_u32_arg(msg.args.first());
-        let mute = parse_bool_arg(msg.args.get(1));
-        if let (Some(idx @ 0..=1), Some(muted)) = (idx, mute) {
-            let mut live = ctx.renderer.live.write();
-            let ear = &mut live.binaural.ears[idx as usize];
-            if ear.muted != muted {
-                ear.muted = muted;
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: binaural ear_mute {idx} -> {muted}"));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_ORIENTATION {
-        // Static head pose from Euler degrees [yaw, pitch, roll]. The live
-        // head-tracking input (SensorsOSC) lands in M2; this lets Studio / tests
-        // drive the pose directly. No topology rebuild (binaural is topology-free).
-        let yaw = parse_f32_arg(msg.args.first()).unwrap_or(0.0);
-        let pitch = parse_f32_arg(msg.args.get(1)).unwrap_or(0.0);
-        let roll = parse_f32_arg(msg.args.get(2)).unwrap_or(0.0);
-        let mut live = ctx.renderer.live.write();
-        live.binaural.head_pose = renderer::binaural::HeadPose::from_euler_deg(yaw, pitch, roll);
-        // A manual pose, like the tracker's, is transient: never saved.
-        effects.publish_only = true;
-        effects.log_message = Some(format!("OSC: head/orientation -> {yaw},{pitch},{roll}"));
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_QUAT {
-        // Static head pose from a raw quaternion [w, x, y, z].
-        let w = parse_f32_arg(msg.args.first()).unwrap_or(1.0);
-        let x = parse_f32_arg(msg.args.get(1)).unwrap_or(0.0);
-        let y = parse_f32_arg(msg.args.get(2)).unwrap_or(0.0);
-        let z = parse_f32_arg(msg.args.get(3)).unwrap_or(0.0);
-        let mut live = ctx.renderer.live.write();
-        live.binaural.head_pose = renderer::binaural::HeadPose::from_quat(w, x, y, z);
-        // A manual pose, like the tracker's, is transient: never saved.
-        effects.publish_only = true;
-        effects.log_message = Some("OSC: head/quat".to_string());
-        return Some(effects);
-    }
-
-    // ── SOFA upload (Studio → renderer, chunked OSC blobs) ──────────────────
-    // For setups where Studio does not share a filesystem with the renderer:
-    // begin [s name, i total_bytes] → chunk [i seq, b data]* → end [i chunks].
-    // The file lands in <config dir>/hrtf/ and is activated on completion.
-    if addr == osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_BEGIN {
-        let name = parse_string_arg(msg.args.first()).unwrap_or_default();
-        let total = match msg.args.get(1) {
-            Some(rosc::OscType::Int(i)) if *i > 0 => *i as usize,
-            _ => 0,
-        };
-        let base = std::path::Path::new(&name)
-            .file_name()
-            .map(|f| f.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let mut upload = hrtf_upload_state().lock().unwrap();
-        if base.is_empty() || !base.to_ascii_lowercase().ends_with(".sofa") {
-            *upload = None;
-            effects.log_message = Some(format!("hrtf upload rejected: bad name {name:?}"));
-        } else if total == 0 || total > HRTF_UPLOAD_MAX_BYTES {
-            *upload = None;
-            effects.log_message = Some(format!("hrtf upload rejected: bad size {total}"));
-        } else {
-            *upload = Some(HrtfUpload {
-                name: base.clone(),
-                total,
-                data: Vec::with_capacity(total),
-                chunks: 0,
-            });
-            effects.log_message = Some(format!("hrtf upload started: {base} ({total} bytes)"));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_CHUNK {
-        let seq = match msg.args.first() {
-            Some(rosc::OscType::Int(i)) if *i >= 0 => *i as u32,
-            _ => return Some(effects),
-        };
-        let mut upload = hrtf_upload_state().lock().unwrap();
-        let abort = match (upload.as_mut(), msg.args.get(1)) {
-            (Some(up), Some(rosc::OscType::Blob(data))) => {
-                if seq != up.chunks || up.data.len() + data.len() > up.total {
-                    true
-                } else {
-                    up.data.extend_from_slice(data);
-                    up.chunks += 1;
-                    false
-                }
-            }
-            _ => return Some(effects),
-        };
-        if abort {
-            *upload = None;
-            effects.log_message =
-                Some("hrtf upload aborted: chunk out of sequence or oversize".to_string());
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_END {
-        let chunks = match msg.args.first() {
-            Some(rosc::OscType::Int(i)) if *i >= 0 => *i as u32,
-            _ => 0,
-        };
-        let done = hrtf_upload_state().lock().unwrap().take();
-        match done {
-            Some(up) if up.chunks == chunks && up.data.len() == up.total => {
-                let dir = renderer::config::default_config_path()
-                    .and_then(|p| p.parent().map(|d| d.join("hrtf")))
-                    .unwrap_or_else(|| std::path::PathBuf::from("hrtf"));
-                let write = std::fs::create_dir_all(&dir)
-                    .and_then(|_| std::fs::write(dir.join(&up.name), &up.data));
-                match write {
-                    Ok(()) => {
-                        let path = dir.join(&up.name).to_string_lossy().into_owned();
-                        ctx.renderer.live.write().binaural.hrir_source =
-                            renderer::binaural::HrirSource::Sofa(path.clone());
-                        effects.mark_dirty = true;
-                        effects.log_message =
-                            Some(format!("hrtf upload complete, activated: {path}"));
-                    }
-                    Err(e) => {
-                        effects.log_message = Some(format!("hrtf upload write failed: {e}"));
-                    }
-                }
-            }
-            Some(up) => {
-                effects.log_message = Some(format!(
-                    "hrtf upload incomplete: {}/{} bytes, {}/{} chunks",
-                    up.data.len(),
-                    up.total,
-                    up.chunks,
-                    chunks
-                ));
-            }
-            None => {
-                effects.log_message = Some("hrtf upload end without begin".to_string());
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_CALIBRATE {
-        let step = msg.args.first().and_then(|a| match a {
-            rosc::OscType::String(s) => renderer::binaural::CalibrationStep::from_str(s),
-            _ => None,
-        });
-        let Some(step) = step else {
-            effects.log_message =
-                Some("OSC: head/calibrate expects front | left | up | reset".to_string());
-            return Some(effects);
-        };
-        let mut live = ctx.renderer.live.write();
-        match live.binaural.tracking.calibrate(step) {
-            Ok(done) => {
-                if step == renderer::binaural::CalibrationStep::Front {
-                    // Looking ahead is the recenter: snap and persist it.
-                    live.binaural.head_pose = renderer::binaural::HeadPose::identity();
-                    effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
-                }
-                if done || step == renderer::binaural::CalibrationStep::Reset {
-                    effects.persist.push(crate::persist::PersistOp::HEAD_AXES);
-                }
-                // A calibration of the sensor on the listener's head: written
-                // at once, never behind the Save button
-                // (docs/persistence-policy.md).
-                effects.publish_only = true;
-                effects.log_message = Some(format!(
-                    "OSC: head/calibrate {step:?}{}",
-                    if done { " — axes calibrated" } else { "" }
-                ));
-            }
-            Err(reason) => {
-                // Nothing changed, but the step's state is published.
-                effects.publish_only = true;
-                effects.log_message =
-                    Some(format!("OSC: head/calibrate {step:?} refused: {reason}"));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_HEAD_RECENTER {
-        // Capture the current raw tracker orientation as "forward" and snap the
-        // rendered pose to identity so the scene faces straight ahead.
-        let mut live = ctx.renderer.live.write();
-        live.binaural.tracking.recenter();
-        live.binaural.head_pose = renderer::binaural::HeadPose::identity();
-        // Persist the new reference to config right away so the centering survives
-        // an engine rebuild (mpv track change) and a restart.
-        effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
-        effects.publish_only = true;
-        effects.log_message = Some("OSC: head/recenter".to_string());
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_RENDER_BACKEND_RESTORE {
-        effects.log_message = Some(
-            "OSC: render_backend/restore is no longer supported after removing from_file"
-                .to_string(),
-        );
-        return Some(effects);
-    }
-
-    // Generic backend parameter set. Two forms:
-    //   `[string key, <scalar value>]`              -> currently selected backend
-    //   `[string backend_id, string key, <value>]`  -> an explicit backend
-    // The explicit form lets the UI address an inner backend (e.g. the hybrid
-    // barycenter tab) even though it is not the active selection. Values are
-    // stored generically (no typed field per backend) and read at the next
-    // topology rebuild via the schema.
-    if addr == osc_contract::CONTROL_BACKEND_PARAM {
-        let (target, key, value_arg) = if msg.args.len() >= 3 {
-            (
-                parse_string_arg(msg.args.first()),
-                parse_string_arg(msg.args.get(1)),
-                msg.args.get(2),
-            )
-        } else {
-            (None, parse_string_arg(msg.args.first()), msg.args.get(1))
-        };
-        let value = value_arg.and_then(parse_param_value);
-        if let (Some(key), Some(value)) = (key, value) {
-            let (backend_id, active, hybrid_legs) = {
-                let live = ctx.renderer.live.read();
-                (
-                    target.unwrap_or_else(|| live.backend_id().to_string()),
-                    live.backend_id().to_string(),
-                    (
-                        live.hybrid.external_backend_id.clone(),
-                        live.hybrid.internal_backend_id.clone(),
-                    ),
-                )
-            };
-            if !ctx.renderer.set_backend_param(&backend_id, &key, value) {
-                effects.log_message = Some(format!(
-                    "OSC: backend param {backend_id}.{key} refused (not a value of its declared type)"
-                ));
-                return Some(effects);
-            }
-            effects.mark_dirty = true;
-            // Recompute only when the edited backend participates in the
-            // active topology (the selection itself, or a leg of an active
-            // hybrid). Params of an inactive backend are stored and persisted;
-            // they are read at the next rebuild that involves that backend.
-            let participates = backend_id == active
-                || (active == "hybrid"
-                    && (backend_id == hybrid_legs.0 || backend_id == hybrid_legs.1));
-            effects.trigger_layout_recompute = participates;
-            effects.log_message = Some(format!(
-                "OSC: backend param {backend_id}.{key} updated{}",
-                if participates {
-                    ""
-                } else {
-                    " (inactive backend, no rebuild)"
-                }
-            ));
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_RENDER_EVALUATION_MODE_FROM_FILE {
-        effects.log_message =
-            Some("OSC: render_evaluation_mode/from_file is no longer supported".to_string());
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_LAYOUT_RADIUS_M {
-        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
-            ctx.renderer
-                .with_editable_layout(|layout| layout.radius_m = v);
-            effects.mark_dirty = true;
-            effects.log_message = Some(format!("OSC: layout radius_m → {}", v));
-        }
-        return Some(effects);
-    }
-
-    // VBAP spread tuning is a generic backend param now (baked into the backend
-    // at build, keyed by backend id "vbap"). These dedicated addresses are kept
-    // as thin aliases over `set_backend_param` so existing OSC clients keep
-    // working; the canonical path is `/omniphony/control/backend/param`. All of
-    // them trigger a topology rebuild (the values are baked, not per-request).
-    macro_rules! spread_param_with_recompute {
-        ($path:expr, $key:literal) => {
-            if addr == $path {
-                if let Some(value) = parse_f32_arg(msg.args.first()) {
-                    ctx.renderer.set_backend_param(
-                        "vbap",
-                        $key,
-                        renderer::backend_params::ParamValue::Float(value),
-                    );
-                    effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
-                }
-                return Some(effects);
-            }
-        };
-    }
-
-    spread_param_with_recompute!(osc_contract::CONTROL_SPREAD_MIN, "spread_min");
-    spread_param_with_recompute!(osc_contract::CONTROL_SPREAD_MAX, "spread_max");
-    spread_param_with_recompute!(
+/// The core's control addresses that are not live options (see
+/// `command_table`). `metering/rate_hz` and `diag/rate_hz` are
+/// `live_control`'s, against `RendererControl`.
+pub static SIMPLE_CONTROL_COMMANDS: &[Command<SimpleHandler>] = &[
+    Command::exact(osc_contract::CONTROL_CONFIG_LAYOUT, config_layout),
+    Command::exact(
+        osc_contract::CONTROL_CONFIG_LAYOUT_APPLY,
+        config_layout_apply,
+    ),
+    Command::exact(osc_contract::CONTROL_CONFIG_SPEAKERS, config_speakers),
+    Command::exact(osc_contract::CONTROL_SPEAKER_TEST, speaker_test),
+    Command::exact(osc_contract::CONTROL_OBJECT_TEST, object_test),
+    Command::exact(
+        osc_contract::CONTROL_OBJECT_TEST_ROTATION,
+        object_test_rotation,
+    ),
+    Command::exact(osc_contract::CONTROL_OBJECT_TEST_CLIP, object_test_clip),
+    Command::exact(
+        osc_contract::CONTROL_SPEAKER_TEST_IDLE_FEED,
+        speaker_test_idle_feed,
+    ),
+    Command::exact(osc_contract::CONTROL_BINAURAL_EAR_GAIN, binaural_ear_gain),
+    Command::exact(osc_contract::CONTROL_BINAURAL_EAR_MUTE, binaural_ear_mute),
+    Command::exact(osc_contract::CONTROL_HEAD_ORIENTATION, head_orientation),
+    Command::exact(osc_contract::CONTROL_HEAD_QUAT, head_quat),
+    Command::exact(
+        osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_BEGIN,
+        binaural_hrtf_upload_begin,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_CHUNK,
+        binaural_hrtf_upload_chunk,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_END,
+        binaural_hrtf_upload_end,
+    ),
+    Command::exact(osc_contract::CONTROL_HEAD_CALIBRATE, head_calibrate),
+    Command::exact(osc_contract::CONTROL_HEAD_RECENTER, head_recenter),
+    Command::exact(
+        osc_contract::CONTROL_RENDER_BACKEND_RESTORE,
+        render_backend_restore,
+    ),
+    Command::exact(osc_contract::CONTROL_BACKEND_PARAM, backend_param),
+    Command::exact(
+        osc_contract::CONTROL_RENDER_EVALUATION_MODE_FROM_FILE,
+        render_evaluation_mode_from_file,
+    ),
+    Command::exact(osc_contract::CONTROL_LAYOUT_RADIUS_M, layout_radius_m),
+    Command::exact(
+        osc_contract::CONTROL_SPREAD_FROM_DISTANCE,
+        spread_from_distance,
+    ),
+    Command::exact(
+        osc_contract::CONTROL_SPREAD_SIZE_TO_SPREAD_MODE,
+        spread_size_to_spread_mode,
+    ),
+    Command::exact(osc_contract::CONTROL_SPREAD_MIN, spread_min),
+    Command::exact(osc_contract::CONTROL_SPREAD_MAX, spread_max),
+    Command::exact(
         osc_contract::CONTROL_SPREAD_DISTANCE_RANGE,
-        "spread_distance_range"
-    );
-    spread_param_with_recompute!(
+        spread_distance_range,
+    ),
+    Command::exact(
         osc_contract::CONTROL_SPREAD_DISTANCE_CURVE,
-        "spread_distance_curve"
-    );
+        spread_distance_curve,
+    ),
+    Command::prefix(osc_contract::CONTROL_HYBRID_PREFIX, hybrid),
+    Command::prefix(osc_contract::CONTROL_OBJECT_PREFIX, object),
+];
 
-    if addr == osc_contract::CONTROL_SPREAD_FROM_DISTANCE {
-        if let Some(v) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.set_backend_param(
-                "vbap",
-                "spread_from_distance",
-                renderer::backend_params::ParamValue::Bool(v),
-            );
-            effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
-        }
-        return Some(effects);
-    }
-
-    if addr == osc_contract::CONTROL_SPREAD_SIZE_TO_SPREAD_MODE {
-        if let Some(OscType::String(s)) = msg.args.first() {
-            if let Some(mode) = renderer::render_backend::SizeToSpreadMode::from_str(
-                s.trim().to_ascii_lowercase().as_str(),
-            ) {
+// VBAP spread tuning is a generic backend param now (baked into the backend
+// at build, keyed by backend id "vbap"). These dedicated addresses are kept
+// as thin aliases over `set_backend_param` so existing OSC clients keep
+// working; the canonical path is `/omniphony/control/backend/param`. All of
+// them trigger a topology rebuild (the values are baked, not per-request).
+macro_rules! spread_param_with_recompute {
+    ($name:ident, $key:literal) => {
+        fn $name(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+            let mut effects = ControlEffects::default();
+            if let Some(value) = parse_f32_arg(msg.args.first()) {
                 ctx.renderer.set_backend_param(
                     "vbap",
-                    "size_to_spread_mode",
-                    renderer::backend_params::ParamValue::Text(mode.as_str().to_string()),
+                    $key,
+                    renderer::backend_params::ParamValue::Float(value),
                 );
                 effects.mark_dirty = true;
-                // Size policy is baked into the backend now, so a rebuild is
-                // required (it was previously a per-request GainCache key).
                 effects.trigger_layout_recompute = true;
             }
+            Some(effects)
         }
-        return Some(effects);
-    }
+    };
+}
 
-    // The hybrid curve: a point list, kept out of the registry. The legs,
-    // smoothing and metric under the same prefix are registry aliases.
-    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_HYBRID_PREFIX) {
-        let mut live = ctx.renderer.live.write();
-        let mut changed = false;
-        match rest {
-            "curve" => {
-                // Flat list of (x, y) pairs: x0, y0, x1, y1, …
-                let mut values: Vec<f32> = Vec::with_capacity(msg.args.len());
-                let mut valid = true;
-                for arg in &msg.args {
-                    match parse_f32_arg(Some(arg)) {
-                        Some(v) => values.push(v),
-                        None => {
-                            valid = false;
-                            break;
-                        }
+spread_param_with_recompute!(spread_min, "spread_min");
+spread_param_with_recompute!(spread_max, "spread_max");
+spread_param_with_recompute!(spread_distance_range, "spread_distance_range");
+spread_param_with_recompute!(spread_distance_curve, "spread_distance_curve");
+
+/// The hybrid curve: a point list, kept out of the registry. The legs,
+/// smoothing and metric under the same prefix are registry aliases, handled
+/// before this table; any other tail is consumed and ignored.
+fn hybrid(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    let rest = msg.addr.strip_prefix(osc_contract::CONTROL_HYBRID_PREFIX)?;
+    let mut live = ctx.renderer.live.write();
+    let mut changed = false;
+    match rest {
+        "curve" => {
+            // Flat list of (x, y) pairs: x0, y0, x1, y1, …
+            let mut values: Vec<f32> = Vec::with_capacity(msg.args.len());
+            let mut valid = true;
+            for arg in &msg.args {
+                match parse_f32_arg(Some(arg)) {
+                    Some(v) => values.push(v),
+                    None => {
+                        valid = false;
+                        break;
                     }
                 }
-                if valid && values.len() >= 4 && values.len() % 2 == 0 {
-                    live.hybrid.curve = values
-                        .chunks_exact(2)
-                        .map(|pair| [pair[0].clamp(0.0, 1.0), pair[1].clamp(0.0, 1.0)])
-                        .collect();
-                    changed = true;
-                    effects.log_message = Some(format!(
-                        "OSC: hybrid/curve -> {} points",
-                        live.hybrid.curve.len()
-                    ));
-                }
             }
-            _ => {}
+            if valid && values.len() >= 4 && values.len() % 2 == 0 {
+                live.hybrid.curve = values
+                    .chunks_exact(2)
+                    .map(|pair| [pair[0].clamp(0.0, 1.0), pair[1].clamp(0.0, 1.0)])
+                    .collect();
+                changed = true;
+                effects.log_message = Some(format!(
+                    "OSC: hybrid/curve -> {} points",
+                    live.hybrid.curve.len()
+                ));
+            }
         }
+        _ => {}
+    }
 
-        if changed {
-            effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
+    if changed {
+        effects.mark_dirty = true;
+        effects.trigger_layout_recompute = true;
+    }
+    Some(effects)
+}
+
+/// `object/<index>/mute`; any other tail passes on.
+fn object(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    let rest = msg.addr.strip_prefix(osc_contract::CONTROL_OBJECT_PREFIX)?;
+    if let Some(idx_str) = rest.strip_suffix("/mute") {
+        if let Ok(idx) = idx_str.parse::<usize>() {
+            if let Some(muted) = parse_bool_arg(msg.args.first()) {
+                ctx.renderer
+                    .live
+                    .write()
+                    .objects
+                    .entry(idx)
+                    .or_default()
+                    .muted = muted;
+                ctx.renderer.mark_object_params_dirty();
+                // Transient, like a speaker mute: its own state address
+                // publishes it, and no Save is for it.
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: format!("/omniphony/state/object/{}/mute", idx),
+                    value: BroadcastValue::Int(if muted { 1 } else { 0 }),
+                });
+                effects.log_message = Some(format!("OSC: object[{}] mute → {}", idx, muted));
+            }
         }
         return Some(effects);
     }
-
-    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_OBJECT_PREFIX) {
-        if let Some(idx_str) = rest.strip_suffix("/mute") {
-            if let Ok(idx) = idx_str.parse::<usize>() {
-                if let Some(muted) = parse_bool_arg(msg.args.first()) {
-                    ctx.renderer
-                        .live
-                        .write()
-                        .objects
-                        .entry(idx)
-                        .or_default()
-                        .muted = muted;
-                    ctx.renderer.mark_object_params_dirty();
-                    // Transient, like a speaker mute: its own state address
-                    // publishes it, and no Save is for it.
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: format!("/omniphony/state/object/{}/mute", idx),
-                        value: BroadcastValue::Int(if muted { 1 } else { 0 }),
-                    });
-                    effects.log_message = Some(format!("OSC: object[{}] mute → {}", idx, muted));
-                }
-            }
-            return Some(effects);
-        }
-    }
-
     None
 }
 
@@ -1766,4 +1071,828 @@ mod persistence_class_tests {
         assert!((live.speakers[&0].gain - 0.501).abs() < 1e-3);
         assert!(!live.speakers.contains_key(&1), "unity needs no entry");
     }
+}
+
+fn config_layout(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let effects = ControlEffects::default();
+    let patch = parse_json_string_arg::<LayoutConfigPatch>(msg.args.first());
+    if let Some(patch) = patch {
+        let mut changed = false;
+
+        // Wholesale layout replacement must run first: it resets the whole
+        // speaker set, so any add/remove/edit in the same message would apply
+        // against the new layout (Studio never combines them, but the order
+        // keeps the semantics well-defined).
+        if let Some(replace) = patch.replace_layout {
+            let new_speakers: Vec<renderer::speaker_layout::Speaker> = replace
+                .speakers
+                .into_iter()
+                .enumerate()
+                .map(|(idx, sp)| build_layout_speaker_from_patch(sp, format!("spk-{idx}")))
+                .collect();
+            // Per-speaker live params are keyed by position, so a wholesale
+            // swap invalidates every entry: reseed them from the new
+            // speakers' delays and gains.
+            // (The live params are written after the layout's lock is
+            // released, so the live write guard never nests with it.)
+            let speakers = ctx.renderer.with_editable_layout(|layout| {
+                if let Some(radius_m) = replace.radius_m {
+                    layout.radius_m = radius_m.max(0.01);
+                }
+                layout.speakers = new_speakers;
+                renderer::live_params::speaker_live_from_layout(layout)
+            });
+            ctx.renderer.live.write().speakers = speakers;
+            ctx.renderer.mark_speaker_params_dirty();
+            changed = true;
+        }
+
+        if let Some(radius_m) = patch.radius_m {
+            let radius_m = radius_m.max(0.01);
+            changed |= ctx.renderer.with_editable_layout(|layout| {
+                if (layout.radius_m - radius_m).abs() > f32::EPSILON {
+                    layout.radius_m = radius_m;
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+
+        if let Some(add_speaker) = patch.add_speaker {
+            let idx = ctx.renderer.editable_layout().speakers.len();
+            let speaker = build_layout_speaker_from_patch(add_speaker, format!("spk-{idx}"));
+            let delay_ms = speaker.delay_ms;
+            ctx.renderer.with_editable_layout(|layout| {
+                layout.speakers.push(speaker);
+            });
+            if delay_ms > 0.0 {
+                ctx.renderer
+                    .live
+                    .write()
+                    .speakers
+                    .entry(idx)
+                    .or_default()
+                    .delay_ms = delay_ms;
+                ctx.renderer.mark_speaker_params_dirty();
+            }
+            changed = true;
+        }
+
+        if let Some(remove_idx) = patch.remove_speaker {
+            let removed = ctx.renderer.with_editable_layout(|layout| {
+                if remove_idx >= layout.speakers.len() {
+                    false
+                } else {
+                    layout.speakers.remove(remove_idx);
+                    true
+                }
+            });
+            if removed {
+                {
+                    let mut live = ctx.renderer.live.write();
+                    remap_live_speakers_remove(&mut live.speakers, remove_idx);
+                }
+                ctx.renderer.mark_speaker_params_dirty();
+                changed = true;
+            }
+        }
+
+        if let Some(move_speaker) = patch.move_speaker {
+            let moved = ctx.renderer.with_editable_layout(|layout| {
+                let len = layout.speakers.len();
+                if move_speaker.from >= len
+                    || move_speaker.to >= len
+                    || move_speaker.from == move_speaker.to
+                {
+                    false
+                } else {
+                    let speaker = layout.speakers.remove(move_speaker.from);
+                    layout.speakers.insert(move_speaker.to, speaker);
+                    true
+                }
+            });
+            if moved {
+                {
+                    let mut live = ctx.renderer.live.write();
+                    remap_live_speakers_move(
+                        &mut live.speakers,
+                        move_speaker.from,
+                        move_speaker.to,
+                    );
+                }
+                ctx.renderer.mark_speaker_params_dirty();
+                changed = true;
+            }
+        }
+
+        if let Some(speaker_edits) = patch.speaker_edits {
+            changed |= ctx.renderer.with_editable_layout(|layout| {
+                let mut any = false;
+                for speaker_patch in &speaker_edits {
+                    if let Some(speaker) = layout.speakers.get_mut(speaker_patch.id) {
+                        any |= apply_layout_speaker_patch(speaker, speaker_patch);
+                    }
+                }
+                any
+            });
+        }
+
+        // Stage-only: do NOT broadcast the full state bundle here. The change is
+        // pending until /omniphony/control/config/layout/apply commits it; the
+        // apply path is responsible for the broadcast. This avoids a 3x
+        // amplification (stage → broadcast, apply → broadcast, recompute →
+        // broadcast) for a single user edit, which previously fed back into the
+        // studio's heatmap pull and saturated the renderer.
+        let _ = changed;
+    }
+    Some(effects)
+}
+
+fn config_layout_apply(_msg: &OscMessage, _ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    Some(ControlEffects {
+        mark_dirty: true,
+        trigger_layout_recompute: true,
+        log_message: Some("OSC: layout config apply".to_string()),
+        ..Default::default()
+    })
+}
+
+fn config_speakers(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    let patch = parse_json_string_arg::<SpeakersConfigPatch>(msg.args.first());
+    if let Some(patch) = patch {
+        let mut changed = false;
+        if let Some(speaker_edits) = patch.speaker_edits {
+            for speaker_patch in speaker_edits {
+                if let Some(delay_ms) = speaker_patch.delay_ms.map(|value| value.max(0.0)) {
+                    ctx.renderer
+                        .live
+                        .write()
+                        .speakers
+                        .entry(speaker_patch.id)
+                        .or_default()
+                        .delay_ms = delay_ms;
+                    ctx.renderer.with_editable_layout(|layout| {
+                        if let Some(speaker) = layout.speakers.get_mut(speaker_patch.id) {
+                            speaker.delay_ms = delay_ms;
+                        }
+                    });
+                    ctx.renderer.mark_speaker_params_dirty();
+                    changed = true;
+                }
+                // A mute is a listening gesture, not a setting: it is
+                // published, never saved (docs/persistence-policy.md).
+                if let Some(muted) = speaker_patch.muted {
+                    ctx.renderer
+                        .live
+                        .write()
+                        .speakers
+                        .entry(speaker_patch.id)
+                        .or_default()
+                        .muted = muted;
+                    ctx.renderer.mark_speaker_params_dirty();
+                    effects.publish_only = true;
+                }
+            }
+        }
+        if changed {
+            effects.mark_dirty = true;
+        }
+    }
+    Some(effects)
+}
+
+fn speaker_test(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let addr = msg.addr.as_str();
+    let mut effects = ControlEffects::default();
+    // Start/stop the per-speaker test signal. A negative index stops: the
+    // client owns the trigger policy (hold, fixed burst, toggle), so the
+    // renderer only ever sees "play this" or "stop".
+    let idx = match msg.args.first() {
+        Some(OscType::Int(v)) => *v,
+        _ => {
+            log::warn!("OSC {addr}: expected [speaker_idx, level, isolation]");
+            return Some(effects);
+        }
+    };
+    let next = if idx < 0 {
+        None
+    } else {
+        let level = match msg.args.get(1) {
+            Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
+            _ => 0.1,
+        };
+        let isolation = parse_string_arg(msg.args.get(2))
+            .and_then(|v| renderer::live_params::TestIsolation::from_str(&v))
+            .unwrap_or_default();
+        Some(renderer::live_params::SpeakerTest {
+            speaker_idx: idx as usize,
+            level,
+            isolation,
+        })
+    };
+    let mut live = ctx.renderer.live.write();
+    if live.speaker_test != next {
+        live.speaker_test = next;
+        // Deliberately NOT mark_dirty: the test is transient and must never
+        // reach the config or a live-handoff sidecar.
+        effects.log_message = Some(match next {
+            Some(t) => format!(
+                "OSC: speaker_test -> speaker {} at {:.3} ({})",
+                t.speaker_idx,
+                t.level,
+                t.isolation.as_str()
+            ),
+            None => "OSC: speaker_test -> off".to_string(),
+        });
+    }
+    Some(effects)
+}
+
+fn object_test(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let addr = msg.addr.as_str();
+    let mut effects = ControlEffects::default();
+    // Start/move/stop the object test. Studio sends one of these per pointer
+    // move while dragging, so the common case is a position update on an
+    // already-running test: keep it allocation-free and let the renderer
+    // ramp, rather than treating a move as a stop-then-start.
+    let Some(on) = parse_bool_arg(msg.args.first()) else {
+        log::warn!("OSC {addr}: expected [on, x, y, z, level, size, isolation]");
+        return Some(effects);
+    };
+    let next = if !on {
+        None
+    } else {
+        let axis = |i: usize| match msg.args.get(i) {
+            Some(OscType::Float(v)) => v.clamp(-1.0, 1.0),
+            _ => 0.0,
+        };
+        // Default y = 1.0 (front centre) rather than 0.0 if absent, matching
+        // the renderer's neutral object position.
+        let position = [
+            axis(1),
+            match msg.args.get(2) {
+                Some(OscType::Float(v)) => v.clamp(-1.0, 1.0),
+                _ => 1.0,
+            },
+            axis(3),
+        ];
+        let level = match msg.args.get(4) {
+            Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
+            _ => 0.1,
+        };
+        let size = match msg.args.get(5) {
+            Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        let isolation = parse_string_arg(msg.args.get(6))
+            .and_then(|v| renderer::live_params::TestIsolation::from_str(&v))
+            .unwrap_or_default();
+        // Absent = pink noise, so a client that predates the signal
+        // selector keeps getting exactly what it used to.
+        let signal = parse_string_arg(msg.args.get(7))
+            .and_then(|v| renderer::live_params::ObjectTestSignal::from_str(&v))
+            .unwrap_or_default();
+        Some(renderer::live_params::ObjectTest {
+            position,
+            size: [size; 3],
+            level,
+            isolation,
+            signal,
+        })
+    };
+    let mut live = ctx.renderer.live.write();
+    if live.object_test != next {
+        let was_running = live.object_test.is_some();
+        let was_signal = live.object_test.map(|t| t.signal);
+        live.object_test = next;
+        // Deliberately NOT mark_dirty: transient like `speaker_test`, and it
+        // must never reach the config or a live-handoff sidecar.
+        //
+        // Log only the edges. A drag is a burst of position updates, and
+        // logging each one would bury the session log in noise about noise.
+        effects.log_message = match (was_running, next) {
+            (false, Some(t)) => Some(format!(
+                "OSC: object_test -> on at [{:.2}, {:.2}, {:.2}] {:.3} ({}, {})",
+                t.position[0],
+                t.position[1],
+                t.position[2],
+                t.level,
+                t.isolation.as_str(),
+                t.signal.as_str()
+            )),
+            (true, None) => Some("OSC: object_test -> off".to_string()),
+            (true, Some(t)) => was_signal
+                .filter(|prev| *prev != t.signal)
+                .map(|_| format!("OSC: object_test signal -> {}", t.signal.as_str())),
+            _ => None,
+        };
+    }
+    Some(effects)
+}
+
+fn object_test_rotation(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let addr = msg.addr.as_str();
+    let mut effects = ControlEffects::default();
+    let Some(axis_name) = parse_string_arg(msg.args.first()) else {
+        log::warn!("OSC {addr}: expected [axis, radius, period, azimuth, elevation]");
+        return Some(effects);
+    };
+    let float_at = |i: usize, fallback: f32| match msg.args.get(i) {
+        Some(OscType::Float(v)) => *v,
+        _ => fallback,
+    };
+    let axis = match renderer::live_params::RotationAxis::from_str(&axis_name) {
+        Some(renderer::live_params::RotationAxis::Free { .. }) => {
+            renderer::live_params::RotationAxis::Free {
+                azimuth_deg: float_at(3, 0.0),
+                elevation_deg: float_at(4, 0.0),
+            }
+        }
+        Some(other) => other,
+        None => {
+            log::warn!("OSC {addr}: unknown axis {axis_name:?}");
+            return Some(effects);
+        }
+    };
+    let next = renderer::live_params::ObjectTestRotation {
+        axis,
+        // 4 covers every distance worth reaching: √3 gets to a room corner
+        // from the centre, 2√3 gets there from the opposite one.
+        radius: float_at(1, 0.0).clamp(0.0, 4.0),
+        // Floored well above zero: a period approaching it is not a fast
+        // orbit, it is a discontinuity.
+        period_s: float_at(2, 4.0).clamp(0.05, 600.0),
+    };
+    let mut live = ctx.renderer.live.write();
+    if live.object_test_rotation != next {
+        let was_active = live.object_test_rotation.is_active();
+        live.object_test_rotation = next;
+        // Deliberately NOT mark_dirty: transient like the test itself.
+        // Log only the edges — a diameter slider drag is a burst.
+        effects.log_message = match (was_active, next.is_active()) {
+            (false, true) => Some(format!(
+                "OSC: object_test rotation -> {} axis, radius {:.2}, {:.2} s/turn",
+                next.axis.as_str(),
+                next.radius,
+                next.period_s
+            )),
+            (true, false) => Some("OSC: object_test rotation -> off".to_string()),
+            _ => None,
+        };
+    }
+    Some(effects)
+}
+
+fn object_test_clip(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    // Choosing the file the `clip` signal plays. Everything expensive
+    // happens here, on the control thread: read, downmix, resample,
+    // normalise. The render path gets an array and an index.
+    let path = parse_string_arg(msg.args.first()).unwrap_or_default();
+    let path = path.trim().to_string();
+    let state = if path.is_empty() {
+        ctx.renderer.live.write().object_test_clip = None;
+        effects.log_message = Some("OSC: object_test clip -> cleared".to_string());
+        "{}".to_string()
+    } else {
+        let rate = ctx
+            .renderer
+            .sample_rate
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .max(1);
+        match renderer::object_test::clip::load(&path, rate) {
+            Ok(clip) => {
+                let name = std::path::Path::new(&clip.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| clip.path.clone());
+                effects.log_message = Some(format!(
+                    "OSC: object_test clip -> {} ({:.1} s, {} Hz, {} ch{})",
+                    name,
+                    clip.duration_s(),
+                    clip.source_rate,
+                    clip.source_channels,
+                    if clip.truncated { ", truncated" } else { "" }
+                ));
+                let json = format!(
+                    "{{\"name\":{},\"path\":{},\"seconds\":{:.3},\"sourceRate\":{},\"channels\":{},\"truncated\":{}}}",
+                    serde_json::Value::from(name.as_str()),
+                    serde_json::Value::from(clip.path.as_str()),
+                    clip.duration_s(),
+                    clip.source_rate,
+                    clip.source_channels,
+                    clip.truncated
+                );
+                ctx.renderer.live.write().object_test_clip = Some(std::sync::Arc::new(clip));
+                json
+            }
+            Err(e) => {
+                // Left as it was on failure: dropping a working clip because
+                // the next pick was unreadable would be a second surprise on
+                // top of the first.
+                effects.log_message = Some(format!("OSC: object_test clip refused: {e}"));
+                format!("{{\"error\":{}}}", serde_json::Value::from(e.as_str()))
+            }
+        }
+    };
+    effects.broadcasts.push(BroadcastUpdate {
+        addr: osc_contract::STATE_OBJECT_TEST_CLIP.to_string(),
+        value: BroadcastValue::String(state),
+    });
+    Some(effects)
+}
+
+fn speaker_test_idle_feed(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let addr = msg.addr.as_str();
+    let mut effects = ControlEffects::default();
+    // Arm/disarm the idle feed that keeps the output chain warm while the
+    // client's test pane is open. Arming always bumps the generation (even
+    // when already armed) so the decode loop refreshes its keepalive
+    // deadline on every re-arm.
+    let Some(on) = parse_bool_arg(msg.args.first()) else {
+        log::warn!("OSC {addr}: expected [on]");
+        return Some(effects);
+    };
+    // Deliberately NOT mark_dirty: transient like speaker_test. Log only
+    // the arm/disarm edges, not the periodic re-arms.
+    let mut live = ctx.renderer.live.write();
+    if on {
+        if live.speaker_test_idle_feed_gen == 0 {
+            effects.log_message = Some("OSC: speaker_test idle feed -> armed".to_string());
+        }
+        live.speaker_test_idle_feed_gen = live.speaker_test_idle_feed_gen.wrapping_add(1).max(1);
+    } else if live.speaker_test_idle_feed_gen != 0 {
+        live.speaker_test_idle_feed_gen = 0;
+        effects.log_message = Some("OSC: speaker_test idle feed -> off".to_string());
+    }
+    Some(effects)
+}
+
+fn binaural_ear_gain(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    // Headphone L/R output gain: [ear_idx (0|1), linear_gain]. Dedicated
+    // params — the ears no longer ride the first two per-speaker slots
+    // (those drive the virtual FL/FR in cascaded mode).
+    let idx = parse_nonnegative_u32_arg(msg.args.first());
+    let gain = parse_f32_arg(msg.args.get(1));
+    if let (Some(idx @ 0..=1), Some(gain)) = (idx, gain) {
+        if gain.is_finite() && (0.0..=4.0).contains(&gain) {
+            let mut live = ctx.renderer.live.write();
+            let ear = &mut live.binaural.ears[idx as usize];
+            if ear.gain != gain {
+                ear.gain = gain;
+                effects.mark_dirty = true;
+                effects.log_message = Some(format!("OSC: binaural ear_gain {idx} -> {gain}"));
+            }
+        }
+    }
+    Some(effects)
+}
+
+fn binaural_ear_mute(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    // Headphone L/R mute: [ear_idx (0|1), 0|1].
+    let idx = parse_nonnegative_u32_arg(msg.args.first());
+    let mute = parse_bool_arg(msg.args.get(1));
+    if let (Some(idx @ 0..=1), Some(muted)) = (idx, mute) {
+        let mut live = ctx.renderer.live.write();
+        let ear = &mut live.binaural.ears[idx as usize];
+        if ear.muted != muted {
+            ear.muted = muted;
+            effects.mark_dirty = true;
+            effects.log_message = Some(format!("OSC: binaural ear_mute {idx} -> {muted}"));
+        }
+    }
+    Some(effects)
+}
+
+fn head_orientation(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    // Static head pose from Euler degrees [yaw, pitch, roll]. The live
+    // head-tracking input (SensorsOSC) lands in M2; this lets Studio / tests
+    // drive the pose directly. No topology rebuild (binaural is topology-free).
+    let yaw = parse_f32_arg(msg.args.first()).unwrap_or(0.0);
+    let pitch = parse_f32_arg(msg.args.get(1)).unwrap_or(0.0);
+    let roll = parse_f32_arg(msg.args.get(2)).unwrap_or(0.0);
+    let mut live = ctx.renderer.live.write();
+    live.binaural.head_pose = renderer::binaural::HeadPose::from_euler_deg(yaw, pitch, roll);
+    // A manual pose, like the tracker's, is transient: never saved.
+    effects.publish_only = true;
+    effects.log_message = Some(format!("OSC: head/orientation -> {yaw},{pitch},{roll}"));
+    Some(effects)
+}
+
+fn head_quat(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    // Static head pose from a raw quaternion [w, x, y, z].
+    let w = parse_f32_arg(msg.args.first()).unwrap_or(1.0);
+    let x = parse_f32_arg(msg.args.get(1)).unwrap_or(0.0);
+    let y = parse_f32_arg(msg.args.get(2)).unwrap_or(0.0);
+    let z = parse_f32_arg(msg.args.get(3)).unwrap_or(0.0);
+    let mut live = ctx.renderer.live.write();
+    live.binaural.head_pose = renderer::binaural::HeadPose::from_quat(w, x, y, z);
+    // A manual pose, like the tracker's, is transient: never saved.
+    effects.publish_only = true;
+    effects.log_message = Some("OSC: head/quat".to_string());
+    Some(effects)
+}
+
+/// ── SOFA upload (Studio → renderer, chunked OSC blobs) ──────────────────
+/// For setups where Studio does not share a filesystem with the renderer:
+/// begin [s name, i total_bytes] → chunk [i seq, b data]* → end [i chunks].
+/// The file lands in <config dir>/hrtf/ and is activated on completion.
+fn binaural_hrtf_upload_begin(
+    msg: &OscMessage,
+    _ctx: &RuntimeControlContext,
+) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    let name = parse_string_arg(msg.args.first()).unwrap_or_default();
+    let total = match msg.args.get(1) {
+        Some(rosc::OscType::Int(i)) if *i > 0 => *i as usize,
+        _ => 0,
+    };
+    let base = std::path::Path::new(&name)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut upload = hrtf_upload_state().lock().unwrap();
+    if base.is_empty() || !base.to_ascii_lowercase().ends_with(".sofa") {
+        *upload = None;
+        effects.log_message = Some(format!("hrtf upload rejected: bad name {name:?}"));
+    } else if total == 0 || total > HRTF_UPLOAD_MAX_BYTES {
+        *upload = None;
+        effects.log_message = Some(format!("hrtf upload rejected: bad size {total}"));
+    } else {
+        *upload = Some(HrtfUpload {
+            name: base.clone(),
+            total,
+            data: Vec::with_capacity(total),
+            chunks: 0,
+        });
+        effects.log_message = Some(format!("hrtf upload started: {base} ({total} bytes)"));
+    }
+    Some(effects)
+}
+
+fn binaural_hrtf_upload_chunk(
+    msg: &OscMessage,
+    _ctx: &RuntimeControlContext,
+) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    let seq = match msg.args.first() {
+        Some(rosc::OscType::Int(i)) if *i >= 0 => *i as u32,
+        _ => return Some(effects),
+    };
+    let mut upload = hrtf_upload_state().lock().unwrap();
+    let abort = match (upload.as_mut(), msg.args.get(1)) {
+        (Some(up), Some(rosc::OscType::Blob(data))) => {
+            if seq != up.chunks || up.data.len() + data.len() > up.total {
+                true
+            } else {
+                up.data.extend_from_slice(data);
+                up.chunks += 1;
+                false
+            }
+        }
+        _ => return Some(effects),
+    };
+    if abort {
+        *upload = None;
+        effects.log_message =
+            Some("hrtf upload aborted: chunk out of sequence or oversize".to_string());
+    }
+    Some(effects)
+}
+
+fn binaural_hrtf_upload_end(
+    msg: &OscMessage,
+    ctx: &RuntimeControlContext,
+) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    let chunks = match msg.args.first() {
+        Some(rosc::OscType::Int(i)) if *i >= 0 => *i as u32,
+        _ => 0,
+    };
+    let done = hrtf_upload_state().lock().unwrap().take();
+    match done {
+        Some(up) if up.chunks == chunks && up.data.len() == up.total => {
+            let dir = renderer::config::default_config_path()
+                .and_then(|p| p.parent().map(|d| d.join("hrtf")))
+                .unwrap_or_else(|| std::path::PathBuf::from("hrtf"));
+            let write = std::fs::create_dir_all(&dir)
+                .and_then(|_| std::fs::write(dir.join(&up.name), &up.data));
+            match write {
+                Ok(()) => {
+                    let path = dir.join(&up.name).to_string_lossy().into_owned();
+                    ctx.renderer.live.write().binaural.hrir_source =
+                        renderer::binaural::HrirSource::Sofa(path.clone());
+                    effects.mark_dirty = true;
+                    effects.log_message = Some(format!("hrtf upload complete, activated: {path}"));
+                }
+                Err(e) => {
+                    effects.log_message = Some(format!("hrtf upload write failed: {e}"));
+                }
+            }
+        }
+        Some(up) => {
+            effects.log_message = Some(format!(
+                "hrtf upload incomplete: {}/{} bytes, {}/{} chunks",
+                up.data.len(),
+                up.total,
+                up.chunks,
+                chunks
+            ));
+        }
+        None => {
+            effects.log_message = Some("hrtf upload end without begin".to_string());
+        }
+    }
+    Some(effects)
+}
+
+fn head_calibrate(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    let step = msg.args.first().and_then(|a| match a {
+        rosc::OscType::String(s) => renderer::binaural::CalibrationStep::from_str(s),
+        _ => None,
+    });
+    let Some(step) = step else {
+        effects.log_message =
+            Some("OSC: head/calibrate expects front | left | up | reset".to_string());
+        return Some(effects);
+    };
+    let mut live = ctx.renderer.live.write();
+    match live.binaural.tracking.calibrate(step) {
+        Ok(done) => {
+            if step == renderer::binaural::CalibrationStep::Front {
+                // Looking ahead is the recenter: snap and persist it.
+                live.binaural.head_pose = renderer::binaural::HeadPose::identity();
+                effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
+            }
+            if done || step == renderer::binaural::CalibrationStep::Reset {
+                effects.persist.push(crate::persist::PersistOp::HEAD_AXES);
+            }
+            // A calibration of the sensor on the listener's head: written
+            // at once, never behind the Save button
+            // (docs/persistence-policy.md).
+            effects.publish_only = true;
+            effects.log_message = Some(format!(
+                "OSC: head/calibrate {step:?}{}",
+                if done { " — axes calibrated" } else { "" }
+            ));
+        }
+        Err(reason) => {
+            // Nothing changed, but the step's state is published.
+            effects.publish_only = true;
+            effects.log_message = Some(format!("OSC: head/calibrate {step:?} refused: {reason}"));
+        }
+    }
+    Some(effects)
+}
+
+fn head_recenter(_msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    // Capture the current raw tracker orientation as "forward" and snap the
+    // rendered pose to identity so the scene faces straight ahead.
+    let mut live = ctx.renderer.live.write();
+    live.binaural.tracking.recenter();
+    live.binaural.head_pose = renderer::binaural::HeadPose::identity();
+    // Persist the new reference to config right away so the centering survives
+    // an engine rebuild (mpv track change) and a restart.
+    effects.persist.push(crate::persist::PersistOp::HEAD_CENTER);
+    effects.publish_only = true;
+    effects.log_message = Some("OSC: head/recenter".to_string());
+    Some(effects)
+}
+
+fn render_backend_restore(
+    _msg: &OscMessage,
+    _ctx: &RuntimeControlContext,
+) -> Option<ControlEffects> {
+    Some(ControlEffects {
+        log_message: Some(
+            "OSC: render_backend/restore is no longer supported after removing from_file"
+                .to_string(),
+        ),
+        ..Default::default()
+    })
+}
+
+/// Generic backend parameter set. Two forms:
+///   `[string key, <scalar value>]`              -> currently selected backend
+///   `[string backend_id, string key, <value>]`  -> an explicit backend
+/// The explicit form lets the UI address an inner backend (e.g. the hybrid
+/// barycenter tab) even though it is not the active selection. Values are
+/// stored generically (no typed field per backend) and read at the next
+/// topology rebuild via the schema.
+fn backend_param(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    let (target, key, value_arg) = if msg.args.len() >= 3 {
+        (
+            parse_string_arg(msg.args.first()),
+            parse_string_arg(msg.args.get(1)),
+            msg.args.get(2),
+        )
+    } else {
+        (None, parse_string_arg(msg.args.first()), msg.args.get(1))
+    };
+    let value = value_arg.and_then(parse_param_value);
+    if let (Some(key), Some(value)) = (key, value) {
+        let (backend_id, active, hybrid_legs) = {
+            let live = ctx.renderer.live.read();
+            (
+                target.unwrap_or_else(|| live.backend_id().to_string()),
+                live.backend_id().to_string(),
+                (
+                    live.hybrid.external_backend_id.clone(),
+                    live.hybrid.internal_backend_id.clone(),
+                ),
+            )
+        };
+        if !ctx.renderer.set_backend_param(&backend_id, &key, value) {
+            effects.log_message = Some(format!(
+                "OSC: backend param {backend_id}.{key} refused (not a value of its declared type)"
+            ));
+            return Some(effects);
+        }
+        effects.mark_dirty = true;
+        // Recompute only when the edited backend participates in the
+        // active topology (the selection itself, or a leg of an active
+        // hybrid). Params of an inactive backend are stored and persisted;
+        // they are read at the next rebuild that involves that backend.
+        let participates = backend_id == active
+            || (active == "hybrid" && (backend_id == hybrid_legs.0 || backend_id == hybrid_legs.1));
+        effects.trigger_layout_recompute = participates;
+        effects.log_message = Some(format!(
+            "OSC: backend param {backend_id}.{key} updated{}",
+            if participates {
+                ""
+            } else {
+                " (inactive backend, no rebuild)"
+            }
+        ));
+    }
+    Some(effects)
+}
+
+fn render_evaluation_mode_from_file(
+    _msg: &OscMessage,
+    _ctx: &RuntimeControlContext,
+) -> Option<ControlEffects> {
+    Some(ControlEffects {
+        log_message: Some(
+            "OSC: render_evaluation_mode/from_file is no longer supported".to_string(),
+        ),
+        ..Default::default()
+    })
+}
+
+fn layout_radius_m(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
+        ctx.renderer
+            .with_editable_layout(|layout| layout.radius_m = v);
+        effects.mark_dirty = true;
+        effects.log_message = Some(format!("OSC: layout radius_m → {}", v));
+    }
+    Some(effects)
+}
+
+fn spread_from_distance(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    if let Some(v) = parse_bool_arg(msg.args.first()) {
+        ctx.renderer.set_backend_param(
+            "vbap",
+            "spread_from_distance",
+            renderer::backend_params::ParamValue::Bool(v),
+        );
+        effects.mark_dirty = true;
+        effects.trigger_layout_recompute = true;
+    }
+    Some(effects)
+}
+
+fn spread_size_to_spread_mode(
+    msg: &OscMessage,
+    ctx: &RuntimeControlContext,
+) -> Option<ControlEffects> {
+    let mut effects = ControlEffects::default();
+    if let Some(OscType::String(s)) = msg.args.first() {
+        if let Some(mode) = renderer::render_backend::SizeToSpreadMode::from_str(
+            s.trim().to_ascii_lowercase().as_str(),
+        ) {
+            ctx.renderer.set_backend_param(
+                "vbap",
+                "size_to_spread_mode",
+                renderer::backend_params::ParamValue::Text(mode.as_str().to_string()),
+            );
+            effects.mark_dirty = true;
+            // Size policy is baked into the backend now, so a rebuild is
+            // required (it was previously a per-request GainCache key).
+            effects.trigger_layout_recompute = true;
+        }
+    }
+    Some(effects)
 }

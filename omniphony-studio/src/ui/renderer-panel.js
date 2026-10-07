@@ -365,6 +365,10 @@ export function rendererPanelMarkup() {
                     <option value="sample" data-i18n="audio.rampModeSample">Per sample</option>
                   </select>
                 </div>
+                <div class="control-row" id="sampleRampStrideRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                  <label for="sampleRampStrideInput" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="audio.sampleRampStride" data-i18n-title="help.audio.sampleRampStride">Lookup stride</label>
+                  <input id="sampleRampStrideInput" class="delay-input" data-option="sample_ramp_stride" type="number" min="1" max="32" step="1" value="8" style="width:5rem" />
+                </div>
               </div>
             </div>
           </div>

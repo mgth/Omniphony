@@ -149,6 +149,45 @@ arguments.
 | `sample_pos` | `i64` | Sample position |
 | `seconds` | `f64` | Time from start of stream |
 
+### Playout
+
+The messages above describe a block of audio and are sent as it is rendered.
+The sound comes out later, by everything buffered behind the render: the
+output ring and the device for the standalone `orender` (which measures it),
+or whatever an embedding host holds — seconds, behind Kodi — which the host
+reports through the C ABI's `heard_us` option. A client that wants to show each
+block when it is heard, as Studio does, needs two things, and the engine sends
+them once it knows where the listener is (never before, so a client of an
+engine that cannot tell sees the stream exactly as before):
+
+#### `/omniphony/playout/block`
+
+| Argument | Type | Description |
+|---|---|---|
+| `pos` | `i64` | The object frames, timestamps, bed config and meter bundles that follow describe the block of audio starting at this sample |
+
+Sent ahead of the first such message of each block, not for every block. The
+timeline is the engine's own (samples rendered since the start, or since the
+last reset for an embedded engine), not the bridge's `sample_pos`; a position
+lower than the previous one means the timeline started again and anything held
+about the old one will never be heard.
+
+#### `/omniphony/playout/heard`
+
+| Argument | Type | Description |
+|---|---|---|
+| `pos` | `i64` | The sample the listener is hearing, on the same timeline |
+| `rate` | `i32` | Samples per second the timeline advances at while it plays |
+
+At most every 20 ms while the audio plays. When it stops coming, so has the
+sound (a pause): a client extrapolating between two reports should not carry
+the listener on for long.
+
+The engine holds nothing back; a client that wants the description early (to
+prepare for it) ignores both. Studio queues the stream messages and applies
+each one once the listener reaches its block, and applies everything else —
+state, replies to an edit — at once.
+
 ### Live State
 
 The control and state surface — every `/omniphony/control/…` address a client
@@ -225,6 +264,9 @@ When the new topology is published, it broadcasts:
 - updated `/omniphony/state/speakers s <json>`
 
 A failed rebuild is reported on `/omniphony/state/speakers/recompute_error`.
+So is a published topology (or a crossover change) whose band engines could
+not be built: the previous bands keep rendering, and an empty string follows
+once a later build goes through.
 
 ## Notes
 

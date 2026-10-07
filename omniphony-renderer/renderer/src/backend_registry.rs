@@ -8,7 +8,8 @@ use crate::live_params::{
 use crate::plugin::{PluginFactory, PluginListing, PluginRegistry};
 use crate::render_backend::{
     BlendCurve, DegenerateVbapBackend, EffectiveEvaluationMode, EvaluationBuildConfig, GainModel,
-    HybridBackend, PreparedRenderEngine, build_prepared_render_engine, wrap_prepared_engine,
+    HybridBackend, PreparedRenderEngine, build_decorated_model, wrap_prepared_engine,
+    wrap_unsampled_engine,
 };
 use crate::speaker_layout::SpeakerLayout;
 
@@ -16,7 +17,7 @@ use crate::speaker_layout::SpeakerLayout;
 /// cube corners, and a few off-axis points. They are intentionally cheap and
 /// fixed — the goal is to exercise a freshly built backend once, on the build
 /// thread, not to characterise it.
-const SMOKE_TEST_POSITIONS: [[f64; 3]; 11] = [
+pub(crate) const SMOKE_TEST_POSITIONS: [[f64; 3]; 11] = [
     [0.0, 0.0, 0.0],
     [1.0, 1.0, 1.0],
     [-1.0, -1.0, -1.0],
@@ -309,11 +310,13 @@ impl ExperimentalDistanceBuildPlan {
 }
 
 impl BarycenterBuildPlan {
+    /// Fails, rather than build a model that would panic per request, when
+    /// the layout spatializes more speakers than the solver holds.
     pub fn build_gain_model(&self) -> Result<Box<dyn GainModel>> {
-        Ok(Box::new(crate::render_backend::BarycenterBackend::new(
+        Ok(Box::new(crate::render_backend::BarycenterBackend::try_new(
             self.speaker_positions.clone(),
             self.localize,
-        )))
+        )?))
     }
 }
 
@@ -331,20 +334,67 @@ pub struct TopologyBuildPlan {
     pub geometry_generation: u64,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TABLES_SAMPLED_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many band topologies — each sampling its gain table in a precomputed
+/// mode — the calling thread has built. Tests use it to tell the render
+/// thread's work from the band worker's.
+#[cfg(test)]
+pub(crate) fn tables_sampled_on_this_thread() -> usize {
+    TABLES_SAMPLED_HERE.with(std::cell::Cell::get)
+}
+
 impl TopologyBuildPlan {
+    /// Build the topology to publish (see [`Self::build_topology_reusing`]).
     pub fn build_topology(&self) -> Result<RenderTopology> {
         self.build_topology_reusing(None)
     }
 
-    /// Build the topology, reusing `current`'s decorated gain model when it was
-    /// built by the same backend at the same geometry generation (only the
-    /// evaluation mode / grid changed). Reuse skips re-triangulation: realtime
-    /// just re-wraps the model, precomputed re-samples it. Anything else (another
-    /// generation, another backend, or no current model) is a full rebuild.
+    /// Build the topology to publish on the control: layout, mappings, backend
+    /// identity and the decorated gain model, but no gain table, whatever the
+    /// evaluation mode. Nothing renders through it: the speaker stage builds
+    /// and samples one engine per crossover band from its layout
+    /// ([`Self::build_band_topology_reusing`]), the single band of a layout
+    /// without crossover included. See
+    /// [`crate::render_backend::wrap_unsampled_engine`].
+    ///
+    /// Reuses `current`'s decorated gain model when it was built by the same
+    /// backend at the same geometry generation (only the evaluation mode /
+    /// grid changed), which skips re-triangulation. Anything else (another
+    /// generation, another backend, or no current model) builds the model, so
+    /// a backend that cannot be built for the layout fails here, with its own
+    /// reason, before anything is published.
     pub fn build_topology_reusing(
         &self,
         current: Option<&RenderTopology>,
     ) -> Result<RenderTopology> {
+        self.build_reusing(current, false)
+    }
+
+    /// Build a topology whose engine renders: the gain model wrapped in the
+    /// evaluation strategy for the plan's mode, so a precomputed mode samples
+    /// its table here. For the speaker stage's band engines and the Studio
+    /// band gain table, which read gains from it. Reuses `prev`'s decorated
+    /// model like [`Self::build_topology_reusing`].
+    pub fn build_band_topology_reusing(
+        &self,
+        prev: Option<&RenderTopology>,
+    ) -> Result<RenderTopology> {
+        self.build_reusing(prev, true)
+    }
+
+    fn build_reusing(
+        &self,
+        current: Option<&RenderTopology>,
+        sample: bool,
+    ) -> Result<RenderTopology> {
+        // A layout edited past the limit is refused here, before any backend
+        // sizes its gains by it: reported to the clients like a failed
+        // build, the running topology stays.
+        crate::spatial_vbap::check_speaker_count(self.layout.num_speakers())?;
         let effective_mode = match self.evaluation_mode {
             LiveEvaluationMode::Realtime => EffectiveEvaluationMode::Realtime,
             LiveEvaluationMode::PrecomputedPolar => EffectiveEvaluationMode::PrecomputedPolar,
@@ -354,37 +404,31 @@ impl TopologyBuildPlan {
             LiveEvaluationMode::Auto => unreachable!("topology build plan must resolve auto mode"),
         };
 
-        if let Some(model) = current.and_then(|cur| {
+        let reused = current.and_then(|cur| {
             (cur.geometry_generation == self.geometry_generation
                 && cur.model_backend_id == self.backend_id)
                 .then(|| cur.backend.decorated_model())
                 .flatten()
-        }) {
-            let engine =
-                wrap_prepared_engine(model, effective_mode, &self.evaluation_build_config)?;
-            let topology = RenderTopology::new(Arc::new(engine), self.layout.clone())?
-                .with_model_origin(self.geometry_generation, &self.backend_id);
-            smoke_test_engine(
-                &topology.backend,
+        });
+        let model = match reused {
+            Some(model) => model,
+            // The panner is geometry-only and ignores the evaluation mode, so
+            // the shared realtime builder applies to every backend (the mode is
+            // resolved by the evaluation wrapper below).
+            None => build_decorated_model(
+                self.backend_build.build_gain_model()?,
                 &self.evaluation_build_config,
-                self.backend_id(),
-            )?;
-            return Ok(topology);
-        }
-
-        // The panner is geometry-only and ignores the evaluation mode, so the
-        // shared realtime builder applies to every backend (the mode is resolved
-        // later by `build_prepared_render_engine`'s evaluation wrapper).
-        let model = self.backend_build.build_gain_model()?;
-        let topology = RenderTopology::new(
-            Arc::new(build_prepared_render_engine(
-                model,
-                effective_mode,
-                &self.evaluation_build_config,
-            )?),
-            self.layout.clone(),
-        )?
-        .with_model_origin(self.geometry_generation, &self.backend_id);
+            ),
+        };
+        let engine = if sample {
+            #[cfg(test)]
+            TABLES_SAMPLED_HERE.with(|n| n.set(n.get() + 1));
+            wrap_prepared_engine(model, effective_mode, &self.evaluation_build_config)?
+        } else {
+            wrap_unsampled_engine(model, effective_mode)
+        };
+        let topology = RenderTopology::new(Arc::new(engine), self.layout.clone())?
+            .with_model_origin(self.geometry_generation, &self.backend_id);
         smoke_test_engine(
             &topology.backend,
             &self.evaluation_build_config,
@@ -801,7 +845,7 @@ pub struct BackendBuildCtx<'a> {
     pub backend_rebuild_params: Option<BackendRebuildParams>,
     /// The registry the active backend was looked up in. A composite backend
     /// (hybrid) resolves its inner models through this so any registered backend
-    /// can be composed, not just a hard-coded set. See [`resolve_hybrid_inner_plan`].
+    /// can be composed, not just a hard-coded set. See `resolve_hybrid_inner_plan`.
     pub registry: &'a BackendRegistry,
     /// All host-set backend param values, keyed by backend id then param key
     /// (see [`crate::backend_params`]). Read at build time only — never on the
@@ -1181,7 +1225,7 @@ mod tests {
     use super::*;
     use crate::render_backend::{
         BackendCapabilities, CartesianEvaluationConfig, PolarEvaluationConfig, RenderRequest,
-        RenderResponse,
+        RenderResponse, build_prepared_render_engine,
     };
     use crate::spatial_vbap::{DistanceMetric, DistanceModel, Gains, OutOfHullMode};
 
@@ -1374,6 +1418,175 @@ mod tests {
         let engine = realtime_engine(Box::new(WrongCountBackend));
         let err = smoke_test_engine(&engine, &build_config(), "wrong_count_backend").unwrap_err();
         assert!(err.to_string().contains("expected"), "got: {err}");
+    }
+
+    /// A model answering with another gain count than its `speaker_count`
+    /// fails the precomputed table build. The smoke test cannot see it there:
+    /// it reads the sampled table back, at the declared count.
+    #[test]
+    fn a_wrong_gain_count_fails_the_precomputed_table_build() {
+        for mode in [
+            EffectiveEvaluationMode::PrecomputedCartesian,
+            EffectiveEvaluationMode::PrecomputedPolar,
+        ] {
+            let err =
+                build_prepared_render_engine(Box::new(WrongCountBackend), mode, &build_config())
+                    .err()
+                    .unwrap_or_else(|| panic!("{mode:?}: a table of shifted cells was built"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("wrong_count_backend")
+                    && msg.contains(&format!("returned {} gains", TEST_SPEAKERS + 1))
+                    && msg.contains(&format!("expected {TEST_SPEAKERS}")),
+                "{mode:?}: got: {msg}"
+            );
+        }
+    }
+
+    /// The count is checked on every cell, not only on the first: a model
+    /// that comes up short at a single position would otherwise shift every
+    /// later cell of the table onto the wrong speakers.
+    #[test]
+    fn a_gain_count_off_at_one_cell_fails_the_table_build() {
+        struct ShortInOneColumn;
+        impl GainModel for ShortInOneColumn {
+            fn backend_id(&self) -> &'static str {
+                "short_in_one_column"
+            }
+            fn backend_label(&self) -> &'static str {
+                "short_in_one_column"
+            }
+            fn capabilities(&self) -> BackendCapabilities {
+                realtime_caps()
+            }
+            fn speaker_count(&self) -> usize {
+                TEST_SPEAKERS
+            }
+            fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+                // One column of the 5×5 grid, off every smoke position.
+                let short = (req.adm_position[0] + 0.5).abs() < 1e-6
+                    && (req.adm_position[1] - 0.5).abs() < 1e-6;
+                let mut gains = Gains::zeroed(TEST_SPEAKERS - usize::from(short));
+                gains.set(0, 1.0);
+                RenderResponse { gains }
+            }
+            fn save_to_file(&self, _path: &std::path::Path, _layout: &SpeakerLayout) -> Result<()> {
+                Ok(())
+            }
+        }
+        // The smoke positions miss that column: realtime builds and passes.
+        let engine = realtime_engine(Box::new(ShortInOneColumn));
+        smoke_test_engine(&engine, &build_config(), "short_in_one_column")
+            .expect("the smoke positions do not reach the short column");
+        let err = build_prepared_render_engine(
+            Box::new(ShortInOneColumn),
+            EffectiveEvaluationMode::PrecomputedCartesian,
+            &build_config(),
+        )
+        .err()
+        .expect("the short cell fails the build");
+        assert!(
+            err.to_string()
+                .contains(&format!("returned {} gains", TEST_SPEAKERS - 1)),
+            "got: {err}"
+        );
+    }
+
+    /// A ring of `n` spatialized speakers, alternating ear level and 40° up.
+    fn ring_layout(n: usize) -> SpeakerLayout {
+        let ring = n.div_ceil(2) as f32;
+        SpeakerLayout::from_speakers(
+            (0..n)
+                .map(|i| {
+                    crate::speaker_layout::Speaker::new(
+                        format!("S{i}"),
+                        -180.0 + 360.0 * (i / 2) as f32 / ring,
+                        if i % 2 == 0 { 0.0 } else { 40.0 },
+                    )
+                })
+                .collect(),
+        )
+        .expect("ring layout")
+    }
+
+    /// The barycenter solver holds `MAX_SPEAKERS` speakers in fixed arrays: a
+    /// larger layout is refused when the model is built — an error the
+    /// recompute reports to Studio — instead of the model panicking out of
+    /// bounds per request (on the render thread for a band rebuild).
+    #[test]
+    fn barycenter_refuses_a_layout_larger_than_its_solver() {
+        use crate::spatial_vbap::MAX_SPEAKERS;
+        let positions = |n: usize| collect_spatializable_positions(&ring_layout(n));
+        let plan = |n: usize| BarycenterBuildPlan {
+            speaker_positions: positions(n),
+            localize: 0.0,
+        };
+        assert!(plan(MAX_SPEAKERS).build_gain_model().is_ok());
+        let err = plan(MAX_SPEAKERS + 2)
+            .build_gain_model()
+            .err()
+            .expect("more speakers than the solver holds");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("at most {MAX_SPEAKERS}"))
+                && msg.contains(&(MAX_SPEAKERS + 2).to_string()),
+            "got: {msg}"
+        );
+
+        // The whole topology build — the published one (model only) and a
+        // band's (precomputed, so its table would sample the model) — and a
+        // hybrid with a barycenter leg fail too, without a panic: refused by
+        // the layout-wide speaker check before the model is built.
+        let topology = |backend_build: BackendBuildPlan, backend_id: &str| TopologyBuildPlan {
+            layout: ring_layout(MAX_SPEAKERS + 2),
+            backend_id: backend_id.to_string(),
+            backend_build,
+            evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+            evaluation_build_config: build_config(),
+            geometry_generation: 0,
+        };
+        let built = std::panic::catch_unwind(|| {
+            topology(
+                BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2)),
+                "barycenter",
+            )
+            .build_topology()
+            .map(|_| ())
+        });
+        let err = built.expect("no panic").expect_err("refused");
+        assert!(
+            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
+            "got: {err}"
+        );
+        let built = std::panic::catch_unwind(|| {
+            topology(
+                BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2)),
+                "barycenter",
+            )
+            .build_band_topology_reusing(None)
+            .map(|_| ())
+        });
+        let err = built.expect("no panic").expect_err("refused");
+        assert!(
+            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
+            "got: {err}"
+        );
+
+        let hybrid = BackendBuildPlan::Hybrid(HybridBuildPlan {
+            external: Box::new(BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2))),
+            internal: Box::new(BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2))),
+            curve: vec![[0.0, 0.0], [1.0, 1.0]],
+            curve_smoothing: 0.0,
+            metric: DistanceMetric::default(),
+        });
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            topology(hybrid, "hybrid").build_topology().map(|_| ())
+        }));
+        let err = built.expect("no panic").expect_err("refused");
+        assert!(
+            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
+            "got: {err}"
+        );
     }
 
     #[test]

@@ -7,7 +7,8 @@ use runtime_control::snapshot::{build_renderer_state_json, build_speakers_state_
 
 use super::client_registry::OscClientRegistry;
 use super::gaintable::GaintableCache;
-use super::transport::{broadcast_int, broadcast_string, send_update_to_client};
+use super::transport::{broadcast_int, broadcast_string, publish_state, send_update_to_client};
+use rosc::{OscMessage, OscType};
 use runtime_control::osc_contract;
 
 pub(crate) fn trigger_layout_recompute(
@@ -68,6 +69,8 @@ pub(crate) fn trigger_layout_recompute(
     std::thread::Builder::new()
         .name("render-backend-recompute".into())
         .spawn(move || {
+            #[cfg(test)]
+            hold::wait_while_held(&control_clone);
             log::info!(
                 "Render backend recompute started ({})",
                 rebuild_plan_for_thread.log_summary()
@@ -98,63 +101,59 @@ pub(crate) fn trigger_layout_recompute(
                         "Render backend {} updated with new speaker layout",
                         rebuild_plan_for_thread.backend_id()
                     );
-                    let renderer_state_json = {
-                        let live = control_clone.live.read();
-                        let topology = control_clone.active_topology();
-                        let scale_m = control_clone.editable_layout().radius_m;
-                        // Speaker names that don't resolve to a known channel
-                        // label — can't be routed by position in by_name mode.
-                        let unroutable: Vec<String> = topology
-                            .speaker_layout
-                            .speakers
-                            .iter()
-                            .filter(|s| {
-                                crate::channel_layout::label_for_speaker_name(&s.name)
-                                    == bridge_api::RChannelLabel::Unknown
-                            })
-                            .map(|s| s.name.clone())
-                            .collect();
-                        build_renderer_state_json(
-                            &live,
-                            &topology,
-                            scale_m,
-                            control_clone.available_backends(),
-                            control_clone.plugin_params(),
-                            &unroutable,
-                            &control_clone.fixed_channel_catalog(),
-                            &control_clone.fixed_channel_processing(),
-                            control_clone.crossover_info(),
-                            &control_clone.binaural_hrir_status(),
-                            &control_clone.binaural_brir_status(),
-                        )
-                    };
-                    let layout_json = {
-                        let layout = control_clone.editable_layout();
-                        serde_json::to_string(&layout).unwrap_or_else(|_| "{}".to_string())
-                    };
-                    let speakers_state_json = {
-                        let live = control_clone.live.read();
-                        let layout = control_clone.editable_layout();
-                        build_speakers_state_json(&live, &layout)
-                    };
-                    broadcast_string(
-                        &socket_clone,
-                        &clients_clone,
-                        osc_contract::STATE_RENDERER,
-                        &renderer_state_json,
-                    );
-                    broadcast_string(
-                        &socket_clone,
-                        &clients_clone,
-                        osc_contract::STATE_LAYOUT,
-                        &layout_json,
-                    );
-                    broadcast_string(
-                        &socket_clone,
-                        &clients_clone,
-                        osc_contract::STATE_SPEAKERS,
-                        &speakers_state_json,
-                    );
+                    // Read under the publication lock: a snapshot the
+                    // listener publishes meanwhile is either all before
+                    // these or all after, never newer under a lower count.
+                    publish_state(&socket_clone, &clients_clone, || {
+                        let renderer_state_json = {
+                            let live = control_clone.live.read();
+                            let topology = control_clone.active_topology();
+                            let scale_m = control_clone.editable_layout().radius_m;
+                            // Speaker names that don't resolve to a known channel
+                            // label — can't be routed by position in by_name mode.
+                            let unroutable: Vec<String> = topology
+                                .speaker_layout
+                                .speakers
+                                .iter()
+                                .filter(|s| {
+                                    crate::channel_layout::label_for_speaker_name(&s.name)
+                                        == bridge_api::RChannelLabel::Unknown
+                                })
+                                .map(|s| s.name.clone())
+                                .collect();
+                            build_renderer_state_json(
+                                &live,
+                                &topology,
+                                scale_m,
+                                control_clone.available_backends(),
+                                control_clone.plugin_params(),
+                                &unroutable,
+                                &control_clone.fixed_channel_catalog(),
+                                &control_clone.fixed_channel_processing(),
+                                control_clone.crossover_info(),
+                                &control_clone.binaural_hrir_status(),
+                                &control_clone.binaural_brir_status(),
+                            )
+                        };
+                        let layout_json = {
+                            let layout = control_clone.editable_layout();
+                            serde_json::to_string(&layout).unwrap_or_else(|_| "{}".to_string())
+                        };
+                        let speakers_state_json = {
+                            let live = control_clone.live.read();
+                            let layout = control_clone.editable_layout();
+                            build_speakers_state_json(&live, &layout)
+                        };
+                        let message = |addr: &str, json: String| OscMessage {
+                            addr: addr.to_string(),
+                            args: vec![OscType::String(json)],
+                        };
+                        vec![
+                            message(osc_contract::STATE_RENDERER, renderer_state_json),
+                            message(osc_contract::STATE_LAYOUT, layout_json),
+                            message(osc_contract::STATE_SPEAKERS, speakers_state_json),
+                        ]
+                    });
                     broadcast_int(
                         &socket_clone,
                         &clients_clone,
@@ -179,9 +178,9 @@ pub(crate) fn trigger_layout_recompute(
                                 {
                                     if client_version != Some(version) {
                                         for update in gaintable_chunk_broadcasts(&bytes, None) {
-                                            send_update_to_client(&socket_clone, addr, &update);
+                                            send_update_to_client(&socket_clone, &addr, &update);
                                         }
-                                        clients_clone.set_gaintable_version(addr, target, version);
+                                        clients_clone.set_gaintable_version(&addr, target, version);
                                     }
                                 }
                             }
@@ -244,4 +243,154 @@ pub(crate) fn trigger_layout_recompute(
             }
         })
         .expect("failed to spawn vbap-recompute thread");
+}
+
+/// Tests that need a recompute still running at a given moment hold the
+/// worker of one engine (one `RendererControl`) at its start until the guard
+/// is dropped; every other engine's workers run as usual.
+#[cfg(test)]
+pub(crate) mod hold {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    use renderer::live_params::RendererControl;
+
+    static HELD: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    static RELEASED: Condvar = Condvar::new();
+
+    fn key(control: &Arc<RendererControl>) -> usize {
+        Arc::as_ptr(control) as usize
+    }
+
+    pub(crate) struct Held(usize);
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            HELD.lock().unwrap().retain(|&k| k != self.0);
+            RELEASED.notify_all();
+        }
+    }
+
+    /// Hold `control`'s recompute workers until the returned guard drops.
+    pub(crate) fn hold(control: &Arc<RendererControl>) -> Held {
+        HELD.lock().unwrap().push(key(control));
+        Held(key(control))
+    }
+
+    pub(super) fn wait_while_held(control: &Arc<RendererControl>) {
+        let key = key(control);
+        let mut held = HELD.lock().unwrap();
+        while held.contains(&key) {
+            held = RELEASED.wait(held).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renderer::spatial_vbap::MAX_SPEAKERS;
+    use renderer::speaker_layout::{Speaker, SpeakerLayout};
+    use renderer::test_support::fixture_control;
+    use rosc::{OscPacket, OscType};
+    use std::net::UdpSocket;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    /// The string a client receives on `addr`, waiting for the first
+    /// non-empty one (a recompute first clears the previous error).
+    fn next_non_empty_string(client: &UdpSocket, addr: &str) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut buf = vec![0u8; 65536];
+        while Instant::now() < deadline {
+            let Ok(len) = client.recv(&mut buf) else {
+                continue;
+            };
+            // A state update travels in a bundle with its generation.
+            let messages = match rosc::decoder::decode_udp(&buf[..len]) {
+                Ok((_, OscPacket::Message(msg))) => vec![msg],
+                Ok((_, OscPacket::Bundle(bundle))) => bundle
+                    .content
+                    .into_iter()
+                    .filter_map(|packet| match packet {
+                        OscPacket::Message(msg) => Some(msg),
+                        OscPacket::Bundle(_) => None,
+                    })
+                    .collect(),
+                Err(_) => continue,
+            };
+            for msg in messages {
+                if msg.addr == addr
+                    && let Some(OscType::String(s)) = msg.args.first()
+                    && !s.is_empty()
+                {
+                    return Some(s.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Studio grows the layout past what the renderer's gains hold
+    /// (`MAX_SPEAKERS`, LFE included), whichever backend is selected: the
+    /// recompute fails with a reason on the recompute-error broadcast — not a
+    /// caught out-of-bounds panic — and the engine keeps rendering the
+    /// previous topology.
+    #[test]
+    fn an_oversized_layout_reports_a_recompute_error_with_every_backend() {
+        for backend in ["vbap", "barycenter", "experimental_distance", "hybrid"] {
+            oversized_layout_reports_a_recompute_error(backend);
+        }
+    }
+
+    fn oversized_layout_reports_a_recompute_error(backend: &str) {
+        let control = fixture_control();
+        let before = control.active_topology();
+        control.live.write().backend_id = backend.to_string();
+        let n = MAX_SPEAKERS + 2;
+        let layout = SpeakerLayout::from_speakers(
+            (0..n)
+                .map(|i| {
+                    Speaker::new(
+                        format!("S{i}"),
+                        -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
+                        if i % 2 == 0 { 0.0 } else { 40.0 },
+                    )
+                })
+                .collect(),
+        )
+        .expect("ring layout");
+        control.with_editable_layout(|l| *l = layout);
+        control.bump_geometry_generation();
+
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
+        clients.insert_permanent(&crate::osc::peer::Peer::Udp(client.local_addr().unwrap()));
+
+        trigger_layout_recompute(
+            &control,
+            &socket,
+            &clients,
+            &Arc::new(GaintableCache::new()),
+        );
+
+        let error = next_non_empty_string(&client, osc_contract::STATE_SPEAKERS_RECOMPUTE_ERROR)
+            .unwrap_or_else(|| panic!("{backend}: a recompute error is broadcast"));
+        assert!(
+            error.contains(&format!("at most {MAX_SPEAKERS}")) && !error.contains("panicked"),
+            "{backend}: {error}"
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while control.recomputing.load(Ordering::Relaxed) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!control.recomputing.load(Ordering::Relaxed), "{backend}");
+        assert!(
+            Arc::ptr_eq(&before, &control.active_topology()),
+            "{backend}: the previous topology stays active"
+        );
+    }
 }

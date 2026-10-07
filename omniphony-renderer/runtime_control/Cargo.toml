@@ -1,11 +1,12 @@
 [package]
 name = "runtime_control"
-version = "0.2.4"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+bridge_api.workspace = true
 omniphony_geometry.workspace = true
 omniphony-osc-contract.workspace = true
 anyhow.workspace = true
@@ -21,3 +22,7 @@ serde_yaml_ng.workspace = true
 anyhow.workspace = true
 vergen-gitcl.workspace = true
 chrono.workspace = true
+
+[dev-dependencies]
+# Shared renderer fixtures (`renderer::test_support`).
+renderer = { workspace = true, features = ["test-support"] }

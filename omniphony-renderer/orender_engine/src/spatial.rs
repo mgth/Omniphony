@@ -59,45 +59,66 @@ pub fn derive_bed_indices(channel_labels: &[RChannelLabel]) -> Vec<usize> {
 /// see `virtual_bed::build_fixed_channel_objects`). Objects report their raw
 /// event position in the bridge's coordinate format, named from the
 /// accumulated `object_names` map (falling back to `Obj_<id>`).
+///
+/// One entry per object id, in order of first appearance: a payload may carry
+/// several timed events for the same object (IAMF hands one position every
+/// 256 samples), and the broadcast shows where each object ends up — the last
+/// event wins, the fields it leaves out keep the earlier event's values.
 pub fn build_object_metas(
     conf: &Configuration,
     coordinate_format: RCoordinateFormat,
     object_names: &HashMap<u32, String>,
 ) -> Vec<ObjectMeta> {
-    let fallback_coord_mode = || match coordinate_format {
-        RCoordinateFormat::Cartesian => "cartesian".to_string(),
-        RCoordinateFormat::Polar => "polar".to_string(),
+    let coord_mode = match coordinate_format {
+        RCoordinateFormat::Cartesian => "cartesian",
+        RCoordinateFormat::Polar => "polar",
     };
-    conf.events
-        .iter()
-        .filter_map(|event| {
-            let id = event.id()?;
-            let [x, y, z] = event_pos_raw(event).unwrap_or([0.0; 3]);
-            Some(ObjectMeta {
-                name: object_names
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Obj_{id}")),
-                x: x as f32,
-                y: y as f32,
-                z: z as f32,
-                coord_mode: fallback_coord_mode(),
-                direct_speaker_index: None,
-                gain: event
-                    .gain_db()
-                    .map_or(renderer::spatial_renderer::GAIN_DB_NEG_INF, f32::from),
-                priority: 0.0,
-                size: event
-                    .size()
-                    .map(|s| [s[0] as f32, s[1] as f32, s[2] as f32])
-                    .unwrap_or([0.0, 0.0, 0.0]),
-                fixed: false,
-                label: String::new(),
-                // Carried by the stream, not synthesized here.
-                kind: crate::object_gen::ObjectKind::Dynamic,
-            })
-        })
-        .collect()
+    let mut ids: Vec<u32> = Vec::with_capacity(conf.events.len());
+    let mut objects: Vec<ObjectMeta> = Vec::with_capacity(conf.events.len());
+    for event in &conf.events {
+        let Some(id) = event.id() else {
+            continue;
+        };
+        if let Some(slot) = ids.iter().position(|&seen| seen == id) {
+            let object = &mut objects[slot];
+            if let Some([x, y, z]) = event_pos_raw(event) {
+                (object.x, object.y, object.z) = (x as f32, y as f32, z as f32);
+            }
+            if let Some(gain_db) = event.gain_db() {
+                object.gain = f32::from(gain_db);
+            }
+            if let Some(s) = event.size() {
+                object.size = [s[0] as f32, s[1] as f32, s[2] as f32];
+            }
+            continue;
+        }
+        let [x, y, z] = event_pos_raw(event).unwrap_or([0.0; 3]);
+        ids.push(id);
+        objects.push(ObjectMeta {
+            name: object_names
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| format!("Obj_{id}")),
+            x: x as f32,
+            y: y as f32,
+            z: z as f32,
+            coord_mode: coord_mode.to_string(),
+            direct_speaker_index: None,
+            gain: event
+                .gain_db()
+                .map_or(renderer::spatial_renderer::GAIN_DB_NEG_INF, f32::from),
+            priority: 0.0,
+            size: event
+                .size()
+                .map(|s| [s[0] as f32, s[1] as f32, s[2] as f32])
+                .unwrap_or([0.0, 0.0, 0.0]),
+            fixed: false,
+            label: String::new(),
+            // Carried by the stream, not synthesized here.
+            kind: crate::object_gen::ObjectKind::Dynamic,
+        });
+    }
+    objects
 }
 
 /// Resolve an event's position to ADM Cartesian `[x, y, z]`, converting from the
@@ -299,6 +320,31 @@ mod tests {
         assert_eq!(metas[0].direct_speaker_index, None);
         assert_eq!(metas[0].gain, -3.0);
         assert!((metas[0].x - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn timed_events_of_one_object_make_one_object_at_its_last_position() {
+        let at = |id, x| {
+            let mut event = Event::with_id(id);
+            event.set_pos([x, 1.0, 0.0]);
+            event
+        };
+        // Two objects, three positions each, as IAMF hands them out.
+        let conf = Configuration::new(vec![
+            at(4, 0.1),
+            at(7, -0.1),
+            at(4, 0.2),
+            at(7, -0.2),
+            at(4, 0.3),
+            at(7, -0.3),
+        ]);
+
+        let metas = build_object_metas(&conf, RCoordinateFormat::Cartesian, &HashMap::new());
+
+        let names: Vec<_> = metas.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Obj_4", "Obj_7"]);
+        assert!((metas[0].x - 0.3).abs() < 1e-6);
+        assert!((metas[1].x + 0.3).abs() < 1e-6);
     }
 
     #[test]

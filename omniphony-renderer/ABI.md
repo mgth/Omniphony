@@ -13,11 +13,14 @@ links the engine as a Rust crate.
 |---|---|---|
 | ABI major (`ORENDER_ABI_MAJOR`) | `orender_ffi/src/lib.rs`, `#define` in header, `orender_version_major()` | Breaking-change counter. Linux soname `liborender.so.<major>` derives from it (build.rs). |
 | ABI minor (`ORENDER_ABI_MINOR`) | same | Additive-change counter. Logging/diagnostics only. |
-| Crate version (`orender_ffi/Cargo.toml`) | crate, `orender_build_id()`, `liborender-v*` release tags, Arch `pkgver` | Package/release identity. Moves faster than the ABI pair. |
+| Crate version (the release version, `[workspace.package]`) | crate, `orender_build_id()`, the `vX.Y.Z` release and its `liborender-vX.Y.Z-<platform>.zip` assets, Arch `pkgver` | Package/release identity, shared with Studio and `orender` (#676). Moves faster than the ABI pair. |
 | Build fingerprint | `orender_build_id()`, `/omniphony/state/render/version` | git-describe + build time; identifies the exact build. |
 
 The ABI pair and the crate version have different lifecycles on purpose: a
-release with no header change bumps the crate version only.
+release with no header change bumps the crate version only. Until 0.6.0 the
+library had its own `liborender-v*` releases; it now ships as assets of every
+`v*` release, and the README's compatibility table (and the release's
+`omniphony-<tag>-manifest.json`) names the ABI pair each release carries.
 
 ## Change policy
 
@@ -62,6 +65,7 @@ not know that key" — treat it as feature-unavailable, not as an error.
 | Key | Values | Since | Meaning |
 |---|---|---|---|
 | `decode_thread` | `on`, `off` (default), `live` (0.11) | 0.10 | Decode on a thread of its own, overlapping the render, so the two share the work across two cores. A packet's audio then comes back from a later `orender_process` call — one packet's per call, about 30 ms of audio behind, or one packet if that is longer; occasionally two while the queue shrinks, so size the buffer for two — or from `orender_drain`, so only a host that takes its timestamps from what the call returns (see [Output timestamps](#output-timestamps)) and drains at end of stream should turn it on. `on`/`off` force it: switch them while nothing is in flight — right after `orender_create`, after `orender_reset`, or once `orender_drain` has returned 0 frames; turning it off with packets still on the thread returns -2. `live` hands the choice to the user's `render.decode_thread` option (config.yaml, Studio, OSC); the engine follows it at packet boundaries, and when it is turned off mid-stream the thread winds down a packet per call before decoding goes back inline. |
+| `heard_us` | a decimal integer | 0.12 | Where the listener is, in the microseconds `*out_pts_us` counts (see [Output timestamps](#output-timestamps)), so from 0 after `orender_reset`. A host that buffers what it is handed plays it later than it is rendered — Kodi banks seconds of it — and only the host knows how much. Reported as the audio plays (a few dozen times a second is plenty), it reaches OSC clients as `/omniphony/playout/heard`, together with `/omniphony/playout/block` markers naming the block each stream message describes, so a client such as Studio can show each block when it is heard. The engine holds nothing back; a host that never sets it changes nothing. |
 
 ## Output timestamps
 

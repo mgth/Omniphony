@@ -206,7 +206,9 @@ pub const ORENDER_ABI_MAJOR: u32 = 0;
 //     option — config.yaml, Studio, OSC — switching at packet boundaries) and
 //     orender_output_packet_pts (the host timestamp of the packet whose audio
 //     the last call returned); orender_process now reads its pts_us argument.
-pub const ORENDER_ABI_MINOR: u32 = 11;
+// 12: added the `heard_us` key of orender_set_option (where the listener is,
+//     relayed to OSC clients as /omniphony/playout/heard).
+pub const ORENDER_ABI_MINOR: u32 = 12;
 
 /// Speaker-position labels written by `orender_channel_layout` and
 /// `orender_bed_layout` (one byte per channel). Mirrors the engine's
@@ -385,7 +387,7 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
 }
 
 /// Initialise the `log` backend once, so the engine's `log::*` diagnostics
-/// (bridge-load time, "VBAP table generated in Xs", clip warnings, engine-ready
+/// (bridge-load time, "Spatial renderer built in Xs", clip warnings, engine-ready
 /// time) surface BOTH on stderr and over OSC to connected clients (Studio's log
 /// panel).
 ///
@@ -1417,6 +1419,13 @@ pub extern "C" fn orender_build_id() -> *const c_char {
 ///   `render.decode_thread` option (config.yaml, Studio, OSC), which the
 ///   engine then follows at packet boundaries, winding the thread down a
 ///   packet per call when it is turned off mid-stream.
+/// - `heard_us` = a decimal integer (ABI 0.12): where the listener is, in the
+///   microseconds `*out_pts_us` counts — so from 0 after `orender_reset`. A
+///   host that buffers the rendered audio plays it later than it renders it;
+///   reported as the audio plays, it reaches OSC clients as
+///   `/omniphony/playout/heard`, so a client such as Studio can show each block
+///   when it is heard rather than when it was rendered. The engine holds
+///   nothing back. A host that never sets it changes nothing.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_set_option(
     r: *mut OrenderRenderer,
@@ -1449,11 +1458,27 @@ pub unsafe extern "C" fn orender_set_option(
                     }
                 }
             }
+            "heard_us" => match value.trim().parse::<i64>() {
+                Ok(us) => {
+                    engine.set_heard_us(us);
+                    0
+                }
+                Err(_) => -2,
+            },
             _ => -1,
         }
     }))
     .unwrap_or(-3)
 }
+
+/// Held by every test that creates a session or waits on the degraded
+/// reporter: a session that starts stops the process-wide reporter, which a
+/// concurrent test may be waiting on.
+#[cfg(test)]
+static SESSION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod live_handle_tests;
 
 #[cfg(test)]
 mod source_label_tests {
@@ -1508,6 +1533,7 @@ mod degraded_reporter_tests {
     /// answering a registration over OSC. A real engine start tears it down.
     #[test]
     fn an_unloadable_bridge_returns_null_and_keeps_the_degraded_reporter() {
+        let _session = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("orender-ffi-degraded-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let config_path = dir.join("config.yaml");

@@ -16,45 +16,22 @@
 //! # Example
 //!
 //! ```ignore
-//! use omniphony_renderer::spatial_renderer::SpatialRenderer;
+//! use omniphony_renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
 //! use omniphony_renderer::speaker_layout::SpeakerLayout;
 //! use omniphony_renderer::spatial_vbap::{DistanceModel, VbapTableMode};
 //!
 //! // Load speaker layout
 //! let layout = SpeakerLayout::preset("7.1.4")?;
 //!
-//! // Create renderer with VBAP configuration
-//! let renderer = SpatialRenderer::new(
-//!     layout,
-//!     48000,                 // sample rate (Hz)
-//!     1,                     // azimuth resolution
-//!     1,                     // elevation resolution
-//!     0.25,                  // spread resolution (0.0 = single table, >0 = dynamic spread)
-//!     2.0,                   // polar distance max
-//!     VbapTableMode::Polar,  // precomputed table mode
-//!     true,                  // allow_negative_z
-//!     DistanceModel::Linear, // distance attenuation model
-//!     false,                 // spread_from_distance (false = use spread_min/spread_max)
-//!     1.0,                   // spread_distance_range (distance where spread reaches 0)
-//!     1.0,                   // spread_distance_curve (1.0 = linear, 2.0 = quadratic)
-//!     0.0,                   // spread_min
-//!     1.0,                   // spread_max
-//!     false,                 // log_object_positions
-//!     [1.0, 2.0, 0.5],       // room_ratio [width, length, height]
-//!     2.0,                   // room_ratio_rear
-//!     0.5,                   // room_ratio_center_blend
-//!     0.0,                   // master_gain_db
-//!     false,                 // auto_gain
-//!     false,                 // use_loudness
-//!     false,                 // distance_diffuse
-//!     1.0,                   // distance_diffuse_threshold
-//!     1.0,                   // distance_diffuse_curve
-//!     omniphony_renderer::live_params::PreferredEvaluationMode::PrecomputedPolar, // bridge preferred mode
-//!     omniphony_renderer::live_params::LiveEvaluationMode::PrecomputedPolar,      // initial live selection
-//!     31,                    // cartesian default x size
-//!     31,                    // cartesian default y size
-//!     15,                    // cartesian default z size
-//! )?;
+//! // Create renderer with VBAP configuration (see `RendererSpec` for each field)
+//! let renderer = SpatialRenderer::new(RendererSpec {
+//!     speaker_layout: layout,
+//!     sample_rate: 48000,
+//!     az_res_deg: 1,
+//!     el_res_deg: 1,
+//!     table_mode: VbapTableMode::Polar,
+//!     // …
+//! })?;
 //!
 //! // Render objects for a frame (in decode loop)
 //! let speaker_samples = renderer.render_frame(
@@ -78,6 +55,7 @@ use std::sync::Arc;
 mod cascade;
 mod components;
 mod construction;
+pub use construction::RendererSpec;
 mod speaker_stage;
 use components::{ChannelState, evaluation_build_config};
 pub use components::{GAIN_DB_NEG_INF, RenderedFrame, SpatialChannelEvent, gain_db_to_linear};
@@ -92,6 +70,7 @@ struct LiveSnapshot<'a> {
     master_gain: f32,
     object_params: &'a [crate::live_params::ObjectLiveParams],
     ramp_mode: RampMode,
+    sample_ramp_stride: usize,
     use_loudness: bool,
     auto_gain: bool,
     auto_gain_ceiling_db: f32,
@@ -229,8 +208,15 @@ pub struct SpatialRenderer {
 
     /// Per-layout speaker rendering state (band engines, crossover, delay
     /// lines, per-layout scratch). Extracted so the cascaded binaural mode can
-    /// later run a second stage against a virtual layout.
+    /// later run a second stage against a virtual layout. Its band engines are
+    /// built by the first frame (or [`Self::prepare_speaker_stage`]), once the
+    /// host has seeded the control from its config.
     speaker_stage: SpeakerRenderStage,
+
+    /// How many band sets (gain tables, crossover bank, unified table) the
+    /// speaker stage installed, built on the render thread or by its worker.
+    /// Read by [`Self::speaker_stage_builds`].
+    speaker_stage_builds: u32,
 
     /// Scratch snapshot of live per-object params, indexed by input channel.
     object_params_buf: Vec<crate::live_params::ObjectLiveParams>,
@@ -358,6 +344,20 @@ impl SpatialRenderer {
         );
     }
 
+    /// Drop the loudness correction: unity gain and no dialogue level, as
+    /// before any stream sent one. For an input that carries no level (plain
+    /// PCM) taking over from one that did. True when a level was set.
+    pub fn clear_loudness(&self) -> bool {
+        if self.control.live.read().dialogue_level.is_none() {
+            return false;
+        }
+        self.loudness_gain
+            .store(1.0_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.control.live.write().dialogue_level = None;
+        log::info!("Dialog normalization: no dialogue level, gain=0 dB");
+        true
+    }
+
     /// Set the bed channel IDs in PCM channel order.
     ///
     /// Must be called once when the first metadata arrives, before any call to `render_frame`.
@@ -371,6 +371,85 @@ impl SpatialRenderer {
     /// Return the shared `RendererControl` Arc so that `OscSender` can hold it.
     pub fn renderer_control(&self) -> Arc<RendererControl> {
         Arc::clone(&self.control)
+    }
+
+    /// Hand a consumed [`RenderedFrame`] back: its metering lists
+    /// (`object_gains`, `object_band_gains`, `object_band_sq`) return to the
+    /// renderer, which refills them in place on the next metered frame, and
+    /// its sample buffer is returned for the caller to donate to the next
+    /// [`Self::render_frame`].
+    ///
+    /// Optional: a frame that is simply dropped costs the next metered frame
+    /// fresh allocations, nothing else. A host that meters every frame
+    /// (Studio connected) recycles them to keep the render allocation-free.
+    pub fn recycle_frame(&mut self, frame: RenderedFrame) -> Vec<f32> {
+        let RenderedFrame {
+            samples,
+            object_gains,
+            object_band_gains,
+            object_band_sq,
+            ..
+        } = frame;
+        self.speaker_stage
+            .meter_buffers
+            .reclaim(speaker_stage::MeterBuffers {
+                object_gains,
+                object_band_gains,
+                object_band_sq,
+            });
+        samples
+    }
+
+    /// Build the speaker stage's band engines (per-band gain tables, crossover
+    /// bank, unified table) for the active topology and the live options now,
+    /// instead of on the first [`Self::render_frame`], on the calling thread
+    /// even when the stage otherwise builds on its worker. A no-op when they
+    /// are already up to date.
+    ///
+    /// Construction does not build them: the hosts seed the backend, its
+    /// params and the crossover engine from their config only after the
+    /// renderer exists, so a build at construction would sample every band
+    /// table on the defaults and the first frame would sample them again. A
+    /// host that wants the cost off its first frame calls this once its seed
+    /// is done; tests call it to inspect the stage.
+    pub fn prepare_speaker_stage(&mut self) -> Result<()> {
+        let topology = self.control.active_topology();
+        // Here, unlike a frame, the build may hold the caller.
+        let synchronous = std::mem::replace(&mut self.speaker_stage.synchronous_builds, true);
+        let refreshed = self
+            .speaker_stage
+            .refresh_for_topology(&self.control, &topology);
+        self.speaker_stage.synchronous_builds = synchronous;
+        if refreshed? {
+            self.speaker_stage_builds += 1;
+        }
+        Ok(())
+    }
+
+    /// Number of band sets the speaker stage has installed since the renderer
+    /// was constructed: one per start-up, one per topology or crossover change
+    /// after that, once its worker has built it. Diagnostics and tests (the start-up
+    /// regression this guards built them twice).
+    pub fn speaker_stage_builds(&self) -> u32 {
+        self.speaker_stage_builds
+    }
+
+    /// `true` while a band set for a new topology or crossover setting has
+    /// been asked of the speaker stage's worker and not answered yet: frames
+    /// rendered meanwhile still use the previous bands. Like
+    /// [`Self::binaural_rebuild_pending`], for callers that need the change
+    /// in effect; once it clears, [`Self::speaker_stage_rebuild_failed`]
+    /// tells whether the set was installed.
+    pub fn speaker_stage_rebuild_pending(&self) -> bool {
+        self.speaker_stage.rebuild_pending()
+    }
+
+    /// `true` when the speaker stage's worker could not build the band set
+    /// the current topology and crossover setting need: the previous bands
+    /// keep rendering, and the reason is in the log and broadcast to the
+    /// clients. Cleared when the setting moves on or a set is installed.
+    pub fn speaker_stage_rebuild_failed(&self) -> bool {
+        self.speaker_stage.rebuild_failed()
     }
 
     /// `true` while a requested binaural HRIR source change has been handed to
@@ -397,6 +476,7 @@ impl SpatialRenderer {
     /// nothing per frame either way. Set it before the first frame.
     pub fn set_synchronous_stage_builds(&mut self, on: bool) {
         self.synchronous_stage_builds = on;
+        self.speaker_stage.synchronous_builds = on;
         self.binaural.set_synchronous_builds(on);
         self.brir.set_synchronous_builds(on);
     }
@@ -462,10 +542,19 @@ impl SpatialRenderer {
         ctx: &RampContext,
     ) -> Result<()> {
         for event in events {
+            if event.channel_idx >= components::MAX_EVENT_CHANNELS {
+                continue;
+            }
             let state = Self::state_mut(states, event.channel_idx);
             state.initialized = true;
 
-            if let Some(gain) = event.gain_db {
+            // A gain no linear factor stands for (NaN, +inf, past ~770 dB) is
+            // a broken event, not an instruction: the channel keeps the gain it
+            // had. -inf is the mute it means (see `gain_db_to_linear`).
+            if let Some(gain) = event
+                .gain_db
+                .filter(|&g| components::gain_db_to_linear(g).is_finite())
+            {
                 state.gain_db = gain;
             }
             if let Some(ramp_length) = event.ramp_length {
@@ -528,14 +617,14 @@ impl SpatialRenderer {
     ///
     /// # Arguments
     ///
-    /// * `pcm_data` - Decoded PCM samples [sample_idx][channel_idx]
+    /// * `pcm_data` - Decoded PCM samples `[sample_idx][channel_idx]`
     /// * `metadata` - Spatial object metadata (positions, gains, etc.)
     /// * `total_channels` - Total number of channels in pcm_data (bed + objects)
-    /// * `bed_indices` - Indices of channels that are bed channels (e.g., [3] for LFE only)
+    /// * `bed_indices` - Indices of channels that are bed channels (e.g., `[3]` for LFE only)
     ///
     /// # Returns
     ///
-    /// Interleaved speaker samples: [sample_idx][speaker_idx]
+    /// Interleaved speaker samples: `[sample_idx][speaker_idx]`
     ///
     /// # Notes
     ///
@@ -580,6 +669,7 @@ impl SpatialRenderer {
             .swap(false, std::sync::atomic::Ordering::Acquire)
         {
             self.channel_states.clear();
+            self.speaker_stage.drop_gain_carries();
         }
 
         // ── 0. Independent binaural (headphone) path ─────────────────────────
@@ -628,17 +718,24 @@ impl SpatialRenderer {
         // ── 1. Load the current immutable render topology and keep band engines in sync ──
         let topology_guard = self.control.active_topology();
         let topology = &*topology_guard;
-        let topology_identity = std::sync::Arc::as_ptr(&topology_guard) as usize;
-        self.speaker_stage.refresh_for_topology(
-            &self.control,
-            topology_identity,
-            &topology.speaker_layout,
-        )?;
-        // Cascaded binaural geometry: derived from the active topology, kept
-        // in sync only while the mode is active. Must run before the live
-        // snapshot below, which borrows `self` fields for the rest of the frame.
-        if binaural_active && cascade_active {
-            self.refresh_cascade_for_topology(topology, topology_identity);
+        if self
+            .speaker_stage
+            .refresh_for_topology(&self.control, &topology_guard)?
+        {
+            self.speaker_stage_builds += 1;
+        }
+        // Cascaded binaural geometry: derived from the topology the installed
+        // bands were built for, not the published one. The virtual speakers
+        // must stand where the gains feeding them place them, so they move
+        // with the band set: a few blocks after a publish, and not at all if
+        // the set could not be built. Kept in sync only while the mode is
+        // active. Must run before the live snapshot below, which borrows
+        // `self` fields for the rest of the frame.
+        if binaural_active
+            && cascade_active
+            && let Some(installed) = self.speaker_stage.installed_topology()
+        {
+            cascade::CascadeStage::follow(&mut self.cascade, installed);
         }
 
         // BRIR source: track the file and options (one compare per frame;
@@ -678,19 +775,24 @@ impl SpatialRenderer {
                 }
         };
 
-        // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
+        // ── 1. Snapshot the live params this frame needs (a lock-free read) ──
         let live_position_interpolation;
         let live = {
-            let g = self.control.live.read();
-            live_position_interpolation = g.evaluation.position_interpolation;
+            // The generations first, then the params: a writer bumps them
+            // once its write is published, so a generation seen here comes
+            // with its data. The other order could record a new generation
+            // over params loaded just before the write, and the caches
+            // would keep them until the next change.
             let object_params_generation = self
                 .control
                 .object_params_generation
-                .load(std::sync::atomic::Ordering::Relaxed);
+                .load(std::sync::atomic::Ordering::Acquire);
             let speaker_params_generation = self
                 .control
                 .speaker_params_generation
-                .load(std::sync::atomic::Ordering::Relaxed);
+                .load(std::sync::atomic::Ordering::Acquire);
+            let g = self.control.live.read();
+            live_position_interpolation = g.evaluation.position_interpolation;
 
             if self.object_params_generation_seen != object_params_generation {
                 if self.object_params_buf.len() < input_channel_count {
@@ -737,10 +839,11 @@ impl SpatialRenderer {
             LiveSnapshot {
                 master_gain: g.master_gain,
                 object_params: &self.object_params_buf[..input_channel_count],
-                ramp_mode: g.ramp_mode,
-                use_loudness: g.use_loudness,
-                auto_gain: g.auto_gain,
-                auto_gain_ceiling_db: g.auto_gain_ceiling_db,
+                ramp_mode: g.options.ramp_mode,
+                sample_ramp_stride: g.options.sample_ramp_stride,
+                use_loudness: g.options.use_loudness,
+                auto_gain: g.options.auto_gain,
+                auto_gain_ceiling_db: g.options.auto_gain_ceiling_db,
                 speaker_params: &self.speaker_params_buf[..self.num_speakers],
                 speaker_test: g.speaker_test,
                 object_test: g.object_test,
@@ -884,6 +987,7 @@ impl SpatialRenderer {
                         layout: active_layout,
                         object_params: live.object_params,
                         ramp_mode: live.ramp_mode,
+                        sample_ramp_stride: live.sample_ramp_stride,
                         ramp_strategy,
                         ramp_context: &ramp_context,
                         log_object_positions: self.log_object_positions,
@@ -899,6 +1003,8 @@ impl SpatialRenderer {
                 cascade_diag = Some(diag);
                 self.cascade = Some(geometry);
             } else {
+                // The ramps advance below, without the speaker stage.
+                self.speaker_stage.drop_gain_carries();
                 self.binaural_pos_buf.clear();
                 self.binaural_pos_buf
                     .resize(input_channel_count, [0.0, 1.0, 0.0]);
@@ -1049,9 +1155,10 @@ impl SpatialRenderer {
             // shared master gain, targeting the configured ceiling.
             if peak_sample > 1.0 {
                 self.control.note_clip(peak_ear);
-                if live.auto_gain {
-                    let new_master_gain =
-                        self.fold_clip_into_master_gain(peak_sample, live.auto_gain_ceiling_db);
+                if live.auto_gain
+                    && let Some(new_master_gain) =
+                        self.fold_clip_into_master_gain(peak_sample, live.auto_gain_ceiling_db)
+                {
                     log::warn!(
                         "Clipping detected on headphone {} (peak={:.3})! Master gain reduced to {:.4} ({:.1} dB), ceiling {:.1} dBFS",
                         if peak_ear == 0 { "L" } else { "R" },
@@ -1067,9 +1174,9 @@ impl SpatialRenderer {
             // the app layout, so the object meters stay valid on headphones.
             return Ok(match cascade_diag {
                 Some(mut diag) => {
-                    diag.object_gains.sort_by_key(|(idx, _)| *idx);
-                    diag.object_band_gains.sort_by_key(|(idx, _)| *idx);
-                    diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
+                    diag.object_gains.sort_unstable_by_key(|(idx, _)| *idx);
+                    diag.object_band_gains.sort_unstable_by_key(|(idx, _)| *idx);
+                    diag.object_band_sq.sort_unstable_by_key(|(idx, _)| *idx);
                     RenderedFrame {
                         samples: output,
                         // Matches the `sample_length * 2` resize above: this
@@ -1134,6 +1241,7 @@ impl SpatialRenderer {
             layout: active_layout,
             object_params: live.object_params,
             ramp_mode: live.ramp_mode,
+            sample_ramp_stride: live.sample_ramp_stride,
             ramp_strategy,
             ramp_context: &ramp_context,
             log_object_positions: self.log_object_positions,
@@ -1222,16 +1330,17 @@ impl SpatialRenderer {
             // master gain (peak-hold, no recovery) so the reduction is visible on
             // the master control and persisted with it. Detection stays at 0 dBFS
             // but the correction targets the configured ceiling (default −1 dBFS),
-            // leaving headroom so it fires less often. The write lock is taken only
-            // on clipping frames (transient), never in steady state.
+            // leaving headroom so it fires less often. The live params are written
+            // only on clipping frames (transient), never in steady state.
             //
             // The log + name resolution live here (not in the always-run flag path)
             // so a sustained clip with auto-gain *off* only flips the atomic flag for
             // the UI indicators — it does not spam the log or load the topology each
             // frame. With auto-gain on, the correction makes clips transient anyway.
-            if live.auto_gain {
-                let new_master_gain =
-                    self.fold_clip_into_master_gain(peak_sample, live.auto_gain_ceiling_db);
+            if live.auto_gain
+                && let Some(new_master_gain) =
+                    self.fold_clip_into_master_gain(peak_sample, live.auto_gain_ceiling_db)
+            {
                 // The speaker is named straight from the topology, without
                 // building a `String` on the audio thread.
                 let topology = self.control.active_topology();
@@ -1253,9 +1362,12 @@ impl SpatialRenderer {
 
         let speaker_channels = self.num_speakers;
         self.apply_output_mode_fade(&mut output, speaker_channels);
-        diag.object_gains.sort_by_key(|(idx, _)| *idx);
-        diag.object_band_gains.sort_by_key(|(idx, _)| *idx);
-        diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
+        // One entry per channel, so the keys are unique and an unstable sort
+        // gives the stable order — without the scratch buffer a stable sort
+        // allocates past a few dozen entries.
+        diag.object_gains.sort_unstable_by_key(|(idx, _)| *idx);
+        diag.object_band_gains.sort_unstable_by_key(|(idx, _)| *idx);
+        diag.object_band_sq.sort_unstable_by_key(|(idx, _)| *idx);
         Ok(RenderedFrame {
             samples: output,
             // Matches the `sample_length * self.num_speakers` resize above.
@@ -1331,14 +1443,17 @@ impl SpatialRenderer {
     /// it, and return the new master gain. Shared by the speaker and the
     /// headphone paths.
     ///
-    /// Takes the live write lock, so it runs only on clipping frames (which
-    /// the correction makes transient), never in steady state. Re-reading
-    /// under the lock preserves any concurrent OSC master change.
-    fn fold_clip_into_master_gain(&self, peak: f32, ceiling_db: f32) -> f32 {
+    /// Runs only on clipping frames (which the correction makes transient),
+    /// never in steady state. Writing the live params copies them, and is
+    /// skipped — `None` — while a control thread is writing them: the render
+    /// thread does not wait, and the next clipping frame folds instead.
+    /// Applying the gain to the published value preserves any concurrent OSC
+    /// master change.
+    fn fold_clip_into_master_gain(&self, peak: f32, ceiling_db: f32) -> Option<f32> {
         // Bring the peak down to the ceiling rather than exactly 0 dBFS.
         let required_gain = db_to_linear(ceiling_db) / peak;
         let new_master_gain = {
-            let mut params = self.control.live.write();
+            let mut params = self.control.live.try_write()?;
             params.master_gain *= required_gain;
             params.master_gain
         };
@@ -1346,7 +1461,7 @@ impl SpatialRenderer {
         self.control.bump_live_state();
         self.auto_gain_triggered
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        new_master_gain
+        Some(new_master_gain)
     }
 
     /// Apply the in-flight output-mode cross-fade to an interleaved block, and
@@ -1407,13 +1522,29 @@ impl SpatialRenderer {
     /// (headphone) mode, otherwise the speaker count. Hosts must size their sink
     /// and `RenderedAudio` from this, not from [`num_speakers`](Self::num_speakers).
     pub fn output_channel_count(&self) -> usize {
-        // The ACTIVE mode, not the live one: across a cross-fade the live flag
-        // already names the incoming mode while the samples are still the
-        // outgoing one's. Reporting the request would tell the host to resize
-        // its sink for audio that has not been rendered yet.
-        match self.active_output_mode {
+        match self.emitted_output_mode() {
             crate::live_params::OutputMode::Binaural => 2,
             crate::live_params::OutputMode::SpeakerArray => self.num_speakers,
+        }
+    }
+
+    /// The output mode the next rendered frame comes out in.
+    ///
+    /// The ACTIVE mode, not the live one: across a cross-fade the live flag
+    /// already names the incoming mode while the samples are still the
+    /// outgoing one's. Reporting the request would tell the host to resize
+    /// its sink for audio that has not been rendered yet.
+    ///
+    /// Except before the first frame, which takes the request as it stands
+    /// (there is nothing to fade from): reporting the mode the renderer was
+    /// built with sized the CLI's sink for the speakers when the config asked
+    /// for headphones, and the rebuild at the right width on the next frame
+    /// reopened the output file — the opening block was lost.
+    fn emitted_output_mode(&self) -> crate::live_params::OutputMode {
+        if self.has_rendered_frame {
+            self.active_output_mode
+        } else {
+            self.control.live.read().binaural.output_mode
         }
     }
 
@@ -1422,7 +1553,7 @@ impl SpatialRenderer {
     /// [`output_channel_count`](Self::output_channel_count).
     pub fn output_is_speaker_array(&self) -> bool {
         matches!(
-            self.active_output_mode,
+            self.emitted_output_mode(),
             crate::live_params::OutputMode::SpeakerArray
         )
     }

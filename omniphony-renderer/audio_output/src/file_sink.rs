@@ -67,6 +67,8 @@ pub struct FileAudioWriter {
     inner: BufWriter<Box<dyn Write + Send>>,
     /// Reused per write so steady-state writing does not allocate.
     byte_scratch: Vec<u8>,
+    /// See [`Self::is_regular_file`].
+    regular_file: bool,
 }
 
 impl FileAudioWriter {
@@ -81,21 +83,24 @@ impl FileAudioWriter {
         channel_count: u32,
         channel_descs: Option<Vec<CafChannelDesc>>,
     ) -> io::Result<Self> {
-        let sink: Box<dyn Write + Send> = if destination == "-" {
-            Box::new(io::stdout())
+        let (sink, regular_file): (Box<dyn Write + Send>, bool) = if destination == "-" {
+            (Box::new(io::stdout()), false)
         } else {
             // A FIFO opens like a regular file and blocks until a reader
             // attaches — that is the intended backpressure. `truncate` is a
             // no-op on FIFOs and gives a fresh capture for regular files.
-            Box::new(
-                OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(destination)?,
-            )
+            let file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(destination)?;
+            let regular_file = file.metadata().is_ok_and(|metadata| metadata.is_file());
+            (Box::new(file), regular_file)
         };
-        Self::with_writer(sink, format, sample_rate, channel_count, channel_descs)
+        let mut writer =
+            Self::with_writer(sink, format, sample_rate, channel_count, channel_descs)?;
+        writer.regular_file = regular_file;
+        Ok(writer)
     }
 
     /// Construct over an arbitrary writer. Used by tests with an in-memory
@@ -119,7 +124,16 @@ impl FileAudioWriter {
         Ok(Self {
             inner,
             byte_scratch: Vec::new(),
+            regular_file: false,
         })
+    }
+
+    /// Whether the destination is a regular file: the one kind [`Self::new`]
+    /// starts over when it is opened again, so a capture only holds a whole
+    /// run for as long as its writer is kept. Stdout and a FIFO lose nothing
+    /// to a second writer.
+    pub fn is_regular_file(&self) -> bool {
+        self.regular_file
     }
 
     /// Append one block of interleaved f32 samples as little-endian bytes.
@@ -211,6 +225,38 @@ mod tests {
     }
     fn read_i64_be(buf: &[u8], at: usize) -> i64 {
         i64::from_be_bytes(buf[at..at + 8].try_into().unwrap())
+    }
+
+    /// Only a path to a regular file is a destination a second open starts
+    /// over; stdout, and whatever a test writes into, are not.
+    #[test]
+    fn only_a_regular_file_destination_is_reported_as_one() {
+        let path =
+            std::env::temp_dir().join(format!("orender-file-sink-kind-{}.f32", std::process::id()));
+        let to_file = FileAudioWriter::new(
+            path.to_str().unwrap(),
+            FileSinkFormat::RawF32,
+            48_000,
+            2,
+            None,
+        )
+        .expect("file sink");
+        let _ = std::fs::remove_file(&path);
+        assert!(to_file.is_regular_file());
+
+        let to_stdout = FileAudioWriter::new("-", FileSinkFormat::RawF32, 48_000, 2, None)
+            .expect("stdout sink");
+        assert!(!to_stdout.is_regular_file());
+
+        let to_memory = FileAudioWriter::with_writer(
+            Box::new(Vec::new()),
+            FileSinkFormat::RawF32,
+            48_000,
+            2,
+            None,
+        )
+        .expect("in-memory sink");
+        assert!(!to_memory.is_regular_file());
     }
 
     #[test]

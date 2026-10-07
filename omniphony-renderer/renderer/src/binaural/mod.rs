@@ -3,7 +3,7 @@
 //! This is a **parallel render path**, not a [`GainModel`] backend: a backend
 //! only emits per-speaker gains and cannot carry the per-ear delay (ITD) or the
 //! stateful HRTF convolution a binaural renderer needs. When
-//! [`OutputMode::Binaural`] is selected, `SpatialRenderer::render_frame` skips
+//! [`OutputMode::Binaural`](crate::live_params::OutputMode::Binaural) is selected, `SpatialRenderer::render_frame` skips
 //! the whole VBAP / crossover / speaker chain and calls [`BinauralRenderer`]
 //! instead, producing a 2-channel (L/R) interleaved frame.
 //!
@@ -224,6 +224,16 @@ const MAX_REVERB_SEND: f32 = 4.0;
 /// Delay-line capacity for the ITD (s) — comfortably above the ~0.7 ms max.
 const ITD_MAX_S: f32 = 0.003;
 
+/// The distance (in ADM units) the distance cues — air absorption, reverb
+/// send, early reflections — see for a source at `pos`: the Chebyshev norm,
+/// which is the distance relative to the room cube's surface in the source's
+/// direction. Every point of the surface is at 1, so the speakers of a
+/// layout, which sit on that surface, read as equidistant, as they are in a
+/// real room. One max-abs per source per block, outside the sample loop.
+fn cue_distance_norm(pos: [f64; 3]) -> f32 {
+    pos[0].abs().max(pos[1].abs()).max(pos[2].abs()) as f32
+}
+
 /// Cutoff (Hz) of the air-absorption low-pass for a path of `dist_m`, or
 /// `None` within the 3 m bypass: ~14 kHz at 10 m, ~5 kHz at 30 m, floored at
 /// 2 kHz. One law for the direct path and for each reflection's own image
@@ -238,6 +248,10 @@ fn air_cutoff_hz(dist_m: f32) -> Option<f32> {
 const PREALLOC_CHANNELS: usize = 64;
 /// Reverb send bus capacity reserved at construction (samples per block).
 const REVERB_BUS_CAPACITY: usize = 8192;
+/// Samples a channel hands its ear convolvers at a time. Sizes the stack
+/// scratch of the sample loop (three runs of this length); a block longer
+/// than this goes through in several runs, with the same result.
+const EAR_RUN: usize = 128;
 
 /// Per-input-channel binaural DSP state, lazily created on first use.
 struct ChannelDsp {
@@ -525,6 +539,7 @@ impl BinauralRenderer {
             std::thread::Builder::new()
                 .name("binaural-hrir-rebuild".into())
                 .spawn(move || {
+                    crate::background_pool::enter_background();
                     while let Ok(mut req) = rebuild_rx.recv() {
                         while let Ok(newer) = rebuild_rx.try_recv() {
                             req = newer;
@@ -882,6 +897,13 @@ impl BinauralRenderer {
             self.fdn_live = false;
         }
 
+        // One run of a channel on its way through the sample loop below: the
+        // un-absorbed signal the reflections read, and each ear's ITD-delayed
+        // signal, which its convolver then filters in place.
+        let mut dry = [0.0f32; EAR_RUN];
+        let mut ear_l = [0.0f32; EAR_RUN];
+        let mut ear_r = [0.0f32; EAR_RUN];
+
         for c in 0..source_count {
             // Past the input channels sits the extra source (the object test).
             // Its PCM is mono, hence the stride of 1 — that triple is the only
@@ -977,7 +999,16 @@ impl BinauralRenderer {
             // send, early reflections), never the direct object level. Those
             // cues are therefore expressed relative to the direct sound: the
             // 1/d the direct path does not apply is folded into them.
-            let dist_norm = ((pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt()) as f32;
+            //
+            // The distance is measured against the room cube's surface, not
+            // as a Euclidean radius (#753): positions sit on the cube, so a
+            // corner of a 7.1.4 is √2 or √3 farther than a face centre while
+            // a listener hears a room's speakers as equidistant. The radius
+            // of the cube in the source's direction is |p|₂/|p|∞, so this
+            // distance is |p|∞: 1 anywhere on the surface, nearer inside,
+            // farther outside. The cue position below keeps the direction and
+            // takes that radius.
+            let dist_norm = cue_distance_norm(pos);
             let dist_m = (dist_norm * unit_scale_m).max(0.0);
 
             // ITD stays continuous: it is the dominant lateralisation cue, and
@@ -1068,10 +1099,18 @@ impl BinauralRenderer {
             // ── Early reflections: per-block image-source update ─────────────
             if reflections.enabled {
                 let bank = &mut dsp.refl;
+                // The source as the distance cues see it: its direction, at
+                // the cue distance (see `cue_distance_norm`).
+                let euclid = ((pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt()) as f32;
+                let to_cue = if euclid > 1e-9 {
+                    dist_norm / euclid * unit_scale_m
+                } else {
+                    0.0
+                };
                 let phys = [
-                    pos[0] as f32 * unit_scale_m,
-                    pos[1] as f32 * unit_scale_m,
-                    pos[2] as f32 * unit_scale_m,
+                    pos[0] as f32 * to_cue,
+                    pos[1] as f32 * to_cue,
+                    pos[2] as f32 * to_cue,
                 ];
                 // The image sources are mirrors of the source *as pulled
                 // inside the room*, so the direct-path reference for their
@@ -1153,47 +1192,62 @@ impl BinauralRenderer {
             let reflections_on = reflections.enabled;
 
             let air = dsp.air_coeff;
-            for s in 0..span {
-                // `raw` carries the object/metadata gain only; the direct path
-                // adds its distance gain, the reflection taps theirs. The air
-                // low-pass applies to the propagated wave, so it feeds the
-                // direct and the reverb send; the reflections filter their
-                // own paths (see below).
-                // A silent block reads no input at all — the draining extra
-                // slot has none to read.
-                let mut raw = if silent {
-                    0.0
-                } else {
-                    src_pcm[s * src_stride + src_offset] * (gain.start + gain.step * s as f32)
-                };
-                // The reflections take the un-absorbed signal: each tap
-                // carries its own low-pass for its own path (wall + air over
-                // the image distance), so the direct path's air filter must
-                // not be applied to them a second time.
-                let raw_dry = raw;
-                if air > 0.0 {
-                    dsp.air_state += (raw - dsp.air_state) * (1.0 - air);
-                    raw = dsp.air_state;
+            // The block goes through in runs of at most `EAR_RUN` samples: the
+            // ITD lines fill a run per ear, each convolver filters its run in
+            // one call (the tap loop wants a block, see `convolver`), then the
+            // reflections and the mix take the result. Every stage keeps its
+            // own state, so the sample order within each is all that matters.
+            for run_start in (0..span).step_by(EAR_RUN) {
+                let n = EAR_RUN.min(span - run_start);
+                for i in 0..n {
+                    let s = run_start + i;
+                    // `raw` carries the object/metadata gain only; the direct
+                    // path adds its distance gain, the reflection taps theirs.
+                    // The air low-pass applies to the propagated wave, so it
+                    // feeds the direct and the reverb send; the reflections
+                    // filter their own paths (see below).
+                    // A silent block reads no input at all — the draining
+                    // extra slot has none to read.
+                    let mut raw = if silent {
+                        0.0
+                    } else {
+                        src_pcm[s * src_stride + src_offset] * (gain.start + gain.step * s as f32)
+                    };
+                    // The reflections take the un-absorbed signal: each tap
+                    // carries its own low-pass for its own path (wall + air
+                    // over the image distance), so the direct path's air
+                    // filter must not be applied to them a second time.
+                    dry[i] = raw;
+                    if air > 0.0 {
+                        dsp.air_state += (raw - dsp.air_state) * (1.0 - air);
+                        raw = dsp.air_state;
+                    }
+                    // Authored object/bed level is respected: no 1/d
+                    // attenuation.
+                    ear_l[i] = dsp.delay_l.process(raw);
+                    ear_r[i] = dsp.delay_r.process(raw);
+                    if reverb_active {
+                        self.reverb_bus_l[s] += raw * send_l;
+                        self.reverb_bus_r[s] += raw * send_r;
+                    }
                 }
-                // Authored object/bed level is respected: no 1/d attenuation.
-                let x = raw;
-                let mut yl = dsp.conv_l.process(dsp.delay_l.process(x));
-                let mut yr = dsp.conv_r.process(dsp.delay_r.process(x));
-                if reflections_on {
-                    let (rl, rr) = dsp.refl.process(raw_dry);
-                    yl += rl;
-                    yr += rr;
-                } else {
-                    // Keep the ring current for the moment they come back.
-                    dsp.refl.push(raw_dry);
+                dsp.conv_l.process_block(&mut ear_l[..n]);
+                dsp.conv_r.process_block(&mut ear_r[..n]);
+                for i in 0..n {
+                    let mut yl = ear_l[i];
+                    let mut yr = ear_r[i];
+                    if reflections_on {
+                        let (rl, rr) = dsp.refl.process(dry[i]);
+                        yl += rl;
+                        yr += rr;
+                    } else {
+                        // Keep the ring current for the moment they come back.
+                        dsp.refl.push(dry[i]);
+                    }
+                    let o = (run_start + i) * 2;
+                    out[o] += yl;
+                    out[o + 1] += yr;
                 }
-                if reverb_active {
-                    self.reverb_bus_l[s] += raw * send_l;
-                    self.reverb_bus_r[s] += raw * send_r;
-                }
-                let o = s * 2;
-                out[o] += yl;
-                out[o + 1] += yr;
             }
         }
 
@@ -1928,6 +1982,63 @@ mod tests {
         );
     }
 
+    /// Positions on the room cube's surface are equidistant to the distance
+    /// cues (#753): on a 7.1.4 cube the centre (a face centre), a front wide
+    /// (a horizontal corner) and a top corner got reverb sends of 0.67, 0.94
+    /// and 1.15 from their Euclidean radii — about 5 dB of spread between
+    /// speakers a room puts at one distance.
+    #[test]
+    fn the_cube_surface_is_equidistant_to_the_reverb() {
+        assert_eq!(cue_distance_norm([0.0, 1.0, 0.0]), 1.0);
+        assert_eq!(cue_distance_norm([1.0, 1.0, 0.0]), 1.0);
+        assert_eq!(cue_distance_norm([-1.0, -1.0, 1.0]), 1.0);
+        assert_eq!(cue_distance_norm([0.0, 0.5, 0.25]), 0.5);
+        assert_eq!(cue_distance_norm([0.0, 2.0, 0.0]), 2.0);
+
+        let n = 24_000;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let tail = |pos: [f64; 3]| -> f32 {
+            let params = BinauralFrameParams {
+                reverb: BinauralReverb {
+                    enabled: true,
+                    level: 0.3,
+                    rt60_s: 0.4,
+                    predelay_ms: 20.0,
+                    ..BinauralReverb::default()
+                },
+                ..dry_params()
+            };
+            let mut out = vec![0.0f32; n * 2];
+            let mut r = BinauralRenderer::new(48_000);
+            r.render_frame(
+                &input,
+                1,
+                n,
+                &params,
+                &[pos],
+                &[ChannelGain::flat(1.0)],
+                &[],
+                None,
+                &mut out,
+            );
+            head_tail_energy(&out, 4_000).1
+        };
+        let centre = tail([0.0, 1.0, 0.0]);
+        let ratios: Vec<f32> = [[1.0, 1.0, 0.0], [-1.0, -1.0, 0.0], [1.0, 1.0, 1.0]]
+            .into_iter()
+            .map(|corner| tail(corner) / centre)
+            .collect();
+        // Same send. What is left is the left/right panning of the send into
+        // the two reverb buses, which are not exactly alike: a few per cent,
+        // against 2.0 and 3.0 (horizontal and top corners) by the Euclidean
+        // law this replaces.
+        assert!(
+            ratios.iter().all(|r| (r - 1.0).abs() < 0.1),
+            "corner/centre tail energy ratios {ratios:?}"
+        );
+    }
+
     /// A reflection arrives at the two ears with the interaural delay of its
     /// own direction. Source at (0.9, 0.3, 0) in the default room: the first
     /// image to land is the ceiling's (image at z = 2.7, 1.9 m beyond the
@@ -2478,5 +2589,76 @@ mod tests {
             "the same scene in another slot order and other block cuts \
              rendered {db:.1} dB apart (re peak); rounding alone is ~−112 dB"
         );
+    }
+
+    /// A block goes through the sample loop in runs of `EAR_RUN`; where a run
+    /// ends is not allowed to show. For a source that stays put (a moving one
+    /// fades its kernel over the block, so its cut is audible by design), a
+    /// block of several runs and a ragged tail renders, bit for bit, what the
+    /// same samples render one at a time — reflections and air filter
+    /// included, which the runs carry around the convolvers.
+    #[test]
+    fn where_a_run_ends_does_not_show_in_the_output() {
+        let params = BinauralFrameParams {
+            unit_scale_m: 5.0,
+            reflections: BinauralReflections {
+                enabled: true,
+                level: 0.4,
+                ..Default::default()
+            },
+            air_absorption: true,
+            ..dry_params()
+        };
+        let pos = [[0.6, 0.7, 0.3]];
+        let gains = [ChannelGain::flat(0.8)];
+        let warm = 2 * HRIR_LEN;
+        let len = 3 * EAR_RUN + 41;
+        let mut state = 0x1357_9bdfu32;
+        let pcm: Vec<f32> = (0..warm + len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state as f32 / u32::MAX as f32 - 0.5) * 0.5
+            })
+            .collect();
+        let render = |block: usize| -> Vec<u32> {
+            let mut r = BinauralRenderer::new(48_000);
+            // The same first block either way: it carries the kernel fade-in.
+            let mut head = vec![0.0f32; warm * 2];
+            r.render_frame(
+                &pcm[..warm],
+                1,
+                warm,
+                &params,
+                &pos,
+                &gains,
+                &[],
+                None,
+                &mut head,
+            );
+            let mut out = vec![0.0f32; len * 2];
+            for at in (0..len).step_by(block) {
+                let n = block.min(len - at);
+                r.render_frame(
+                    &pcm[warm + at..warm + at + n],
+                    1,
+                    n,
+                    &params,
+                    &pos,
+                    &gains,
+                    &[],
+                    None,
+                    &mut out[at * 2..(at + n) * 2],
+                );
+            }
+            assert!(out.iter().any(|v| *v != 0.0));
+            out.iter().map(|v| v.to_bits()).collect()
+        };
+        let one_at_a_time = render(1);
+        assert_eq!(render(len), one_at_a_time, "one block of several runs");
+        assert_eq!(render(EAR_RUN), one_at_a_time, "blocks of exactly one run");
+        assert_eq!(render(EAR_RUN + 1), one_at_a_time, "a run and one sample");
+        assert_eq!(render(40), one_at_a_time, "live-sized blocks");
     }
 }

@@ -1,6 +1,21 @@
+//! The ABI between the orender host and its decoder bridges.
+//!
+//! A bridge loads only in a host built against the same `bridge_api` minor
+//! version (`BRIDGE_API.md`, "Versioning"). Any change to what a bridge sees
+//! across the boundary — a trait method, a root-module field, a field or a
+//! variant of a type they exchange — bumps the minor; the
+//! `tests/abi_baseline.rs` test fails a change that does not. A patch release
+//! never changes the ABI.
+
 #![allow(non_local_definitions)]
 
 pub mod labels;
+
+/// This crate's version, the `bridge_api` a host built against it loads
+/// bridges of (same minor). Hosts publish it to their clients
+/// (`/omniphony/state/render/bridge_api`, Studio's About box) so a bridge
+/// that will not load can be matched against it before anyone reads a log.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use abi_stable::{
     StableAbi, declare_root_module_statics,
@@ -161,6 +176,57 @@ pub struct RChannelPose {
     pub elevation_deg: f32,
 }
 
+/// A tag a bridge puts on some of its frame's channels: what they carry,
+/// beside the rest of the programme — the dialogue of a stream that codes it
+/// apart from music and effects. A host may then treat them on their own (a
+/// dialogue level); one that ignores the tag renders them like any other
+/// channel, so a bridge splits out only what still sums back to the mix.
+///
+/// Declaration-level, like the labels: reported by
+/// [`FormatBridge::channel_tags`], read when the labels change, after a
+/// reset and at a segment start, never per frame.
+///
+/// Fields are strings so that a new kind, or a language, costs no ABI
+/// change; a host ignores a kind it does not know.
+#[repr(C)]
+#[derive(StableAbi, Clone, Debug, PartialEq, Eq)]
+pub struct RChannelTag {
+    /// What the channels carry, lower case: `dialogue` today. Kinds named
+    /// later (`music_effects`, a commentary…) leave older hosts unaffected.
+    pub kind: RString,
+    /// The content's language when the stream states it, as a BCP 47 tag
+    /// (`fr`, `en-US`); empty when unknown. Lets a host tell an original
+    /// version from a dub when a stream carries both.
+    pub language: RString,
+    /// What the stream calls these channels (`Dialogue`), for display;
+    /// empty when it names nothing.
+    pub label: RString,
+    /// The tagged channels, as indices into [`RDecodedFrame::channel_labels`]
+    /// — indices, not labels, since tagged channels usually repeat labels
+    /// of the bed beside them (a dialogue `L`/`R`/`C` next to the bed's).
+    pub channels: RVec<u32>,
+}
+
+/// A source family a bridge declares (see [`BridgeLib::source_families`]):
+/// a format whose fixed channels share one placement policy in the
+/// renderer. The renderer knows no format by name; every family but its own
+/// (`generic`, the base the others inherit from, and `pcm`, its own PCM
+/// input) comes from a bridge's catalogue.
+#[repr(C)]
+#[derive(StableAbi, Clone, Debug, PartialEq, Eq)]
+pub struct RSourceFamily {
+    /// The name [`FormatBridge::source_family`] returns and the config key
+    /// (`render.placement.<name>`): lower case, stable across releases.
+    pub name: RString,
+    /// What a user interface calls the family (`Dolby`, `Auro-3D`).
+    pub label: RString,
+    /// The placement mode the family runs in when neither it nor the generic
+    /// family sets one: `room` (channels at the room model's corners) or
+    /// `sphere` (channels at the angles the format states). Anything else
+    /// reads as `room`.
+    pub default_mode: RString,
+}
+
 /// Spatial metadata for one payload within a decoded frame.
 ///
 /// Describes dynamic objects only; fixed channels are fully described by
@@ -278,7 +344,7 @@ pub enum RVbapTableMode {
 /// Format bridge trait — implemented by each plugin `.so`.
 ///
 /// The bridge owns the full decode pipeline internally.
-/// Call [`push_packet`] for each incoming chunk or packet; the bridge handles
+/// Call `push_packet` for each incoming chunk or packet; the bridge handles
 /// format-specific validation, parsing, and metadata extraction.
 #[sabi_trait]
 pub trait FormatBridge: Send + Sync + 'static {
@@ -314,7 +380,7 @@ pub trait FormatBridge: Send + Sync + 'static {
 
     /// Set a bridge-specific configuration option.
     ///
-    /// Must be called before the first [`push_packet`].
+    /// Must be called before the first `push_packet`.
     /// Returns `true` if the key was recognised, `false` otherwise.
     /// Keys and their semantics are defined by each bridge implementation.
     fn configure(&mut self, key: RStr<'_>, value: RStr<'_>) -> bool;
@@ -353,9 +419,10 @@ pub trait FormatBridge: Send + Sync + 'static {
     /// per frame, so a bridge may build the list on each call. Entries whose
     /// label is not in the current frame's labels are ignored.
     ///
-    /// Marks the end of the `bridge_api` 0.4 method prefix: methods added
-    /// after this one in later 0.4.x releases must carry a default body, so a
-    /// bridge built against 0.4.0 keeps loading.
+    /// Marks the end of the vtable's prefix. Methods after it carry a
+    /// default body so that a bridge that does not implement them still
+    /// builds; it still has to be rebuilt against the `bridge_api` minor that
+    /// added them to load (see the crate documentation).
     ///
     /// [`reset`]: FormatBridge::reset
     #[sabi(last_prefix_field)]
@@ -368,8 +435,7 @@ pub trait FormatBridge: Send + Sync + 'static {
     /// name the renderer does not know, means its generic family.
     ///
     /// Declaration-level like the labels: read when they change, never per
-    /// frame. Added after the 0.4 prefix with a default body, so a bridge
-    /// built before it keeps loading and reads as generic.
+    /// frame. A bridge that does not implement it reads as generic.
     fn source_family(&self) -> RString {
         RString::new()
     }
@@ -385,10 +451,23 @@ pub trait FormatBridge: Send + Sync + 'static {
     /// Declaration-level like the family: read when the labels change,
     /// never per frame, and naming what is actually decoded — a lossy
     /// carrier whose spatial layer the bridge cannot read is named as the
-    /// carrier alone. Added after the 0.4 prefix with a default body, so a
-    /// bridge built before it keeps loading and reads as stating none.
+    /// carrier alone. A bridge that does not implement it states none.
     fn source_label(&self) -> RString {
         RString::new()
+    }
+
+    /// Tags on some of the current presentation's channels (see
+    /// [`RChannelTag`]): the dialogue a format codes apart, so the host can
+    /// set its level. Empty, the default, means nothing is tagged.
+    ///
+    /// Declaration-level like the poses: read when the frame's labels
+    /// change, after [`reset`] and at a segment start, never per frame — so
+    /// a bridge changes its tags only along with one of those. A bridge that
+    /// does not implement it tags nothing.
+    ///
+    /// [`reset`]: FormatBridge::reset
+    fn channel_tags(&self) -> RVec<RChannelTag> {
+        RVec::new()
     }
 }
 
@@ -418,6 +497,15 @@ pub struct BridgeLib {
     /// Older bridges may not expose it; in that case bridge diagnostics fall
     /// back to stderr.
     pub set_host_log_sink: extern "C" fn(usize),
+    /// The source families this plugin's bridges declare (see
+    /// [`RSourceFamily`]): every name [`FormatBridge::source_family`] can
+    /// return, with what to call it and its default placement. The host
+    /// reads it once, at load, so the families can be configured before any
+    /// stream of theirs plays.
+    ///
+    /// A root-module field rather than a trait method: it describes the
+    /// plugin, not a stream.
+    pub source_families: extern "C" fn() -> RVec<RSourceFamily>,
 }
 
 impl RootModule for BridgeLibRef {

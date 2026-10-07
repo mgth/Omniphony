@@ -138,42 +138,106 @@ impl StudioSpike {
                 .map(str::to_owned)
         };
         // While no renderer is connected, say how to bring one up — but not
-        // when there is a more specific banner to show.
+        // when there is a more specific banner to show. This is what a first
+        // run sees, so it speaks of the audio engine rather than of orender,
+        // and offers the one action that fixes it where Studio can take it:
+        // starting the engine on this machine.
         if bridge_error.is_none() && self.osc_state() != OscState::Connected {
+            let can_start = crate::host::capabilities::ActionPolicy::of(&self.host).manage_process;
+            self.host_operations.poll();
+            let pending = self.host_operations.pending();
+            let mut start = false;
             widgets::banner_with(
                 ui,
-                widgets::Severity::Error,
-                "No renderer connected.",
+                // Not an error on a first run: nothing has failed yet.
+                widgets::Severity::Warning,
+                t("status.noEngine.title"),
                 |ui| {
                     ui.label(
-                        egui::RichText::new("Run orender to create a SPDIF audio input, or launch")
-                            .size(theme::FONT_SIZE_SMALL)
-                            .color(theme::TEXT_MUTED),
+                        egui::RichText::new(t(if can_start {
+                            "status.noEngine.body"
+                        } else {
+                            "status.noEngine.bodyRemote"
+                        }))
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
                     );
-                    // The web says this with an anchor inside the sentence;
-                    // egui has no inline links, so the link is its own line.
-                    ui.hyperlink_to(
-                        egui::RichText::new("mpv-omniphony")
+                    ui.horizontal_wrapped(|ui| {
+                        if can_start {
+                            start = ui
+                                .add_enabled(
+                                    !pending,
+                                    egui::Button::new(t("status.noEngine.start")),
+                                )
+                                .clicked();
+                            if pending {
+                                ui.spinner();
+                            }
+                        }
+                        ui.hyperlink_to(
+                            egui::RichText::new(t("status.noEngine.getPlayer"))
+                                .size(theme::FONT_SIZE_SMALL)
+                                .color(theme::ACCENT),
+                            MPV_RELEASES,
+                        );
+                    });
+                    if let Some(error) = &self.host_operations.error {
+                        ui.label(
+                            egui::RichText::new(error)
+                                .size(theme::FONT_SIZE_SMALL)
+                                .color(theme::WARN),
+                        );
+                    }
+                    // The watchdog tried on its own and failed: say why and
+                    // where the engine's log is, rather than only in Studio's
+                    // log, which a first-time user never opens.
+                    if let Some((error, log)) =
+                        crate::host::commands::orender::autostart_failure(&self.host)
+                    {
+                        ui.label(
+                            egui::RichText::new(tf(
+                                "status.noEngine.autostartFailed",
+                                &[("error", &error), ("log", &log.display().to_string())],
+                            ))
                             .size(theme::FONT_SIZE_SMALL)
-                            .color(theme::ACCENT),
-                        MPV_RELEASES,
-                    );
-                    ui.label(
-                        egui::RichText::new("which embeds its own renderer.")
-                            .size(theme::FONT_SIZE_SMALL)
-                            .color(theme::TEXT_MUTED),
-                    );
+                            .color(theme::WARN),
+                        );
+                    }
                 },
             );
+            if start {
+                self.host_operations.request(
+                    &self.host,
+                    crate::host::services::operations::Action::Launch,
+                );
+            }
         }
         // The renderer came up without its decoder bridge: it is running, and
         // it has no spatial audio. The underlying error is the useful part.
         if let Some(error) = bridge_error {
-            widgets::banner(
+            widgets::banner_with(
                 ui,
                 widgets::Severity::Error,
                 t("status.bridgeErrorTitle"),
-                Some(&error),
+                |ui| {
+                    // What to do first, in the user's words; the engine's own
+                    // report (search paths, config keys) after it.
+                    ui.label(
+                        egui::RichText::new(tf(
+                            "status.bridgeErrorHint",
+                            &[
+                                ("section", t("section.audioInput")),
+                                ("field", t("input.bridgeBinary")),
+                            ],
+                        ))
+                        .size(theme::FONT_SIZE_SMALL),
+                    );
+                    ui.label(
+                        egui::RichText::new(&error)
+                            .size(theme::FONT_SIZE_SMALL)
+                            .color(theme::TEXT_MUTED),
+                    );
+                },
             );
         }
         // Attached to someone else's renderer: the connection looks perfectly
