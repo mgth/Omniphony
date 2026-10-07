@@ -176,10 +176,7 @@ pub fn configure_presentation(bridge: &mut FormatBridgeBox, presentation: &str) 
 /// per loaded plugin, after the renderer is built (seeding the config keeps
 /// the table, so the order does not matter).
 pub fn declare_source_families(lib: &BridgeLibRef, control: &RendererControl) {
-    let Some(source_families) = lib.source_families() else {
-        return;
-    };
-    let families = source_families();
+    let families = lib.source_families()();
     let mut live = control.live.write();
     for family in families.iter() {
         let mode =
@@ -198,10 +195,7 @@ pub fn declare_source_families(lib: &BridgeLibRef, control: &RendererControl) {
 }
 
 pub fn install_bridge_host_log_sink(lib: &BridgeLibRef) {
-    let Some(set_host_log_sink) = lib.set_host_log_sink() else {
-        return;
-    };
-    set_host_log_sink(forward_bridge_log_to_host as BridgeHostLogSink as usize);
+    lib.set_host_log_sink()(forward_bridge_log_to_host as BridgeHostLogSink as usize);
 }
 
 extern "C" fn forward_bridge_log_to_host(level: RLogLevel, target: RStr<'_>, message: RStr<'_>) {
