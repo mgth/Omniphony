@@ -6,3 +6,5 @@ pub(crate) mod list_asio_devices;
 #[cfg(target_os = "macos")]
 pub(crate) mod list_coreaudio_devices;
 pub(crate) mod options;
+#[cfg(target_os = "linux")]
+pub(crate) mod sync_host;

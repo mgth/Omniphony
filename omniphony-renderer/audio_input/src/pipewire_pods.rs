@@ -119,6 +119,41 @@ pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> 
     build_buffers_pod(channels, sample_rate_hz, std::mem::size_of::<u16>(), 0)
 }
 
+/// One Buffers param for every IEC 61937 format a driver-following sink
+/// offers, sized for the largest graph cycle of the widest carrier.
+///
+/// A sink that follows a driver (the sync host's `own` mode) gets one cycle's
+/// worth per process call, so a buffer must hold a whole quantum. And it must
+/// be *one* param with ranges: a fixed-stride param per format lets PipeWire
+/// pair a format with another format's stride and size, and the player is
+/// then asked for half a quantum per cycle (measured: mpv queued 2048 of a
+/// 4096-frame cycle, i.e. half real time). Ranges as in spike S1.
+pub fn build_pipewire_bridge_iec958_quantum_buffers_pod() -> Result<Vec<u8>> {
+    let range = |default: i32, min: i32, max: i32| {
+        pw::spa::pod::Value::Choice(pw::spa::pod::ChoiceValue::Int(pw::spa::utils::Choice(
+            pw::spa::utils::ChoiceFlags::empty(),
+            pw::spa::utils::ChoiceEnum::Range { default, min, max },
+        )))
+    };
+    let max_size = (PW_QUANTUM_LIMIT_FRAMES as i32) * 16;
+    let obj = object! {
+        spa::utils::SpaTypes::ObjectParamBuffers,
+        spa::param::ParamType::Buffers,
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_buffers), range(4, 2, 16)),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_blocks), Int, 1i32),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_size), range(max_size, 4096, max_size)),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_stride), range(4, 1, 16)),
+    };
+    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(obj),
+    )
+    .map_err(|e| anyhow!("Failed to serialize the IEC 958 buffers pod: {e:?}"))?
+    .0
+    .into_inner();
+    Ok(values)
+}
+
 /// Buffer pod matching the linear-PCM alternative, whose samples are four bytes
 /// wide instead of the two-byte IEC 61937 transport container.
 ///
