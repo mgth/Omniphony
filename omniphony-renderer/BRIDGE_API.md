@@ -74,10 +74,25 @@ the media player.
 Bridge lookup order:
 1. `--bridge-path <FILE>`
 2. `render.bridge_path` in the config file
-3. the first file matching `lib*_bridge.so`, `lib*_bridge.dll`, or
-   `lib*_bridge.dylib` next to the `orender` executable
+3. else auto-discovery: the first `*_bridge.so`, `*_bridge.dll` or
+   `*_bridge.dylib` (alphabetical within a folder) in, in this order:
+   1. the folder of the host executable (`orender`, or the player that loads
+      liborender, e.g. mpv-omniphony);
+   2. `$ORENDER_BRIDGE_DIR`;
+   3. the per-user engine folder, where Studio deploys liborender and
+      mpv-omniphony's loader looks for it: `$XDG_DATA_HOME/omniphony/lib`
+      (default `~/.local/share/omniphony/lib`) on Linux,
+      `~/Library/Application Support/omniphony/lib` on macOS,
+      `%LOCALAPPDATA%\omniphony\lib` on Windows;
+   4. the system plugin folder, `/usr/lib/orender` on Unix (where the AUR's
+      `harletty-bridge` installs it; packagers override it with
+      `ORENDER_BRIDGE_DIR` at build time). None on Windows.
 
-Without a bridge plugin, `orender` will not start.
+A path named in 1 or 2 must exist: it is never replaced by a discovered one.
+When nothing is named and nothing is found, `orender` still starts, without a
+decoder: PCM and channel input work, and the published
+`/omniphony/state/render/bridge_error` contains `no decoder bridge found`,
+which Studio shows as a warning rather than an error.
 
 ## Exported Root Module
 

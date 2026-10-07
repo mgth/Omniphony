@@ -149,6 +149,12 @@ its own (*Auto-start local renderer*, in the connection settings), and that one
 holds the port the player needs. When you only use Studio with the player,
 switch that option off.
 
+Studio's own renderer looks for the bridge next to its `orender.exe`, then in
+`%LOCALAPPDATA%\omniphony\lib\`, but not next to the player. Without one it
+still runs, and Studio shows an orange *No decoder* banner: films keep playing
+in the player. To give it the bridge too, copy `harletty_bridge.dll` into
+`%LOCALAPPDATA%\omniphony\lib\`, a folder the player also searches.
+
 ## When it does not work
 
 Run mpv from PowerShell as above: every message below appears there. Read the

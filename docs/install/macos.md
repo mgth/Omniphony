@@ -157,6 +157,10 @@ its own (*Auto-start local renderer*, in the connection settings), and that one
 holds the port the player needs. When you only use Studio with the player,
 switch that option off.
 
+Studio's own renderer reads the same `config.yaml`, so the `bridge_path` of
+step 2 serves it too. Without a bridge it still runs, and Studio shows an
+orange *No decoder* banner: films keep playing in the player.
+
 ## When it does not work
 
 Run mpv from the Terminal: every message below appears there. Read the

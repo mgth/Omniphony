@@ -18,6 +18,8 @@ script_backend.workspace = true
 omniphony_geometry.workspace = true
 bridge_api.workspace = true
 runtime_control.workspace = true
+# The wire contract's names (the `bridge_error` marker a client matches on).
+omniphony-osc-contract.workspace = true
 sys.workspace = true
 live_log.workspace = true
 # Audio output/input belong to the host_audio crate and reach the OSC server
