@@ -177,7 +177,11 @@ pub(crate) fn trigger_layout_recompute(
                                     gaintable_cache_clone.bytes_for_target(&ctx, target)
                                 {
                                     if client_version != Some(version) {
-                                        for update in gaintable_chunk_broadcasts(&bytes, None) {
+                                        for update in gaintable_chunk_broadcasts(
+                                            &bytes,
+                                            None,
+                                            addr.gaintable_chunk_bytes(),
+                                        ) {
                                             send_update_to_client(&socket_clone, &addr, &update);
                                         }
                                         clients_clone.set_gaintable_version(&addr, target, version);

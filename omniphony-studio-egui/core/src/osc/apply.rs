@@ -19,6 +19,7 @@ struct AudioDomainState {
     output_devices: Option<Vec<OutputDeviceOption>>,
     output_device: Option<String>,
     output_device_effective: Option<String>,
+    output_host: Option<String>,
     output_backend: Option<String>,
     output_file: Option<String>,
     output_file_format: Option<String>,
@@ -411,6 +412,9 @@ pub fn apply_audio_domain_state(s: &mut AppState, value: &str) -> bool {
     }
     if let Some(output_device_effective) = parsed.output_device_effective {
         s.set_audio_effective_output_device(&output_device_effective);
+    }
+    if let Some(output_host) = parsed.output_host {
+        s.set_audio_output_host(&output_host);
     }
     if let Some(output_backend) = parsed.output_backend {
         s.set_audio_output_backend(Some(output_backend));
@@ -1403,5 +1407,37 @@ mod domain_state_tests {
                 assert!(outcome.is_ok(), "{domain} panicked on {input:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod audio_domain_tests {
+    use super::*;
+
+    /// The output host the engine names reaches the model, and an empty
+    /// string (no stream open, or a backend without a host) clears it.
+    #[test]
+    fn the_output_host_is_kept_and_cleared() {
+        let mut state = AppState::default();
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"outputHost": "WASAPI (fallback: no ASIO driver)"}"#
+        ));
+        assert_eq!(
+            state.audio.audio_output_host.as_deref(),
+            Some("WASAPI (fallback: no ASIO driver)")
+        );
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"outputHost": ""}"#
+        ));
+        assert_eq!(state.audio.audio_output_host, None);
+        // An engine that predates the field leaves the model alone.
+        state.set_audio_output_host("ASIO");
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"sampleRate": 48000}"#
+        ));
+        assert_eq!(state.audio.audio_output_host.as_deref(), Some("ASIO"));
     }
 }

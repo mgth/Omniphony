@@ -258,10 +258,18 @@ impl<'a> WriterLifecycleCoordinator<'a> {
             input_sample_rate,
             self.runtime.output_sample_rate,
         );
+        // The host the open writer plays through: on Windows, ASIO or the
+        // WASAPI fallback and why. Fixed when the writer opened.
+        let output_host = self
+            .output
+            .audio_writer
+            .as_ref()
+            .and_then(|writer| writer.output_host());
 
         if self.output.last_audio_sample_rate_hz == Some(effective_rate)
             && self.output.last_audio_sample_format.as_deref() == Some(sample_format)
             && self.output.last_audio_output_device == effective_output_device
+            && self.output.last_audio_output_host == output_host
         {
             return;
         }
@@ -269,9 +277,11 @@ impl<'a> WriterLifecycleCoordinator<'a> {
         self.output.last_audio_sample_rate_hz = Some(effective_rate);
         self.output.last_audio_sample_format = Some(sample_format.to_string());
         self.output.last_audio_output_device = effective_output_device.clone();
+        self.output.last_audio_output_host = output_host;
 
         if let Some(control) = self.audio_control {
             control.set_effective_output_device(effective_output_device);
+            control.set_effective_output_host(output_host);
             control.set_audio_state(effective_rate, sample_format);
         }
         if self

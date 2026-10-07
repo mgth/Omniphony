@@ -37,7 +37,7 @@ cargo build --release -p orender_ffi         # liborender, the engine library mp
 
 (`cargo build --release --workspace` builds all three and the rest of the
 workspace.) Nothing needs a feature flag: the platform's realtime output
-backend (PipeWire on Linux, ASIO on Windows, CoreAudio on macOS) and the
+backend (PipeWire on Linux, ASIO on Windows with a WASAPI fallback, CoreAudio on macOS) and the
 native VBAP backend (pure Rust, no external library) are in the default build.
 The `pipewire` and `asio` features Cargo still accepts are empty aliases kept
 for old scripts.
@@ -198,7 +198,12 @@ Write to a file or pipe instead of a device (non-realtime):
 ```
 
 Windows / ASIO (`list-asio-devices` prints the exact device names; FlexASIO
-or ASIO4ALL work when the hardware has no ASIO driver of its own):
+or ASIO4ALL work when the hardware has no ASIO driver of its own). With no ASIO
+driver at all, `--output-backend asio` falls back to WASAPI shared mode and says
+so in the log; `list-asio-devices` then names the WASAPI devices. WASAPI shared
+mode plays as many channels as the device's Windows speaker setup, and a layout
+wider than that is refused with an error rather than played with channels
+missing:
 
 ```powershell
 .\target\release\orender.exe list-asio-devices

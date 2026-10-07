@@ -186,7 +186,7 @@ kept ASIO out of free audio software for twenty years.
 | Features | Commands available |
 |---|---|
 | `saf_vbap` | default render flow, `generate-vbap` |
-| `asio` | default render flow, `list-asio-devices` (`--output-backend asio`) |
+| `asio` | default render flow, `list-asio-devices` (`--output-backend asio`; falls back to WASAPI shared mode at run time when no ASIO driver is installed) |
 | `saf_vbap,asio` | All of the above |
 
 ### Building from a different directory

@@ -154,6 +154,14 @@ its own (*Auto-start local renderer*, in the connection settings), and that one
 holds the port the player needs. When you only use Studio with the player,
 switch that option off.
 
+A renderer that Studio starts itself plays through ASIO when an ASIO driver is
+installed (your interface's own, or FlexASIO / ASIO4ALL). Without one, it falls
+back to WASAPI, the Windows mixer, and Studio's *Audio output* section reads
+`host: WASAPI (fallback: no ASIO driver)`. WASAPI plays as many channels as the
+device's speaker setup ([step 3](#3-headphones-or-speakers)): a speaker layout
+wider than that is refused, with the reason in that section. Widen the speaker
+setup, or install an ASIO driver.
+
 ## When it does not work
 
 Run mpv from PowerShell as above: every message below appears there. Read the
