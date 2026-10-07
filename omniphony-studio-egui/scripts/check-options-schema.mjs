@@ -14,7 +14,7 @@
 // declared engine-side but invisible to the UI is exactly the silent-omission
 // class the registry exists to kill.
 //
-// Usage: node scripts/check-options-schema.mjs <path-to-options-schema.json>
+// Usage: node omniphony-studio-egui/scripts/check-options-schema.mjs <path-to-options-schema.json>
 // (run once per schema: the core's, and the standalone host's own options,
 // `host_audio`'s `dump_host_options_schema`).
 
@@ -29,7 +29,7 @@ if (!schemaPath) {
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
-const en = JSON.parse(readFileSync(join(here, '..', '..', 'omniphony-studio-egui', 'i18n', 'en.json'), 'utf8'));
+const en = JSON.parse(readFileSync(join(here, '..', 'i18n', 'en.json'), 'utf8'));
 
 // en.json uses flat, literally-dotted keys; tolerate nested objects too.
 function resolvesInEn(key) {

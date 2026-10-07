@@ -510,9 +510,12 @@ impl SpatialRenderer {
             .store(sample_rate, std::sync::atomic::Ordering::Relaxed);
 
         let initial_output_mode = control.live.read().binaural.output_mode;
+        // A BRIR set's layout must fit the stage's width (`brir_layout`).
+        control.set_speaker_stage_width(num_speakers);
 
         let binaural = Self::build_binaural_stage(&control, sample_rate);
         let brir = Self::build_brir_stage(&control, sample_rate);
+        let layout_follower = super::layout_follower::LayoutFollower::spawn(Arc::clone(&control));
 
         Ok(Self {
             num_speakers,
@@ -546,6 +549,7 @@ impl SpatialRenderer {
             ramp_strategy_override: None,
             binaural,
             brir,
+            layout_follower,
             synchronous_stage_builds: false,
             cascade: None,
             last_mix_num_speakers: 0,
@@ -584,10 +588,7 @@ impl SpatialRenderer {
         let status_control = Arc::clone(control);
         crate::binaural::BrirStage::with_status_sink(
             sample_rate,
-            Arc::new(move |status| {
-                status_control.binaural_brir_status.store(Arc::new(status));
-                status_control.bump_live_state();
-            }),
+            Arc::new(move |status| status_control.set_binaural_brir_status(status)),
         )
     }
 

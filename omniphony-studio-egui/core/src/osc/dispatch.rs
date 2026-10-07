@@ -561,8 +561,13 @@ impl Live {
         }
     }
 
-    /// The speakers of the layout the renderer currently runs.
+    /// The speakers of the layout the renderer currently runs: a BRIR set's
+    /// own loudspeakers while a headphone render uses one, else the selected
+    /// layout's.
     pub fn selected_speakers(&self) -> &[Speaker] {
+        if let Some(speakers) = &self.app.brir_speakers {
+            return speakers;
+        }
         let key = self.app.selected_layout_key.as_deref();
         self.app
             .layouts

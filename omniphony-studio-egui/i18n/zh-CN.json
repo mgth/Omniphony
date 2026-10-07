@@ -726,6 +726,8 @@
   "experimentalDistance.infoBody": "距离后端是一种实验性渲染器，它根据扬声器与目标点的几何关系对其进行评分。<br><br>所提供的控件可调节可参与的扬声器数量、最近扬声器的主导强度，以及在增益被钳制或进一步扩散之前可容忍的位置误差。<br><br>请将其用于后端比较和调节，而非作为最安全的默认值。",
   "objects.none": "没有对象。",
   "speakers.none": "没有扬声器。",
+  "speakers.brirLayout": "BRIR 文件的扬声器",
+  "speakers.brirReadOnly": "这些是耳机渲染所经过的实测房间（BRIR）的扬声器。它们来自文件，无法编辑、调整增益、静音或延迟；你的扬声器布局保持不变，切换到其他耳机源或扬声器输出时会恢复。",
   "config.saved": "已保存",
   "config.modified": "已修改（未保存）",
   "status.initializing": "初始化中...",

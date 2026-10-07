@@ -1464,6 +1464,11 @@ pub struct RenderTopology {
     /// is selected, so without it a backend switch that lands without a bump
     /// would re-wrap the previous backend's model. Empty until set by a plan.
     pub model_backend_id: String,
+    /// `speaker_layout` is the resident BRIR set's virtual loudspeakers
+    /// (`SpeakerLayout::from_brir_emitters`), not the editable layout: bus
+    /// `n` is emitter `n`, and the editable layout's per-speaker rows (gain,
+    /// mute, delay) do not apply to it.
+    pub brir_layout: bool,
 }
 
 impl RenderTopology {
@@ -1504,6 +1509,7 @@ impl RenderTopology {
             backend_to_speaker_mapping,
             geometry_generation: 0,
             model_backend_id: String::new(),
+            brir_layout: false,
         })
     }
 
@@ -1578,6 +1584,21 @@ pub struct RendererControl {
     /// file asked for, what is resident, or why it failed. Written by the
     /// BRIR stage's worker, read by the state snapshot.
     pub binaural_brir_status: ArcSwap<crate::binaural::BrirStatus>,
+    /// Bumped with every [`Self::set_binaural_brir_status`]: identifies the
+    /// set a BRIR layout was derived from (never 0, which names the user's
+    /// layout in [`Self::render_layout_key`]).
+    brir_status_generation: std::sync::atomic::AtomicU64,
+    /// Which layout the last prepared topology rebuild was for: 0 for the
+    /// editable layout, else the BRIR status generation whose emitters it
+    /// was built on. Compared by [`Self::render_layout_outdated`].
+    render_layout_key: std::sync::atomic::AtomicU64,
+    /// Width the speaker stage was opened with (0 until a renderer reports
+    /// it): a BRIR layout wider than this cannot be installed.
+    speaker_stage_width: std::sync::atomic::AtomicUsize,
+    /// A host rebuilds the topology when [`Self::render_layout_outdated`]
+    /// says so (the OSC listener, which also tells its clients). While
+    /// `false`, the renderer's own layout follower does it.
+    relayout_by_host: AtomicBool,
 
     /// Bumped whenever per-object live params change.
     /// Render sample rate, published so control-thread work that has to produce
@@ -1777,6 +1798,10 @@ impl RendererControl {
             config_dirty: AtomicBool::new(false),
             binaural_hrir_status: ArcSwap::from_pointee(crate::binaural::HrirStatus::default()),
             binaural_brir_status: ArcSwap::from_pointee(crate::binaural::BrirStatus::default()),
+            brir_status_generation: std::sync::atomic::AtomicU64::new(0),
+            render_layout_key: std::sync::atomic::AtomicU64::new(0),
+            speaker_stage_width: std::sync::atomic::AtomicUsize::new(0),
+            relayout_by_host: AtomicBool::new(false),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
             live_state_generation: std::sync::atomic::AtomicU64::new(0),
@@ -2295,6 +2320,109 @@ impl RendererControl {
         self.binaural_brir_status.load_full()
     }
 
+    /// Record a BRIR load's outcome (the BRIR stage's status sink). A loaded
+    /// set changes the layout a headphone render pans onto: hosts notice it
+    /// through [`Self::render_layout_outdated`].
+    pub fn set_binaural_brir_status(&self, status: crate::binaural::BrirStatus) {
+        self.binaural_brir_status.store(Arc::new(status));
+        self.brir_status_generation.fetch_add(1, Ordering::Release);
+        self.bump_live_state();
+    }
+
+    /// Whether a host follows [`Self::render_layout_outdated`] itself (see
+    /// the field). The OSC listener claims it while it runs.
+    pub fn set_relayout_by_host(&self, on: bool) {
+        self.relayout_by_host.store(on, Ordering::Release);
+    }
+
+    pub fn relayout_by_host(&self) -> bool {
+        self.relayout_by_host.load(Ordering::Acquire)
+    }
+
+    /// What [`Self::render_layout_outdated`] depends on that can move without
+    /// the live params changing: the BRIR status generation, the layout the
+    /// last rebuild was for, and whether a host follows it. The render thread
+    /// compares it each frame (three loads) and only then asks the question.
+    pub fn render_layout_fingerprint(&self) -> (u64, u64, bool) {
+        (
+            self.brir_status_generation.load(Ordering::Acquire),
+            self.render_layout_key.load(Ordering::Acquire),
+            self.relayout_by_host(),
+        )
+    }
+
+    /// Record the width the speaker stage was opened with (see the field).
+    pub fn set_speaker_stage_width(&self, width: usize) {
+        self.speaker_stage_width.store(width, Ordering::Relaxed);
+    }
+
+    /// The layout a headphone render with a BRIR source pans onto, when one
+    /// applies: the output is binaural, the source is a BRIR set, and that
+    /// file's set is resident. `Ok(None)` otherwise (the editable layout
+    /// applies); `Err` when the set's layout cannot be used (too wide for
+    /// the speaker stage, or not a valid layout), which also falls back to
+    /// the editable one.
+    pub fn brir_layout(&self) -> Result<Option<SpeakerLayout>, String> {
+        let Some(positions) = self.brir_emitters_in_use(|p| p.to_vec()) else {
+            return Ok(None);
+        };
+        let layout = SpeakerLayout::from_brir_emitters(&positions).map_err(|e| e.to_string())?;
+        let width = self.speaker_stage_width.load(Ordering::Relaxed);
+        if !Self::brir_layout_fits(positions.len(), width) {
+            return Err(format!(
+                "the BRIR set needs {} virtual speakers (with the LFE) but the renderer \
+                 was opened with {width}; it renders on the speaker layout instead",
+                layout.num_speakers()
+            ));
+        }
+        Ok(Some(layout))
+    }
+
+    /// Whether a set of `emitters` (plus the LFE bus) fits a speaker stage
+    /// of `width` (0: not reported yet, assumed to fit).
+    fn brir_layout_fits(emitters: usize, width: usize) -> bool {
+        // `emitters + 1 <= width`: the LFE bus takes a channel too.
+        width == 0 || emitters < width
+    }
+
+    /// `f` of the resident BRIR set's emitters when a headphone render uses
+    /// them.
+    fn brir_emitters_in_use<R>(&self, f: impl FnOnce(&[[f32; 3]]) -> R) -> Option<R> {
+        let status = self.binaural_brir_status();
+        let loaded = status.loaded.as_ref()?;
+        let live = self.live.read();
+        let in_use = live.binaural.output_mode == OutputMode::Binaural
+            && matches!(
+                &live.binaural.hrir_source,
+                crate::binaural::HrirSource::Brir(path) if *path == status.path
+            );
+        in_use.then(|| f(&loaded.emitter_positions))
+    }
+
+    /// The [`Self::render_layout_key`] a rebuild prepared now would record:
+    /// the BRIR status generation while a set's layout applies, else 0.
+    /// Builds no layout.
+    fn wanted_render_layout_key(&self) -> u64 {
+        // Read before the status: a load landing in between then reads as
+        // outdated once more, never as current with the older set.
+        let generation = self.brir_status_generation.load(Ordering::Acquire);
+        let width = self.speaker_stage_width.load(Ordering::Relaxed);
+        match self.brir_emitters_in_use(|p| Self::brir_layout_fits(p.len(), width)) {
+            Some(true) => generation,
+            _ => 0,
+        }
+    }
+
+    /// `true` when the published topology was not prepared for the layout
+    /// the render should pan onto: a BRIR set landed or went away, or the
+    /// output switched between speakers and headphones with one selected.
+    /// Hosts poll it and rebuild the topology
+    /// ([`Self::prepare_topology_rebuild`] picks the layout). Cheap: no
+    /// layout is built unless a BRIR set is in use.
+    pub fn render_layout_outdated(&self) -> bool {
+        self.wanted_render_layout_key() != self.render_layout_key.load(Ordering::Acquire)
+    }
+
     /// Signal that live state changed and should be re-broadcast to clients.
     pub fn bump_live_state(&self) {
         self.live_state_generation.fetch_add(1, Ordering::Relaxed);
@@ -2341,9 +2469,35 @@ impl RendererControl {
         (idx >= 0).then_some(idx as usize)
     }
 
+    /// Plan a rebuild of the render topology on the layout the render pans
+    /// onto: the resident BRIR set's emitters while a headphone render uses
+    /// one ([`Self::brir_layout`]), the editable layout otherwise. Records
+    /// which, for [`Self::render_layout_outdated`], and invalidates the gain
+    /// model when that is another layout than the last rebuild's: whatever
+    /// asked for the rebuild (an evaluation-only edit reuses the model), the
+    /// previous layout's triangulation cannot serve this one.
     pub fn prepare_topology_rebuild(&self) -> Option<TopologyBuildPlan> {
-        let layout = self.editable_layout();
-        self.prepare_topology_rebuild_for_layout(layout)
+        let key = self.wanted_render_layout_key();
+        // Recorded whatever comes of it: a set whose layout cannot be built
+        // falls back to the editable layout once, not on every poll.
+        let previous = self.render_layout_key.swap(key, Ordering::AcqRel);
+        if previous != key {
+            // Before the plan below captures the generation.
+            self.bump_geometry_generation();
+        }
+        let brir = if key == 0 {
+            None
+        } else {
+            self.brir_layout().unwrap_or_else(|e| {
+                log::warn!("BRIR layout not used: {e}");
+                None
+            })
+        };
+        let brir_layout = brir.is_some();
+        let layout = brir.unwrap_or_else(|| self.editable_layout());
+        let mut plan = self.prepare_topology_rebuild_for_layout(layout)?;
+        plan.brir_layout = brir_layout;
+        Some(plan)
     }
 
     pub fn prepare_topology_rebuild_for_layout(
