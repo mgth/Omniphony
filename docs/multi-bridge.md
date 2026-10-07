@@ -115,12 +115,17 @@ pub struct RProbe {
     /// (not of its sync word). None: every byte before it is ruled out,
     /// the host need not show them to this bridge again.
     pub offset: u32,
+    /// Pending only: how many bytes from `offset` the bridge needs before it
+    /// can answer again (a header length, then a frame length once the
+    /// header gives it). Must exceed what it was shown; the host does not
+    /// call this bridge again until that many bytes are buffered.
+    pub needed: u32,
 }
 
 #[repr(u8)]
 pub enum RProbeVerdict {
-    /// A validated stream start at `offset`: header complete and checked
-    /// (its CRC, or the next frame's sync where the format has no CRC).
+    /// A validated stream start at `offset`, by the family's own criteria
+    /// (table below), within that family's bounded probe length.
     Claim,
     /// A possible start at `offset` whose header is not complete yet.
     Pending,
@@ -132,6 +137,21 @@ pub enum RProbeVerdict {
 The answer is still yes or no, not a confidence score; what it adds is
 *where* and *not decidable yet*, which the host needs to route a byte stream
 the same way whatever its read sizes.
+
+**What a claim validates** is the family's business, but each family states
+its criteria and the most bytes it ever needs from a start, so a stream with
+a single header is always claimed within a known distance:
+
+| Family | Claim when | At most |
+|---|---|---|
+| TrueHD | access-unit header, major sync, `major_sync_info` checksum | 32 bytes |
+| E-AC-3 / AC-3 | sync word, valid frame size and rate codes, frame CRC | one frame (4 KiB) |
+| DTS core / DTS-HD | sync word, valid header fields, the next frame's sync at the declared frame size | one frame + 4 bytes (16 KiB + 4) |
+| IAMF | IA Sequence Header OBU: OBU header type 31, LEB128 size within bound, `iamf` code, known primary and additional profiles; then the next OBU header well framed (a codec config OBU) | 64 bytes |
+
+IAMF has no CRC and need not repeat its sequence header, so its criteria are
+OBU framing, not a second sync. A stream that reaches its family's bound
+without validating is not that family's: the probe answers `None` past it.
 
 `input_codec`, which the host already sends from mpv's codec name, becomes a
 documented configure key in `BRIDGE_API.md`, with its accepted values.
@@ -180,31 +200,47 @@ pub struct BridgeSet {
     to no stream and are dropped, counted in a rate-limited warning.
   - **Bounded work**: each bridge keeps a scan position. A `None` answer
     moves it to the returned offset, so the next probe sees only the new
-    bytes plus the bridge's own overlap (at most its longest header); a
-    `Pending` answer keeps it at the pending start. Bytes every bridge has
-    ruled out leave the buffer at once. Each received byte is thus examined
-    a bounded number of times per bridge, whatever the read size, instead of
-    the whole buffer at every push.
+    bytes plus the bridge's own overlap (at most its longest header). A
+    `Pending` answer keeps it at the pending start and says how many bytes it
+    `needed`; the host does not call that bridge again until they are
+    buffered, so a candidate costs a few calls (header, then frame), each
+    presenting at most the family's bound above, not one call per received
+    byte. Bytes every bridge has ruled out leave the buffer at once. Each
+    received byte is thus presented a bounded number of times per bridge,
+    whatever the read size.
   - **Overflow**: only a pending start can hold the buffer. If it reaches
     the bound, that start is abandoned (the bridge's scan position moves past
     it) with a rate-limited warning, an error in strict mode.
 
   The route then holds until `reset`, as a bridge's own codec lock does today.
 - **Resume after a seek**: `reset` (which a seek issues) resets the bridges
-  but keeps the last route as the **fallback**. Until the route is decided
-  again, each push is probed **at its first byte only**, with no buffering:
-  a `Claim` at offset 0 moves the route there (a new stream starting on the
-  read that follows the reset, as the next file in a continuous pipe does);
-  anything else, `Pending` included, goes to the fallback bridge at once, and
-  the first push it takes fixes the route. This is what the bridges do today
-  on their own: harletty's router sniffs only the start of a packet, then
-  sends a sync-less packet after a reset to IAMF while its sequence is still
-  configured (temporal units carry no header to probe) and otherwise to
-  TrueHD, which resynchronises on its next major sync. Scanning the whole
-  buffer here instead would let a sync-like pattern inside the resumed
-  stream's payload pull it to another bridge. The fallback is cleared only
-  when the host loads a new set or the input is closed; with no fallback
-  (first stream), the undecided-buffer rule above applies.
+  but keeps the last route as the **fallback**, without locking it: until a
+  bridge claims a start again, the stream is on probation, as today's
+  `resolve_raw_codec` leaves `raw_codec` unset after its fallback. Each push
+  is probed **at its first byte only**:
+  - a `Claim` at offset 0 locks the route there: the fallback bridge itself
+    (TrueHD at its next major sync) or another one (a new stream starting
+    on the read that follows the reset, as the next file in a continuous
+    pipe does);
+  - `None` at 0: the push goes to the fallback bridge at once, and the next
+    push is probed again;
+  - `Pending` at 0: the push is **held**, with the next ones appended, until
+    the candidate is decided (within its family's bound): `Claim` locks the
+    route there and the held bytes go to that bridge; `None` sends the held
+    bytes to the fallback bridge. Either way every byte is delivered once,
+    in order, to one bridge.
+
+  This is what the bridges do today on their own: harletty's router sniffs
+  only the start of a packet, sends a sync-less packet after a reset to IAMF
+  while its sequence is still configured (temporal units carry no header to
+  probe) and otherwise to TrueHD, and keeps sniffing until a sync locks the
+  codec. Probing only the first byte keeps a sync-like pattern inside the
+  resumed stream's payload from pulling it to another bridge. A resumed IAMF
+  stream stays on probation, as it does today; the cost is one probe at the
+  first byte of each push, bounded by the families' header checks. The
+  fallback is cleared only when the host loads a new set or the input is
+  closed; with no fallback (first stream), the undecided-buffer rule above
+  applies.
 - **IEC 61937**: the bridge for a burst type is found by probing once and
   cached in `iec_route`. When the type moves to a different bridge mid-stream
   (a live input switching from E-AC-3 to DTS), the old bridge is reset, the
@@ -283,7 +319,10 @@ explicit setting:
     so the grid was frozen on purpose;
   - mode absent or `auto`, and sizes absent or equal to the first loaded
     bridge's hint → `bridge`;
-  - mode absent or `auto`, and any size different from the hint → `custom`.
+  - mode absent or `auto`, and any size different from the hint → `custom`;
+  - `vbap_allow_negative_z` present and different from the hint → `custom`,
+    whatever the mode and sizes (the engine has always honoured it over the
+    bridge's), with that value kept in the custom grid.
 
   The one case the rule cannot tell apart is a mode left on `auto` with
   sizes set by hand to exactly the bridge's values: it is indistinguishable
@@ -380,13 +419,21 @@ explicit setting:
   a reserved OBU carrying an E-AC-3 frame) routes to its own bridge, fed in
   one block and byte by byte. Fragmentation combined with a seek reset.
   A pending start that reaches the bound is abandoned and probing goes on.
-- Probe work budget: 1 MiB of undecidable bytes pushed one byte at a time;
-  the bytes presented to each bridge's probe stay within a small constant
-  times the input plus the overlap, counted by an instrumented fake bridge.
+- Probe work budget: 1 MiB of undecidable bytes pushed one byte at a time,
+  and the same with plausible candidates that stay `Pending` up to their
+  family's bound and are then rejected; the bytes presented to each bridge's
+  probe stay within a small constant times the input plus the bounds,
+  counted by an instrumented fake bridge.
+- Claim criteria: an ordinary IAMF sequence with a single sequence header is
+  claimed within 64 bytes; each family's real probe on its own corpus
+  streams and on the other families' streams (no cross-claim).
 - Seek: IAMF auto-detected (no forced codec) → `reset` → temporal units with
   no sequence header are decoded by the IAMF bridge; a TrueHD stream resumes
   on its next major sync; a different format's header after the reset moves
-  the route.
+  the route. A → reset → B's opening header split at every offset ends on
+  B, with every byte delivered once and in order; A → reset → A's
+  continuation with a `Pending` false start at a push boundary goes back to
+  A without loss.
 - DRC: legacy aliases (`Standard`, `Line`, `Heavy`, `RF`) from an old config
   reach the Dolby bridge and take effect; a mode no bridge accepts warns.
 - Combined-library path: a config pointing at `libharletty_bridge.so`, with
@@ -402,7 +449,9 @@ explicit setting:
   with `auto` and default-equal sizes becomes `bridge`; one with
   `precomputed_polar`, `realtime`, a reduced grid, or `precomputed_cartesian`
   with sizes equal to bridge A's becomes `custom` and renders as before, also
-  when a stream from bridge B with other hints follows; its first Save writes
+  when a stream from bridge B with other hints follows; `auto` with an
+  explicit `vbap_allow_negative_z` (`true` and `false`) becomes `custom` when
+  it differs from the hint and `bridge` when it equals it; its first Save writes
   the key and a concrete mode. Save then restart with another bridge active
   first gives the same grid in `custom`.
 - Discovery: all bridges of the first non-empty folder, none from later
