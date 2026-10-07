@@ -94,7 +94,13 @@ pub input_codecs: extern "C" fn() -> RVec<RString>,
 `input_codec`, which the host already sends from mpv's codec name, becomes a
 documented configure key in `BRIDGE_API.md`, with its accepted values.
 
-`FormatBridge` itself does not change. Every bridge, the reference bridge
+`RVbapCartesianDefaults` gains `z_neg_size`, so a bridge's grid hint is
+complete (today the host fills in 0 below the floor). harletty keeps 0, its
+current effective value, so output does not change. The reference bridge's
+`allow_negative_z` and the doc comment on `BALANCED`, which claims it matches
+harletty's (it does not: harletty allows negative z), are reconciled.
+
+`FormatBridge` itself does not change otherwise. Every bridge, the reference bridge
 included, must be rebuilt for 0.6, which the policy already requires for any
 minor bump.
 
@@ -137,14 +143,53 @@ pub struct BridgeSet {
   - `configure("log_level")` and `configure("presentation")` go to every
     bridge (each bridge library has its own log state); a family without
     presentations already accepts the default as a no-op;
-  - `coordinate_format`, `vbap_cartesian_defaults`,
-    `preferred_vbap_table_mode` are read before the renderer is built. The
-    loaded bridges must agree; when they do not, the host warns and uses the
-    first bridge's. The harletty families return the same constants, so this
-    is a check, not a merge.
+  - `coordinate_format` is read before the renderer is built; the loaded
+    bridges must agree, and the host refuses to start a set that does not
+    (every bridge today answers Cartesian).
+- **Grid hints** (`vbap_cartesian_defaults`, `preferred_vbap_table_mode`) are
+  per stream: they are read from the active bridge with its declaration, and
+  the evaluation grid follows them unless the user forces one (next section).
 - **Instances for a second consumer** (the PipeWire live sink opens its own
   instance today): `BridgeSet::instantiate` opens a fresh instance of every
   bridge from the already-loaded root modules.
+
+### Evaluation grid: follow the bridge, or forced
+
+The VBAP gain table is sampled on a grid whose mode and size come from the
+bridge's hints unless the user set them. With several bridges the hints can
+differ from one stream to the next, so where the grid comes from becomes an
+explicit setting:
+
+- New option `render.evaluation_grid: bridge | custom`, **default `bridge`**
+  (also when the key is absent). A registry option: it changes the render,
+  so only Save writes it.
+- **`bridge`**: the grid is the active bridge's hint, all of it: evaluation
+  mode, Cartesian x / y / z+ / z− sizes, negative z. When a new stream's
+  declaration carries hints that differ from the grid in force, the host
+  starts an evaluation-only rebuild, the one a grid edit triggers today
+  (`osc/recompute.rs`, band worker at idle priority): the installed table
+  keeps rendering until the new one is swapped in, so a codec switch never
+  blocks or drops audio; the first frames of the new stream may render on
+  the previous grid. Same hints, no rebuild. In this mode the grid cannot be
+  edited: the grid controls answer `/state/control_error` ("the grid follows
+  the bridge"), the CLI grid flags are refused with the same message, and
+  Studio shows the values read-only, with the bridge they come from.
+- **`custom`**: the grid is the user's, fixed whatever the stream: no rebuild
+  on a codec switch. Switching from `bridge` to `custom` starts from the grid
+  in force, so nothing moves until the user edits it. `vbap_allow_negative_z`
+  becomes a registry option in this mode (live, Save), so a forced grid is
+  complete; today it can only be set from the config file or the CLI.
+- **Existing configs**: the grid keys already in `config.yaml` (Save pins the
+  bridge's sizes today whenever Cartesian is in force) are kept as the custom
+  grid and are not applied while the option is `bridge`. Adding a key needs
+  no schema bump.
+- The `auto` value of `render_evaluation_mode` keeps its meaning (the bridge's
+  preferred mode) in `custom`; in `bridge` the mode is not the user's to set.
+- **State**: `/omniphony/state/renderer` gains `evaluationGrid` (`bridge` or
+  `custom`) and `evaluationGridBridge` (the hint of the active bridge), next
+  to the effective values it already publishes. While at it,
+  `/state/vbap/allow_negative_z` stops defaulting to `true` when the rebuild
+  parameters are unset; the engine itself defaults to `false`.
 
 ### OSC and Studio
 
@@ -154,6 +199,8 @@ pub struct BridgeSet {
   know it. `CONTRACT_REVISION` is bumped.
 - New control `/omniphony/control/render/bridge_paths` (the full list);
   `render/bridge_path` sets a one-element list.
+- Native Studio, Renderer panel: a switch "Follow the bridge" above the grid
+  fields; on, the fields are read-only and show the bridge's values.
 - Native Studio (`omniphony-studio-egui`): the Input panel lists the loaded
   bridges with their families and status, and edits the list (add with the
   file picker, remove, reorder). The panel only draws; the list lives in the
@@ -208,7 +255,12 @@ pub struct BridgeSet {
   as `decode_queue.rs` does): routing by probe, by `input_codec`, by IEC burst
   type; a mid-stream burst-type switch resets the old bridge and reports
   `did_reset`; the first bridge wins on a double claim; family and DRC-mode
-  union; disagreeing VBAP defaults warn and keep the first.
+  union; disagreeing coordinate formats are refused.
+- Evaluation grid: in `bridge`, a stream switch to a bridge with other hints
+  triggers one evaluation-only rebuild and none with the same hints; grid
+  edits are refused; in `custom`, no rebuild on a switch and edits apply;
+  `bridge → custom` keeps the grid in force; an absent key reads as `bridge`
+  and keeps the stored grid keys.
 - Discovery: all bridges of the first non-empty folder, none from later
   folders; a refused bridge is reported and skipped.
 - Config: `bridge_path` read as a list, `bridge_paths` round-trips, schema
@@ -237,6 +289,7 @@ Each step is one PR, merged before the next is built on it.
 | 2 | Omniphony | `bridge_api` 0.6: `probe`, `input_codecs`; reference bridge; ABI baseline; `BRIDGE_API.md` (incl. `input_codec`). |
 | 3 | Omniphony | `BridgeSet` in `orender_engine`; Engine, CLI, live sink and `sync-play` hold it. |
 | 4 | Omniphony | `render.bridge_paths`, discovery of every bridge, repeatable flag, env list, OSC state and control, schema version 2, docs. |
+| 4b | Omniphony | `render.evaluation_grid` (`bridge` / `custom`): rebuild on a hint change, grid edits refused in `bridge`, negative z as an option, state, Studio switch. |
 | 5 | harletty-bridge | `FamilyPipeline` and `PluginBridge` in `bridge-common`; the combined router built on them; output unchanged. |
 | 6 | harletty-bridge | Three plugin crates on `bridge_api` 0.6; bit-exactness through the host. |
 | 7 | harletty-bridge | Release, build scripts, CI matrix, isolation check per plugin; the combined cdylib leaves the release. |
@@ -252,9 +305,6 @@ can run alongside 2–4.
    linked statically into the IAMF plugin, which keeps one file per plugin.
 2. **Probe**: a boolean. The sync words of the formats we have do not
    collide; a confidence score waits until a format needs one.
-
-## Open questions
-
-1. **Per-stream VBAP defaults**: the router reads them once. If a future
-   bridge needs different ones, the renderer has to rebuild its tables on a
-   stream switch; out of scope while every bridge agrees.
+3. **Evaluation grid**: follows the active bridge by default and is rebuilt
+   when a stream brings other hints; a `custom` setting forces it (see
+   "Evaluation grid").
