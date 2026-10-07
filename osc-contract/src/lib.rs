@@ -588,7 +588,7 @@ pub const STATE_OSC_METERING: &str = "/omniphony/state/osc/metering";
 pub const STATE_REALTIME_MASTER_GAIN: &str = "/omniphony/state/realtime/master_gain";
 pub const STATE_REALTIME_SPEAKER_GAIN: &str = "/omniphony/state/realtime/speaker_gain";
 pub const STATE_RENDER_ABI: &str = "/omniphony/state/render/abi";
-/// The `bridge_api` version this engine was built against (`"0.5.0"`): a
+/// The `bridge_api` version this engine was built against (`"0.6.0"`): a
 /// decoder bridge loads only if it was built against the same minor.
 pub const STATE_RENDER_BRIDGE_API: &str = "/omniphony/state/render/bridge_api";
 pub const STATE_RENDER_BRIDGE_ERROR: &str = "/omniphony/state/render/bridge_error";

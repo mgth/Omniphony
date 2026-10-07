@@ -38,7 +38,7 @@ audio_input = { path = "audio_input" }
 audio_output = { path = "audio_output" }
 audio_rt = { path = "audio_rt" }
 audio_sync = { path = "audio_sync" }
-bridge_api = { version = "0.5.0", path = "bridge_api" }
+bridge_api = { version = "0.6.0", path = "bridge_api" }
 diag = { path = "diag" }
 dsp_fixtures = { path = "dsp_fixtures" }
 example_backend = { path = "example_backend" }
