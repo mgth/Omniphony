@@ -743,20 +743,22 @@ impl Undecided {
         }
     }
 
-    /// The buffer is full and undecided: abandon the earliest pending start,
-    /// which is what holds it, and drop what that frees. If nothing does,
-    /// drop the older half and start the scans over.
+    /// The buffer is full and undecided: abandon pending starts, earliest
+    /// first, which is what holds it, until a claim they held back is settled
+    /// (left to the caller's next decision) or the abandoned bytes free room.
+    /// If nothing does, drop the older half and start the scans over.
     fn make_room(&mut self) {
-        let holder = self
-            .scans
-            .iter()
-            .enumerate()
-            .filter_map(|(index, scan)| match scan.answer {
-                Answer::Pending(at) => Some((at, index)),
-                _ => None,
-            })
-            .min();
-        if let Some((at, index)) = holder {
+        while self.settled_claim().is_none() {
+            let holder = self
+                .scans
+                .iter()
+                .enumerate()
+                .filter_map(|(index, scan)| match scan.answer {
+                    Answer::Pending(at) => Some((at, index)),
+                    _ => None,
+                })
+                .min();
+            let Some((at, index)) = holder else { break };
             log::warn!(
                 "a possible stream start for bridge {} was not confirmed within {} bytes; \
                  it is abandoned",
@@ -768,12 +770,16 @@ impl Undecided {
             scan.from = at + 1;
             scan.need_end = 0;
             scan.wait_until = 0;
-            // A claim the abandoned start held back may now win: leave it to
-            // the caller's next decision rather than drop it with the rest.
             if self.settled_claim().is_some() {
                 return;
             }
             self.drop_ruled_out();
+            if self.buf.len() < MAX_UNDECIDED_RAW {
+                return;
+            }
+        }
+        if self.settled_claim().is_some() {
+            return;
         }
         if self.buf.len() >= MAX_UNDECIDED_RAW {
             let half = MAX_UNDECIDED_RAW / 2;
@@ -1207,6 +1213,22 @@ mod tests {
         push_raw(&mut set, &stream);
         assert_eq!(bytes(&c), stream);
         assert!(bytes(&stuck).is_empty());
+    }
+
+    #[test]
+    fn a_claim_held_back_by_several_abandoned_starts_still_wins() {
+        let logs: [Arc<Mutex<Log>>; 3] = Default::default();
+        let mut set = BridgeSet::from_parts(vec![
+            (probe_stuck as ProbeFn, vec![], test_bridge(&logs[0])),
+            (probe_stuck as ProbeFn, vec![], test_bridge(&logs[1])),
+            (probe_c as ProbeFn, vec![], test_bridge(&logs[2])),
+        ])
+        .unwrap();
+        let mut stream = b"CCCC".to_vec();
+        stream.resize(4 + MAX_UNDECIDED_RAW, b'.');
+        push_raw(&mut set, &stream);
+        assert_eq!(bytes(&logs[2]), stream);
+        assert!(bytes(&logs[0]).is_empty() && bytes(&logs[1]).is_empty());
     }
 
     #[test]
