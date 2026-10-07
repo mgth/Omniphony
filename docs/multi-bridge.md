@@ -151,7 +151,7 @@ a single header is always claimed within a known distance:
 | E-AC-3 / AC-3 | sync word, valid frame size and rate codes, frame CRC | one frame (4 KiB) |
 | DTS core | sync word, valid header fields, the next frame's sync at the declared frame size (its header CRC is optional) | one frame + 4 bytes (16 KiB + 4) |
 | DTS-HD substream with no core | substream sync word, header size and fields, header CRC (the frame itself can exceed the buffer) | the substream header (4 KiB) |
-| IAMF | IA Sequence Header OBU: OBU header type 31, a well-formed LEB128 `obu_size` of at least the syntax it carries, the optional fields its header flags announce (the extension when `obu_extension_flag` is set: its LEB128 size and that many bytes, before the payload), then the `iamf` code and known primary and additional profiles. Nothing after these fields is required: `obu_size` may extend past them (IAMF 1.1 §3.2), and reserved OBUs may follow before the codec config (§3.3). `Pending` asks for the length the extension declares | 15 bytes plus the declared extension |
+| IAMF | IA Sequence Header OBU: OBU header type 31, a well-formed LEB128 `obu_size` of at least the syntax it carries, the optional fields its header flags announce (the extension when `obu_extension_flag` is set: its LEB128 size and that many bytes, before the payload), then the `iamf` code and known primary and additional profiles. Nothing after these fields is required: `obu_size` may extend past them (IAMF 1.1 §3.2), and reserved OBUs may follow before the codec config (§3.3). `Pending` asks for the length the extension declares | 15 bytes without extension; with one, 1 + the two LEB128 fields (up to 8 bytes each) + the declared extension + 6, so at most 23 + `extension_header_size` |
 
 IAMF has no CRC and need not repeat its sequence header, so its criteria are
 the sequence header's own fields, not a second sync or the OBUs after it: an
@@ -448,9 +448,10 @@ explicit setting:
   counted by an instrumented fake bridge.
 - Claim criteria: an ordinary IAMF sequence with a single sequence header is
   claimed within 15 bytes, and so are one whose sequence header declares an
-  `obu_size` beyond its syntax (64, with 58 ignored bytes), one where a
-  reserved OBU follows it, and one with `obu_extension_flag` set and a
-  16-byte extension before the `iamf` code (25 bytes in all), each also
+  `obu_size` beyond its syntax (64, with 58 ignored bytes) and one where a
+  reserved OBU follows it; one with `obu_extension_flag` set and a 16-byte
+  extension before the `iamf` code is claimed at 25 bytes, and one with an
+  empty extension and both LEB128 fields on 8 bytes at 23; each also
   fragmented at every offset; an extension larger than the host buffer is
   abandoned with the resource warning, not refused as another format; a TrueHD
   major sync with the longest `extra_channel_meaning` extension is claimed at
