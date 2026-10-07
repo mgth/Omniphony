@@ -744,6 +744,7 @@
   "status.foreignRendererTitle": "Mit einem Renderer verbunden, den dieses Studio nicht gestartet hat",
   "status.foreignRendererDetail": "Steuerbefehle, die er nicht kennt, werden stillschweigend verworfen.\nläuft:    {running}\nerwartet: {expected}",
   "status.audioFormat": "Audio: {rate} / {format}",
+  "status.outputHost": "Host: {host}",
   "status.latencyFallback": "Latenz: raw {raw} | ctrl {ctrl}",
   "status.minValue": "min {value}",
   "status.maxValue": "max {value}",

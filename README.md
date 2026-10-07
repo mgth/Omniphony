@@ -31,7 +31,8 @@ failures.
 
 The engine ships a self-contained demo: a reference WAV decoder bridge plus a
 short multichannel clip. From a fresh clone, with a Rust toolchain, on Linux,
-macOS or Windows (Git Bash; the device modes need an ASIO driver there):
+macOS or Windows (Git Bash; the device modes play through ASIO when an ASIO driver
+is installed, and through WASAPI shared mode otherwise):
 
 ```sh
 cd omniphony-renderer
@@ -107,7 +108,8 @@ and renders it:
 
 - VBAP object → speaker-feed rendering, with loadable speaker layouts and
   precomputed VBAP tables
-- real-time output backends — `pipewire` (Linux), `asio` (Windows), CoreAudio
+- real-time output backends — `pipewire` (Linux), `asio` (Windows, falling back
+  to WASAPI shared mode without an ASIO driver), CoreAudio
   (macOS), plus a non-realtime **file / stdout / FIFO** backend
 - binaural headphone output — HRTF, ITD, early reflections, live head-tracking
 - metadata and metering over OSC

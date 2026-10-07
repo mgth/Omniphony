@@ -114,7 +114,8 @@ pub enum Commands {
     /// Generate VBAP gain table from speaker layout configuration
     GenerateVbap(GenerateVbapArgs),
 
-    /// List available ASIO output devices (Windows only)
+    /// List the realtime output devices (Windows only): the ASIO ones, or the
+    /// WASAPI ones when no ASIO driver is installed
     #[cfg(target_os = "windows")]
     ListAsioDevices,
 

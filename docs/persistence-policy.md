@@ -43,6 +43,14 @@ stand:
   resuming, a `/control/restart`) for up to ten minutes. It never touches
   `config.yaml`, and what it restores comes back unsaved. It is a relay, not a
   save.
+- **A config file created by a write records `render.osc: true`.** With no
+  config file, the engine embedded in a player runs with OSC on, so Studio can
+  find it; a file without the key means off. Every write starts from
+  `Config::load_for_update`, which, when the file does not exist yet, starts
+  from that state, so whatever creates the file (the first Save, a view write,
+  a profile operation) does not switch OSC off behind the user's back. It
+  writes down what the engine already does, and never amends a file that
+  exists.
 - **Transient state that is published but never saved** is still broadcast to
   every client (a mute shows on every Studio), it just never dirties the
   config.
