@@ -331,7 +331,7 @@ values are dropped.
 |---|---|---|
 | `/control/output_mode` | s | `speaker` (render to the layout) \| `binaural` (stereo for headphones). Registry option `output_mode`. |
 | `/control/binaural_mode` | s | `direct` (one HRIR pair per object) \| `cascaded` (pan onto a virtual layout, binauralise its speakers). Registry option `binaural_mode`. |
-| `/control/binaural/hrir_source` | s | `synthetic` \| `saf_kemar` \| `sofa[:<path>]` \| `brir[:<path>]` \| `pinna[:<preset>:<d_scale %>:<depth %>]` \| `prtf[:<freq_scale %>:<depth %>]`. Registry option `hrir_source` (group `hrir_source`). |
+| `/control/binaural/hrir_source` | s | `synthetic` \| `saf_kemar` \| `sofa[:<path>]` \| `brir[:<path>]` \| `pinna[:<preset>:<d_scale %>:<depth %>]` \| `prtf[:<freq_scale %>:<depth %>]`. Registry option `hrir_source` (group `hrir_source`). With `brir` on the headphones, once the set is loaded the render pans onto the set's own loudspeakers (one per emitter, plus a direct `LFE`; no per-speaker gain, mute, delay or band) instead of the editable layout, which is kept as is: `/state/renderer` carries them as `binaural.brir.layout` (layout-state shape, `null` otherwise) and `binaural.brir.layoutError` says why a set's loudspeakers cannot be used. |
 | `/control/binaural/hrtf_upload/begin` | name s, total_bytes int | Start uploading a SOFA file (≤ 1 GiB; one upload at a time). |
 | `/control/binaural/hrtf_upload/chunk` | index int, blob | One chunk, in order. |
 | `/control/binaural/hrtf_upload/end` | chunk_count int | Finish: the file is written to `hrtf/` next to the default config file and selected as the `sofa` source. |

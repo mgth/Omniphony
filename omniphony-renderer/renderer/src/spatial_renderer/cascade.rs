@@ -53,6 +53,10 @@ pub(super) struct CascadeStage {
     pub(super) bin_pos: Vec<[f64; 3]>,
     pub(super) bin_gain: Vec<crate::binaural::ChannelGain>,
     pub(super) bin_direct: Vec<bool>,
+    /// The topology is a BRIR set's own loudspeakers
+    /// ([`RenderTopology::brir_layout`]): the editable layout's per-speaker
+    /// rows index other speakers, so none applies.
+    pub(super) brir_layout: bool,
     /// Interleaved virtual-speaker bus the binaural stage consumes as its PCM
     /// input. Reused every frame; exposed to the host for virtual metering
     /// (see `SpatialRenderer::virtual_bus`).
@@ -66,18 +70,33 @@ impl CascadeStage {
         self.bin_pos.len()
     }
 
-    pub(super) fn from_topology(topology: &RenderTopology, topology_identity: usize) -> Self {
+    /// The virtual speakers of `topology`, padded to the stage's `width`:
+    /// the main stage mixes onto all its channels, and a layout narrower
+    /// than the width it was opened with (a BRIR set's loudspeakers, an
+    /// edited layout) leaves the last ones silent. They are direct buses,
+    /// so no convolver is spent on them.
+    pub(super) fn from_topology(
+        topology: &RenderTopology,
+        topology_identity: usize,
+        width: usize,
+    ) -> Self {
         let speakers = &topology.speaker_layout.speakers;
+        let total = width.max(speakers.len());
+        let mut bin_pos: Vec<[f64; 3]> = speakers
+            .iter()
+            .map(|s| [s.x as f64, s.y as f64, s.z as f64])
+            .collect();
+        let mut bin_direct: Vec<bool> = speakers.iter().map(|s| !s.spatialize).collect();
+        bin_pos.resize(total, [0.0, 1.0, 0.0]);
+        bin_direct.resize(total, true);
         Self {
             topology_identity,
-            bin_pos: speakers
-                .iter()
-                .map(|s| [s.x as f64, s.y as f64, s.z as f64])
-                .collect(),
+            bin_pos,
             // Per-channel level shaping happens in the virtual mix (including
             // the per-speaker rows); the binaural stage sees unity buses.
-            bin_gain: vec![crate::binaural::ChannelGain::flat(1.0); speakers.len()],
-            bin_direct: speakers.iter().map(|s| !s.spatialize).collect(),
+            bin_gain: vec![crate::binaural::ChannelGain::flat(1.0); total],
+            bin_direct,
+            brir_layout: topology.brir_layout,
             bus: Vec::new(),
         }
     }
@@ -90,13 +109,13 @@ impl CascadeStage {
     /// only becomes once the stage's worker has built its bands. Called from
     /// `render_frame` *before* the live snapshot is taken. Infallible and
     /// cheap — just position/flag vectors off the layout.
-    pub(super) fn follow(slot: &mut Option<Self>, topology: &Arc<RenderTopology>) {
+    pub(super) fn follow(slot: &mut Option<Self>, topology: &Arc<RenderTopology>, width: usize) {
         let topology_identity = Arc::as_ptr(topology) as usize;
         let up_to_date = slot
             .as_ref()
             .is_some_and(|c| c.topology_identity == topology_identity);
         if !up_to_date {
-            *slot = Some(Self::from_topology(topology, topology_identity));
+            *slot = Some(Self::from_topology(topology, topology_identity, width));
         }
     }
 }
@@ -190,6 +209,15 @@ pub(super) fn render_cascade_frame(
     // master gain applies once, on the final stereo. The returned peak is
     // ignored: clip handling watches the stereo output, and auto-gain must
     // never react to virtual buses.
+    //
+    // On a BRIR set's own loudspeakers there are no rows: the measurement
+    // carries the room's levels and delays, and the editable layout's rows
+    // index other speakers.
+    let speaker_params = if cascade.brir_layout {
+        &[]
+    } else {
+        speaker_params
+    };
     let _ = stage.finalize_output(speaker_params, 1.0, &mut cascade.bus);
 
     match brir {

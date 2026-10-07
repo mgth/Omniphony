@@ -611,6 +611,7 @@ mod tests {
                 x_size: 9,
                 y_size: 9,
                 z_size: 5,
+                z_neg_size: 0,
                 allow_negative_z: false,
             },
             bridge_api::RVbapTableMode::Cartesian,

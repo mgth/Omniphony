@@ -346,10 +346,10 @@ jobs:
         run: |
           cargo run -q -p renderer --example dump_options_schema --locked \
             --manifest-path omniphony-renderer/Cargo.toml > /tmp/options-schema.json
-          node omniphony-studio/scripts/check-options-schema.mjs /tmp/options-schema.json
+          node omniphony-studio-egui/scripts/check-options-schema.mjs /tmp/options-schema.json
           cargo run -q -p host_audio --example dump_host_options_schema --locked \
             --manifest-path omniphony-renderer/Cargo.toml > /tmp/host-options-schema.json
-          node omniphony-studio/scripts/check-options-schema.mjs /tmp/host-options-schema.json
+          node omniphony-studio-egui/scripts/check-options-schema.mjs /tmp/host-options-schema.json
 
   # Which jobs a pull request concerns. Only `studio` is optional: on a pull
   # request whose files it builds nothing of, it is skipped, and GitHub
@@ -386,7 +386,7 @@ jobs:
           # scene take the OSC contract and omniphony_geometry), its i18n check,
           # and what the version-bump step resolves: every manifest and
           # lockfile, and the script itself. This workflow too.
-          studio_paths='^(omniphony-studio-egui/|osc-contract/|omniphony-renderer/omniphony_geometry/|omniphony-studio/scripts/check-i18n\.mjs$|omniphony-studio/src-tauri/tauri\.conf\.json$|omniphony-studio/package(-lock)?\.json$|scripts/release_version\.py$|\.github/workflows/ci\.yml$)|(^|/)Cargo\.(toml|lock)$'
+          studio_paths='^(omniphony-studio-egui/|osc-contract/|omniphony-renderer/omniphony_geometry/|omniphony-studio/src-tauri/tauri\.conf\.json$|omniphony-studio/package(-lock)?\.json$|scripts/release_version\.py$|\.github/workflows/ci\.yml$)|(^|/)Cargo\.(toml|lock)$'
           # A here-string, not a pipe: `grep -q` stops at its first match,
           # and under pipefail the writer it leaves behind dies of SIGPIPE
           # and turns a match into a miss on a long list.
@@ -550,7 +550,7 @@ jobs:
       # ::warning:: annotations on the PR. A plain node script, no npm install.
       - name: Check i18n parity (warn-only)
         continue-on-error: true
-        run: node omniphony-studio/scripts/check-i18n.mjs
+        run: node omniphony-studio-egui/scripts/check-i18n.mjs
 
   build-macos:
     # macOS arm64 build and test gate. The renderer workspace pulls the

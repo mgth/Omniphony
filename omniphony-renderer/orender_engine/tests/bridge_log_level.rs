@@ -50,6 +50,7 @@ impl FormatBridge for ConfigureRecorder {
             x_size: 3,
             y_size: 3,
             z_size: 3,
+            z_neg_size: 0,
             allow_negative_z: false,
         }
     }
@@ -100,6 +101,8 @@ fn engine(configured: &Arc<Mutex<Vec<String>>>) -> Engine {
         new_bridge,
         set_host_log_sink: log_sink,
         source_families,
+        probe,
+        input_codecs,
     }
     .leak_into_prefix();
     Engine::new(
@@ -139,4 +142,17 @@ fn the_bridge_follows_the_runtime_log_level() {
             "decode thread {decode_thread}: pushed first, then on changes only"
         );
     }
+}
+
+/// Claims nothing: these tests hand their bridge every packet themselves.
+extern "C" fn probe(
+    data: abi_stable::std_types::RSlice<'_, u8>,
+    _transport: bridge_api::RInputTransport,
+    _data_type: u8,
+) -> bridge_api::RProbe {
+    bridge_api::RProbe::none(data.len() as u32)
+}
+
+extern "C" fn input_codecs() -> abi_stable::std_types::RVec<abi_stable::std_types::RString> {
+    abi_stable::std_types::RVec::new()
 }
