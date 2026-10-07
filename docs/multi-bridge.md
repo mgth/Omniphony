@@ -147,14 +147,17 @@ a single header is always claimed within a known distance:
 
 | Family | Claim when | At most |
 |---|---|---|
-| TrueHD | access-unit header, major sync, `major_sync_info` checksum | 32 bytes |
+| TrueHD | access-unit header, major sync, `major_sync_info` checksum, which follows the optional `extra_channel_meaning` extension (2 × (n + 1) bytes, n on 4 bits): `Pending` asks for the length the extension declares | 64 bytes |
 | E-AC-3 / AC-3 | sync word, valid frame size and rate codes, frame CRC | one frame (4 KiB) |
 | DTS core | sync word, valid header fields, the next frame's sync at the declared frame size (its header CRC is optional) | one frame + 4 bytes (16 KiB + 4) |
 | DTS-HD substream with no core | substream sync word, header size and fields, header CRC (the frame itself can exceed the buffer) | the substream header (4 KiB) |
-| IAMF | IA Sequence Header OBU: OBU header type 31, LEB128 size within bound, `iamf` code, known primary and additional profiles; then the next OBU header well framed (a codec config OBU) | 64 bytes |
+| IAMF | IA Sequence Header OBU: OBU header type 31, a well-formed LEB128 `obu_size` of at least the syntax it carries, the `iamf` code, known primary and additional profiles. Nothing after these fields is required: `obu_size` may extend past them (IAMF 1.1 §3.2), and reserved OBUs may follow before the codec config (§3.3) | 15 bytes |
 
 IAMF has no CRC and need not repeat its sequence header, so its criteria are
-OBU framing, not a second sync. A stream that reaches its family's bound
+the sequence header's own fields, not a second sync or the OBUs after it: an
+OBU type, a 32-bit code and two constrained profile bytes at fixed places
+make a chance match negligible, and the claim never waits on a declared size
+or on a following OBU. A stream that reaches its family's bound
 without validating is not that family's: the probe answers `None` past it.
 
 `input_codec`, which the host already sends from mpv's codec name, becomes a
@@ -435,7 +438,11 @@ explicit setting:
   probe stay within a small constant times the input plus the bounds,
   counted by an instrumented fake bridge.
 - Claim criteria: an ordinary IAMF sequence with a single sequence header is
-  claimed within 64 bytes; each family's real probe on its own corpus
+  claimed within 15 bytes, and so are one whose sequence header declares an
+  `obu_size` beyond its syntax (64, with 58 ignored bytes) and one where a
+  reserved OBU follows it, each also fragmented at every offset; a TrueHD
+  major sync with the longest `extra_channel_meaning` extension is claimed at
+  64 bytes, fragmented at every offset up to its CRC; each family's real probe on its own corpus
   streams and on the other families' streams (no cross-claim).
 - Seek: IAMF auto-detected (no forced codec) → `reset` → temporal units with
   no sequence header are decoded by the IAMF bridge; a TrueHD stream resumes
