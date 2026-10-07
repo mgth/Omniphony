@@ -288,7 +288,7 @@ impl Engine {
     /// renderer. The bridge must already be configured (presentation, DRC mode)
     /// before the first [`process`](Self::process) call.
     pub fn new(mut bridge: LoadedBridge, renderer: SpatialRenderer, sample_rate: u32) -> Self {
-        crate::bridge_loader::declare_source_families(&bridge.lib, &renderer.renderer_control());
+        crate::bridge_loader::declare_source_families(&bridge.libs, &renderer.renderer_control());
         // Checked before each packet without locking the bridge.
         let log_level = std::mem::take(&mut bridge.log_level);
         let coordinate_format = bridge.bridge.coordinate_format();
@@ -825,9 +825,7 @@ impl Engine {
             )
         };
         if drc_changed {
-            self.lock_bridge()
-                .bridge
-                .set_drc_mode(self.drc_mode.mode().into());
+            self.lock_bridge().bridge.set_drc_mode(self.drc_mode.mode());
         }
         if self.log_level.update(live_log::current_runtime_level()) {
             let mut bridge = self.bridge.lock().unwrap_or_else(|e| e.into_inner());

@@ -107,8 +107,8 @@ fn engine(configured: &Arc<Mutex<Vec<String>>>) -> Engine {
     .leak_into_prefix();
     Engine::new(
         LoadedBridge {
-            lib,
-            bridge,
+            libs: orender_engine::bridge_loader::BridgeLibs::single(lib),
+            bridge: orender_engine::bridge_set::BridgeSet::single(bridge),
             log_level: LogLevelSync::new(),
         },
         renderer,

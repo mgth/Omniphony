@@ -9,9 +9,8 @@
 //! asked for has to be pushed to the bridge.
 
 use crate::bridge_loader::configure_log_level;
-use bridge_api::{
-    FormatBridgeBox, RChannelLabel, RChannelPose, RDecodedFrame, RInputTransport, RPushResult,
-};
+use crate::bridge_set::BridgeSet;
+use bridge_api::{RChannelLabel, RChannelPose, RDecodedFrame, RInputTransport, RPushResult};
 use log::LevelFilter;
 use std::time::Instant;
 
@@ -35,7 +34,7 @@ pub struct Declaration {
 }
 
 impl Declaration {
-    pub fn read(bridge: &FormatBridgeBox) -> Self {
+    pub fn read(bridge: &BridgeSet) -> Self {
         Self {
             poses: bridge.fixed_channel_poses().into_iter().collect(),
             family: bridge.source_family().as_str().to_owned(),
@@ -169,14 +168,14 @@ pub fn frame_duration_secs(frame: &RDecodedFrame) -> f64 {
 /// the packet: the host applies it from [`DecodedPacket::declaration_frame`]
 /// on, and keeps it until the next one.
 pub fn decode_packet(
-    bridge: &mut FormatBridgeBox,
+    bridge: &mut BridgeSet,
     data: &[u8],
     transport: RInputTransport,
     data_type: u8,
     tracker: &mut DeclarationTracker,
 ) -> DecodedPacket {
     let started = Instant::now();
-    let result = bridge.push_packet(data.into(), transport, data_type);
+    let result = bridge.push_packet(data, transport, data_type);
     let decode_ms = started.elapsed().as_secs_f32() * 1000.0;
     let declaration_frame = tracker.first_frame_needing_it(&result);
     DecodedPacket {
@@ -224,9 +223,9 @@ impl DrcModeSync {
     }
 
     /// Bring `bridge` in line with `requested`: push it when it changed.
-    pub fn apply(&mut self, requested: &str, bridge: &mut FormatBridgeBox) {
+    pub fn apply(&mut self, requested: &str, bridge: &mut BridgeSet) {
         if self.update(requested) {
-            bridge.set_drc_mode(self.mode.as_str().into());
+            bridge.set_drc_mode(self.mode.as_str());
         }
     }
 }
@@ -237,7 +236,7 @@ impl DrcModeSync {
 /// atomic load and a compare per packet, no call into the bridge.
 ///
 /// One per bridge instance, from [`open`](Self::open) when the bridge is
-/// opened (`bridge_loader::open_bridge`), so the host does not send the level
+/// opened (`bridge_loader::open_bridges`), so the host does not send the level
 /// the bridge was opened with again. A bridge that refuses the key predates
 /// it and is not asked again. [`new`](Self::new) knows of no push: its first
 /// update always reports a change.
@@ -254,7 +253,7 @@ impl LogLevelSync {
 
     /// Push `level` to a bridge that has just been opened, and remember it
     /// and whether the bridge took it.
-    pub fn open(level: LevelFilter, bridge: &mut FormatBridgeBox) -> Self {
+    pub fn open(level: LevelFilter, bridge: &mut BridgeSet) -> Self {
         let mut sync = Self::new();
         sync.apply(level, bridge);
         sync
@@ -272,7 +271,7 @@ impl LogLevelSync {
     }
 
     /// Push the level last recorded by [`update`](Self::update) to `bridge`.
-    pub fn push(&mut self, bridge: &mut FormatBridgeBox) {
+    pub fn push(&mut self, bridge: &mut BridgeSet) {
         if let Some(level) = self.level
             && !configure_log_level(bridge, level)
         {
@@ -282,7 +281,7 @@ impl LogLevelSync {
 
     /// Bring `bridge` in line with `level` (the host's,
     /// `live_log::current_runtime_level()`): push it when it changed.
-    pub fn apply(&mut self, level: LevelFilter, bridge: &mut FormatBridgeBox) {
+    pub fn apply(&mut self, level: LevelFilter, bridge: &mut BridgeSet) {
         if self.update(level) {
             self.push(bridge);
         }
@@ -451,17 +450,17 @@ mod tests {
     fn recorder(
         knows_log_level: bool,
     ) -> (
-        FormatBridgeBox,
+        BridgeSet,
         std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
     ) {
         let calls = std::sync::Arc::default();
-        let bridge = bridge_api::FormatBridge_TO::from_value(
+        let bridge = BridgeSet::single(bridge_api::FormatBridge_TO::from_value(
             ConfigureRecorder {
                 calls: std::sync::Arc::clone(&calls),
                 knows_log_level,
             },
             abi_stable::sabi_trait::TD_Opaque,
-        );
+        ));
         (bridge, calls)
     }
 

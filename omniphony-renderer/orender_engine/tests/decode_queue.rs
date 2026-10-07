@@ -223,8 +223,8 @@ fn engine_with_control() -> (Engine, Arc<Mutex<Vec<String>>>, Arc<RendererContro
     .leak_into_prefix();
     let engine = Engine::new(
         LoadedBridge {
-            lib,
-            bridge,
+            libs: orender_engine::bridge_loader::BridgeLibs::single(lib),
+            bridge: orender_engine::bridge_set::BridgeSet::single(bridge),
             log_level: LogLevelSync::new(),
         },
         renderer,

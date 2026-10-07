@@ -9,7 +9,7 @@ use abi_stable::std_types::{RSlice, RStr, RString, RVec};
 use abi_stable::{prefix_type::PrefixTypeTrait, sabi_trait::prelude::TD_Opaque};
 use bridge_api::*;
 use log::LevelFilter;
-use orender_engine::bridge_loader::open_bridge;
+use orender_engine::bridge_loader::{BridgeLibs, open_bridges};
 
 /// Every `configure` call, as `key=value`, from both bridges below.
 static CONFIGURED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -101,7 +101,8 @@ fn lib(new_bridge: extern "C" fn(bool) -> FormatBridgeBox) -> BridgeLibRef {
 /// `info`, `info`, `debug`.
 fn configured_over_a_stream(new_bridge: extern "C" fn(bool) -> FormatBridgeBox) -> Vec<String> {
     CONFIGURED.lock().unwrap().clear();
-    let (mut bridge, mut log_level) = open_bridge(&lib(new_bridge));
+    let (mut bridge, mut log_level) =
+        open_bridges(&BridgeLibs::single(lib(new_bridge))).expect("open the bridge");
     for level in [LevelFilter::Info, LevelFilter::Info, LevelFilter::Debug] {
         log_level.apply(level, &mut bridge);
     }

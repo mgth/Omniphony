@@ -19,9 +19,10 @@ use audio_output::AudioControl;
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::PipewireBufferConfig;
 #[cfg(target_os = "linux")]
-use bridge_api::{FormatBridgeBox, RChannelLabel, RDecodedFrame};
+use bridge_api::{RChannelLabel, RDecodedFrame};
 #[cfg(target_os = "linux")]
-use orender_engine::bridge_loader::{configure_presentation, open_bridge};
+use orender_engine::bridge_loader::{BridgeLibs, configure_presentation, open_bridges};
+use orender_engine::bridge_set::BridgeSet;
 #[cfg(target_os = "linux")]
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -45,7 +46,7 @@ const LIVE_BRIDGE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct LiveBridgeRuntimeConfig {
-    pub lib: bridge_api::BridgeLibRef,
+    pub libs: BridgeLibs,
     pub presentation: String,
     pub clock_mode: InputClockMode,
     pub requested_drc_mode: Arc<std::sync::RwLock<String>>,
@@ -586,8 +587,8 @@ fn run_pipewire_bridge_pw_stream_backend(
 #[cfg(target_os = "linux")]
 fn instantiate_live_bridge(
     runtime: &LiveBridgeRuntimeConfig,
-) -> Result<(FormatBridgeBox, orender_engine::decode_step::LogLevelSync)> {
-    let (mut bridge, log_level) = open_bridge(&runtime.lib);
+) -> Result<(BridgeSet, orender_engine::decode_step::LogLevelSync)> {
+    let (mut bridge, log_level) = open_bridges(&runtime.libs)?;
     configure_presentation(&mut bridge, &runtime.presentation)?;
     Ok((bridge, log_level))
 }
