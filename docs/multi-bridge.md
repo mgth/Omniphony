@@ -165,8 +165,10 @@ pub struct BridgeSet {
   (`MAX_UNDECIDED_RAW`, 64 KiB, allocated once at load) and routes by
   **stream start**, not by any occurrence of a sync word:
   - **The earliest start wins.** After each push, the host decides as soon as
-    some bridge claims an offset `o` and no bridge has a `Pending` start at
-    or before `o`; between claims at the same offset, load order decides.
+    some bridge claims an offset `o` and every other bridge has either
+    answered at a later offset or ruled out every byte up to `o` (its scan
+    position, below, is past `o`); a `Pending` start at or before `o` holds
+    the decision. Between claims at the same offset, load order decides.
     A sync word inside another stream's payload (an IAMF prefix can carry
     reserved OBUs whose bytes are arbitrary) lies after that stream's own
     start, so it loses whether it arrives in the same read or a later one.
