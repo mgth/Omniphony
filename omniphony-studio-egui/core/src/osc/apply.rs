@@ -3,11 +3,10 @@
 //! Tauri host (`src-tauri/src/osc_listener.rs`). These are pure functions over
 //! `AppState` and the OSC socket; keep them in sync with the host.
 
-use std::net::UdpSocket;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use rosc::{OscPacket, OscType};
+use rosc::OscType;
 
 use crate::model::app_state::*;
 use crate::model::layouts::{Layout, Speaker};
@@ -814,26 +813,19 @@ pub fn gaintable_check_nack(now: Instant) -> Vec<(u32, Vec<u32>)> {
     out
 }
 
-pub fn send_gaintable_nack(
-    socket: &UdpSocket,
-    host: &str,
-    rx_port: u16,
-    version: u32,
-    missing: &[u32],
-) {
-    use rosc::{OscMessage, encoder};
-    for group in missing.chunks(GAINTABLE_NACK_MAX_INDICES) {
-        let mut args = Vec::with_capacity(group.len() + 1);
-        args.push(OscType::Int(version as i32));
-        args.extend(group.iter().map(|&i| OscType::Int(i as i32)));
-        let msg = OscPacket::Message(OscMessage {
-            addr: "/omniphony/control/debug/speaker_gaintable/nack".to_string(),
-            args,
-        });
-        if let Ok(bytes) = encoder::encode(&msg) {
-            let _ = socket.send_to(&bytes, format!("{host}:{rx_port}"));
-        }
-    }
+/// The NACK messages asking the renderer again for gain-table `version`'s
+/// `missing` chunks, a bounded number of indices each. The listener sends
+/// them on its link to the renderer.
+pub fn gaintable_nack_messages(version: u32, missing: &[u32]) -> Vec<Vec<OscType>> {
+    missing
+        .chunks(GAINTABLE_NACK_MAX_INDICES)
+        .map(|group| {
+            let mut args = Vec::with_capacity(group.len() + 1);
+            args.push(OscType::Int(version as i32));
+            args.extend(group.iter().map(|&i| OscType::Int(i as i32)));
+            args
+        })
+        .collect()
 }
 
 /// Copied from the host's `commands/input.rs`.
