@@ -113,8 +113,9 @@ mod tests {
     }
 
     /// A reader racing the writer never sees a pair that was not published
-    /// together. The writer publishes until the reader is done, so every read
-    /// below races it, whatever order the threads are scheduled in.
+    /// together. The reader starts once the writer has published, and the
+    /// writer publishes until the reader is done, so every read below races
+    /// it, whatever order the threads are scheduled in.
     #[test]
     fn pairs_are_never_torn() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -133,6 +134,16 @@ mod tests {
             })
         };
         let coherent = |obs: SourceObservation| assert_eq!(obs.t, obs.received / 1000.0);
+        // The writer's first pair, so the reads below cannot all come before
+        // it starts (nor stop it before it has published).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while tap.latest().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the writer never published"
+            );
+            std::thread::yield_now();
+        }
         for _ in 0..200_000 {
             if let Some(obs) = tap.latest() {
                 coherent(obs);
