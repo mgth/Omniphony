@@ -114,6 +114,11 @@ pub enum Commands {
     /// Generate VBAP gain table from speaker layout configuration
     GenerateVbap(GenerateVbapArgs),
 
+    /// Play a pipe through the new sync output (resampling rework, experimental).
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    SyncPlay(crate::cli::sync_host::SyncPlayArgs),
+
     /// List the realtime output devices (Windows only): the ASIO ones, or the
     /// WASAPI ones when no ASIO driver is installed
     #[cfg(target_os = "windows")]

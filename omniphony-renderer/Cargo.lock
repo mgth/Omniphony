@@ -236,8 +236,11 @@ name = "audio_output"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "audio_rt",
+ "audio_sync",
  "cpal",
  "diag",
+ "libc",
  "log",
  "parking_lot",
  "pipewire",
@@ -245,6 +248,14 @@ dependencies = [
  "rubato 0.14.1",
  "serde",
 ]
+
+[[package]]
+name = "audio_rt"
+version = "0.6.0"
+
+[[package]]
+name = "audio_sync"
+version = "0.6.0"
 
 [[package]]
 name = "audioadapter"
@@ -1569,6 +1580,8 @@ dependencies = [
  "anyhow",
  "audio_input",
  "audio_output",
+ "audio_rt",
+ "audio_sync",
  "bridge_api",
  "chrono",
  "clap",
@@ -1578,6 +1591,7 @@ dependencies = [
  "live_log",
  "log",
  "orender_engine",
+ "pipewire",
  "reference_bridge",
  "renderer",
  "rosc",

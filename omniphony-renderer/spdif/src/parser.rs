@@ -28,16 +28,23 @@ pub fn contains_sync(bytes: &[u8]) -> bool {
 pub struct Iec61937Packet {
     pub data_type: u8,
     pub payload: Vec<u8>,
+    /// Absolute byte offset of the burst's preamble (Pa) in everything pushed
+    /// into the parser since it was created or reset. With the carrier's
+    /// byte rate this places the burst on the transport's timeline.
+    pub start_byte: u64,
 }
 
 #[derive(Debug)]
 enum ParserState {
     WaitingForSync,
-    WaitingForHeader,
+    WaitingForHeader {
+        start_byte: u64,
+    },
     WaitingForPayload {
         data_type: u8,
         payload_size: usize,
         pd_raw: u16,
+        start_byte: u64,
     },
 }
 
@@ -45,6 +52,8 @@ enum ParserState {
 pub struct SpdifParser {
     buffer: Vec<u8>,
     state: ParserState,
+    /// Bytes drained from the front of `buffer` so far.
+    consumed: u64,
 }
 
 impl SpdifParser {
@@ -52,6 +61,7 @@ impl SpdifParser {
         Self {
             buffer: Vec::with_capacity(256 * 1024),
             state: ParserState::WaitingForSync,
+            consumed: 0,
         }
     }
 
@@ -59,6 +69,13 @@ impl SpdifParser {
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.state = ParserState::WaitingForSync;
+        self.consumed = 0;
+    }
+
+    /// Drop `n` bytes from the front, keeping the absolute count.
+    fn drain_front(&mut self, n: usize) {
+        self.buffer.drain(0..n);
+        self.consumed += n as u64;
     }
 
     pub fn push_bytes(&mut self, bytes: &[u8]) {
@@ -75,20 +92,22 @@ impl SpdifParser {
                     match sync_pos {
                         Some(pos) => {
                             if pos > 0 {
-                                self.buffer.drain(0..pos);
+                                self.drain_front(pos);
                             }
-                            self.state = ParserState::WaitingForHeader;
+                            self.state = ParserState::WaitingForHeader {
+                                start_byte: self.consumed,
+                            };
                         }
                         None => {
                             let keep_len = self.buffer.len().min(3);
                             if self.buffer.len() > keep_len {
-                                self.buffer.drain(0..self.buffer.len() - keep_len);
+                                self.drain_front(self.buffer.len() - keep_len);
                             }
                             return None;
                         }
                     }
                 }
-                ParserState::WaitingForHeader => {
+                ParserState::WaitingForHeader { start_byte } => {
                     if self.buffer.len() < 8 {
                         return None;
                     }
@@ -103,23 +122,26 @@ impl SpdifParser {
                         payload_size,
                         payload_unit
                     );
-                    self.buffer.drain(0..8);
+                    self.drain_front(8);
                     self.state = ParserState::WaitingForPayload {
                         data_type,
                         payload_size,
                         pd_raw,
+                        start_byte,
                     };
                 }
                 ParserState::WaitingForPayload {
                     data_type,
                     payload_size,
                     pd_raw,
+                    start_byte,
                 } => {
                     if self.buffer.len() < payload_size {
                         return None;
                     }
 
                     let payload = self.buffer.drain(0..payload_size).collect::<Vec<u8>>();
+                    self.consumed += payload_size as u64;
                     self.state = ParserState::WaitingForSync;
                     log::debug!(
                         "IEC 61937 packet extracted: data_type=0x{:02X} pd_raw={} payload={} bytes",
@@ -127,7 +149,11 @@ impl SpdifParser {
                         pd_raw,
                         payload.len()
                     );
-                    return Some(Iec61937Packet { data_type, payload });
+                    return Some(Iec61937Packet {
+                        data_type,
+                        payload,
+                        start_byte,
+                    });
                 }
             }
         }
@@ -182,6 +208,7 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x16,
                 payload: vec![0xAA, 0xBB, 0xCC, 0xDD],
+                start_byte: 0,
             })
         );
         assert_eq!(parser.get_next_packet(), None);
@@ -199,6 +226,7 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x15,
                 payload: vec![0x0B, 0x77, 0xAA, 0xBB],
+                start_byte: 0,
             })
         );
     }
@@ -216,6 +244,8 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x01,
                 payload: vec![0xAB, 0xCD],
+                // After the three garbage bytes.
+                start_byte: 3,
             })
         );
     }
@@ -237,6 +267,7 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x01,
                 payload,
+                start_byte: 0,
             })
         );
     }
@@ -256,7 +287,31 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x15,
                 payload,
+                start_byte: 0,
             })
         );
+    }
+
+    /// Burst start offsets stay absolute across chunks, stuffing and
+    /// garbage, so a burst can be placed on the transport timeline.
+    #[test]
+    fn burst_start_offsets_are_absolute() {
+        let mut parser = SpdifParser::new();
+        let burst = |pd: u8, fill: u8| {
+            let mut b = vec![0x72, 0xF8, 0x1F, 0x4E, 0x15, 0x00, pd, 0x00];
+            b.extend(std::iter::repeat_n(fill, pd as usize));
+            b
+        };
+        // Burst 1 at 0 (8 + 4 bytes), 20 bytes of stuffing, burst 2 at 32,
+        // pushed in uneven chunks.
+        let mut stream = burst(4, 0xAA);
+        stream.extend(std::iter::repeat_n(0u8, 20));
+        stream.extend(burst(6, 0xBB));
+        for chunk in stream.chunks(5) {
+            parser.push_bytes(chunk);
+        }
+        assert_eq!(parser.get_next_packet().unwrap().start_byte, 0);
+        assert_eq!(parser.get_next_packet().unwrap().start_byte, 32);
+        assert_eq!(parser.get_next_packet(), None);
     }
 }
