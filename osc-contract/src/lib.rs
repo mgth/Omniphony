@@ -592,6 +592,14 @@ pub const STATE_RENDER_ABI: &str = "/omniphony/state/render/abi";
 /// decoder bridge loads only if it was built against the same minor.
 pub const STATE_RENDER_BRIDGE_API: &str = "/omniphony/state/render/bridge_api";
 pub const STATE_RENDER_BRIDGE_ERROR: &str = "/omniphony/state/render/bridge_error";
+/// The text [`STATE_RENDER_BRIDGE_ERROR`] contains when no bridge was asked
+/// for and auto-discovery found none: the engine runs without a decoder, which
+/// is normal for a standby renderer (PCM and channel input still work). Any
+/// other non-empty error is a bridge that was asked for or found and failed to
+/// load. A client matches it with `contains`, as a host may prefix its own
+/// context; an engine predating it never sends it, so its errors all read as
+/// failures.
+pub const BRIDGE_ERROR_NONE_FOUND: &str = "no decoder bridge found";
 pub const STATE_RENDER_BRIDGE_PATH: &str = "/omniphony/state/render/bridge_path";
 pub const STATE_RENDER_CONFIG_PATH: &str = "/omniphony/state/render/config_path";
 pub const STATE_RENDER_CONFIG_STATUS: &str = "/omniphony/state/render/config_status";

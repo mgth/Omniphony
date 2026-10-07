@@ -1635,6 +1635,7 @@ dependencies = [
  "example_backend",
  "live_log",
  "log",
+ "omniphony-osc-contract",
  "omniphony_geometry",
  "realfft",
  "reference_bridge",

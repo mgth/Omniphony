@@ -751,7 +751,10 @@ exhaustive machine-readable list.
   understands it and never written; `""` without a config path),
   `render/bridge_path`, `render/bridge_error` (bounded to 2 KB: the first
   line and the distinct verdicts of a plugin load failure, the full report
-  stays in the renderer log), `vbap/allow_negative_z`,
+  stays in the renderer log; it contains `no decoder bridge found`
+  (`BRIDGE_ERROR_NONE_FOUND`) when none was asked for and auto-discovery found
+  none, a normal state for a standby renderer, and anything else is a failed
+  load), `vbap/allow_negative_z`,
   `render_evaluation/*` (mirrors of the control resolutions), `speakers`,
   `speakers/recomputing`, `speakers/recompute_error`, `layout`.
 - **Schemas & profiles** — `options_schema`, `object_generators` (the height
