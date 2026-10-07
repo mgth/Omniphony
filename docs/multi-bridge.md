@@ -250,6 +250,11 @@ pub struct BridgeSet {
   (a live input switching from E-AC-3 to DTS), the old bridge is reset, the
   new one becomes active and the push result carries `did_reset`, so the host
   starts a new segment as it does for a bridge-internal reset.
+- **A single bridge is not probed**: with one bridge loaded, every packet
+  goes to it, as today, whatever `probe` answers. Routing, buffering and
+  probation only exist between several bridges, so a host with one bridge
+  behaves exactly as before, including with a bridge whose probe only looks
+  at offset 0 (harletty's combined bridge until the family plugins ship).
 - **One instance per bridge**, created at load and kept. Only the active one
   receives packets; the hot path adds one index lookup per packet, and the
   probe runs only while the route is undecided or on a burst-type change.
@@ -378,7 +383,7 @@ explicit setting:
 
   | Library | Family crate | Raw probe | IEC burst types |
   |---|---|---|---|
-  | `harletty_dolby_bridge` | `bridge-family-dolby` | TrueHD major sync, E-AC-3/AC-3 sync | 0x15, 0x16 |
+  | `harletty_dolby_bridge` | `bridge-family-dolby` | TrueHD major sync, E-AC-3/AC-3 sync | 0x01, 0x15, 0x16 |
   | `harletty_dts_bridge` | `bridge-family-dts` | DTS core / substream sync | 0x0B–0x0D, 0x11 |
   | `harletty_iamf_bridge` | `bridge-family-iamf` | IAMF sequence header | none |
 
@@ -414,7 +419,8 @@ explicit setting:
 - `BridgeSet` with in-process fake bridges (`BridgeLib{..}.leak_into_prefix()`,
   as `decode_queue.rs` does): routing by probe, by `input_codec`, by IEC burst
   type; a mid-stream burst-type switch resets the old bridge and reports
-  `did_reset`; the first bridge wins on a double claim; family union;
+  `did_reset`; the first bridge wins on a double claim; a single loaded
+  bridge receives every packet unprobed; family union;
   disagreeing coordinate formats are refused.
 - Fragmented raw input: the opening header of each format split at every
   byte offset, one-byte pushes, and undecided bytes before the first start;
