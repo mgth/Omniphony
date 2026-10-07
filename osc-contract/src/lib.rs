@@ -46,6 +46,7 @@
 
 pub mod nesting;
 pub mod shapes;
+pub mod stream;
 
 /// Revision of this contract. The engine advertises it as `contractRevision`
 /// in `/state/capabilities`, and a client compares it with its own, so a
