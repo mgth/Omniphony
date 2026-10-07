@@ -684,7 +684,9 @@ fn push_gaintable_subscribe(
                     },
                 );
             } else {
-                for update in gaintable_chunk_broadcasts(&bytes, None) {
+                for update in
+                    gaintable_chunk_broadcasts(&bytes, None, client.gaintable_chunk_bytes())
+                {
                     send_update_to_client(socket, client, &update);
                 }
                 clients.set_gaintable_version(client, speaker, version);
@@ -1939,7 +1941,11 @@ fn debug_speaker_gaintable_nack(d: &mut Dispatch) -> ControlOutcome {
                 .gaintable_target_for_version(client, version)
                 .unwrap_or(0);
             if let Some((_v, bytes)) = gaintable_cache.bytes_for_target(&runtime_ctx, target) {
-                for update in gaintable_chunk_broadcasts(&bytes, Some((version, missing))) {
+                for update in gaintable_chunk_broadcasts(
+                    &bytes,
+                    Some((version, missing)),
+                    client.gaintable_chunk_bytes(),
+                ) {
                     send_update_to_client(socket, client, &update);
                 }
             }
