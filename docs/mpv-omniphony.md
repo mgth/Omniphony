@@ -62,13 +62,14 @@ over OSC, showing per-object positions in the room and live meters.*
 - **The decoder bridge**
   ([harletty-bridge](https://github.com/harletty/harletty-bridge/releases) — it
   is not bundled with the player). Without configuration the engine takes the
-  first `*_bridge.{so,dll,dylib}` next to the mpv executable, then in
-  `$ORENDER_BRIDGE_DIR`, then in the per-user engine folder of point 2 above
-  (`<local data>/omniphony/lib/`), then in `/usr/lib/orender` (Unix). Studio's
-  own renderer searches the same folders from its `orender`, so a bridge in the
-  per-user engine folder serves both; Studio also hands its renderer the folder
-  of a bridge named by `ad-orender-bridge-path` in `mpv.conf` (an absolute path,
-  default profile). `render.bridge_path`
+  file `$ORENDER_BRIDGE_FILE` names, else the first `*_bridge.{so,dll,dylib}`
+  next to the mpv executable, then in `$ORENDER_BRIDGE_DIR`, then in the
+  per-user engine folder of point 2 above (`<local data>/omniphony/lib/`), then
+  in `/usr/lib/orender` (Unix). Studio's own renderer searches the same folders
+  from its `orender`, so a bridge in the per-user engine folder serves both;
+  Studio also hands its renderer the exact bridge named by
+  `ad-orender-bridge-path` in `mpv.conf` (an absolute path, default profile) as
+  `$ORENDER_BRIDGE_FILE`. `render.bridge_path`
   in the config, or `--ad-orender-bridge-path`, names one file instead (no
   globs, and no fallback when it is wrong).
 - The **shared omniphony config** (the same one the `orender` CLI and Studio

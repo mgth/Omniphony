@@ -168,9 +168,9 @@ its own (*Auto-start local renderer*, in the connection settings), and that one
 holds the port the player needs. When you only use Studio with the player,
 switch that option off.
 
-Studio's own renderer looks for the bridge next to its `orender`, in the folder
-of the bridge your `mpv.conf` names (`ad-orender-bridge-path=`, with an
-absolute path), in `~/.local/share/omniphony/lib/`, then in `/usr/lib/orender/`
+Studio's own renderer uses the bridge your `mpv.conf` names
+(`ad-orender-bridge-path=`, with an absolute path), else it looks next to its
+`orender`, in `~/.local/share/omniphony/lib/`, then in `/usr/lib/orender/`
 (where the AUR puts it). It does not know the player's folder: a bridge that
 only sits next to `mpv`, with no `mpv.conf` line naming it, is not found.
 Without one it still runs, and Studio shows an orange *No decoder* banner:

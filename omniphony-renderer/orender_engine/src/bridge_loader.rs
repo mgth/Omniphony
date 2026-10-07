@@ -255,9 +255,11 @@ pub fn resolve_bridge_path(explicit: Option<&Path>) -> Result<PathBuf> {
 ///
 /// 1. `explicit` set → must resolve to a file, else error.
 /// 2. else `config` (`render.bridge_path`) set → must resolve to a file, else error.
-/// 3. else → [`find_bridge_next_to_exe`], which scans the host executable's
-///    directory, then `$ORENDER_BRIDGE_DIR`, then the per-user engine
-///    directory, then the system plugin directory ([`auto_discovery_dirs`]).
+/// 3. else → [`find_bridge_next_to_exe`]: the exact file in
+///    `$ORENDER_BRIDGE_FILE` if it names one, else a scan of the host
+///    executable's directory, then `$ORENDER_BRIDGE_DIR`, then the per-user
+///    engine directory, then the system plugin directory
+///    ([`auto_discovery_dirs`]).
 ///    Finding none there is not a failure of the engine: the error then
 ///    contains [`osc_contract::BRIDGE_ERROR_NONE_FOUND`], which a client reads
 ///    as "running without a decoder" rather than "a bridge failed to load".
@@ -287,13 +289,14 @@ pub fn resolve_bridge(explicit: Option<&Path>, config: Option<&Path>) -> Result<
             searched_locations_hint(path),
         );
     }
-    discover(&auto_discovery_dirs())
+    discover(&|key| std::env::var_os(key), &auto_discovery_dirs())
 }
 
-/// Auto-discovery over `dirs`, its failure worded as "nothing found" with the
-/// contract's [`osc_contract::BRIDGE_ERROR_NONE_FOUND`] marker in front.
-fn discover(dirs: &[PathBuf]) -> Result<PathBuf> {
-    find_bridge_in_dirs(dirs).with_context(|| {
+/// Auto-discovery ([`auto_discover`]) over `dirs`, its failure worded as
+/// "nothing found" with the contract's
+/// [`osc_contract::BRIDGE_ERROR_NONE_FOUND`] marker in front.
+fn discover(env: &dyn Fn(&str) -> Option<OsString>, dirs: &[PathBuf]) -> Result<PathBuf> {
+    auto_discover(env, dirs).with_context(|| {
         format!(
             "{}: none requested (no explicit path, no render.bridge_path) and none \
              in the auto-discovery directories",
@@ -385,10 +388,42 @@ const SYSTEM_BRIDGE_DIR_DEFAULT: Option<&str> = None;
 /// This mirrors the candidate chain the liborender loader already uses on the
 /// host side. Resolved once when an engine starts, never on the audio path.
 fn auto_discovery_dirs() -> Vec<PathBuf> {
-    let exe_dir = std::env::current_exe()
+    discovery_dirs(current_exe_dir(), &|key| std::env::var_os(key))
+}
+
+fn current_exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf));
-    discovery_dirs(exe_dir, &|key| std::env::var_os(key))
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+}
+
+/// The runtime variable naming one exact bridge file for auto-discovery.
+pub const BRIDGE_FILE_ENV: &str = "ORENDER_BRIDGE_FILE";
+
+/// Auto-discovery: the file `$ORENDER_BRIDGE_FILE` names, when it is one,
+/// then the first `*_bridge.*` of `dirs` ([`auto_discovery_dirs`] outside tests).
+///
+/// The variable is how a host that knows *which* bridge it wants hands it
+/// over without making it a requested path: Studio passes the bridge
+/// mpv-omniphony is configured with (`ad-orender-bridge-path` in
+/// `mpv.conf`) to the renderer it spawns. A folder would not do: the scan
+/// takes the first bridge of a folder in name order, which need not be the
+/// named one when the folder holds several. It sits at auto-discovery's
+/// level, below `--bridge-path` and `render.bridge_path`, and is checked
+/// before the folders because it names one file. A value naming no file is
+/// logged and skipped, as a missing folder is.
+fn auto_discover(env: &dyn Fn(&str) -> Option<OsString>, dirs: &[PathBuf]) -> Result<PathBuf> {
+    if let Some(file) = env(BRIDGE_FILE_ENV).filter(|value| !value.is_empty()) {
+        let file = PathBuf::from(file);
+        if file.is_file() {
+            return Ok(file);
+        }
+        log::warn!(
+            "${BRIDGE_FILE_ENV} '{}' is not a file; searching the auto-discovery folders",
+            file.display()
+        );
+    }
+    find_bridge_in_dirs(dirs)
 }
 
 /// [`auto_discovery_dirs`] with the executable's directory and the
@@ -441,13 +476,15 @@ fn user_engine_dir(env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     Some(data.join("omniphony").join("lib"))
 }
 
-/// Look for a `*_bridge.{so,dll,dylib}` in the auto-discovery directories.
+/// Look for a bridge the way auto-discovery does ([`auto_discover`]): the
+/// file `$ORENDER_BRIDGE_FILE` names, else a `*_bridge.{so,dll,dylib}` in the
+/// auto-discovery directories.
 /// [`resolve_bridge`] (the CLI's and [`crate::engine::Engine::from_paths`]'s
 /// resolution) falls back to it only when no path was requested at all: a
 /// requested path that does not resolve to a file is an error, never a cue
 /// to load some other bridge.
 pub fn find_bridge_next_to_exe() -> Result<PathBuf> {
-    find_bridge_in_dirs(&auto_discovery_dirs())
+    auto_discover(&|key| std::env::var_os(key), &auto_discovery_dirs())
 }
 
 /// First `*_bridge.*` found scanning `dirs` in order. Split out from
@@ -806,7 +843,10 @@ mod tests {
     /// A requested path that is missing never does.
     #[test]
     fn only_an_empty_search_carries_the_none_found_marker() {
-        let none = discover(&[PathBuf::from("/nonexistent/orender/plugins")]);
+        let none = discover(
+            &|_: &str| None,
+            &[PathBuf::from("/nonexistent/orender/plugins")],
+        );
         let text = format!("{:#}", none.unwrap_err());
         assert!(
             text.starts_with(osc_contract::BRIDGE_ERROR_NONE_FOUND),
@@ -827,5 +867,72 @@ mod tests {
             !configured.contains(osc_contract::BRIDGE_ERROR_NONE_FOUND),
             "{configured}"
         );
+    }
+
+    /// The variable names one file: with two bridges in its folder, that
+    /// file is the one loaded, where a scan of the folder would take the
+    /// first by name.
+    #[test]
+    fn the_bridge_file_variable_selects_that_exact_file() {
+        let dir = dir_with_bridge("twobridges", "liba_bridge.so");
+        fs::write(dir.join("libz_bridge.so"), b"x").unwrap();
+        let named = dir.join("libz_bridge.so");
+        let env =
+            |key: &str| (key == "ORENDER_BRIDGE_FILE").then(|| named.clone().into_os_string());
+        let dirs = [dir.clone()];
+        let by_file = auto_discover(&env, &dirs);
+        let by_dir = auto_discover(&|_: &str| None, &dirs);
+        fs::remove_dir_all(&dir).ok();
+        assert_eq!(by_file.unwrap(), named);
+        assert_eq!(
+            by_dir.unwrap(),
+            dir.join("liba_bridge.so"),
+            "the scan's own pick"
+        );
+    }
+
+    /// The named file comes before the folders, the host's own included.
+    #[test]
+    fn the_bridge_file_comes_before_the_hosts_folder() {
+        let exe = dir_with_bridge("exewithbridge", "libexe_bridge.so");
+        let other = dir_with_bridge("namedbridge", "libnamed_bridge.so");
+        let named = other.join("libnamed_bridge.so");
+        let env =
+            |key: &str| (key == "ORENDER_BRIDGE_FILE").then(|| named.clone().into_os_string());
+        let found = auto_discover(&env, &discovery_dirs(Some(exe.clone()), &env));
+        fs::remove_dir_all(&exe).ok();
+        fs::remove_dir_all(&other).ok();
+        assert_eq!(found.unwrap(), named);
+    }
+
+    /// A value naming no file is skipped like a missing folder: the folders
+    /// are still searched, and finding nothing there is still "none found".
+    #[test]
+    fn a_bridge_file_variable_naming_nothing_falls_back_to_the_folders() {
+        let dir = dir_with_bridge("fallback", "libfb_bridge.so");
+        let gone = |key: &str| {
+            (key == "ORENDER_BRIDGE_FILE").then(|| OsString::from("/nonexistent/libgone_bridge.so"))
+        };
+        let found = auto_discover(&gone, std::slice::from_ref(&dir));
+        fs::remove_dir_all(&dir).ok();
+        assert_eq!(found.unwrap(), dir.join("libfb_bridge.so"));
+        let empty = [PathBuf::from("/nonexistent/orender/plugins")];
+        let text = format!("{:#}", discover(&gone, &empty).unwrap_err());
+        assert!(
+            text.starts_with(osc_contract::BRIDGE_ERROR_NONE_FOUND),
+            "{text}"
+        );
+    }
+
+    /// A requested path still wins over the variable: it only takes part in
+    /// auto-discovery.
+    #[test]
+    fn a_requested_path_wins_over_the_bridge_file_variable() {
+        let requested = tmp_bridge("requested_over_file");
+        // resolve_bridge reads the real environment; the requested path
+        // returns before it is consulted, whatever the variable holds.
+        assert_eq!(resolve_bridge(Some(&requested), None).unwrap(), requested);
+        assert_eq!(resolve_bridge(None, Some(&requested)).unwrap(), requested);
+        fs::remove_file(&requested).ok();
     }
 }

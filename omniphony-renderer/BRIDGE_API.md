@@ -74,19 +74,23 @@ the media player.
 Bridge lookup order:
 1. `--bridge-path <FILE>`
 2. `render.bridge_path` in the config file
-3. else auto-discovery: the first `*_bridge.so`, `*_bridge.dll` or
-   `*_bridge.dylib` (alphabetical within a folder) in, in this order:
-   1. the folder of the host executable (`orender`, or the player that loads
-      liborender, e.g. mpv-omniphony);
-   2. `$ORENDER_BRIDGE_DIR`;
-   3. the per-user engine folder, where Studio deploys liborender and
-      mpv-omniphony's loader looks for it: `$XDG_DATA_HOME/omniphony/lib`
-      (default `~/.local/share/omniphony/lib`) on Linux,
-      `~/Library/Application Support/omniphony/lib` on macOS,
-      `%LOCALAPPDATA%\omniphony\lib` on Windows;
-   4. the system plugin folder, `/usr/lib/orender` on Unix (where the AUR's
-      `harletty-bridge` installs it; packagers override it with
-      `ORENDER_BRIDGE_DIR` at build time). None on Windows.
+3. else auto-discovery:
+   1. `$ORENDER_BRIDGE_FILE`, when it names an existing file: that exact
+      bridge (Studio sets it, see below). A value naming no file is logged
+      and skipped;
+   2. else the first `*_bridge.so`, `*_bridge.dll` or `*_bridge.dylib`
+      (alphabetical within a folder) in, in this order:
+      1. the folder of the host executable (`orender`, or the player that loads
+         liborender, e.g. mpv-omniphony);
+      2. `$ORENDER_BRIDGE_DIR`;
+      3. the per-user engine folder, where Studio deploys liborender and
+         mpv-omniphony's loader looks for it: `$XDG_DATA_HOME/omniphony/lib`
+         (default `~/.local/share/omniphony/lib`) on Linux,
+         `~/Library/Application Support/omniphony/lib` on macOS,
+         `%LOCALAPPDATA%\omniphony\lib` on Windows;
+      4. the system plugin folder, `/usr/lib/orender` on Unix (where the AUR's
+         `harletty-bridge` installs it; packagers override it with
+         `ORENDER_BRIDGE_DIR` at build time). None on Windows.
 
 A path named in 1 or 2 must exist: it is never replaced by a discovered one.
 When nothing is named and nothing is found, `orender` still starts, without a
@@ -98,11 +102,14 @@ Studio also uses the bridge path from `mpv.conf`: before it spawns its own
 `orender`, it reads mpv-omniphony's `ad-orender-bridge-path` from the player's
 config (mpv's own lookup: `$MPV_HOME`, else `$XDG_CONFIG_HOME/mpv` or
 `~/.config/mpv`, `~/.mpv`, `/etc/mpv`; `%APPDATA%\mpv` on Windows; default
-profile only) and, when it names an existing file, passes that file's folder as
-`$ORENDER_BRIDGE_DIR` (step 3.2). An `ORENDER_BRIDGE_DIR` already in Studio's
-environment wins, and a bridge named in the engine's own config or found next
-to `orender` comes first anyway. A bridge that only sits next to the player,
-with no `mpv.conf` line naming it, stays unknown to Studio.
+profile only) and, when it names an existing file, passes that exact file as
+`$ORENDER_BRIDGE_FILE` (step 3.1). A file, not its folder: the folder scan takes
+the first bridge by name, which need not be the named one when the folder
+holds several. A bridge named in the engine's own config (`render.bridge_path`)
+or on its command line still comes first, and when Studio's own environment
+already sets `ORENDER_BRIDGE_FILE` or `ORENDER_BRIDGE_DIR`, the renderer
+inherits that and `mpv.conf` is not read. A bridge that only sits next to the
+player, with no `mpv.conf` line naming it, stays unknown to Studio.
 
 ## Exported Root Module
 

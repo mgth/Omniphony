@@ -770,15 +770,17 @@ fn spawn_orender_process(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
-    // The bridge the player is configured with in mpv.conf, for a renderer
-    // that finds none of its own (the engine looks next to itself first, and
-    // a `render.bridge_path` in its config wins over this). A variable set in
-    // Studio's own environment is inherited and wins over mpv.conf.
-    if let Some(dir) = mpv_bridge::bridge_dir_for_renderer(
+    // The bridge the player is configured with in mpv.conf, as the exact file
+    // (a folder would let the engine pick another bridge sitting beside it).
+    // It only takes part in the engine's auto-discovery: a `render.bridge_path`
+    // in its config wins over it. A bridge variable set in Studio's own
+    // environment is inherited and wins over mpv.conf.
+    if let Some(file) = mpv_bridge::bridge_file_for_renderer(
+        std::env::var_os(mpv_bridge::BRIDGE_FILE_ENV).as_ref(),
         std::env::var_os(mpv_bridge::BRIDGE_DIR_ENV).as_ref(),
         &mpv_bridge::MpvPaths::from_env(),
     ) {
-        cmd.env(mpv_bridge::BRIDGE_DIR_ENV, dir);
+        cmd.env(mpv_bridge::BRIDGE_FILE_ENV, file);
     }
 
     #[cfg(target_os = "windows")]
