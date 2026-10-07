@@ -20,7 +20,7 @@ pub const VERSION_INFO: &str = concat!(
     author     = env!("CARGO_PKG_AUTHORS"),
     about      = env!("CARGO_PKG_DESCRIPTION"),
     long_about = None,
-    after_help = "If no command is given, orender runs the default render flow.",
+    after_help = "If no command is given, `render` is assumed: `orender <INPUT>` is `orender render <INPUT>`.",
 )]
 pub struct Cli {
     /// Path to config file (default: ~/.config/omniphony/config.yaml on Linux,

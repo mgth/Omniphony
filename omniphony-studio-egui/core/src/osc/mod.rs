@@ -1620,24 +1620,38 @@ mod stream_link_tests {
 
     impl FakeEngine {
         /// A UDP socket and, with `stream`, a TCP listener on its port number
-        /// (another port is taken when that number is busy over TCP).
+        /// (another port is taken when that number is busy over UDP).
+        ///
+        /// TCP picks the port: Windows reserves ranges of ports for TCP alone
+        /// (Hyper-V, WinNAT), and a UDP ephemeral port falls in them often
+        /// enough that binding TCP to it failed 16 times in a row on CI.
         fn new(stream: bool) -> Self {
-            for _ in 0..16 {
-                let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let timed = |udp: UdpSocket| {
                 udp.set_read_timeout(Some(Duration::from_millis(100)))
                     .unwrap();
-                if !stream {
-                    return Self { udp, tcp: None };
-                }
-                let port = udp.local_addr().unwrap().port();
-                if let Ok(tcp) = TcpListener::bind(("127.0.0.1", port)) {
-                    return Self {
-                        udp,
-                        tcp: Some(tcp),
-                    };
+                udp
+            };
+            if !stream {
+                return Self {
+                    udp: timed(UdpSocket::bind("127.0.0.1:0").unwrap()),
+                    tcp: None,
+                };
+            }
+            let mut last_error = None;
+            for _ in 0..64 {
+                let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = tcp.local_addr().unwrap().port();
+                match UdpSocket::bind(("127.0.0.1", port)) {
+                    Ok(udp) => {
+                        return Self {
+                            udp: timed(udp),
+                            tcp: Some(tcp),
+                        };
+                    }
+                    Err(e) => last_error = Some((port, e)),
                 }
             }
-            panic!("no port free over both UDP and TCP");
+            panic!("no port free over both TCP and UDP; last refusal: {last_error:?}");
         }
 
         fn addr(&self) -> SocketAddr {

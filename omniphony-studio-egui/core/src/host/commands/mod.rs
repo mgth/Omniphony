@@ -210,6 +210,9 @@ pub struct WatchdogControl {
     pub last_spawn_at: Option<std::time::Instant>,
     pub check_requested_at: Option<std::time::Instant>,
     pub suppressed: bool,
+    /// Why the last automatic start failed (spawn error or fast exit), for
+    /// the "engine not running" banner. Cleared on re-arm and on a connection.
+    pub last_failure: Option<String>,
 }
 
 impl WatchdogControl {
@@ -217,6 +220,7 @@ impl WatchdogControl {
         self.attempts = 0;
         self.cooldown_until = None;
         self.suppressed = false;
+        self.last_failure = None;
     }
 }
 

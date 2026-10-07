@@ -118,7 +118,11 @@ impl Watchdog {
         // next moment this could have anything to say.
         if state.stats.connection_state() == crate::osc::ConnectionState::Connected {
             self.disconnected_since = None;
-            state.watchdog.lock().unwrap().check_requested_at = None;
+            {
+                let mut wd = state.watchdog.lock().unwrap();
+                wd.check_requested_at = None;
+                wd.last_failure = None;
+            }
             return Tick {
                 changed,
                 next: Some(now + TICK),
@@ -193,6 +197,7 @@ impl Watchdog {
                     let mut wd = state.watchdog.lock().unwrap();
                     wd.attempts += 1;
                     wd.cooldown_until = Some(now + COOLDOWN);
+                    wd.last_failure = Some(error.clone());
                     wd.attempts
                 };
                 app::push_log(state, "error", "orender", format!("orender: {error}"));
@@ -248,21 +253,18 @@ fn reap_renderer_child(state: &SharedState, now: Instant) -> bool {
         );
         return true;
     }
+    let message = format!(
+        "orender exited within {}s of starting: {status}",
+        FAST_FAIL.as_secs()
+    );
     let attempts = {
         let mut wd = state.watchdog.lock().unwrap();
         wd.attempts += 1;
         wd.cooldown_until = Some(now + COOLDOWN);
+        wd.last_failure = Some(message.clone());
         wd.attempts
     };
-    app::push_log(
-        state,
-        "warn",
-        "orender",
-        format!(
-            "orender exited within {}s of starting: {status}",
-            FAST_FAIL.as_secs()
-        ),
-    );
+    app::push_log(state, "warn", "orender", message);
     if attempts >= MAX_ATTEMPTS {
         app::push_log(
             state,
