@@ -333,6 +333,16 @@ impl AudioWriter {
     }
 
     /// Returns the current estimated audio latency in milliseconds, if supported by the backend.
+    /// The host a cpal writer plays through, as Studio shows it (`ASIO`,
+    /// `WASAPI (fallback: …)`, `CoreAudio`); `None` for the other backends.
+    pub fn output_host(&self) -> Option<&'static str> {
+        match self {
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            AudioWriter::Cpal(w) => Some(w.output_host_label()),
+            _ => None,
+        }
+    }
+
     pub fn latency_ms(&self) -> Option<f32> {
         match self {
             #[cfg(target_os = "linux")]

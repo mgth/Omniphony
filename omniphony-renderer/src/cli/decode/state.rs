@@ -319,6 +319,8 @@ pub struct OutputState {
     pub last_audio_sample_rate_hz: Option<u32>,
     pub last_audio_sample_format: Option<String>,
     pub last_audio_output_device: Option<String>,
+    /// The output host last published (`AudioWriter::output_host`).
+    pub last_audio_output_host: Option<&'static str>,
 }
 
 impl Default for OutputState {
@@ -338,6 +340,7 @@ impl Default for OutputState {
             last_audio_sample_rate_hz: None,
             last_audio_sample_format: None,
             last_audio_output_device: None,
+            last_audio_output_host: None,
         }
     }
 }
