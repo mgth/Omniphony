@@ -1,5 +1,6 @@
 use anyhow::Result;
-use bridge_api::{FormatBridgeBox, RInputTransport};
+use bridge_api::RInputTransport;
+use orender_engine::bridge_set::BridgeSet;
 use orender_engine::decode_step::{
     DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
 };
@@ -96,7 +97,7 @@ pub struct DecoderThreadConfig {
     /// with downstream latency sawtooths.
     pub pipe_input_diag: Option<PipeInputDiag>,
     /// The bridge owns the complete decode pipeline.
-    pub bridge: FormatBridgeBox,
+    pub bridge: BridgeSet,
     /// The log level `bridge` was opened with (`LoadedBridge::log_level`).
     pub log_level: LogLevelSync,
     /// Platform-agnostic shutdown signal for interrupt-aware I/O.
@@ -620,13 +621,13 @@ mod tests {
             requested_drc_mode: Arc::new(RwLock::new("Standard".to_owned())),
             drain_tx: None,
             pipe_input_diag: None,
-            bridge: FormatBridge_TO::from_value(
+            bridge: BridgeSet::single(FormatBridge_TO::from_value(
                 DrcRecordingBridge {
                     mode: "Off".to_owned(),
                     modes_at_push: Arc::clone(&modes_at_push),
                 },
                 TD_Opaque,
-            ),
+            )),
             log_level: LogLevelSync::new(),
             shutdown_signal: sys::ShutdownSignal { fd: fds[0] },
         })
