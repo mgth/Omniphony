@@ -179,6 +179,9 @@ fn build_audio_state_json(audio: &AudioControl) -> String {
         "outputDevices": audio.available_output_devices(),
         "outputDevice": requested.output_device,
         "outputDeviceEffective": audio.effective_output_device(),
+        // The host the open stream plays through, e.g. "WASAPI (fallback:
+        // no ASIO driver)"; "" when none is open or the backend names none.
+        "outputHost": audio.effective_output_host().unwrap_or_default(),
         "outputBackend": requested.output_backend,
         "outputFile": requested.output_file,
         "outputFileFormat": requested.output_file_format,
@@ -642,49 +645,9 @@ impl HostControlHandler for HostAudio {
         let mut messages = Vec::with_capacity(2);
 
         // /state/audio: full output-device + adaptive-resampling state.
-        let requested = audio.requested_snapshot();
         messages.push(OscPacket::Message(OscMessage {
             addr: osc_contract::STATE_AUDIO.to_string(),
-            args: vec![OscType::String(
-                json!({
-                    "outputDevices": audio.available_output_devices(),
-                    "outputDevice": requested.output_device.clone(),
-                    "outputDeviceEffective": audio.effective_output_device(),
-                    "outputBackend": requested.output_backend.clone(),
-                    "outputFile": requested.output_file.clone(),
-                    "outputFileFormat": requested.output_file_format.clone(),
-                    "sampleRate": requested.output_sample_rate_hz,
-                    "sampleFormat": audio.audio_state().1,
-                    "error": audio.audio_error(),
-                    "adaptiveResampling": {
-                        "enabled": requested.adaptive_enabled,
-                        "enableFarMode": requested.adaptive.enable_far_mode,
-                        "forceSilenceInFarMode": requested.adaptive.force_silence_in_far_mode,
-                        "hardRecoverHighInFarMode": requested.adaptive.hard_recover_high_in_far_mode,
-                        "hardRecoverLowInFarMode": requested.adaptive.hard_recover_low_in_far_mode,
-                        "farModeReturnFadeInMs": requested.adaptive.far_mode_return_fade_in_ms,
-                        "kpNear": requested.adaptive.kp_near,
-                        "ki": requested.adaptive.ki,
-                        "integralDischargeRatio": requested.adaptive.integral_discharge_ratio,
-                        "maxAdjust": requested.adaptive.max_adjust,
-                        "updateIntervalCallbacks": requested.adaptive.update_interval_callbacks,
-                        "highRecoverEntryMarginMs": requested.adaptive.high_recover_entry_margin_ms,
-                        "lowRecoverSettleStableMs": requested.adaptive.low_recover_settle_stable_ms,
-                        "lowRecoverEntryMarginMs": requested.adaptive.low_recover_entry_margin_ms,
-                        "lowRecoverExitMarginMs": requested.adaptive.low_recover_exit_margin_ms,
-                        "lowRecoverSettleMarginMs": requested.adaptive.low_recover_settle_margin_ms,
-                        "lowRecoverRefillDeltaAlpha": requested.adaptive.low_recover_refill_delta_alpha,
-                        "controlSmoothingCutoffHz": requested.adaptive.control_smoothing_cutoff_hz,
-                        "controlSmoothingOrder": requested.adaptive.control_smoothing_order,
-                        "paused": requested.adaptive.paused,
-                        "usePreBridgeClock": requested.adaptive.use_pre_bridge_clock,
-                        "useOutputPacing": requested.adaptive.use_output_pacing,
-                        "disableBackpressure": requested.adaptive.disable_backpressure
-                    },
-                    "latencyTargetMs": requested.latency_target_ms
-                })
-                .to_string(),
-            )],
+            args: vec![OscType::String(build_audio_state_json(audio))],
         }));
 
         // /state/input: live-input device state. DRC fields (drcMode/drcWeight/

@@ -99,7 +99,9 @@ carries what a client needs to notice either. The contract crate's
   relay, which it loses as a datagram client would when it falls behind
   (8 MiB queued); a
   client too slow for the state is disconnected instead, and gets a fresh
-  snapshot when it reconnects. Its snapshot comes in one part. An engine that
+  snapshot when it reconnects. Its snapshot comes in one part, and the
+  gain-table stream in chunks of up to 512 KiB rather than 1 KiB (the meta
+  says which); an HRTF upload may send chunks of the same size. An engine that
   cannot bind the port runs on datagrams only. See
   `docs/control-transport.md`.
 
@@ -285,7 +287,7 @@ same wire format; `null` unsets a nullable field.
 |---|---|---|
 | `/control/config/audio`, `/control/config/audio/apply` | json | Audio output and adaptive-resampling config as one batch. The apply is an alias of `/control/options/apply audio_output`: the output applies its values as they arrive, so it only acknowledges. |
 | `/control/audio/output_device` | s | Select output device. Host option `output_device`. |
-| `/control/audio/output_backend` | s | Requested output backend (`pipewire`, `asio`, `file`, …; `""` = platform default). Takes effect on the next output (re)start. Host option `output_backend`. |
+| `/control/audio/output_backend` | s | Requested output backend (`pipewire`, `asio`, `file`, …; `""` = platform default). Takes effect on the next output (re)start. Host option `output_backend`. On Windows, `asio` falls back to WASAPI shared mode when ASIO has no output device or the requested device is a WASAPI one; the `outputHost` field of `/state/audio` names the host the open stream plays through (`ASIO`, `WASAPI (fallback: no ASIO driver)`, `CoreAudio`; `""` when none is open or the backend names none). |
 | `/control/audio/output_file` | s | Destination for the `file` backend (`-`, a path or a FIFO; `""` = unset). Host option `output_file`. |
 | `/control/audio/output_file_format` | s | Container/format for the `file` backend (`""` = unset). Host option `output_file_format`. |
 | `/control/audio/output_devices/refresh` | — | Re-enumerate output devices. |

@@ -62,6 +62,10 @@ impl StudioSpike {
                     "status.audioFormat",
                     &[("rate", &rate), ("format", &format)],
                 );
+                if let Some(host) = &audio.audio_output_host {
+                    line.push_str(" • ");
+                    line.push_str(&tf("status.outputHost", &[("host", host)]));
+                }
                 if let Some(error) = &audio.audio_error {
                     line.push_str(&format!(" • Error: {error}"));
                 }
@@ -387,6 +391,11 @@ fn summary(
         "audio.summary",
         &[("device", &device), ("rate", &rate), ("format", &format)],
     );
+    // The host, so a WASAPI fallback shows without opening the section.
+    if let Some(host) = &audio.audio_output_host {
+        summary.push_str(" • ");
+        summary.push_str(host);
+    }
     if let Some(error) = &audio.audio_error {
         summary.push_str(&format!(" • Error: {error}"));
     }

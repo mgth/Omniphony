@@ -139,6 +139,11 @@ It creates the folder `omniphony-studio-egui-v0.6.0-windows-x86_64` holding
 1. Start the player first, with OSC on:
    `.\mpv --ad=orender --ad-orender-osc "D:\Films\film.mkv"`
    (or set `osc: true` under `render:` in the config).
+   From the next release, the flag is only needed with a config file that
+   leaves OSC off: with no config file the engine turns OSC on by itself, and
+   the config Studio then writes when you press Save keeps it on. (A config
+   that says `osc: false`, or one saved before that release without
+   `osc: true`, leaves it off.)
 2. Then start
    `C:\omniphony\omniphony-studio-egui-v0.6.0-windows-x86_64\omniphony-studio-egui.exe`
    (double-click it, or from another terminal). It connects by itself. Allow it
@@ -160,6 +165,14 @@ player. To give it the bridge too, add
 `ad-orender-bridge-path=C:\omniphony\harletty_bridge.dll` to
 `%APPDATA%\mpv\mpv.conf`, or copy `harletty_bridge.dll` into
 `%LOCALAPPDATA%\omniphony\lib\`, a folder the player also searches.
+
+A renderer that Studio starts itself plays through ASIO when an ASIO driver is
+installed (your interface's own, or FlexASIO / ASIO4ALL). Without one, it falls
+back to WASAPI, the Windows mixer, and Studio's *Audio output* section reads
+`host: WASAPI (fallback: no ASIO driver)`. WASAPI plays as many channels as the
+device's speaker setup ([step 3](#3-headphones-or-speakers)): a speaker layout
+wider than that is refused, with the reason in that section. Widen the speaker
+setup, or install an ASIO driver.
 
 ## When it does not work
 

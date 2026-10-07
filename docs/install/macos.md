@@ -148,6 +148,11 @@ xattr -dr com.apple.quarantine omniphony-studio-egui-v0.6.0-macos-arm64
 
 1. Start the player first, with OSC on: `mpv --ad=orender --ad-orender-osc film.mkv`
    (or set `osc: true` under `render:` in the config).
+   From the next release, the flag is only needed with a config file that
+   leaves OSC off: with no config file the engine turns OSC on by itself, and
+   the config Studio then writes when you press Save keeps it on. (A config
+   that says `osc: false`, or one saved before that release without
+   `osc: true`, leaves it off.)
 2. Then, from another Terminal window, start
    `~/omniphony/omniphony-studio-egui-v0.6.0-macos-arm64/omniphony-studio-egui`.
    It connects by itself.

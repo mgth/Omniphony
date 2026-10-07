@@ -84,10 +84,13 @@ fn stop_degraded_reporter_global() {
 // disagree on when OSC is up or where it listens.
 //
 // A zero/NULL field of the C struct defers to the config; `osc_enabled` can
-// only force OSC on (0 means "follow the config", never "off").
+// only force OSC on (0 means "follow the config", never "off"). When nothing
+// decides, OSC is on iff no config file exists (`config_file_exists`): a first
+// start in a player, where Studio is the only place a failure can show.
 fn resolve_osc_opts(
     cfg: &OrenderConfig,
     render_cfg: Option<&orender_engine::RenderConfig>,
+    config_file_exists: bool,
 ) -> Option<OscOptions> {
     let overrides = OscOverrides {
         enabled: (cfg.osc_enabled != 0).then_some(true),
@@ -96,14 +99,21 @@ fn resolve_osc_opts(
         port_in: (cfg.osc_port_in != 0).then_some(cfg.osc_port_in),
         metering: None,
     };
-    let opts = OscSettings::resolve(render_cfg, &overrides).options();
+    let opts = OscSettings::resolve(render_cfg, &overrides, !config_file_exists).options();
     if opts.is_none() {
         log::info!(
-            "OSC disabled: render.osc is unset/false, no host override, \
+            "OSC disabled: render.osc is unset/false in the config, no host override, \
              and no OMNIPHONY_OSC_PORT in the environment"
         );
     }
     opts
+}
+
+// Whether the config file the engine reads exists. Asked of the file itself,
+// not of what was loaded: a live-handoff sidecar can stand in for a missing
+// `config.yaml`, and no path at all (no home directory) is no config either.
+fn config_file_exists(config_path: Option<&Path>) -> bool {
+    config_path.is_some_and(Path::exists)
 }
 
 /// Opaque handle to a decode→render session. Created by `orender_create`,
@@ -151,8 +161,10 @@ pub struct OrenderConfig {
     pub codec: *const c_char,
     /// Force the OSC live-control server on (non-zero). 0 → follow the
     /// config's `render.osc`; when that is unset too, OSC defaults to on iff
-    /// `OMNIPHONY_OSC_PORT` is set (a workflow-assigned control port implies
-    /// the engine must be reachable there).
+    /// no config file exists (a first start: Studio can then see the engine)
+    /// or `OMNIPHONY_OSC_PORT` is set (a workflow-assigned control port
+    /// implies the engine must be reachable there). An existing config without
+    /// the key keeps OSC off.
     pub osc_enabled: c_int,
     /// Incoming OSC port (0 → config `render.osc_rx_port`, else
     /// `OMNIPHONY_OSC_PORT`, else 9000).
@@ -313,7 +325,11 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
         .and_then(|c| c.render);
     // Resolve OSC up front so we can also reach Studio with a degraded reporter
     // if the bridge fails. `None` when OSC is off.
-    let osc_opts = resolve_osc_opts(cfg, render_cfg.as_ref());
+    let osc_opts = resolve_osc_opts(
+        cfg,
+        render_cfg.as_ref(),
+        config_file_exists(config_path.as_deref()),
+    );
 
     // Settle OSC port ownership BEFORE `Engine::from_paths` reads the config:
     // a yieldable standby renderer writes its live-state sidecar while still
@@ -1267,7 +1283,7 @@ mod tests {
     }
 
     mod resolve_osc {
-        use crate::{OrenderConfig, resolve_osc_opts};
+        use crate::{OrenderConfig, config_file_exists, resolve_osc_opts};
         use orender_engine::RenderConfig;
         use std::ptr;
 
@@ -1307,19 +1323,65 @@ mod tests {
             }
         }
 
+        /// A config file that exists but says nothing about OSC keeps it off,
+        /// as before: a save with OSC off leaves the key out.
         #[test]
-        fn off_when_nothing_enables_it() {
+        fn off_when_an_existing_config_does_not_enable_it() {
             with_env_port(None, || {
-                assert!(resolve_osc_opts(&host_cfg(), None).is_none());
+                assert!(resolve_osc_opts(&host_cfg(), None, true).is_none());
                 let render = RenderConfig::default();
-                assert!(resolve_osc_opts(&host_cfg(), Some(&render)).is_none());
+                assert!(resolve_osc_opts(&host_cfg(), Some(&render), true).is_none());
             });
+        }
+
+        /// No config file: a first start in a player. OSC comes up on the
+        /// built-in rendezvous port, so Studio sees the engine.
+        #[test]
+        fn on_when_no_config_file_exists() {
+            with_env_port(None, || {
+                let opts = resolve_osc_opts(&host_cfg(), None, false)
+                    .expect("no config file must bring OSC up");
+                assert_eq!(opts.port_in, 9000);
+                assert_eq!(opts.port_out, 9000);
+                assert_eq!(opts.host, "127.0.0.1");
+                assert!(!opts.metering);
+            });
+        }
+
+        /// What the config says still wins over the missing-file default (a
+        /// live-handoff sidecar can stand in for a missing `config.yaml`),
+        /// and the workflow port still picks the port.
+        #[test]
+        fn config_and_environment_still_apply_without_a_config_file() {
+            with_env_port(Some("9010"), || {
+                let off = RenderConfig {
+                    osc: Some(false),
+                    ..RenderConfig::default()
+                };
+                assert!(resolve_osc_opts(&host_cfg(), Some(&off), false).is_none());
+                let opts = resolve_osc_opts(&host_cfg(), None, false).expect("OSC on");
+                assert_eq!((opts.port_in, opts.port_out), (9010, 9010));
+            });
+        }
+
+        #[test]
+        fn config_file_exists_asks_the_file() {
+            let dir = std::env::temp_dir()
+                .join(format!("orender-ffi-config-exists-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            let path = dir.join("config.yaml");
+            let _ = std::fs::remove_file(&path);
+            assert!(!config_file_exists(None), "no path is no config");
+            assert!(!config_file_exists(Some(&path)));
+            std::fs::write(&path, "render: {}\n").expect("write config");
+            assert!(config_file_exists(Some(&path)));
+            let _ = std::fs::remove_dir_all(&dir);
         }
 
         #[test]
         fn workflow_port_enables_osc_and_supplies_both_ports() {
             with_env_port(Some("9010"), || {
-                let opts = resolve_osc_opts(&host_cfg(), None)
+                let opts = resolve_osc_opts(&host_cfg(), None, true)
                     .expect("OMNIPHONY_OSC_PORT alone must bring OSC up");
                 assert_eq!(opts.port_in, 9010);
                 assert_eq!(opts.port_out, 9010);
@@ -1333,7 +1395,7 @@ mod tests {
                     osc: Some(false),
                     ..RenderConfig::default()
                 };
-                assert!(resolve_osc_opts(&host_cfg(), Some(&render)).is_none());
+                assert!(resolve_osc_opts(&host_cfg(), Some(&render), true).is_none());
             });
         }
 
@@ -1344,7 +1406,7 @@ mod tests {
                     osc_port_in: 9020,
                     ..host_cfg()
                 };
-                let opts = resolve_osc_opts(&cfg, None).expect("env enables OSC");
+                let opts = resolve_osc_opts(&cfg, None, true).expect("env enables OSC");
                 assert_eq!(opts.port_in, 9020);
                 assert_eq!(opts.port_out, 9010);
             });
@@ -1359,7 +1421,7 @@ mod tests {
                     ..RenderConfig::default()
                 };
                 let opts =
-                    resolve_osc_opts(&host_cfg(), Some(&render)).expect("config enables OSC");
+                    resolve_osc_opts(&host_cfg(), Some(&render), true).expect("config enables OSC");
                 assert_eq!(opts.port_in, 9005);
                 assert_eq!(opts.port_out, 9010);
             });

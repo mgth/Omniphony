@@ -154,6 +154,11 @@ tar xzf ~/Downloads/omniphony-studio-egui-v0.6.0-linux-x86_64.tar.gz --strip-com
    `~/omniphony/mpv --ad=orender --ad-orender-osc film.mkv`
    (or set `osc: true` under `render:` in the config). With the AUR packages
    the player is on your `PATH`: `mpv --ad=orender --ad-orender-osc film.mkv`.
+   From the next release, the flag is only needed with a config file that
+   leaves OSC off: with no config file the engine turns OSC on by itself, and
+   the config Studio then writes when you press Save keeps it on. (A config
+   that says `osc: false`, or one saved before that release without
+   `osc: true`, leaves it off.)
 2. Then, from another terminal, start `~/omniphony/studio/omniphony-studio-egui`
    (with the AUR, `paru -S omniphony-studio-egui`, then `omniphony-studio-egui`).
    It connects by itself.

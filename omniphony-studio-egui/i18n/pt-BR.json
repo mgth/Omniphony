@@ -746,6 +746,7 @@
   "status.foreignRendererTitle": "Conectado a um renderizador que este Studio não iniciou",
   "status.foreignRendererDetail": "Os controles que ele não implementa são descartados silenciosamente.\nem uso:    {running}\nesperado: {expected}",
   "status.audioFormat": "áudio: {rate} / {format}",
+  "status.outputHost": "host: {host}",
   "status.latencyFallback": "latência: raw {raw} | ctrl {ctrl}",
   "status.minValue": "min {value}",
   "status.maxValue": "max {value}",

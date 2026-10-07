@@ -746,6 +746,7 @@
   "status.foreignRendererTitle": "已连接到并非由本 Studio 启动的渲染器",
   "status.foreignRendererDetail": "它未实现的控制会被静默丢弃。\n正在运行：{running}\n预期：{expected}",
   "status.audioFormat": "音频: {rate} / {format}",
+  "status.outputHost": "主机: {host}",
   "status.latencyFallback": "延迟: raw {raw} | ctrl {ctrl}",
   "status.minValue": "最小 {value}",
   "status.maxValue": "最大 {value}",

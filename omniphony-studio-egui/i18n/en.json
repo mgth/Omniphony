@@ -776,6 +776,7 @@
   "status.foreignRendererTitle": "Connected to a renderer this Studio did not start",
   "status.foreignRendererDetail": "Controls it does not implement are dropped silently.\nrunning:  {running}\nexpected: {expected}",
   "status.audioFormat": "audio: {rate} / {format}",
+  "status.outputHost": "host: {host}",
   "status.latencyFallback": "latency: raw {raw} | ctrl {ctrl}",
   "status.minValue": "min {value}",
   "status.maxValue": "max {value}",
