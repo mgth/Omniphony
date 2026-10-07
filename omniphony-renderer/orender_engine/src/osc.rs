@@ -501,6 +501,7 @@ fn report_control_outcome(
     let (code, message) = match outcome {
         ControlOutcome::Handled => return,
         ControlOutcome::Invalid(reason) => (osc_contract::CONTROL_ERROR_INVALID_ARGUMENTS, reason),
+        ControlOutcome::NotAllowed(reason) => (osc_contract::CONTROL_ERROR_NOT_ALLOWED, reason),
         ControlOutcome::Unhandled if osc_contract::is_known_control(addr) => (
             osc_contract::CONTROL_ERROR_NOT_APPLIED,
             "not applied: its arguments were refused, or this engine host does not \
