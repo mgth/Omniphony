@@ -10,6 +10,7 @@ use crate::app::StudioSpike;
 use crate::host::commands::app as app_cmd;
 use crate::host::commands::mpv_config::MpvOrenderState;
 use crate::i18n::{t, tf};
+use crate::model::app_state::BridgeProblemKind;
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
 
@@ -128,21 +129,13 @@ impl StudioSpike {
     /// The three things that can be wrong with a connection, in the order the
     /// web shows them.
     fn connection_banners(&mut self, ui: &mut egui::Ui) {
-        let bridge_error = {
-            let live = self.host.read();
-            live.app
-                .render_bridge_error
-                .as_deref()
-                .map(str::trim)
-                .filter(|e| !e.is_empty())
-                .map(str::to_owned)
-        };
+        let bridge_problem = self.host.read().app.bridge_problem();
         // While no renderer is connected, say how to bring one up — but not
         // when there is a more specific banner to show. This is what a first
         // run sees, so it speaks of the audio engine rather than of orender,
         // and offers the one action that fixes it where Studio can take it:
         // starting the engine on this machine.
-        if bridge_error.is_none() && self.osc_state() != OscState::Connected {
+        if bridge_problem.is_none() && self.osc_state() != OscState::Connected {
             let can_start = crate::host::capabilities::ActionPolicy::of(&self.host).manage_process;
             self.host_operations.poll();
             let pending = self.host_operations.pending();
@@ -213,32 +206,42 @@ impl StudioSpike {
             }
         }
         // The renderer came up without its decoder bridge: it is running, and
-        // it has no spatial audio. The underlying error is the useful part.
-        if let Some(error) = bridge_error {
-            widgets::banner_with(
-                ui,
-                widgets::Severity::Error,
-                t("status.bridgeErrorTitle"),
-                |ui| {
-                    // What to do first, in the user's words; the engine's own
-                    // report (search paths, config keys) after it.
-                    ui.label(
-                        egui::RichText::new(tf(
-                            "status.bridgeErrorHint",
-                            &[
-                                ("section", t("section.audioInput")),
-                                ("field", t("input.bridgeBinary")),
-                            ],
-                        ))
-                        .size(theme::FONT_SIZE_SMALL),
-                    );
-                    ui.label(
-                        egui::RichText::new(&error)
-                            .size(theme::FONT_SIZE_SMALL)
-                            .color(theme::TEXT_MUTED),
-                    );
-                },
-            );
+        // it decodes no film soundtrack. Finding none is the standby
+        // renderer's normal state while the player, which has its own bridge,
+        // plays films: a warning. A bridge that was asked for or found and
+        // would not load is something to fix: an error.
+        if let Some(problem) = bridge_problem {
+            let (severity, title, hint) = match problem.kind {
+                BridgeProblemKind::NoDecoder => (
+                    widgets::Severity::Warning,
+                    "status.bridgeMissingTitle",
+                    "status.bridgeMissingHint",
+                ),
+                BridgeProblemKind::LoadFailed => (
+                    widgets::Severity::Error,
+                    "status.bridgeErrorTitle",
+                    "status.bridgeErrorHint",
+                ),
+            };
+            widgets::banner_with(ui, severity, t(title), |ui| {
+                // What to do first, in the user's words; the engine's own
+                // report (search paths, config keys) after it.
+                ui.label(
+                    egui::RichText::new(tf(
+                        hint,
+                        &[
+                            ("section", t("section.audioInput")),
+                            ("field", t("input.bridgeBinary")),
+                        ],
+                    ))
+                    .size(theme::FONT_SIZE_SMALL),
+                );
+                ui.label(
+                    egui::RichText::new(&problem.report)
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                );
+            });
         }
         // Attached to someone else's renderer: the connection looks perfectly
         // healthy, so this has to be said out loud or every control it does not
