@@ -38,6 +38,13 @@ use pw::spa::pod::Pod;
 
 use super::reader::{END_OF_STREAM_S, ReaderMsg, ReaderStats, Transport};
 
+/// `SPA_IO_CLOCK_FLAG_XRUN_RECOVER | SPA_IO_CLOCK_FLAG_DISCONT`
+/// (`spa/node/io.h`): the driver's clock restarted. Spelled out because the
+/// `libspa-sys` bindings come from the system's headers, and those of the
+/// PipeWire releases still supported (Ubuntu 22.04/24.04, CI included)
+/// predate both flags. The bits are ABI; an older server never sets them.
+const CLOCK_RESTARTED: u32 = (1 << 1) | (1 << 4);
+
 /// One graph cycle as the sink saw it.
 #[derive(Debug, Clone, Copy, Default)]
 struct CycleStamp {
@@ -244,10 +251,7 @@ fn run_sink(
                 (0, false)
             } else {
                 let clock = unsafe { &(*io).clock };
-                let discont = clock.flags
-                    & (spa::sys::SPA_IO_CLOCK_FLAG_DISCONT
-                        | spa::sys::SPA_IO_CLOCK_FLAG_XRUN_RECOVER)
-                    != 0;
+                let discont = clock.flags & CLOCK_RESTARTED != 0;
                 (clock.nsec, discont)
             };
             if discont {
