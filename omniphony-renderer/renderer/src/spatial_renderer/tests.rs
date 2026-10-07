@@ -454,6 +454,42 @@ fn settle(r: &mut SpatialRenderer, pcm: &[f32]) {
     }
 }
 
+/// The same panic on a build the calling thread makes itself — at start-up
+/// ([`SpatialRenderer::prepare_speaker_stage`]) or in synchronous mode
+/// (offline renders) — is an error the caller gets, not a panic through the
+/// engine or the render thread.
+#[test]
+fn a_band_build_that_panics_on_the_calling_thread_is_an_error() {
+    use std::sync::atomic::Ordering;
+    let mut r = build_table_renderer(true, false);
+    let control = r.renderer_control();
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(FLAKY_BUILDS));
+    control.register_backend(Box::new(FlakyFactory(Arc::clone(&mode))));
+    control.live.write().backend_id = "flaky".to_string();
+    control.bump_geometry_generation();
+    let plan = control.prepare_topology_rebuild().expect("plan");
+    let topology = plan
+        .build_topology_reusing(Some(&control.active_topology()))
+        .expect("topology");
+    mode.store(FLAKY_PANICS, Ordering::Relaxed);
+    control.publish_topology(topology);
+
+    let prepared =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| r.prepare_speaker_stage()))
+            .expect("no panic out of prepare_speaker_stage");
+    let error = format!("{:#}", prepared.expect_err("the build failed"));
+    assert!(error.contains("backend bug"), "{error}");
+
+    r.set_synchronous_stage_builds(true);
+    let pcm = vec![0.25f32; 40];
+    let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        r.render_frame(&pcm, 1, &[], Vec::new(), false).map(|_| ())
+    }))
+    .expect("no panic out of a synchronous render");
+    let error = format!("{:#}", rendered.expect_err("the build failed"));
+    assert!(error.contains("backend bug"), "{error}");
+}
+
 /// A band set the worker cannot build — its backend fails, or panics — is
 /// answered all the same: the stage stops waiting, keeps the bands it has,
 /// does not ask again every frame, and the reason reaches the control for the
@@ -1979,6 +2015,124 @@ fn rendered_frame_reports_the_geometry_it_produced() {
     assert_eq!(bin.samples.len(), frames * bin.n_channels);
 }
 
+/// What Studio does to a playing renderer: the layout swapped for one with
+/// fewer, then more speakers, and the stream's sample rate changed. The
+/// output keeps the width it was opened with: a smaller layout fills its
+/// first channels, a larger one is refused with a reason for the clients and
+/// the previous layout keeps playing (its gains would land past the stage's
+/// gain sets). Every frame stays finite and the renderer keeps sounding; a
+/// per-speaker setting left on a speaker the new layout does not have is
+/// ignored, not a crash.
+#[test]
+fn a_playing_renderer_survives_layout_and_sample_rate_changes() {
+    const FRAMES: usize = 480;
+    const WIDTH: usize = 12;
+    let mut r = renderer_for_layout(SpeakerLayout::preset("7.1.4").unwrap());
+    let control = r.renderer_control();
+    let event = SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(0),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([0.3, 0.8, 0.2]),
+        sample_pos: Some(0),
+    };
+    let mut block = 0;
+    // Render until a frame sounds on channels `from..used` and on none past
+    // `used`, checking every frame on the way. (The object sounds on a
+    // height speaker of 7.1.4, channel 9: `from` 6 tells 7.1.4 from 5.1.)
+    // The bands are built on a worker thread: wait for it by the clock, not
+    // by a count of blocks, so a slow runner is not reported as a failure.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+    let mut play_until = |r: &mut SpatialRenderer, from: usize, used: usize| {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        while std::time::Instant::now() < deadline {
+            // The object's metadata in every block, as a stream carries it: a
+            // sample-rate change is a new stream and resets what it knew.
+            let events = std::slice::from_ref(&event);
+            let frame = r
+                .render_frame(&noise_block(1, FRAMES, block), 1, events, Vec::new(), false)
+                .unwrap();
+            block += 1;
+            assert_eq!(
+                frame.n_channels, WIDTH,
+                "the output keeps the width it was opened with"
+            );
+            assert_eq!(frame.samples.len(), FRAMES * WIDTH);
+            assert!(
+                frame.samples.iter().all(|s| s.is_finite()),
+                "non-finite output"
+            );
+            let energy = |c: usize| {
+                frame
+                    .samples
+                    .iter()
+                    .skip(c)
+                    .step_by(WIDTH)
+                    .map(|x| x * x)
+                    .sum::<f32>()
+            };
+            if (from..used).any(|c| energy(c) > 0.0) && (used..WIDTH).all(|c| energy(c) == 0.0) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("the renderer never settled on channels {from}..{used}");
+    };
+    let publish = |preset: &str| {
+        control.with_editable_layout(|l| *l = SpeakerLayout::preset(preset).unwrap());
+        control.bump_geometry_generation();
+        let plan = control.prepare_topology_rebuild().expect("plan");
+        let topology = plan
+            .build_topology_reusing(Some(&control.active_topology()))
+            .expect("topology");
+        control.publish_topology(topology);
+    };
+    play_until(&mut r, 6, WIDTH);
+
+    // A setting for the last 7.1.4 speaker, which 5.1 does not have.
+    control.live.write().speakers.entry(11).or_default().gain = 0.0;
+    control.mark_speaker_params_dirty();
+    publish("5.1");
+    play_until(&mut r, 0, 6);
+    assert_eq!(control.take_band_build_error(), None);
+
+    // Wider than the output: refused, the 5.1 bands keep playing.
+    publish("9.1.6");
+    // The 5.1 bands stay installed meanwhile, so every block settles at once:
+    // wait for the worker's reply, with the 5.1 output checked on the way.
+    let deadline = std::time::Instant::now() + PATIENCE;
+    let error = loop {
+        play_until(&mut r, 0, 6);
+        if let Some(error) = control.take_band_build_error() {
+            break error;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wider layout is refused with a reason"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert!(
+        error.contains("16 speakers") && error.contains("restart"),
+        "{error}"
+    );
+    play_until(&mut r, 0, 6);
+
+    // Back to a layout that fits: built, and the error taken back.
+    publish("7.1.4");
+    control.live.write().speakers.remove(&11);
+    control.mark_speaker_params_dirty();
+    play_until(&mut r, 6, WIDTH);
+    assert_eq!(control.take_band_build_error().as_deref(), Some(""));
+
+    for rate in [44_100, 96_000, 48_000] {
+        r.set_sample_rate(rate).expect("sample rate");
+        play_until(&mut r, 6, WIDTH);
+    }
+}
+
 /// A mode change must be ramped, not stepped.
 ///
 /// The binaural and speaker paths are independent DSP chains; swapping them
@@ -2074,11 +2228,279 @@ fn crossover_renderer() -> SpatialRenderer {
 /// Build a renderer over an arbitrary layout with the same defaults as
 /// [`crossover_renderer`].
 fn renderer_for_layout(layout: SpeakerLayout) -> SpatialRenderer {
+    try_renderer_for_layout(layout).unwrap()
+}
+
+fn try_renderer_for_layout(layout: SpeakerLayout) -> Result<SpatialRenderer> {
     SpatialRenderer::new(RendererSpec {
         vbap_position_interpolation: false,
         ..test_support::spec(layout)
     })
-    .unwrap()
+}
+
+/// A layout larger than the renderer's gains hold (`MAX_SPEAKERS`, LFE
+/// included) is refused with a reason when the renderer is built: every
+/// backend sized its gains by it and panicked out of bounds on the
+/// table-building workers. One more speaker than the limit is enough.
+#[test]
+fn a_layout_past_the_speaker_limit_is_refused_with_a_reason() {
+    use crate::spatial_vbap::MAX_SPEAKERS;
+    use crate::speaker_layout::Speaker;
+    let ring = |n: usize| {
+        SpeakerLayout::from_speakers(
+            (0..n)
+                .map(|i| {
+                    Speaker::new(
+                        format!("S{i}"),
+                        -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
+                        if i % 2 == 0 { 0.0 } else { 40.0 },
+                    )
+                })
+                .collect(),
+        )
+        .unwrap()
+    };
+    assert!(try_renderer_for_layout(ring(MAX_SPEAKERS)).is_ok());
+    let error = try_renderer_for_layout(ring(MAX_SPEAKERS + 1))
+        .err()
+        .expect("refused");
+    let error = format!("{error:#}");
+    assert!(
+        error.contains(&format!("{} speakers", MAX_SPEAKERS + 1))
+            && error.contains(&format!("at most {MAX_SPEAKERS}")),
+        "{error}"
+    );
+}
+
+/// Render one object between two speakers on the plain 7.1.4 layout, after
+/// `setup` has set the per-speaker live params, and return each speaker's
+/// signal over the blocks after a settling run (identical input every time).
+fn per_speaker_streams(setup: impl Fn(&RendererControl)) -> Vec<Vec<f32>> {
+    const BLOCK: usize = 480;
+    const SETTLE: usize = 20;
+    const KEEP: usize = 10;
+    let mut r = renderer_for_layout(SpeakerLayout::preset("7.1.4").unwrap());
+    let control = r.renderer_control();
+    setup(&control);
+    control.mark_speaker_params_dirty();
+    let event = SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(0),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([-0.4, 1.0, 0.0]),
+        sample_pos: Some(0),
+    };
+    let mut streams: Vec<Vec<f32>> = Vec::new();
+    for block in 0..SETTLE + KEEP {
+        let pcm = noise_block(1, BLOCK, block);
+        let events = if block == 0 {
+            std::slice::from_ref(&event)
+        } else {
+            &[]
+        };
+        let out = r.render_frame(&pcm, 1, events, Vec::new(), false).unwrap();
+        let n = out.n_channels;
+        streams.resize(n, Vec::new());
+        if block >= SETTLE {
+            for (spk, stream) in streams.iter_mut().enumerate() {
+                stream.extend(out.samples.iter().skip(spk).step_by(n).copied());
+            }
+        }
+    }
+    streams
+}
+
+fn energy(stream: &[f32]) -> f64 {
+    stream.iter().map(|&s| s as f64 * s as f64).sum()
+}
+
+/// The output stage's per-speaker controls — gain, mute, delay — act on
+/// their speaker and on nothing else. Measured against the same render with
+/// no override: the object lands on two speakers, and each control is set on
+/// the louder one while the other must come out bit-identical.
+#[test]
+fn per_speaker_gain_mute_and_delay_shape_only_their_speaker() {
+    let reference = per_speaker_streams(|_| {});
+    let mut by_energy: Vec<usize> = (0..reference.len()).collect();
+    by_energy.sort_by(|&a, &b| energy(&reference[b]).total_cmp(&energy(&reference[a])));
+    let (target, other) = (by_energy[0], by_energy[1]);
+    assert!(
+        energy(&reference[other]) > 1e-3 * energy(&reference[target]),
+        "the object must land on two speakers for the comparison to mean anything"
+    );
+    let set = |f: fn(&mut crate::live_params::SpeakerLiveParams)| {
+        per_speaker_streams(move |control| {
+            f(control.live.write().speakers.entry(target).or_default())
+        })
+    };
+    let untouched = |streams: &[Vec<f32>], what: &str| {
+        for (spk, stream) in streams.iter().enumerate() {
+            if spk != target {
+                assert_eq!(stream, &reference[spk], "{what} changed speaker {spk}");
+            }
+        }
+    };
+
+    let halved = set(|p| p.gain = 0.5);
+    untouched(&halved, "a gain");
+    for (got, want) in halved[target].iter().zip(&reference[target]) {
+        assert!(
+            (got - 0.5 * want).abs() <= 1e-6,
+            "gain 0.5: {got} vs {want}"
+        );
+    }
+
+    let muted = set(|p| {
+        p.gain = 0.5;
+        p.muted = true;
+    });
+    untouched(&muted, "a mute");
+    assert!(
+        muted[target].iter().all(|&s| s == 0.0),
+        "a muted speaker is silent"
+    );
+
+    // 1 ms at 48 kHz: the speaker's signal, 48 samples later.
+    let delayed = set(|p| p.delay_ms = 1.0);
+    untouched(&delayed, "a delay");
+    let shift = 48;
+    for (n, (got, want)) in delayed[target][shift..]
+        .iter()
+        .zip(&reference[target])
+        .enumerate()
+    {
+        assert!(
+            (got - want).abs() <= 1e-5,
+            "delay: sample {n}: {got} vs {want}"
+        );
+    }
+    assert!(energy(&delayed[target]) > 0.5 * energy(&reference[target]));
+}
+
+/// What a decoder or a bridge hands `render_frame` is not to be trusted: no
+/// channel, a buffer that is not a whole number of frames, an event for a
+/// channel that does not exist (up to the last index), a position, size or
+/// gain that is NaN or infinite, a ramp of four billion samples. Each is answered with an error
+/// or with finite output — never a panic, never NaN on a speaker — and the
+/// renderer renders normally afterwards. (Non-finite PCM is not among them:
+/// the engine hands over integer PCM from the bridge ABI, finite by
+/// construction, and checking every sample here would cost the hot loop.)
+#[test]
+fn hostile_render_inputs_never_panic_or_reach_the_output_as_nan() {
+    let mut r = renderer_for_layout(SpeakerLayout::preset("7.1.4").unwrap());
+    let object = |position: [f64; 3]| SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(0),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some(position),
+        sample_pos: Some(0),
+    };
+    let nan = f64::NAN;
+    let inf = f64::INFINITY;
+    let mut events: Vec<(&str, Vec<SpatialChannelEvent>)> = vec![
+        ("NaN position", vec![object([nan, nan, nan])]),
+        ("infinite position", vec![object([inf, -inf, inf])]),
+        ("huge position", vec![object([1e30, -1e30, 1e30])]),
+        (
+            "NaN size",
+            vec![SpatialChannelEvent {
+                size: Some([f32::NAN; 3]),
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "NaN gain",
+            vec![SpatialChannelEvent {
+                gain_db: Some(f32::NAN),
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "infinite gain",
+            vec![SpatialChannelEvent {
+                gain_db: Some(f32::INFINITY),
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "endless ramp",
+            vec![SpatialChannelEvent {
+                ramp_length: Some(u32::MAX),
+                ..object([1.0, 0.0, 0.0])
+            }],
+        ),
+        (
+            "far sample position",
+            vec![SpatialChannelEvent {
+                sample_pos: Some(u64::MAX),
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "unknown channel",
+            vec![SpatialChannelEvent {
+                channel_idx: 99,
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "channel one billion",
+            vec![SpatialChannelEvent {
+                channel_idx: 1_000_000_000,
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+        (
+            "last channel index",
+            vec![SpatialChannelEvent {
+                channel_idx: usize::MAX,
+                ..object([0.0, 1.0, 0.0])
+            }],
+        ),
+    ];
+    events.push(("no event", Vec::new()));
+    let buffers: Vec<(&str, Vec<f32>, usize)> = vec![
+        ("one channel", noise_block(1, 480, 0), 1),
+        ("empty", Vec::new(), 1),
+        ("no channel", noise_block(1, 480, 1), 0),
+        ("partial frame", noise_block(1, 7, 2), 2),
+    ];
+    for (what_events, evs) in &events {
+        for (what_pcm, pcm, channels) in &buffers {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                r.render_frame(pcm, *channels, evs, Vec::new(), false)
+            }));
+            let case = format!("{what_events} / {what_pcm}");
+            let Ok(result) = outcome else {
+                panic!("{case}: render_frame panicked");
+            };
+            if let Ok(frame) = result {
+                assert!(
+                    frame.samples.iter().all(|s| s.is_finite()),
+                    "{case}: non-finite output"
+                );
+            }
+        }
+    }
+    // And the renderer is still a renderer.
+    let after = r
+        .render_frame(
+            &noise_block(1, 480, 9),
+            1,
+            &[object([0.0, 1.0, 0.0])],
+            Vec::new(),
+            false,
+        )
+        .expect("a normal frame after the hostile ones");
+    assert!(after.samples.iter().all(|s| s.is_finite()));
+    assert!(
+        after.samples.iter().any(|&s| s != 0.0),
+        "it still renders sound"
+    );
 }
 
 /// The test signal must reach only the speaker under test.
@@ -2697,9 +3119,10 @@ fn synchronous_stage_builds_land_on_the_requesting_frame() {
 
 /// A 7.1.4 renderer on a precomputed table, cartesian or polar. With
 /// `band_limited` its first three speakers are band-limited, so objects render
-/// through several crossover bands and the unified multi-band table; without,
-/// through the single band's own evaluator. Coarse grids: the tests that use it
-/// compare renders with each other, not with a geometry.
+/// through several crossover bands; without, through a single band. Either way
+/// through the unified table (a test that wants the per-band path clears it).
+/// Coarse grids: the tests that use it compare renders with each other, not
+/// with a geometry.
 pub(super) fn build_table_renderer(cartesian: bool, band_limited: bool) -> SpatialRenderer {
     let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
     if band_limited {
@@ -2739,10 +3162,9 @@ pub(super) fn build_table_renderer(cartesian: bool, band_limited: bool) -> Spati
     })
     .unwrap();
     r.prepare_speaker_stage().unwrap();
-    assert_eq!(
+    assert!(
         r.speaker_stage.unified_table.is_some(),
-        band_limited,
-        "only the band-limited layout renders through the unified table"
+        "every precomputed layout renders through the unified table"
     );
     r
 }
@@ -2756,6 +3178,51 @@ pub(super) fn noise_block(n_channels: usize, sample_length: usize, block: usize)
             ((x >> 8) & 0xffff) as f32 / 65535.0 * 0.5 - 0.25
         })
         .collect()
+}
+
+/// A layout without crossover renders through the unified table too, its one
+/// band merged like a crossover's: the lookup localises the cell once and
+/// reads the corner cache. It must render exactly what the band's own
+/// evaluator renders — the same bits, in the sample ramp, objects moving.
+#[test]
+fn a_single_band_renders_the_same_bits_through_the_unified_table() {
+    for cartesian in [true, false] {
+        let mut unified = build_table_renderer(cartesian, false);
+        assert!(unified.speaker_stage.unified_table.is_some(), "{cartesian}");
+        let mut per_band = build_table_renderer(cartesian, false);
+        per_band.speaker_stage.unified_table = None;
+        for r in [&mut unified, &mut per_band] {
+            r.control.live.write().options.ramp_mode = RampMode::Sample;
+        }
+        const OBJECTS: usize = 4;
+        for block in 0..24 {
+            let events = circling_events(OBJECTS, block, 120);
+            let pcm = noise_block(OBJECTS, 40, block);
+            let a = unified
+                .render_frame(&pcm, OBJECTS, &events, Vec::new(), false)
+                .unwrap();
+            let b = per_band
+                .render_frame(&pcm, OBJECTS, &events, Vec::new(), false)
+                .unwrap();
+            assert_eq!(a.samples.len(), b.samples.len());
+            assert!(
+                a.samples.iter().any(|x| x.abs() > 1e-3),
+                "block {block} is silent"
+            );
+            let first = a
+                .samples
+                .iter()
+                .zip(&b.samples)
+                .position(|(x, y)| x.to_bits() != y.to_bits());
+            assert_eq!(
+                first,
+                None,
+                "cartesian {cartesian}, block {block}: unified {:?} vs per band {:?}",
+                first.map(|i| a.samples[i]),
+                first.map(|i| b.samples[i])
+            );
+        }
+    }
 }
 
 /// One event per object on a slow circle round the listener, each object at

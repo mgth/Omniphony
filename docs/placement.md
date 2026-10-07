@@ -43,7 +43,7 @@ height that makes 30° in a cube.
 The renderer knows no format by name. Its family table holds its own two
 families and whatever the loaded bridge declares:
 
-| Family | From | Default mode |
+| Family | From | Default mode on speakers |
 |---|---|---|
 | `generic` | the renderer: the base every family inherits from, and what a stream declaring no family (or one missing from the table) gets | Room |
 | `pcm` | the renderer: its own PCM input (the PipeWire sink's plain PCM; the reference WAV bridge declares it too) | Room |
@@ -55,7 +55,7 @@ its family (`FormatBridge::source_family`, a string read when the labels
 change), resolved to a table entry once per declaration. The harletty bridge
 declares:
 
-| Family | Label | Covers | Default mode |
+| Family | Label | Covers | Default mode on speakers |
 |---|---|---|---|
 | `dolby` | Dolby | AC-3, E-AC-3, TrueHD (with or without objects) | Room |
 | `dts` | DTS | DTS, DTS-HD, DTS:X | Room (its ETSI angles serve Sphere) |
@@ -68,8 +68,24 @@ bridge declares it. Studio offers the families the renderer publishes
 (`placementFamilies`), named by their label.
 
 `generic` is also the base the others inherit from: a family with no mode
-of its own takes the generic mode when one is set, else its default mode;
-a family with no layout of its own uses the generic layout.
+of its own takes the generic mode when one is set, else the output's
+default; a family with no layout of its own uses the generic layout.
+
+## The output's default
+
+When neither a family nor `generic` sets a mode, the output decides:
+
+| Output | Mode |
+|---|---|
+| Headphones (binaural, direct or virtual room) | **Sphere**, whatever the family |
+| Speakers | the family's default mode (the tables above) |
+
+On headphones there is no room around the listener whose corners the
+channels could take, and a direction on the sphere is what an HRTF renders;
+on speakers Room often matches where the real speakers stand (#569, #375,
+#679). The default is a resolution, not a setting: switching the output
+re-plans a defaulted family on the next frame, and nothing is written to the
+config. A mode chosen for a family, or for `generic`, wins on either output.
 
 ## Config
 
@@ -114,8 +130,10 @@ needs.
 The `/omniphony/state/renderer` snapshot carries a `placement` block, one
 entry per family of the table, keyed by name: `label`, `declared` (false for
 a family known only from the config), `defaultMode`, `mode` and `layout`
-(the family's own, `null` when inherited), `effectiveMode`, and
-`layoutSource` (`own`, `generic` or `none`). `placementFamilies` lists the
+(the family's own, `null` when inherited), `effectiveMode` on the current
+output, `modeSource` saying why (`own`, `generic`, `headphones` or
+`family`), and `layoutSource` (`own`, `generic` or `none`). `defaultMode` is
+the speakers' default. `placementFamilies` lists the
 families a client offers, in order: `generic`, the bridge's in its
 catalogue order, then `pcm`. `fixedChannelProcessing.family` names the
 family of the stream being rendered; the legacy `virtualBed` key mirrors

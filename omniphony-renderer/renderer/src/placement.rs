@@ -30,15 +30,21 @@
 //! in the table too, so its settings survive a save under another bridge.
 //!
 //! Families inherit from the generic one: a family without an explicit mode
-//! takes the generic mode when one is set, else its default (the bridge's;
-//! room for the renderer's own families); a family without a layout uses the
-//! generic layout. The generic family is also what a stream declaring no
-//! family, or one missing from the table, gets.
+//! takes the generic mode when one is set, else the output's default; a family
+//! without a layout uses the generic layout. The generic family is also what a
+//! stream declaring no family, or one missing from the table, gets.
+//!
+//! The output's default is Sphere on headphones, whatever the family: there is
+//! no room around a listener on headphones whose corners the channels could
+//! take, and a direction on the sphere is what an HRTF renders. On speakers it
+//! is the family's own default (the bridge's; room for the renderer's own
+//! families), since Room often matches where real speakers stand (#679).
 
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Mapping;
 
 use crate::config::unknown_values::{self, EnumKey, KeepsUnknownValues};
+use crate::live_params::OutputMode;
 use crate::speaker_layout::SpeakerLayout;
 
 /// How a family's fixed channels are placed. See the module docs.
@@ -67,6 +73,31 @@ impl PlacementMode {
         Self::ALL
             .into_iter()
             .find(|mode| mode.as_str().eq_ignore_ascii_case(s))
+    }
+}
+
+/// Why a family runs in the mode it does, in the order the rule looks:
+/// see [`PlacementState::resolve_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeSource {
+    /// The family's own choice.
+    Own,
+    /// The generic family's choice, inherited.
+    Generic,
+    /// Nobody chose, and the output is headphones: Sphere.
+    Headphones,
+    /// Nobody chose, and the output is speakers: the family's default.
+    Family,
+}
+
+impl ModeSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Own => "own",
+            Self::Generic => "generic",
+            Self::Headphones => "headphones",
+            Self::Family => "family",
+        }
     }
 }
 
@@ -109,7 +140,7 @@ pub struct FamilyInfo {
 ///
 /// `Deserialize` and `Serialize` wrap the derived ones (`remote = "Self"`): a
 /// mode this build does not know is kept rather than failing the file (see
-/// [`unknown_values`]).
+/// `unknown_values`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct FamilyPlacement {
@@ -298,13 +329,28 @@ impl PlacementState {
         &mut self.families[family.index()].own
     }
 
-    /// The mode a family runs in: its own, else the generic one, else its
-    /// default.
-    pub fn effective_mode(&self, family: SourceFamily) -> PlacementMode {
-        self.family(family)
-            .mode
-            .or(self.family(SourceFamily::GENERIC).mode)
-            .unwrap_or(self.info(family).default_mode)
+    /// The mode a family runs in on `output`, and why: its own, else the
+    /// generic one, else Sphere on headphones, else the family's default.
+    pub fn resolve_mode(
+        &self,
+        family: SourceFamily,
+        output: OutputMode,
+    ) -> (PlacementMode, ModeSource) {
+        if let Some(mode) = self.family(family).mode {
+            return (mode, ModeSource::Own);
+        }
+        if let Some(mode) = self.family(SourceFamily::GENERIC).mode {
+            return (mode, ModeSource::Generic);
+        }
+        match output {
+            OutputMode::Binaural => (PlacementMode::Sphere, ModeSource::Headphones),
+            OutputMode::SpeakerArray => (self.info(family).default_mode, ModeSource::Family),
+        }
+    }
+
+    /// The mode a family runs in on `output` (see [`Self::resolve_mode`]).
+    pub fn effective_mode(&self, family: SourceFamily, output: OutputMode) -> PlacementMode {
+        self.resolve_mode(family, output).0
     }
 
     /// The entries a family uses: its own layout, else the generic one.
@@ -315,9 +361,9 @@ impl PlacementState {
             .or(self.family(SourceFamily::GENERIC).layout.as_ref())
     }
 
-    pub fn effective(&self, family: SourceFamily) -> EffectivePlacement<'_> {
+    pub fn effective(&self, family: SourceFamily, output: OutputMode) -> EffectivePlacement<'_> {
         EffectivePlacement {
-            mode: self.effective_mode(family),
+            mode: self.effective_mode(family, output),
             layout: self.effective_layout(family),
         }
     }
@@ -458,6 +504,9 @@ impl<'de> Deserialize<'de> for PlacementConfig {
 mod tests {
     use super::*;
 
+    const SPEAKERS: OutputMode = OutputMode::SpeakerArray;
+    const HEADPHONES: OutputMode = OutputMode::Binaural;
+
     fn bed() -> SpeakerLayout {
         SpeakerLayout::preset("5.1").expect("5.1 preset")
     }
@@ -489,10 +538,10 @@ mod tests {
     fn declared_defaults_apply_and_the_rest_is_a_room() {
         let (state, dts, auro) = with_bridge();
         assert!(state.is_default());
-        assert_eq!(state.effective_mode(auro), PlacementMode::Sphere);
+        assert_eq!(state.effective_mode(auro, SPEAKERS), PlacementMode::Sphere);
         for family in [SourceFamily::GENERIC, SourceFamily::PCM, dts] {
             assert_eq!(
-                state.effective_mode(family),
+                state.effective_mode(family, SPEAKERS),
                 PlacementMode::Room,
                 "{family:?}"
             );
@@ -502,6 +551,39 @@ mod tests {
         assert_eq!(state.info(auro).label, "Auro-3D");
     }
 
+    /// On headphones nobody's default is a room: every family that has no
+    /// choice of its own, or from generic, renders on the sphere — and says
+    /// so. A choice still wins, whatever the output.
+    #[test]
+    fn headphones_default_to_the_sphere_unless_someone_chose() {
+        let (mut state, dts, auro) = with_bridge();
+        for family in [SourceFamily::GENERIC, SourceFamily::PCM, dts, auro] {
+            assert_eq!(
+                state.resolve_mode(family, HEADPHONES),
+                (PlacementMode::Sphere, ModeSource::Headphones),
+                "{family:?}"
+            );
+        }
+        assert_eq!(
+            state.resolve_mode(dts, SPEAKERS),
+            (PlacementMode::Room, ModeSource::Family)
+        );
+        state.family_mut(dts).mode = Some(PlacementMode::Room);
+        assert_eq!(
+            state.resolve_mode(dts, HEADPHONES),
+            (PlacementMode::Room, ModeSource::Own)
+        );
+        state.family_mut(SourceFamily::GENERIC).mode = Some(PlacementMode::Room);
+        assert_eq!(
+            state.resolve_mode(auro, HEADPHONES),
+            (PlacementMode::Room, ModeSource::Generic)
+        );
+        // The default is a resolution, not a setting: nothing to save.
+        state.family_mut(dts).mode = None;
+        state.family_mut(SourceFamily::GENERIC).mode = None;
+        assert!(state.is_default());
+    }
+
     #[test]
     fn a_bridge_cannot_redefine_the_renderer_families() {
         let mut state = PlacementState::default();
@@ -509,7 +591,10 @@ mod tests {
         state.declare("generic", "Other", PlacementMode::Sphere);
         assert_eq!(state.families().count(), 2);
         assert_eq!(state.info(SourceFamily::PCM).label, "PCM");
-        assert_eq!(state.effective_mode(SourceFamily::PCM), PlacementMode::Room);
+        assert_eq!(
+            state.effective_mode(SourceFamily::PCM, SPEAKERS),
+            PlacementMode::Room
+        );
     }
 
     #[test]
@@ -518,18 +603,18 @@ mod tests {
         state.family_mut(SourceFamily::GENERIC).mode = Some(PlacementMode::Manual);
         state.family_mut(SourceFamily::GENERIC).layout = Some(bed());
         // An explicit generic mode beats a declared default, Auro's too.
-        assert_eq!(state.effective_mode(auro), PlacementMode::Manual);
-        assert_eq!(state.effective_mode(dts), PlacementMode::Manual);
+        assert_eq!(state.effective_mode(auro, SPEAKERS), PlacementMode::Manual);
+        assert_eq!(state.effective_mode(dts, SPEAKERS), PlacementMode::Manual);
         assert!(state.effective_layout(dts).is_some());
         // The family's own setting wins over generic.
         state.family_mut(auro).mode = Some(PlacementMode::Sphere);
-        assert_eq!(state.effective_mode(auro), PlacementMode::Sphere);
+        assert_eq!(state.effective_mode(auro, SPEAKERS), PlacementMode::Sphere);
         // …and its own layout too, while the mode keeps inheriting.
         let mut own = bed();
         own.radius_m = 2.0;
         state.family_mut(dts).layout = Some(own);
         assert_eq!(state.effective_layout(dts).map(|l| l.radius_m), Some(2.0));
-        assert_eq!(state.effective_mode(dts), PlacementMode::Manual);
+        assert_eq!(state.effective_mode(dts, SPEAKERS), PlacementMode::Manual);
     }
 
     #[test]
@@ -569,7 +654,7 @@ mod tests {
         assert!(state.info(iamf).declared);
         assert_eq!(state.info(iamf).label, "IAMF");
         assert_eq!(
-            state.effective_mode(iamf),
+            state.effective_mode(iamf, SPEAKERS),
             PlacementMode::Room,
             "own mode kept"
         );
@@ -591,7 +676,7 @@ mod tests {
         let families: Vec<SourceFamily> = state.families().map(|(family, _)| family).collect();
         for family in families {
             assert_eq!(
-                state.effective_mode(family),
+                state.effective_mode(family, SPEAKERS),
                 PlacementMode::Manual,
                 "{family:?}"
             );

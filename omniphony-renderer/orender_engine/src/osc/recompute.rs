@@ -69,6 +69,8 @@ pub(crate) fn trigger_layout_recompute(
     std::thread::Builder::new()
         .name("render-backend-recompute".into())
         .spawn(move || {
+            #[cfg(test)]
+            hold::wait_while_held(&control_clone);
             log::info!(
                 "Render backend recompute started ({})",
                 rebuild_plan_for_thread.log_summary()
@@ -176,9 +178,9 @@ pub(crate) fn trigger_layout_recompute(
                                 {
                                     if client_version != Some(version) {
                                         for update in gaintable_chunk_broadcasts(&bytes, None) {
-                                            send_update_to_client(&socket_clone, addr, &update);
+                                            send_update_to_client(&socket_clone, &addr, &update);
                                         }
-                                        clients_clone.set_gaintable_version(addr, target, version);
+                                        clients_clone.set_gaintable_version(&addr, target, version);
                                     }
                                 }
                             }
@@ -243,6 +245,46 @@ pub(crate) fn trigger_layout_recompute(
         .expect("failed to spawn vbap-recompute thread");
 }
 
+/// Tests that need a recompute still running at a given moment hold the
+/// worker of one engine (one `RendererControl`) at its start until the guard
+/// is dropped; every other engine's workers run as usual.
+#[cfg(test)]
+pub(crate) mod hold {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    use renderer::live_params::RendererControl;
+
+    static HELD: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    static RELEASED: Condvar = Condvar::new();
+
+    fn key(control: &Arc<RendererControl>) -> usize {
+        Arc::as_ptr(control) as usize
+    }
+
+    pub(crate) struct Held(usize);
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            HELD.lock().unwrap().retain(|&k| k != self.0);
+            RELEASED.notify_all();
+        }
+    }
+
+    /// Hold `control`'s recompute workers until the returned guard drops.
+    pub(crate) fn hold(control: &Arc<RendererControl>) -> Held {
+        HELD.lock().unwrap().push(key(control));
+        Held(key(control))
+    }
+
+    pub(super) fn wait_while_held(control: &Arc<RendererControl>) {
+        let key = key(control);
+        let mut held = HELD.lock().unwrap();
+        while held.contains(&key) {
+            held = RELEASED.wait(held).unwrap();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,15 +330,22 @@ mod tests {
         None
     }
 
-    /// Studio grows the layout past what the barycenter solver holds while
-    /// that backend is selected: the recompute fails with the backend's own
-    /// reason on the recompute-error broadcast — not a caught out-of-bounds
-    /// panic — and the engine keeps rendering the previous topology.
+    /// Studio grows the layout past what the renderer's gains hold
+    /// (`MAX_SPEAKERS`, LFE included), whichever backend is selected: the
+    /// recompute fails with a reason on the recompute-error broadcast — not a
+    /// caught out-of-bounds panic — and the engine keeps rendering the
+    /// previous topology.
     #[test]
-    fn an_oversized_barycenter_layout_reports_a_recompute_error() {
+    fn an_oversized_layout_reports_a_recompute_error_with_every_backend() {
+        for backend in ["vbap", "barycenter", "experimental_distance", "hybrid"] {
+            oversized_layout_reports_a_recompute_error(backend);
+        }
+    }
+
+    fn oversized_layout_reports_a_recompute_error(backend: &str) {
         let control = fixture_control();
         let before = control.active_topology();
-        control.live.write().backend_id = "barycenter".to_string();
+        control.live.write().backend_id = backend.to_string();
         let n = MAX_SPEAKERS + 2;
         let layout = SpeakerLayout::from_speakers(
             (0..n)
@@ -319,7 +368,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_millis(200)))
             .unwrap();
         let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
-        clients.insert_permanent(client.local_addr().unwrap());
+        clients.insert_permanent(&crate::osc::peer::Peer::Udp(client.local_addr().unwrap()));
 
         trigger_layout_recompute(
             &control,
@@ -329,19 +378,19 @@ mod tests {
         );
 
         let error = next_non_empty_string(&client, osc_contract::STATE_SPEAKERS_RECOMPUTE_ERROR)
-            .expect("a recompute error is broadcast");
+            .unwrap_or_else(|| panic!("{backend}: a recompute error is broadcast"));
         assert!(
             error.contains(&format!("at most {MAX_SPEAKERS}")) && !error.contains("panicked"),
-            "got: {error}"
+            "{backend}: {error}"
         );
         let deadline = Instant::now() + Duration::from_secs(10);
         while control.recomputing.load(Ordering::Relaxed) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(!control.recomputing.load(Ordering::Relaxed));
+        assert!(!control.recomputing.load(Ordering::Relaxed), "{backend}");
         assert!(
             Arc::ptr_eq(&before, &control.active_topology()),
-            "the previous topology stays active"
+            "{backend}: the previous topology stays active"
         );
     }
 }

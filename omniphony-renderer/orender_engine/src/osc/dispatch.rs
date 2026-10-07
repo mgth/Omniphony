@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,6 +23,7 @@ use runtime_control::osc_contract;
 use super::client_registry::OscClientRegistry;
 use super::export::{broadcast_live_state, export_current_layout, save_live_config};
 use super::gaintable::GaintableCache;
+use super::peer::Peer;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
     broadcast_blob, broadcast_fff, broadcast_float, broadcast_int, broadcast_string,
@@ -59,7 +60,7 @@ pub(crate) struct RealtimeSeqState {
 pub(crate) struct Dispatch<'a> {
     msg: &'a OscMessage,
     /// The sender, for the handlers that reply point-to-point.
-    src: SocketAddr,
+    src: &'a Peer,
     control: &'a Arc<RendererControl>,
     host: Option<&'a Arc<dyn HostControlHandler>>,
     realtime_seq: &'a mut RealtimeSeqState,
@@ -154,7 +155,7 @@ fn profile(d: &mut Dispatch) -> ControlOutcome {
 
 pub(crate) fn handle_control_message(
     msg: &OscMessage,
-    src: SocketAddr,
+    src: &Peer,
     control: &Arc<RendererControl>,
     host: Option<&Arc<dyn HostControlHandler>>,
     realtime_seq: &mut RealtimeSeqState,
@@ -235,7 +236,7 @@ pub(crate) fn handle_control_message(
                             if let Ok(bytes) =
                                 rosc::encoder::encode(&rosc::OscPacket::Message(reply))
                             {
-                                let _ = socket.send_to(&bytes, src);
+                                let _ = src.send(socket, &bytes);
                             }
                             log::info!(
                                 "OSC yield_port: entering standby; resume port {resume_port}"
@@ -403,7 +404,7 @@ fn backend_file_reply(mut args: Vec<OscType>, request_id: Option<&str>) -> Vec<O
 
 fn send_backend_file_error(
     socket: &UdpSocket,
-    src: SocketAddr,
+    src: &Peer,
     backend_id: &str,
     key: &str,
     request_id: Option<&str>,
@@ -433,7 +434,7 @@ fn send_backend_file_error(
 /// [`backend_files::resolve`]).
 fn handle_backend_file_get(
     msg: &OscMessage,
-    src: SocketAddr,
+    src: &Peer,
     control: &Arc<RendererControl>,
     socket: &UdpSocket,
 ) {
@@ -453,7 +454,7 @@ fn handle_backend_file_get(
             .unwrap_or_default(),
     };
     let config_dir = backend_file_config_dir(control);
-    let allow_absolute = src.ip().is_loopback();
+    let allow_absolute = src.is_loopback();
     let Some(path) =
         backend_files::resolve(config_dir.as_deref(), &backend_id, &handle, allow_absolute)
     else {
@@ -498,7 +499,7 @@ fn handle_backend_file_get(
 /// remote (no native Browse).
 fn handle_backend_file_list(
     msg: &OscMessage,
-    src: SocketAddr,
+    src: &Peer,
     control: &Arc<RendererControl>,
     socket: &UdpSocket,
 ) {
@@ -522,7 +523,7 @@ fn handle_backend_file_list(
 /// errors surface through the usual recompute-error banner.
 fn handle_backend_file_put(
     msg: &OscMessage,
-    src: SocketAddr,
+    src: &Peer,
     control: &Arc<RendererControl>,
     host: Option<&Arc<dyn HostControlHandler>>,
     socket: &Arc<UdpSocket>,
@@ -552,7 +553,7 @@ fn handle_backend_file_put(
         return;
     }
     let config_dir = backend_file_config_dir(control);
-    let allow_absolute = src.ip().is_loopback();
+    let allow_absolute = src.is_loopback();
     let Some(path) =
         backend_files::resolve(config_dir.as_deref(), &backend_id, &name, allow_absolute)
     else {
@@ -652,7 +653,7 @@ fn push_gaintable_subscribe(
     clients: &OscClientRegistry,
     gaintable_cache: &GaintableCache,
     ctx: &RuntimeControlContext,
-    client: SocketAddr,
+    client: &Peer,
     speaker: i64,
     have_version: Option<u32>,
 ) {
@@ -723,7 +724,7 @@ mod backend_file_request_tests {
         for id in [None, Some("id-a")] {
             send_backend_file_error(
                 &socket,
-                receiver.local_addr().unwrap(),
+                &Peer::Udp(receiver.local_addr().unwrap()),
                 "script",
                 "file",
                 id,
@@ -767,7 +768,7 @@ mod notify_tests {
     struct Wire {
         engine: Arc<UdpSocket>,
         clients: Arc<OscClientRegistry>,
-        writer: SocketAddr,
+        writer: std::net::SocketAddr,
         bystander: UdpSocket,
         gaintable_cache: Arc<GaintableCache>,
     }
@@ -784,8 +785,8 @@ mod notify_tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(60)));
-        clients.register(writer.local_addr().unwrap());
-        clients.register(bystander.local_addr().unwrap());
+        clients.register(&Peer::Udp(writer.local_addr().unwrap()));
+        clients.register(&Peer::Udp(bystander.local_addr().unwrap()));
         Wire {
             engine,
             clients,
@@ -806,7 +807,7 @@ mod notify_tests {
                 addr: addr.to_string(),
                 args,
             },
-            wire.writer,
+            &Peer::Udp(wire.writer),
             control,
             None,
             &mut RealtimeSeqState::default(),
@@ -1082,6 +1083,236 @@ mod notify_tests {
         drop(sender);
     }
 
+    /// Argument lists: a few a control plausibly accepts, so that changes are
+    /// applied, and the ways a sender gets them wrong — none at all, too few,
+    /// the wrong type, a non-finite number, out of range, and many.
+    fn argument_lists() -> Vec<Vec<OscType>> {
+        vec![
+            vec![OscType::Int(0)],
+            vec![OscType::Float(0.5)],
+            vec![OscType::String("1".into())],
+            vec![],
+            vec![OscType::Int(1)],
+            vec![OscType::Int(-1)],
+            vec![OscType::Int(i32::MAX)],
+            vec![OscType::Float(f32::NAN)],
+            vec![OscType::Float(f32::INFINITY)],
+            vec![OscType::Double(-1e300)],
+            vec![OscType::String(String::new())],
+            vec![OscType::String("x".into())],
+            vec![OscType::Nil],
+            vec![OscType::Blob(vec![0; 3])],
+            (0..32).map(OscType::Int).collect(),
+            (0..32).map(|i| OscType::String(i.to_string())).collect(),
+        ]
+    }
+
+    /// Process lifecycle commands act on the whole test process (shutdown,
+    /// restart and standby flags) and read no argument but the log level's.
+    const PROCESS_COMMANDS: &[&str] = &[
+        osc_contract::CONTROL_RELOAD_CONFIG,
+        osc_contract::CONTROL_RESTART,
+        osc_contract::CONTROL_QUIT,
+        osc_contract::CONTROL_YIELD_PORT,
+        osc_contract::CONTROL_RESUME,
+    ];
+
+    /// Every control address a sender can reach: the contract's, minus the
+    /// process lifecycle commands, plus each prefixed family's real fields —
+    /// the registry's prefixed rows and the hand-wired ones — and a few
+    /// malformed instances of each family. The contract lists the families by
+    /// prefix only, so without the real fields their handlers go unswept.
+    fn control_addresses() -> Vec<String> {
+        let mut addresses: Vec<String> = osc_contract::ALL_CONTROL
+            .iter()
+            .filter(|address| !PROCESS_COMMANDS.contains(address))
+            .map(|address| address.to_string())
+            .collect();
+        let registry_fields = renderer::options::LIVE_OPTIONS
+            .iter()
+            .filter_map(|spec| match spec.legacy_control_addr {
+                renderer::options::LegacyAddr::Prefixed { prefix, tail } => {
+                    Some(format!("{prefix}{tail}"))
+                }
+                _ => None,
+            });
+        addresses.extend(registry_fields);
+        // Hand-wired fields, outside the registry.
+        for (prefix, tail) in [
+            (osc_contract::CONTROL_HYBRID_PREFIX, "curve"),
+            (osc_contract::CONTROL_HYBRID_PREFIX, "external_backend"),
+            (osc_contract::CONTROL_HYBRID_PREFIX, "internal_backend"),
+            (osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX, "threshold"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "1/mute"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "0/mute"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "-1/mute"),
+            (osc_contract::CONTROL_OBJECT_PREFIX, "4294967296/mute"),
+        ] {
+            addresses.push(format!("{prefix}{tail}"));
+        }
+        // And what a sender gets wrong under each family.
+        for prefix in [
+            osc_contract::CONTROL_OBJECT_PREFIX,
+            osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX,
+            osc_contract::CONTROL_HYBRID_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+            osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+        ] {
+            for suffix in ["", "1", "x", "x/y/z", "x/mute"] {
+                addresses.push(format!("{prefix}{suffix}"));
+            }
+        }
+        addresses.sort();
+        addresses.dedup();
+        addresses
+    }
+
+    /// The address list reaches the prefixed families' real fields, not only
+    /// the contract's exact addresses: one per registry row with a prefixed
+    /// address, and the hand-wired hybrid curve.
+    #[test]
+    fn the_sweeps_reach_every_prefixed_field() {
+        let addresses = control_addresses();
+        let prefixed = renderer::options::LIVE_OPTIONS
+            .iter()
+            .filter(|spec| {
+                matches!(
+                    spec.legacy_control_addr,
+                    renderer::options::LegacyAddr::Prefixed { .. }
+                )
+            })
+            .count();
+        assert!(
+            prefixed > 5,
+            "the registry declares prefixed fields: {prefixed}"
+        );
+        let in_families = |prefix: &str| {
+            addresses
+                .iter()
+                .filter(|a| a.starts_with(prefix) && a.len() > prefix.len() + 1)
+                .count()
+        };
+        assert!(in_families(osc_contract::CONTROL_HYBRID_PREFIX) > 3);
+        assert!(addresses.contains(&format!("{}curve", osc_contract::CONTROL_HYBRID_PREFIX)));
+        assert!(in_families(osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX) >= 4);
+    }
+
+    /// A control datagram is untrusted: whatever its arguments, the handler
+    /// ignores or applies it and never panics, which would end the control
+    /// listener thread and leave the engine deaf to every client.
+    #[test]
+    fn no_control_address_panics_on_malformed_arguments() {
+        // The sweep drives the process-global overlay and port registry too.
+        let _overlay = crate::overlay::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::osc::test_support::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile_dir("control-sweep");
+        let control = fixture_control();
+        // Save, profiles and backend files write beside the config: here.
+        control.set_config_path(dir.join("config.yaml"));
+        let wire = wire();
+
+        let addresses = control_addresses();
+
+        let mut sent = 0;
+        for address in &addresses {
+            for args in argument_lists() {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    send(&wire, &control, address, args.clone())
+                }));
+                assert!(
+                    outcome.is_ok(),
+                    "{address} with {args:?} panicked the control handler"
+                );
+                sent += 1;
+            }
+        }
+        assert!(sent > 1000, "too few cases to mean anything: {sent}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What may write `config.yaml` without the Save button
+    /// (docs/persistence-policy.md): the Save itself, the profile operations,
+    /// and the view-state exceptions — head-tracker recenter and calibration,
+    /// and the monitoring cadences.
+    const WRITES_CONFIG: &[&str] = &[
+        osc_contract::CONTROL_SAVE_CONFIG,
+        osc_contract::CONTROL_PROFILE_SWITCH,
+        osc_contract::CONTROL_PROFILE_CREATE,
+        osc_contract::CONTROL_PROFILE_DELETE,
+        osc_contract::CONTROL_PROFILE_RENAME,
+        osc_contract::CONTROL_HEAD_RECENTER,
+        osc_contract::CONTROL_HEAD_CALIBRATE,
+        osc_contract::CONTROL_METERING_RATE_HZ,
+        osc_contract::CONTROL_DIAG_RATE_HZ,
+    ];
+
+    /// The persistence policy, checked where it is enforced: no control
+    /// message but the ones it names changes `config.yaml`, whatever its
+    /// arguments. A render or engine change marks the config dirty and waits
+    /// for the Save. The source tripwire (runtime_control's
+    /// persistence_policy.rs) lists the writers; this watches the file.
+    #[test]
+    fn only_save_profiles_and_view_state_change_the_config_file() {
+        let _overlay = crate::overlay::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::osc::test_support::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile_dir("persistence-net");
+        let config = dir.join("config.yaml");
+        let original = "render:\n  ramp_mode: sample\n";
+        std::fs::write(&config, original).unwrap();
+        let control = fixture_control();
+        control.set_config_path(config.clone());
+        let wire = wire();
+
+        let addresses = control_addresses();
+        let mut writers_seen = Vec::new();
+        let mut violations = Vec::new();
+        for address in &addresses {
+            let address = address.as_str();
+            for args in argument_lists() {
+                let _ = send(&wire, &control, address, args.clone());
+                let now = std::fs::read_to_string(&config).unwrap_or_default();
+                if now != original {
+                    if WRITES_CONFIG.contains(&address) {
+                        writers_seen.push(address);
+                    } else {
+                        violations.push(format!("{address} {args:?}"));
+                    }
+                    std::fs::write(&config, original).unwrap();
+                }
+                // A profile operation may move the control to another file.
+                control.set_config_path(config.clone());
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "these controls wrote config.yaml without the Save button; mark the config \
+             dirty instead, or name the write in docs/persistence-policy.md's \
+             exceptions with its reason:\n{}",
+            violations.join("\n")
+        );
+        // The net must see a write when one happens, or it proves nothing.
+        assert!(
+            writers_seen.contains(&osc_contract::CONTROL_SAVE_CONFIG),
+            "Save never changed the file: the check is not watching the right file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tempfile_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("orender-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     /// What a control came to, as its sender is told: taken, refused with a
     /// reason, or taken by nobody.
     #[test]
@@ -1193,7 +1424,7 @@ mod notify_tests {
             None,
             &wire.engine,
             &wire.clients,
-            wire.bystander.local_addr().unwrap(),
+            &Peer::Udp(wire.bystander.local_addr().unwrap()),
         );
         let messages = received(&wire.bystander);
         assert_eq!(generations(&messages), [(start + 3, 1, 0, 1)]);
@@ -1583,7 +1814,7 @@ fn debug_speaker_gaintable_subscribe(d: &mut Dispatch) -> ControlOutcome {
         Some(OscType::Int(_)) => renderer::band_gaintable::GLOBAL_ENERGY_INDEX,
         _ => 0,
     };
-    let client = resolve_register_addr(src, &[]);
+    let client = &resolve_register_addr(src, &[]);
     // Ensure the client exists in the registry (refreshes liveness) so the
     // subscribe flag sticks and the 5 s heartbeat keeps it alive.
     clients.register(client);
@@ -1606,7 +1837,7 @@ fn debug_speaker_gaintable_subscribe(d: &mut Dispatch) -> ControlOutcome {
 fn debug_speaker_gaintable_unsubscribe(d: &mut Dispatch) -> ControlOutcome {
     let src = d.src;
     let clients = d.clients;
-    let client = resolve_register_addr(src, &[]);
+    let client = &resolve_register_addr(src, &[]);
     clients.set_gaintable(client, false);
     // Drop the targets too: the next subscribe declares what it wants, and
     // keeping them would push fields nobody is displaying any more.
@@ -1630,7 +1861,7 @@ fn debug_speaker_gaintable_nack(d: &mut Dispatch) -> ControlOutcome {
     if let Some(version) = ints.next() {
         let missing: Vec<u32> = ints.collect();
         if !missing.is_empty() {
-            let client = resolve_register_addr(src, &[]);
+            let client = &resolve_register_addr(src, &[]);
             // Resolve the target from the version the client is missing
             // chunks for, so a NACK is answered with the right field even
             // when several transfers are in flight.
@@ -1656,7 +1887,7 @@ fn metering(d: &mut Dispatch) -> ControlOutcome {
         Some(v) => v,
         None => return ControlOutcome::invalid("expected a boolean"),
     };
-    let client = resolve_register_addr(src, &[]);
+    let client = &resolve_register_addr(src, &[]);
     if clients.set_metering(client, enabled) {
         send_metering_state(socket, client, enabled);
     }
@@ -1672,7 +1903,7 @@ fn diag_enabled(d: &mut Dispatch) -> ControlOutcome {
         Some(v) => v,
         None => return ControlOutcome::invalid("expected a boolean"),
     };
-    let client = resolve_register_addr(src, &[]);
+    let client = &resolve_register_addr(src, &[]);
     if clients.set_diag(client, enabled) {
         send_diag_state(socket, client, enabled);
     }

@@ -142,17 +142,45 @@ fn block_time_all_objects_moving_is_within_budget() {
 }
 
 /// Topology changes gated: a speaker edit or a backend switch republishes the
-/// topology mid-stream.
-const TOPOLOGY_CHANGES: usize = 8;
+/// topology mid-stream. Sixteen, so the median shrugs off seven hiccups.
+const TOPOLOGY_CHANGES: usize = 16;
+
+/// Blocks timed on the new band set after it is installed: one FIR hop and a
+/// block, so every filtered channel completes its first hop on the new
+/// filter memory inside the window, and the window is at least as long as
+/// the hop pattern the reference window is compared on.
+const BLOCKS_AFTER_INSTALL: usize = crate::crossover::fir::BLOCK.div_ceil(BLOCK_SAMPLES) + 1;
 
 /// Render topology changes on `$r` mid-stream (a speaker moved in Studio) and
-/// gate the blocks from each publish until the new band set is installed, the
-/// first block mixed on it included. They keep the deadline because the set
-/// is built by the stage's worker — gain tables, crossover bank and filter
-/// memory — and not by the render thread.
+/// gate what each one costs the render thread over the blocks it would
+/// render anyway. A change keeps the deadline because its set is built by
+/// the stage's worker — gain tables, crossover bank and filter memory — and
+/// not by the render thread; what the render thread does is swap the set in
+/// and run the new filter memory's first hops.
 ///
-/// Gated on the median over the changes of each one's slowest block: a build
-/// back on the render thread blows every change, an OS hiccup only one.
+/// **Against a reference, not against the block period.** Each change times
+/// the blocks from its publish until the new set is installed, then
+/// [`BLOCKS_AFTER_INSTALL`] more on it, and takes the slowest. The same number
+/// of blocks is then rendered with no change, on the same renderer, and the
+/// slowest of those is the reference. What is gated is the difference, as a
+/// fraction of the block period. Most of the slowest block is the stage's
+/// own: the linear-phase crossover finishes a 1024-sample hop per channel
+/// every 25.6 blocks, two channels in the same block for 32 objects, and the
+/// window runs the thousands of blocks the build takes when they are
+/// rendered back to back, while the build shares the core's other hyperthread
+/// and the caches. With the set built off the render thread, that slowest
+/// block measured 20–22 % of the period on the CI runners' EPYC 7763, 32 % on
+/// a Xeon 8370C and 10 % on an EPYC 9V45: gated against the period, it
+/// failed on the runners slow at FFTs, with no change at fault. What a
+/// change adds measured 10 µs on four separate cores and 20 µs on two cores'
+/// hyperthreads (a 4-vCPU runner's shape). A build back on the render thread
+/// added 2 ms (24 ms with the FIR crossover) even on a 32-thread desktop,
+/// and the new filter memory
+/// allocated with the old set freed on the render thread at the swap added
+/// 2.8 ms: both far over the budget, on top of any reference.
+///
+/// Gated on the median over the changes: a build back on the render thread
+/// costs every change, an OS hiccup only the change or reference it hits.
 ///
 /// A macro, not a function: the fixture's renderer is another instance of
 /// this crate (the dev-dependency cycle), whose type cannot be named here.
@@ -175,6 +203,8 @@ macro_rules! assert_topology_changes_within_budget {
             }};
         }
         let mut worst_per_change = Vec::with_capacity(TOPOLOGY_CHANGES);
+        let mut reference_per_change = Vec::with_capacity(TOPOLOGY_CHANGES);
+        let mut excess_per_change = Vec::with_capacity(TOPOLOGY_CHANGES);
         for _ in 0..TOPOLOGY_CHANGES {
             // The recompute thread's part, untimed: the topology it publishes.
             control.bump_geometry_generation();
@@ -186,24 +216,40 @@ macro_rules! assert_topology_changes_within_budget {
             control.publish_topology(topology);
 
             let mut worst = render!();
+            let mut blocks = 1;
             let deadline = Instant::now() + std::time::Duration::from_secs(60);
             while $r.speaker_stage_builds() == builds {
                 assert!(Instant::now() < deadline, "the band worker never delivered");
                 worst = worst.max(render!());
+                blocks += 1;
             }
-            // The block after the install, which runs on the new bands.
-            worst_per_change.push(worst.max(render!()));
+            // On the new bands, through every channel's first hop on them.
+            for _ in 0..BLOCKS_AFTER_INSTALL {
+                worst = worst.max(render!());
+            }
+            blocks += BLOCKS_AFTER_INSTALL;
+
+            // As many blocks again, with nothing changing.
+            let reference = (0..blocks).map(|_| render!()).fold(0.0, f64::max);
+            worst_per_change.push(worst);
+            reference_per_change.push(reference);
+            excess_per_change.push(worst - reference);
         }
-        let median = percentile_us(worst_per_change.clone(), 0.5);
+        let median = percentile_us(excess_per_change.clone(), 0.5);
         println!(
-            "[measure] block_time {}: worst block per change {worst_per_change:.1?} µs",
-            $label
+            "[measure] block_time {}: slowest block per change {worst_per_change:.1?} µs, \
+             with no change {reference_per_change:.1?} µs; median cost of a change \
+             {median:.1} µs ({:.1} % of the block period, budget {:.0} %)",
+            $label,
+            median / BLOCK_PERIOD_US * 100.0,
+            MAX_BLOCK_FRACTION * 100.0,
         );
         assert!(
             median / BLOCK_PERIOD_US <= MAX_BLOCK_FRACTION,
-            "{}: the slowest block around a change takes {:.1} % of the block period \
-             (median over {TOPOLOGY_CHANGES} changes, {median:.1} µs of {BLOCK_PERIOD_US:.1} µs), \
-             over the {:.0} % budget: is the band build back on the render thread?",
+            "{}: a change adds {:.1} % of the block period to the slowest block (median over \
+             {TOPOLOGY_CHANGES} changes, {median:.1} µs of {BLOCK_PERIOD_US:.1} µs over the \
+             same number of blocks rendered with no change), over the {:.0} % budget: is the \
+             band build back on the render thread?",
             $label,
             median / BLOCK_PERIOD_US * 100.0,
             MAX_BLOCK_FRACTION * 100.0,

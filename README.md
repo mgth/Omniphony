@@ -12,6 +12,11 @@ or to **binaural headphones**, in real time. Open source, GPL-3.0.
 [![Download mpv-omniphony](https://img.shields.io/badge/Download-mpv--omniphony-1f6feb?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.6.0)
 [![Download mpv-omniphony FEL](https://img.shields.io/badge/Download-mpv--omniphony%20FEL-8957e5?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.6.0-fel-beta.2)
 
+**Play a film through Omniphony, step by step:**
+[Linux](docs/install/linux.md) · [Windows](docs/install/windows.md) · [macOS](docs/install/macos.md)
+— what to download, where each file goes, how to check each step, and the usual
+failures.
+
 ![Omniphony Studio rendering a spatial mix](Omniphony_capture.png)
 
 - 🎧 **Hear it on headphones** — binaural output (HRTF + ITD + live head-tracking),
@@ -25,7 +30,8 @@ or to **binaural headphones**, in real time. Open source, GPL-3.0.
 ## Hear it in 2 minutes — no media player needed
 
 The engine ships a self-contained demo: a reference WAV decoder bridge plus a
-short multichannel clip. From a fresh clone:
+short multichannel clip. From a fresh clone, with a Rust toolchain, on Linux,
+macOS or Windows (Git Bash; the device modes need an ASIO driver there):
 
 ```sh
 cd omniphony-renderer
@@ -139,8 +145,8 @@ runtime state, and control selected live parameters.
 ### `omniphony-studio` — the Tauri Studio (deprecated)
 
 The previous, web-based Studio. Deprecated in favour of
-`omniphony-studio-egui`: it still ships, but gets no new features. Its
-`src/i18n/` catalogues are shared with the native Studio.
+`omniphony-studio-egui`: it still ships, but gets no new features. It reads
+the native Studio's `i18n/` catalogues and `assets/`.
 
 ## Repository layout
 
@@ -164,10 +170,10 @@ prebuilt download for it.
 | macOS arm64 (Apple Silicon) | tested | tested | yes — Studio bundle, `liborender` |
 | Linux arm64 (aarch64) | tested | not built | no — build from source |
 
-The Tauri Studio is built on Linux only. Tests that need a sound device or a
-running PipeWire session are skipped by CI on every platform, so the audio
-backends themselves (PipeWire, ASIO, CoreAudio) are compiled but not exercised
-there. Anything not listed — macOS on Intel, 32-bit targets — is not built by
+The deprecated Tauri Studio is no longer built by CI; releases still package
+it until it is removed. Tests that need a sound device or a running PipeWire
+session are skipped by CI on every platform, so the audio backends themselves
+(PipeWire, ASIO, CoreAudio) are compiled but not exercised there. Anything not listed — macOS on Intel, 32-bit targets — is not built by
 CI.
 
 ## License

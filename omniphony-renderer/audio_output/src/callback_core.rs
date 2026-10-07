@@ -310,7 +310,7 @@ impl<R: Resampler<f32>> OutputCallbackCore<R> {
             output_to_input_domain_samples(frames * channels, effective_ratio);
         // Cumulative flow (written − drained), published for observation only:
         // as the servo's input it deadlocked the bootstrap, since the callback
-        // drains before anything is written (LATENCY_DAC_SAWTOOTH_REPORT.md).
+        // drains before anything is written (docs/archive/LATENCY_DAC_SAWTOOTH_REPORT.md).
         let drained = telemetry
             .cumulative_drained_input_samples
             .fetch_add(callback_input_domain_samples as u64, Ordering::Relaxed)

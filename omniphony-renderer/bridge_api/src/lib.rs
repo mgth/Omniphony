@@ -344,7 +344,7 @@ pub enum RVbapTableMode {
 /// Format bridge trait — implemented by each plugin `.so`.
 ///
 /// The bridge owns the full decode pipeline internally.
-/// Call [`push_packet`] for each incoming chunk or packet; the bridge handles
+/// Call `push_packet` for each incoming chunk or packet; the bridge handles
 /// format-specific validation, parsing, and metadata extraction.
 #[sabi_trait]
 pub trait FormatBridge: Send + Sync + 'static {
@@ -380,7 +380,7 @@ pub trait FormatBridge: Send + Sync + 'static {
 
     /// Set a bridge-specific configuration option.
     ///
-    /// Must be called before the first [`push_packet`].
+    /// Must be called before the first `push_packet`.
     /// Returns `true` if the key was recognised, `false` otherwise.
     /// Keys and their semantics are defined by each bridge implementation.
     fn configure(&mut self, key: RStr<'_>, value: RStr<'_>) -> bool;

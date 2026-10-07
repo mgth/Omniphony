@@ -391,6 +391,10 @@ impl TopologyBuildPlan {
         current: Option<&RenderTopology>,
         sample: bool,
     ) -> Result<RenderTopology> {
+        // A layout edited past the limit is refused here, before any backend
+        // sizes its gains by it: reported to the clients like a failed
+        // build, the running topology stays.
+        crate::spatial_vbap::check_speaker_count(self.layout.num_speakers())?;
         let effective_mode = match self.evaluation_mode {
             LiveEvaluationMode::Realtime => EffectiveEvaluationMode::Realtime,
             LiveEvaluationMode::PrecomputedPolar => EffectiveEvaluationMode::PrecomputedPolar,
@@ -841,7 +845,7 @@ pub struct BackendBuildCtx<'a> {
     pub backend_rebuild_params: Option<BackendRebuildParams>,
     /// The registry the active backend was looked up in. A composite backend
     /// (hybrid) resolves its inner models through this so any registered backend
-    /// can be composed, not just a hard-coded set. See [`resolve_hybrid_inner_plan`].
+    /// can be composed, not just a hard-coded set. See `resolve_hybrid_inner_plan`.
     pub registry: &'a BackendRegistry,
     /// All host-set backend param values, keyed by backend id then param key
     /// (see [`crate::backend_params`]). Read at build time only — never on the
@@ -1531,7 +1535,8 @@ mod tests {
 
         // The whole topology build — the published one (model only) and a
         // band's (precomputed, so its table would sample the model) — and a
-        // hybrid with a barycenter leg fail the same way, without a panic.
+        // hybrid with a barycenter leg fail too, without a panic: refused by
+        // the layout-wide speaker check before the model is built.
         let topology = |backend_build: BackendBuildPlan, backend_id: &str| TopologyBuildPlan {
             layout: ring_layout(MAX_SPEAKERS + 2),
             backend_id: backend_id.to_string(),
@@ -1549,7 +1554,10 @@ mod tests {
             .map(|_| ())
         });
         let err = built.expect("no panic").expect_err("refused");
-        assert!(err.to_string().contains("barycenter backend"), "got: {err}");
+        assert!(
+            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
+            "got: {err}"
+        );
         let built = std::panic::catch_unwind(|| {
             topology(
                 BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2)),
@@ -1559,7 +1567,10 @@ mod tests {
             .map(|_| ())
         });
         let err = built.expect("no panic").expect_err("refused");
-        assert!(err.to_string().contains("barycenter backend"), "got: {err}");
+        assert!(
+            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
+            "got: {err}"
+        );
 
         let hybrid = BackendBuildPlan::Hybrid(HybridBuildPlan {
             external: Box::new(BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2))),
@@ -1572,7 +1583,10 @@ mod tests {
             topology(hybrid, "hybrid").build_topology().map(|_| ())
         }));
         let err = built.expect("no panic").expect_err("refused");
-        assert!(err.to_string().contains("barycenter backend"), "got: {err}");
+        assert!(
+            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
+            "got: {err}"
+        );
     }
 
     #[test]

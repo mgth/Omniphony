@@ -26,34 +26,75 @@ own input. The commands assume you are in `omniphony-renderer/`.
 
 ## 2. Build
 
-Minimal build:
+Rust 1.89 or newer (the workspace's `rust-version`). The same commands on
+every platform, from `omniphony-renderer/`:
 
 ```bash
+cargo build --release                        # orender, the CLI
+cargo build --release -p reference_bridge    # the WAV bridge the demo uses
+cargo build --release -p orender_ffi         # liborender, the engine library mpv loads
+```
+
+(`cargo build --release --workspace` builds all three and the rest of the
+workspace.) Nothing needs a feature flag: the platform's realtime output
+backend (PipeWire on Linux, ASIO on Windows, CoreAudio on macOS) and the
+native VBAP backend (pure Rust, no external library) are in the default build.
+The `pipewire` and `asio` features Cargo still accepts are empty aliases kept
+for old scripts.
+
+### Linux
+
+```bash
+# Debian / Ubuntu
+sudo apt install build-essential pkg-config clang libclang-dev libpipewire-0.3-dev
+# Arch
+sudo pacman -S base-devel clang pipewire
+```
+
+PipeWire 0.3.65 or newer is needed at build time (`pipewire-rs` 0.9); Ubuntu
+24.04's own package is fine (the arm64 CI job uses it). Ubuntu 22.04 ships
+0.3.48: add the `pipewire-debian/pipewire-upstream` PPA, as the x64 CI job does
+(`.github/workflows/ci.yml`).
+
+### Windows
+
+- Visual Studio 2022 (or the Build Tools) with the C++ desktop workload, and the
+  `x86_64-pc-windows-msvc` Rust toolchain.
+- LLVM/Clang, for the bindings the ASIO backend generates.
+- The Steinberg ASIO SDK, which `cpal` compiles in. It is available under GPLv3,
+  the licence this project carries, from <https://github.com/audiosdk/asio>;
+  point `CPAL_ASIO_DIR` at the checkout before building:
+
+```powershell
+git clone https://github.com/audiosdk/asio C:\dev\asio_sdk
+$env:CPAL_ASIO_DIR = "C:\dev\asio_sdk"
 cargo build --release
 ```
 
-Linux with PipeWire:
+CI pins the SDK commit in `.github/actions/setup-asio-sdk/action.yml`.
+
+### macOS
+
+The Xcode command line tools (`xcode-select --install`) are all the build
+needs; the CoreAudio backend uses the system frameworks. Apple Silicon is the
+platform CI builds and tests (`macos-14`).
+
+### Optional: SAF-backed VBAP
+
+`saf_vbap` adds a second VBAP implementation from
+[`Spatial_Audio_Framework` (SAF)](https://github.com/leomccormack/Spatial_Audio_Framework)
+(not the separate [`SPARTA`](https://leomccormack.github.io/sparta-site/)
+plug-in suite). The default native backend does not need it. It links SAF and
+OpenBLAS/LAPACKE, which you build yourself; this repository does not bundle
+or redistribute either, so check SAF's licence terms for your build.
 
 ```bash
-cargo build --release --features pipewire
-```
-
-Linux or Windows with runtime VBAP generation:
-
-```bash
-export SAF_ROOT="/path/to/Spatial_Audio_Framework"
+export SAF_ROOT="/path/to/Spatial_Audio_Framework"   # with build/framework/libsaf.a
 cargo build --release --features saf_vbap
 ```
 
-`saf_vbap` enables runtime VBAP generation via
-[`Spatial_Audio_Framework` (SAF)](https://github.com/leomccormack/Spatial_Audio_Framework),
-not the separate [`SPARTA`](https://leomccormack.github.io/sparta-site/) plug-in suite.
-
-Windows with ASIO:
-
-```bash
-cargo build --release --features asio
-```
+On Linux install `libopenblas-dev` and `liblapacke-dev`; on Windows follow
+[BUILDING_WINDOWS.md](BUILDING_WINDOWS.md).
 
 ## 3. The bridge model
 
@@ -156,7 +197,8 @@ Write to a file or pipe instead of a device (non-realtime):
   --output-backend file --output-file out.f32 --output-file-format raw-f32
 ```
 
-Windows / ASIO:
+Windows / ASIO (`list-asio-devices` prints the exact device names; FlexASIO
+or ASIO4ALL work when the hardware has no ASIO driver of its own):
 
 ```powershell
 .\target\release\orender.exe list-asio-devices
@@ -165,11 +207,23 @@ Windows / ASIO:
   --output-backend asio --output-device "Your ASIO Device"
 ```
 
+macOS / CoreAudio (`list-coreaudio-devices` prints the device names):
+
+```bash
+./target/release/orender list-coreaudio-devices
+./target/release/orender assets/demo/spatial-demo.wav \
+  --bridge-path target/release/libreference_bridge.dylib \
+  --output-backend coreaudio
+```
+
+`--output-backend device` picks the platform's realtime backend, whichever it
+is.
+
 ## 9. Configuration file
 
 Default config path:
 
-- Linux: `~/.config/omniphony/config.yaml`
+- Linux and macOS: `~/.config/omniphony/config.yaml`
 - Windows: `%ProgramData%\omniphony\config.yaml` (machine-wide; shared by user-mode and the service)
 
 Save the current effective configuration:
@@ -184,7 +238,6 @@ Save the current effective configuration:
 ## Next references
 
 - [README.md](README.md)
-- [BUILD.md](BUILD.md)
 - [BUILDING_WINDOWS.md](BUILDING_WINDOWS.md)
 - [BINAURAL.md](BINAURAL.md)
 - [OSC_PROTOCOL.md](OSC_PROTOCOL.md)

@@ -121,17 +121,25 @@ The tag push triggers `release.yml`:
 - **native Studio**, same job, after tauri-action: builds
   `omniphony-studio-egui` on its pinned toolchain and attaches
   `omniphony-studio-egui-vX.Y.Z-{linux-x86_64.tar.gz,windows-x86_64.zip,macos-arm64.zip}`
-  to the draft with `gh release upload` — the Studio, the `orender` sidecar
-  the Tauri build just prepared (same commit), `layouts/`, `assets/` and the
-  licence, in one directory. Three more assets. The Studio
-  finds those files next to its executable (`core/src/host/bundle.rs`); no
-  installer, no engine deploy for mpv (that stays the Tauri bundle's job, or
-  the `orender` package's).
-- **standalone liborender**, same job: the engine library the sidecar step
-  built, with `orender.h`, as `liborender-vX.Y.Z-{linux-x86_64,windows-x86_64,macos-arm64}.zip`
+  to the draft with `gh release upload` — the Studio, `orender` (built by its
+  own step with the same command as the Tauri sidecar, so it finds that build
+  done), `engine/` (the engine library), `layouts/`, `assets/` and the
+  licence, in one directory. Three more assets. The Studio finds those files
+  next to its executable (`core/src/host/bundle.rs`).
+- **native Studio installers**, same job, before the archive (#677):
+  `omniphony-studio-egui/scripts/package.sh` runs cargo-packager (configured
+  in `omniphony-studio-egui/Cargo.toml`) and attaches
+  `omniphony-studio-egui_X.Y.Z_amd64.deb`, `…_x86_64.AppImage`,
+  `…_x64-setup.exe`, `…_x64_en-US.msi` and `…_aarch64.dmg` (the .app signed ad
+  hoc, without the hardened runtime, as the Tauri bundle). Five more assets.
+  Every form ships `orender` and the engine library; the Studio copies the
+  library to `<local data>/omniphony/lib/` on startup for mpv
+  (`core/src/host/engine_deploy.rs`), as the Tauri Studio does.
+- **standalone liborender**, same job: the engine library (built by the
+  same step as the native Studio's `orender`), with `orender.h`, as `liborender-vX.Y.Z-{linux-x86_64,windows-x86_64,macos-arm64}.zip`
   (flat, like the old `liborender-v*` archives). Three more assets.
 - **manifest**, after the three builds: `omniphony-vX.Y.Z-manifest.json` —
-  the README row as JSON, plus the commit. One more asset, **fourteen** in
+  the README row as JSON, plus the commit. One more asset, **nineteen** in
   all.
 
 The draft's URL is `releases/tag/untagged-<hash>` until it is published —
@@ -155,6 +163,26 @@ runners (prefer `auto`), and any step that only runs on a tag push. Never cap
   `## Known limitations`, and the macOS quarantine/Gatekeeper install note
   (still needed until the app is notarized — #201).
 - Notes span everything since the last **public** tag.
+- Every release's notes (`v*`, `mpv-v*`, and the bridge's) open with the
+  install line, so a user who lands on a release page finds the path to a
+  film playing:
+
+  ```markdown
+  **New here?** Step-by-step install, from nothing to a film playing:
+  [Linux](https://github.com/mgth/Omniphony/blob/main/docs/install/linux.md) ·
+  [Windows](https://github.com/mgth/Omniphony/blob/main/docs/install/windows.md) ·
+  [macOS](https://github.com/mgth/Omniphony/blob/main/docs/install/macos.md)
+  ```
+
+- Every Linux asset says what it runs on, in the notes and in the table of
+  `docs/install/linux.md`: the build image and what the binary takes from the
+  system. At 0.6.0: the native Studio and the Tauri bundles are built on
+  Ubuntu 22.04 (glibc ≥ 2.35; the `orender` beside the Studio also needs a
+  system PipeWire); the player zip links Ubuntu 24.04's FFmpeg and libplacebo
+  and runs only there; the bridge is built on Ubuntu 24.04 and needs only glibc.
+- After publishing, bump the asset names and release links in
+  `docs/install/{linux,windows,macos}.md` on `main` (and the version pairing
+  stated at the top of each page) together with the README download badges.
 
 ```sh
 gh release edit vX.Y.Z --repo mgth/Omniphony --notes-file notes.md

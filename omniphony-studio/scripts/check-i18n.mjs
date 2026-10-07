@@ -1,6 +1,6 @@
 // i18n parity checker for Omniphony Studio.
 //
-// Compares every locale file under src/i18n/ against en.json (the reference)
+// Compares every locale file under omniphony-studio-egui/i18n/ against en.json (the reference)
 // and reports three classes of problem:
 //   - missing:    a key present in en.json but absent from the locale
 //   - orphaned:   a key present in the locale but absent from en.json
@@ -18,7 +18,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const i18nDir = join(scriptDir, '..', 'src', 'i18n');
+const i18nDir = join(scriptDir, '..', '..', 'omniphony-studio-egui', 'i18n');
 const REFERENCE = 'en';
 
 const strict = process.argv.includes('--strict');

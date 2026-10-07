@@ -20,7 +20,7 @@
       /* Stop the WebGL canvas from being picked up as a native drag source.
          An orbit-drag could otherwise start a native drag-and-drop whose drag
          image is a compositor snapshot; dropping it aliases the sprite textures
-         (see docs/webgl-compositor-aliasing.md). This is the guard that lets the
+         (see docs/archive/webgl-compositor-aliasing.md). This is the guard that lets the
          overlay backdrop blur below stay enabled safely. */
       #omniphony-renderer-mount,
       #omniphony-renderer-mount canvas {

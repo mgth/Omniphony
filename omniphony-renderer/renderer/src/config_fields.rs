@@ -373,7 +373,7 @@ pub mod hrir_update_lattice {
 /// `room_ratio_lower`) are still read. `room_ratio_center_blend` is stored as
 /// is.
 ///
-/// [`resolve`] is the one reading of a render section into ratios: the
+/// `Room::resolve` is the one reading of a render section into ratios: the
 /// renderer construction, the live seed and the profile switch all go through
 /// it, so they cannot disagree on a default (rear falls back to the length,
 /// lower and the centre blend to one half).

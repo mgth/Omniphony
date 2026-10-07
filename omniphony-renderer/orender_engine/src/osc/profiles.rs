@@ -538,7 +538,7 @@ mod tests {
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
         let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
         let client = UdpSocket::bind("127.0.0.1:0").unwrap();
-        clients.insert_permanent(client.local_addr().unwrap());
+        clients.insert_permanent(&crate::osc::peer::Peer::Udp(client.local_addr().unwrap()));
         let msg = OscMessage {
             addr: addr.to_string(),
             args: args

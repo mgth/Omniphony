@@ -13,6 +13,20 @@ pub struct BiquadState {
     z2: f32,
 }
 
+impl BiquadState {
+    /// The two delay elements, for code that runs several states side by
+    /// side (the crossover's lanes) and copies them in and out.
+    #[inline]
+    pub(crate) fn delays(self) -> (f32, f32) {
+        (self.z1, self.z2)
+    }
+
+    #[inline]
+    pub(crate) fn from_delays(z1: f32, z2: f32) -> Self {
+        Self { z1, z2 }
+    }
+}
+
 /// Biquad coefficients: `[b0, b1, b2, a1, a2]` in Direct-Form-II Transposed
 /// (`a0` normalised to 1).
 #[derive(Clone, Copy)]
