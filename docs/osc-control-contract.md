@@ -99,7 +99,9 @@ carries what a client needs to notice either. The contract crate's
   relay, which it loses as a datagram client would when it falls behind
   (8 MiB queued); a
   client too slow for the state is disconnected instead, and gets a fresh
-  snapshot when it reconnects. Its snapshot comes in one part. An engine that
+  snapshot when it reconnects. Its snapshot comes in one part, and the
+  gain-table stream in chunks of up to 512 KiB rather than 1 KiB (the meta
+  says which); an HRTF upload may send chunks of the same size. An engine that
   cannot bind the port runs on datagrams only. See
   `docs/control-transport.md`.
 

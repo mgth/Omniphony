@@ -89,6 +89,77 @@ pub struct OscStats {
     pub start: Instant,
     /// Renderer the client is registered with (None = listen only).
     pub target: Mutex<Option<SocketAddr>>,
+    /// The renderer is reached over its stream transport (TCP) right now,
+    /// not by datagrams: what sizes the large transfers (#680, step 3).
+    pub stream_link: AtomicBool,
+    /// Bytes of large transfers (an HRTF upload) queued for the listener and
+    /// not yet sent: the sender waits on it, so a file never sits whole in
+    /// the control queue (see [`SendWindow`]).
+    pub send_window: SendWindow,
+}
+
+/// Flow control between a large transfer and the listener: the sender
+/// reserves each chunk before queueing it ([`Control::SendCounted`]), and
+/// the listener releases it once the chunk has left (or was dropped for want
+/// of a target). At most [`SEND_WINDOW_BYTES`] (or one chunk) are queued at a
+/// time, so a slow or stalled link slows the transfer instead of letting it
+/// fill memory.
+#[derive(Default)]
+pub struct SendWindow {
+    state: Mutex<SendWindowState>,
+    freed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct SendWindowState {
+    queued: usize,
+    closed: bool,
+}
+
+/// Bytes a large transfer may have queued for the listener.
+pub const SEND_WINDOW_BYTES: usize = 4 << 20;
+
+impl SendWindow {
+    /// Wait until `bytes` more fit (one chunk always does when nothing is
+    /// queued) and count them. False when the listener is gone, or after
+    /// `patience` without any progress: the caller abandons the transfer.
+    pub fn reserve(&self, bytes: usize, patience: Duration) -> bool {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if state.closed {
+                return false;
+            }
+            if state.queued == 0 || state.queued + bytes <= SEND_WINDOW_BYTES {
+                state.queued += bytes;
+                return true;
+            }
+            let before = state.queued;
+            let (next, timeout) = self.freed.wait_timeout(state, patience).unwrap();
+            state = next;
+            if timeout.timed_out() && state.queued >= before {
+                return false;
+            }
+        }
+    }
+
+    pub fn release(&self, bytes: usize) {
+        let mut state = self.state.lock().unwrap();
+        state.queued = state.queued.saturating_sub(bytes);
+        self.freed.notify_all();
+    }
+
+    /// The listener stops: nothing queued will be sent.
+    fn close(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.closed = true;
+        state.queued = 0;
+        self.freed.notify_all();
+    }
+
+    /// Bytes queued and not yet sent.
+    pub fn queued(&self) -> usize {
+        self.state.lock().unwrap().queued
+    }
 }
 
 impl OscStats {
@@ -105,6 +176,8 @@ impl OscStats {
             last_packet_ms: AtomicU64::new(0),
             start: Instant::now(),
             target: Mutex::new(None),
+            stream_link: AtomicBool::new(false),
+            send_window: SendWindow::default(),
         })
     }
 
@@ -148,6 +221,13 @@ pub enum Control {
     Send {
         address: String,
         args: Vec<OscType>,
+    },
+    /// [`Control::Send`] for a chunk of a large transfer whose `bytes` were
+    /// reserved in [`OscStats::send_window`]: released once handled.
+    SendCounted {
+        address: String,
+        args: Vec<OscType>,
+        bytes: usize,
     },
     /// Point the client at another renderer: register there, request the
     /// snapshot, restate the metering choice.
@@ -461,6 +541,16 @@ fn listener_loop(
                         send_args(&mut link, &socket, addr, &address, args);
                     }
                 }
+                Control::SendCounted {
+                    address,
+                    args,
+                    bytes,
+                } => {
+                    if let Some(addr) = register {
+                        send_args(&mut link, &socket, addr, &address, args);
+                    }
+                    stats.send_window.release(bytes);
+                }
                 Control::SubscribeGainTable {
                     have_version,
                     speaker_index,
@@ -489,8 +579,11 @@ fn listener_loop(
             }
         }
 
+        stats.stream_link.store(link.is_stream(), Ordering::Relaxed);
         if stop.cancelled() {
             stats.registered.store(false, Ordering::Relaxed);
+            stats.stream_link.store(false, Ordering::Relaxed);
+            stats.send_window.close();
             link.close();
             return;
         }

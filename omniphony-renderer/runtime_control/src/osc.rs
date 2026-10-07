@@ -265,9 +265,17 @@ struct SpeakersConfigPatch {
     speaker_edits: Option<Vec<SpeakersRuntimePatch>>,
 }
 
-/// Payload bytes per gain-table chunk (excluding the 8-byte version+index header),
-/// kept well under the UDP MTU once OSC blob framing is added.
-const GAINTABLE_CHUNK_BYTES: usize = 1024;
+/// Payload bytes per gain-table chunk to a datagram client (excluding the
+/// 8-byte version+index header), kept well under the UDP MTU once OSC blob
+/// framing is added.
+pub const GAINTABLE_CHUNK_BYTES: usize = 1024;
+
+/// Payload bytes per gain-table chunk to a stream client (#680): the table in
+/// a few packets rather than hundreds of datagrams, each well under the
+/// stream's packet bound (`osc_contract::stream::MAX_PACKET`). Nothing is
+/// lost on a stream, so the NACK path never has to resend these; when asked,
+/// it chunks the same way for the same client.
+pub const GAINTABLE_STREAM_CHUNK_BYTES: usize = 512 << 10;
 
 /// Stable 31-bit id of a serialized table, so a re-request returns the same
 /// version while a topology rebuild yields a new one.
@@ -279,7 +287,9 @@ pub fn gaintable_version(bytes: &[u8]) -> u32 {
 
 /// Chunk an already-serialized gain table into OSC broadcasts: a `meta` header
 /// (JSON: version, total_len, chunk_count, chunk_bytes) followed by `chunk` blobs,
-/// each prefixed with `version` + chunk index. `only = Some((version, missing))`
+/// each prefixed with `version` + chunk index, `chunk_bytes` of table each
+/// ([`GAINTABLE_CHUNK_BYTES`] for a datagram client,
+/// [`GAINTABLE_STREAM_CHUNK_BYTES`] for a stream one). `only = Some((version, missing))`
 /// re-emits just those chunk indices when the version still matches (NACK resend),
 /// else falls back to a full send. `None` = full send with `meta`.
 ///
@@ -288,9 +298,11 @@ pub fn gaintable_version(bytes: &[u8]) -> u32 {
 pub fn gaintable_chunk_broadcasts(
     bytes: &[u8],
     only: Option<(u32, Vec<u32>)>,
+    chunk_bytes: usize,
 ) -> Vec<BroadcastUpdate> {
+    let chunk_bytes = chunk_bytes.max(1);
     let version = gaintable_version(bytes);
-    let chunk_count = bytes.len().div_ceil(GAINTABLE_CHUNK_BYTES).max(1);
+    let chunk_count = bytes.len().div_ceil(chunk_bytes).max(1);
 
     // Decide which chunks to send + whether to (re)send the meta header.
     let (emit_meta, indices): (bool, Vec<usize>) = match &only {
@@ -313,7 +325,7 @@ pub fn gaintable_chunk_broadcasts(
             "version": version,
             "total_len": bytes.len(),
             "chunk_count": chunk_count,
-            "chunk_bytes": GAINTABLE_CHUNK_BYTES,
+            "chunk_bytes": chunk_bytes,
         })
         .to_string();
         out.push(BroadcastUpdate {
@@ -322,8 +334,8 @@ pub fn gaintable_chunk_broadcasts(
         });
     }
     for ci in indices {
-        let start = ci * GAINTABLE_CHUNK_BYTES;
-        let end = (start + GAINTABLE_CHUNK_BYTES).min(bytes.len());
+        let start = ci * chunk_bytes;
+        let end = (start + chunk_bytes).min(bytes.len());
         let mut blob = Vec::with_capacity(8 + (end - start));
         blob.extend_from_slice(&version.to_le_bytes());
         blob.extend_from_slice(&(ci as u32).to_le_bytes());
@@ -833,6 +845,59 @@ fn object(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffect
         return Some(effects);
     }
     None
+}
+
+/// Gain-table chunking at both sizes (#680, step 3).
+#[cfg(test)]
+mod gaintable_chunk_tests {
+    use super::*;
+
+    fn chunks(updates: &[BroadcastUpdate]) -> Vec<(u32, Vec<u8>)> {
+        updates
+            .iter()
+            .filter_map(|u| match &u.value {
+                BroadcastValue::Blob(blob) => Some((
+                    u32::from_le_bytes(blob[4..8].try_into().unwrap()),
+                    blob[8..].to_vec(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_table_chunks_back_to_itself_at_either_size() {
+        let table: Vec<u8> = (0..(3 << 19)).map(|i| (i * 7 % 251) as u8).collect();
+        for (size, count) in [
+            (GAINTABLE_CHUNK_BYTES, 1536),
+            (GAINTABLE_STREAM_CHUNK_BYTES, 3),
+        ] {
+            let updates = gaintable_chunk_broadcasts(&table, None, size);
+            let BroadcastValue::String(meta) = &updates[0].value else {
+                panic!("meta first")
+            };
+            let meta: serde_json::Value = serde_json::from_str(meta).unwrap();
+            assert_eq!(meta["chunk_count"], count);
+            assert_eq!(meta["chunk_bytes"], size);
+            let chunks = chunks(&updates);
+            assert_eq!(chunks.len(), count);
+            let joined: Vec<u8> = chunks.into_iter().flat_map(|(_, bytes)| bytes).collect();
+            assert_eq!(joined, table);
+        }
+    }
+
+    /// A NACK is answered with the chunks of the same chunking.
+    #[test]
+    fn a_nack_resends_the_chunks_of_that_size() {
+        let table = vec![9u8; GAINTABLE_STREAM_CHUNK_BYTES * 2 + 10];
+        let version = gaintable_version(&table);
+        let resent = chunks(&gaintable_chunk_broadcasts(
+            &table,
+            Some((version, vec![2])),
+            GAINTABLE_STREAM_CHUNK_BYTES,
+        ));
+        assert_eq!(resent, [(2, vec![9u8; 10])]);
+    }
 }
 
 #[cfg(test)]
