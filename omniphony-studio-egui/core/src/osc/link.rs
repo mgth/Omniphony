@@ -42,6 +42,15 @@ const CLOSED_BACKOFF: Duration = Duration::from_secs(1);
 /// it drops telemetry for it, and disconnects it rather than drop state.
 /// Studio holds no more than this (plus one packet) in its queue.
 const RECEIVE_BUDGET: usize = 8 << 20;
+/// What a packet costs against [`RECEIVE_BUDGET`] on top of its bytes: the
+/// queue's own per-item memory. Without it an empty frame (which no engine
+/// sends, but a peer that is not one may) would cost nothing, and any number
+/// of them would queue.
+const PACKET_COST: usize = 64;
+
+fn cost(packet_len: usize) -> usize {
+    packet_len + PACKET_COST
+}
 
 /// What the listener receives from a stream: a packet, or its end.
 pub(super) enum Inbound {
@@ -129,7 +138,7 @@ impl Link {
         };
         let outcome = match link.packets.recv_timeout(timeout) {
             Ok(Inbound::Packet(packet)) => {
-                link.budget.release(packet.len());
+                link.budget.release(cost(packet.len()));
                 if !link.confirmed {
                     link.confirmed = super::decode_datagram(&packet).is_ok();
                 }
@@ -278,7 +287,7 @@ fn connect(target: SocketAddr) -> std::io::Result<StreamLink> {
                 match stream::read_frame(&mut reader, stream::MAX_PACKET) {
                     Ok(Some(packet)) => {
                         // Read no further than the listener keeps up with.
-                        if !reader_budget.reserve(packet.len())
+                        if !reader_budget.reserve(cost(packet.len()))
                             || tx.send(Inbound::Packet(packet)).is_err()
                         {
                             return;
@@ -339,13 +348,45 @@ mod tests {
         // Taking packets lets the reader go on.
         let mut taken = 0;
         while let Ok(Inbound::Packet(packet)) = link.packets.recv_timeout(Duration::from_secs(5)) {
-            link.budget.release(packet.len());
+            link.budget.release(cost(packet.len()));
             taken += 1;
             if taken == 32 {
                 break;
             }
         }
         assert_eq!(taken, 32, "every packet arrives once the listener keeps up");
+        drop(link);
+        sender.join().unwrap();
+    }
+
+    /// Empty frames are no way around the budget: each costs its queue slot.
+    #[test]
+    fn empty_frames_count_against_the_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let link = connect(listener.local_addr().unwrap()).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        let sender = std::thread::spawn(move || {
+            let frame = stream::frame(&[]).unwrap();
+            let burst: Vec<u8> = frame.repeat(1000);
+            // Far more empty frames than the budget's worth of slots.
+            for _ in 0..(4 * RECEIVE_BUDGET / PACKET_COST / 1000) {
+                if peer.write_all(&burst).is_err() {
+                    return;
+                }
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while link.budget.held() + cost(0) <= RECEIVE_BUDGET {
+            assert!(Instant::now() < deadline, "the reader fills its budget");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let queued = link.packets.try_iter().count();
+        assert!(
+            queued <= RECEIVE_BUDGET / PACKET_COST,
+            "{queued} empty frames queued for a budget of {} slots",
+            RECEIVE_BUDGET / PACKET_COST
+        );
         drop(link);
         sender.join().unwrap();
     }
