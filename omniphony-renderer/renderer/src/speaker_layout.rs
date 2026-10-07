@@ -116,6 +116,41 @@ pub struct Speaker {
     pub freq_high: Option<f32>,
 }
 
+/// How far a BRIR emitter may sit from a standard position and still take its
+/// name ([`SpeakerLayout::from_brir_emitters`]), degrees.
+pub const BRIR_NAME_MATCH_DEG: f32 = 20.0;
+
+/// Standard positions a BRIR emitter is named after: `(name, azimuth,
+/// elevation)` in the layout convention (negative azimuth to the left).
+const BRIR_STANDARD_POSITIONS: [(&str, f32, f32); 16] = [
+    ("C", 0.0, 0.0),
+    ("FL", -30.0, 0.0),
+    ("FR", 30.0, 0.0),
+    ("FWL", -60.0, 0.0),
+    ("FWR", 60.0, 0.0),
+    ("SL", -90.0, 0.0),
+    ("SR", 90.0, 0.0),
+    ("BL", -135.0, 0.0),
+    ("BR", 135.0, 0.0),
+    ("BC", 180.0, 0.0),
+    ("TFL", -45.0, 35.0),
+    ("TFR", 45.0, 35.0),
+    ("TSL", -90.0, 45.0),
+    ("TSR", 90.0, 45.0),
+    ("TBL", -135.0, 35.0),
+    ("TBR", 135.0, 35.0),
+];
+
+/// Great-circle angle between two `(azimuth, elevation)` directions, degrees.
+fn angle_between_deg(az_a: f32, el_a: f32, az_b: f32, el_b: f32) -> f32 {
+    let (a, b) = (
+        geometry::from_spherical(az_a, el_a, 1.0),
+        geometry::from_spherical(az_b, el_b, 1.0),
+    );
+    let dot = a.0 * b.0 + a.1 * b.1 + a.2 * b.2;
+    dot.clamp(-1.0, 1.0).acos().to_degrees()
+}
+
 fn default_coord_mode() -> String {
     "polar".to_string()
 }
@@ -428,6 +463,61 @@ impl SpeakerLayout {
         Ok(layout)
     }
 
+    /// The virtual loudspeakers of a measured room (a BRIR set): one
+    /// spatialized speaker per emitter, in the set's order, so bus `n` is
+    /// emitter `n`, plus a non-spatialized `LFE` last — the set measures no
+    /// subwoofer, and the cascade's direct-bus policy feeds it to both ears.
+    ///
+    /// `positions` are the emitters relative to the listener in the
+    /// renderer's frame (`x` right, `y` front, `z` up, any unit). Each is
+    /// projected onto the normalised cube along its own direction, so the
+    /// speaker points exactly at its emitter. No delay, gain or crossover
+    /// band: the measurement carries the room's own. An emitter within
+    /// [`BRIR_NAME_MATCH_DEG`] of a standard position takes that position's
+    /// name (each name once, nearest first), so beds placed by channel name
+    /// still find their speaker; the others are `E<n>`, `n` counted from 1.
+    pub fn from_brir_emitters(positions: &[[f32; 3]]) -> Result<Self> {
+        let directions: Vec<(f32, f32)> = positions
+            .iter()
+            .map(|&[x, y, z]| {
+                let (azimuth, elevation, _) = geometry::to_spherical(x, y, z);
+                (azimuth, elevation)
+            })
+            .collect();
+        let mut names: Vec<Option<&str>> = vec![None; positions.len()];
+        let mut candidates: Vec<(f32, usize, usize)> = Vec::new();
+        for (e, &(azimuth, elevation)) in directions.iter().enumerate() {
+            for (n, &(_, std_azimuth, std_elevation)) in BRIR_STANDARD_POSITIONS.iter().enumerate()
+            {
+                let angle = angle_between_deg(azimuth, elevation, std_azimuth, std_elevation);
+                if angle <= BRIR_NAME_MATCH_DEG {
+                    candidates.push((angle, e, n));
+                }
+            }
+        }
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut taken = [false; BRIR_STANDARD_POSITIONS.len()];
+        for (_, e, n) in candidates {
+            if names[e].is_none() && !taken[n] {
+                names[e] = Some(BRIR_STANDARD_POSITIONS[n].0);
+                taken[n] = true;
+            }
+        }
+        let mut speakers: Vec<Speaker> = positions
+            .iter()
+            .zip(&names)
+            .enumerate()
+            .map(|(e, (&[x, y, z], name))| {
+                let scale = x.abs().max(y.abs()).max(z.abs());
+                let scale = if scale > 0.0 { 1.0 / scale } else { 0.0 };
+                let name = name.map_or_else(|| format!("E{}", e + 1), str::to_string);
+                Speaker::from_cartesian(name, x * scale, y * scale, z * scale, true, 0.0)
+            })
+            .collect();
+        speakers.push(Speaker::new_with_spatialize("LFE", 0.0, -30.0, false));
+        Self::from_speakers(speakers)
+    }
+
     /// Get number of speakers in the layout
     pub fn num_speakers(&self) -> usize {
         self.speakers.len()
@@ -704,6 +794,85 @@ impl SpeakerLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 13 loudspeakers of a 9+4 listening room (the BBC R&D System G set),
+    /// as the BRIR loader reports them: renderer frame, metres.
+    fn system_g_emitters() -> Vec<[f32; 3]> {
+        [
+            (0.0, 0.0, 1.99),
+            (-45.0, 0.0, 3.01),
+            (45.0, 0.0, 3.01),
+            (-30.0, 0.0, 2.37),
+            (30.0, 0.0, 2.37),
+            (-90.0, 0.0, 2.28),
+            (90.0, 0.0, 2.28),
+            (-135.0, 0.0, 3.01),
+            (135.0, 0.0, 3.01),
+            (-45.0, 40.0, 1.91),
+            (45.0, 40.0, 1.91),
+            (-110.0, 40.0, 1.91),
+            (110.0, 40.0, 1.91),
+        ]
+        .iter()
+        .map(|&(az, el, r)| {
+            let (x, y, z) = geometry::from_spherical(az, el, r);
+            [x, y, z]
+        })
+        .collect()
+    }
+
+    #[test]
+    fn a_brir_layout_has_one_speaker_per_emitter_pointing_at_it() {
+        let emitters = system_g_emitters();
+        let layout = SpeakerLayout::from_brir_emitters(&emitters).unwrap();
+        assert_eq!(layout.num_speakers(), emitters.len() + 1);
+        for (speaker, e) in layout.speakers.iter().zip(&emitters) {
+            let (az, el, _) = geometry::to_spherical(e[0], e[1], e[2]);
+            assert!(
+                // f32 `acos` near 1 resolves a few hundredths of a degree.
+                angle_between_deg(speaker.azimuth, speaker.elevation, az, el) < 0.1,
+                "{} points at its emitter",
+                speaker.name
+            );
+            assert!(speaker.spatialize);
+            assert_eq!(
+                (
+                    speaker.gain_db,
+                    speaker.delay_ms,
+                    speaker.freq_low,
+                    speaker.freq_high
+                ),
+                (0.0, 0.0, None, None),
+                "no trim, delay or band of its own"
+            );
+        }
+        let lfe = layout.speakers.last().unwrap();
+        assert_eq!(lfe.name, "LFE");
+        assert!(!lfe.spatialize, "the LFE is a direct bus");
+    }
+
+    #[test]
+    fn brir_emitters_take_the_nearest_free_standard_name() {
+        let layout = SpeakerLayout::from_brir_emitters(&system_g_emitters()).unwrap();
+        assert_eq!(
+            layout.speaker_names(),
+            [
+                // ±45° lose FL/FR to the exact ±30° pair and are the wides.
+                "C", "FWL", "FWR", "FL", "FR", "SL", "SR", "BL", "BR", "TFL", "TFR",
+                // ±110° at 40°: nearer the top sides than the top backs.
+                "TSL", "TSR", "LFE",
+            ]
+        );
+        // Nothing standard near it: numbered from 1 in the set's order.
+        let odd = SpeakerLayout::from_brir_emitters(&[
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.3, -1.0],
+        ])
+        .unwrap();
+        assert_eq!(odd.speaker_names(), ["C", "SL", "SR", "E4", "LFE"]);
+    }
 
     #[test]
     fn placement_entries_accept_a_partial_set_and_reject_duplicates() {

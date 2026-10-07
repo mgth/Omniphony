@@ -215,6 +215,7 @@ fn legacy_addr_example(addr: renderer::options::LegacyAddr) -> Option<String> {
 }
 
 fn snapshot_json(control: &Arc<RendererControl>) -> serde_json::Value {
+    let brir_layout_error = control.brir_layout().err();
     let live = control.live.read();
     let json = build_renderer_state_json(
         &live,
@@ -228,6 +229,7 @@ fn snapshot_json(control: &Arc<RendererControl>) -> serde_json::Value {
         control.crossover_info(),
         &control.binaural_hrir_status(),
         &control.binaural_brir_status(),
+        brir_layout_error,
     );
     serde_json::from_str(&json).expect("snapshot is valid JSON")
 }

@@ -106,15 +106,20 @@ pub(crate) fn trigger_layout_recompute(
                     // these or all after, never newer under a lower count.
                     publish_state(&socket_clone, &clients_clone, || {
                         let renderer_state_json = {
+                            // Before the live lock: it reads the live params.
+                            let brir_layout_error = control_clone.brir_layout().err();
                             let live = control_clone.live.read();
                             let topology = control_clone.active_topology();
                             let scale_m = control_clone.editable_layout().radius_m;
                             // Speaker names that don't resolve to a known channel
                             // label — can't be routed by position in by_name mode.
+                            // A BRIR set's loudspeakers are named by the renderer,
+                            // not the user: nothing to warn about there.
                             let unroutable: Vec<String> = topology
                                 .speaker_layout
                                 .speakers
                                 .iter()
+                                .filter(|_| !topology.brir_layout)
                                 .filter(|s| {
                                     crate::channel_layout::label_for_speaker_name(&s.name)
                                         == bridge_api::RChannelLabel::Unknown
@@ -133,6 +138,7 @@ pub(crate) fn trigger_layout_recompute(
                                 control_clone.crossover_info(),
                                 &control_clone.binaural_hrir_status(),
                                 &control_clone.binaural_brir_status(),
+                                brir_layout_error,
                             )
                         };
                         let layout_json = {

@@ -726,6 +726,8 @@
   "experimentalDistance.infoBody": "Das Distanz-Backend ist ein experimenteller Renderer, der Lautsprecher anhand ihrer geometrischen Beziehung zum Zielpunkt bewertet.<br><br>Die freigegebenen Regler steuern, wie viele Lautsprecher teilnehmen dürfen, wie stark die nächstgelegenen Lautsprecher dominieren und wie viel Positionsfehler toleriert wird, bevor Gains begrenzt oder breiter gestreut werden.<br><br>Nutze es zum Vergleichen und Abstimmen von Backends, nicht als sicherste Voreinstellung.",
   "objects.none": "Keine Objekte.",
   "speakers.none": "Keine Lautsprecher.",
+  "speakers.brirLayout": "Lautsprecher des BRIR-Satzes",
+  "speakers.brirReadOnly": "Dies sind die Lautsprecher des gemessenen Raums (BRIR), über die der Kopfhörer gerendert wird. Sie stammen aus der Datei und lassen sich weder bearbeiten noch pegeln, stummschalten oder verzögern; dein Lautsprecher-Layout bleibt unverändert und kehrt mit einer anderen Kopfhörerquelle oder auf den Lautsprechern zurück.",
   "config.saved": "Gespeichert",
   "config.modified": "Geändert (nicht gespeichert)",
   "status.initializing": "Initialisierung...",

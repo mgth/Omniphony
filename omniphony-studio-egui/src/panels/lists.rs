@@ -38,6 +38,9 @@ struct Row {
     speaker: bool,
     freq_low: Option<f32>,
     freq_high: Option<f32>,
+    /// A read-only speaker (a BRIR set's own loudspeaker): no mute, no solo,
+    /// no reordering — it can only be selected.
+    fixed: bool,
     /// How much of the selected object this entry carries, 0..1, and the same
     /// split per crossover band. Both empty unless an object is selected.
     contribution: Option<f64>,
@@ -190,6 +193,7 @@ impl StudioSpike {
                     speaker: false,
                     freq_low: None,
                     freq_high: None,
+                    fixed: false,
                     contribution: None,
                     band_gains: Vec::new(),
                     size: None,
@@ -250,21 +254,34 @@ impl StudioSpike {
                 .filter(|(_, at)| at.elapsed() < CLIP_FLASH)
                 .map(|(index, _)| index)
         };
-        let layout_name = {
+        let (layout_name, brir) = {
             let live = self.host.read();
-            live.app
-                .layouts
-                .iter()
-                .find(|l| Some(&l.key) == live.app.selected_layout_key.as_ref())
-                .map(|l| l.name.clone())
-                .unwrap_or_default()
+            let brir = live.app.brir_speakers.is_some();
+            let name = if brir {
+                t("speakers.brirLayout").to_string()
+            } else {
+                live.app
+                    .layouts
+                    .iter()
+                    .find(|l| Some(&l.key) == live.app.selected_layout_key.as_ref())
+                    .map(|l| l.name.clone())
+                    .unwrap_or_default()
+            };
+            (name, brir)
         };
         Section::new("speakersSection", "section.speakers")
             .icon(&crate::ui::icons::SECTION_SPEAKERS)
             .default_open(true)
             .summary(layout_name)
             .show(ui, |ui| {
-                self.layout_actions(ui);
+                if brir {
+                    // The set's own loudspeakers stand in for the layout:
+                    // nothing to load, edit or trim, and the layout itself is
+                    // kept for the speakers.
+                    widgets::note(ui, t("speakers.brirReadOnly"));
+                } else {
+                    self.layout_actions(ui);
+                }
                 if rows.is_empty() {
                     widgets::note(ui, t("speakers.none"));
                 }
@@ -500,6 +517,7 @@ impl StudioSpike {
                     speaker: false,
                     freq_low: None,
                     freq_high: None,
+                    fixed: false,
                     contribution: selected_speaker.and_then(|spk| {
                         contribution_fraction(
                             live.app
@@ -596,6 +614,9 @@ impl StudioSpike {
 
     fn speaker_rows(&self) -> Vec<Row> {
         let live = self.host.read();
+        // A BRIR set's own loudspeakers: the editable layout's rows (gain,
+        // mute) index other speakers, so none is shown or offered.
+        let brir = live.app.brir_speakers.is_some();
         // The contribution overlay answers "where does *this* object go", so it
         // exists only while one is selected.
         let selected = self.selection.object.as_deref();
@@ -610,7 +631,9 @@ impl StudioSpike {
             .enumerate()
             .map(|(index, speaker)| {
                 let key = index.to_string();
-                let gain = live.app.speaker_gains.get(&key).copied();
+                let gain = (!brir)
+                    .then(|| live.app.speaker_gains.get(&key).copied())
+                    .flatten();
                 Row {
                     id: key.clone(),
                     label: speaker.id.clone(),
@@ -618,7 +641,7 @@ impl StudioSpike {
                     strip_icon: None,
                     meter: live.app.speaker_levels.get(&key).cloned(),
                     hold: live.peak_hold(&format!("spk:{key}")),
-                    muted: live.app.speaker_mutes.get(&key).is_some_and(|m| *m != 0),
+                    muted: !brir && live.app.speaker_mutes.get(&key).is_some_and(|m| *m != 0),
                     soloed: false,
                     colour: theme::TEXT,
                     detail: gain
@@ -629,6 +652,7 @@ impl StudioSpike {
                     speaker: true,
                     freq_low: speaker.freq_low,
                     freq_high: speaker.freq_high,
+                    fixed: brir,
                     // The object's own RMS through this speaker's panning gain
                     // — what it actually contributes, not what it was asked for.
                     contribution: contribution_fraction(
@@ -1105,7 +1129,7 @@ fn row_body(
     let strip = ui.interact(
         strip_rect,
         egui::Id::new(("row-strip", list, row.id.as_str())),
-        if row.speaker {
+        if row.speaker && !row.fixed {
             Sense::click_and_drag()
         } else {
             Sense::click()
@@ -1116,7 +1140,7 @@ fn row_body(
     } else if strip.clicked() {
         *action = RowAction::Select;
     }
-    if row.speaker {
+    if row.speaker && !row.fixed {
         if strip.hovered() && !strip.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         }
@@ -1241,11 +1265,13 @@ fn row_line(ui: &mut Ui, row: &Row, action: &mut RowAction) {
         // scroll area, which widens the next row's slack, and the list fans out
         // as it goes down.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if toggle_letter(ui, "S", row.soloed).clicked() {
-                *action = RowAction::Solo;
-            }
-            if toggle_letter(ui, "M", row.muted).clicked() {
-                *action = RowAction::Mute;
+            if !row.fixed {
+                if toggle_letter(ui, "S", row.soloed).clicked() {
+                    *action = RowAction::Solo;
+                }
+                if toggle_letter(ui, "M", row.muted).clicked() {
+                    *action = RowAction::Mute;
+                }
             }
             if let Some(size) = row.size {
                 row_glyphs::size_gauges(ui, size);
@@ -1318,6 +1344,7 @@ mod tests {
             speaker: true,
             freq_low: None,
             freq_high: None,
+            fixed: false,
             contribution: None,
             band_gains: Vec::new(),
             size: None,
@@ -1372,6 +1399,7 @@ mod tests {
             speaker,
             freq_low: None,
             freq_high: None,
+            fixed: false,
             contribution: None,
             band_gains: Vec::new(),
             size: None,

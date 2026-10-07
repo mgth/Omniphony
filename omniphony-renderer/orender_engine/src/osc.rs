@@ -723,6 +723,21 @@ impl OscSender {
                             last_live_state_generation = Some(generation);
                             broadcast_live_state(ctrl, host_handler.as_ref(), &socket, &clients);
                         }
+                        // A BRIR set landed or went away, or the output
+                        // switched between speakers and headphones with one
+                        // selected: the topology is rebuilt on the layout the
+                        // render now pans onto (the set's loudspeakers or the
+                        // editable layout, see `prepare_topology_rebuild`).
+                        // Another layout, so the gain model is rebuilt too.
+                        if ctrl.render_layout_outdated() {
+                            ctrl.bump_geometry_generation();
+                            recompute::trigger_layout_recompute(
+                                ctrl,
+                                &socket,
+                                &clients,
+                                &gaintable_cache,
+                            );
+                        }
                         // One-shot clip notification carrying the offending speaker
                         // index (set on the audio thread on any detected clip,
                         // regardless of auto-gain). Coalesced to the poll cadence so a
