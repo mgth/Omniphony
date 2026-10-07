@@ -142,13 +142,14 @@ fn osc_overrides(args: &RenderArgs, sources: &RenderArgSources<'_>) -> OscOverri
 
 /// Resolve the OSC settings through the resolution shared with the embedded
 /// engine ([`OscSettings::resolve`]: flag → config → `OMNIPHONY_OSC_PORT` →
-/// default).
+/// default). Unlike the embedded engine, the CLI keeps OSC off when no config
+/// file exists: see the `osc_settings` module documentation.
 pub(super) fn resolve_osc_settings(
     cfg: Option<&renderer::config::RenderConfig>,
     args: &RenderArgs,
     sources: &RenderArgSources<'_>,
 ) -> OscSettings {
-    OscSettings::resolve(cfg, &osc_overrides(args, sources))
+    OscSettings::resolve(cfg, &osc_overrides(args, sources), false)
 }
 
 /// Fold resolved OSC settings into the args the rest of the CLI reads.

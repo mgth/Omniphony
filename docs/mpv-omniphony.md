@@ -102,17 +102,30 @@ shared omniphony config. Per-invocation overrides:
 | `--ad-orender-library=<path>` | the liborender to load (else the search order above) |
 | `--ad-orender-config=<path>` | the render config YAML (else the shared default) |
 | `--ad-orender-bridge-path=<path>` | `render.bridge_path` (the decoder bridge `.so`) |
-| `--ad-orender-osc` | force OSC on (else follows `render.osc` in the config) |
+| `--ad-orender-osc` | force OSC on (else follows `render.osc` in the config; on when there is no config file) |
 | `--ad-orender-osc-port=<n>` | outgoing/monitoring port |
 | `--ad-orender-osc-rx-port=<n>` | incoming control port (studio registers here; default 9000) |
 | `--ad-orender-osc-bind=<addr>` | listener bind address |
 | `--ad-orender-osc-monitor-target=<host>` | monitoring host |
 
-Empty/zero values fall back to the config then the built-in defaults, so the
-zero-config `--ad=orender` path is unchanged. **OSC + studio:** either set
-`render.osc: true` in the config or pass `--ad-orender-osc`; the renderer then
-listens on 9000 (the rendezvous studio registers to) — studio connects on its
-own. Note the shared config means the standalone CLI would also enable OSC.
+Empty/zero values fall back to the config then the built-in defaults.
+**OSC + studio:** with no config file, OSC is on: the renderer listens on 9000
+(the rendezvous studio registers to, or `OMNIPHONY_OSC_PORT` when set) and
+studio connects on its own. A config file that exists decides:
+`render.osc: true` turns OSC on, and `render.osc: false` or no `osc` key
+leaves it off unless you pass `--ad-orender-osc`. The config Studio creates (its first Save,
+or a setting it keeps at once) records `osc: true`, so creating the file does
+not turn OSC off. Note the shared config means the standalone CLI would also
+enable OSC; without a config file the CLI keeps it off (it reports in its
+terminal, and Studio starts it with `--osc`).
+
+When a Studio-launched standby renderer already holds the port, the player's
+engine asks it to step aside: the standby releases the port and its audio
+output, the player's engine takes the port, and the standby resumes when the
+player exits. Only a client on this machine can make a renderer step aside.
+A second player cannot take the port from the first (an embedded engine never
+yields) and plays without OSC; a player whose bridge fails to load reports it
+on the port only if it is free, never evicting a standby.
 
 ## Supervision with Omniphony Studio
 
@@ -141,7 +154,9 @@ a Start menu entry.
 
 ### Connect Studio to mpv
 
-1. Start mpv with OSC on (one of the two — they're equivalent):
+1. Start mpv with OSC on. With no config file it already is
+   (`mpv --ad=orender film.mkv`); otherwise one of the two — they're
+   equivalent:
    - add `render.osc: true` to `~/.config/omniphony/config.yaml`, or
    - launch with `mpv --ad=orender --ad-orender-osc film.mkv`.
 2. Launch Studio. It registers with the renderer on the rendezvous port
