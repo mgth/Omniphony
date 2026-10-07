@@ -20,8 +20,10 @@ use std::sync::OnceLock;
 
 use omniphony_geometry::f32::inverse_room_scaled_position;
 
-/// The room model in force: the ratios the live params carry for the room
-/// warp, taken together so a pose resolver reads one value instead of four.
+/// The room warp the output applies: the ratios the live params carry for it,
+/// taken together so a pose resolver reads one value instead of four. A pose
+/// stated as an angle is pre-compensated for it ([`angles_to_normalized`]), so
+/// it must be the warp that is actually undone downstream ([`Self::for_output`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoomRatios {
     /// `[width, front, height]`.
@@ -40,7 +42,17 @@ impl RoomRatios {
         center_blend: 0.0,
     };
 
-    pub fn from_live(live: &renderer::live_params::LiveParams) -> Self {
+    /// The warp the output in force applies to a normalized position: the
+    /// live room on the speaker stage (which the cascaded binaural mode also
+    /// pans through), none on the direct binaural path, which reads the
+    /// direction straight off the position
+    /// ([`renderer::live_params::BinauralLiveParams::renders_direct`]).
+    /// Pre-compensating a direct binaural pose for the live room left it
+    /// warped: `L` at −49° instead of −30° in the default room (#781).
+    pub fn for_output(live: &renderer::live_params::LiveParams) -> Self {
+        if live.binaural.renders_direct() {
+            return Self::UNIT;
+        }
         Self {
             ratio: live.room_ratio,
             rear: live.room_ratio_rear,
@@ -259,7 +271,8 @@ fn speaker_pose_to_normalized(
 }
 
 /// Normalized ADM position that renders at an absolute direction under the
-/// room in force: spherical → real ADM → inverse room warp, the conversion the
+/// room warp of the output in force ([`RoomRatios::for_output`], none on the
+/// direct binaural path): spherical → real ADM → inverse room warp, the conversion the
 /// polar branch of [`speaker_pose_to_normalized`] makes for a placement entry
 /// that states an angle. A corner channel is deliberately carried around by
 /// the room warp; a channel stated as an angle — a pose the bridge declared,
@@ -953,7 +966,7 @@ pub fn build_fixed_channel_objects(
         (
             OwnedPlacement::from_live(&live, family),
             live.options.surround_placement,
-            RoomRatios::from_live(&live),
+            RoomRatios::for_output(&live),
         )
     };
     let topology = control.active_topology();
@@ -1014,7 +1027,7 @@ impl ChannelPlanKey {
             mode,
             placement: OwnedPlacement::from_live(live, family),
             surround_placement: live.options.surround_placement,
-            room: RoomRatios::from_live(live),
+            room: RoomRatios::for_output(live),
             layout_generation,
         }
     }
@@ -1050,7 +1063,7 @@ impl ChannelPlanKey {
         *planned_generation == layout_generation
             && *planned_mode == mode
             && *surround_placement == live.options.surround_placement
-            && *room == RoomRatios::from_live(live)
+            && *room == RoomRatios::for_output(live)
             && *planned_family == family
             && labels.as_slice() == channel_labels
             && planned_poses.as_slice() == declared_poses
@@ -1767,8 +1780,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// Azimuth/elevation the binaural stage would read off a normalized pose
-    /// once the room warp has been applied to it.
+    /// Azimuth/elevation the speaker stage (and the cascaded binaural mode,
+    /// which pans through it) renders a normalized pose at, once the room
+    /// warp has been applied to it.
     fn rendered_angles(pos: (f32, f32, f32), room: [f32; 3], rear: f32) -> (f32, f32) {
         let [px, py, pz] = omniphony_geometry::f32::room_scaled_position(
             [pos.0, pos.1, pos.2],
@@ -1866,6 +1880,99 @@ pub(crate) mod tests {
         // Manual without an entry for the label falls back to the room.
         let (az, _) = resolve(&PlacementPolicy::manual(&bed_with_l_at(-45.0)));
         assert!((az + 90.0).abs() < 0.05, "manual fallback: got {az}");
+    }
+
+    /// Azimuth, elevation and distance the direct binaural stage reads off a
+    /// normalized pose: straight off the coordinates, with no room warp
+    /// (`renderer::binaural`).
+    fn direct_binaural_angles(pos: (f32, f32, f32)) -> (f32, f32, f32) {
+        let (x, y, z) = pos;
+        let horizontal = (x * x + y * y).sqrt();
+        (
+            x.atan2(y).to_degrees(),
+            z.atan2(horizontal).to_degrees(),
+            (horizontal * horizontal + z * z).sqrt(),
+        )
+    }
+
+    /// A channel placed by angle — a sphere direction or a polar manual entry
+    /// — renders at that angle on every output, in the engine's default room
+    /// too: pre-compensated for no warp on the direct binaural path, which
+    /// applies none, and for the live room wherever the speaker stage does
+    /// (#781). On the direct path it also sits at the sphere's radius, so the
+    /// distance cues treat every channel alike.
+    #[test]
+    fn angle_poses_render_at_their_angles_on_every_output() {
+        use RChannelLabel::{C, L, Lb, Ls, Tfl};
+        use renderer::live_params::{BinauralMode, OutputMode};
+        let renderer = small_renderer(SpeakerLayout::preset("7.1.4").expect("preset layout"));
+        let control = renderer.renderer_control();
+        let (room, rear) = {
+            let live = control.live.read();
+            (live.room_ratio, live.room_ratio_rear)
+        };
+        assert_ne!(room, UNIT_ROOM, "the engine's default room is not a cube");
+        let manual = bed_with_l_at(-30.0);
+        // (label, use_7_1, policy, azimuth, elevation)
+        let cases: [(RChannelLabel, bool, PlacementPolicy<'_>, f32, f32); 6] = [
+            (L, false, PlacementPolicy::sphere(&[]), -30.0, 0.0),
+            (C, false, PlacementPolicy::sphere(&[]), 0.0, 0.0),
+            (Ls, false, PlacementPolicy::sphere(&[]), -110.0, 0.0),
+            (Lb, true, PlacementPolicy::sphere(&[]), -135.0, 0.0),
+            (Tfl, true, PlacementPolicy::sphere(&[]), -45.0, 45.0),
+            (L, false, PlacementPolicy::manual(&manual), -30.0, 0.0),
+        ];
+        let resolve = |label, use_7_1, policy: &PlacementPolicy<'_>| {
+            let room = RoomRatios::for_output(&control.live.read());
+            let (_, x, y, z) =
+                resolve_virtual_bed_pose(label, use_7_1, policy, room, SurroundPlacement::Side)
+                    .unwrap_or_else(|| panic!("no pose for {label:?}"));
+            (x, y, z)
+        };
+
+        control.live.write().binaural.output_mode = OutputMode::Binaural;
+        for (label, use_7_1, policy, want_az, want_el) in &cases {
+            let (az, el, dist) = direct_binaural_angles(resolve(*label, *use_7_1, policy));
+            assert!(
+                (az - want_az).abs() < 0.05,
+                "direct {label:?}: azimuth {az}"
+            );
+            assert!(
+                (el - want_el).abs() < 0.05,
+                "direct {label:?}: elevation {el}"
+            );
+            assert!(
+                (dist - 1.0).abs() < 1e-4,
+                "direct {label:?}: distance {dist}"
+            );
+        }
+
+        // Cascaded, a BRIR source (which runs the cascade whatever the mode
+        // says), and speakers: the speaker stage warps, so the pose is
+        // pre-compensated for the live room.
+        let outputs: [fn(&mut renderer::live_params::LiveParams); 3] = [
+            |live| live.binaural.mode = BinauralMode::Cascaded,
+            |live| {
+                live.binaural.mode = BinauralMode::Direct;
+                live.binaural.hrir_source =
+                    renderer::binaural::HrirSource::Brir("room.sofa".into());
+            },
+            |live| live.binaural.output_mode = OutputMode::SpeakerArray,
+        ];
+        for (output, set) in outputs.iter().enumerate() {
+            set(&mut control.live.write());
+            for (label, use_7_1, policy, want_az, want_el) in &cases {
+                let (az, el) = rendered_angles(resolve(*label, *use_7_1, policy), room, rear);
+                assert!(
+                    (az - want_az).abs() < 0.05,
+                    "output {output} {label:?}: azimuth {az}"
+                );
+                assert!(
+                    (el - want_el).abs() < 0.05,
+                    "output {output} {label:?}: elevation {el}"
+                );
+            }
+        }
     }
 
     /// The Side/Back choice is the room model's, for a source that has no
@@ -2765,7 +2872,7 @@ pub(crate) mod tests {
         let mut dolby_planner = FixedChannelPlanner::new();
         let mut dts_planner = FixedChannelPlanner::new();
         let l_room = event_position(&plan(&mut dolby_planner, dolby), 0).expect("L event");
-        assert!(!plan(&mut dts_planner, dts).is_empty(), "initial plan");
+        let dts_l = event_position(&plan(&mut dts_planner, dts), 0).expect("initial DTS L");
 
         control.live.write().binaural.output_mode = OutputMode::Binaural;
         let l_headphones =
@@ -2776,10 +2883,52 @@ pub(crate) mod tests {
             plan(&mut dolby_planner, dolby).is_empty(),
             "the default on headphones is the sphere itself → cached plan"
         );
+        // The output's room warp is part of the plan key (the direct path
+        // applies none), so the room family may replan, but onto its corner.
+        let dts_after = plan(&mut dts_planner, dts);
         assert!(
-            plan(&mut dts_planner, dts).is_empty(),
+            dts_after.is_empty() || event_position(&dts_after, 0) == Some(dts_l),
             "a chosen room is not the output's to change"
         );
+        assert!(plan(&mut dts_planner, dts).is_empty(), "then a cached plan");
+    }
+
+    /// Switching the binaural stage between its direct and cascaded paths
+    /// replans a sphere-mode prefix on the next frame: the two warp the room
+    /// differently, so the same angle is a different normalized pose (#781).
+    #[test]
+    fn binaural_path_switch_replans_a_sphere_prefix() {
+        use renderer::live_params::{BinauralMode, OutputMode};
+        let renderer = small_renderer(SpeakerLayout::preset("7.1.4").expect("preset layout"));
+        let control = renderer.renderer_control();
+        let dolby = test_family(&control, "dolby");
+        control.live.write().binaural.output_mode = OutputMode::Binaural;
+        let labels = [
+            RChannelLabel::L,
+            RChannelLabel::R,
+            RChannelLabel::C,
+            RChannelLabel::LFE,
+            RChannelLabel::Object,
+        ];
+        let mut planner = FixedChannelPlanner::new();
+        let mut plan = || {
+            let mut out = Vec::new();
+            planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
+            out
+        };
+        let pose = |p: [f64; 3]| (p[0] as f32, p[1] as f32, p[2] as f32);
+
+        let l_direct = event_position(&plan(), 0).expect("L event");
+        let (az, ..) = direct_binaural_angles(pose(l_direct));
+        assert!((az + 30.0).abs() < 0.05, "direct L: azimuth {az}");
+
+        control.live.write().binaural.mode = BinauralMode::Cascaded;
+        let l_cascaded = event_position(&plan(), 0).expect("L event after the switch");
+        assert_ne!(
+            l_cascaded, l_direct,
+            "the cascade warps the room → new pose"
+        );
+        assert!(plan().is_empty(), "nothing changed since → cached plan");
     }
 
     /// A route that depends on the output layout — here `LFE2`, which folds

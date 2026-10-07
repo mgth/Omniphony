@@ -681,15 +681,11 @@ impl SpatialRenderer {
         let (requested_output_mode, cascade_active, brir_source) = {
             let g = self.control.live.read();
             // A room response is rendered through the virtual-speaker path
-            // whatever the binaural mode says: the set only knows its
-            // loudspeakers, so anything else has to be panned onto them.
-            let brir_source =
-                matches!(g.binaural.hrir_source, crate::binaural::HrirSource::Brir(_));
+            // whatever the binaural mode says (`cascade_active`).
             (
                 g.binaural.output_mode,
-                matches!(g.binaural.mode, crate::live_params::BinauralMode::Cascaded)
-                    || brir_source,
-                brir_source,
+                g.binaural.cascade_active(),
+                matches!(g.binaural.hrir_source, crate::binaural::HrirSource::Brir(_)),
             )
         };
         // A mode change does not take effect here: it arms a cross-fade and the
