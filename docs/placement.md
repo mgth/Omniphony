@@ -24,6 +24,14 @@ Room is the historical behaviour and the Dolby one: in a cube `L` renders at
 45°, not at ITU's 30°, because the model is topological, not angular. Sphere
 and Room therefore do not coincide even in a cubic room.
 
+A channel placed by angle (a Sphere direction, or a polar Manual entry) is
+stored as the normalized position that renders at that angle on the output
+in force. The speaker stage warps the room, and the cascaded binaural mode
+pans through that stage, so on those outputs the pose is pre-compensated for
+the room ratio. The direct binaural path reads a direction straight off the
+position, with no warp, so there the pose is the plain direction on the unit
+sphere. Switching between the two replans the channel on the next frame.
+
 In **every** mode the family's entries still decide two things per channel:
 `spatialize` (virtualised, or routed direct to the speaker of the same
 label — the LFE's default) and `gain_db` (the input trim). The mode only

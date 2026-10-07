@@ -672,6 +672,25 @@ impl Default for BinauralLiveParams {
     }
 }
 
+impl BinauralLiveParams {
+    /// Whether the virtual-speaker path feeds the binaural stage: the
+    /// `Cascaded` mode, or a BRIR source, which only knows its loudspeakers
+    /// and so has everything panned onto them whatever the mode says.
+    pub fn cascade_active(&self) -> bool {
+        matches!(self.mode, BinauralMode::Cascaded)
+            || matches!(self.hrir_source, crate::binaural::HrirSource::Brir(_))
+    }
+
+    /// Whether the output renders each source directly as a direction on the
+    /// listener's sphere: binaural output outside the cascade. That path reads
+    /// a direction straight off the normalized position and applies no room
+    /// warp (see [`crate::binaural`]); every other path pans through the
+    /// speaker stage, which does.
+    pub fn renders_direct(&self) -> bool {
+        matches!(self.output_mode, OutputMode::Binaural) && !self.cascade_active()
+    }
+}
+
 /// Live-tunable parameters for a single input object (bed or audio object).
 #[derive(Clone)]
 pub struct ObjectLiveParams {
