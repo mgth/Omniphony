@@ -57,6 +57,20 @@ fn main() {
         println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/liborender.dylib");
     }
 
+    // With MSVC, the linker names a program database after its output, so
+    // this library (`orender.dll`) and the `orender` executable both write
+    // `orender.pdb` into the same `deps/` folder: cargo warns of the collision,
+    // and when the two links overlap one fails with LNK1201. Keep this
+    // library's database in its own build folder instead; the DLL records its
+    // path, so a debugger still finds it.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+        println!(
+            "cargo:rustc-cdylib-link-arg=/PDB:{}",
+            PathBuf::from(out_dir).join("orender.pdb").display()
+        );
+    }
+
     // Load cbindgen.toml explicitly: the library Builder (unlike the cbindgen
     // CLI) does not pick it up on its own, and the export/enum settings there
     // (forced OrenderChannelLabel emission, name-prefixed variants) are part of
