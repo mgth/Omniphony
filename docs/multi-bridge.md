@@ -181,7 +181,7 @@ pub struct BridgeSet {
   the per-family plugins; removing it is a follow-up.
 - `release.yml` packages the three libraries in each platform archive. The
   IAMF library links libopus, which the Linux build takes from the system;
-  Windows and macOS need it built or bundled (open question 1).
+  Windows and macOS build it from source and link it statically.
 - `check-crate-isolation.sh` checks each plugin's crate graph holds only its
   own family's decoders.
 
@@ -246,14 +246,15 @@ Each step is one PR, merged before the next is built on it.
 Steps 5 and 8 depend on nothing but their predecessors in the same repo and
 can run alongside 2–4.
 
+## Decisions
+
+1. **libopus on Windows and macOS**: built from source in `release.yml` and
+   linked statically into the IAMF plugin, which keeps one file per plugin.
+2. **Probe**: a boolean. The sync words of the formats we have do not
+   collide; a confidence score waits until a format needs one.
+
 ## Open questions
 
-1. **libopus on Windows and macOS** for the IAMF plugin: build it from source
-   in `release.yml` and link it statically, or ship the shared library next to
-   the plugin. Static linking keeps the one-file-per-plugin model.
-2. **Probe confidence**: a boolean is enough for the formats we have (their
-   sync words do not collide). A score would let a bridge claim a stream
-   weakly; not proposed until a format needs it.
-3. **Per-stream VBAP defaults**: the router reads them once. If a future
+1. **Per-stream VBAP defaults**: the router reads them once. If a future
    bridge needs different ones, the renderer has to rebuild its tables on a
    stream switch; out of scope while every bridge agrees.
