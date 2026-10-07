@@ -312,42 +312,58 @@ impl BridgeSet {
     /// until that is decided; anything else goes to the fallback bridge.
     fn push_on_probation(&mut self, fallback: usize, data: &[u8]) -> RPushResult {
         let holding = !self.undecided.buf.is_empty();
-        if holding {
-            if self.undecided.buf.len() + data.len() > MAX_UNDECIDED_RAW {
-                // A start that never completes within the bound is not one.
-                let mut result = self.deliver_held(fallback);
-                merge(&mut result, self.deliver(fallback, data));
-                return result;
-            }
-            self.undecided.buf.extend_from_slice(data);
-        }
-        let start = probe_first_byte(
-            &self.slots,
-            if holding { &self.undecided.buf } else { data },
-        );
-        match start {
+        // What the probes judge: the held bytes topped up to the bound, or
+        // this push up to the bound. `rest` is what lies past it, which goes
+        // wherever the judged bytes go.
+        let judged = if holding {
+            self.undecided.append(data)
+        } else {
+            data.len().min(MAX_UNDECIDED_RAW)
+        };
+        let rest = if holding { &data[judged..] } else { &[][..] };
+        let start = if holding {
+            probe_first_byte(&self.slots, &self.undecided.buf)
+        } else {
+            probe_first_byte(&self.slots, &data[..judged])
+        };
+        let full = if holding {
+            self.undecided.buf.len() >= MAX_UNDECIDED_RAW
+        } else {
+            data.len() >= MAX_UNDECIDED_RAW
+        };
+        let target = match start {
             FirstByte::Claimed(index) => {
                 self.raw = RawRoute::Locked(index);
-                if holding {
-                    self.deliver_held(index)
-                } else {
-                    self.deliver(index, data)
-                }
+                index
             }
-            FirstByte::Pending => {
+            FirstByte::Pending if !full => {
                 if !holding {
                     self.undecided.buf.extend_from_slice(data);
                 }
-                empty_result()
+                return empty_result();
             }
-            FirstByte::None => {
-                if holding {
-                    self.deliver_held(fallback)
-                } else {
-                    self.deliver(fallback, data)
-                }
+            FirstByte::Pending => {
+                // A start that does not complete within the bound is not one.
+                log::warn!(
+                    "a possible stream start after a reset was not confirmed within {} bytes; \
+                     it resumes on bridge {}",
+                    MAX_UNDECIDED_RAW,
+                    fallback + 1
+                );
+                fallback
             }
+            FirstByte::None => fallback,
+        };
+        let mut result = if holding {
+            self.deliver_held(target)
+        } else {
+            self.deliver(target, data)
+        };
+        if !rest.is_empty() {
+            let more = self.deliver(target, rest);
+            merge(&mut result, more);
         }
+        result
     }
 
     /// The held bytes, in one push, to `index`.
@@ -752,6 +768,11 @@ impl Undecided {
             scan.from = at + 1;
             scan.need_end = 0;
             scan.wait_until = 0;
+            // A claim the abandoned start held back may now win: leave it to
+            // the caller's next decision rather than drop it with the rest.
+            if self.settled_claim().is_some() {
+                return;
+            }
             self.drop_ruled_out();
         }
         if self.buf.len() >= MAX_UNDECIDED_RAW {
@@ -948,6 +969,11 @@ mod tests {
         }
     }
 
+    /// A `C` stream with a 4-byte header, like A and B.
+    extern "C" fn probe_c(data: RSlice<'_, u8>, _: RInputTransport, _: u8) -> RProbe {
+        probe_for(b'C', 0, data.as_slice())
+    }
+
     extern "C" fn probe_never(data: RSlice<'_, u8>, _: RInputTransport, _: u8) -> RProbe {
         PROBED.with(|p| p.set(p.get() + data.len()));
         RProbe::none(data.len().saturating_sub(3) as u32)
@@ -1130,6 +1156,57 @@ mod tests {
         push_raw(&mut set, b"tail");
         assert!(bytes(&a).is_empty());
         assert_eq!(bytes(&b), b"BBBBfirstAAxyztail");
+    }
+
+    #[test]
+    fn after_a_seek_a_cut_header_completed_by_a_large_push_moves_the_route() {
+        let (mut set, a, b) = set_ab();
+        push_raw(&mut set, b"BBBBfirst");
+        set.reset();
+        push_raw(&mut set, b"AA");
+        let mut large = b"AA".to_vec();
+        large.resize(2 + MAX_UNDECIDED_RAW, b'.');
+        push_raw(&mut set, &large);
+        let mut expected = b"AA".to_vec();
+        expected.extend_from_slice(&large);
+        assert_eq!(bytes(&a), expected);
+        assert_eq!(bytes(&b), b"BBBBfirst");
+    }
+
+    #[test]
+    fn after_a_seek_a_held_start_never_exceeds_the_bound() {
+        let (stuck, b) = (Arc::default(), Arc::default());
+        let mut set = BridgeSet::from_parts(vec![
+            (probe_stuck as ProbeFn, vec![], test_bridge(&stuck)),
+            (probe_b as ProbeFn, vec![], test_bridge(&b)),
+        ])
+        .unwrap();
+        push_raw(&mut set, b"BBBBfirst");
+        set.reset();
+        let mut large = vec![b'.'; 2 * MAX_UNDECIDED_RAW];
+        large[0] = b'C';
+        push_raw(&mut set, &large);
+        assert!(set.undecided.buf.capacity() <= MAX_UNDECIDED_RAW);
+        assert!(set.undecided.buf.is_empty());
+        let mut expected = b"BBBBfirst".to_vec();
+        expected.extend_from_slice(&large);
+        assert_eq!(bytes(&b), expected);
+        assert!(bytes(&stuck).is_empty());
+    }
+
+    #[test]
+    fn a_claim_held_back_by_an_abandoned_start_still_wins() {
+        let (stuck, c) = (Arc::default(), Arc::default());
+        let mut set = BridgeSet::from_parts(vec![
+            (probe_stuck as ProbeFn, vec![], test_bridge(&stuck)),
+            (probe_c as ProbeFn, vec![], test_bridge(&c)),
+        ])
+        .unwrap();
+        let mut stream = b"CCCC".to_vec();
+        stream.resize(4 + MAX_UNDECIDED_RAW, b'.');
+        push_raw(&mut set, &stream);
+        assert_eq!(bytes(&c), stream);
+        assert!(bytes(&stuck).is_empty());
     }
 
     #[test]

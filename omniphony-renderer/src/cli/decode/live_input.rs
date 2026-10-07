@@ -20,8 +20,10 @@ use audio_output::AudioControl;
 use audio_output::pipewire::PipewireBufferConfig;
 #[cfg(target_os = "linux")]
 use bridge_api::{RChannelLabel, RDecodedFrame};
+use orender_engine::bridge_loader::BridgeLibs;
 #[cfg(target_os = "linux")]
-use orender_engine::bridge_loader::{BridgeLibs, configure_presentation, open_bridges};
+use orender_engine::bridge_loader::{configure_presentation, open_bridges};
+#[cfg(target_os = "linux")]
 use orender_engine::bridge_set::BridgeSet;
 #[cfg(target_os = "linux")]
 use std::cell::RefCell;
