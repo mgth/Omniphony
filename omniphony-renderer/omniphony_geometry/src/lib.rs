@@ -46,8 +46,8 @@
 //!
 //! # Precision
 //!
-//! Every function exists in both [`f32`] (what the renderer's audio path uses)
-//! and [`f64`] (what the Studio backend uses). The two are generated from one
+//! Every function exists in both [`f32`](mod@f32) (what the renderer's audio path uses)
+//! and [`f64`](mod@f64) (what the Studio backend uses). The two are generated from one
 //! macro so they cannot drift; the arithmetic is written to match the existing
 //! renderer implementations term for term, so adopting this crate there is a
 //! bit-for-bit no-op.

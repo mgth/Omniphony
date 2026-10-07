@@ -480,7 +480,8 @@ pub struct LiveOptionsState {
     /// Per-family placement of fixed channels (`renderer::placement`), the
     /// renderer's `placement` block passed through: one object per family of
     /// its table, keyed by name, with its `label`, `defaultMode`, own `mode`
-    /// and `layout` (null when inherited), `effectiveMode` and
+    /// and `layout` (null when inherited), `effectiveMode`, `modeSource`
+    /// (absent from renderers older than the headphones default) and
     /// `layoutSource`. Read through `host::channels::family_placement`.
     pub placement: Option<serde_json::Value>,
     /// The families to offer, by name, in the renderer's order: the generic

@@ -23,7 +23,7 @@
 //! remain typed fields on [`LiveParams`], read directly per frame. The
 //! registry is the declaration + plumbing layer, not the storage.
 //!
-//! Adding a live option = one row of `declared_options!` ([`declared`]),
+//! Adding a live option = one row of `declared_options!` (`declared`),
 //! which generates its `LiveParams::options` and `RenderConfig::options`
 //! fields, its default and its registry row, + the Studio i18n keys. An
 //! option whose value lives inside a larger structure (binaural, room,
@@ -957,7 +957,7 @@ fn round6(v: f32) -> f32 {
     (v * 1_000_000.0).round() / 1_000_000.0
 }
 
-/// Every live option: the [`declared`] rows, then the rows written by hand.
+/// Every live option: the `declared` rows, then the rows written by hand.
 /// Iterated by the OSC dispatcher, persistence, seeding, the snapshot, the
 /// schema dump, and the conformance net.
 pub static LIVE_OPTIONS: &[OptionSpec] = &concat_rows::<
@@ -2932,7 +2932,7 @@ fn with_raw_of<T>(
     }
 }
 
-/// Bring every host option back within its kind: [`seed_option`]'s guard,
+/// Bring every host option back within its kind: `seed_option`'s guard,
 /// for a host whose state was built straight from the config (the standalone
 /// renderer's audio output and live input are) rather than seeded through
 /// the rows. A value its kind does not admit goes through the row's setter,

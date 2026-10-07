@@ -1,15 +1,15 @@
 # Studio native UI, phase 1: viewport parity
 
 Date: 10 September 2026. Branch `feat/studio-egui-viewport`, crate
-[`omniphony-studio-egui/`](../omniphony-studio-egui/). Follows the phase 0
+[`omniphony-studio-egui/`](../../omniphony-studio-egui/). Follows the phase 0
 spike ([results](studio-native-ui-spike.md)). Goal of the phase: draw what the
 Tauri Studio's three.js viewport draws, from the same OSC data, with the same
 rules. Everything below was ported from the JavaScript file by file, using a
 written specification of each visual element (geometry, material, blending,
 render order, state rules, data source) extracted from the sources first; those
-specifications are in [`studio-native-ui-specs/`](studio-native-ui-specs/).
+specifications are in [`studio-native-ui-specs/`](../studio-native-ui-specs/).
 
-![phase 1, 24 synthetic objects at 100 Hz with the object energy field](../omniphony-studio-egui/phase1-screenshot.png)
+![phase 1, 24 synthetic objects at 100 Hz with the object energy field](../../omniphony-studio-egui/phase1-screenshot.png)
 
 ## Architecture
 

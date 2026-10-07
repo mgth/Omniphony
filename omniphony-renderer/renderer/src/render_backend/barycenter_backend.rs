@@ -25,12 +25,12 @@ use omniphony_geometry::f32::vec3::distance_sq;
 /// reach the source, a whole family of weights does equally well. The third
 /// term settles it. Among equally good weights it picks the most evenly spread
 /// ones (the least `Σ wᵢ²`, equivalently the nearest to uniform weights), and
-/// it is small enough to leave the first two terms alone: see [`RIDGE`].
+/// it is small enough to leave the first two terms alone: see `RIDGE`.
 ///
 /// With it the objective is strictly convex, so the answer is unique. It does
 /// not depend on where a solver starts, and mirrored sources in a mirrored
 /// layout get mirrored gains. It is computed exactly rather than iterated
-/// towards: see [`minimise`].
+/// towards: see `minimise`.
 pub struct BarycenterBackend {
     speaker_positions: Vec<[f32; 3]>,
     /// Localisation bias toward nearer speakers, baked at construction. It only

@@ -2,9 +2,10 @@ name: Release
 
 # Triggered by a version tag (v*) or manually.
 # Creates a draft GitHub release with Linux (.deb, .AppImage), Windows (.msi,
-# .exe) and macOS arm64 (.dmg/.app) bundles of the Tauri Studio, one archive
-# per platform of the native (egui/wgpu) Studio and of the standalone
-# liborender, and the release's compatibility manifest (#676).
+# .exe) and macOS arm64 (.dmg/.app) bundles of the Tauri Studio, the same
+# installers of the native (egui/wgpu) Studio plus one plain archive of it per
+# platform, one archive per platform of the standalone liborender, and the
+# release's compatibility manifest (#676).
 on:
   push:
     tags: ['v*']
@@ -226,6 +227,24 @@ jobs:
           cargo build --release --locked
           cargo build --release --locked -p orender_ffi
 
+      # Installers of the native Studio (#677): deb + AppImage, NSIS + MSI,
+      # .dmg. cargo-packager, configured in omniphony-studio-egui/Cargo.toml;
+      # the script also stages orender and the engine library into the
+      # Studio's target/release, which the archive below reuses.
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+
+      - name: Build the native Studio installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          omniphony-studio-egui/scripts/package.sh
+          {
+            echo 'studio_installers<<EOF'
+            cat omniphony-studio-egui/target/packages/list.txt
+            echo EOF
+          } >> "$GITHUB_ENV"
+
       - name: Stage the native Studio archive
         shell: bash
         run: |
@@ -238,10 +257,13 @@ jobs:
           esac
           name="omniphony-studio-egui-${GITHUB_REF_NAME}-${platform}"
           dir="staging/$name"
-          mkdir -p "$dir/layouts/legacy" "$dir/assets"
+          mkdir -p "$dir/layouts/legacy" "$dir/assets" "$dir/engine"
           cp "omniphony-studio-egui/target/release/omniphony-studio-egui$exe" "$dir/"
           # The Studio looks for a plain `orender` next to itself.
           cp "omniphony-renderer/target/release/orender$exe" "$dir/"
+          # The engine library the Studio deploys for the player on startup,
+          # staged under its loader name by the installers step below.
+          cp omniphony-studio-egui/target/release/engine/* "$dir/engine/"
           cp layouts/*.yaml "$dir/layouts/"
           cp layouts/legacy/*.yaml "$dir/layouts/legacy/"
           cp omniphony-studio-egui/assets/la_dame_de_brassempouy_centered.glb "$dir/assets/"
@@ -296,6 +318,12 @@ jobs:
           name: studio-egui-${{ runner.os }}
           path: ${{ env.archive }}
 
+      - name: Upload the native Studio installers (workflow artifact)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: studio-egui-installers-${{ runner.os }}
+          path: ${{ env.studio_installers }}
+
       # Attached to the draft tauri-action created for this tag. `gh` finds a
       # draft by its tag name (drafts have no ref yet, so the tag lookup alone
       # would miss it). A manual dispatch has no tag and no draft: the
@@ -306,8 +334,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Bash 3.2 on the macOS runner: no mapfile. One path per line,
+          # spaces kept.
+          installers=()
+          while IFS= read -r installer; do
+            installers+=("$installer")
+          done < omniphony-studio-egui/target/packages/list.txt
           gh release upload "$GITHUB_REF_NAME" "$archive" "$liborender_archive" \
-            --clobber --repo "$GITHUB_REPOSITORY"
+            "${installers[@]}" --clobber --repo "$GITHUB_REPOSITORY"
 
   # What this release goes with (#676): its version, the liborender ABI, the
   # player tag and the bridge_api series a decoder bridge must be built

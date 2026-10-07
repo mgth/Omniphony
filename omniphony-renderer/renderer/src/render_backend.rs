@@ -307,7 +307,7 @@ pub trait PreparedEvaluator: Send + Sync {
     }
     /// Borrow the sampled polar table + axes, when this evaluator is a precomputed
     /// polar one. Default `None`. Crate-internal view used to merge bands into a
-    /// polar [`MultiBandTable`].
+    /// polar `MultiBandTable`.
     #[allow(private_interfaces)]
     fn polar_parts(&self) -> Option<PolarParts<'_>> {
         None

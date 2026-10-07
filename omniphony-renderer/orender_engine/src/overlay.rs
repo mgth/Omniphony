@@ -1449,13 +1449,18 @@ fn render(s: &mut OverlayState, res_x: f64, res_y: f64, now: f64) -> String {
     body
 }
 
+/// Held by every test that changes the process-global overlay state, this
+/// module's and any other that drives it (the control-message sweep).
+#[cfg(test)]
+pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // The overlay state is a process-global singleton, so the tests must not
     // run concurrently against it. Serialise them and reset to a known state.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    use super::TEST_LOCK;
 
     fn guard() -> std::sync::MutexGuard<'static, ()> {
         let g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
