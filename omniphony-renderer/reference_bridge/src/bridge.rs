@@ -357,7 +357,7 @@ impl FormatBridge for WavBridge {
     }
 
     fn vbap_cartesian_defaults(&self) -> RVbapCartesianDefaults {
-        // Balanced default grid, matching the production bridge's hint.
+        // The balanced default grid; WAV beds have no position below the floor.
         RVbapCartesianDefaults::BALANCED
     }
 
