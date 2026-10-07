@@ -772,7 +772,7 @@
   "status.bridgeErrorTitle": "Decoder bridge could not be loaded — spatial audio disabled",
   "status.bridgeErrorHint": "Playing a film soundtrack needs a decoder bridge. Put harletty-bridge next to orender, or choose its file under {section} → {field} and press Save. What the engine reported:",
   "status.bridgeMissingTitle": "No decoder — the engine runs without a decoder bridge",
-  "status.bridgeMissingHint": "This engine plays PCM and multichannel input, not film soundtracks. That is normal while you play films in mpv-omniphony, which has its own bridge. To decode here too, put harletty-bridge next to orender or in one of the folders listed below, or choose its file under {section} → {field} and press Save. What the engine reported:",
+  "status.bridgeMissingHint": "This engine plays PCM and multichannel input, not film soundtracks. That is normal while you play films in mpv-omniphony, which has its own bridge. When mpv.conf names the player's bridge (ad-orender-bridge-path), Studio also gives it to this engine. To decode here too, name it there, put harletty-bridge next to orender or in one of the folders listed below, or choose its file under {section} → {field} and press Save. What the engine reported:",
   "status.foreignRendererTitle": "Connected to a renderer this Studio did not start",
   "status.foreignRendererDetail": "Controls it does not implement are dropped silently.\nrunning:  {running}\nexpected: {expected}",
   "status.audioFormat": "audio: {rate} / {format}",

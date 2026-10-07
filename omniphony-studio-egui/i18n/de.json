@@ -742,7 +742,7 @@
   "status.bridgeErrorTitle": "Decoder-Bridge konnte nicht geladen werden — räumliches Audio deaktiviert",
   "status.bridgeErrorHint": "Für Film-Tonspuren ist eine Decoder-Bridge nötig. Legen Sie harletty-bridge neben orender oder wählen Sie ihre Datei unter {section} → {field} und drücken Sie Speichern. Meldung der Engine:",
   "status.bridgeMissingTitle": "Kein Decoder — die Engine läuft ohne Decoder-Bridge",
-  "status.bridgeMissingHint": "Diese Engine spielt PCM und Mehrkanal-Eingänge ab, aber keine Film-Tonspuren. Das ist normal, solange Sie Filme in mpv-omniphony abspielen, das eine eigene Bridge mitbringt. Um auch hier zu dekodieren, legen Sie harletty-bridge neben orender oder in einen der unten aufgeführten Ordner, oder wählen Sie ihre Datei unter {section} → {field} und drücken Sie Speichern. Meldung der Engine:",
+  "status.bridgeMissingHint": "Diese Engine spielt PCM und Mehrkanal-Eingänge ab, aber keine Film-Tonspuren. Das ist normal, solange Sie Filme in mpv-omniphony abspielen, das eine eigene Bridge mitbringt. Wenn mpv.conf die Bridge des Players nennt (ad-orender-bridge-path), gibt Studio sie auch dieser Engine. Um auch hier zu dekodieren, tragen Sie sie dort ein, legen Sie harletty-bridge neben orender oder in einen der unten aufgeführten Ordner, oder wählen Sie ihre Datei unter {section} → {field} und drücken Sie Speichern. Meldung der Engine:",
   "status.foreignRendererTitle": "Mit einem Renderer verbunden, den dieses Studio nicht gestartet hat",
   "status.foreignRendererDetail": "Steuerbefehle, die er nicht kennt, werden stillschweigend verworfen.\nläuft:    {running}\nerwartet: {expected}",
   "status.audioFormat": "Audio: {rate} / {format}",

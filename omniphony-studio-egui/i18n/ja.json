@@ -742,7 +742,7 @@
   "status.bridgeErrorTitle": "デコーダーブリッジを読み込めませんでした — 空間オーディオは無効です",
   "status.bridgeErrorHint": "映画のサウンドトラックを再生するにはデコーダーブリッジが必要です。harletty-bridge を orender と同じフォルダーに置くか、{section} → {field}でファイルを選んで保存してください。エンジンからの報告:",
   "status.bridgeMissingTitle": "デコーダーなし — エンジンはデコーダーブリッジなしで動作しています",
-  "status.bridgeMissingHint": "このエンジンは PCM とマルチチャンネル入力を再生できますが、映画のサウンドトラックはデコードできません。独自のブリッジを持つ mpv-omniphony で映画を再生している間は、これが通常の状態です。ここでもデコードするには、harletty-bridge を orender と同じフォルダーか下に表示されたフォルダーのいずれかに置くか、{section} → {field}でファイルを選んで保存してください。エンジンからの報告:",
+  "status.bridgeMissingHint": "このエンジンは PCM とマルチチャンネル入力を再生できますが、映画のサウンドトラックはデコードできません。独自のブリッジを持つ mpv-omniphony で映画を再生している間は、これが通常の状態です。mpv.conf がプレーヤーのブリッジを指定している場合 (ad-orender-bridge-path)、Studio はそれをこのエンジンにも渡します。ここでもデコードするには、そこで指定するか、harletty-bridge を orender と同じフォルダーか下に表示されたフォルダーのいずれかに置くか、{section} → {field}でファイルを選んで保存してください。エンジンからの報告:",
   "status.foreignRendererTitle": "この Studio が起動していないレンダラーに接続しています",
   "status.foreignRendererDetail": "実装されていないコントロールは黙って破棄されます。\n実行中: {running}\n想定:   {expected}",
   "status.audioFormat": "audio: {rate} / {format}",

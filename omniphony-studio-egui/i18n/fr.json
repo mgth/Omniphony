@@ -772,7 +772,7 @@
   "status.bridgeErrorTitle": "Le bridge décodeur n'a pas pu être chargé — audio spatial désactivé",
   "status.bridgeErrorHint": "La lecture d'une bande-son de film demande un bridge décodeur. Placez harletty-bridge à côté d'orender, ou choisissez son fichier dans {section} → {field} puis appuyez sur Enregistrer. Ce que le moteur a signalé :",
   "status.bridgeMissingTitle": "Aucun décodeur — le moteur tourne sans bridge décodeur",
-  "status.bridgeMissingHint": "Ce moteur lit le PCM et les entrées multicanal, pas les bandes-son de film. C'est normal tant que vous lisez vos films dans mpv-omniphony, qui a son propre bridge. Pour décoder ici aussi, placez harletty-bridge à côté d'orender ou dans l'un des dossiers listés ci-dessous, ou choisissez son fichier dans {section} → {field} puis appuyez sur Enregistrer. Ce que le moteur a signalé :",
+  "status.bridgeMissingHint": "Ce moteur lit le PCM et les entrées multicanal, pas les bandes-son de film. C'est normal tant que vous lisez vos films dans mpv-omniphony, qui a son propre bridge. Quand mpv.conf désigne le bridge du lecteur (ad-orender-bridge-path), Studio le donne aussi à ce moteur. Pour décoder ici aussi, désignez-le là, placez harletty-bridge à côté d'orender ou dans l'un des dossiers listés ci-dessous, ou choisissez son fichier dans {section} → {field} puis appuyez sur Enregistrer. Ce que le moteur a signalé :",
   "status.foreignRendererTitle": "Connecté à un renderer que ce Studio n'a pas lancé",
   "status.foreignRendererDetail": "Les contrôles qu'il n'implémente pas sont ignorés en silence.\nen cours : {running}\nattendu  : {expected}",
   "status.audioFormat": "audio : {rate} / {format}",

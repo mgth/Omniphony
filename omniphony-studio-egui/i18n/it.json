@@ -742,7 +742,7 @@
   "status.bridgeErrorTitle": "Impossibile caricare il bridge di decodifica — audio spaziale disattivato",
   "status.bridgeErrorHint": "Per riprodurre la colonna sonora di un film serve un bridge di decodifica. Metti harletty-bridge accanto a orender, oppure scegli il suo file in {section} → {field} e premi Salva. Messaggio del motore:",
   "status.bridgeMissingTitle": "Nessun decoder — il motore funziona senza bridge di decodifica",
-  "status.bridgeMissingHint": "Questo motore riproduce PCM e ingressi multicanale, non le colonne sonore dei film. È normale finché riproduci i film in mpv-omniphony, che ha il proprio bridge. Per decodificare anche qui, metti harletty-bridge accanto a orender o in una delle cartelle elencate sotto, oppure scegli il suo file in {section} → {field} e premi Salva. Messaggio del motore:",
+  "status.bridgeMissingHint": "Questo motore riproduce PCM e ingressi multicanale, non le colonne sonore dei film. È normale finché riproduci i film in mpv-omniphony, che ha il proprio bridge. Quando mpv.conf indica il bridge del lettore (ad-orender-bridge-path), Studio lo dà anche a questo motore. Per decodificare anche qui, indicalo lì, metti harletty-bridge accanto a orender o in una delle cartelle elencate sotto, oppure scegli il suo file in {section} → {field} e premi Salva. Messaggio del motore:",
   "status.foreignRendererTitle": "Connesso a un renderer che questo Studio non ha avviato",
   "status.foreignRendererDetail": "I controlli che non implementa vengono ignorati in silenzio.\nin uso:   {running}\natteso:   {expected}",
   "status.audioFormat": "audio: {rate} / {format}",

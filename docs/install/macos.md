@@ -158,8 +158,10 @@ holds the port the player needs. When you only use Studio with the player,
 switch that option off.
 
 Studio's own renderer reads the same `config.yaml`, so the `bridge_path` of
-step 2 serves it too. Without a bridge it still runs, and Studio shows an
-orange *No decoder* banner: films keep playing in the player.
+step 2 serves it too. It also takes the folder of a bridge named in
+`~/.config/mpv/mpv.conf` (`ad-orender-bridge-path=`, with an absolute path).
+Without a bridge it still runs, and Studio shows an orange *No decoder* banner:
+films keep playing in the player.
 
 ## When it does not work
 

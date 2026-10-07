@@ -12,6 +12,7 @@ pub mod control;
 pub mod diagnostics;
 pub mod engine_deploy;
 pub mod json_store;
+pub mod mpv_bridge;
 pub mod peak_hold;
 pub mod process;
 pub mod runtime;

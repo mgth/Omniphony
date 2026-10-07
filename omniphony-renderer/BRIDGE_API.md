@@ -94,6 +94,16 @@ decoder: PCM and channel input work, and the published
 `/omniphony/state/render/bridge_error` contains `no decoder bridge found`,
 which Studio shows as a warning rather than an error.
 
+Studio also uses the bridge path from `mpv.conf`: before it spawns its own
+`orender`, it reads mpv-omniphony's `ad-orender-bridge-path` from the player's
+config (mpv's own lookup: `$MPV_HOME`, else `$XDG_CONFIG_HOME/mpv` or
+`~/.config/mpv`, `~/.mpv`, `/etc/mpv`; `%APPDATA%\mpv` on Windows; default
+profile only) and, when it names an existing file, passes that file's folder as
+`$ORENDER_BRIDGE_DIR` (step 3.2). An `ORENDER_BRIDGE_DIR` already in Studio's
+environment wins, and a bridge named in the engine's own config or found next
+to `orender` comes first anyway. A bridge that only sits next to the player,
+with no `mpv.conf` line naming it, stays unknown to Studio.
+
 ## Exported Root Module
 
 Each plugin must export the `format_bridge` root module expected by
