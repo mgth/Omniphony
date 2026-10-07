@@ -40,7 +40,7 @@ fn thd_n_db(freq: f64, ratio: f64) -> f64 {
             continue; // the history starts silent
         }
         let step = (ratio * 4_294_967_296.0).round() / 4_294_967_296.0;
-        for (n, frame) in out.chunks_exact(CH).enumerate() {
+        for (n, frame) in out.as_chunks::<CH>().0.iter().enumerate() {
             let p = p0.as_f64() + n as f64 * step;
             let ideal = (TAU * freq * p / FS).sin() * 0.5;
             for &v in frame {

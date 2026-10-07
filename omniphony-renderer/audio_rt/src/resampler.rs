@@ -269,7 +269,7 @@ fn block4<const G: usize>(kern: &[f32], win: &[f32], c: usize, cb: usize, out: &
     let mut acc0 = [F4::ZERO; G];
     let mut acc1 = [F4::ZERO; G];
     let mut rows = win.chunks_exact(c);
-    for h in kern.chunks_exact(2) {
+    for h in kern.as_chunks::<2>().0 {
         let (Some(r0), Some(r1)) = (rows.next(), rows.next()) else {
             break;
         };
@@ -289,7 +289,7 @@ fn block4<const G: usize>(kern: &[f32], win: &[f32], c: usize, cb: usize, out: &
 fn block_scalar(kern: &[f32], win: &[f32], c: usize, ch: usize, out: &mut [f32]) {
     let (mut a0, mut a1) = (0.0f32, 0.0f32);
     let mut rows = win.chunks_exact(c);
-    for h in kern.chunks_exact(2) {
+    for h in kern.as_chunks::<2>().0 {
         let (Some(r0), Some(r1)) = (rows.next(), rows.next()) else {
             break;
         };

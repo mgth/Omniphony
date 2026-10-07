@@ -294,7 +294,7 @@ mod tests {
             let n = (1 + (expect % 61) as usize).min(64);
             let n = n.min((FRAMES - expect) as usize);
             if rx.read_exact(&mut buf[..n * CH]) {
-                for frame in buf[..n * CH].chunks_exact(CH) {
+                for frame in buf[..n * CH].as_chunks::<CH>().0 {
                     for (c, &v) in frame.iter().enumerate() {
                         assert_eq!(v, (expect * 4 + c as u64) as f32);
                     }
