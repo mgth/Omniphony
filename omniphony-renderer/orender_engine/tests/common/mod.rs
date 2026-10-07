@@ -81,7 +81,7 @@ fn private_config_dir() -> PathBuf {
 /// dependency's cdylib in `deps/` beside the binaries; the newer build-dir
 /// layout (cargo nightly) puts it in `build/reference_bridge/<hash>/out/`
 /// under the profile directory instead. The most recent of several wins.
-fn reference_bridge_path() -> PathBuf {
+pub fn reference_bridge_path() -> PathBuf {
     let exe = std::env::current_exe().expect("test binary path");
     let name = format!(
         "{}reference_bridge{}",
