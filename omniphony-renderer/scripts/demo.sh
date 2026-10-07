@@ -8,8 +8,10 @@
 #
 # Runs on Linux, macOS and Windows (Git Bash / MSYS2). The audio device is the
 # platform's realtime backend: PipeWire on Linux, CoreAudio on macOS, ASIO on
-# Windows (which needs an ASIO driver: the sound card's own, or FlexASIO /
-# ASIO4ALL). Without one, use the `file` mode.
+# Windows (the sound card's own driver, or FlexASIO / ASIO4ALL). A Windows
+# machine without an ASIO driver falls back to WASAPI shared mode, which plays
+# as many channels as the device's speaker setup: enough for the binaural
+# mode; the speaker modes need a speaker setup as wide as the layout.
 #
 # Usage:
 #   scripts/demo.sh                 # binaural → audio device (default)

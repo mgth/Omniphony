@@ -9,14 +9,15 @@ The main executable is `orender`.
 It loads a bridge plugin at runtime, decodes the input stream, and can then:
 
 - stream decoded audio to realtime backends
-- output through `pipewire` on Linux or `asio` on Windows
+- output through `pipewire` on Linux or `asio` on Windows (WASAPI shared mode
+  when no ASIO driver is installed)
 - emit OSC metadata and metering under the `/omniphony/...` namespace
 - render objects to speaker feeds with VBAP
 
 The repository also contains the supporting runtime stack:
 
 - `renderer`: VBAP engine, speaker layouts, OSC output, runtime config
-- `audio_output`: PipeWire and ASIO backends
+- `audio_output`: PipeWire, ASIO (with its WASAPI fallback) and CoreAudio backends
 - `spdif`: IEC61937 / S/PDIF parsing helpers
 - `bridge_api`: ABI-stable interface for external bridge plugins
 - `reference_bridge`: a reference WAV/PCM bridge that powers the bundled demo
@@ -62,7 +63,8 @@ the smallest example for writing your own bridge ([BRIDGE_API.md](BRIDGE_API.md)
 
 - default command: render an input stream to a realtime backend
 - `generate-vbap`: generate a binary VBAP table from a speaker layout
-- `list-asio-devices`: list available ASIO output devices on Windows builds
+- `list-asio-devices`: list the realtime output devices on Windows builds — the
+  ASIO ones, or the WASAPI ones when output falls back to WASAPI
 
 Inspect the exact CLI supported by your build with:
 

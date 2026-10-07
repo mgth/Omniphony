@@ -430,6 +430,11 @@ pub struct RuntimeAudioState {
     pub audio_sample_format: Option<String>,
     #[serde(rename = "audioError")]
     pub audio_error: Option<String>,
+    /// The host the engine's output stream plays through, as the engine
+    /// names it: `ASIO`, `WASAPI (fallback: no ASIO driver)`, `CoreAudio`.
+    /// `None` when no stream is open or the backend names no host.
+    #[serde(rename = "audioOutputHost")]
+    pub audio_output_host: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -941,6 +946,14 @@ impl AppState {
 
     pub fn set_audio_sample_format(&mut self, value: String) {
         self.audio.audio_sample_format = Some(value);
+    }
+
+    pub fn set_audio_output_host(&mut self, value: &str) {
+        self.audio.audio_output_host = if value.trim().is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        };
     }
 
     pub fn set_audio_error(&mut self, value: &str) -> Option<String> {
