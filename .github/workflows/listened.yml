@@ -12,13 +12,17 @@ on:
     branches: [release]
     types: [opened, synchronize, reopened, labeled, unlabeled, edited]
 
+# One run at a time per pull request, none cancelled: the label is removed
+# and recorded by these runs, and two at once could undo each other. Every run
+# checks everything again, so a run GitHub drops from the queue costs at most
+# a label to add again (see the script).
 concurrency:
   group: listened-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
-  pull-requests: write  # remove a stale label and say why
+  pull-requests: write  # record the listened head, remove a stale label
 
 jobs:
   listened:
@@ -36,7 +40,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BEFORE: ${{ github.event.before }}
         run: .github/scripts/listened-check.sh

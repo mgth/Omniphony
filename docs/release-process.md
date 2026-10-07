@@ -102,8 +102,10 @@ path — the sources of the crates between the decoder and the device, the CLI,
 the speaker layout presets; not OSC, tests or docs — the check fails until the
 PR carries the `listened` label. CI cannot hear. The job summary lists the
 commits on that path, which is what to listen to. Adding the label reruns only
-this check. When new commits on the path reach the PR (main moved), the label
-is removed with a comment, and the new head must be listened to again.
+this check, which records in a comment the head the label was added on. Every
+later run compares that head with the current one: when commits since then
+touch the path (main moved), the label is removed with a comment, and the new
+head must be listened to again.
 
 Back-merge discipline: a hotfix lands on `release` through its own PR (same
 checks), and must then be merged back into `main`, or `main` regresses at the
