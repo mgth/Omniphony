@@ -9,6 +9,7 @@ use egui::Color32;
 use crate::app::StudioSpike;
 use crate::host::commands::app as app_cmd;
 use crate::host::commands::mpv_config::MpvOrenderState;
+use crate::host::commands::orender::RendererMismatch;
 use crate::i18n::{t, tf};
 use crate::model::app_state::BridgeProblemKind;
 use crate::ui::section::Section;
@@ -107,10 +108,10 @@ impl StudioSpike {
             .map(str::to_owned)
     }
 
-    /// Whether the renderer answering is one this Studio did not start
-    /// (`rendererIsForeign`): `None` while either path is unknown, and never
-    /// true for an embedded producer, which was never ours to start.
-    fn renderer_is_foreign(&self) -> Option<(String, String)> {
+    /// How the renderer answering differs from the one this Studio would
+    /// launch (`rendererIsForeign`, plus a rebuilt binary): `None` while
+    /// either path is unknown, and never for an embedded producer.
+    fn renderer_mismatch(&self) -> Option<RendererMismatch> {
         let live = self.host.read();
         let embedded = live
             .app
@@ -119,7 +120,7 @@ impl StudioSpike {
             .and_then(|c| c.get("variant"))
             .and_then(|v| v.as_str())
             == Some("embedded");
-        foreign_renderer(
+        crate::host::commands::orender::renderer_mismatch(
             embedded,
             live.app.render_executable.as_deref(),
             self.expected_orender_path.as_deref(),
@@ -243,11 +244,15 @@ impl StudioSpike {
                 );
             });
         }
-        // Attached to someone else's renderer: the connection looks perfectly
-        // healthy, so this has to be said out loud or every control it does not
-        // implement just vanishes.
-        if let Some((running, expected)) = self.renderer_is_foreign() {
-            widgets::banner(
+        match self.renderer_mismatch() {
+            None => {}
+            // Ours, but its binary was rebuilt under it: still the older
+            // build, until a restart loads the new one.
+            Some(RendererMismatch::Replaced { path }) => self.replaced_renderer_banner(ui, &path),
+            // Attached to someone else's renderer: the connection looks
+            // perfectly healthy, so this has to be said out loud or every
+            // control it does not implement just vanishes.
+            Some(RendererMismatch::Foreign { running, expected }) => widgets::banner(
                 ui,
                 widgets::Severity::Warning,
                 t("status.foreignRendererTitle"),
@@ -255,7 +260,52 @@ impl StudioSpike {
                     "status.foreignRendererDetail",
                     &[("running", &running), ("expected", &expected)],
                 )),
-            );
+            ),
+        }
+    }
+
+    /// The renderer runs an older build of the executable this Studio would
+    /// launch. Offers the restart that fixes it when Studio manages that
+    /// renderer: the one it launched, or the OS service.
+    fn replaced_renderer_banner(&mut self, ui: &mut egui::Ui, path: &str) {
+        let restart = self.host_operations.restart_action(&self.host);
+        self.host_operations.poll();
+        let pending = self.host_operations.pending();
+        let mut clicked = false;
+        widgets::banner_with(
+            ui,
+            widgets::Severity::Warning,
+            t("status.replacedRendererTitle"),
+            |ui| {
+                ui.label(
+                    egui::RichText::new(tf("status.replacedRendererDetail", &[("path", path)]))
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                );
+                if restart.is_some() {
+                    ui.horizontal_wrapped(|ui| {
+                        clicked = ui
+                            .add_enabled(
+                                !pending,
+                                egui::Button::new(t("status.replacedRendererRestart")),
+                            )
+                            .clicked();
+                        if pending {
+                            ui.spinner();
+                        }
+                    });
+                }
+                if let Some(error) = &self.host_operations.error {
+                    ui.label(
+                        egui::RichText::new(error)
+                            .size(theme::FONT_SIZE_SMALL)
+                            .color(theme::WARN),
+                    );
+                }
+            },
+        );
+        if let Some(action) = restart.filter(|_| clicked) {
+            self.host_operations.request(&self.host, action);
         }
     }
 }
@@ -484,44 +534,5 @@ impl StudioSpike {
                 port: self.osc_port,
             },
         );
-    }
-}
-
-/// `rendererIsForeign`, as a rule on its own: unknown while either path is
-/// missing, never true for an embedded producer — which was never ours to
-/// start — and true only when the two paths disagree.
-fn foreign_renderer(
-    embedded: bool,
-    running: Option<&str>,
-    expected: Option<&str>,
-) -> Option<(String, String)> {
-    if embedded {
-        return None;
-    }
-    let running = running?.trim();
-    let expected = expected?.trim();
-    if running.is_empty() || expected.is_empty() || running == expected {
-        return None;
-    }
-    Some((running.to_owned(), expected.to_owned()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_foreign_renderer_is_only_claimed_when_both_paths_are_known_and_differ() {
-        let ours = Some("/usr/bin/orender");
-        let theirs = Some("/opt/other/orender");
-        assert!(foreign_renderer(false, theirs, ours).is_some());
-        assert!(foreign_renderer(false, ours, ours).is_none());
-        // Half the answer is no answer: an unknown path must not be reported
-        // as a mismatch.
-        assert!(foreign_renderer(false, None, ours).is_none());
-        assert!(foreign_renderer(false, theirs, None).is_none());
-        assert!(foreign_renderer(false, Some("  "), ours).is_none());
-        // An embedded producer is never one this Studio started.
-        assert!(foreign_renderer(true, theirs, ours).is_none());
     }
 }
