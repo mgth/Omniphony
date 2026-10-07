@@ -64,7 +64,7 @@ Expand-Archive "$HOME\Downloads\harletty-bridge-v0.8.0-windows-x86_64.zip" C:\om
 
 That adds `harletty_bridge.dll` next to `mpv.exe`.
 
-If `C:\ProgramData\omniphony\config.yaml` already exists (Studio writes one) and
+If `C:\ProgramData\omniphony\config.yaml` already exists (Studio writes it when you press Save) and
 sets `render.bridge_path`, that path is used instead, and it must point at this
 file. Remove the line, or change it to `C:\omniphony\harletty_bridge.dll`.
 
