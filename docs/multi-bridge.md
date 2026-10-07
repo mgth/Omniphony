@@ -191,15 +191,20 @@ pub struct BridgeSet {
 
   The route then holds until `reset`, as a bridge's own codec lock does today.
 - **Resume after a seek**: `reset` (which a seek issues) resets the bridges
-  but keeps the last route as the **fallback**. The next push is probed as
-  above; if no bridge accepts it, it goes to the fallback bridge instead of
-  waiting. This is what the bridges do today on their own: harletty's router
+  but keeps the last route as the **fallback**. Until the route is decided
+  again, each push is probed **at its first byte only**, with no buffering:
+  a `Claim` at offset 0 moves the route there (a new stream starting on the
+  read that follows the reset, as the next file in a continuous pipe does);
+  anything else, `Pending` included, goes to the fallback bridge at once, and
+  the first push it takes fixes the route. This is what the bridges do today
+  on their own: harletty's router sniffs only the start of a packet, then
   sends a sync-less packet after a reset to IAMF while its sequence is still
   configured (temporal units carry no header to probe) and otherwise to
-  TrueHD, which resynchronises on its next major sync. A probe hit from
-  another bridge moves the route (a real stream change), with the same
-  precedence as today's sniff-before-continuation order. The fallback is
-  cleared only when the host loads a new set or the input is closed.
+  TrueHD, which resynchronises on its next major sync. Scanning the whole
+  buffer here instead would let a sync-like pattern inside the resumed
+  stream's payload pull it to another bridge. The fallback is cleared only
+  when the host loads a new set or the input is closed; with no fallback
+  (first stream), the undecided-buffer rule above applies.
 - **IEC 61937**: the bridge for a burst type is found by probing once and
   cached in `iec_route`. When the type moves to a different bridge mid-stream
   (a live input switching from E-AC-3 to DTS), the old bridge is reset, the
