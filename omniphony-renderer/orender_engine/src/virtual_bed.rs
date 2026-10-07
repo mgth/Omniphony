@@ -1882,9 +1882,9 @@ pub(crate) mod tests {
         assert!((az + 90.0).abs() < 0.05, "manual fallback: got {az}");
     }
 
-    /// Azimuth, elevation and distance the direct binaural stage reads off a
-    /// normalized pose: straight off the coordinates, with no room warp
-    /// (`renderer::binaural`).
+    /// Azimuth and elevation the direct binaural stage reads off a normalized
+    /// pose, straight off the coordinates with no room warp
+    /// (`renderer::binaural`), and the pose's Euclidean radius.
     fn direct_binaural_angles(pos: (f32, f32, f32)) -> (f32, f32, f32) {
         let (x, y, z) = pos;
         let horizontal = (x * x + y * y).sqrt();
@@ -1899,8 +1899,10 @@ pub(crate) mod tests {
     /// — renders at that angle on every output, in the engine's default room
     /// too: pre-compensated for no warp on the direct binaural path, which
     /// applies none, and for the live room wherever the speaker stage does
-    /// (#781). On the direct path it also sits at the sphere's radius, so the
-    /// distance cues treat every channel alike.
+    /// (#781). On the direct path it also sits on the unit sphere (Euclidean
+    /// radius 1). That is not an equal distance cue: the binaural stage
+    /// measures cues with the cube norm (`cue_distance_norm`), so C reads 1
+    /// and L about 0.87.
     #[test]
     fn angle_poses_render_at_their_angles_on_every_output() {
         use RChannelLabel::{C, L, Lb, Ls, Tfl};
@@ -1943,7 +1945,7 @@ pub(crate) mod tests {
             );
             assert!(
                 (dist - 1.0).abs() < 1e-4,
-                "direct {label:?}: distance {dist}"
+                "direct {label:?}: Euclidean radius {dist}"
             );
         }
 
