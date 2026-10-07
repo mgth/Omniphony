@@ -66,13 +66,27 @@ impl<T: Copy> Shared<T> {
 
 /// Create a ring of `capacity_frames` frames of `channels` samples, and its
 /// two ends.
+///
+/// # Panics
+/// When `channels × capacity_frames` samples cannot be allocated. Refused
+/// here rather than wrapped: the copies trust the dimensions, so a ring
+/// smaller than it advertises would write past its buffer.
 pub fn frame_ring<T: Copy + Default + Send>(
     channels: usize,
     capacity_frames: usize,
 ) -> (Producer<T>, Consumer<T>) {
     let channels = channels.max(1);
     let capacity = capacity_frames.max(1);
-    let buf = (0..channels * capacity)
+    let samples = channels
+        .checked_mul(capacity)
+        .filter(|&n| {
+            n.checked_mul(std::mem::size_of::<UnsafeCell<T>>())
+                .is_some_and(|bytes| bytes <= isize::MAX as usize)
+        })
+        .unwrap_or_else(|| {
+            panic!("a frame ring of {channels} channels × {capacity} frames does not fit in memory")
+        });
+    let buf = (0..samples)
         .map(|_| UnsafeCell::new(T::default()))
         .collect::<Vec<_>>()
         .into_boxed_slice();
@@ -220,6 +234,21 @@ impl<T: Copy> Consumer<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dimensions whose product wraps are refused, never turned into a ring
+    /// that advertises more frames than it holds (the reviewer's probe:
+    /// 2 × (usize::MAX / 2 + 1) wrapped to zero samples).
+    #[test]
+    #[should_panic(expected = "does not fit in memory")]
+    fn dimensions_that_overflow_are_refused() {
+        let _ = frame_ring::<u8>(2, usize::MAX / 2 + 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not fit in memory")]
+    fn a_ring_past_the_address_space_is_refused() {
+        let _ = frame_ring::<f32>(1, usize::MAX / 2);
+    }
 
     #[test]
     fn moves_whole_frames_and_wraps() {
