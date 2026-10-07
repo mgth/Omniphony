@@ -64,9 +64,13 @@ passes and the old bridge silently keeps decoding.
   `ORENDER_BRIDGE_FILE` accepts a list in the platform's path-list syntax
   (`:` or `;`).
 - **Auto-discovery** (no paths configured) loads **every** bridge in the first
-  discovery folder that holds at least one, sorted by file name. It does not
-  merge folders: a stale per-user bridge must not be added to the system ones.
-  The folders and their order are unchanged.
+  discovery folder that holds at least one **usable** bridge, sorted by file
+  name. A candidate is usable when its header passes the version and layout
+  check; the refused ones are reported in `bridge_error`, and a folder that
+  only holds refused candidates (a leftover 0.5 `libharletty_bridge` next to
+  the executable) does not stop the search. It does not merge folders: a
+  stale per-user bridge must not be added to the system ones. The folders and
+  their order are unchanged.
 - **The combined library's path**: a configured path (config, CLI,
   `ORENDER_BRIDGE_FILE`, mpv's `ad-orender-bridge-path`) whose file name is
   the combined harletty library of 0.5 (`libharletty_bridge.so`,
@@ -90,18 +94,44 @@ The root module gains two required entries (a layout change, so a minor bump
 under the policy in `BRIDGE_API.md`; `abi-baseline.txt` is regenerated):
 
 ```rust
-/// Whether this bridge decodes the stream `data` belongs to. Stateless: the
-/// host calls it before it creates or picks an instance. For `Raw`, `data` is
-/// every undecided byte the host holds, which may start mid-frame or end
-/// inside a header: the probe looks for a sync anywhere in it and answers
-/// `false` until one is complete. For `Iec61937`, `data` is the burst payload
-/// and `data_type` the burst type.
-pub probe: extern "C" fn(data: RSlice<'_, u8>, transport: RInputTransport, data_type: u8) -> bool,
+/// Where, if anywhere, a stream this bridge decodes starts in `data`.
+/// Stateless: the host calls it before it creates or picks an instance.
+/// For `Iec61937`, `data` is the burst payload and `data_type` the burst
+/// type, and only `Claim` at 0 or `None` make sense. For `Raw`, `data` is a
+/// window of undecided bytes, which may start mid-frame or end inside a
+/// header (see Routing).
+pub probe: extern "C" fn(data: RSlice<'_, u8>, transport: RInputTransport, data_type: u8) -> RProbe,
 
 /// The `input_codec` names this bridge decodes ("truehd", "eac3", "dts", …),
 /// lower case. The host routes a forced codec by this list.
 pub input_codecs: extern "C" fn() -> RVec<RString>,
 ```
+
+```rust
+#[repr(C)]
+pub struct RProbe {
+    pub verdict: RProbeVerdict,
+    /// Claim / Pending: the offset of the frame the stream starts with
+    /// (not of its sync word). None: every byte before it is ruled out,
+    /// the host need not show them to this bridge again.
+    pub offset: u32,
+}
+
+#[repr(u8)]
+pub enum RProbeVerdict {
+    /// A validated stream start at `offset`: header complete and checked
+    /// (its CRC, or the next frame's sync where the format has no CRC).
+    Claim,
+    /// A possible start at `offset` whose header is not complete yet.
+    Pending,
+    /// No possible start at or after `offset` in `data` so far.
+    None,
+}
+```
+
+The answer is still yes or no, not a confidence score; what it adds is
+*where* and *not decidable yet*, which the host needs to route a byte stream
+the same way whatever its read sizes.
 
 `input_codec`, which the host already sends from mpv's codec name, becomes a
 documented configure key in `BRIDGE_API.md`, with its accepted values.
@@ -129,19 +159,35 @@ pub struct BridgeSet {
 
 - **Raw transport**: raw input is a byte stream, not a packet stream: the
   CLI forwards each read as it comes, so a sync word or header can straddle
-  two pushes, and a reader may hand over one byte at a time. With no route,
-  the host therefore keeps the undecided bytes in a bounded buffer
-  (`MAX_UNDECIDED_RAW`, 64 KiB, allocated once at load) and probes the whole
-  buffer after each push, in load order:
-  - the forced bridge, if `input_codec` named one, is the route at once;
-  - the first bridge whose `probe` accepts becomes the route, and receives
-    the buffered bytes in one push before the live ones (a replay: nothing it
-    would have seen is lost);
-  - if the buffer fills with no taker, its older half is dropped with a
-    rate-limited warning (an error in strict mode) and probing goes on.
+  two pushes, and a reader may hand over one byte at a time. With no route
+  (and no forced bridge: an `input_codec` naming one makes it the route at
+  once), the host keeps the undecided bytes in a bounded buffer
+  (`MAX_UNDECIDED_RAW`, 64 KiB, allocated once at load) and routes by
+  **stream start**, not by any occurrence of a sync word:
+  - **The earliest start wins.** After each push, the host decides as soon as
+    some bridge claims an offset `o` and no bridge has a `Pending` start at
+    or before `o`; between claims at the same offset, load order decides.
+    A sync word inside another stream's payload (an IAMF prefix can carry
+    reserved OBUs whose bytes are arbitrary) lies after that stream's own
+    start, so it loses whether it arrives in the same read or a later one.
+    Since a probe only claims a validated header and keeps a start pending
+    until it can validate it, the decision does not depend on how the bytes
+    were split into reads.
+  - **Replay**: the chosen bridge receives the buffered bytes from its
+    claimed offset in one push, then the live ones. Bytes before it belong
+    to no stream and are dropped, counted in a rate-limited warning.
+  - **Bounded work**: each bridge keeps a scan position. A `None` answer
+    moves it to the returned offset, so the next probe sees only the new
+    bytes plus the bridge's own overlap (at most its longest header); a
+    `Pending` answer keeps it at the pending start. Bytes every bridge has
+    ruled out leave the buffer at once. Each received byte is thus examined
+    a bounded number of times per bridge, whatever the read size, instead of
+    the whole buffer at every push.
+  - **Overflow**: only a pending start can hold the buffer. If it reaches
+    the bound, that start is abandoned (the bridge's scan position moves past
+    it) with a rate-limited warning, an error in strict mode.
 
   The route then holds until `reset`, as a bridge's own codec lock does today.
-  The probe cost is bounded by the buffer and paid only while undecided.
 - **Resume after a seek**: `reset` (which a seek issues) resets the bridges
   but keeps the last route as the **fallback**. The next push is probed as
   above; if no bridge accepts it, it goes to the fallback bridge instead of
@@ -220,22 +266,34 @@ explicit setting:
   until the user edits it. `vbap_allow_negative_z`
   becomes a registry option in this mode (live, Save), so a forced grid is
   complete; today it can only be set from the config file or the CLI.
-- **Existing configs** (no `evaluation_grid` key) are migrated
-  conservatively, once, when the bridges are loaded. Their grid keys may be a
-  deliberate choice (`precomputed_polar`, a coarser grid to save memory) or
-  only the bridge's defaults that Save pinned (it writes the sizes whenever
-  Cartesian is in force). The host compares them with the first loaded
-  bridge's hint: every key absent, `auto`, or equal to the hint → `bridge`;
-  any other value → `custom`, with the stored grid, so the render and its
-  memory cost do not change. The outcome is logged and marks the config
+- **Existing configs** (no `evaluation_grid` key) are migrated once, when
+  the bridges are loaded. Their grid keys may be a deliberate choice or only
+  the bridge's defaults that Save pinned: Save writes the sizes whenever
+  Cartesian is in force, even with the mode on `auto`. The rule:
+  - `render_evaluation_mode` set to a concrete mode (`realtime`,
+    `precomputed_polar`, `precomputed_cartesian`) → `custom`, with the stored
+    grid, **even if its values equal the bridge's hint**: a mode was chosen,
+    so the grid was frozen on purpose;
+  - mode absent or `auto`, and sizes absent or equal to the first loaded
+    bridge's hint → `bridge`;
+  - mode absent or `auto`, and any size different from the hint → `custom`.
+
+  The one case the rule cannot tell apart is a mode left on `auto` with
+  sizes set by hand to exactly the bridge's values: it is indistinguishable
+  from what Save pins on its own and becomes `bridge`. This is deliberate,
+  so that following the bridge is the default for the configs that never
+  chose a grid. Otherwise the render and its memory cost do not change. The outcome is logged and marks the config
   dirty, so the user sees it and Save records it; nothing is written before.
   A config written by this build always carries the key, so the migration
   runs only once. Adding a key needs no schema bump.
 - **`auto` has no place in `custom`**: entering `custom` (by the switch or by
   the migration) resolves `auto` to the mode in force, and Save writes that
-  concrete mode. In `custom` the mode control offers polar and Cartesian
-  only, so a forced grid never depends on which bridge was active first or
-  at the last restart. In `bridge` the mode is the bridge's.
+  concrete mode. In `custom` the mode control offers the concrete modes the
+  backend supports (`allowed_evaluation_modes`): `realtime`,
+  `precomputed_polar`, `precomputed_cartesian`. In `realtime` there is no
+  table, so the grid fields are inactive. A forced grid never depends on
+  which bridge was active first or at the last restart. In `bridge` the mode
+  is the bridge's.
 - **State**: `/omniphony/state/renderer` gains `evaluationGrid` (`bridge` or
   `custom`) and `evaluationGridBridge` (the hint of the active bridge), next
   to the effective values it already publishes. While at it,
@@ -309,9 +367,15 @@ explicit setting:
   `did_reset`; the first bridge wins on a double claim; family union;
   disagreeing coordinate formats are refused.
 - Fragmented raw input: the opening header of each format split at every
-  byte offset, one-byte pushes, and undecided bytes before the first sync;
-  the chosen bridge receives exactly the input bytes, in order. A full
-  undecided buffer drops its older half and keeps probing.
+  byte offset, one-byte pushes, and undecided bytes before the first start;
+  the chosen bridge receives exactly the bytes from its start, in order. A
+  stream whose payload holds another family's sync word (an IAMF prefix with
+  a reserved OBU carrying an E-AC-3 frame) routes to its own bridge, fed in
+  one block and byte by byte. Fragmentation combined with a seek reset.
+  A pending start that reaches the bound is abandoned and probing goes on.
+- Probe work budget: 1 MiB of undecidable bytes pushed one byte at a time;
+  the bytes presented to each bridge's probe stay within a small constant
+  times the input plus the overlap, counted by an instrumented fake bridge.
 - Seek: IAMF auto-detected (no forced codec) → `reset` → temporal units with
   no sequence header are decoded by the IAMF bridge; a TrueHD stream resumes
   on its next major sync; a different format's header after the reset moves
@@ -320,15 +384,18 @@ explicit setting:
   reach the Dolby bridge and take effect; a mode no bridge accepts warns.
 - Combined-library path: a config pointing at `libharletty_bridge.so`, with
   and without the old file present, loads the family libraries beside it;
-  a folder without them falls back to discovery; any other missing path
-  still fails.
+  a folder without them falls back to discovery, and discovery passes over
+  a priority folder that still holds the old file alone; any other missing
+  path still fails.
 - Evaluation grid: in `bridge`, a stream switch to a bridge with other hints
   triggers one evaluation-only rebuild and none with the same hints; grid
   edits are refused; in `custom`, no rebuild on a switch and edits apply.
   During a rebuild: `bridge → custom` while B's grid is building keeps A
   installed and discards B; A → B → A ends on A. Migration: an old config
-  with default-equal keys becomes `bridge`, one with `precomputed_polar` or a
-  reduced grid becomes `custom` and renders as before; its first Save writes
+  with `auto` and default-equal sizes becomes `bridge`; one with
+  `precomputed_polar`, `realtime`, a reduced grid, or `precomputed_cartesian`
+  with sizes equal to bridge A's becomes `custom` and renders as before, also
+  when a stream from bridge B with other hints follows; its first Save writes
   the key and a concrete mode. Save then restart with another bridge active
   first gives the same grid in `custom`.
 - Discovery: all bridges of the first non-empty folder, none from later
@@ -376,10 +443,10 @@ can run alongside 2–4.
 
 1. **libopus on Windows and macOS**: built from source in `release.yml` and
    linked statically into the IAMF plugin, which keeps one file per plugin.
-2. **Probe**: a boolean. The sync words of the formats we have do not
-   collide; a confidence score waits until a format needs one. Incomplete
-   headers are handled by the host's undecided-byte buffer, not by a third
-   answer.
+2. **Probe**: no confidence score. It answers where a validated stream
+   start is, or that one is pending, or that there is none so far; the host
+   routes to the earliest start, so a sync word inside another stream's
+   payload never wins, whatever the read sizes.
 3. **Evaluation grid**: follows the active bridge by default and is rebuilt
    when a stream brings other hints; a `custom` setting forces it (see
    "Evaluation grid").
