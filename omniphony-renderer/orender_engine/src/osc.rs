@@ -680,6 +680,23 @@ impl OscSender {
                     }
                 }
 
+                // This loop follows `render_layout_outdated` (below) and tells
+                // the clients; the renderer's own follower stands down while
+                // it runs, and takes over again when it stops (standby, a
+                // stop), whichever way the loop ends.
+                struct RelayoutClaim(Option<Arc<RendererControl>>);
+                impl Drop for RelayoutClaim {
+                    fn drop(&mut self) {
+                        if let Some(ctrl) = &self.0 {
+                            ctrl.set_relayout_by_host(false);
+                        }
+                    }
+                }
+                if let Some(ref ctrl) = control {
+                    ctrl.set_relayout_by_host(true);
+                }
+                let _relayout_claim = RelayoutClaim(control.clone());
+
                 let mut decode_errors = WarnLimiter::default();
                 let mut control_errors = WarnLimiter::default();
                 loop {
@@ -722,6 +739,20 @@ impl OscSender {
                         if last_live_state_generation != Some(generation) {
                             last_live_state_generation = Some(generation);
                             broadcast_live_state(ctrl, host_handler.as_ref(), &socket, &clients);
+                        }
+                        // A BRIR set landed or went away, or the output
+                        // switched between speakers and headphones with one
+                        // selected: the topology is rebuilt on the layout the
+                        // render now pans onto (the set's loudspeakers or the
+                        // editable layout, see `prepare_topology_rebuild`,
+                        // which also invalidates the gain model).
+                        if ctrl.render_layout_outdated() {
+                            recompute::trigger_layout_recompute(
+                                ctrl,
+                                &socket,
+                                &clients,
+                                &gaintable_cache,
+                            );
                         }
                         // One-shot clip notification carrying the offending speaker
                         // index (set on the audio thread on any detected clip,

@@ -107,6 +107,21 @@ CI also rejects UI crates in the core's dependency graph and toolkits in the
 scene's graph. A failed dependency inspection must fail the check, not yield
 an empty list treated as success.
 
+Two catalogue checks live in `scripts/`, plain Node with no `npm install`:
+
+```sh
+node omniphony-studio-egui/scripts/check-i18n.mjs --strict
+cargo run -q -p renderer --example dump_options_schema --locked \
+  --manifest-path omniphony-renderer/Cargo.toml > options-schema.json
+node omniphony-studio-egui/scripts/check-options-schema.mjs options-schema.json
+```
+
+The first compares every locale with `i18n/en.json`; CI runs it without
+`--strict`, as a warning. The second is a hard gate: every option the engine
+declares must resolve its label and help keys in `i18n/en.json`. CI runs it
+on the engine's schema and on the standalone host's (`host_audio`'s
+`dump_host_options_schema`).
+
 ## Upgrade a dependency or compiler
 
 Keep upgrades separate from feature work and record the prior and new versions

@@ -726,6 +726,8 @@
   "experimentalDistance.infoBody": "El backend de distancia es un renderer experimental que puntúa los altavoces a partir de su relación geométrica con el punto objetivo.<br><br>Los controles expuestos ajustan cuántos altavoces pueden participar, con qué intensidad dominan los más cercanos y cuánto error de posición se tolera antes de limitar o ampliar las ganancias.<br><br>Úsalo para comparar y ajustar backends, no como el valor por defecto más seguro.",
   "objects.none": "Sin objetos.",
   "speakers.none": "Sin altavoces.",
+  "speakers.brirLayout": "Altavoces del conjunto BRIR",
+  "speakers.brirReadOnly": "Son los altavoces de la sala medida (BRIR) a través de los cuales se renderizan los auriculares. Proceden del archivo y no se pueden editar, ajustar, silenciar ni retrasar; tu layout de altavoces se conserva tal cual y vuelve con otra fuente de auriculares o en los altavoces.",
   "config.saved": "Guardado",
   "config.modified": "Modificado (sin guardar)",
   "status.initializing": "Inicializando...",

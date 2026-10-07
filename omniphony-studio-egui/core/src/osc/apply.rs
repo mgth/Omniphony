@@ -567,6 +567,20 @@ pub fn apply_input_domain_state(s: &mut AppState, value: &str) -> bool {
     true
 }
 
+/// The speakers of `binaural.brir.layout`: the BRIR set's loudspeakers the
+/// render pans onto, in the layout state's shape. `None` while the editable
+/// layout renders (the key absent or null).
+fn brir_layout_speakers(binaural: &serde_json::Value) -> Option<Vec<Speaker>> {
+    let layout = binaural.get("brir")?.get("layout")?;
+    let parsed = <LayoutDomainState as serde::Deserialize>::deserialize(layout).ok()?;
+    let speakers: Vec<Speaker> = parsed
+        .speakers
+        .into_iter()
+        .map(normalized_layout_domain_speaker)
+        .collect();
+    (!speakers.is_empty()).then_some(speakers)
+}
+
 pub fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<RendererDomainState>(value) else {
         return false;
@@ -587,6 +601,7 @@ pub fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
         s.object_size_intervals = object_size_intervals;
     }
     if let Some(binaural) = parsed.binaural {
+        s.brir_speakers = brir_layout_speakers(&binaural);
         s.binaural = Some(binaural);
     }
     if let Some(master_gain) = parsed.master_gain {
@@ -1439,5 +1454,43 @@ mod audio_domain_tests {
             r#"{"sampleRate": 48000}"#
         ));
         assert_eq!(state.audio.audio_output_host.as_deref(), Some("ASIO"));
+    }
+}
+
+#[cfg(test)]
+mod brir_layout_tests {
+    use super::*;
+
+    /// A renderer state carrying a BRIR set's loudspeakers puts them in the
+    /// model, read-only; one without (or with `null`) takes them away, and the
+    /// editable layout is what the speakers are again.
+    #[test]
+    fn a_brir_layout_in_the_renderer_state_replaces_the_speakers_read_only() {
+        let mut state = AppState::default();
+        assert!(!state.speakers_read_only());
+        let with_layout = r#"{"binaural": {"brir": {"layout": {"radius_m": 1.0, "speakers": [
+            {"name": "C", "coord_mode": "cartesian", "x": 0.0, "y": 1.0, "z": 0.0,
+             "azimuth": 0.0, "elevation": 0.0, "distance": 1.0, "spatialize": true},
+            {"name": "FL", "coord_mode": "cartesian", "x": -0.57735, "y": 1.0, "z": 0.0,
+             "azimuth": -30.0, "elevation": 0.0, "distance": 1.1547, "spatialize": true},
+            {"name": "LFE", "coord_mode": "polar", "x": 0.0, "y": 0.866, "z": -0.5,
+             "azimuth": 0.0, "elevation": -30.0, "distance": 1.0, "spatialize": false}
+        ]}}}}"#;
+        assert!(apply_renderer_domain_state(&mut state, with_layout));
+        let speakers = state
+            .brir_speakers
+            .as_ref()
+            .expect("the set's loudspeakers");
+        let names: Vec<&str> = speakers.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(names, ["C", "FL", "LFE"]);
+        assert_eq!(speakers[2].spatialize, 0);
+        assert!(state.speakers_read_only());
+
+        assert!(apply_renderer_domain_state(
+            &mut state,
+            r#"{"binaural": {"brir": {"layout": null}}}"#
+        ));
+        assert!(state.brir_speakers.is_none());
+        assert!(!state.speakers_read_only());
     }
 }
