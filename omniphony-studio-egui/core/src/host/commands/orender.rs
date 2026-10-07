@@ -801,6 +801,14 @@ fn spawn_orender_process(
     }))
 }
 
+/// Why the local renderer's last automatic start failed, and the log it
+/// writes to, for the banner shown while no engine answers. `None` when the
+/// last start did not fail, after a re-arm, and once a renderer connected.
+pub fn autostart_failure(state: &SharedState) -> Option<(String, PathBuf)> {
+    let failure = state.watchdog.lock().unwrap().last_failure.clone()?;
+    Some((failure, default_orender_log_path()))
+}
+
 /// Watchdog entry point: launch a standby renderer from the saved OSC config
 /// (binary discovery only — no user-supplied path or log level).
 pub fn autostart_orender(

@@ -81,7 +81,7 @@ cd ~/omniphony
 unzip ~/Downloads/harletty-bridge-v0.8.0-linux-x86_64.zip   # adds libharletty_bridge.so
 ```
 
-If your `~/.config/omniphony/config.yaml` already exists (Studio writes one) and
+If your `~/.config/omniphony/config.yaml` already exists (Studio writes it when you press Save) and
 sets `render.bridge_path`, that path is used instead, and it must point at this
 file. Remove the line, or change it to `/home/you/omniphony/libharletty_bridge.so`
 (an absolute path).
