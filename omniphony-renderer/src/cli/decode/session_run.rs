@@ -233,7 +233,17 @@ fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecod
     let input = args
         .input
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Must specify INPUT file"))?
+        .ok_or_else(|| {
+            // What a first-time user sees after typing `orender` alone: say
+            // what it wants and that the usual hosts start it for them.
+            anyhow::anyhow!(
+                "no input given. orender renders one stream: a file, a named pipe, \
+                 or `-` for stdin (`orender render <INPUT>`; `orender render --help` \
+                 lists the options). Omniphony Studio and mpv-omniphony start the \
+                 engine themselves, so playing a film needs neither this command nor \
+                 a config file."
+            )
+        })?
         .clone();
 
     log::info!(

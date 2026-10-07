@@ -178,12 +178,20 @@ fn config_path(ui: &mut Ui, facts: &RendererFacts) {
 /// known at all.
 fn config_line(path: &str, status: &str, connected: bool) -> (String, egui::Color32, bool) {
     let failure = match status {
-        "missing" => Some(t("about.configMissing")),
         "parse_error" => Some(t("about.configParseError")),
         "newer_schema" => Some(t("about.configNewerSchema")),
         _ => None,
     };
     if !path.is_empty() {
+        // No file yet is what every first start looks like: nothing has gone
+        // wrong, the first Save writes it. Said plainly, not as an alarm.
+        if status == "missing" {
+            return (
+                format!("{path} — {}", t("about.configMissing")),
+                theme::TEXT_MUTED,
+                true,
+            );
+        }
         return match failure {
             Some(reason) => (format!("{path} — {reason}"), CONFIG_ERROR, true),
             None => (path.to_owned(), theme::TEXT, true),
@@ -228,11 +236,13 @@ mod tests {
         let (text, colour, _) = config_line("/etc/omniphony/config.yaml", "ok", true);
         assert_eq!(text, "/etc/omniphony/config.yaml");
         assert_eq!(colour, theme::TEXT);
-        // A path it could not read: the path *and* what went wrong, in red.
+        // No file yet (a first start): the path and "not saved yet", muted,
+        // since nothing went wrong.
         let (text, colour, _) = config_line("/etc/omniphony/config.yaml", "missing", true);
         assert!(text.starts_with("/etc/omniphony/config.yaml — "));
         assert!(text.ends_with(t("about.configMissing")));
-        assert_eq!(colour, CONFIG_ERROR);
+        assert_eq!(colour, theme::TEXT_MUTED);
+        // A path it could not read: the path *and* what went wrong, in red.
         let (text, _, _) = config_line("/x.yaml", "parse_error", true);
         assert!(text.ends_with(t("about.configParseError")));
         let (text, colour, _) = config_line("/x.yaml", "newer_schema", true);

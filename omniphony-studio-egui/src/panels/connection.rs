@@ -188,6 +188,21 @@ impl StudioSpike {
                                 .color(theme::WARN),
                         );
                     }
+                    // The watchdog tried on its own and failed: say why and
+                    // where the engine's log is, rather than only in Studio's
+                    // log, which a first-time user never opens.
+                    if let Some((error, log)) =
+                        crate::host::commands::orender::autostart_failure(&self.host)
+                    {
+                        ui.label(
+                            egui::RichText::new(tf(
+                                "status.noEngine.autostartFailed",
+                                &[("error", &error), ("log", &log.display().to_string())],
+                            ))
+                            .size(theme::FONT_SIZE_SMALL)
+                            .color(theme::WARN),
+                        );
+                    }
                 },
             );
             if start {
@@ -200,11 +215,29 @@ impl StudioSpike {
         // The renderer came up without its decoder bridge: it is running, and
         // it has no spatial audio. The underlying error is the useful part.
         if let Some(error) = bridge_error {
-            widgets::banner(
+            widgets::banner_with(
                 ui,
                 widgets::Severity::Error,
                 t("status.bridgeErrorTitle"),
-                Some(&error),
+                |ui| {
+                    // What to do first, in the user's words; the engine's own
+                    // report (search paths, config keys) after it.
+                    ui.label(
+                        egui::RichText::new(tf(
+                            "status.bridgeErrorHint",
+                            &[
+                                ("section", t("section.audioInput")),
+                                ("field", t("input.bridgeBinary")),
+                            ],
+                        ))
+                        .size(theme::FONT_SIZE_SMALL),
+                    );
+                    ui.label(
+                        egui::RichText::new(&error)
+                            .size(theme::FONT_SIZE_SMALL)
+                            .color(theme::TEXT_MUTED),
+                    );
+                },
             );
         }
         // Attached to someone else's renderer: the connection looks perfectly
