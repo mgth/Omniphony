@@ -395,13 +395,20 @@ fn pump(
     stats: &ReaderStats,
 ) {
     let mut stamp = [CycleStamp::default()];
-    let mut in_stream: Option<u32> = None;
+    // The capture's epoch, whose byte count `bytes_end` runs in, and whether
+    // a stream is open. They differ: a pause ends the stream, but the capture
+    // keeps its epoch and its count, and resumes them.
+    let mut epoch: Option<u32> = None;
+    let mut in_stream = false;
     let mut last_bytes_end = 0u64;
+    // The capture's count where the open stream started: what the stream's
+    // own count (`Transport::bytes_end`) starts from.
+    let mut stream_base = 0u64;
     let mut last_data_at = std::time::Instant::now();
     loop {
         if !stamps.read_exact(&mut stamp) {
-            if in_stream.is_some() && last_data_at.elapsed().as_secs_f64() >= END_OF_STREAM_S {
-                in_stream = None;
+            if in_stream && last_data_at.elapsed().as_secs_f64() >= END_OF_STREAM_S {
+                in_stream = false;
                 if tx.send(ReaderMsg::End).is_err() {
                     return;
                 }
@@ -410,12 +417,18 @@ fn pump(
             continue;
         }
         let s = stamp[0];
-        if in_stream != Some(s.epoch) {
-            if in_stream.is_some() && tx.send(ReaderMsg::End).is_err() {
+        if epoch != Some(s.epoch) {
+            // A new capture epoch counts its bytes from zero again.
+            if in_stream && tx.send(ReaderMsg::End).is_err() {
                 return;
             }
-            in_stream = Some(s.epoch);
+            in_stream = false;
+            epoch = Some(s.epoch);
             last_bytes_end = 0;
+        }
+        if !in_stream {
+            in_stream = true;
+            stream_base = last_bytes_end;
             if tx.send(ReaderMsg::Start).is_err() {
                 return;
             }
@@ -435,11 +448,86 @@ fn pump(
             transport: Some(Transport {
                 rate: s.rate,
                 channels: s.channels,
-                bytes_end: s.bytes_end,
+                bytes_end: s.bytes_end - stream_base,
             }),
         };
         if tx.send(msg).is_err() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RATE: u32 = 48_000;
+
+    fn stamp(t_ns: u64, bytes_end: u64, epoch: u32) -> CycleStamp {
+        CycleStamp {
+            t_ns,
+            bytes_end,
+            rate: RATE,
+            channels: 2,
+            epoch,
+        }
+    }
+
+    fn next(rx: &Receiver<ReaderMsg>) -> ReaderMsg {
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the pump answers")
+    }
+
+    fn chunk(msg: ReaderMsg) -> (f64, usize, u64) {
+        match msg {
+            ReaderMsg::Chunk {
+                t,
+                bytes,
+                transport: Some(transport),
+            } => (t, bytes.len(), transport.bytes_end),
+            _ => panic!("expected a chunk with its transport"),
+        }
+    }
+
+    /// A pause ends the stream, but the capture keeps its epoch and its byte
+    /// count: when it resumes, only the new bytes are read and timed, and
+    /// the new stream counts from where it started (reviewer's probe on
+    /// #767: 4096 bytes, End, 4096 more at a cumulative 8192).
+    #[test]
+    fn a_pause_resumes_the_capture_count_where_it_was() {
+        let (mut bytes_tx, bytes_rx) = frame_ring::<u8>(1, BYTE_RING);
+        let (mut stamps_tx, stamps_rx) = frame_ring::<CycleStamp>(1, STAMP_RING);
+        let (tx, rx) = sync_channel(64);
+        let stats = Arc::new(ReaderStats::default());
+        let pump_stats = Arc::clone(&stats);
+        let pump = thread::spawn(move || pump(bytes_rx, stamps_rx, tx, &pump_stats));
+
+        bytes_tx.push(&[1; 4096]);
+        stamps_tx.push(&[stamp(1_000_000_000, 4096, 7)]);
+        assert!(matches!(next(&rx), ReaderMsg::Start));
+        let (t, len, bytes_end) = chunk(next(&rx));
+        assert_eq!((len, bytes_end), (4096, 4096));
+        assert!((t - (1.0 + 1024.0 / RATE as f64)).abs() < 1e-9, "{t}");
+        assert!(matches!(next(&rx), ReaderMsg::End), "the pause ends it");
+
+        bytes_tx.push(&[2; 4096]);
+        stamps_tx.push(&[stamp(2_000_000_000, 8192, 7)]);
+        assert!(matches!(next(&rx), ReaderMsg::Start));
+        let (t, len, bytes_end) = chunk(next(&rx));
+        assert_eq!(len, 4096);
+        assert_eq!(bytes_end, 4096, "the new stream counts from its start");
+        assert!((t - (2.0 + 1024.0 / RATE as f64)).abs() < 1e-9, "{t}");
+
+        // A new capture epoch ends the open stream and counts from zero.
+        bytes_tx.push(&[3; 4096]);
+        stamps_tx.push(&[stamp(3_000_000_000, 4096, 8)]);
+        assert!(matches!(next(&rx), ReaderMsg::End));
+        assert!(matches!(next(&rx), ReaderMsg::Start));
+        let (_, len, bytes_end) = chunk(next(&rx));
+        assert_eq!((len, bytes_end), (4096, 4096));
+
+        drop(rx);
+        stamps_tx.push(&[stamp(4_000_000_000, 4096, 9)]);
+        pump.join().unwrap();
     }
 }
