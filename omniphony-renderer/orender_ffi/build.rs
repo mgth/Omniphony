@@ -61,14 +61,20 @@ fn main() {
     // this library (`orender.dll`) and the `orender` executable both write
     // `orender.pdb` into the same `deps/` folder: cargo warns of the collision,
     // and when the two links overlap one fails with LNK1201. Keep this
-    // library's database in its own build folder instead; the DLL records its
-    // path, so a debugger still finds it.
+    // library's database in its own build folder instead.
+    //
+    // rustc records only the file name in the DLL (`/PDBALTPATH:%_PDB%`), and
+    // next to the DLL that name is now the executable's database. A debug
+    // build records the full path instead (the later option wins), so a
+    // debugger finds this one; a release DLL keeps the bare name, recording
+    // no build-machine path, and ships without its database anyway.
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
-        println!(
-            "cargo:rustc-cdylib-link-arg=/PDB:{}",
-            PathBuf::from(out_dir).join("orender.pdb").display()
-        );
+        let pdb = PathBuf::from(out_dir).join("orender.pdb");
+        println!("cargo:rustc-cdylib-link-arg=/PDB:{}", pdb.display());
+        if profile != "release" {
+            println!("cargo:rustc-cdylib-link-arg=/PDBALTPATH:{}", pdb.display());
+        }
     }
 
     // Load cbindgen.toml explicitly: the library Builder (unlike the cbindgen
