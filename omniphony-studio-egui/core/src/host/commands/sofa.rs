@@ -518,9 +518,13 @@ mod tests {
         );
         assert!(!uploader.is_finished(), "the upload waits for the listener");
 
-        // The listener sends what it was given, then everything else.
+        // The listener sends what it was given, then everything else. Drained
+        // by count, not until the uploader finishes: once the window is free
+        // it can queue its last chunks and finish before this loop looks.
         stats.send_window.release(queued);
-        while !uploader.is_finished() {
+        let expected = size.div_ceil(UPLOAD_STREAM_CHUNK);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while chunks < expected && std::time::Instant::now() < deadline {
             if let Ok(crate::osc::Control::SendCounted { bytes, .. }) =
                 rx.recv_timeout(std::time::Duration::from_millis(50))
             {
@@ -528,8 +532,8 @@ mod tests {
                 chunks += 1;
             }
         }
+        assert_eq!(chunks, expected, "every chunk reached the listener");
         assert_eq!(uploader.join().unwrap(), Ok(chunks as u32));
-        assert_eq!(chunks, size.div_ceil(UPLOAD_STREAM_CHUNK));
     }
 
     /// Datagram-sized chunks with a pause every 16 over UDP; large chunks over
