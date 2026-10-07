@@ -43,7 +43,8 @@ ABI, player tag, `bridge_api` series) and the **manifest**
   still fetch; don't `--force` tags just to silence it.
 - CI is green on `main` (`ci.yml`: fmt, build, full test suite incl. doctests).
 - The changes shipping in this release have been validated (the user listens
-  live; audio-path changes need that sign-off).
+  live; audio-path changes need that sign-off). The promotion PR records it
+  with the `listened` label (step 3).
 - Decide whether the release also needs an `mpv-v*` player release (see the
   table above; it has its own steps below): the bump names the player tag the
   release ships with, so the choice is made before the bump, not after.
@@ -90,12 +91,25 @@ commit — not squash**. `release.yml`'s guard job checks
 `git merge-base --is-ancestor <tag SHA> origin/release`; a squash rewrites the
 SHAs and the guard rejects the tag.
 
-`ci.yml` gates PRs to `release` too, so the promotion PR re-runs the full
-suite it just ran on `main` — budget for two CI passes (~6 min each at 0.5.1)
-between the bump merge and the tag.
+`release` takes pull requests only, and requires `build-and-test`,
+`build-macos`, `build-windows` and `listened`. `ci.yml` gates PRs to `release`
+too, so the promotion PR re-runs the full suite it just ran on `main` — budget
+for two CI passes (~6 min each at 0.5.1) between the bump merge and the tag.
 
-Back-merge discipline: any hotfix committed directly on `release` must be
-merged back into `main`, or `main` regresses at the next promotion.
+**`listened`** (`.github/workflows/listened.yml`, rules in
+`.github/scripts/listened-check.sh`): when the PR changes the render or output
+path — the sources of the crates between the decoder and the device, the CLI,
+the speaker layout presets; not OSC, tests or docs — the check fails until the
+PR carries the `listened` label. CI cannot hear. The job summary lists the
+commits on that path, which is what to listen to. Adding the label reruns only
+this check, which records in a comment the head the label was added on. Every
+later run compares that head with the current one: when commits since then
+touch the path (main moved), the label is removed with a comment, and the new
+head must be listened to again.
+
+Back-merge discipline: a hotfix lands on `release` through its own PR (same
+checks), and must then be merged back into `main`, or `main` regresses at the
+next promotion.
 
 ## 4. Tag and build
 
