@@ -746,6 +746,8 @@
   "experimentalDistance.infoBody": "Le backend distance est un renderer expérimental qui score les enceintes à partir de leur relation géométrique au point cible.<br><br>Les réglages exposés ajustent combien d'enceintes peuvent participer, à quel point les enceintes les plus proches dominent, et quel niveau d'erreur de position est toléré avant que les gains soient clampés ou étalés plus largement.<br><br>Utilise-le pour comparer et régler les backends, pas comme défaut le plus sûr.",
   "objects.none": "Aucun objet.",
   "speakers.none": "Aucun speaker.",
+  "speakers.brirLayout": "Enceintes du fichier BRIR",
+  "speakers.brirReadOnly": "Ce sont les enceintes de la salle mesurée (BRIR) à travers lesquelles le casque est rendu. Elles viennent du fichier et ne peuvent être ni modifiées, ni réglées en gain, ni coupées, ni retardées ; ton layout d'enceintes est conservé tel quel et revient avec une autre source casque ou sur les enceintes.",
   "config.saved": "Sauvegardé",
   "config.modified": "Modifié (non sauvegardé)",
   "unsaved.quitTitle": "Le moteur a des modifications non sauvegardées",

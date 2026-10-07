@@ -126,6 +126,10 @@ pub fn build_renderer_state_json(
     crossover_info: Option<renderer::live_params::CrossoverInfo>,
     hrir_status: &renderer::binaural::HrirStatus,
     brir_status: &renderer::binaural::BrirStatus,
+    // Why the resident BRIR set's loudspeakers are not the layout a
+    // headphone render pans onto (`RendererControl::brir_layout`). Read
+    // by the caller before it takes the live params' lock.
+    brir_layout_error: Option<String>,
 ) -> String {
     let effective_backend = active_topology.backend.backend_id();
     let effective_evaluation_mode = active_topology.backend.evaluation_mode().as_str();
@@ -347,6 +351,15 @@ pub fn build_renderer_state_json(
                     "bytes": s.bytes,
                 })),
                 "error": brir_status.error,
+                // The set's own loudspeakers, once the topology renders on
+                // them (`RenderTopology::brir_layout`): what the listener is
+                // panned onto in place of the editable layout. Read-only —
+                // the measurement fixes them.
+                "layout": active_topology.brir_layout.then(|| {
+                    serde_json::to_value(&active_topology.speaker_layout)
+                        .unwrap_or(serde_json::Value::Null)
+                }),
+                "layoutError": brir_layout_error,
             },
             "headPose": {
                 "w": live.binaural.head_pose.w,
@@ -584,6 +597,8 @@ pub fn build_live_state_bundle_with_host(
     has_input: bool,
     host: Option<&dyn crate::HostControlHandler>,
 ) -> Vec<OscPacket> {
+    // Before the live lock: it reads the live params itself.
+    let brir_layout_error = control.brir_layout().err();
     let live = control.live.read();
     let active_topology = control.active_topology();
     let editable_layout = control.editable_layout();
@@ -608,6 +623,7 @@ pub fn build_live_state_bundle_with_host(
         control.crossover_info(),
         &control.binaural_hrir_status(),
         &control.binaural_brir_status(),
+        brir_layout_error,
     );
 
     let mut messages = vec![

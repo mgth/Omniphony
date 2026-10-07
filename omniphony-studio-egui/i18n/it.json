@@ -726,6 +726,8 @@
   "experimentalDistance.infoBody": "Il backend distanza è un renderer sperimentale che valuta i diffusori in base alla loro relazione geometrica con il punto obiettivo.<br><br>I controlli esposti regolano quanti diffusori possono partecipare, quanto i più vicini dominano e quanto errore di posizione è tollerato prima che i gain vengano limitati o allargati.<br><br>Usalo per confrontare e mettere a punto i backend, non come default più sicuro.",
   "objects.none": "Nessun oggetto.",
   "speakers.none": "Nessun diffusore.",
+  "speakers.brirLayout": "Diffusori del set BRIR",
+  "speakers.brirReadOnly": "Sono i diffusori della sala misurata (BRIR) attraverso cui vengono resi gli auricolari. Provengono dal file e non si possono modificare, regolare, silenziare né ritardare; il tuo layout di diffusori resta invariato e torna con un'altra sorgente per le cuffie o sui diffusori.",
   "config.saved": "Salvato",
   "config.modified": "Modificato (non salvato)",
   "status.initializing": "Inizializzazione...",

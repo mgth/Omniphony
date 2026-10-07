@@ -55,6 +55,7 @@ use std::sync::Arc;
 mod cascade;
 mod components;
 mod construction;
+mod layout_follower;
 pub use construction::RendererSpec;
 mod speaker_stage;
 use components::{ChannelState, evaluation_build_config};
@@ -240,6 +241,9 @@ pub struct SpatialRenderer {
     /// The BRIR stage of the cascaded path, used while the HRIR source is a
     /// room response ([`crate::binaural::HrirSource::Brir`]).
     brir: crate::binaural::BrirStage,
+    /// Rebuilds the topology on a BRIR set's loudspeakers (or back) for a
+    /// real-time host that does not ([`layout_follower`]).
+    layout_follower: layout_follower::LayoutFollower,
     /// Whether the two stages above build on the render thread — see
     /// [`Self::set_synchronous_stage_builds`]. Kept here so a sample-rate
     /// change, which rebuilds them, carries it over.
@@ -413,6 +417,9 @@ impl SpatialRenderer {
     /// host that wants the cost off its first frame calls this once its seed
     /// is done; tests call it to inspect the stage.
     pub fn prepare_speaker_stage(&mut self) -> Result<()> {
+        if self.synchronous_stage_builds {
+            self.settle_brir_layout()?;
+        }
         let topology = self.control.active_topology();
         // Here, unlike a frame, the build may hold the caller.
         let synchronous = std::mem::replace(&mut self.speaker_stage.synchronous_builds, true);
@@ -422,6 +429,31 @@ impl SpatialRenderer {
         self.speaker_stage.synchronous_builds = synchronous;
         if refreshed? {
             self.speaker_stage_builds += 1;
+        }
+        Ok(())
+    }
+
+    /// With synchronous builds (offline renders): load the BRIR set a
+    /// headphone render asks for, then rebuild the topology on the layout it
+    /// pans onto ([`RendererControl::prepare_topology_rebuild`]) when that
+    /// changed, all on the calling thread. Two compares when nothing changed.
+    fn settle_brir_layout(&mut self) -> Result<()> {
+        {
+            let g = self.control.live.read();
+            if g.binaural.output_mode == crate::live_params::OutputMode::Binaural
+                && let crate::binaural::HrirSource::Brir(path) = &g.binaural.hrir_source
+            {
+                let opts = cascade::brir_load_options(&g.binaural);
+                let buses = self.control.active_topology().speaker_layout.num_speakers();
+                self.brir.ensure_loaded(path, &opts, buses);
+            }
+        }
+        if self.control.render_layout_outdated()
+            && let Some(plan) = self.control.prepare_topology_rebuild()
+        {
+            let current = self.control.active_topology();
+            let topology = plan.build_topology_reusing(Some(&current))?;
+            self.control.publish_topology(topology);
         }
         Ok(())
     }
@@ -672,6 +704,13 @@ impl SpatialRenderer {
             self.speaker_stage.drop_gain_carries();
         }
 
+        // Offline, a BRIR set's loudspeakers replace the layout on the frame
+        // that selects them (a live host rebuilds the topology off the audio
+        // thread instead, when `render_layout_outdated` tells it to).
+        if self.synchronous_stage_builds {
+            self.settle_brir_layout()?;
+        }
+
         // ── 0. Independent binaural (headphone) path ─────────────────────────
         // When headphone output is selected, bypass the entire VBAP / crossover /
         // speaker chain and emit a 2-channel frame. The branch is taken below,
@@ -692,6 +731,16 @@ impl SpatialRenderer {
                 brir_source,
             )
         };
+        // A real-time host without a relayout of its own: the follower asks
+        // its worker when the layout to pan onto changed (offline renders
+        // settled it above).
+        if !self.synchronous_stage_builds {
+            self.layout_follower.poll(
+                &self.control,
+                requested_output_mode == crate::live_params::OutputMode::Binaural,
+                brir_source,
+            );
+        }
         // A mode change does not take effect here: it arms a cross-fade and the
         // OLD mode keeps rendering until the ramp reaches zero (see
         // `apply_output_mode_fade`). Rendering the branch that is on its way out
@@ -735,8 +784,22 @@ impl SpatialRenderer {
             && cascade_active
             && let Some(installed) = self.speaker_stage.installed_topology()
         {
-            cascade::CascadeStage::follow(&mut self.cascade, installed);
+            cascade::CascadeStage::follow(
+                &mut self.cascade,
+                installed,
+                self.speaker_stage.num_speakers,
+            );
         }
+
+        // Bands built for a BRIR set's virtual loudspeakers are only ever
+        // meant for the headphones. While a switch back to the speakers waits
+        // for the bands of the speaker layout, their channels would land on
+        // the wrong physical speakers (a full-range bus on a subwoofer
+        // output), so the speaker path stays silent until then.
+        let brir_bands_installed = self
+            .speaker_stage
+            .installed_topology()
+            .is_some_and(|t| t.brir_layout);
 
         // BRIR source: track the file and options (one compare per frame;
         // the load itself runs on the stage's worker) and find out whether a
@@ -1312,9 +1375,13 @@ impl SpatialRenderer {
             &mut output,
         ) || object_test_active;
 
-        let (peak_sample, peak_speaker_idx) =
+        let (peak_sample, peak_speaker_idx) = if brir_bands_installed {
+            output.fill(0.0);
+            (0.0, 0)
+        } else {
             self.speaker_stage
-                .finalize_output(live.speaker_params, total_gain, &mut output);
+                .finalize_output(live.speaker_params, total_gain, &mut output)
+        };
 
         // Clipping handling. Detection is always at 0 dBFS (peak > 1.0) and the
         // clip flag is raised (with the offending speaker) regardless of auto-gain
