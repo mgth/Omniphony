@@ -67,6 +67,15 @@ passes and the old bridge silently keeps decoding.
   discovery folder that holds at least one, sorted by file name. It does not
   merge folders: a stale per-user bridge must not be added to the system ones.
   The folders and their order are unchanged.
+- **The combined library's path**: a configured path (config, CLI,
+  `ORENDER_BRIDGE_FILE`, mpv's `ad-orender-bridge-path`) whose file name is
+  the combined harletty library of 0.5 (`libharletty_bridge.so`,
+  `harletty_bridge.dll`, `libharletty_bridge.dylib`) stands for the family
+  libraries that replace it: the host loads the `harletty_*_bridge` files
+  found in the same folder, whether the old file is still there or not, and
+  logs the substitution. If that folder holds none, it falls back to
+  auto-discovery with a warning. The next Save writes the resolved list.
+  Every other path keeps the strict rule: it must exist and load.
 - **Partial failure**: a bridge that fails to load (missing file, ABI
   mismatch) is reported in `bridge_error` and skipped; the host runs if at
   least one bridge loaded. A leftover `libharletty_bridge.so` from 0.5 is
@@ -81,9 +90,12 @@ The root module gains two required entries (a layout change, so a minor bump
 under the policy in `BRIDGE_API.md`; `abi-baseline.txt` is regenerated):
 
 ```rust
-/// Whether this bridge decodes the stream that starts with `data`.
-/// Stateless: the host calls it before it creates or picks an instance.
-/// For `Iec61937`, `data` is the payload and `data_type` the burst type.
+/// Whether this bridge decodes the stream `data` belongs to. Stateless: the
+/// host calls it before it creates or picks an instance. For `Raw`, `data` is
+/// every undecided byte the host holds, which may start mid-frame or end
+/// inside a header: the probe looks for a sync anywhere in it and answers
+/// `false` until one is complete. For `Iec61937`, `data` is the burst payload
+/// and `data_type` the burst type.
 pub probe: extern "C" fn(data: RSlice<'_, u8>, transport: RInputTransport, data_type: u8) -> bool,
 
 /// The `input_codec` names this bridge decodes ("truehd", "eac3", "dts", …),
@@ -115,15 +127,31 @@ pub struct BridgeSet {
 }
 ```
 
-- **Raw transport**: with no active bridge, the forced bridge if
-  `input_codec` named one, otherwise the first whose `probe` accepts the
-  packet. That bridge stays active until `reset`, as a bridge's own codec lock
-  does today. A packet no bridge accepts is dropped with a rate-limited
-  warning (an error in strict mode). Today harletty's router assumes TrueHD
-  for an unrecognised first packet and waits for a major sync; under the host
-  router those packets are dropped instead, and the Dolby bridge sees the
-  stream from its first major sync. The output must still be identical (see
-  Verification).
+- **Raw transport**: raw input is a byte stream, not a packet stream: the
+  CLI forwards each read as it comes, so a sync word or header can straddle
+  two pushes, and a reader may hand over one byte at a time. With no route,
+  the host therefore keeps the undecided bytes in a bounded buffer
+  (`MAX_UNDECIDED_RAW`, 64 KiB, allocated once at load) and probes the whole
+  buffer after each push, in load order:
+  - the forced bridge, if `input_codec` named one, is the route at once;
+  - the first bridge whose `probe` accepts becomes the route, and receives
+    the buffered bytes in one push before the live ones (a replay: nothing it
+    would have seen is lost);
+  - if the buffer fills with no taker, its older half is dropped with a
+    rate-limited warning (an error in strict mode) and probing goes on.
+
+  The route then holds until `reset`, as a bridge's own codec lock does today.
+  The probe cost is bounded by the buffer and paid only while undecided.
+- **Resume after a seek**: `reset` (which a seek issues) resets the bridges
+  but keeps the last route as the **fallback**. The next push is probed as
+  above; if no bridge accepts it, it goes to the fallback bridge instead of
+  waiting. This is what the bridges do today on their own: harletty's router
+  sends a sync-less packet after a reset to IAMF while its sequence is still
+  configured (temporal units carry no header to probe) and otherwise to
+  TrueHD, which resynchronises on its next major sync. A probe hit from
+  another bridge moves the route (a real stream change), with the same
+  precedence as today's sniff-before-continuation order. The fallback is
+  cleared only when the host loads a new set or the input is closed.
 - **IEC 61937**: the bridge for a burst type is found by probing once and
   cached in `iec_route`. When the type moves to a different bridge mid-stream
   (a live input switching from E-AC-3 to DTS), the old bridge is reset, the
@@ -131,15 +159,19 @@ pub struct BridgeSet {
   starts a new segment as it does for a bridge-internal reset.
 - **One instance per bridge**, created at load and kept. Only the active one
   receives packets; the hot path adds one index lookup per packet, and the
-  probe runs only on the first packet after a reset or on a burst-type change.
+  probe runs only while the route is undecided or on a burst-type change.
 - **Per-stream answers** (`is_ready`, `has_objects`, `source_family`,
   `source_label`, `fixed_channel_poses`, `channel_tags`) come from the active
   bridge, and from the first bridge while idle.
 - **Global answers**:
   - `source_families`: the union in load order, a family declared twice kept
     once (first wins);
-  - `supported_drc_modes`: the union, and `set_drc_mode` goes to every bridge
-    that lists the mode;
+  - `supported_drc_modes`: the union, for display only. It is not the list
+    of values a bridge accepts: harletty also takes `Standard`, `Line`,
+    `Heavy` and `RF`, which configs may hold. `set_drc_mode` is sent to
+    every bridge, only when the setting changes (and once at load), and each
+    bridge decides from the value; the mode is in force if at least one
+    bridge accepts it, and the host warns only when none does, as today;
   - `configure("log_level")` and `configure("presentation")` go to every
     bridge (each bridge library has its own log state); a family without
     presentations already accepts the default as a no-op;
@@ -174,17 +206,36 @@ explicit setting:
   edited: the grid controls answer `/state/control_error` ("the grid follows
   the bridge"), the CLI grid flags are refused with the same message, and
   Studio shows the values read-only, with the bridge they come from.
+- **Which request wins**: a rebuild carries a **grid request** (grid source,
+  mode, sizes, negative z) with a generation number. The host records the
+  latest request; `osc/recompute.rs` checks it before publishing a topology,
+  and the band worker checks it again before installing a table. A result
+  whose request is no longer the latest is discarded, whatever its topology
+  identity. So a switch to `custom` while bridge B's grid is still being
+  built keeps table A in force and drops B's; A → B → A during B's build
+  ends on A, with no rebuild if A is still installed.
 - **`custom`**: the grid is the user's, fixed whatever the stream: no rebuild
   on a codec switch. Switching from `bridge` to `custom` starts from the grid
-  in force, so nothing moves until the user edits it. `vbap_allow_negative_z`
+  in force, that is the installed table, not a pending one, so nothing moves
+  until the user edits it. `vbap_allow_negative_z`
   becomes a registry option in this mode (live, Save), so a forced grid is
   complete; today it can only be set from the config file or the CLI.
-- **Existing configs**: the grid keys already in `config.yaml` (Save pins the
-  bridge's sizes today whenever Cartesian is in force) are kept as the custom
-  grid and are not applied while the option is `bridge`. Adding a key needs
-  no schema bump.
-- The `auto` value of `render_evaluation_mode` keeps its meaning (the bridge's
-  preferred mode) in `custom`; in `bridge` the mode is not the user's to set.
+- **Existing configs** (no `evaluation_grid` key) are migrated
+  conservatively, once, when the bridges are loaded. Their grid keys may be a
+  deliberate choice (`precomputed_polar`, a coarser grid to save memory) or
+  only the bridge's defaults that Save pinned (it writes the sizes whenever
+  Cartesian is in force). The host compares them with the first loaded
+  bridge's hint: every key absent, `auto`, or equal to the hint → `bridge`;
+  any other value → `custom`, with the stored grid, so the render and its
+  memory cost do not change. The outcome is logged and marks the config
+  dirty, so the user sees it and Save records it; nothing is written before.
+  A config written by this build always carries the key, so the migration
+  runs only once. Adding a key needs no schema bump.
+- **`auto` has no place in `custom`**: entering `custom` (by the switch or by
+  the migration) resolves `auto` to the mode in force, and Save writes that
+  concrete mode. In `custom` the mode control offers polar and Cartesian
+  only, so a forced grid never depends on which bridge was active first or
+  at the last restart. In `bridge` the mode is the bridge's.
 - **State**: `/omniphony/state/renderer` gains `evaluationGrid` (`bridge` or
   `custom`) and `evaluationGridBridge` (the hint of the active bridge), next
   to the effective values it already publishes. While at it,
@@ -235,8 +286,9 @@ explicit setting:
 ### Compatibility
 
 - A 0.6 host refuses a 0.5 bridge, and the reverse, by name, as today.
-- Configs with `render.bridge_path` keep working; the first Save rewrites them
-  as `bridge_paths`, and a pre-0.6 build then refuses to save over that file
+- Configs with `render.bridge_path` keep working, including one that names
+  the combined library (see Loading); the first Save rewrites them as
+  `bridge_paths`, and a pre-0.6 build then refuses to save over that file
   (schema version 2).
 - Packaging and install: the AUR `harletty-bridge` package, the installers
   and `scripts/wfbuild.sh` install three libraries and remove the old
@@ -254,13 +306,31 @@ explicit setting:
 - `BridgeSet` with in-process fake bridges (`BridgeLib{..}.leak_into_prefix()`,
   as `decode_queue.rs` does): routing by probe, by `input_codec`, by IEC burst
   type; a mid-stream burst-type switch resets the old bridge and reports
-  `did_reset`; the first bridge wins on a double claim; family and DRC-mode
-  union; disagreeing coordinate formats are refused.
+  `did_reset`; the first bridge wins on a double claim; family union;
+  disagreeing coordinate formats are refused.
+- Fragmented raw input: the opening header of each format split at every
+  byte offset, one-byte pushes, and undecided bytes before the first sync;
+  the chosen bridge receives exactly the input bytes, in order. A full
+  undecided buffer drops its older half and keeps probing.
+- Seek: IAMF auto-detected (no forced codec) → `reset` → temporal units with
+  no sequence header are decoded by the IAMF bridge; a TrueHD stream resumes
+  on its next major sync; a different format's header after the reset moves
+  the route.
+- DRC: legacy aliases (`Standard`, `Line`, `Heavy`, `RF`) from an old config
+  reach the Dolby bridge and take effect; a mode no bridge accepts warns.
+- Combined-library path: a config pointing at `libharletty_bridge.so`, with
+  and without the old file present, loads the family libraries beside it;
+  a folder without them falls back to discovery; any other missing path
+  still fails.
 - Evaluation grid: in `bridge`, a stream switch to a bridge with other hints
   triggers one evaluation-only rebuild and none with the same hints; grid
-  edits are refused; in `custom`, no rebuild on a switch and edits apply;
-  `bridge → custom` keeps the grid in force; an absent key reads as `bridge`
-  and keeps the stored grid keys.
+  edits are refused; in `custom`, no rebuild on a switch and edits apply.
+  During a rebuild: `bridge → custom` while B's grid is building keeps A
+  installed and discards B; A → B → A ends on A. Migration: an old config
+  with default-equal keys becomes `bridge`, one with `precomputed_polar` or a
+  reduced grid becomes `custom` and renders as before; its first Save writes
+  the key and a concrete mode. Save then restart with another bridge active
+  first gives the same grid in `custom`.
 - Discovery: all bridges of the first non-empty folder, none from later
   folders; a refused bridge is reported and skipped.
 - Config: `bridge_path` read as a list, `bridge_paths` round-trips, schema
@@ -270,10 +340,13 @@ explicit setting:
 
 ### Verification
 
-- **Bit-exactness**: the 51-stream kit from the step-1 split
-  (`dumps/codec-family-crates/baseline/`, raw and IEC 61937), decoded through
-  the host with the three family bridges, against the combined bridge on
-  `main`. Any difference is a bug.
+- **Bit-exactness**: the baseline corpus of the step-1 split (one or more
+  streams per family, raw and IEC 61937), located through
+  `HARLETTY_BASELINE_CORPUS` (a manifest of stream files and expected
+  hashes; not part of the repository), decoded through the host with the
+  three family bridges, against the combined bridge on `main`. Fragmented
+  replays of the same streams (fixed small reads) must give the same hashes.
+  Any difference is a bug.
 - **Hot path**: `bridge_bench` per family through `BridgeSet`; no regression
   beyond the kit's noise floor.
 - **Listening**: mpv on one stream per family, and the live S/PDIF input
@@ -287,9 +360,9 @@ Each step is one PR, merged before the next is built on it.
 |---|---|---|
 | 1 | Omniphony | Loader: load by path without abi_stable's process-wide cache; regression test. `bridge_api` stays 0.5. |
 | 2 | Omniphony | `bridge_api` 0.6: `probe`, `input_codecs`; reference bridge; ABI baseline; `BRIDGE_API.md` (incl. `input_codec`). |
-| 3 | Omniphony | `BridgeSet` in `orender_engine`; Engine, CLI, live sink and `sync-play` hold it. |
-| 4 | Omniphony | `render.bridge_paths`, discovery of every bridge, repeatable flag, env list, OSC state and control, schema version 2, docs. |
-| 4b | Omniphony | `render.evaluation_grid` (`bridge` / `custom`): rebuild on a hint change, grid edits refused in `bridge`, negative z as an option, state, Studio switch. |
+| 3 | Omniphony | `BridgeSet` in `orender_engine` (undecided-byte buffer, fallback route after a seek, DRC forwarding); Engine, CLI, live sink and `sync-play` hold it. |
+| 4 | Omniphony | `render.bridge_paths`, discovery of every bridge, combined-library path substitution, repeatable flag, env list, OSC state and control, schema version 2, docs. |
+| 4b | Omniphony | `render.evaluation_grid` (`bridge` / `custom`): grid requests with a generation, rebuild on a hint change, conservative migration, edits refused in `bridge`, negative z as an option, state, Studio switch. |
 | 5 | harletty-bridge | `FamilyPipeline` and `PluginBridge` in `bridge-common`; the combined router built on them; output unchanged. |
 | 6 | harletty-bridge | Three plugin crates on `bridge_api` 0.6; bit-exactness through the host. |
 | 7 | harletty-bridge | Release, build scripts, CI matrix, isolation check per plugin; the combined cdylib leaves the release. |
@@ -304,7 +377,9 @@ can run alongside 2–4.
 1. **libopus on Windows and macOS**: built from source in `release.yml` and
    linked statically into the IAMF plugin, which keeps one file per plugin.
 2. **Probe**: a boolean. The sync words of the formats we have do not
-   collide; a confidence score waits until a format needs one.
+   collide; a confidence score waits until a format needs one. Incomplete
+   headers are handled by the host's undecided-byte buffer, not by a third
+   answer.
 3. **Evaluation grid**: follows the active bridge by default and is rebuilt
    when a stream brings other hints; a `custom` setting forces it (see
    "Evaluation grid").
