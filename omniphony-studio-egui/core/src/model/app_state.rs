@@ -718,6 +718,10 @@ pub struct AppState {
     /// asked for, then each bridge loaded or failed.
     #[serde(rename = "renderBridges")]
     pub render_bridges: Option<RenderBridges>,
+    /// The bridge list was edited from this Studio since the last restart it
+    /// sent: the only sign of a pending change once the list is emptied.
+    #[serde(skip)]
+    pub render_bridges_edited: bool,
     #[serde(rename = "liveInput")]
     pub live_input: LiveInputState,
     #[serde(rename = "orenderInputPipe")]
@@ -1120,6 +1124,7 @@ impl Default for AppState {
             profile_names: Vec::new(),
             render_bridge_error: None,
             render_bridges: None,
+            render_bridges_edited: false,
             live_input: LiveInputState::default(),
             orender_input_pipe: None,
             producer_capabilities: None,

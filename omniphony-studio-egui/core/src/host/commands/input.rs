@@ -263,11 +263,10 @@ pub fn set_live_input_clock_mode(state: &SharedState, clock: String) {
     state.inner.lock().unwrap().app.live_input.clock_mode = Some(clock);
 }
 
-/// The bridge library path; empty means "auto-detect".
+/// A single bridge library path; empty means "auto-detect". The list of one
+/// it is, sent as the list to an engine that has one.
 pub fn set_render_bridge_path(state: &SharedState, path: String) {
-    let value = path.trim().to_owned();
-    state.inner.lock().unwrap().app.render_bridge_path = (!value.is_empty()).then(|| value.clone());
-    super::render::control_render_bridge_path(state, value);
+    super::bridges::set_render_bridge_paths(state, vec![path]);
 }
 
 /// The named pipe the renderer reads; empty means "auto-detect".
@@ -292,11 +291,9 @@ pub fn apply_input(state: &SharedState, mode: &str, active: Option<&str>) {
     let needs_bootstrap =
         mode == "pipe_bridge" || (mode == "pipewire" && active != Some("pipewire"));
     if needs_bootstrap {
-        let bridge = {
-            let live = state.inner.lock().unwrap();
-            live.app.render_bridge_path.clone().unwrap_or_default()
-        };
-        super::render::control_render_bridge_path(state, bridge);
+        // The whole bridge list, not only its first entry: the single
+        // path would cut it down to one bridge.
+        super::bridges::resend_for_restart(state);
         control_input_live_clock_mode(state, clock);
         super::engine::control_restart(state);
     } else {

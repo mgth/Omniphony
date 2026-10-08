@@ -23,6 +23,8 @@ pub enum Purpose {
     Sofa,
     /// A room-response SOFA file for the `brir` HRIR source.
     Brir,
+    /// A decoder bridge library, appended to the bridge list.
+    Bridge,
 }
 pub struct PendingPicker {
     purpose: Purpose,
@@ -121,6 +123,10 @@ impl StudioSpike {
                         Purpose::Brir => {
                             crate::host::commands::binaural::control_brir_file(&self.host, &path)
                         }
+                        Purpose::Bridge => crate::host::commands::bridges::apply(
+                            &self.host,
+                            crate::host::commands::bridges::Action::Add(path),
+                        ),
                         _ => {}
                     });
                 if accepted.is_none() {

@@ -9,6 +9,7 @@ pub mod adaptive;
 pub mod app;
 pub mod audio;
 pub mod binaural;
+pub mod bridges;
 pub mod diag;
 pub mod engine;
 pub mod gain;

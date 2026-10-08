@@ -1,35 +1,42 @@
-//! The decoder bridge mpv-omniphony is told to use in `mpv.conf`, lent to
+//! The decoder bridges mpv-omniphony is told to use in `mpv.conf`, lent to
 //! Studio's own renderer.
 //!
-//! Studio's standby `orender` finds a bridge only next to itself, in the
+//! Studio's standby `orender` finds bridges only next to itself, in the
 //! per-user engine folder or in the system plugin folder (the engine's
 //! auto-discovery, `orender_engine::bridge_loader`). A user who installed the
-//! player and its bridge in a folder of their own has the bridge nowhere the
+//! player and its bridges in a folder of their own has them nowhere the
 //! engine looks, so Studio's renderer runs without a decoder while the player
-//! decodes fine. When that user named the bridge in `mpv.conf`
-//! (`ad-orender-bridge-path=…`), Studio reads it and hands that exact file to
-//! the renderer it spawns as `$ORENDER_BRIDGE_FILE`, which the engine's
+//! decodes fine. When that user named the bridges in `mpv.conf`
+//! (`ad-orender-bridge-path=…`), Studio reads them and hands those exact files
+//! to the renderer it spawns as `$ORENDER_BRIDGE_FILE`, which the engine's
 //! auto-discovery takes before any folder. A folder would not do: the engine
-//! takes the first bridge of a folder by name, which need not be the one the
-//! player uses when the folder holds several.
+//! loads every bridge of a folder, which need not be the ones the player uses.
+//!
+//! The option is a path list in the platform's syntax (`:` on Unix, `;` on
+//! Windows), as `ORENDER_BRIDGE_FILE` is: mpv hands the string to liborender,
+//! which splits it with `std::env::split_paths`. Each entry is resolved on its
+//! own; the ones naming no file are dropped, except a path naming the
+//! combined harletty library of 0.5, which the engine replaces with the
+//! `harletty_*_bridge` family libraries in the same folder whether the old
+//! file is still there or not (docs/multi-bridge.md, "Loading").
 //!
 //! Read-only: `mpv.conf` belongs to mpv and nothing here writes to it (or to
 //! anything else); the lookup runs once per spawn, off the UI thread.
 //!
-//! The environment variable never overrides a bridge the engine was told
-//! about: a `render.bridge_path` in the engine's config (or `--bridge-path`)
-//! is used before it. When Studio's own environment already sets
-//! `ORENDER_BRIDGE_FILE` or `ORENDER_BRIDGE_DIR`, the renderer inherits the
-//! user's choice untouched and `mpv.conf` is not read.
+//! The environment variable never overrides bridges the engine was told
+//! about: `render.bridge_paths` (or `render.bridge_path`) in the engine's
+//! config, or `--bridge-path`, is used before it. When Studio's own
+//! environment already sets `ORENDER_BRIDGE_FILE` or `ORENDER_BRIDGE_DIR`, the
+//! renderer inherits the user's choice untouched and `mpv.conf` is not read.
 //!
 //! Not covered: a bridge that sits next to an mpv whose `mpv.conf` does not
 //! name it. Nothing records where the player was installed.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// The engine's auto-discovery variable naming one exact bridge file
-/// (`orender_engine::bridge_loader::BRIDGE_FILE_ENV`): what Studio sets.
+/// The engine's auto-discovery variable naming exact bridge files, a path
+/// list (`orender_engine::bridge_loader::BRIDGE_FILE_ENV`): what Studio sets.
 pub const BRIDGE_FILE_ENV: &str = "ORENDER_BRIDGE_FILE";
 /// The engine's auto-discovery variable naming a folder to search. Studio
 /// never sets it; when the user did, it is their choice and Studio's
@@ -180,14 +187,14 @@ fn parse_value(value: &str) -> Option<String> {
     (rest.is_empty() || rest.starts_with('#')).then(|| value.to_owned())
 }
 
-/// The bridge file a value names. Absolute paths are taken as they are;
-/// `~/…` and `~~/…` (mpv's config directory: the first config dir holding
-/// the file, else the first config dir) are expanded the way mpv expands
-/// user paths (`options/path.c`, `mp_get_user_path`). mpv itself hands this
-/// option to liborender verbatim, without that expansion, so only an
-/// absolute path works in the player too; the expansion here only reads the
-/// user's evident intent. A relative path is left out: liborender inside mpv
-/// resolves it against the player's working directory and folder, which
+/// The bridge file one entry of the value names. Absolute paths are taken as
+/// they are; `~/…` and `~~/…` (mpv's config directory: the first config dir
+/// holding the file, else the first config dir) are expanded the way mpv
+/// expands user paths (`options/path.c`, `mp_get_user_path`). mpv itself
+/// hands this option to liborender verbatim, without that expansion, so only
+/// an absolute path works in the player too; the expansion here only reads
+/// the user's evident intent. A relative path is left out: liborender inside
+/// mpv resolves it against the player's working directory and folder, which
 /// Studio does not know.
 fn resolve(value: &str, paths: &MpvPaths, dirs: &[PathBuf]) -> Option<PathBuf> {
     if let Some(rest) = value.strip_prefix("~~/") {
@@ -201,19 +208,56 @@ fn resolve(value: &str, paths: &MpvPaths, dirs: &[PathBuf]) -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
 
-/// What `mpv.conf` says about the bridge.
+/// The combined harletty library's file name of `bridge_api` 0.5. The engine
+/// stands the family libraries beside it in for such a path, even once the
+/// old file is gone, so the entry is handed over as it is rather than
+/// dropped for naming no file. A transition rule, removed with the engine's
+/// (`orender_engine::bridge_loader::is_combined_library`).
+fn is_combined_library(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("libharletty_bridge.so" | "harletty_bridge.dll" | "libharletty_bridge.dylib")
+    )
+}
+
+/// The bridges a value names, in order: each entry of the path list
+/// resolved, kept when it is a file or the combined library, and listed
+/// once.
+fn bridges_in(value: &str, paths: &MpvPaths, dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut bridges = Vec::new();
+    for entry in std::env::split_paths(value) {
+        let Some(entry) = entry.to_str().filter(|entry| !entry.is_empty()) else {
+            continue;
+        };
+        match resolve(entry, paths, dirs) {
+            Some(path) if path.is_file() || is_combined_library(&path) => {
+                if !bridges.contains(&path) {
+                    bridges.push(path);
+                }
+            }
+            _ => log::info!(
+                "{OPTION} names {entry}, which is no file Studio can find \
+                 (an absolute path, ~/ or ~~/); its renderer does not get it"
+            ),
+        }
+    }
+    bridges
+}
+
+/// What `mpv.conf` says about the bridges.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MpvBridge {
     /// The `mpv.conf` the value came from.
     pub conf: PathBuf,
-    /// The bridge file it names, which exists.
-    pub bridge: PathBuf,
+    /// The bridge files it names, in its order: each exists, or names the
+    /// combined library the engine replaces.
+    pub bridges: Vec<PathBuf>,
 }
 
-/// The bridge the player is configured with, if its `mpv.conf` names an
-/// existing file. The highest-priority `mpv.conf` that sets the option
-/// decides, as it does for mpv: a value naming nothing usable there is not
-/// replaced by one from a lower-priority file.
+/// The bridges the player is configured with, if its `mpv.conf` names at
+/// least one usable file. The highest-priority `mpv.conf` that sets the
+/// option decides, as it does for mpv: a value naming nothing usable there
+/// is not replaced by one from a lower-priority file.
 pub fn find(paths: &MpvPaths) -> Option<MpvBridge> {
     let dirs = config_dirs(paths);
     for dir in &dirs {
@@ -224,28 +268,30 @@ pub fn find(paths: &MpvPaths) -> Option<MpvBridge> {
         let Some(value) = bridge_path_in(&text) else {
             continue;
         };
-        let bridge = resolve(&value, paths, &dirs).filter(|p| p.is_file());
-        if bridge.is_none() {
+        let bridges = bridges_in(&value, paths, &dirs);
+        if bridges.is_empty() {
             log::info!(
-                "{} sets {OPTION}={value}, which is no file Studio can find \
-                 (an absolute path, ~/ or ~~/); its renderer does not use it",
+                "{} sets {OPTION}={value}, which names no file Studio can find; \
+                 its renderer does not use it",
                 conf.display()
             );
+            return None;
         }
-        return bridge.map(|bridge| MpvBridge { conf, bridge });
+        return Some(MpvBridge { conf, bridges });
     }
     None
 }
 
-/// The `ORENDER_BRIDGE_FILE` to give the renderer Studio spawns: the bridge
-/// `mpv.conf` names, unless Studio's own environment already sets
-/// `ORENDER_BRIDGE_FILE` or `ORENDER_BRIDGE_DIR` (`own_file`, `own_dir`):
-/// the spawned process inherits those, and the user's choice wins.
+/// The `ORENDER_BRIDGE_FILE` to give the renderer Studio spawns: the bridges
+/// `mpv.conf` names, as a path list, unless Studio's own environment already
+/// sets `ORENDER_BRIDGE_FILE` or `ORENDER_BRIDGE_DIR` (`own_file`,
+/// `own_dir`): the spawned process inherits those, and the user's choice
+/// wins.
 pub fn bridge_file_for_renderer(
     own_file: Option<&OsString>,
     own_dir: Option<&OsString>,
     paths: &MpvPaths,
-) -> Option<PathBuf> {
+) -> Option<OsString> {
     for (name, value) in [(BRIDGE_FILE_ENV, own_file), (BRIDGE_DIR_ENV, own_dir)] {
         if value.is_some_and(|v| !v.is_empty()) {
             log::info!("{name} is set in Studio's environment; mpv.conf is not read");
@@ -253,12 +299,24 @@ pub fn bridge_file_for_renderer(
         }
     }
     let found = find(paths)?;
+    // The entries came out of a split on the same separator, so none holds
+    // it and the join cannot fail; refuse rather than hand over half a list.
+    let list = match std::env::join_paths(&found.bridges) {
+        Ok(list) => list,
+        Err(error) => {
+            log::warn!(
+                "{}: {error}; its renderer does not use it",
+                found.conf.display()
+            );
+            return None;
+        }
+    };
     log::info!(
-        "{} names the bridge {}: its renderer gets {BRIDGE_FILE_ENV}",
+        "{} names the bridges {}: its renderer gets {BRIDGE_FILE_ENV}",
         found.conf.display(),
-        found.bridge.display(),
+        list.to_string_lossy(),
     );
-    Some(found.bridge)
+    Some(list)
 }
 
 #[cfg(test)]
@@ -413,8 +471,11 @@ ad-orender-bridge-path=/profile_bridge.so
         let paths = unix_paths(root);
         let found = find(&paths).unwrap();
         assert_eq!(found.conf, user_dir(root).join("mpv.conf"));
-        assert_eq!(found.bridge, bridge);
-        assert_eq!(bridge_file_for_renderer(None, None, &paths), Some(bridge));
+        assert_eq!(found.bridges, [bridge.clone()]);
+        assert_eq!(
+            bridge_file_for_renderer(None, None, &paths),
+            Some(bridge.into_os_string())
+        );
     }
 
     /// The review's case: the folder holds another bridge that sorts first.
@@ -433,7 +494,7 @@ ad-orender-bridge-path=/profile_bridge.so
         );
         assert_eq!(
             bridge_file_for_renderer(None, None, &unix_paths(root)),
-            Some(named)
+            Some(named.into_os_string())
         );
     }
 
@@ -455,7 +516,7 @@ ad-orender-bridge-path=/profile_bridge.so
         let empty = OsString::new();
         assert_eq!(
             bridge_file_for_renderer(Some(&empty), Some(&empty), &paths),
-            Some(bridge)
+            Some(bridge.into_os_string())
         );
     }
 
@@ -500,14 +561,14 @@ ad-orender-bridge-path=/profile_bridge.so
             &root.join("etc/mpv.conf"),
             &format!("ad-orender-bridge-path={}\n", global_bridge.display()),
         );
-        assert_eq!(find(&paths).unwrap().bridge, global_bridge);
+        assert_eq!(find(&paths).unwrap().bridges, [global_bridge]);
         let user_bridge = root.join("mine").join("libu_bridge.so");
         write(&user_bridge, "x");
         write(
             &user_dir(root).join("mpv.conf"),
             &format!("ad-orender-bridge-path={}\n", user_bridge.display()),
         );
-        assert_eq!(find(&paths).unwrap().bridge, user_bridge);
+        assert_eq!(find(&paths).unwrap().bridges, [user_bridge]);
         write(
             &user_dir(root).join("mpv.conf"),
             "ad-orender-bridge-path=/nonexistent/libu_bridge.so\n",
@@ -527,13 +588,142 @@ ad-orender-bridge-path=/profile_bridge.so
             &user_dir(root).join("mpv.conf"),
             "ad-orender-bridge-path=~/omniphony/libh_bridge.so\n",
         );
-        assert_eq!(find(&paths).unwrap().bridge, in_home);
+        assert_eq!(find(&paths).unwrap().bridges, [in_home]);
         let in_config = user_dir(root).join("bridges/libh_bridge.so");
         write(&in_config, "x");
         write(
             &user_dir(root).join("mpv.conf"),
             "ad-orender-bridge-path=~~/bridges/libh_bridge.so\n",
         );
-        assert_eq!(find(&paths).unwrap().bridge, in_config);
+        assert_eq!(find(&paths).unwrap().bridges, [in_config]);
+    }
+
+    /// The platform's path-list separator, as `split_paths` reads it.
+    const SEP: &str = if cfg!(windows) { ";" } else { ":" };
+
+    fn list(paths: &[&Path]) -> OsString {
+        std::env::join_paths(paths).unwrap()
+    }
+
+    /// Since the engine takes several bridges, the option is a path list:
+    /// every entry is handed over, in order, as one list.
+    #[test]
+    fn a_list_hands_over_every_bridge_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let dts = root.join("player").join("harletty_dts_bridge.so");
+        let iamf = root.join("other dir").join("harletty_iamf_bridge.so");
+        write(&dts, "x");
+        write(&iamf, "x");
+        // Quoted as a whole, since an entry holds a space; the same entry
+        // twice is listed once.
+        write(
+            &user_dir(root).join("mpv.conf"),
+            &format!(
+                "ad-orender-bridge-path=\"{}{SEP}{}{SEP}{}\"\n",
+                iamf.display(),
+                dts.display(),
+                iamf.display()
+            ),
+        );
+        let paths = unix_paths(root);
+        assert_eq!(find(&paths).unwrap().bridges, [iamf.clone(), dts.clone()]);
+        assert_eq!(
+            bridge_file_for_renderer(None, None, &paths),
+            Some(list(&[&iamf, &dts]))
+        );
+    }
+
+    /// An entry naming no file is dropped and the others kept; a list naming
+    /// none at all sets nothing.
+    #[test]
+    fn a_missing_entry_is_skipped() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let dts = root.join("player").join("harletty_dts_bridge.so");
+        write(&dts, "x");
+        let missing = root.join("gone").join("harletty_iamf_bridge.so");
+        let conf = user_dir(root).join("mpv.conf");
+        // A relative entry and an empty one are dropped too.
+        write(
+            &conf,
+            &format!(
+                "ad-orender-bridge-path={}{SEP}{SEP}relative_bridge.so{SEP}{}\n",
+                missing.display(),
+                dts.display()
+            ),
+        );
+        let paths = unix_paths(root);
+        assert_eq!(
+            bridge_file_for_renderer(None, None, &paths),
+            Some(list(&[&dts]))
+        );
+        write(
+            &conf,
+            &format!("ad-orender-bridge-path={}\n", missing.display()),
+        );
+        assert_eq!(bridge_file_for_renderer(None, None, &paths), None);
+    }
+
+    /// A path naming the combined library of 0.5 is handed over even once
+    /// the file is gone: the engine loads the family libraries beside it in
+    /// its place.
+    #[test]
+    fn a_missing_combined_library_is_passed_for_the_engine_to_replace() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let player = root.join("player");
+        write(&player.join("harletty_dts_bridge.so"), "x");
+        let combined = if cfg!(windows) {
+            player.join("harletty_bridge.dll")
+        } else if cfg!(target_os = "macos") {
+            player.join("libharletty_bridge.dylib")
+        } else {
+            player.join("libharletty_bridge.so")
+        };
+        let other = root.join("mine").join("liby_bridge.so");
+        write(&other, "x");
+        write(
+            &user_dir(root).join("mpv.conf"),
+            &format!(
+                "ad-orender-bridge-path={}{SEP}{}\n",
+                combined.display(),
+                other.display()
+            ),
+        );
+        assert_eq!(
+            bridge_file_for_renderer(None, None, &unix_paths(root)),
+            Some(list(&[&combined, &other]))
+        );
+        // Every platform's spelling counts, whatever this one is.
+        for name in [
+            "libharletty_bridge.so",
+            "harletty_bridge.dll",
+            "libharletty_bridge.dylib",
+        ] {
+            assert!(is_combined_library(&player.join(name)), "{name}");
+        }
+        assert!(!is_combined_library(&player.join("harletty_dts_bridge.so")));
+    }
+
+    /// Windows' list syntax quotes an entry that holds the separator.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_entry_may_be_quoted_inside_the_list() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let odd = root.join("a;b").join("x_bridge.dll");
+        let plain = root.join("p").join("y_bridge.dll");
+        write(&odd, "x");
+        write(&plain, "x");
+        write(
+            &user_dir(root).join("mpv.conf"),
+            &format!(
+                "ad-orender-bridge-path='\"{}\";{}'\n",
+                odd.display(),
+                plain.display()
+            ),
+        );
+        assert_eq!(find(&unix_paths(root)).unwrap().bridges, [odd, plain]);
     }
 }
