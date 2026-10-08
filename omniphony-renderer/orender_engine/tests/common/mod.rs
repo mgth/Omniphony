@@ -48,8 +48,14 @@ pub fn real_engine() -> (Engine, Vec<u8>) {
     let data =
         std::fs::read(&sample).unwrap_or_else(|e| panic!("read sample {}: {e}", sample.display()));
     let config = private_config_dir().join("config.yaml");
-    let engine =
-        Engine::from_paths(Some(&config), None, Some(&bridge), None, 48_000).expect("build engine");
+    let engine = Engine::from_paths(
+        Some(&config),
+        None,
+        std::slice::from_ref(&bridge),
+        None,
+        48_000,
+    )
+    .expect("build engine");
     (engine, data)
 }
 

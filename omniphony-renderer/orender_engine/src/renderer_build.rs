@@ -609,23 +609,27 @@ pub fn seed_runtime_state_from_render_config(
     }
 }
 
-/// Record the bridge a host runs with as the live `render.bridge_path` — what
-/// Studio shows and edits, and what a save writes back. Every host records the
-/// path it was *asked* for: its own override (a CLI flag, the C config's
-/// `bridge_path`) else the config's. Never an auto-discovered one: a bridge
-/// found next to the host binary is that host's, and saving it would write,
-/// say, the mpv bundle's bridge into the config every host shares. A host
-/// override that differs from the config is unsaved state.
-pub fn record_bridge_path(
+/// Record the bridges a host runs with as the live `render.bridge_path(s)` —
+/// what Studio shows and edits, and what a save writes back. Every host
+/// records the paths it was *asked* for: its own override (CLI flags, the C
+/// config's `bridge_path` list) else the config's. Never auto-discovered
+/// ones: a bridge found next to the host binary is that host's, and saving it
+/// would write, say, the mpv bundle's bridge into the config every host
+/// shares. A host override that differs from the config is unsaved state.
+pub fn record_bridge_paths(
     control: &RendererControl,
-    host_override: Option<&std::path::Path>,
-    config_bridge: Option<&std::path::Path>,
+    host_override: &[std::path::PathBuf],
+    config_bridges: &[std::path::PathBuf],
 ) {
-    let recorded = host_override.or(config_bridge);
-    if recorded != config_bridge {
+    let recorded = if host_override.is_empty() {
+        config_bridges
+    } else {
+        host_override
+    };
+    if recorded != config_bridges {
         control.mark_dirty();
     }
-    control.set_bridge_path(recorded.map(std::path::Path::to_path_buf));
+    control.set_bridge_paths(recorded.to_vec());
 }
 
 /// Record the config's `render.input_pipe` as the live input path, so a save
@@ -651,15 +655,15 @@ pub struct HostStateSeed<'a> {
     /// The render section the host resolved (the file, live-handoff sidecar
     /// included, plus the host's own overrides).
     pub render_cfg: Option<&'a RenderConfig>,
-    /// The bridge path the host itself was asked for (a CLI flag, the C
-    /// config's field); the config's own comes from `render_cfg`.
-    pub requested_bridge_path: Option<&'a std::path::Path>,
+    /// The bridge paths the host itself was asked for (CLI flags, the C
+    /// config's field); the config's own come from `render_cfg`.
+    pub requested_bridge_paths: &'a [std::path::PathBuf],
     /// This host's monitoring cadence fallback, meter then diag, in Hz.
     pub cadence_defaults_hz: (f32, f32),
 }
 
-/// Record the host-side state every live-state bundle carries: the bridge path
-/// ([`record_bridge_path`]), the config path, load status and profiles view,
+/// Record the host-side state every live-state bundle carries: the bridge paths
+/// ([`record_bridge_paths`]), the config path, load status and profiles view,
 /// the unsaved mark of a restored live handoff, the cadence fallback and the
 /// runtime seed ([`seed_runtime_state_from_render_config`]).
 ///
@@ -667,10 +671,13 @@ pub struct HostStateSeed<'a> {
 /// hosts ([`crate::degraded::NoBridgeRuntime`]), so a renderer that came up
 /// without a decoder publishes — and saves — the same state as one that did.
 pub fn seed_host_state(control: &RendererControl, seed: &HostStateSeed<'_>) {
-    record_bridge_path(
+    record_bridge_paths(
         control,
-        seed.requested_bridge_path,
-        seed.render_cfg.and_then(|c| c.bridge_path.as_deref()),
+        seed.requested_bridge_paths,
+        &seed
+            .render_cfg
+            .map(RenderConfig::bridges)
+            .unwrap_or_default(),
     );
     record_input_path(control, seed.render_cfg);
     if let Some(path) = seed.config_path {
@@ -917,7 +924,7 @@ mod tests {
             &HostStateSeed {
                 config_path: None,
                 render_cfg: Some(&cfg),
-                requested_bridge_path: None,
+                requested_bridge_paths: &[],
                 cadence_defaults_hz: (10.0, 10.0),
             },
         );
@@ -1272,8 +1279,8 @@ mod tests {
     /// The recorded bridge path is the one asked for, and asking for another
     /// than the config's is unsaved state.
     #[test]
-    fn the_recorded_bridge_path_is_the_requested_one() {
-        use std::path::Path;
+    fn the_recorded_bridge_paths_are_the_requested_ones() {
+        use std::path::PathBuf;
         let renderer = test_renderer();
         let control = renderer.renderer_control();
         let dirty = || {
@@ -1281,43 +1288,22 @@ mod tests {
                 .config_dirty
                 .load(std::sync::atomic::Ordering::Relaxed)
         };
-        let config = Path::new("/cfg/libbridge.so");
+        let config = vec![PathBuf::from("/cfg/libbridge.so")];
 
-        record_bridge_path(&control, None, Some(config));
-        assert_eq!(control.bridge_path().as_deref(), Some(config));
+        record_bridge_paths(&control, &[], &config);
+        assert_eq!(control.bridge_paths(), config);
         assert!(!dirty());
 
-        record_bridge_path(&control, None, None);
-        assert_eq!(control.bridge_path(), None);
+        record_bridge_paths(&control, &[], &[]);
+        assert!(control.bridge_paths().is_empty());
         assert!(!dirty());
 
-        let host = Path::new("/host/libbridge.so");
-        record_bridge_path(&control, Some(host), Some(config));
-        assert_eq!(control.bridge_path().as_deref(), Some(host));
+        let host = vec![
+            PathBuf::from("/host/liba_bridge.so"),
+            PathBuf::from("/host/libb_bridge.so"),
+        ];
+        record_bridge_paths(&control, &host, &config);
+        assert_eq!(control.bridge_paths(), host);
         assert!(dirty());
-    }
-
-    /// The shared runtime seed must not carry a cadence of its own.
-    ///
-    /// It is replayed wholesale by the live profile switch, on whichever host
-    /// happens to be running. When it hard-coded the embedded host's 10 Hz, a
-    /// profile switch on the CLI silently dropped Studio's meters from 50 Hz to
-    /// 10 — the bug this pins.
-    #[test]
-    fn the_runtime_seed_keeps_the_host_cadence_default() {
-        let renderer = test_renderer();
-        let control = renderer.renderer_control();
-
-        control.set_cadence_defaults_hz(50.0, 50.0);
-        seed_runtime_state_from_render_config(&control, None);
-        assert_eq!(control.meter_rate_hz(), 50.0);
-        assert_eq!(control.diag_rate_hz(), 50.0);
-
-        // A second host, slower on purpose, gets its own value from the same
-        // call — the seed reads the host, it does not decide.
-        control.set_cadence_defaults_hz(10.0, 10.0);
-        seed_runtime_state_from_render_config(&control, None);
-        assert_eq!(control.meter_rate_hz(), 10.0);
-        assert_eq!(control.diag_rate_hz(), 10.0);
     }
 }

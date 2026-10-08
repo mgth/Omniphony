@@ -144,11 +144,13 @@ pub struct OrenderConfig {
     /// Optional speaker-layout YAML path overriding the config. NULL → use the
     /// config's embedded layout, else the 7.1.4 preset.
     pub speaker_layout_path: *const c_char,
-    /// Optional decoder bridge plugin path (the `*_bridge.so` produced by
-    /// the input format's bridge crate) overriding the config. NULL → the
-    /// config YAML's `render.bridge_path`; when that is unset too, the engine
-    /// looks for a `*_bridge.{so,dll,dylib}` next to the host executable, then
-    /// in `$ORENDER_BRIDGE_DIR`, then in the system plugin directory
+    /// Optional decoder bridge plugins (the `*_bridge.so` files of the input
+    /// formats' bridges) overriding the config: one path, or a path list in
+    /// the platform's syntax (`:` on Unix, `;` on Windows), in load order.
+    /// NULL → the config YAML's `render.bridge_path(s)`; when that is unset
+    /// too, the engine loads every `*_bridge.{so,dll,dylib}` of the first
+    /// folder holding one: next to the host executable, then
+    /// `$ORENDER_BRIDGE_DIR`, then the system plugin directory
     /// (`/usr/lib/orender` on Unix) — for library hosts as for the CLI. A path
     /// given here or in the config must name an existing file (a relative one
     /// is tried against the working directory, then the executable's
@@ -299,8 +301,18 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
     // once (no-op on Linux/macOS), before resolving the default path.
     orender_engine::migrate_legacy_windows_config();
 
-    // Optional override; NULL → taken from the config YAML's render.bridge_path.
+    // Optional override; NULL → taken from the config YAML's
+    // render.bridge_path(s). A path list in the platform's syntax (`:` on
+    // Unix, `;` on Windows), so a player names several bridges with one
+    // option (mpv's `ad-orender-bridge-path`).
     let bridge_path = unsafe { opt_str(cfg.bridge_path) };
+    let bridge_paths: Vec<PathBuf> = bridge_path
+        .map(|list| {
+            std::env::split_paths(list)
+                .filter(|path| !path.as_os_str().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
     // NULL config → the shared omniphony config (same as the CLI + studio),
     // so one config drives all hosts.
     let config_path = unsafe { opt_str(cfg.config_yaml_path) }
@@ -337,12 +349,12 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
     // handed-over state. Gated on a successful bridge pre-resolution (same
     // strict policy as `from_paths`): a host that is about to fall back to the
     // degraded reporter must not evict a healthy standby.
-    let config_bridge = render_cfg.as_ref().and_then(|c| c.bridge_path.clone());
-    let bridge_resolvable = orender_engine::bridge_loader::resolve_bridge(
-        bridge_path.map(Path::new),
-        config_bridge.as_deref(),
-    )
-    .is_ok();
+    let config_bridges = render_cfg
+        .as_ref()
+        .map(|render| render.bridges())
+        .unwrap_or_default();
+    let bridge_resolvable =
+        orender_engine::bridge_loader::resolve_bridges(&bridge_paths, &config_bridges).is_ok();
     if bridge_resolvable {
         // A same-process degraded reporter may itself hold the port.
         stop_degraded_reporter_global();
@@ -360,7 +372,7 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
     let mut engine = match Engine::from_paths(
         config_path.as_deref(),
         layout_path.map(Path::new),
-        bridge_path.map(Path::new),
+        &bridge_paths,
         codec,
         sample_rate,
     ) {
@@ -379,7 +391,7 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
                         config_path.clone(),
                         render_cfg,
                         layout_path.map(PathBuf::from),
-                        bridge_path.map(PathBuf::from),
+                        bridge_paths.clone(),
                         sample_rate,
                         format!("{e:#}{}", host_launch_diagnostics()),
                         Some((ORENDER_ABI_MAJOR, ORENDER_ABI_MINOR)),
@@ -1643,7 +1655,7 @@ mod degraded_reporter_tests {
         let error = control.bridge_error().expect("bridge error published");
         assert!(error.contains(BRIDGE), "{error}");
         assert!(error.contains("Working dir:"), "{error}");
-        assert_eq!(control.bridge_path(), Some(PathBuf::from(BRIDGE)));
+        assert_eq!(control.bridge_paths(), [PathBuf::from(BRIDGE)]);
         assert_eq!(
             control.host_abi(),
             Some((ORENDER_ABI_MAJOR, ORENDER_ABI_MINOR))

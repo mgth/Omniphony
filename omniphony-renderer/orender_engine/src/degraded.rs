@@ -57,10 +57,10 @@ pub struct NoBridgeSetup {
     pub renderer_params: SpatialRendererParams,
     /// The host's explicit speaker layout file, if it has one.
     pub speaker_layout_path: Option<PathBuf>,
-    /// The bridge path the host itself was asked for; the config's comes from
-    /// `render_cfg`. Recorded as the live `render.bridge_path`, so a Save from
-    /// Studio keeps it instead of erasing it.
-    pub requested_bridge_path: Option<PathBuf>,
+    /// The bridge paths the host itself was asked for; the config's come from
+    /// `render_cfg`. Recorded as the live `render.bridge_path(s)`, so a Save
+    /// from Studio keeps them instead of erasing them.
+    pub requested_bridge_paths: Vec<PathBuf>,
     pub sample_rate: u32,
     /// The host's monitoring cadence fallback, meter then diag, in Hz.
     pub cadence_defaults_hz: (f32, f32),
@@ -80,7 +80,7 @@ impl NoBridgeSetup {
         config_path: Option<PathBuf>,
         render_cfg: Option<RenderConfig>,
         speaker_layout_path: Option<PathBuf>,
-        requested_bridge_path: Option<PathBuf>,
+        requested_bridge_paths: Vec<PathBuf>,
         sample_rate: u32,
         bridge_error: String,
         host_abi: Option<(u32, u32)>,
@@ -90,7 +90,7 @@ impl NoBridgeSetup {
             config_path,
             render_cfg,
             speaker_layout_path,
-            requested_bridge_path,
+            requested_bridge_paths,
             sample_rate,
             cadence_defaults_hz: (
                 crate::engine::EMBEDDED_METER_RATE_HZ,
@@ -138,7 +138,7 @@ impl NoBridgeRuntime {
             &HostStateSeed {
                 config_path: setup.config_path.as_deref(),
                 render_cfg,
-                requested_bridge_path: setup.requested_bridge_path.as_deref(),
+                requested_bridge_paths: &setup.requested_bridge_paths,
                 cadence_defaults_hz: setup.cadence_defaults_hz,
             },
         );
@@ -226,11 +226,17 @@ const BRIDGE_ERROR_MAX_BYTES: usize = 2048;
 /// Shorten a bridge load error to what a UI can show (see
 /// `BRIDGE_ERROR_MAX_BYTES`); a short error passes through unchanged.
 pub fn summarize_bridge_error(text: &str) -> String {
-    if text.len() <= BRIDGE_ERROR_MAX_BYTES {
+    summarize_bridge_error_within(text, BRIDGE_ERROR_MAX_BYTES)
+}
+
+/// [`summarize_bridge_error`] within `max_bytes` (plus its one-line
+/// trailer naming the full report's size).
+pub fn summarize_bridge_error_within(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
         return text.to_string();
     }
     let mut out = text.lines().next().unwrap_or("").trim_end().to_string();
-    truncate_at_char_boundary(&mut out, BRIDGE_ERROR_MAX_BYTES / 2);
+    truncate_at_char_boundary(&mut out, max_bytes / 2);
 
     // abi_stable's verdicts: an `Error:` line, then `Expected:` / `Found:`
     // labels each followed by an indented value (possibly several lines),
@@ -264,7 +270,7 @@ pub fn summarize_bridge_error(text: &str) -> String {
         text.len()
     );
     for verdict in verdicts {
-        if out.len() + 1 + verdict.len() + trailer.len() > BRIDGE_ERROR_MAX_BYTES {
+        if out.len() + 1 + verdict.len() + trailer.len() > max_bytes {
             break;
         }
         out.push('\n');
@@ -325,7 +331,7 @@ mod tests {
             Some(path.clone()),
             Some(render_cfg),
             None,
-            Some(PathBuf::from("/nonexistent/libhost_bridge.so")),
+            vec![PathBuf::from("/nonexistent/libhost_bridge.so")],
             44_100,
             "bridge path '/nonexistent/libhost_bridge.so' does not exist".to_string(),
             Some((0, 7)),
@@ -338,8 +344,8 @@ mod tests {
             Some("bridge path '/nonexistent/libhost_bridge.so' does not exist")
         );
         assert_eq!(
-            control.bridge_path(),
-            Some(PathBuf::from("/nonexistent/libhost_bridge.so"))
+            control.bridge_paths(),
+            [PathBuf::from("/nonexistent/libhost_bridge.so")]
         );
         assert_eq!(control.config_path(), Some(path));
         assert_eq!(control.config_status().as_deref(), Some("loaded"));
@@ -368,7 +374,7 @@ mod tests {
             Some(path),
             Some(render_cfg),
             Some(PathBuf::from("/nonexistent/layout.yaml")),
-            None,
+            Vec::new(),
             48_000,
             "no bridge".to_string(),
             None,
@@ -376,8 +382,8 @@ mod tests {
         .expect("no-bridge runtime");
         let control = runtime.control();
         assert_eq!(
-            control.bridge_path(),
-            Some(PathBuf::from("/nonexistent/libconfig_bridge.so"))
+            control.bridge_paths(),
+            [PathBuf::from("/nonexistent/libconfig_bridge.so")]
         );
         assert_eq!(control.editable_layout().num_speakers(), speakers);
         assert_eq!(control.host_abi(), None);

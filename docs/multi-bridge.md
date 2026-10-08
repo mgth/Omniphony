@@ -54,19 +54,20 @@ passes and the old bridge silently keeps decoding.
   loading a different file really loads it. This fix lands first, on its own,
   under the current `bridge_api` 0.5.
 - **Config**: a new `render.bridge_paths: [path, …]`. An existing
-  `render.bridge_path` is read as a one-element list. Save writes
-  `bridge_paths` and drops `bridge_path`, which moves a key, so
-  `CONFIG_SCHEMA_VERSION` goes to 2: an older build refuses to save over the
-  file rather than losing the list. The list changes what the engine
-  decodes, so it is saved only through Save, as `bridge_path` is today
-  (`docs/persistence-policy.md`).
+  `render.bridge_path` is read as a one-element list. Save writes one bridge
+  as `bridge_path`, which every build reads, and several as `bridge_paths`
+  (and no `bridge_path`). No key moves, so `CONFIG_SCHEMA_VERSION` stays: an
+  older build keeps `bridge_paths` through a save as an unknown key
+  (`extra`) and auto-discovers its own bridge meanwhile. The list changes
+  what the engine decodes, so it is saved only through Save, as
+  `bridge_path` is today (`docs/persistence-policy.md`).
 - **CLI**: `--bridge-path` becomes repeatable.
   `ORENDER_BRIDGE_FILE` accepts a list in the platform's path-list syntax
   (`:` or `;`).
 - **Auto-discovery** (no paths configured) loads **every** bridge in the first
   discovery folder that holds at least one **usable** bridge, sorted by file
   name. A candidate is usable when its header passes the version and layout
-  check; the refused ones are reported in `bridge_error`, and a folder that
+  check; the refused ones are reported with the others, and a folder that
   only holds refused candidates (a leftover 0.5 `libharletty_bridge` next to
   the executable) does not stop the search. It does not merge folders: a
   stale per-user bridge must not be added to the system ones. The folders and
@@ -84,7 +85,9 @@ passes and the old bridge silently keeps decoding.
   the family libraries.
   Every other path keeps the strict rule: it must exist and load.
 - **Partial failure**: a bridge that fails to load (missing file, ABI
-  mismatch) is reported in `bridge_error` and skipped; the host runs if at
+  mismatch) is reported in `/omniphony/state/render/bridges` and skipped,
+  and a missing path stays in what a Save writes; `bridge_error` is set only
+  when no bridge loads, as Studio reads it as "no decoder"; the host runs if at
   least one bridge loaded. A leftover `libharletty_bridge.so` from 0.5 is
   therefore refused by name and ignored, not fatal.
 - **The same family twice**: when two loaded bridges both accept a packet, the
@@ -369,8 +372,9 @@ explicit setting:
 
 ### OSC and Studio
 
-- New state `/omniphony/state/render/bridges`: one entry per configured or
-  discovered bridge (path, `bridge_api`, families, error). The existing
+- New state `/omniphony/state/render/bridges`, JSON: `requested`, the paths
+  asked for, then `bridges`, each bridge loaded (`path`, `families`) and each
+  one that failed (`path`, `error`). The existing
   `bridge_path` state stays, holding the first entry, for clients that only
   know it. `CONTRACT_REVISION` is bumped.
 - New control `/omniphony/control/render/bridge_paths` (the full list);
@@ -412,9 +416,9 @@ explicit setting:
 
 - A 0.6 host refuses a 0.5 bridge, and the reverse, by name, as today.
 - Configs with `render.bridge_path` keep working, including one that names
-  the combined library (see Loading); the first Save rewrites them as
-  `bridge_paths`, and a pre-0.6 build then refuses to save over that file
-  (schema version 2).
+  the combined library (see Loading); a Save keeps one bridge as
+  `bridge_path` and writes several as `bridge_paths`, which an older build
+  keeps through its own saves.
 - Packaging and install: the AUR `harletty-bridge` package, the installers
   and `scripts/wfbuild.sh` install three libraries and remove the old
   `libharletty_bridge`. The install pages list the three.
@@ -486,8 +490,8 @@ explicit setting:
   first gives the same grid in `custom`.
 - Discovery: all bridges of the first non-empty folder, none from later
   folders; a refused bridge is reported and skipped.
-- Config: `bridge_path` read as a list, `bridge_paths` round-trips, schema
-  version 2 refused by an older build's rules.
+- Config: `bridge_path` read as a list; one bridge written as `bridge_path`,
+  several as `bridge_paths`; `bridge_paths` wins when both are present.
 - harletty: each plugin's tests run against its own crate alone; the IAMF
   plugin's crate graph holds no other decoder.
 
@@ -514,7 +518,7 @@ Each step is one PR, merged before the next is built on it.
 | 1 | Omniphony | Loader: load by path without abi_stable's process-wide cache; regression test. `bridge_api` stays 0.5. |
 | 2 | Omniphony | `bridge_api` 0.6: `probe`, `input_codecs`; reference bridge; ABI baseline; `BRIDGE_API.md` (incl. `input_codec`). |
 | 3 | Omniphony | `BridgeSet` in `orender_engine` (undecided-byte buffer, fallback route after a seek, DRC forwarding); Engine, CLI, live sink and `sync-play` hold it. |
-| 4 | Omniphony | `render.bridge_paths`, discovery of every bridge, combined-library path substitution, repeatable flag, env list, OSC state and control, schema version 2, docs. |
+| 4 | Omniphony | `render.bridge_paths`, discovery of every bridge, combined-library path substitution, repeatable flag, env list, OSC state and control, docs. |
 | 4b | Omniphony | `render.evaluation_grid` (`bridge` / `custom`): grid requests with a generation, rebuild on a hint change, conservative migration, edits refused in `bridge`, negative z as an option, state, Studio switch. |
 | 5 | harletty-bridge | `FamilyPipeline` and `PluginBridge` in `bridge-common`; the combined router built on them; output unchanged. |
 | 6 | harletty-bridge | Three plugin crates on `bridge_api` 0.6; bit-exactness through the host. |

@@ -172,11 +172,11 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
         .map(renderer::config::Config::load_or_default)
         .unwrap_or_default();
     let render = config.render.clone().unwrap_or_default();
-    let bridge_path = render.bridge_path.clone();
+    let bridge_paths = render.bridges();
     let mut engine = Engine::from_paths(
         config_path.as_deref(),
         None,
-        bridge_path.as_deref(),
+        &bridge_paths,
         None,
         RENDER_RATE,
     )

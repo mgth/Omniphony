@@ -571,6 +571,20 @@ pub fn build_speakers_state_json(
 /// whether a `HostControlHandler` is attached.
 /// JSON payload of [`crate::osc_contract::STATE_PROFILES`]:
 /// `{"active": "...", "names": ["..."]}`.
+/// `/omniphony/state/render/bridges`: the bridges asked for, then what the
+/// host loaded and what failed.
+pub fn bridges_state_json(control: &RendererControl) -> String {
+    json!({
+        "requested": control
+            .bridge_paths()
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>(),
+        "bridges": control.bridges_status(),
+    })
+    .to_string()
+}
+
 pub fn profiles_state_json(control: &RendererControl) -> String {
     let info = control.profiles_info();
     json!({
@@ -767,10 +781,14 @@ pub fn build_live_state_bundle_with_host(
             addr: crate::osc_contract::STATE_RENDER_BRIDGE_PATH.to_string(),
             args: vec![OscType::String(
                 control
-                    .bridge_path()
+                    .first_bridge_path()
                     .map(|path| path.display().to_string())
                     .unwrap_or_default(),
             )],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: crate::osc_contract::STATE_RENDER_BRIDGES.to_string(),
+            args: vec![OscType::String(bridges_state_json(control))],
         }),
         OscPacket::Message(OscMessage {
             // The config file this renderer instance actually loaded. Empty

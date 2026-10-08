@@ -326,7 +326,7 @@ fn init_osc_runtime(
             &orender_engine::renderer_build::HostStateSeed {
                 config_path: config_path.as_deref(),
                 render_cfg: Some(render_cfg),
-                requested_bridge_path: args.bridge_path.as_deref(),
+                requested_bridge_paths: &args.bridge_paths,
                 cadence_defaults_hz: CLI_CADENCE_DEFAULTS_HZ,
             },
         );
@@ -514,7 +514,7 @@ pub fn init_no_bridge_handler(
         render_cfg: Some(render_cfg.clone()),
         renderer_params: params.clone(),
         speaker_layout_path: args.speaker_layout.clone(),
-        requested_bridge_path: args.bridge_path.clone(),
+        requested_bridge_paths: args.bridge_paths.clone(),
         // As a render builds it before any frame (`init_spatial_renderer`).
         sample_rate: 48000,
         cadence_defaults_hz: CLI_CADENCE_DEFAULTS_HZ,

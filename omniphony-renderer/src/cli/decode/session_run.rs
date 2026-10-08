@@ -15,7 +15,7 @@ use super::state::FrameHandlerContext;
 use crate::cli::command::{Cli, OutputBackend, RenderArgSources, RenderArgs};
 use anyhow::{Context, Result};
 use diag::DiagAtomicHandle;
-use orender_engine::bridge_loader::{LoadedBridge, resolve_bridge_path};
+use orender_engine::bridge_loader::{LoadedBridge, load_bridges, resolve_bridges};
 use orender_engine::renderer_build::SpatialRendererParams;
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock, atomic::AtomicU64};
@@ -51,6 +51,10 @@ struct PreparedDecodeRun {
     pacer_bridge_diag: PacerBridgeDiag,
     _shutdown: sys::ShutdownHandle,
     bridge_libs: orender_engine::bridge_loader::BridgeLibs,
+    /// How the bridges were resolved, for what a Save records.
+    bridge_request: orender_engine::bridge_loader::BridgeRequest,
+    /// What loaded and what did not, as published.
+    bridges_status: Vec<renderer::live_params::BridgeStatus>,
     input_path: std::path::PathBuf,
     presentation: String,
     is_spatial_presentation: bool,
@@ -262,16 +266,19 @@ fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecod
         ));
     }
 
-    let bridge_path =
-        resolve_bridge_path(args.bridge_path.as_deref()).context(BridgeUnavailable)?;
-    log::info!("Loading format bridge: {}", bridge_path.display());
+    let bridge_request = resolve_bridges(&args.bridge_paths, &[]).context(BridgeUnavailable)?;
+    for path in &bridge_request.files {
+        log::info!("Loading format bridge: {}", path.display());
+    }
+    let loaded_bridges = load_bridges(&bridge_request).context(BridgeUnavailable)?;
     // Only the load is "bridge unavailable"; a bridge that loads but
     // refuses the presentation is a configuration error, not a reason to idle.
     let LoadedBridge {
         libs,
         mut bridge,
         log_level,
-    } = LoadedBridge::load_with_params(&bridge_path).context(BridgeUnavailable)?;
+    } = LoadedBridge::open(loaded_bridges.libs.clone()).context(BridgeUnavailable)?;
+    let bridges_status = loaded_bridges.status();
     orender_engine::bridge_loader::configure_presentation(&mut bridge, &args.presentation)?;
     let is_spatial_presentation = bridge.has_objects();
     let coordinate_format = bridge.coordinate_format();
@@ -349,6 +356,8 @@ fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecod
         pacer_bridge_diag,
         _shutdown: shutdown,
         bridge_libs: libs,
+        bridge_request,
+        bridges_status,
         input_path: input,
         presentation: args.presentation.clone(),
         is_spatial_presentation,
@@ -368,7 +377,7 @@ fn idle_input_path(args: &RenderArgs) -> &std::path::Path {
 fn run_idle_runtime(
     run: &ResolvedRun,
     bridge_error: &anyhow::Error,
-) -> Result<Option<std::path::PathBuf>> {
+) -> Result<Vec<std::path::PathBuf>> {
     let args = &run.args;
     let shutdown = sys::shutdown::ShutdownHandle::install()?;
     let mut handler = DecodeHandler::default();
@@ -419,8 +428,8 @@ fn run_idle_runtime(
     Ok(handler
         .spatial_renderer
         .as_ref()
-        .map(|renderer| renderer.renderer_control().bridge_path())
-        .unwrap_or_else(|| args.bridge_path.clone()))
+        .map(|renderer| renderer.renderer_control().bridge_paths())
+        .unwrap_or_else(|| args.bridge_paths.clone()))
 }
 
 fn effective_output_backend(
@@ -1081,7 +1090,7 @@ fn spawn_pacer_drain_thread(
 fn run_prepared_render(
     mut prepared: PreparedDecodeRun,
     run: &ResolvedRun,
-) -> Result<Option<std::path::PathBuf>> {
+) -> Result<Vec<std::path::PathBuf>> {
     let effective_args = &run.args;
     if run.renderer_params.render_evaluation_mode.is_none() {
         log::info!(
@@ -1111,6 +1120,8 @@ fn run_prepared_render(
         let ctrl = renderer.renderer_control();
         ctrl.set_bridge_supported_drc_modes(prepared.supported_drc_modes.clone());
         orender_engine::bridge_loader::declare_source_families(&prepared.bridge_libs, &ctrl);
+        orender_engine::bridge_loader::record_bridge_request(&ctrl, &prepared.bridge_request);
+        ctrl.set_bridges_status(prepared.bridges_status.clone());
     }
 
     if let Some(input_control) = handler.input_control.as_ref() {
@@ -1230,8 +1241,8 @@ fn run_prepared_render(
     let current_bridge_path = handler
         .spatial_renderer
         .as_ref()
-        .map(|renderer| renderer.renderer_control().bridge_path())
-        .unwrap_or_else(|| effective_args.bridge_path.clone());
+        .map(|renderer| renderer.renderer_control().bridge_paths())
+        .unwrap_or_else(|| effective_args.bridge_paths.clone());
     finalize_render_run(prepared, &mut handler)?;
     Ok(current_bridge_path)
 }
@@ -1261,12 +1272,12 @@ fn negotiate_osc_port_if_enabled(args: &RenderArgs, cli: &Cli, arg_sources: &Ren
 pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'_>) -> Result<()> {
     sys::shutdown::set_yieldable(args.osc_yield);
     sys::shutdown::set_restartable(true);
-    let mut restart_bridge_path_override: Option<Option<std::path::PathBuf>> = None;
+    let mut restart_bridge_path_override: Option<Vec<std::path::PathBuf>> = None;
     loop {
         negotiate_osc_port_if_enabled(args, cli, arg_sources);
         let mut run = resolve_effective_decode_args(args, cli, arg_sources)?;
         if let Some(bridge_path) = restart_bridge_path_override.take() {
-            run.args.bridge_path = bridge_path;
+            run.args.bridge_paths = bridge_path;
         }
 
         if maybe_save_effective_config(cli, &run, arg_sources)? {
@@ -1728,7 +1739,7 @@ mod tests {
                     .0
                     .render,
                 None,
-                Some(bridge.into()),
+                vec![bridge.into()],
                 48_000,
                 error.clone(),
                 Some((0, 1)),
@@ -1737,7 +1748,10 @@ mod tests {
         let embedded_control = embedded.control();
 
         assert_eq!(cli_control.bridge_error(), Some(error));
-        assert_eq!(cli_control.bridge_path(), Some(bridge.into()));
+        assert_eq!(
+            cli_control.bridge_paths(),
+            [std::path::PathBuf::from(bridge)]
+        );
         let mut cli_state = published_state(&cli_control, true);
         let mut embedded_state = published_state(&embedded_control, false);
         // The options schema differs by exactly the embedded engine's own

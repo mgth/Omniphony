@@ -102,8 +102,7 @@ pub fn store_live_into_config(
 ) {
     let live = control.live.read();
     let render = config.render.get_or_insert_with(Default::default);
-    let requested_bridge_path = control.bridge_path();
-    render.bridge_path = requested_bridge_path;
+    render.set_bridges(&control.bridge_paths());
     render.input_pipe = control
         .input_path()
         .map(|value| std::path::PathBuf::from(value.trim()))
