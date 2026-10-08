@@ -77,6 +77,10 @@ pub struct BridgeSet {
     slots: Vec<Slot>,
     /// The bridge that took the last packet; per-stream answers come from it.
     active: usize,
+    /// Whether `active` has taken a packet since the set was opened or
+    /// reset. Before that it is only the idle default, so a first burst for
+    /// another bridge is no switch: nothing to reset, no new segment.
+    fed: bool,
     raw: RawRoute,
     /// The bridge `input_codec` named, which takes raw input unprobed.
     forced: Option<usize>,
@@ -170,6 +174,7 @@ impl BridgeSet {
         Ok(Self {
             slots,
             active: 0,
+            fed: false,
             raw: RawRoute::Undecided,
             forced: None,
             iec_route: [IEC_UNPROBED; 256],
@@ -214,11 +219,12 @@ impl BridgeSet {
             });
             return empty_result();
         };
-        let switched = index != self.active;
+        let switched = index != self.active && self.fed;
         if switched {
             self.slots[self.active].bridge.reset();
-            self.active = index;
         }
+        self.active = index;
+        self.fed = true;
         let mut result =
             self.slots[index]
                 .bridge
@@ -255,6 +261,7 @@ impl BridgeSet {
 
     fn deliver(&mut self, index: usize, data: &[u8]) -> RPushResult {
         self.active = index;
+        self.fed = true;
         self.slots[index]
             .bridge
             .push_packet(data.into(), RInputTransport::Raw, 0)
@@ -391,6 +398,7 @@ impl BridgeSet {
         };
         self.undecided.clear();
         self.unrouted = Unrouted::default();
+        self.fed = false;
     }
 
     /// Send a configuration key. `input_codec` names the bridge raw input
@@ -1125,6 +1133,25 @@ mod tests {
         assert!(unknown.frames.is_empty());
         assert_eq!(a.lock().unwrap().bursts, [0x15]);
         assert_eq!(a.lock().unwrap().resets, 1);
+        assert_eq!(b.lock().unwrap().bursts, [0x0B, 0x0B]);
+    }
+
+    /// The first bridge is active only by default until a packet arrives: a
+    /// first burst for another bridge, at start or after a seek, is no
+    /// switch.
+    #[test]
+    fn a_first_burst_for_a_later_bridge_is_no_switch() {
+        let (mut set, a, b) = set_ab();
+        let first = set.push_packet(b"", RInputTransport::Iec61937, 0x0B);
+        assert!(!first.did_reset);
+        assert_eq!(a.lock().unwrap().resets, 0);
+        set.reset();
+        let resets = a.lock().unwrap().resets;
+        let after_seek = set.push_packet(b"", RInputTransport::Iec61937, 0x15);
+        assert!(!after_seek.did_reset);
+        assert_eq!(a.lock().unwrap().resets, resets);
+        let switched = set.push_packet(b"", RInputTransport::Iec61937, 0x0B);
+        assert!(switched.did_reset);
         assert_eq!(b.lock().unwrap().bursts, [0x0B, 0x0B]);
     }
 
