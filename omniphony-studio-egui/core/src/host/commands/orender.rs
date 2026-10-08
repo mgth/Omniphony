@@ -8,6 +8,7 @@
 use super::HostPaths;
 use super::OscControlMsg;
 use super::{SharedState, send_control};
+use crate::host::mpv_bridge;
 use crate::osc_contract;
 use std::env;
 use std::fs::File;
@@ -769,6 +770,18 @@ fn spawn_orender_process(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    // The bridge the player is configured with in mpv.conf, as the exact file
+    // (a folder would let the engine pick another bridge sitting beside it).
+    // It only takes part in the engine's auto-discovery: a `render.bridge_path`
+    // in its config wins over it. A bridge variable set in Studio's own
+    // environment is inherited and wins over mpv.conf.
+    if let Some(file) = mpv_bridge::bridge_file_for_renderer(
+        std::env::var_os(mpv_bridge::BRIDGE_FILE_ENV).as_ref(),
+        std::env::var_os(mpv_bridge::BRIDGE_DIR_ENV).as_ref(),
+        &mpv_bridge::MpvPaths::from_env(),
+    ) {
+        cmd.env(mpv_bridge::BRIDGE_FILE_ENV, file);
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -799,6 +812,14 @@ fn spawn_orender_process(
         "command": format!("{} {}", spec.orender_path.display(), spec.args.join(" ")),
         "logPath": log_path.display().to_string()
     }))
+}
+
+/// Why the local renderer's last automatic start failed, and the log it
+/// writes to, for the banner shown while no engine answers. `None` when the
+/// last start did not fail, after a re-arm, and once a renderer connected.
+pub fn autostart_failure(state: &SharedState) -> Option<(String, PathBuf)> {
+    let failure = state.watchdog.lock().unwrap().last_failure.clone()?;
+    Some((failure, default_orender_log_path()))
 }
 
 /// Watchdog entry point: launch a standby renderer from the saved OSC config

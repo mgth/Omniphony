@@ -96,6 +96,11 @@ pub struct BrirStatus {
 pub struct BrirSummary {
     pub conventions: String,
     pub emitters: usize,
+    /// Each emitter's position relative to the listener, in the renderer's
+    /// frame (`x` right, `y` front, `z` up, metres), in the set's order: the
+    /// virtual loudspeakers a BRIR source renders onto
+    /// ([`crate::speaker_layout::SpeakerLayout::from_brir_emitters`]).
+    pub emitter_positions: Vec<[f32; 3]>,
     pub orientations: usize,
     pub max_taps: usize,
     pub sample_rate: u32,
@@ -107,6 +112,7 @@ impl BrirSummary {
         Self {
             conventions: set.conventions().to_string(),
             emitters: set.emitters().len(),
+            emitter_positions: set.emitters().to_vec(),
             orientations: set.orientations().len(),
             max_taps: set.max_taps(),
             sample_rate: set.sample_rate(),
@@ -552,6 +558,38 @@ impl BrirStage {
                 path: String::new(),
                 opts: BrirLoadOptions::default(),
             },
+            set,
+            bank,
+            streams,
+        });
+    }
+
+    /// Install a set as the load of `path` with `opts` would (tests): the
+    /// stage tracks that file, so [`Self::ensure_loaded`] asks for nothing
+    /// more, and the load's status is reported to the sink.
+    #[cfg(test)]
+    pub(crate) fn install_set_as(
+        &mut self,
+        path: &str,
+        opts: BrirLoadOptions,
+        set: Arc<BrirSet>,
+        buses: usize,
+    ) {
+        let key = LoadKey {
+            path: path.to_string(),
+            opts,
+        };
+        let front = set.nearest_orientation(0.0, 0.0);
+        let bank = Arc::new(build_bank(&self.plan, &set, front));
+        let streams = Streams::new(&self.plan, set.max_taps(), &bank, buses);
+        (self.sink)(BrirStatus {
+            path: key.path.clone(),
+            loaded: Some(BrirSummary::of(&set)),
+            error: None,
+        });
+        self.key = Some(key.clone());
+        self.adopt(Loaded {
+            key,
             set,
             bank,
             streams,

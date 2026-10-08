@@ -46,6 +46,7 @@
 
 pub mod nesting;
 pub mod shapes;
+pub mod stream;
 
 /// Revision of this contract. The engine advertises it as `contractRevision`
 /// in `/state/capabilities`, and a client compares it with its own, so a
@@ -58,7 +59,7 @@ pub mod shapes;
 /// a change to arguments only is for the author to remember.
 ///
 /// An engine that predates this advertises none, which a client reads as 0.
-pub const CONTRACT_REVISION: u32 = 2;
+pub const CONTRACT_REVISION: u32 = 3;
 
 /// The port the engine's stream transport listens on is the OSC/UDP control
 /// port's number, on loopback (TCP and UDP ports are separate spaces). A
@@ -495,6 +496,11 @@ pub const CONTROL_ERROR_NOT_APPLIED: &str = "not_applied";
 /// The datagram is not OSC the engine can decode, or nests deeper than
 /// [`nesting::MAX_NESTING`]. Its address is unknown, so the reply's is empty.
 pub const CONTROL_ERROR_UNDECODABLE: &str = "undecodable";
+/// Revision 3: a process-lifecycle control (`quit`, `yield_port`, `resume`)
+/// from another machine. The OSC/UDP socket listens on the network (head
+/// tracking from a phone, a remote Studio), but only a client on this
+/// machine may stop the engine or take its port.
+pub const CONTROL_ERROR_NOT_ALLOWED: &str = "not_allowed";
 
 // ── State: engine → clients ─────────────────────────────────────────────────
 
@@ -582,10 +588,18 @@ pub const STATE_OSC_METERING: &str = "/omniphony/state/osc/metering";
 pub const STATE_REALTIME_MASTER_GAIN: &str = "/omniphony/state/realtime/master_gain";
 pub const STATE_REALTIME_SPEAKER_GAIN: &str = "/omniphony/state/realtime/speaker_gain";
 pub const STATE_RENDER_ABI: &str = "/omniphony/state/render/abi";
-/// The `bridge_api` version this engine was built against (`"0.5.0"`): a
+/// The `bridge_api` version this engine was built against (`"0.6.0"`): a
 /// decoder bridge loads only if it was built against the same minor.
 pub const STATE_RENDER_BRIDGE_API: &str = "/omniphony/state/render/bridge_api";
 pub const STATE_RENDER_BRIDGE_ERROR: &str = "/omniphony/state/render/bridge_error";
+/// The text [`STATE_RENDER_BRIDGE_ERROR`] contains when no bridge was asked
+/// for and auto-discovery found none: the engine runs without a decoder, which
+/// is normal for a standby renderer (PCM and channel input still work). Any
+/// other non-empty error is a bridge that was asked for or found and failed to
+/// load. A client matches it with `contains`, as a host may prefix its own
+/// context; an engine predating it never sends it, so its errors all read as
+/// failures.
+pub const BRIDGE_ERROR_NONE_FOUND: &str = "no decoder bridge found";
 pub const STATE_RENDER_BRIDGE_PATH: &str = "/omniphony/state/render/bridge_path";
 pub const STATE_RENDER_CONFIG_PATH: &str = "/omniphony/state/render/config_path";
 pub const STATE_RENDER_CONFIG_STATUS: &str = "/omniphony/state/render/config_status";
@@ -1155,7 +1169,7 @@ mod tests {
     /// `(revision, fingerprint)`. Change both together, and only together with
     /// a bump: a new fingerprint under the old revision tells clients nothing
     /// changed when it did.
-    const PINNED_ADDRESS_SET: (u32, u64) = (2, 0x9e77_a313_a880_fc97);
+    const PINNED_ADDRESS_SET: (u32, u64) = (3, 0x9e77_a313_a880_fc97);
 
     /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
     /// and not the order the lists happen to be written in.

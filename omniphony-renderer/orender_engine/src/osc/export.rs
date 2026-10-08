@@ -19,9 +19,9 @@ use runtime_control::osc_contract;
 pub(crate) const MAX_STATE_DATAGRAM: usize = 65_000;
 
 /// Largest snapshot packet sent to a stream client: the whole snapshot in
-/// one bundle, short of a pathological one. Readers accept at least this
-/// ([`crate::osc::STREAM_PACKET_MAX`]).
-pub(crate) const MAX_STATE_STREAM_PACKET: usize = 1 << 20;
+/// one bundle, short of a pathological one, within what both ends accept
+/// (`osc_contract::stream::MAX_PACKET`).
+pub(crate) const MAX_STATE_STREAM_PACKET: usize = runtime_control::osc_contract::stream::MAX_PACKET;
 
 /// Broadcast the live-state snapshot to every registered client.
 ///

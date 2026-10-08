@@ -455,7 +455,10 @@ pub fn build_frame(
     // The edit gizmos follow the thing this editor moves: the selected
     // speaker, or a selected object that is a virtual bed channel — a real
     // object's position belongs to whatever is playing it, not to the editor.
+    // Read-only speakers (frozen by the backend, or a BRIR set's own) have
+    // nothing to move.
     let gizmo_target: Option<(gizmos::GizmoTarget, Vec3)> = match selection.speaker {
+        Some(_) if live.app.speakers_read_only() => None,
         Some(index) => speaker_visuals
             .get(index)
             .map(|sp| (gizmos::GizmoTarget::Speaker(index), sp.scene_pos)),

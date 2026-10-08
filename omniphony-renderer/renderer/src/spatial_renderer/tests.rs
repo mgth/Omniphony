@@ -3088,6 +3088,285 @@ fn brir_source_forces_the_cascade_and_convolves_the_set() {
     );
 }
 
+/// A renderer on the 7.1.4 layout with a resident BRIR set of the 7.1
+/// horizontal loudspeakers (SOFA azimuths, left positive), selected as the
+/// headphone source and reported loaded the way a real load reports it.
+/// Synchronous builds when `synchronous` (an offline render).
+fn brir_layout_test_renderer(synchronous: bool) -> SpatialRenderer {
+    use crate::binaural::brir_stage::test_support::synth_set;
+
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+    r.set_synchronous_stage_builds(synchronous);
+    let path = "synthetic-7.1.sofa";
+    let opts = {
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        live.binaural.hrir_source = crate::binaural::HrirSource::Brir(path.into());
+        cascade::brir_load_options(&live.binaural)
+    };
+    let set = synth_set(&[0.0, 30.0, -30.0, 90.0, -90.0, 135.0, -135.0], &[0.0], 400);
+    r.brir.install_set_as(path, opts, set, 12);
+    r
+}
+
+/// A hard-right noise object for the BRIR layout tests: `frames` blocks of
+/// 40 samples, the stereo energy of the last half returned as `(L, R)`.
+fn render_noise_object(r: &mut SpatialRenderer, frames: usize) -> (f32, f32) {
+    let mut lcg: u32 = 0x1234_5678;
+    let mut noise_block = move || -> Vec<f32> {
+        (0..40)
+            .map(|_| {
+                lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                (lcg >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            })
+            .collect()
+    };
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(40),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([1.0, 0.0, 0.0]),
+        sample_pos: Some(0),
+    }];
+    let (mut e_l, mut e_r) = (0.0f32, 0.0f32);
+    for i in 0..frames {
+        let pcm = noise_block();
+        let events: &[SpatialChannelEvent] = if i == 0 { &event } else { &[] };
+        let out = r.render_frame(&pcm, 1, events, Vec::new(), false).unwrap();
+        if i >= frames / 2 {
+            for s in out.samples.as_chunks::<2>().0 {
+                e_l += s[0] * s[0];
+                e_r += s[1] * s[1];
+            }
+        }
+    }
+    (e_l, e_r)
+}
+
+/// With a BRIR source on the headphones, the render pans onto the set's own
+/// loudspeakers, not the editable layout: the topology is rebuilt on them
+/// (offline, on the frame that selects the set), bus `n` is emitter `n`, the
+/// LFE bus is direct, and the editable layout is left as it was. Back on an
+/// HRTF source, or on the speakers, the editable layout renders again.
+#[test]
+fn a_brir_set_renders_on_its_own_loudspeakers() {
+    let mut r = brir_layout_test_renderer(true);
+    let editable = r.control.editable_layout();
+    assert!(
+        r.control.render_layout_outdated(),
+        "a resident set the render uses outdates the editable layout's topology"
+    );
+
+    let (e_l, e_r) = render_noise_object(&mut r, 60);
+    let topology = r.control.active_topology();
+    assert!(topology.brir_layout, "the topology is the set's");
+    let names: Vec<&str> = topology.speaker_layout.speaker_names();
+    assert_eq!(names, ["C", "FL", "FR", "SL", "SR", "BL", "BR", "LFE"]);
+    assert_eq!(
+        r.brir.bus_emitters(),
+        &[
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+            // The LFE, then the stage's 4 unused channels: direct buses.
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        "one bus per emitter, in the set's order"
+    );
+    assert!(!r.control.render_layout_outdated());
+    assert_eq!(
+        r.control.editable_layout(),
+        editable,
+        "the editable layout is never replaced"
+    );
+    assert!(
+        e_r > 1.5 * e_l,
+        "a hard-right object favours the right ear through the set: L {e_l:.4} R {e_r:.4}"
+    );
+
+    // Another source: the editable layout renders again.
+    r.control.live.write().binaural.hrir_source = crate::binaural::HrirSource::Synthetic;
+    render_noise_object(&mut r, 2);
+    let topology = r.control.active_topology();
+    assert!(!topology.brir_layout);
+    assert_eq!(topology.speaker_layout, editable);
+
+    // The set again, then the speakers: the physical layout, whatever the
+    // headphone source.
+    r.control.live.write().binaural.hrir_source =
+        crate::binaural::HrirSource::Brir("synthetic-7.1.sofa".into());
+    render_noise_object(&mut r, 2);
+    assert!(r.control.active_topology().brir_layout);
+    r.control.live.write().binaural.output_mode = crate::live_params::OutputMode::SpeakerArray;
+    assert!(r.control.render_layout_outdated());
+    let pcm = vec![0.0f32; 40];
+    r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+    let topology = r.control.active_topology();
+    assert!(!topology.brir_layout);
+    assert_eq!(topology.speaker_layout, editable);
+}
+
+/// The editable layout's per-speaker rows (gain, mute, delay) belong to its
+/// speakers: on a BRIR set's loudspeakers none applies — every row muted,
+/// the set still sounds — while the HRTF virtual room still honours them.
+#[test]
+fn the_editable_layouts_speaker_rows_do_not_apply_to_a_brir_set() {
+    let mute_every_row = |r: &SpatialRenderer| {
+        {
+            let mut live = r.control.live.write();
+            for idx in 0..12 {
+                live.speakers.entry(idx).or_default().muted = true;
+            }
+        }
+        r.control.mark_speaker_params_dirty();
+    };
+
+    let mut r = brir_layout_test_renderer(true);
+    mute_every_row(&r);
+    let (e_l, e_r) = render_noise_object(&mut r, 60);
+    assert!(r.control.active_topology().brir_layout);
+    assert!(
+        e_l + e_r > 0.0,
+        "the set's loudspeakers ignore the editable layout's mutes"
+    );
+
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+    r.control.live.write().binaural.output_mode = crate::live_params::OutputMode::Binaural;
+    r.control.live.write().binaural.mode = crate::live_params::BinauralMode::Cascaded;
+    mute_every_row(&r);
+    let (e_l, e_r) = render_noise_object(&mut r, 60);
+    assert_eq!(
+        e_l + e_r,
+        0.0,
+        "the HRTF virtual room is the editable layout, rows included"
+    );
+}
+
+/// Bands built for a BRIR set are headphone-only: on a switch to the
+/// speakers, until the speaker layout's bands are installed, the speaker
+/// path is silent rather than sending the set's buses to the wrong outputs.
+#[test]
+fn the_speaker_path_is_silent_while_a_brir_sets_bands_are_installed() {
+    let mut r = brir_layout_test_renderer(false);
+    let plan = r.control.prepare_topology_rebuild().expect("plan");
+    assert!(plan.brir_layout);
+    let topology = plan.build_topology().unwrap();
+    r.control.publish_topology(topology);
+    r.prepare_speaker_stage().unwrap();
+    assert!(
+        r.speaker_stage
+            .installed_topology()
+            .is_some_and(|t| t.brir_layout)
+    );
+
+    r.control.live.write().binaural.output_mode = crate::live_params::OutputMode::SpeakerArray;
+    let pcm = vec![0.5f32; 40];
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(40),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([1.0, 0.0, 0.0]),
+        sample_pos: Some(0),
+    }];
+    let out = r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
+    assert!(!out.samples.is_empty());
+    assert!(
+        out.samples.iter().all(|&s| s == 0.0),
+        "no BRIR bus reaches a physical speaker"
+    );
+}
+
+/// A set whose loudspeakers (with the LFE) outnumber the channels the
+/// renderer was opened with cannot replace the layout: it is reported, and
+/// the render stays on the editable layout (the nearest-emitter mapping).
+#[test]
+fn a_brir_set_wider_than_the_renderer_keeps_the_editable_layout() {
+    use crate::binaural::brir_stage::test_support::synth_set;
+
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+    r.set_synchronous_stage_builds(true);
+    let path = "synthetic-wide.sofa";
+    let opts = {
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        live.binaural.hrir_source = crate::binaural::HrirSource::Brir(path.into());
+        cascade::brir_load_options(&live.binaural)
+    };
+    // 12 emitters + the LFE: one more than the 7.1.4 renderer's 12 channels.
+    let azimuths: Vec<f32> = (0..12).map(|i| i as f32 * 30.0).collect();
+    r.brir
+        .install_set_as(path, opts, synth_set(&azimuths, &[0.0], 400), 12);
+    let error = r.control.brir_layout().expect_err("too wide");
+    assert!(error.contains("13 virtual speakers"), "{error}");
+    assert!(!r.control.render_layout_outdated());
+    render_noise_object(&mut r, 2);
+    assert!(!r.control.active_topology().brir_layout);
+}
+
+/// A set landing makes the next rebuild another layout, whatever asked for
+/// it: an evaluation-only one (which does not bump the geometry) must not
+/// reuse the editable layout's gain model for the set's loudspeakers.
+#[test]
+fn a_rebuild_onto_a_brir_set_never_reuses_the_editable_layouts_model() {
+    let r = brir_layout_test_renderer(false);
+    let current = r.control.active_topology();
+    assert!(!current.brir_layout);
+    let plan = r.control.prepare_topology_rebuild().expect("plan");
+    assert!(plan.brir_layout);
+    let topology = plan
+        .build_topology_reusing(Some(&current))
+        .expect("the set's layout gets a gain model of its own");
+    assert!(topology.brir_layout);
+    assert_eq!(topology.num_speakers, 8);
+}
+
+/// A real-time host with no OSC listener still moves onto a set's
+/// loudspeakers: the renderer's own follower rebuilds the topology off the
+/// render thread. While a host claims the rebuilds, it stands down.
+#[test]
+fn a_real_time_host_without_osc_moves_onto_the_brir_set() {
+    let render_until =
+        |r: &mut SpatialRenderer, secs: f32, done: &dyn Fn(&SpatialRenderer) -> bool| {
+            let pcm = vec![0.0f32; 40];
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f32(secs);
+            while std::time::Instant::now() < deadline {
+                r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+                if done(r) {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            false
+        };
+
+    let mut r = brir_layout_test_renderer(false);
+    assert!(
+        render_until(&mut r, 5.0, &|r| r.control.active_topology().brir_layout),
+        "the follower publishes the set's layout"
+    );
+    assert!(!r.control.render_layout_outdated());
+
+    let mut r = brir_layout_test_renderer(false);
+    r.control.set_relayout_by_host(true);
+    assert!(
+        !render_until(&mut r, 0.5, &|r| r.control.active_topology().brir_layout),
+        "a host that claims the rebuilds is left to do them"
+    );
+    assert!(r.control.render_layout_outdated());
+}
+
 /// Synchronous stage builds (offline renders): a source change is live on the
 /// frame that requests it, and the setting survives the stage rebuild a
 /// sample-rate change does. Without it the same frame still renders the old

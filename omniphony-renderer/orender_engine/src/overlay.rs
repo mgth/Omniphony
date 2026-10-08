@@ -638,6 +638,11 @@ fn save_prefs() {
         mode,
         s.cfg.teleport_sq.sqrt(),
     );
+    // On a first start nothing has created the config directory yet (only
+    // Save does), and the toggles would be lost until it exists.
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let _ = std::fs::write(&path, body);
 }
 

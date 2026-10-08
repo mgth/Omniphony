@@ -1,27 +1,63 @@
+use crate::bridge_set::BridgeSet;
 use crate::decode_step::LogLevelSync;
-use abi_stable::library::{RootModule, lib_header_from_path};
+use abi_stable::library::{LibHeader, RootModule, lib_header_from_path};
 use abi_stable::sabi_types::VersionNumber;
 use abi_stable::std_types::RStr;
 use anyhow::{Context, Result, bail};
 use bridge_api::{
-    BridgeHostLogSink, BridgeLibRef, FormatBridgeBox, RLogLevel, RVbapCartesianDefaults,
-    RVbapTableMode,
+    BridgeHostLogSink, BridgeLibRef, RLogLevel, RVbapCartesianDefaults, RVbapTableMode,
 };
+use omniphony_osc_contract as osc_contract;
 use renderer::live_params::RendererControl;
 use renderer::placement::PlacementMode;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// Loaded bridge library + live bridge instance.
-///
-/// Both fields must be kept alive together: `lib` holds the reference-count
-/// that prevents the `.so` from being unloaded while `bridge` is in use.
+/// The decoder bridge plugins a host loaded, in load order: what it opens
+/// bridge instances from ([`open_bridges`]) and declares source families from.
+/// The libraries stay resident for the life of the process (abi_stable never
+/// unloads one).
+#[derive(Clone)]
+pub struct BridgeLibs {
+    libs: Vec<BridgeLibRef>,
+}
+
+impl BridgeLibs {
+    /// One plugin.
+    pub fn single(lib: BridgeLibRef) -> Self {
+        Self { libs: vec![lib] }
+    }
+
+    /// Plugins already loaded, in load order.
+    pub fn new(libs: Vec<BridgeLibRef>) -> Result<Self> {
+        if libs.is_empty() {
+            bail!("no decoder bridge loaded");
+        }
+        Ok(Self { libs })
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &BridgeLibRef> {
+        self.libs.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.libs.len()
+    }
+
+    /// Never true: [`new`](Self::new) refuses an empty list.
+    pub fn is_empty(&self) -> bool {
+        self.libs.is_empty()
+    }
+}
+
+/// Loaded bridge plugins + the live set of instances the host decodes with.
 pub struct LoadedBridge {
-    /// Keeps the `.so` resident in memory.
-    pub lib: BridgeLibRef,
-    /// The live bridge instance (stateful, called per chunk).
-    pub bridge: FormatBridgeBox,
+    /// The plugins, for more instances and their source families.
+    pub libs: BridgeLibs,
+    /// The live bridges (stateful, called per chunk), routed per stream.
+    pub bridge: BridgeSet,
     /// The log level `bridge` was opened with, for the host that drives it to
-    /// keep in line with its own ([`open_bridge`]).
+    /// keep in line with its own ([`open_bridges`]).
     pub log_level: LogLevelSync,
 }
 
@@ -29,14 +65,16 @@ impl LoadedBridge {
     /// Load a bridge plugin from `path` and create one instance.
     ///
     /// Format-specific options (e.g. presentation index) are applied afterwards via
-    /// [`FormatBridgeBox::configure`] before the first [`FormatBridgeBox::push_packet`].
+    /// [`BridgeSet::configure`] before the first [`BridgeSet::push_packet`].
     pub fn load_with_params(path: &Path) -> Result<Self> {
-        check_bridge_api_version(path)?;
-        let lib = BridgeLibRef::load_from_file(path)
-            .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
-        let (bridge, log_level) = open_bridge(&lib);
+        Self::open(BridgeLibs::single(load_bridge_library(path)?))
+    }
+
+    /// One instance of every plugin in `libs`, routed per stream.
+    pub fn open(libs: BridgeLibs) -> Result<Self> {
+        let (bridge, log_level) = open_bridges(&libs)?;
         Ok(Self {
-            lib,
+            libs,
             bridge,
             log_level,
         })
@@ -52,7 +90,7 @@ impl LoadedBridge {
 
     /// Set a bridge configuration option. Must be called before the first packet.
     pub fn configure(&mut self, key: &str, value: &str) -> bool {
-        self.bridge.configure(key.into(), value.into())
+        self.bridge.configure(key, value)
     }
 
     /// Default Cartesian VBAP grid dimensions suggested by the bridge.
@@ -66,6 +104,26 @@ impl LoadedBridge {
     }
 }
 
+/// Open the bridge plugin at `path` and return its root module.
+///
+/// Not `BridgeLibRef::load_from_file`: abi_stable's `RootModule::load_from`
+/// keeps the first root module it loads in a process-wide static and returns
+/// it for every later path, so a second, different bridge (a config reloaded
+/// with another `bridge_path`, another engine in the same player) would
+/// silently be the first one again. Initialising the root module from the
+/// library's own header runs the same version and layout checks without that
+/// cache: each library keeps its root module in its header, so opening one
+/// file twice still yields one module, and two files yield two.
+pub fn load_bridge_library(path: &Path) -> Result<BridgeLibRef> {
+    let header = lib_header_from_path(path)
+        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
+    check_bridge_api_version(path, header)?;
+    header
+        .init_root_module::<BridgeLibRef>()
+        .and_then(RootModule::initialization)
+        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))
+}
+
 /// Refuse a plugin built against another `bridge_api` minor than this host,
 /// with a message naming both versions (`BRIDGE_API.md`, "Versioning").
 ///
@@ -74,9 +132,7 @@ impl LoadedBridge {
 /// plugin of another minor fails with a layout error ("too many fields",
 /// "package version") that says nothing a user can act on. So the version
 /// the plugin declares in its header is read first.
-fn check_bridge_api_version(path: &Path) -> Result<()> {
-    let header = lib_header_from_path(path)
-        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
+fn check_bridge_api_version(path: &Path, header: &LibHeader) -> Result<()> {
     let host = host_bridge_api_version();
     let bridge = header.version_strings().parsed().with_context(|| {
         format!(
@@ -130,28 +186,25 @@ fn bridge_api_compatible(host: VersionNumber, bridge: VersionNumber) -> Result<(
     ))
 }
 
-/// One more bridge instance from an already-loaded plugin, its logs routed to
-/// the host's and filtered at the host's level: how every host opens one, from
-/// a path ([`LoadedBridge`]) or from the plugin a session already holds (the
-/// PipeWire sink's own bridge). Later level changes reach it through the
-/// [`LogLevelSync`] returned with it, which the host keeps with the bridge.
-pub fn open_bridge(lib: &BridgeLibRef) -> (FormatBridgeBox, LogLevelSync) {
-    install_bridge_host_log_sink(lib);
-    let new_bridge = lib.new_bridge();
-    // strict mode removed from the host; bridges ignore the flag. The ABI
-    // parameter is kept for compatibility and always passed as `false`.
-    let mut bridge = new_bridge(false);
+/// One instance of every plugin in `libs`, as a [`BridgeSet`], their logs
+/// routed to the host's and filtered at the host's level: how every host
+/// opens its bridges, from paths ([`LoadedBridge`]) or from the plugins a
+/// session already holds (the PipeWire sink's own set). Later level changes
+/// reach them through the [`LogLevelSync`] returned with it, which the host
+/// keeps with the set.
+pub fn open_bridges(libs: &BridgeLibs) -> Result<(BridgeSet, LogLevelSync)> {
+    let mut bridge = BridgeSet::open(libs)?;
     let log_level = LogLevelSync::open(live_log::current_runtime_level(), &mut bridge);
-    (bridge, log_level)
+    Ok((bridge, log_level))
 }
 
 /// Ask `bridge` to format and forward only the diagnostics at `level` or
 /// below, so the ones the host would drop cost it nothing. `false` from a
 /// bridge that predates the `log_level` key: it keeps its own level
 /// (`HARLETTY_LOG`, info by default), which is no fault worth a warning.
-pub fn configure_log_level(bridge: &mut FormatBridgeBox, level: log::LevelFilter) -> bool {
+pub fn configure_log_level(bridge: &mut BridgeSet, level: log::LevelFilter) -> bool {
     let name = live_log::level_name(level);
-    let accepted = bridge.configure("log_level".into(), name.into());
+    let accepted = bridge.configure("log_level", name);
     if !accepted {
         log::debug!("bridge does not take log_level {name}; it keeps its own level");
     }
@@ -161,45 +214,38 @@ pub fn configure_log_level(bridge: &mut FormatBridgeBox, level: log::LevelFilter
 /// Ask `bridge` for `presentation` (before its first packet); an error naming
 /// the value when the bridge refuses it. Whether that is fatal is the host's
 /// call: the CLI stops, a player keeps the bridge's default.
-pub fn configure_presentation(bridge: &mut FormatBridgeBox, presentation: &str) -> Result<()> {
-    if !bridge.configure("presentation".into(), presentation.into()) {
+pub fn configure_presentation(bridge: &mut BridgeSet, presentation: &str) -> Result<()> {
+    if !bridge.configure("presentation", presentation) {
         bail!("Bridge rejected presentation value '{presentation}'");
     }
     Ok(())
 }
 
-/// Put the plugin's source families (`BridgeLib::source_families`) in the
+/// Put the plugins' source families (`BridgeLib::source_families`) in the
 /// renderer's family table, so they can be configured — and the config's
-/// settings for them apply — before a stream of theirs plays. Called once
-/// per loaded plugin, after the renderer is built (seeding the config keeps
-/// the table, so the order does not matter).
-pub fn declare_source_families(lib: &BridgeLibRef, control: &RendererControl) {
-    let Some(source_families) = lib.source_families() else {
-        return;
-    };
-    let families = source_families();
+/// settings for them apply — before a stream of theirs plays. Called once,
+/// after the renderer is built (seeding the config keeps the table, so the
+/// order does not matter). A family two plugins declare is the first one's.
+pub fn declare_source_families(libs: &BridgeLibs, control: &RendererControl) {
+    let mut declared: Vec<String> = Vec::new();
     let mut live = control.live.write();
-    for family in families.iter() {
-        let mode =
-            PlacementMode::parse(family.default_mode.as_str()).unwrap_or(PlacementMode::Room);
-        live.placement
-            .declare(family.name.as_str(), family.label.as_str(), mode);
+    for lib in libs.iter() {
+        for family in lib.source_families()().iter() {
+            if declared.iter().any(|name| name == family.name.as_str()) {
+                continue;
+            }
+            let mode =
+                PlacementMode::parse(family.default_mode.as_str()).unwrap_or(PlacementMode::Room);
+            live.placement
+                .declare(family.name.as_str(), family.label.as_str(), mode);
+            declared.push(family.name.as_str().to_owned());
+        }
     }
-    log::info!(
-        "Bridge source families: {}",
-        families
-            .iter()
-            .map(|family| family.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    log::info!("Bridge source families: {}", declared.join(", "));
 }
 
 pub fn install_bridge_host_log_sink(lib: &BridgeLibRef) {
-    let Some(set_host_log_sink) = lib.set_host_log_sink() else {
-        return;
-    };
-    set_host_log_sink(forward_bridge_log_to_host as BridgeHostLogSink as usize);
+    lib.set_host_log_sink()(forward_bridge_log_to_host as BridgeHostLogSink as usize);
 }
 
 extern "C" fn forward_bridge_log_to_host(level: RLogLevel, target: RStr<'_>, message: RStr<'_>) {
@@ -217,7 +263,9 @@ extern "C" fn forward_bridge_log_to_host(level: RLogLevel, target: RStr<'_>, mes
 ///
 /// Search order:
 /// 1. `--bridge-path` / config-provided explicit file path
-/// 2. Any file matching `*_bridge.so` / `.dll` / `.dylib` next to the executable
+/// 2. Any file matching `*_bridge.so` / `.dll` / `.dylib` in the
+///    auto-discovery directories (see [`auto_discovery_dirs`]), the host
+///    executable's directory first
 ///
 /// The exe-relative fallback applies to *any* host: the `orender` CLI, but
 /// also library hosts like mpv loading `liborender.dll`/`.so`. On Windows in
@@ -251,8 +299,14 @@ pub fn resolve_bridge_path(explicit: Option<&Path>) -> Result<PathBuf> {
 ///
 /// 1. `explicit` set → must resolve to a file, else error.
 /// 2. else `config` (`render.bridge_path`) set → must resolve to a file, else error.
-/// 3. else → [`find_bridge_next_to_exe`], which scans the host executable's
-///    directory, then `$ORENDER_BRIDGE_DIR`, then the system plugin directory.
+/// 3. else → [`find_bridge_next_to_exe`]: the exact file in
+///    `$ORENDER_BRIDGE_FILE` if it names one, else a scan of the host
+///    executable's directory, then `$ORENDER_BRIDGE_DIR`, then the per-user
+///    engine directory, then the system plugin directory
+///    ([`auto_discovery_dirs`]).
+///    Finding none there is not a failure of the engine: the error then
+///    contains [`osc_contract::BRIDGE_ERROR_NONE_FOUND`], which a client reads
+///    as "running without a decoder" rather than "a bridge failed to load".
 pub fn resolve_bridge(explicit: Option<&Path>, config: Option<&Path>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         if let Some(found) = resolve_requested(path) {
@@ -279,10 +333,20 @@ pub fn resolve_bridge(explicit: Option<&Path>, config: Option<&Path>) -> Result<
             searched_locations_hint(path),
         );
     }
-    find_bridge_next_to_exe().context(
-        "no decoder bridge requested (no explicit path, no render.bridge_path) and \
-         none found by auto-discovery",
-    )
+    discover(&|key| std::env::var_os(key), &auto_discovery_dirs())
+}
+
+/// Auto-discovery ([`auto_discover`]) over `dirs`, its failure worded as
+/// "nothing found" with the contract's
+/// [`osc_contract::BRIDGE_ERROR_NONE_FOUND`] marker in front.
+fn discover(env: &dyn Fn(&str) -> Option<OsString>, dirs: &[PathBuf]) -> Result<PathBuf> {
+    auto_discover(env, dirs).with_context(|| {
+        format!(
+            "{}: none requested (no explicit path, no render.bridge_path) and none \
+             in the auto-discovery directories",
+            osc_contract::BRIDGE_ERROR_NONE_FOUND
+        )
+    })
 }
 
 /// Resolve a *requested* bridge path (CLI `--bridge-path`, FFI param, or
@@ -354,37 +418,117 @@ const SYSTEM_BRIDGE_DIR_DEFAULT: Option<&str> = None;
 ///
 /// 1. next to the host executable — the "drop the bundle in one folder" install,
 ///    and the dev/portable layout. Kept first so a build tree always wins over
-///    anything installed system-wide.
+///    anything installed elsewhere. For mpv-omniphony this is the player's own
+///    folder, where its install pages put the bridge.
 /// 2. `$ORENDER_BRIDGE_DIR` at runtime — lets a test or an unpackaged install
 ///    point somewhere else without touching the config.
-/// 3. the system plugin directory (see [`SYSTEM_BRIDGE_DIR`]).
+/// 3. the per-user engine directory ([`user_engine_dir`]): where Studio
+///    deploys the engine library and mpv-omniphony's loader looks for it
+///    first, so the one place every host on the machine shares. A bridge put
+///    there serves the player and Studio's standby renderer alike.
+/// 4. the system plugin directory (see [`SYSTEM_BRIDGE_DIR`]): where the
+///    distribution packages (the AUR's `harletty-bridge`) install it.
 ///
 /// This mirrors the candidate chain the liborender loader already uses on the
-/// host side; the bridge was the one half that only ever looked next to the exe.
+/// host side. Resolved once when an engine starts, never on the audio path.
 fn auto_discovery_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            dirs.push(dir.to_path_buf());
+    discovery_dirs(current_exe_dir(), &|key| std::env::var_os(key))
+}
+
+fn current_exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+}
+
+/// The runtime variable naming one exact bridge file for auto-discovery.
+pub const BRIDGE_FILE_ENV: &str = "ORENDER_BRIDGE_FILE";
+
+/// Auto-discovery: the file `$ORENDER_BRIDGE_FILE` names, when it is one,
+/// then the first `*_bridge.*` of `dirs` ([`auto_discovery_dirs`] outside tests).
+///
+/// The variable is how a host that knows *which* bridge it wants hands it
+/// over without making it a requested path: Studio passes the bridge
+/// mpv-omniphony is configured with (`ad-orender-bridge-path` in
+/// `mpv.conf`) to the renderer it spawns. A folder would not do: the scan
+/// takes the first bridge of a folder in name order, which need not be the
+/// named one when the folder holds several. It sits at auto-discovery's
+/// level, below `--bridge-path` and `render.bridge_path`, and is checked
+/// before the folders because it names one file. A value naming no file is
+/// logged and skipped, as a missing folder is.
+fn auto_discover(env: &dyn Fn(&str) -> Option<OsString>, dirs: &[PathBuf]) -> Result<PathBuf> {
+    if let Some(file) = env(BRIDGE_FILE_ENV).filter(|value| !value.is_empty()) {
+        let file = PathBuf::from(file);
+        if file.is_file() {
+            return Ok(file);
         }
+        log::warn!(
+            "${BRIDGE_FILE_ENV} '{}' is not a file; searching the auto-discovery folders",
+            file.display()
+        );
     }
-    if let Some(dir) = std::env::var_os("ORENDER_BRIDGE_DIR") {
+    find_bridge_in_dirs(dirs)
+}
+
+/// [`auto_discovery_dirs`] with the executable's directory and the
+/// environment given, so the order is testable without touching either.
+/// A directory listed twice is kept at its first, higher-priority place.
+fn discovery_dirs(
+    exe_dir: Option<PathBuf>,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Vec<PathBuf> {
+    let mut dirs = Vec::with_capacity(4);
+    dirs.extend(exe_dir);
+    if let Some(dir) = env("ORENDER_BRIDGE_DIR").filter(|dir| !dir.is_empty()) {
         dirs.push(PathBuf::from(dir));
     }
+    dirs.extend(user_engine_dir(env));
     if let Some(dir) = SYSTEM_BRIDGE_DIR.or(SYSTEM_BRIDGE_DIR_DEFAULT) {
         dirs.push(PathBuf::from(dir));
     }
-    dirs.dedup();
-    dirs
+    let mut unique: Vec<PathBuf> = Vec::with_capacity(dirs.len());
+    for dir in dirs {
+        if !unique.contains(&dir) {
+            unique.push(dir);
+        }
+    }
+    unique
 }
 
-/// Look for a `*_bridge.{so,dll,dylib}` in the auto-discovery directories.
+/// `<local data>/omniphony/lib`, resolved exactly as mpv-omniphony's loader
+/// (`common/orender_dl.c`) and Studio's engine deploy resolve it:
+///
+/// - Linux and other Unix: `$XDG_DATA_HOME/omniphony/lib` (any non-empty
+///   value), else `~/.local/share/omniphony/lib`
+/// - macOS: `~/Library/Application Support/omniphony/lib`
+/// - Windows: `%LOCALAPPDATA%\omniphony\lib`
+///
+/// `None` when the variable it rests on is unset.
+fn user_engine_dir(env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let set = |key: &str| {
+        env(key)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    let data = if cfg!(target_os = "windows") {
+        set("LOCALAPPDATA")
+    } else if cfg!(target_os = "macos") {
+        set("HOME").map(|home| home.join("Library").join("Application Support"))
+    } else {
+        set("XDG_DATA_HOME").or_else(|| set("HOME").map(|home| home.join(".local").join("share")))
+    }?;
+    Some(data.join("omniphony").join("lib"))
+}
+
+/// Look for a bridge the way auto-discovery does ([`auto_discover`]): the
+/// file `$ORENDER_BRIDGE_FILE` names, else a `*_bridge.{so,dll,dylib}` in the
+/// auto-discovery directories.
 /// [`resolve_bridge`] (the CLI's and [`crate::engine::Engine::from_paths`]'s
 /// resolution) falls back to it only when no path was requested at all: a
 /// requested path that does not resolve to a file is an error, never a cue
 /// to load some other bridge.
 pub fn find_bridge_next_to_exe() -> Result<PathBuf> {
-    find_bridge_in_dirs(&auto_discovery_dirs())
+    auto_discover(&|key| std::env::var_os(key), &auto_discovery_dirs())
 }
 
 /// First `*_bridge.*` found scanning `dirs` in order. Split out from
@@ -624,7 +768,8 @@ mod tests {
     }
 
     /// The chain itself: exe dir first, then the runtime override, then the
-    /// system dir. Ordering is the whole contract, so it is pinned here.
+    /// per-user engine dir, then the system dir. Ordering is the whole
+    /// contract, so it is pinned here.
     #[test]
     fn auto_discovery_chain_is_ordered() {
         let dirs = auto_discovery_dirs();
@@ -641,5 +786,197 @@ mod tests {
                 "the system plugin dir must be the last resort"
             );
         }
+    }
+
+    /// The environment a test hands [`discovery_dirs`]: the variables every
+    /// platform's per-user engine directory rests on, pointed at `root`.
+    fn fake_env(root: &Path, override_dir: Option<&Path>) -> impl Fn(&str) -> Option<OsString> {
+        let root = root.to_path_buf();
+        let override_dir = override_dir.map(Path::to_path_buf);
+        move |key| match key {
+            "ORENDER_BRIDGE_DIR" => override_dir.clone().map(PathBuf::into_os_string),
+            "HOME" => Some(root.join("home").into_os_string()),
+            "XDG_DATA_HOME" => Some(root.join("data").into_os_string()),
+            "LOCALAPPDATA" => Some(root.join("local").into_os_string()),
+            _ => None,
+        }
+    }
+
+    /// Where mpv-omniphony's loader and Studio's deploy put the engine library.
+    fn expected_user_engine_dir(root: &Path) -> PathBuf {
+        let data = if cfg!(target_os = "windows") {
+            root.join("local")
+        } else if cfg!(target_os = "macos") {
+            root.join("home")
+                .join("Library")
+                .join("Application Support")
+        } else {
+            root.join("data")
+        };
+        data.join("omniphony").join("lib")
+    }
+
+    /// The full order with every candidate present: the host's folder, the
+    /// runtime override, the per-user engine dir, the system dir.
+    #[test]
+    fn the_per_user_engine_dir_comes_after_the_override_and_before_the_system_dir() {
+        let root = std::env::temp_dir().join(format!("orender_chain_{}", std::process::id()));
+        let exe = root.join("exe");
+        let over = root.join("override");
+        let dirs = discovery_dirs(Some(exe.clone()), &fake_env(&root, Some(&over)));
+        let mut expected = vec![exe, over, expected_user_engine_dir(&root)];
+        expected.extend(
+            SYSTEM_BRIDGE_DIR
+                .or(SYSTEM_BRIDGE_DIR_DEFAULT)
+                .map(PathBuf::from),
+        );
+        assert_eq!(dirs, expected);
+    }
+
+    /// Without `XDG_DATA_HOME` (or with it empty), the Linux engine dir is the
+    /// XDG default under `$HOME`, as mpv's loader resolves it; with no `HOME`
+    /// either there is no per-user candidate at all.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn the_linux_engine_dir_falls_back_to_the_xdg_default() {
+        let env = |key: &str| match key {
+            "HOME" => Some(OsString::from("/home/you")),
+            "XDG_DATA_HOME" => Some(OsString::new()),
+            _ => None,
+        };
+        assert_eq!(
+            user_engine_dir(&env),
+            Some(PathBuf::from("/home/you/.local/share/omniphony/lib"))
+        );
+        assert_eq!(user_engine_dir(&|_: &str| None), None);
+    }
+
+    /// A directory that appears twice (the override pointing at the host's own
+    /// folder) is searched once, at its first place; an empty override is no
+    /// candidate.
+    #[test]
+    fn a_repeated_or_empty_candidate_is_dropped() {
+        let root = std::env::temp_dir().join(format!("orender_dup_{}", std::process::id()));
+        let exe = root.join("exe");
+        let dirs = discovery_dirs(Some(exe.clone()), &fake_env(&root, Some(&exe)));
+        assert_eq!(dirs.iter().filter(|d| **d == exe).count(), 1);
+        assert_eq!(dirs.first(), Some(&exe));
+        let empty = |key: &str| (key == "ORENDER_BRIDGE_DIR").then(OsString::new);
+        assert!(!discovery_dirs(None, &empty).contains(&PathBuf::new()));
+    }
+
+    /// The player's case: a bridge only in the per-user engine dir (put there
+    /// next to the engine mpv-omniphony loads) is found by a renderer whose own
+    /// folder has none, such as Studio's standby `orender`.
+    #[test]
+    fn a_bridge_in_the_per_user_engine_dir_is_found() {
+        let root = std::env::temp_dir().join(format!("orender_user_{}", std::process::id()));
+        let exe = root.join("studio");
+        fs::create_dir_all(&exe).unwrap();
+        let engine_dir = expected_user_engine_dir(&root);
+        fs::create_dir_all(&engine_dir).unwrap();
+        fs::write(engine_dir.join("libharletty_bridge.so"), b"x").unwrap();
+        let dirs = discovery_dirs(Some(exe), &fake_env(&root, None));
+        let found = find_bridge_in_dirs(&dirs);
+        fs::remove_dir_all(&root).ok();
+        assert_eq!(found.unwrap(), engine_dir.join("libharletty_bridge.so"));
+    }
+
+    /// Nothing requested and nothing found: the error carries the contract's
+    /// marker, so Studio shows "no decoder" rather than a load failure.
+    /// A requested path that is missing never does.
+    #[test]
+    fn only_an_empty_search_carries_the_none_found_marker() {
+        let none = discover(
+            &|_: &str| None,
+            &[PathBuf::from("/nonexistent/orender/plugins")],
+        );
+        let text = format!("{:#}", none.unwrap_err());
+        assert!(
+            text.starts_with(osc_contract::BRIDGE_ERROR_NONE_FOUND),
+            "{text}"
+        );
+        assert!(
+            text.contains("/nonexistent/orender/plugins"),
+            "the searched directories still follow: {text}"
+        );
+        let missing = Path::new("/nonexistent/requested_bridge.so");
+        let requested = format!("{:#}", resolve_bridge(Some(missing), None).unwrap_err());
+        assert!(
+            !requested.contains(osc_contract::BRIDGE_ERROR_NONE_FOUND),
+            "{requested}"
+        );
+        let configured = format!("{:#}", resolve_bridge(None, Some(missing)).unwrap_err());
+        assert!(
+            !configured.contains(osc_contract::BRIDGE_ERROR_NONE_FOUND),
+            "{configured}"
+        );
+    }
+
+    /// The variable names one file: with two bridges in its folder, that
+    /// file is the one loaded, where a scan of the folder would take the
+    /// first by name.
+    #[test]
+    fn the_bridge_file_variable_selects_that_exact_file() {
+        let dir = dir_with_bridge("twobridges", "liba_bridge.so");
+        fs::write(dir.join("libz_bridge.so"), b"x").unwrap();
+        let named = dir.join("libz_bridge.so");
+        let env =
+            |key: &str| (key == "ORENDER_BRIDGE_FILE").then(|| named.clone().into_os_string());
+        let dirs = [dir.clone()];
+        let by_file = auto_discover(&env, &dirs);
+        let by_dir = auto_discover(&|_: &str| None, &dirs);
+        fs::remove_dir_all(&dir).ok();
+        assert_eq!(by_file.unwrap(), named);
+        assert_eq!(
+            by_dir.unwrap(),
+            dir.join("liba_bridge.so"),
+            "the scan's own pick"
+        );
+    }
+
+    /// The named file comes before the folders, the host's own included.
+    #[test]
+    fn the_bridge_file_comes_before_the_hosts_folder() {
+        let exe = dir_with_bridge("exewithbridge", "libexe_bridge.so");
+        let other = dir_with_bridge("namedbridge", "libnamed_bridge.so");
+        let named = other.join("libnamed_bridge.so");
+        let env =
+            |key: &str| (key == "ORENDER_BRIDGE_FILE").then(|| named.clone().into_os_string());
+        let found = auto_discover(&env, &discovery_dirs(Some(exe.clone()), &env));
+        fs::remove_dir_all(&exe).ok();
+        fs::remove_dir_all(&other).ok();
+        assert_eq!(found.unwrap(), named);
+    }
+
+    /// A value naming no file is skipped like a missing folder: the folders
+    /// are still searched, and finding nothing there is still "none found".
+    #[test]
+    fn a_bridge_file_variable_naming_nothing_falls_back_to_the_folders() {
+        let dir = dir_with_bridge("fallback", "libfb_bridge.so");
+        let gone = |key: &str| {
+            (key == "ORENDER_BRIDGE_FILE").then(|| OsString::from("/nonexistent/libgone_bridge.so"))
+        };
+        let found = auto_discover(&gone, std::slice::from_ref(&dir));
+        fs::remove_dir_all(&dir).ok();
+        assert_eq!(found.unwrap(), dir.join("libfb_bridge.so"));
+        let empty = [PathBuf::from("/nonexistent/orender/plugins")];
+        let text = format!("{:#}", discover(&gone, &empty).unwrap_err());
+        assert!(
+            text.starts_with(osc_contract::BRIDGE_ERROR_NONE_FOUND),
+            "{text}"
+        );
+    }
+
+    /// A requested path still wins over the variable: it only takes part in
+    /// auto-discovery.
+    #[test]
+    fn a_requested_path_wins_over_the_bridge_file_variable() {
+        let requested = tmp_bridge("requested_over_file");
+        // resolve_bridge reads the real environment; the requested path
+        // returns before it is consulted, whatever the variable holds.
+        assert_eq!(resolve_bridge(Some(&requested), None).unwrap(), requested);
+        assert_eq!(resolve_bridge(None, Some(&requested)).unwrap(), requested);
+        fs::remove_file(&requested).ok();
     }
 }

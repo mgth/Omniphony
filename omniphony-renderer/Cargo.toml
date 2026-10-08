@@ -1,5 +1,5 @@
 [workspace]
-members = ["renderer", "audio_input", "audio_output", "sys", "diag", "live_log", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony_geometry"]
+members = ["renderer", "audio_input", "audio_output", "audio_rt", "audio_sync", "sys", "diag", "live_log", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony_geometry"]
 resolver = "2"
 
 # Metadata shared by the members. A member opts in field by field
@@ -36,7 +36,9 @@ player = "mpv-v0.6.0"
 # a version requirement stays only on the crates with a line of their own.
 audio_input = { path = "audio_input" }
 audio_output = { path = "audio_output" }
-bridge_api = { version = "0.5.0", path = "bridge_api" }
+audio_rt = { path = "audio_rt" }
+audio_sync = { path = "audio_sync" }
+bridge_api = { version = "0.6.0", path = "bridge_api" }
 diag = { path = "diag" }
 dsp_fixtures = { path = "dsp_fixtures" }
 example_backend = { path = "example_backend" }
@@ -103,6 +105,8 @@ path = "src/main.rs"
 [dependencies]
 renderer.workspace = true
 audio_output.workspace = true
+audio_rt.workspace = true
+audio_sync.workspace = true
 audio_input.workspace = true
 sys.workspace = true
 diag.workspace = true
@@ -118,6 +122,10 @@ anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 log.workspace = true
 libc.workspace = true
+
+# The sync host's own-clock sink talks to PipeWire directly.
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire.workspace = true
 
 [dev-dependencies]
 # Not linked by the tests: depending on it makes `cargo test` build its cdylib,

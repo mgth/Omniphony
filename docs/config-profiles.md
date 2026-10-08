@@ -180,4 +180,4 @@ back with an `applying` guard, never trusted locally. `app_state.rs` mirrors
 `{activeProfile, profileNames}` (camelCase renames), fed from
 `/omniphony/state/profiles`. Create prompts for a name, then sends
 `create` + `switch`. All labels through i18n, 8-locale parity gated by
-`npm run i18n:check -- --strict`.
+`node omniphony-studio-egui/scripts/check-i18n.mjs --strict`.

@@ -1,7 +1,8 @@
 #![cfg(any(target_os = "windows", target_os = "macos"))]
-//! cpal-backed realtime output writer shared by the Windows (ASIO) and macOS
-//! (CoreAudio) backends. The two platforms differ only in which cpal host they
-//! open; the ring-buffer, local resampler and adaptive-rate servo are identical.
+//! cpal-backed realtime output writer shared by the Windows (ASIO, with a
+//! WASAPI fallback) and macOS (CoreAudio) backends. The platforms differ only
+//! in which cpal host they open; the ring-buffer, local resampler and
+//! adaptive-rate servo are identical.
 
 use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -13,6 +14,9 @@ use std::time::Duration;
 
 use crate::callback_core::{CallbackContext, CallbackShared, OutputCallbackCore};
 use crate::callback_log::CallbackLogDrain;
+use crate::host_choice::too_few_channels_message;
+#[cfg(target_os = "windows")]
+use crate::host_choice::{HostChoice, choose_host};
 use crate::output_telemetry::interleaved_samples_to_ms;
 use crate::{
     AdaptiveResamplingConfig, local_resampler_ratio_bounds,
@@ -29,13 +33,6 @@ const DEFAULT_TARGET_BUFFER_MS: u32 = 220;
 const MAX_BUFFER_MS: u32 = 250;
 /// Drift, in samples, the servo leaves alone on this backend.
 const SERVO_DEADBAND_SAMPLES: usize = 100;
-
-/// Human-readable label for the active cpal output backend, used in logs and
-/// error messages (referenced via inline `{BACKEND}` format args throughout).
-#[cfg(target_os = "windows")]
-const BACKEND: &str = "ASIO";
-#[cfg(target_os = "macos")]
-const BACKEND: &str = "CoreAudio";
 
 /// Largest device callback, in frames, the converting stream wrapper sizes
 /// its scratch for up front. A larger callback still works: the scratch
@@ -90,24 +87,93 @@ where
 /// The post-rendering output pacer (`use_output_pacing`) exists only on the
 /// PipeWire backend, where the bridge input thread drains it. Say so instead
 /// of silently ignoring the request.
-fn warn_if_output_pacing_requested(config: &AdaptiveResamplingConfig) {
+fn warn_if_output_pacing_requested(backend: &str, config: &AdaptiveResamplingConfig) {
     if config.use_output_pacing {
-        log::warn!("{BACKEND}: output pacing is only implemented on PipeWire; ignored here");
+        log::warn!("{backend}: output pacing is only implemented on PipeWire; ignored here");
     }
 }
 
-/// Open the cpal host that backs realtime output on this platform: the ASIO
-/// host on Windows, the default (CoreAudio) host on macOS.
-fn output_host() -> Result<cpal::Host> {
-    #[cfg(target_os = "windows")]
-    {
-        cpal::host_from_id(cpal::HostId::Asio)
-            .map_err(|e| anyhow!("{BACKEND} host not available: {:?}", e))
+/// The cpal host realtime output opened, and how logs, errors and Studio name
+/// it.
+struct OutputHost {
+    host: cpal::Host,
+    /// Short host name for logs and errors: `ASIO`, `WASAPI` or `CoreAudio`.
+    name: &'static str,
+    /// What Studio shows as the output host: the name, plus on Windows why
+    /// output is not on ASIO.
+    label: &'static str,
+    /// WASAPI shared mode: the Windows mixer fixes the channel count.
+    shared_mode: bool,
+}
+
+/// The output device names `host` lists, or `None` when it cannot list them.
+#[cfg(target_os = "windows")]
+fn output_device_names(host: &cpal::Host) -> Option<Vec<String>> {
+    match host.output_devices() {
+        Ok(devices) => Some(devices.filter_map(|d| d.name().ok()).collect()),
+        Err(e) => {
+            log::debug!("{:?} host cannot list output devices: {e}", host.id());
+            None
+        }
     }
-    #[cfg(target_os = "macos")]
-    {
-        Ok(cpal::default_host())
-    }
+}
+
+/// cpal's ASIO host, or `None` (logged) when it cannot be opened.
+#[cfg(target_os = "windows")]
+fn asio_host() -> Option<cpal::Host> {
+    cpal::host_from_id(cpal::HostId::Asio)
+        .map_err(|e| log::debug!("ASIO host not available: {e:?}"))
+        .ok()
+}
+
+#[cfg(target_os = "windows")]
+fn wasapi_host() -> Result<cpal::Host> {
+    cpal::host_from_id(cpal::HostId::Wasapi)
+        .map_err(|e| anyhow!("WASAPI host not available either: {e:?}"))
+}
+
+/// The ASIO host when it has an output device, else WASAPI in shared mode;
+/// see [`choose_host`]. `requested` is the configured device name: one only
+/// WASAPI lists selects WASAPI.
+#[cfg(target_os = "windows")]
+fn output_host(requested: Option<&str>) -> Result<OutputHost> {
+    let asio = asio_host();
+    let asio_devices = asio.as_ref().and_then(output_device_names);
+    let choice = choose_host(asio_devices.as_deref(), requested, || {
+        cpal::host_from_id(cpal::HostId::Wasapi)
+            .ok()
+            .as_ref()
+            .and_then(output_device_names)
+            .unwrap_or_default()
+    });
+    let host = match (choice, asio) {
+        (HostChoice::Asio, Some(host)) => host,
+        (HostChoice::Asio, None) => return Err(anyhow!("ASIO host not available")),
+        (HostChoice::WasapiFallback(reason), _) => {
+            log::warn!(
+                "ASIO output not used: {}; falling back to WASAPI (shared mode)",
+                reason.describe()
+            );
+            wasapi_host()?
+        }
+    };
+    Ok(OutputHost {
+        host,
+        name: choice.host_name(),
+        label: choice.label(),
+        shared_mode: matches!(choice, HostChoice::WasapiFallback(_)),
+    })
+}
+
+/// The default (CoreAudio) host.
+#[cfg(target_os = "macos")]
+fn output_host(_requested: Option<&str>) -> Result<OutputHost> {
+    Ok(OutputHost {
+        host: cpal::default_host(),
+        name: "CoreAudio",
+        label: "CoreAudio",
+        shared_mode: false,
+    })
 }
 
 pub struct CpalWriter {
@@ -134,6 +200,10 @@ pub struct CpalWriter {
     /// `AdaptiveResamplingConfig::disable_backpressure`, mirrored so the
     /// writer reads it without taking the config lock.
     backpressure_disabled: Arc<AtomicBool>,
+    /// Short name of the host the stream runs on (`ASIO`, `WASAPI`, `CoreAudio`).
+    host_name: &'static str,
+    /// The host as Studio shows it, with the fallback reason on Windows.
+    host_label: &'static str,
     // We keep the stream alive by holding it here, though cpal streams run in background threads
     _stream: Option<cpal::Stream>,
     /// Logs what the device callback queues. Declared after the stream, so it
@@ -141,28 +211,59 @@ pub struct CpalWriter {
     _callback_log_drain: CallbackLogDrain,
 }
 
-/// Get a list of available output device names for this platform's backend.
-pub fn list_output_devices() -> Result<Vec<String>> {
-    let host = output_host()?;
+/// The output devices of the host realtime output opens by default, with
+/// that host's label: on Windows the ASIO devices, or the WASAPI ones (and a
+/// label naming the fallback) when ASIO has none.
+#[cfg(target_os = "windows")]
+pub fn list_output_host_devices() -> Result<(&'static str, Vec<String>)> {
+    let asio_devices = asio_host().as_ref().and_then(output_device_names);
+    match choose_host(asio_devices.as_deref(), None, Vec::new) {
+        choice @ HostChoice::Asio => Ok((choice.label(), asio_devices.unwrap_or_default())),
+        choice @ HostChoice::WasapiFallback(reason) => {
+            log::info!(
+                "Listing WASAPI output devices: {}; output falls back to WASAPI (shared mode)",
+                reason.describe()
+            );
+            let devices = output_device_names(&wasapi_host()?).unwrap_or_default();
+            Ok((choice.label(), devices))
+        }
+    }
+}
 
-    let devices: Vec<String> = host
+/// The CoreAudio output devices, with the host's label.
+#[cfg(target_os = "macos")]
+pub fn list_output_host_devices() -> Result<(&'static str, Vec<String>)> {
+    let opened = output_host(None)?;
+    let devices: Vec<String> = opened
+        .host
         .output_devices()?
         .filter_map(|d| d.name().ok())
         .collect();
+    Ok((opened.label, devices))
+}
 
-    Ok(devices)
+/// Get a list of available output device names for the host realtime output
+/// opens by default (see [`list_output_host_devices`]).
+pub fn list_output_devices() -> Result<Vec<String>> {
+    list_output_host_devices().map(|(_, devices)| devices)
 }
 
 impl CpalWriter {
     pub fn list_output_devices() -> Result<()> {
-        println!("Available {BACKEND} Devices:");
-        let devices = list_output_devices()?;
+        let (host, devices) = list_output_host_devices()?;
+        println!("Available {host} Devices:");
 
         for (i, device_name) in devices.iter().enumerate() {
             println!("  {}: {}", i, device_name);
         }
 
         Ok(())
+    }
+
+    /// The host this writer plays through, as Studio shows it: `ASIO`,
+    /// `CoreAudio`, or `WASAPI (fallback: …)` naming why ASIO was not used.
+    pub fn output_host_label(&self) -> &'static str {
+        self.host_label
     }
 
     pub fn new(
@@ -225,10 +326,16 @@ impl CpalWriter {
             sample_ring(max_buffer_fill.div_ceil(channels), channels);
         let ring = sample_buffer.monitor();
 
-        // Open the platform's cpal output host (ASIO on Windows, CoreAudio on macOS).
-        let host = output_host()?;
+        // Open the platform's cpal output host: ASIO on Windows, WASAPI when
+        // ASIO cannot serve; CoreAudio on macOS. Chosen once, here.
+        let OutputHost {
+            host,
+            name: backend,
+            label: host_label,
+            shared_mode,
+        } = output_host(output_device.as_deref())?;
 
-        log::info!("{BACKEND} host initialized");
+        log::info!("Output host: {host_label}");
 
         // Find device by name if specified, otherwise use default
         let device = if let Some(ref target_name) = output_device {
@@ -245,16 +352,16 @@ impl CpalWriter {
 
             found_device.ok_or_else(|| {
                 anyhow!(
-                    "{BACKEND} output device '{target_name}' not found; run the platform list-output-devices command to see available devices.",
+                    "{backend} output device '{target_name}' not found; run the platform list-output-devices command to see available devices.",
                 )
             })?
         } else {
             host.default_output_device()
-                .ok_or_else(|| anyhow!("No default {BACKEND} output device found"))?
+                .ok_or_else(|| anyhow!("No default {backend} output device found"))?
         };
 
         log::info!(
-            "Using {BACKEND} device: {}",
+            "Using {backend} device: {}",
             device.name().unwrap_or_default()
         );
 
@@ -262,7 +369,7 @@ impl CpalWriter {
         let supported_configs: Vec<_> = device.supported_output_configs()?.collect();
 
         log::info!(
-            "Looking for {BACKEND} config supporting {} channels at {} Hz",
+            "Looking for {backend} config supporting {} channels at {} Hz",
             channel_count,
             output_sample_rate
         );
@@ -277,6 +384,21 @@ impl CpalWriter {
             );
         }
 
+        // A device with fewer channels than the output is refused, never
+        // played with channels dropped. WASAPI shared mode in particular
+        // offers only the Windows mixer's count (often 2 or 8).
+        if let Some(offered) = supported_configs.iter().map(|c| c.channels()).max()
+            && u32::from(offered) < channel_count
+        {
+            return Err(anyhow!(too_few_channels_message(
+                backend,
+                shared_mode,
+                &device.name().unwrap_or_default(),
+                offered,
+                channel_count,
+            )));
+        }
+
         // Find best matching config (prefer exact match, then next larger channel count)
         let best_config = supported_configs
             .iter()
@@ -289,7 +411,7 @@ impl CpalWriter {
             .min_by_key(|c| (c.channels(), c.sample_format() != cpal::SampleFormat::F32))
             .ok_or_else(|| {
                 anyhow!(
-                    "{BACKEND} device does not support {} channels at {} Hz. Available configs: {:?}",
+                    "{backend} device does not support {} channels at {} Hz. Available configs: {:?}",
                     channel_count,
                     output_sample_rate,
                     supported_configs
@@ -316,7 +438,7 @@ impl CpalWriter {
 
         if resample_ratio != 1.0 {
             log::info!(
-                "{BACKEND} Config: {} Hz (resampling from {} Hz, ratio {:.3}x), {} device channels (using {} for output)",
+                "{backend} Config: {} Hz (resampling from {} Hz, ratio {:.3}x), {} device channels (using {} for output)",
                 output_sample_rate,
                 input_sample_rate,
                 resample_ratio,
@@ -325,7 +447,7 @@ impl CpalWriter {
             );
         } else {
             log::info!(
-                "{BACKEND} Config: {} Hz, {} device channels (using {} for output)",
+                "{backend} Config: {} Hz, {} device channels (using {} for output)",
                 output_sample_rate,
                 device_channel_count,
                 channel_count
@@ -346,7 +468,7 @@ impl CpalWriter {
             log::info!("Adaptive resampling disabled (fixed resampling ratio)");
         }
         log::info!(
-            "{BACKEND} buffer thresholds ({}ch @ {}Hz input): min={} target={} max={} samples",
+            "{backend} buffer thresholds ({}ch @ {}Hz input): min={} target={} max={} samples",
             channel_count,
             input_sample_rate,
             min_buffer_fill,
@@ -370,7 +492,7 @@ impl CpalWriter {
             .map_err(|e| anyhow!("Failed to create resampler: {:?}", e))?;
 
         let backpressure_disabled = Arc::new(AtomicBool::new(adaptive_config.disable_backpressure));
-        warn_if_output_pacing_requested(&adaptive_config);
+        warn_if_output_pacing_requested(backend, &adaptive_config);
         let initial_config = adaptive_config.clone();
         let shared = CallbackShared::new(adaptive_config);
         let (mut callback_core, callback_log_reader) = OutputCallbackCore::new(
@@ -422,7 +544,7 @@ impl CpalWriter {
             }
             other => {
                 return Err(anyhow!(
-                    "{BACKEND} device sample format {other:?} is not supported (f32, i32, i16)"
+                    "{backend} device sample format {other:?} is not supported (f32, i32, i16)"
                 ));
             }
         };
@@ -444,6 +566,8 @@ impl CpalWriter {
             shared,
             pipeline_latency_ms_bits,
             backpressure_disabled,
+            host_name: backend,
+            host_label,
             _callback_log_drain: callback_log_drain,
             _stream: Some(stream),
         })
@@ -564,7 +688,7 @@ impl CpalWriter {
     pub fn update_adaptive_config(&self, config: AdaptiveResamplingConfig) {
         self.backpressure_disabled
             .store(config.disable_backpressure, Ordering::Relaxed);
-        warn_if_output_pacing_requested(&config);
+        warn_if_output_pacing_requested(self.host_name, &config);
         *self.shared.live_config.lock() = config;
     }
 }

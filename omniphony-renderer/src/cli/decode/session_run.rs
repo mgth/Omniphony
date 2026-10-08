@@ -50,7 +50,7 @@ struct PreparedDecodeRun {
     pipe_input_diag: PipeInputDiag,
     pacer_bridge_diag: PacerBridgeDiag,
     _shutdown: sys::ShutdownHandle,
-    bridge_lib: bridge_api::BridgeLibRef,
+    bridge_libs: orender_engine::bridge_loader::BridgeLibs,
     input_path: std::path::PathBuf,
     presentation: String,
     is_spatial_presentation: bool,
@@ -233,7 +233,17 @@ fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecod
     let input = args
         .input
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Must specify INPUT file"))?
+        .ok_or_else(|| {
+            // What a first-time user sees after typing `orender` alone: say
+            // what it wants and that the usual hosts start it for them.
+            anyhow::anyhow!(
+                "no input given. orender renders one stream: a file, a named pipe, \
+                 or `-` for stdin (`orender render <INPUT>`; `orender render --help` \
+                 lists the options). Omniphony Studio and mpv-omniphony start the \
+                 engine themselves, so playing a film needs neither this command nor \
+                 a config file."
+            )
+        })?
         .clone();
 
     log::info!(
@@ -258,7 +268,7 @@ fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecod
     // Only the load is "bridge unavailable"; a bridge that loads but
     // refuses the presentation is a configuration error, not a reason to idle.
     let LoadedBridge {
-        lib,
+        libs,
         mut bridge,
         log_level,
     } = LoadedBridge::load_with_params(&bridge_path).context(BridgeUnavailable)?;
@@ -338,7 +348,7 @@ fn prepare_render_run(args: &RenderArgs, drc_mode: &str) -> Result<PreparedDecod
         pipe_input_diag,
         pacer_bridge_diag,
         _shutdown: shutdown,
-        bridge_lib: lib,
+        bridge_libs: libs,
         input_path: input,
         presentation: args.presentation.clone(),
         is_spatial_presentation,
@@ -1100,7 +1110,7 @@ fn run_prepared_render(
     if let Some(renderer) = &handler.spatial_renderer {
         let ctrl = renderer.renderer_control();
         ctrl.set_bridge_supported_drc_modes(prepared.supported_drc_modes.clone());
-        orender_engine::bridge_loader::declare_source_families(&prepared.bridge_lib, &ctrl);
+        orender_engine::bridge_loader::declare_source_families(&prepared.bridge_libs, &ctrl);
     }
 
     if let Some(input_control) = handler.input_control.as_ref() {
@@ -1188,7 +1198,7 @@ fn run_prepared_render(
                 input_control.clone(),
                 audio_control.clone(),
                 LiveBridgeRuntimeConfig {
-                    lib: prepared.bridge_lib.clone(),
+                    libs: prepared.bridge_libs.clone(),
                     presentation: prepared.presentation.clone(),
                     clock_mode: input_control.requested_snapshot().clock_mode,
                     requested_drc_mode: Arc::clone(&prepared.drc_mode),

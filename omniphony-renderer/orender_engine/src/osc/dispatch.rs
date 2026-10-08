@@ -42,6 +42,9 @@ pub(crate) enum ControlOutcome {
     Invalid(String),
     /// No handler took it.
     Unhandled,
+    /// Refused because of who sent it, for this reason
+    /// ([`osc_contract::CONTROL_ERROR_NOT_ALLOWED`]).
+    NotAllowed(String),
 }
 
 impl ControlOutcome {
@@ -191,6 +194,18 @@ pub(crate) fn handle_control_message(
     }
 
     if let Some(command) = parse_process_command(msg) {
+        // The OSC/UDP socket listens on the network (head tracking from a
+        // phone, a remote Studio); stopping the engine or taking its port is
+        // for a client on this machine only (#680).
+        if matches!(
+            command,
+            RuntimeCommand::Quit | RuntimeCommand::YieldPort | RuntimeCommand::Resume
+        ) && !src.is_loopback()
+        {
+            return ControlOutcome::NotAllowed(
+                "only a client on this machine may stop the engine or take its port".into(),
+            );
+        }
         match command {
             RuntimeCommand::SaveConfig => save_live_config(control, host, socket, clients),
             RuntimeCommand::ReloadConfig => {
@@ -669,7 +684,9 @@ fn push_gaintable_subscribe(
                     },
                 );
             } else {
-                for update in gaintable_chunk_broadcasts(&bytes, None) {
+                for update in
+                    gaintable_chunk_broadcasts(&bytes, None, client.gaintable_chunk_bytes())
+                {
                     send_update_to_client(socket, client, &update);
                 }
                 clients.set_gaintable_version(client, speaker, version);
@@ -754,6 +771,61 @@ mod backend_file_request_tests {
             backend_file_reply(content, Some("id-b"))[4],
             OscType::String("id-b".into())
         );
+    }
+}
+
+/// Process-lifecycle controls from another machine (#680, step 4).
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use renderer::test_support::fixture_control;
+
+    fn outcome(addr: &str, from: &Peer) -> ControlOutcome {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        handle_control_message(
+            &OscMessage {
+                addr: addr.to_string(),
+                args: Vec::new(),
+            },
+            from,
+            &fixture_control(),
+            None,
+            &mut RealtimeSeqState::default(),
+            &socket,
+            &Arc::new(OscClientRegistry::new(std::time::Duration::from_secs(60))),
+            &Arc::new(GaintableCache::new()),
+        )
+    }
+
+    /// Refused from another machine, before anything happens: the request
+    /// flags (process-wide) are left as they were. The local path is the
+    /// engine's existing behaviour and would stop the test process.
+    #[test]
+    fn lifecycle_controls_from_another_machine_are_not_allowed() {
+        let remote = Peer::Udp("192.0.2.10:9000".parse().unwrap());
+        let standby_before = sys::shutdown::is_standby_requested();
+        for addr in [
+            osc_contract::CONTROL_QUIT,
+            osc_contract::CONTROL_YIELD_PORT,
+            osc_contract::CONTROL_RESUME,
+        ] {
+            assert!(
+                matches!(outcome(addr, &remote), ControlOutcome::NotAllowed(_)),
+                "{addr} from another machine"
+            );
+        }
+        assert_eq!(sys::shutdown::is_standby_requested(), standby_before);
+    }
+
+    /// Everything else stays open to the network: a remote control reaches
+    /// its handler, which here refuses the missing value, not the sender.
+    #[test]
+    fn other_controls_from_another_machine_are_taken() {
+        let remote = Peer::Udp("192.0.2.10:9000".parse().unwrap());
+        assert!(matches!(
+            outcome(osc_contract::CONTROL_GAIN, &remote),
+            ControlOutcome::Invalid(_)
+        ));
     }
 }
 
@@ -1869,7 +1941,11 @@ fn debug_speaker_gaintable_nack(d: &mut Dispatch) -> ControlOutcome {
                 .gaintable_target_for_version(client, version)
                 .unwrap_or(0);
             if let Some((_v, bytes)) = gaintable_cache.bytes_for_target(&runtime_ctx, target) {
-                for update in gaintable_chunk_broadcasts(&bytes, Some((version, missing))) {
+                for update in gaintable_chunk_broadcasts(
+                    &bytes,
+                    Some((version, missing)),
+                    client.gaintable_chunk_bytes(),
+                ) {
                     send_update_to_client(socket, client, &update);
                 }
             }

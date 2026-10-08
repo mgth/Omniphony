@@ -9,8 +9,8 @@ use renderer::test_support::fixture_control;
 use rosc::{OscMessage, OscPacket, OscType};
 use runtime_control::osc_contract;
 
-use super::peer::read_frame;
 use super::test_support::{SERIAL, listening_sender};
+use runtime_control::osc_contract::stream::{MAX_PACKET, read_frame};
 
 struct Client {
     stream: TcpStream,
@@ -31,8 +31,7 @@ impl Client {
             args,
         }))
         .unwrap();
-        let mut frame = (bytes.len() as u32).to_be_bytes().to_vec();
-        frame.extend_from_slice(&bytes);
+        let frame = runtime_control::osc_contract::stream::frame(&bytes).unwrap();
         self.stream.write_all(&frame).unwrap();
     }
 
@@ -42,7 +41,7 @@ impl Client {
     fn until(&mut self, last: &str) -> Option<Vec<OscMessage>> {
         let mut messages = Vec::new();
         loop {
-            let packet = match read_frame(&mut self.stream, super::inbound::STREAM_PACKET_MAX) {
+            let packet = match read_frame(&mut self.stream, MAX_PACKET) {
                 Ok(Some(packet)) => packet,
                 Ok(None) => return None,
                 Err(e)
@@ -349,4 +348,59 @@ fn a_successor_that_gets_the_datagram_port_gets_the_stream_port_too() {
         }
         drop(sender);
     }
+}
+
+/// A stream client gets the gain table in large chunks (#680, step 3): the
+/// meta announces them, they arrive in order without a NACK, and they make
+/// up the whole table.
+#[test]
+fn a_stream_client_gets_the_gain_table_in_large_chunks() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let control = fixture_control();
+    let (sender, port) = listening_sender(&control);
+    let mut client = Client::connect(port);
+    client.send(osc_contract::REGISTER, vec![]);
+    client.until(osc_contract::STATE_SNAPSHOT_COMPLETE).unwrap();
+
+    client.send(
+        osc_contract::CONTROL_DEBUG_SPEAKER_GAINTABLE_SUBSCRIBE,
+        vec![OscType::Int(-1), OscType::Int(0)],
+    );
+    let messages = client
+        .until(osc_contract::STATE_DEBUG_SPEAKER_GAINTABLE_META)
+        .expect("the table's meta");
+    let meta = messages.last().unwrap();
+    let OscType::String(json) = &meta.args[0] else {
+        panic!("meta: {:?}", meta.args)
+    };
+    let meta: serde_json::Value = serde_json::from_str(json).unwrap();
+    let total = meta["total_len"].as_u64().unwrap() as usize;
+    let count = meta["chunk_count"].as_u64().unwrap() as usize;
+    assert_eq!(
+        meta["chunk_bytes"].as_u64().unwrap() as usize,
+        runtime_control::osc::GAINTABLE_STREAM_CHUNK_BYTES
+    );
+    assert_eq!(
+        count,
+        total
+            .div_ceil(runtime_control::osc::GAINTABLE_STREAM_CHUNK_BYTES)
+            .max(1)
+    );
+
+    let mut table = Vec::new();
+    for index in 0..count {
+        let chunk = client
+            .until(osc_contract::STATE_DEBUG_SPEAKER_GAINTABLE_CHUNK)
+            .expect("every chunk arrives");
+        let OscType::Blob(blob) = &chunk.last().unwrap().args[0] else {
+            panic!("chunk args")
+        };
+        assert_eq!(
+            u32::from_le_bytes(blob[4..8].try_into().unwrap()),
+            index as u32
+        );
+        table.extend_from_slice(&blob[8..]);
+    }
+    assert_eq!(table.len(), total, "the chunks make up the table");
+    drop(sender);
 }

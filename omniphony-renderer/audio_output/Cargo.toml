@@ -9,6 +9,12 @@ description = "Audio output backends (PipeWire, ASIO, CoreAudio)"
 [lib]
 name = "audio_output"
 
+[features]
+# Type-check the cpal sync adapter on Linux against cpal's ALSA host. The
+# adapter ships on Windows (ASIO) and macOS (CoreAudio), which cannot be built
+# from a Linux machine; this keeps it compiling. Not for shipping.
+cpal-check = ["dep:cpal"]
+
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
@@ -17,9 +23,16 @@ rubato = "0.14"
 rtrb = "0.4"
 diag.workspace = true
 serde.workspace = true
+audio_rt.workspace = true
+audio_sync.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire.workspace = true
+# Only for the `cpal-check` feature below.
+cpal = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 # Windows: ASIO is always compiled in (no cargo feature gates it).
 [target.'cfg(windows)'.dependencies]

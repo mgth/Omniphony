@@ -586,7 +586,7 @@ impl StreamState {
             let live = control.live.read();
             (
                 OwnedPlacement::from_live(&live, self.declaration.family),
-                RoomRatios::from_live(&live),
+                RoomRatios::for_output(&live),
                 live.options.surround_placement,
             )
         };

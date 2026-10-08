@@ -5,7 +5,7 @@ decoder bridges.
 
 The ABI is defined in:
 - [bridge_api/src/lib.rs](bridge_api/src/lib.rs)
-- [src/bridge_loader.rs](src/bridge_loader.rs)
+- [orender_engine/src/bridge_loader.rs](orender_engine/src/bridge_loader.rs)
 
 `omniphony-renderer` does not decode immersive formats directly. A bridge plugin owns the
 format-specific parsing, decode pipeline, and spatial metadata extraction.
@@ -14,7 +14,7 @@ format-specific parsing, decode pipeline, and spatial metadata extraction.
 
 **A bridge loads only in a host built against the same `bridge_api` minor
 version.** Rebuild the bridge with the host: a bridge built against
-`bridge_api` 0.5.x loads in every host built against 0.5.x, and in no other.
+`bridge_api` 0.6.x loads in every host built against 0.6.x, and in no other.
 
 - **What bumps the minor.** Any change to what crosses the boundary: a
   `FormatBridge` method, a `BridgeLib` field, a field, a variant or a
@@ -64,7 +64,7 @@ the media player.
   bridge could not decode: reset the pipeline and set `did_reset` (and, for a
   strict bridge, `error_message`).
 - The root-module entry points (`new_bridge`, `set_host_log_sink`,
-  `source_families`) are `extern "C"`: keep them free of work that can fail.
+  `source_families`, `probe`, `input_codecs`) are `extern "C"`: keep them free of work that can fail.
   `new_bridge` constructs; fallible setup belongs in `configure` or the
   first `push_packet`.
 - `reference_bridge` shows the pattern (`WavBridge::recover_from_panic`).
@@ -74,10 +74,42 @@ the media player.
 Bridge lookup order:
 1. `--bridge-path <FILE>`
 2. `render.bridge_path` in the config file
-3. the first file matching `lib*_bridge.so`, `lib*_bridge.dll`, or
-   `lib*_bridge.dylib` next to the `orender` executable
+3. else auto-discovery:
+   1. `$ORENDER_BRIDGE_FILE`, when it names an existing file: that exact
+      bridge (Studio sets it, see below). A value naming no file is logged
+      and skipped;
+   2. else the first `*_bridge.so`, `*_bridge.dll` or `*_bridge.dylib`
+      (alphabetical within a folder) in, in this order:
+      1. the folder of the host executable (`orender`, or the player that loads
+         liborender, e.g. mpv-omniphony);
+      2. `$ORENDER_BRIDGE_DIR`;
+      3. the per-user engine folder, where Studio deploys liborender and
+         mpv-omniphony's loader looks for it: `$XDG_DATA_HOME/omniphony/lib`
+         (default `~/.local/share/omniphony/lib`) on Linux,
+         `~/Library/Application Support/omniphony/lib` on macOS,
+         `%LOCALAPPDATA%\omniphony\lib` on Windows;
+      4. the system plugin folder, `/usr/lib/orender` on Unix (where the AUR's
+         `harletty-bridge` installs it; packagers override it with
+         `ORENDER_BRIDGE_DIR` at build time). None on Windows.
 
-Without a bridge plugin, `orender` will not start.
+A path named in 1 or 2 must exist: it is never replaced by a discovered one.
+When nothing is named and nothing is found, `orender` still starts, without a
+decoder: PCM and channel input work, and the published
+`/omniphony/state/render/bridge_error` contains `no decoder bridge found`,
+which Studio shows as a warning rather than an error.
+
+Studio also uses the bridge path from `mpv.conf`: before it spawns its own
+`orender`, it reads mpv-omniphony's `ad-orender-bridge-path` from the player's
+config (mpv's own lookup: `$MPV_HOME`, else `$XDG_CONFIG_HOME/mpv` or
+`~/.config/mpv`, `~/.mpv`, `/etc/mpv`; `%APPDATA%\mpv` on Windows; default
+profile only) and, when it names an existing file, passes that exact file as
+`$ORENDER_BRIDGE_FILE` (step 3.1). A file, not its folder: the folder scan takes
+the first bridge by name, which need not be the named one when the folder
+holds several. A bridge named in the engine's own config (`render.bridge_path`)
+or on its command line still comes first, and when Studio's own environment
+already sets `ORENDER_BRIDGE_FILE` or `ORENDER_BRIDGE_DIR`, the renderer
+inherits that and `mpv.conf` is not read. A bridge that only sits next to the
+player, with no `mpv.conf` line naming it, stays unknown to Studio.
 
 ## Exported Root Module
 
@@ -89,12 +121,16 @@ Each plugin must export the `format_bridge` root module expected by
 #[derive(StableAbi)]
 #[sabi(kind(Prefix(prefix_ref = BridgeLibRef)))]
 pub struct BridgeLib {
-    #[sabi(last_prefix_field)]
     pub new_bridge: extern "C" fn(strict: bool) -> FormatBridgeBox,
     pub set_host_log_sink: extern "C" fn(usize),
     pub source_families: extern "C" fn() -> RVec<RSourceFamily>,
+    pub probe: extern "C" fn(data: RSlice<'_, u8>, transport: RInputTransport, data_type: u8) -> RProbe,
+    #[sabi(last_prefix_field)]
+    pub input_codecs: extern "C" fn() -> RVec<RString>,
 }
 ```
+
+Every field is required (since 0.6).
 
 `source_families` is the plugin's catalogue of source families: every name
 `FormatBridge::source_family` can return, with a label for user interfaces
@@ -108,6 +144,43 @@ own to declare returns an empty list.
 Fixed names:
 - `BASE_NAME = "format_bridge"`
 - `NAME = "format_bridge"`
+
+## Probing
+
+`probe` and `input_codecs` let a host that holds several bridges route each
+stream to the one that decodes it ([`docs/multi-bridge.md`](../docs/multi-bridge.md)).
+A host with one bridge may ignore them.
+
+`input_codecs` lists the codec names the bridge decodes, lower case
+(`truehd`, `eac3`, `dts`, `iamf`, …). A host that was told the codec (a
+player knows it) routes by this list and sends the name as `input_codec`
+(see "Configuration Keys"); every listed name must be one `input_codec`
+accepts. A bridge that is only reached by probing (the reference bridge:
+nothing names WAV as a codec) returns an empty list.
+
+`probe(data, transport, data_type)` says where, if anywhere, a stream the
+bridge decodes starts in `data`. It is stateless and cheap: the host calls it
+before it creates or picks an instance, and only while a stream's route is
+undecided. The answer is an `RProbe { verdict, offset, needed }`:
+
+| `verdict` | Meaning | `offset` | `needed` |
+|---|---|---|---|
+| `Claim` | a stream of this bridge starts here, validated | where its first frame starts (not its sync word) | 0 |
+| `Pending` | a stream may start here, header incomplete | where it would start | bytes from `offset` needed to answer again, more than shown |
+| `None` | nothing of this bridge before `offset` | every byte before it is ruled out | 0 |
+
+- **IEC 61937**: `data` is a burst payload and `data_type` its burst type.
+  Answer `Claim` at 0 for a burst type the bridge decodes, `None` otherwise.
+- **Raw**: `data` is a window of undecided bytes, which may start mid-frame
+  or end inside a header, and `data_type` is 0. A `Claim` must rest on the
+  format's own validation (a header checksum, the next frame's sync at the
+  declared frame size, a well-formed container header), reached within a
+  bounded number of bytes from the start; a candidate that reaches that bound
+  without validating is not this bridge's stream. Answer for the **earliest**
+  start in `data`: the host routes to the earliest claimed start among its
+  bridges.
+- A probe must not be the only check: `push_packet` still validates what it
+  decodes.
 
 ## Bridge Lifecycle
 
@@ -288,7 +361,8 @@ If `has_pos == false`, the event is a gain/ramp-only update for its object.
 - declares how `REvent.pos` must be interpreted
 
 ### `vbap_cartesian_defaults()`
-- provides default Cartesian VBAP grid sizes
+- provides default Cartesian VBAP grid sizes, below the floor included
+  (`z_neg_size`, since 0.6; 0 for none)
 - also advertises `allow_negative_z`
 
 ### `preferred_vbap_table_mode()`
@@ -311,6 +385,12 @@ These are host hints, not host commands.
     level changes (`log_level` over OSC). A bridge may apply it process-wide.
     A bridge that returns `false` (one that predates the key) keeps its own
     level, and the host stops sending it changes
+- `input_codec`
+  - the codec of the raw access units the host will push, when it knows it
+    (a player names the stream's codec): one of the names the bridge lists in
+    `input_codecs`. Sent once, before the first packet; the bridge decodes
+    those units as that codec rather than detecting it. Empty or `auto`
+    restores detection
 
 Return value:
 - `true`
@@ -345,6 +425,7 @@ A usable bridge plugin must:
 
 ## Related Host Code
 
-- [src/bridge_loader.rs](src/bridge_loader.rs)
-- [src/cli/decode/decode_impl.rs](src/cli/decode/decode_impl.rs)
+- [orender_engine/src/bridge_loader.rs](orender_engine/src/bridge_loader.rs)
+- [orender_engine/src/decode_step.rs](orender_engine/src/decode_step.rs)
+- [src/cli/decode/session_run.rs](src/cli/decode/session_run.rs)
 - [src/cli/decode/decoder_thread.rs](src/cli/decode/decoder_thread.rs)

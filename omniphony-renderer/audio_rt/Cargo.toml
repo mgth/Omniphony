@@ -1,0 +1,10 @@
+[package]
+name = "audio_rt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Realtime audio primitives for the output stage: SPSC frame ring and variable-ratio polyphase resampler"
+
+[lib]
+name = "audio_rt"

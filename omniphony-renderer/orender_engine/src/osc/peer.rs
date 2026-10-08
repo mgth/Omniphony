@@ -6,6 +6,8 @@
 //! `docs/control-transport.md`. Everything that answers a client or fans
 //! state out to them goes through [`Peer::send`], whatever the transport.
 //!
+//! The framing itself is `osc_contract::stream`, shared with Studio.
+//!
 //! A stream client has a bounded queue and a writer thread of its own:
 //! publishers only push onto the queue, so a slow reader never holds up the
 //! listener, the telemetry thread or a state publication (which send while
@@ -17,6 +19,8 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
+
+use runtime_control::osc_contract;
 use std::net::{Shutdown, SocketAddr, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -82,6 +86,16 @@ impl Peer {
     /// A stream client's liveness is its connection, not a heartbeat.
     pub(crate) fn is_stream(&self) -> bool {
         matches!(self, Self::Tcp(_))
+    }
+
+    /// Gain-table payload per chunk for this client: datagram-sized, or a
+    /// few large packets on a stream (#680, step 3).
+    pub(crate) fn gaintable_chunk_bytes(&self) -> usize {
+        if self.is_stream() {
+            runtime_control::osc::GAINTABLE_STREAM_CHUNK_BYTES
+        } else {
+            runtime_control::osc::GAINTABLE_CHUNK_BYTES
+        }
     }
 }
 
@@ -179,18 +193,12 @@ impl StreamPeer {
 
     /// Queue one packet, framed. Never blocks on the connection.
     fn push(&self, packet: &[u8], delivery: Delivery) -> io::Result<()> {
-        let Ok(size) = u32::try_from(packet.len()) else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "packet too large",
-            ));
-        };
+        let frame = osc_contract::stream::frame(packet)?;
         let mut queue = self.queue.lock().unwrap();
         if queue.closed {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
-        let framed_len = packet.len() + 4;
-        if queue.bytes + framed_len > STREAM_QUEUE_MAX_BYTES {
+        if queue.bytes + frame.len() > STREAM_QUEUE_MAX_BYTES {
             match delivery {
                 Delivery::Droppable => {
                     queue.dropped += 1;
@@ -208,10 +216,7 @@ impl StreamPeer {
                 }
             }
         }
-        let mut frame = Vec::with_capacity(framed_len);
-        frame.extend_from_slice(&size.to_be_bytes());
-        frame.extend_from_slice(packet);
-        queue.bytes += framed_len;
+        queue.bytes += frame.len();
         queue.frames.push_back(frame);
         drop(queue);
         self.ready.notify_one();
@@ -257,27 +262,6 @@ impl StreamPeer {
     }
 }
 
-/// Read one framed packet from a stream: `Ok(None)` at a clean end of
-/// stream, an error for a size over `max` or a connection that failed.
-pub(crate) fn read_frame(input: &mut impl io::Read, max: usize) -> io::Result<Option<Vec<u8>>> {
-    let mut size = [0u8; 4];
-    match input.read_exact(&mut size) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e),
-    }
-    let size = u32::from_be_bytes(size) as usize;
-    if size > max {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("a {size}-byte packet, over the {max}-byte limit"),
-        ));
-    }
-    let mut packet = vec![0u8; size];
-    input.read_exact(&mut packet)?;
-    Ok(Some(packet))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,23 +286,16 @@ mod tests {
             peer.push(packet, Delivery::Reliable).unwrap();
         }
         for want in [&b"one"[..], b"", b"three!!"] {
-            assert_eq!(read_frame(&mut client, 64).unwrap().as_deref(), Some(want));
+            assert_eq!(
+                osc_contract::stream::read_frame(&mut client, 64)
+                    .unwrap()
+                    .as_deref(),
+                Some(want)
+            );
         }
         peer.close();
         writer.join().unwrap();
         assert!(peer.push(b"late", Delivery::Reliable).is_err());
-    }
-
-    #[test]
-    fn an_oversized_frame_is_refused() {
-        let mut bytes = (100u32).to_be_bytes().to_vec();
-        bytes.extend_from_slice(&[0; 100]);
-        assert!(read_frame(&mut &bytes[..], 64).is_err());
-        assert_eq!(
-            read_frame(&mut &bytes[..], 100).unwrap().unwrap().len(),
-            100
-        );
-        assert!(read_frame(&mut &[][..], 64).unwrap().is_none());
     }
 
     /// No writer drains the queue, as with a client that stopped reading:

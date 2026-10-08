@@ -9,7 +9,7 @@ use abi_stable::std_types::{RSlice, RStr, RString, RVec};
 use abi_stable::{prefix_type::PrefixTypeTrait, sabi_trait::prelude::TD_Opaque};
 use bridge_api::*;
 use log::LevelFilter;
-use orender_engine::bridge_loader::open_bridge;
+use orender_engine::bridge_loader::{BridgeLibs, open_bridges};
 
 /// Every `configure` call, as `key=value`, from both bridges below.
 static CONFIGURED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -47,6 +47,7 @@ impl FormatBridge for ConfigureRecorder {
             x_size: 3,
             y_size: 3,
             z_size: 3,
+            z_neg_size: 0,
             allow_negative_z: false,
         }
     }
@@ -90,6 +91,8 @@ fn lib(new_bridge: extern "C" fn(bool) -> FormatBridgeBox) -> BridgeLibRef {
         new_bridge,
         set_host_log_sink: log_sink,
         source_families,
+        probe,
+        input_codecs,
     }
     .leak_into_prefix()
 }
@@ -98,7 +101,8 @@ fn lib(new_bridge: extern "C" fn(bool) -> FormatBridgeBox) -> BridgeLibRef {
 /// `info`, `info`, `debug`.
 fn configured_over_a_stream(new_bridge: extern "C" fn(bool) -> FormatBridgeBox) -> Vec<String> {
     CONFIGURED.lock().unwrap().clear();
-    let (mut bridge, mut log_level) = open_bridge(&lib(new_bridge));
+    let (mut bridge, mut log_level) =
+        open_bridges(&BridgeLibs::single(lib(new_bridge))).expect("open the bridge");
     for level in [LevelFilter::Info, LevelFilter::Info, LevelFilter::Debug] {
         log_level.apply(level, &mut bridge);
     }
@@ -116,4 +120,17 @@ fn the_level_a_bridge_is_opened_with_is_sent_once() {
         configured_over_a_stream(new_older_bridge),
         ["log_level=info"]
     );
+}
+
+/// Claims nothing: these tests hand their bridge every packet themselves.
+extern "C" fn probe(
+    data: abi_stable::std_types::RSlice<'_, u8>,
+    _transport: bridge_api::RInputTransport,
+    _data_type: u8,
+) -> bridge_api::RProbe {
+    bridge_api::RProbe::none(data.len() as u32)
+}
+
+extern "C" fn input_codecs() -> abi_stable::std_types::RVec<abi_stable::std_types::RString> {
+    abi_stable::std_types::RVec::new()
 }

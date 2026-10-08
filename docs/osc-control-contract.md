@@ -86,7 +86,7 @@ than discarded.
 UDP loses datagrams and the engine answers nothing by default, so the session
 carries what a client needs to notice either. The contract crate's
 `CONTRACT_REVISION` (`osc-contract`) is the revision this section describes:
-**2**.
+**3**.
 
 - **Stream transport** (revision 2) — the engine also listens on TCP, on
   loopback, on the OSC/UDP control port's number. A connection carries the
@@ -99,7 +99,9 @@ carries what a client needs to notice either. The contract crate's
   relay, which it loses as a datagram client would when it falls behind
   (8 MiB queued); a
   client too slow for the state is disconnected instead, and gets a fresh
-  snapshot when it reconnects. Its snapshot comes in one part. An engine that
+  snapshot when it reconnects. Its snapshot comes in one part, and the
+  gain-table stream in chunks of up to 512 KiB rather than 1 KiB (the meta
+  says which); an HRTF upload may send chunks of the same size. An engine that
   cannot bind the port runs on datagrams only. See
   `docs/control-transport.md`.
 
@@ -141,7 +143,11 @@ carries what a client needs to notice either. The contract crate's
   arguments were refused without a reason, or the host does not implement it,
   such as an audio-output control sent to an engine embedded in mpv) and
   `undecodable` (not OSC the engine can read; `address` is empty, and these
-  are answered at most once per 5 s). `message` is for a person. A control
+  are answered at most once per 5 s) and, from revision 3, `not_allowed` (a
+  process-lifecycle control, `quit`, `yield_port` or `resume`, from another
+  machine: the OSC/UDP socket listens on the network for head tracking and
+  remote clients, but only a client on this machine may stop the engine or
+  take its port). `message` is for a person. A control
   taken and found to change nothing is not answered.
 - **Sync** (revision 2) — `/omniphony/sync [args…]` is answered with
   `/omniphony/sync/ack [args…]` (the same arguments) once every packet the
@@ -281,7 +287,7 @@ same wire format; `null` unsets a nullable field.
 |---|---|---|
 | `/control/config/audio`, `/control/config/audio/apply` | json | Audio output and adaptive-resampling config as one batch. The apply is an alias of `/control/options/apply audio_output`: the output applies its values as they arrive, so it only acknowledges. |
 | `/control/audio/output_device` | s | Select output device. Host option `output_device`. |
-| `/control/audio/output_backend` | s | Requested output backend (`pipewire`, `asio`, `file`, …; `""` = platform default). Takes effect on the next output (re)start. Host option `output_backend`. |
+| `/control/audio/output_backend` | s | Requested output backend (`pipewire`, `asio`, `file`, …; `""` = platform default). Takes effect on the next output (re)start. Host option `output_backend`. On Windows, `asio` falls back to WASAPI shared mode when ASIO has no output device or the requested device is a WASAPI one; the `outputHost` field of `/state/audio` names the host the open stream plays through (`ASIO`, `WASAPI (fallback: no ASIO driver)`, `CoreAudio`; `""` when none is open or the backend names none). |
 | `/control/audio/output_file` | s | Destination for the `file` backend (`-`, a path or a FIFO; `""` = unset). Host option `output_file`. |
 | `/control/audio/output_file_format` | s | Container/format for the `file` backend (`""` = unset). Host option `output_file_format`. |
 | `/control/audio/output_devices/refresh` | — | Re-enumerate output devices. |
@@ -325,7 +331,7 @@ values are dropped.
 |---|---|---|
 | `/control/output_mode` | s | `speaker` (render to the layout) \| `binaural` (stereo for headphones). Registry option `output_mode`. |
 | `/control/binaural_mode` | s | `direct` (one HRIR pair per object) \| `cascaded` (pan onto a virtual layout, binauralise its speakers). Registry option `binaural_mode`. |
-| `/control/binaural/hrir_source` | s | `synthetic` \| `saf_kemar` \| `sofa[:<path>]` \| `brir[:<path>]` \| `pinna[:<preset>:<d_scale %>:<depth %>]` \| `prtf[:<freq_scale %>:<depth %>]`. Registry option `hrir_source` (group `hrir_source`). |
+| `/control/binaural/hrir_source` | s | `synthetic` \| `saf_kemar` \| `sofa[:<path>]` \| `brir[:<path>]` \| `pinna[:<preset>:<d_scale %>:<depth %>]` \| `prtf[:<freq_scale %>:<depth %>]`. Registry option `hrir_source` (group `hrir_source`). With `brir` on the headphones, once the set is loaded the render pans onto the set's own loudspeakers (one per emitter, plus a direct `LFE`; no per-speaker gain, mute, delay or band) instead of the editable layout, which is kept as is: `/state/renderer` carries them as `binaural.brir.layout` (layout-state shape, `null` otherwise) and `binaural.brir.layoutError` says why a set's loudspeakers cannot be used. |
 | `/control/binaural/hrtf_upload/begin` | name s, total_bytes int | Start uploading a SOFA file (≤ 1 GiB; one upload at a time). |
 | `/control/binaural/hrtf_upload/chunk` | index int, blob | One chunk, in order. |
 | `/control/binaural/hrtf_upload/end` | chunk_count int | Finish: the file is written to `hrtf/` next to the default config file and selected as the `sofa` source. |
@@ -745,7 +751,10 @@ exhaustive machine-readable list.
   understands it and never written; `""` without a config path),
   `render/bridge_path`, `render/bridge_error` (bounded to 2 KB: the first
   line and the distinct verdicts of a plugin load failure, the full report
-  stays in the renderer log), `vbap/allow_negative_z`,
+  stays in the renderer log; it contains `no decoder bridge found`
+  (`BRIDGE_ERROR_NONE_FOUND`) when none was asked for and auto-discovery found
+  none, a normal state for a standby renderer, and anything else is a failed
+  load), `vbap/allow_negative_z`,
   `render_evaluation/*` (mirrors of the control resolutions), `speakers`,
   `speakers/recomputing`, `speakers/recompute_error`, `layout`.
 - **Schemas & profiles** — `options_schema`, `object_generators` (the height

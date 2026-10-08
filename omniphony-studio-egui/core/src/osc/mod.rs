@@ -13,6 +13,7 @@
 
 pub mod apply;
 pub mod dispatch;
+mod link;
 #[allow(dead_code)]
 pub mod parser;
 mod playout;
@@ -28,6 +29,7 @@ use rosc::{OscBundle, OscError, OscMessage, OscPacket, OscTime, OscType, decoder
 
 use crate::host::runtime::{StopToken, Worker};
 use dispatch::{Change, Live, apply_event};
+use link::{Backoff, Link, Received};
 use parser::{CoordinateFormat, HeartbeatResponse, is_heartbeat_address, parse_osc_message};
 use playout::{Offer, Playout};
 
@@ -47,6 +49,11 @@ const PLAYOUT_TICK: Duration = Duration::from_millis(4);
 /// While `osc_snapshot_ready` is false, re-register this often (host value).
 const SNAPSHOT_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_BUF: usize = 65_536;
+/// While a local renderer is reached by datagrams, how often the stream is
+/// tried again: after a stream closed (the next one may already be up), and
+/// for an engine that came up with the stream after this client registered.
+/// A refused loopback connection costs next to nothing.
+const TCP_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 /// Send buffer both sending sockets must have: larger than any UDP payload,
 /// like [`RECV_BUF`].
 const SEND_BUF: usize = 65_536;
@@ -82,6 +89,77 @@ pub struct OscStats {
     pub start: Instant,
     /// Renderer the client is registered with (None = listen only).
     pub target: Mutex<Option<SocketAddr>>,
+    /// The renderer is reached over its stream transport (TCP) right now,
+    /// not by datagrams: what sizes the large transfers (#680, step 3).
+    pub stream_link: AtomicBool,
+    /// Bytes of large transfers (an HRTF upload) queued for the listener and
+    /// not yet sent: the sender waits on it, so a file never sits whole in
+    /// the control queue (see [`SendWindow`]).
+    pub send_window: SendWindow,
+}
+
+/// Flow control between a large transfer and the listener: the sender
+/// reserves each chunk before queueing it ([`Control::SendCounted`]), and
+/// the listener releases it once the chunk has left (or was dropped for want
+/// of a target). At most [`SEND_WINDOW_BYTES`] (or one chunk) are queued at a
+/// time, so a slow or stalled link slows the transfer instead of letting it
+/// fill memory.
+#[derive(Default)]
+pub struct SendWindow {
+    state: Mutex<SendWindowState>,
+    freed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct SendWindowState {
+    queued: usize,
+    closed: bool,
+}
+
+/// Bytes a large transfer may have queued for the listener.
+pub const SEND_WINDOW_BYTES: usize = 4 << 20;
+
+impl SendWindow {
+    /// Wait until `bytes` more fit (one chunk always does when nothing is
+    /// queued) and count them. False when the listener is gone, or after
+    /// `patience` without any progress: the caller abandons the transfer.
+    pub fn reserve(&self, bytes: usize, patience: Duration) -> bool {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if state.closed {
+                return false;
+            }
+            if state.queued == 0 || state.queued + bytes <= SEND_WINDOW_BYTES {
+                state.queued += bytes;
+                return true;
+            }
+            let before = state.queued;
+            let (next, timeout) = self.freed.wait_timeout(state, patience).unwrap();
+            state = next;
+            if timeout.timed_out() && state.queued >= before {
+                return false;
+            }
+        }
+    }
+
+    pub fn release(&self, bytes: usize) {
+        let mut state = self.state.lock().unwrap();
+        state.queued = state.queued.saturating_sub(bytes);
+        self.freed.notify_all();
+    }
+
+    /// The listener stops: nothing queued will be sent.
+    fn close(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.closed = true;
+        state.queued = 0;
+        self.freed.notify_all();
+    }
+
+    /// Bytes queued and not yet sent.
+    pub fn queued(&self) -> usize {
+        self.state.lock().unwrap().queued
+    }
 }
 
 impl OscStats {
@@ -98,6 +176,8 @@ impl OscStats {
             last_packet_ms: AtomicU64::new(0),
             start: Instant::now(),
             target: Mutex::new(None),
+            stream_link: AtomicBool::new(false),
+            send_window: SendWindow::default(),
         })
     }
 
@@ -141,6 +221,13 @@ pub enum Control {
     Send {
         address: String,
         args: Vec<OscType>,
+    },
+    /// [`Control::Send`] for a chunk of a large transfer whose `bytes` were
+    /// reserved in [`OscStats::send_window`]: released once handled.
+    SendCounted {
+        address: String,
+        args: Vec<OscType>,
+        bytes: usize,
     },
     /// Point the client at another renderer: register there, request the
     /// snapshot, restate the metering choice.
@@ -264,21 +351,51 @@ fn listener_loop(
     let mut register = register;
     let mut metering = metering;
     *stats.target.lock().unwrap() = register;
+    // The way to the renderer: a stream when it is on this machine and
+    // serves one, datagrams otherwise (see `link`).
+    let mut link = Link::Datagram;
+    let mut backoff = Backoff::default();
+    let mut next_tcp_probe = Instant::now() + TCP_PROBE_INTERVAL;
 
     if let Some(addr) = register {
-        send_register(&socket, addr, port, metering);
+        register_with(&mut link, &backoff, &socket, addr, port, metering);
     }
 
     loop {
-        match socket.recv_from(&mut buf) {
+        let stream_packet: Vec<u8>;
+        let incoming = match link.receive(&socket, &mut buf, read_timeout, &mut backoff) {
+            Ok(Received::Datagram(n, from)) => Some((&buf[..n], from)),
+            Ok(Received::Packet(packet, from)) => {
+                stream_packet = packet;
+                Some((&stream_packet[..], from))
+            }
+            Ok(Received::Timeout) => None,
+            Ok(Received::StreamClosed) => {
+                // The renderer went away, or the port was not an engine's:
+                // register again, which tries the stream again when allowed.
+                stats.registered.store(false, Ordering::Relaxed);
+                repaint_pending = true;
+                if let Some(addr) = register {
+                    register_with(&mut link, &backoff, &socket, addr, port, metering);
+                }
+                None
+            }
+            Err(e) => {
+                log::error!("[osc] recv failed: {e}");
+                std::thread::sleep(Duration::from_millis(50));
+                None
+            }
+        };
+        match incoming {
             // Replies use a separate ephemeral socket; reject other IPs
             // without starving control draining or shutdown below.
-            Ok((n, from)) if accepts_sender(register, from) => {
+            Some((packet, from)) if accepts_sender(register, from) => {
+                let n = packet.len();
                 stats.packets.fetch_add(1, Ordering::Relaxed);
                 stats
                     .last_packet_ms
                     .store(stats.start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                match decode_datagram(&buf[..n]) {
+                match decode_datagram(packet) {
                     Ok(packet) => {
                         let mut outcome = PacketOutcome::default();
                         {
@@ -307,6 +424,7 @@ fn listener_loop(
                         {
                             log::debug!("[osc] state generation fell behind, asking for a refresh");
                             send_int(
+                                &mut link,
                                 &socket,
                                 addr,
                                 crate::osc_contract::CONTROL_STATE_REFRESH,
@@ -330,7 +448,7 @@ fn listener_loop(
                                     "[osc] renderer does not know this client; re-registering"
                                 );
                             }
-                            send_register(&socket, addr, port, metering);
+                            register_with(&mut link, &backoff, &socket, addr, port, metering);
                         }
                         if outcome.ack {
                             last_ack = Instant::now();
@@ -342,16 +460,7 @@ fn listener_loop(
                     Err(e) => log::debug!("[osc] undecodable packet ({n} bytes): {e:?}"),
                 }
             }
-            Ok(_) => {}
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(e) => {
-                log::error!("[osc] recv failed: {e}");
-                std::thread::sleep(Duration::from_millis(50));
-            }
+            Some(_) | None => {}
         }
 
         // What the listener has now reached, out of the queue and into the
@@ -409,12 +518,16 @@ fn listener_loop(
                         apply_connection_reset(&mut model, request);
                     }
                     repaint_pending = true;
-                    send_register(&socket, target, port, metering);
+                    // Another renderer: its own stream, if it serves one.
+                    link.close();
+                    backoff.reset();
+                    register_with(&mut link, &backoff, &socket, target, port, metering);
                 }
                 Control::SetMetering { enabled } => {
                     metering = enabled;
                     if let Some(addr) = register {
                         send_ints(
+                            &mut link,
                             &socket,
                             addr,
                             "/omniphony/control/metering",
@@ -425,8 +538,18 @@ fn listener_loop(
                 Control::SetPlayoutSync { enabled } => playout.set_enabled(enabled),
                 Control::Send { address, args } => {
                     if let Some(addr) = register {
-                        send_args(&socket, addr, &address, args);
+                        send_args(&mut link, &socket, addr, &address, args);
                     }
+                }
+                Control::SendCounted {
+                    address,
+                    args,
+                    bytes,
+                } => {
+                    if let Some(addr) = register {
+                        send_args(&mut link, &socket, addr, &address, args);
+                    }
+                    stats.send_window.release(bytes);
                 }
                 Control::SubscribeGainTable {
                     have_version,
@@ -434,6 +557,7 @@ fn listener_loop(
                 } => {
                     if let Some(addr) = register {
                         send_ints(
+                            &mut link,
                             &socket,
                             addr,
                             "/omniphony/control/debug/speaker_gaintable/subscribe",
@@ -444,6 +568,7 @@ fn listener_loop(
                 Control::UnsubscribeGainTable => {
                     if let Some(addr) = register {
                         send_ints(
+                            &mut link,
                             &socket,
                             addr,
                             "/omniphony/control/debug/speaker_gaintable/unsubscribe",
@@ -454,12 +579,27 @@ fn listener_loop(
             }
         }
 
+        stats.stream_link.store(link.is_stream(), Ordering::Relaxed);
         if stop.cancelled() {
             stats.registered.store(false, Ordering::Relaxed);
+            stats.stream_link.store(false, Ordering::Relaxed);
+            stats.send_window.close();
+            link.close();
             return;
         }
         if let Some(addr) = register {
             let now = Instant::now();
+            // On datagrams with a renderer on this machine: try the stream
+            // again on a timer of its own. Nothing else would once the
+            // session is up, since a healthy datagram session never needs to
+            // register again.
+            if !link.is_stream() && now >= next_tcp_probe {
+                next_tcp_probe = now + TCP_PROBE_INTERVAL;
+                if link.prepare(addr, &backoff) {
+                    last_snapshot_request = now;
+                    register_with(&mut link, &backoff, &socket, addr, port, metering);
+                }
+            }
             // Until the renderer's state bundle has fully arrived, keep asking
             // for it (the host's `SNAPSHOT_REQUEST_INTERVAL`).
             if now.duration_since(last_snapshot_request) >= SNAPSHOT_REQUEST_INTERVAL
@@ -467,18 +607,26 @@ fn listener_loop(
             {
                 last_snapshot_request = now;
                 log::debug!("[osc] snapshot not ready yet, re-requesting the live state bundle");
-                send_register(&socket, addr, port, metering);
+                register_with(&mut link, &backoff, &socket, addr, port, metering);
             }
             if now.duration_since(last_heartbeat) >= HEARTBEAT_INTERVAL {
                 last_heartbeat = now;
-                send_int(&socket, addr, "/omniphony/heartbeat", i32::from(port));
+                send_int(
+                    &mut link,
+                    &socket,
+                    addr,
+                    "/omniphony/heartbeat",
+                    i32::from(port),
+                );
                 if stats.registered.load(Ordering::Relaxed)
                     && now.duration_since(last_ack) >= HEARTBEAT_TIMEOUT
                 {
                     log::warn!("[osc] heartbeat timeout, re-registering");
                     stats.registered.store(false, Ordering::Relaxed);
                     repaint_pending = true;
-                    send_register(&socket, addr, port, metering);
+                    // A stream that stopped answering is dead too.
+                    link.close();
+                    register_with(&mut link, &backoff, &socket, addr, port, metering);
                 }
             }
             // Recover lost gain-table chunks (remote renderer case).
@@ -487,13 +635,15 @@ fn listener_loop(
                     "[osc] gaintable {version}: re-requesting {} chunks",
                     missing.len()
                 );
-                apply::send_gaintable_nack(
-                    &socket,
-                    &addr.ip().to_string(),
-                    addr.port(),
-                    version,
-                    &missing,
-                );
+                for args in apply::gaintable_nack_messages(version, &missing) {
+                    send_args(
+                        &mut link,
+                        &socket,
+                        addr,
+                        "/omniphony/control/debug/speaker_gaintable/nack",
+                        args,
+                    );
+                }
             }
         }
     }
@@ -681,9 +831,47 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
 /// Register with a renderer: `/omniphony/register <listen_port>` followed by
 /// the metering choice, exactly like the host's `send_register` +
 /// `send_metering_enabled` pair.
-fn send_register(socket: &UdpSocket, to: SocketAddr, listen_port: u16, metering: bool) {
-    send_int(socket, to, "/omniphony/register", i32::from(listen_port));
+/// (Re)register with `to`, over a stream when one can be opened (see
+/// [`Link::prepare`]). On a stream, a heartbeat follows at once: its ack is
+/// what marks the client connected, and a stream has no reason to wait the
+/// heartbeat interval for it.
+fn register_with(
+    link: &mut Link,
+    backoff: &Backoff,
+    socket: &UdpSocket,
+    to: SocketAddr,
+    listen_port: u16,
+    metering: bool,
+) {
+    link.prepare(to, backoff);
+    send_register(link, socket, to, listen_port, metering);
+    if link.is_stream() {
+        send_int(
+            link,
+            socket,
+            to,
+            "/omniphony/heartbeat",
+            i32::from(listen_port),
+        );
+    }
+}
+
+fn send_register(
+    link: &mut Link,
+    socket: &UdpSocket,
+    to: SocketAddr,
+    listen_port: u16,
+    metering: bool,
+) {
     send_int(
+        link,
+        socket,
+        to,
+        "/omniphony/register",
+        i32::from(listen_port),
+    );
+    send_int(
+        link,
         socket,
         to,
         "/omniphony/control/metering",
@@ -696,12 +884,13 @@ fn send_register(socket: &UdpSocket, to: SocketAddr, listen_port: u16, metering:
     log::debug!("[osc] register sent to {to} (listen_port={listen_port}, metering={metering})");
 }
 
-fn send_int(socket: &UdpSocket, to: SocketAddr, addr: &str, value: i32) {
-    send_ints(socket, to, addr, &[value]);
+fn send_int(link: &mut Link, socket: &UdpSocket, to: SocketAddr, addr: &str, value: i32) {
+    send_ints(link, socket, to, addr, &[value]);
 }
 
-fn send_ints(socket: &UdpSocket, to: SocketAddr, addr: &str, values: &[i32]) {
+fn send_ints(link: &mut Link, socket: &UdpSocket, to: SocketAddr, addr: &str, values: &[i32]) {
     send_args(
+        link,
         socket,
         to,
         addr,
@@ -709,14 +898,14 @@ fn send_ints(socket: &UdpSocket, to: SocketAddr, addr: &str, values: &[i32]) {
     );
 }
 
-fn send_args(socket: &UdpSocket, to: SocketAddr, addr: &str, args: Vec<OscType>) {
+fn send_args(link: &mut Link, socket: &UdpSocket, to: SocketAddr, addr: &str, args: Vec<OscType>) {
     let msg = OscPacket::Message(OscMessage {
         addr: addr.to_owned(),
         args,
     });
     match encoder::encode(&msg) {
         Ok(bytes) => {
-            if let Err(e) = socket.send_to(&bytes, to) {
+            if let Err(e) = link.send(socket, to, &bytes) {
                 log::warn!("[osc] send {addr} to {to} failed: {e}");
             }
         }
@@ -1412,5 +1601,318 @@ mod send_size_tests {
             .count();
         assert_eq!(positions, OBJECTS as usize);
         assert!(len > 2 * MACOS_DEFAULT_SEND_BUFFER, "only {len} bytes");
+    }
+}
+
+/// The stream transport from Studio's side (#680, step 2), against a fake
+/// engine: a UDP socket and, when the test wants one, a TCP listener on the
+/// same port number.
+#[cfg(test)]
+mod stream_link_tests {
+    use super::*;
+    use crate::osc_contract::stream::{MAX_PACKET, frame, read_frame};
+    use std::net::{TcpListener, TcpStream};
+
+    struct FakeEngine {
+        udp: UdpSocket,
+        tcp: Option<TcpListener>,
+    }
+
+    impl FakeEngine {
+        /// A UDP socket and, with `stream`, a TCP listener on its port number
+        /// (another port is taken when that number is busy over UDP).
+        ///
+        /// TCP picks the port: Windows reserves ranges of ports for TCP alone
+        /// (Hyper-V, WinNAT), and a UDP ephemeral port falls in them often
+        /// enough that binding TCP to it failed 16 times in a row on CI.
+        fn new(stream: bool) -> Self {
+            let timed = |udp: UdpSocket| {
+                udp.set_read_timeout(Some(Duration::from_millis(100)))
+                    .unwrap();
+                udp
+            };
+            if !stream {
+                return Self {
+                    udp: timed(UdpSocket::bind("127.0.0.1:0").unwrap()),
+                    tcp: None,
+                };
+            }
+            let mut last_error = None;
+            for _ in 0..64 {
+                let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = tcp.local_addr().unwrap().port();
+                match UdpSocket::bind(("127.0.0.1", port)) {
+                    Ok(udp) => {
+                        return Self {
+                            udp: timed(udp),
+                            tcp: Some(tcp),
+                        };
+                    }
+                    Err(e) => last_error = Some((port, e)),
+                }
+            }
+            panic!("no port free over both TCP and UDP; last refusal: {last_error:?}");
+        }
+
+        fn addr(&self) -> SocketAddr {
+            self.udp.local_addr().unwrap()
+        }
+
+        fn accept(&self, within: Duration) -> Option<TcpStream> {
+            let tcp = self.tcp.as_ref()?;
+            tcp.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + within;
+            while Instant::now() < deadline {
+                if let Ok((stream, _)) = tcp.accept() {
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    return Some(stream);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            None
+        }
+
+        /// The address of the next datagram that arrives within `within`.
+        fn datagram(&self, within: Duration) -> Option<String> {
+            let deadline = Instant::now() + within;
+            let mut buf = [0u8; 4096];
+            while Instant::now() < deadline {
+                if let Ok((n, _)) = self.udp.recv_from(&mut buf) {
+                    if let Ok((_, OscPacket::Message(m))) = decoder::decode_udp(&buf[..n]) {
+                        return Some(m.addr);
+                    }
+                }
+            }
+            None
+        }
+    }
+
+    fn read_message(stream: &mut TcpStream) -> Option<OscMessage> {
+        let packet = read_frame(stream, MAX_PACKET).ok()??;
+        match decoder::decode_udp(&packet).ok()?.1 {
+            OscPacket::Message(m) => Some(m),
+            OscPacket::Bundle(_) => None,
+        }
+    }
+
+    fn send_message(stream: &mut TcpStream, addr: &str, args: Vec<OscType>) {
+        let bytes = encoder::encode(&OscPacket::Message(OscMessage {
+            addr: addr.into(),
+            args,
+        }))
+        .unwrap();
+        stream.write_all(&frame(&bytes).unwrap()).unwrap();
+    }
+
+    fn start(engine: &FakeEngine) -> (Arc<OscStats>, ControlTx, Worker) {
+        let (stats, tx, worker, _) = start_with_model(engine);
+        (stats, tx, worker)
+    }
+
+    fn start_with_model(engine: &FakeEngine) -> (Arc<OscStats>, ControlTx, Worker, SharedLive) {
+        let stats = OscStats::new();
+        let live: SharedLive = Arc::new(Mutex::new(Live::new(
+            crate::model::app_state::AppState::new(Vec::new()),
+        )));
+        let (_, tx, worker) = spawn_listener(
+            live.clone(),
+            Arc::new(|| {}),
+            stats.clone(),
+            ListenerConfig {
+                listen_port: 0,
+                register: Some(engine.addr()),
+                metering: false,
+                playout_sync: false,
+            },
+        )
+        .unwrap();
+        (stats, tx, worker, live)
+    }
+
+    fn wait_for(what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    use std::io::Write;
+
+    /// An engine on this machine that serves the stream gets the
+    /// registration, the heartbeat and the controls over TCP, and nothing
+    /// over UDP; its heartbeat ack marks the client connected at once.
+    #[test]
+    fn a_local_engine_with_a_stream_is_reached_over_tcp() {
+        let engine = FakeEngine::new(true);
+        let (stats, tx, mut worker) = start(&engine);
+        let mut stream = engine
+            .accept(Duration::from_secs(5))
+            .expect("Studio connects over TCP");
+        let first: Vec<_> = (0..3)
+            .map(|_| read_message(&mut stream).expect("a framed message").addr)
+            .collect();
+        assert_eq!(
+            first,
+            [
+                crate::osc_contract::REGISTER,
+                crate::osc_contract::CONTROL_METERING,
+                crate::osc_contract::HEARTBEAT,
+            ]
+        );
+        send_message(
+            &mut stream,
+            crate::osc_contract::HEARTBEAT_ACK,
+            vec![OscType::Int(7), OscType::Int(0)],
+        );
+        wait_for("the ack over TCP registers the client", || {
+            stats.registered.load(Ordering::Relaxed)
+        });
+
+        tx.send(Control::Send {
+            address: "/test/over-the-stream".into(),
+            args: vec![],
+        })
+        .unwrap();
+        let mut seen = false;
+        for _ in 0..16 {
+            match read_message(&mut stream) {
+                Some(m) if m.addr == "/test/over-the-stream" => {
+                    seen = true;
+                    break;
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        assert!(seen, "controls go over the stream");
+        assert_eq!(
+            engine.datagram(Duration::from_millis(300)),
+            None,
+            "nothing by UDP"
+        );
+        worker.shutdown();
+    }
+
+    /// No stream at the engine's port: datagrams, as before revision 2.
+    #[test]
+    fn an_engine_without_a_stream_is_reached_by_datagrams() {
+        let engine = FakeEngine::new(false);
+        let (_stats, _tx, mut worker) = start(&engine);
+        assert_eq!(
+            engine.datagram(Duration::from_secs(2)).as_deref(),
+            Some(crate::osc_contract::REGISTER)
+        );
+        worker.shutdown();
+    }
+
+    /// The engine closes the stream (a restart, a handoff): the client is no
+    /// longer connected, and it connects again.
+    #[test]
+    fn a_closed_stream_is_opened_again() {
+        let engine = FakeEngine::new(true);
+        let (stats, _tx, mut worker) = start(&engine);
+        let mut stream = engine.accept(Duration::from_secs(5)).unwrap();
+        let _ = read_message(&mut stream);
+        send_message(
+            &mut stream,
+            crate::osc_contract::HEARTBEAT_ACK,
+            vec![OscType::Int(7), OscType::Int(0)],
+        );
+        wait_for("registered", || stats.registered.load(Ordering::Relaxed));
+        drop(stream);
+        wait_for("the close is noticed", || {
+            !stats.registered.load(Ordering::Relaxed)
+        });
+        let mut again = engine
+            .accept(Duration::from_secs(5))
+            .expect("Studio connects again");
+        assert_eq!(
+            read_message(&mut again).map(|m| m.addr).as_deref(),
+            Some(crate::osc_contract::REGISTER)
+        );
+        worker.shutdown();
+    }
+
+    /// Something that is not an engine owns the port number over TCP: it
+    /// accepts and never speaks OSC. Studio gives up on it and registers by
+    /// datagrams.
+    #[test]
+    fn a_silent_stream_is_left_for_datagrams() {
+        let engine = FakeEngine::new(true);
+        let (_stats, _tx, mut worker) = start(&engine);
+        let _held = engine.accept(Duration::from_secs(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut registered_by_udp = false;
+        while !registered_by_udp && Instant::now() < deadline {
+            registered_by_udp = engine.datagram(Duration::from_millis(200)).as_deref()
+                == Some(crate::osc_contract::REGISTER);
+        }
+        assert!(registered_by_udp, "datagrams once the stream proved silent");
+        worker.shutdown();
+    }
+
+    /// A session that was fully up over TCP (snapshot complete) loses its
+    /// stream and carries on over datagrams, answered there: nothing about
+    /// that session asks to register again, yet the stream is tried again
+    /// and taken back.
+    #[test]
+    fn an_initialized_session_goes_back_to_the_stream() {
+        let engine = FakeEngine::new(true);
+        let (stats, _tx, mut worker, live) = start_with_model(&engine);
+        let mut stream = engine.accept(Duration::from_secs(5)).unwrap();
+        let _ = read_message(&mut stream);
+        send_message(
+            &mut stream,
+            crate::osc_contract::HEARTBEAT_ACK,
+            vec![OscType::Int(7), OscType::Int(0)],
+        );
+        send_message(
+            &mut stream,
+            crate::osc_contract::STATE_SNAPSHOT_COMPLETE,
+            vec![],
+        );
+        wait_for("registered with the snapshot", || {
+            stats.registered.load(Ordering::Relaxed) && live.lock().unwrap().app.osc_snapshot_ready
+        });
+        drop(stream);
+
+        // The engine answers by datagrams from now on: every heartbeat or
+        // registration gets an ack and the snapshot's end, so the datagram
+        // session is healthy.
+        let udp = engine.udp.try_clone().unwrap();
+        let answering = Arc::new(AtomicBool::new(true));
+        let answer = {
+            let answering = answering.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let reply = |addr: &str, args: Vec<OscType>| {
+                    encoder::encode(&OscPacket::Message(OscMessage {
+                        addr: addr.into(),
+                        args,
+                    }))
+                    .unwrap()
+                };
+                while answering.load(Ordering::Relaxed) {
+                    if let Ok((_, from)) = udp.recv_from(&mut buf) {
+                        let ack = reply(
+                            crate::osc_contract::HEARTBEAT_ACK,
+                            vec![OscType::Int(7), OscType::Int(0)],
+                        );
+                        let done = reply(crate::osc_contract::STATE_SNAPSHOT_COMPLETE, vec![]);
+                        let _ = udp.send_to(&ack, from);
+                        let _ = udp.send_to(&done, from);
+                    }
+                }
+            })
+        };
+        let again = engine.accept(Duration::from_secs(8));
+        answering.store(false, Ordering::Relaxed);
+        answer.join().unwrap();
+        assert!(again.is_some(), "the stream is taken back");
+        worker.shutdown();
     }
 }

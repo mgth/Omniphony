@@ -39,10 +39,13 @@ Dependency shape:
 /usr/share/omniphony-studio-egui/   # its shipped files: layouts → ../orender/layouts, assets/
 ```
 
-The engine auto-discovers any `*_bridge.so` next to the host executable; system
-hosts in `/usr/bin` won't find one there, so point them at the plugin
-explicitly — either `render.bridge_path` in `~/.config/omniphony/config.yaml`
-(shared by the CLI, Studio and mpv) or on the mpv command line:
+The engine auto-discovers the file `$ORENDER_BRIDGE_FILE` names, else a
+`*_bridge.so` next to the host executable, then in `$ORENDER_BRIDGE_DIR`, then in the per-user engine folder
+(`~/.local/share/omniphony/lib`), then in `/usr/lib/orender`, so the packaged
+bridge is found by mpv, the `orender` CLI and Studio's own renderer with no
+configuration. To use another file, name it in `render.bridge_path` in
+`~/.config/omniphony/config.yaml` (shared by the CLI, Studio and mpv) or on the
+mpv command line:
 
 ```
 mpv --ad=orender \

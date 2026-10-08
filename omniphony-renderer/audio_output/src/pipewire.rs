@@ -35,7 +35,7 @@ const SPA_PROP_RATE: u32 = pw::spa::sys::SPA_PROP_rate;
 
 /// Convert speaker name to PipeWire channel position name
 /// PipeWire expects lowercase positions like "FL", "FR", "FC", "LFE", "RL", "RR", etc.
-fn to_pipewire_position(name: &str) -> String {
+pub(crate) fn to_pipewire_position(name: &str) -> String {
     match name {
         "C" => "FC".to_string(),    // Center → Front-Center
         "BL" => "RL".to_string(),   // Back-Left → Rear-Left
@@ -66,7 +66,7 @@ fn to_pipewire_position(name: &str) -> String {
 /// the graph it is triggered by — hands the output stream a clock that only
 /// this stream keeps alive. The ring then stops draining altogether, which
 /// reads as an endless "Buffer drain timeout" and total silence.
-fn output_target_properties(target: &str) -> [(&'static str, &str); 4] {
+pub(crate) fn output_target_properties(target: &str) -> [(&'static str, &str); 4] {
     [
         ("target.object", target),
         ("node.target", target),

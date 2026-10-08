@@ -81,7 +81,7 @@ cd ~/omniphony
 unzip ~/Downloads/harletty-bridge-v0.8.0-linux-x86_64.zip   # adds libharletty_bridge.so
 ```
 
-If your `~/.config/omniphony/config.yaml` already exists (Studio writes one) and
+If your `~/.config/omniphony/config.yaml` already exists (Studio writes it when you press Save) and
 sets `render.bridge_path`, that path is used instead, and it must point at this
 file. Remove the line, or change it to `/home/you/omniphony/libharletty_bridge.so`
 (an absolute path).
@@ -154,6 +154,11 @@ tar xzf ~/Downloads/omniphony-studio-egui-v0.6.0-linux-x86_64.tar.gz --strip-com
    `~/omniphony/mpv --ad=orender --ad-orender-osc film.mkv`
    (or set `osc: true` under `render:` in the config). With the AUR packages
    the player is on your `PATH`: `mpv --ad=orender --ad-orender-osc film.mkv`.
+   From the next release, the flag is only needed with a config file that
+   leaves OSC off: with no config file the engine turns OSC on by itself, and
+   the config Studio then writes when you press Save keeps it on. (A config
+   that says `osc: false`, or one saved before that release without
+   `osc: true`, leaves it off.)
 2. Then, from another terminal, start `~/omniphony/studio/omniphony-studio-egui`
    (with the AUR, `paru -S omniphony-studio-egui`, then `omniphony-studio-egui`).
    It connects by itself.
@@ -162,6 +167,17 @@ Start them in this order. If Studio finds no renderer for six seconds, it starts
 its own (*Auto-start local renderer*, in the connection settings), and that one
 holds the port the player needs. When you only use Studio with the player,
 switch that option off.
+
+Studio's own renderer uses the bridge your `mpv.conf` names
+(`ad-orender-bridge-path=`, with an absolute path), else it looks next to its
+`orender`, in `~/.local/share/omniphony/lib/`, then in `/usr/lib/orender/`
+(where the AUR puts it). It does not know the player's folder: a bridge that
+only sits next to `mpv`, with no `mpv.conf` line naming it, is not found.
+Without one it still runs, and Studio shows an orange *No decoder* banner:
+films keep playing in the player. To give it the bridge too, add
+`ad-orender-bridge-path=/home/you/omniphony/libharletty_bridge.so` to
+`~/.config/mpv/mpv.conf`, or copy `libharletty_bridge.so` into
+`~/.local/share/omniphony/lib/`, a folder the player also searches.
 
 ## When it does not work
 

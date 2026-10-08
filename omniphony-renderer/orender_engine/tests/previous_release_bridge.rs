@@ -15,7 +15,6 @@
 //! ```
 
 use abi_stable::library::lib_header_from_path;
-use abi_stable::std_types::RSlice;
 use bridge_api::RInputTransport;
 use orender_engine::bridge_loader::{LoadedBridge, host_bridge_api_version};
 use std::path::{Path, PathBuf};
@@ -65,9 +64,7 @@ fn decodes_the_demo(loaded: &mut LoadedBridge) {
     assert!(loaded.configure("presentation", "best"));
     let mut frames = 0;
     for chunk in data.chunks(16 * 1024).take(8) {
-        let result = loaded
-            .bridge
-            .push_packet(RSlice::from_slice(chunk), RInputTransport::Raw, 0);
+        let result = loaded.bridge.push_packet(chunk, RInputTransport::Raw, 0);
         assert!(
             result.error_message.is_empty(),
             "decode error: {}",

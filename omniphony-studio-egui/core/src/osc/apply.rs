@@ -3,11 +3,10 @@
 //! Tauri host (`src-tauri/src/osc_listener.rs`). These are pure functions over
 //! `AppState` and the OSC socket; keep them in sync with the host.
 
-use std::net::UdpSocket;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use rosc::{OscPacket, OscType};
+use rosc::OscType;
 
 use crate::model::app_state::*;
 use crate::model::layouts::{Layout, Speaker};
@@ -20,6 +19,7 @@ struct AudioDomainState {
     output_devices: Option<Vec<OutputDeviceOption>>,
     output_device: Option<String>,
     output_device_effective: Option<String>,
+    output_host: Option<String>,
     output_backend: Option<String>,
     output_file: Option<String>,
     output_file_format: Option<String>,
@@ -413,6 +413,9 @@ pub fn apply_audio_domain_state(s: &mut AppState, value: &str) -> bool {
     if let Some(output_device_effective) = parsed.output_device_effective {
         s.set_audio_effective_output_device(&output_device_effective);
     }
+    if let Some(output_host) = parsed.output_host {
+        s.set_audio_output_host(&output_host);
+    }
     if let Some(output_backend) = parsed.output_backend {
         s.set_audio_output_backend(Some(output_backend));
     }
@@ -564,6 +567,20 @@ pub fn apply_input_domain_state(s: &mut AppState, value: &str) -> bool {
     true
 }
 
+/// The speakers of `binaural.brir.layout`: the BRIR set's loudspeakers the
+/// render pans onto, in the layout state's shape. `None` while the editable
+/// layout renders (the key absent or null).
+fn brir_layout_speakers(binaural: &serde_json::Value) -> Option<Vec<Speaker>> {
+    let layout = binaural.get("brir")?.get("layout")?;
+    let parsed = <LayoutDomainState as serde::Deserialize>::deserialize(layout).ok()?;
+    let speakers: Vec<Speaker> = parsed
+        .speakers
+        .into_iter()
+        .map(normalized_layout_domain_speaker)
+        .collect();
+    (!speakers.is_empty()).then_some(speakers)
+}
+
 pub fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<RendererDomainState>(value) else {
         return false;
@@ -584,6 +601,7 @@ pub fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
         s.object_size_intervals = object_size_intervals;
     }
     if let Some(binaural) = parsed.binaural {
+        s.brir_speakers = brir_layout_speakers(&binaural);
         s.binaural = Some(binaural);
     }
     if let Some(master_gain) = parsed.master_gain {
@@ -814,26 +832,19 @@ pub fn gaintable_check_nack(now: Instant) -> Vec<(u32, Vec<u32>)> {
     out
 }
 
-pub fn send_gaintable_nack(
-    socket: &UdpSocket,
-    host: &str,
-    rx_port: u16,
-    version: u32,
-    missing: &[u32],
-) {
-    use rosc::{OscMessage, encoder};
-    for group in missing.chunks(GAINTABLE_NACK_MAX_INDICES) {
-        let mut args = Vec::with_capacity(group.len() + 1);
-        args.push(OscType::Int(version as i32));
-        args.extend(group.iter().map(|&i| OscType::Int(i as i32)));
-        let msg = OscPacket::Message(OscMessage {
-            addr: "/omniphony/control/debug/speaker_gaintable/nack".to_string(),
-            args,
-        });
-        if let Ok(bytes) = encoder::encode(&msg) {
-            let _ = socket.send_to(&bytes, format!("{host}:{rx_port}"));
-        }
-    }
+/// The NACK messages asking the renderer again for gain-table `version`'s
+/// `missing` chunks, a bounded number of indices each. The listener sends
+/// them on its link to the renderer.
+pub fn gaintable_nack_messages(version: u32, missing: &[u32]) -> Vec<Vec<OscType>> {
+    missing
+        .chunks(GAINTABLE_NACK_MAX_INDICES)
+        .map(|group| {
+            let mut args = Vec::with_capacity(group.len() + 1);
+            args.push(OscType::Int(version as i32));
+            args.extend(group.iter().map(|&i| OscType::Int(i as i32)));
+            args
+        })
+        .collect()
 }
 
 /// Copied from the host's `commands/input.rs`.
@@ -1411,5 +1422,75 @@ mod domain_state_tests {
                 assert!(outcome.is_ok(), "{domain} panicked on {input:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod audio_domain_tests {
+    use super::*;
+
+    /// The output host the engine names reaches the model, and an empty
+    /// string (no stream open, or a backend without a host) clears it.
+    #[test]
+    fn the_output_host_is_kept_and_cleared() {
+        let mut state = AppState::default();
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"outputHost": "WASAPI (fallback: no ASIO driver)"}"#
+        ));
+        assert_eq!(
+            state.audio.audio_output_host.as_deref(),
+            Some("WASAPI (fallback: no ASIO driver)")
+        );
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"outputHost": ""}"#
+        ));
+        assert_eq!(state.audio.audio_output_host, None);
+        // An engine that predates the field leaves the model alone.
+        state.set_audio_output_host("ASIO");
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"sampleRate": 48000}"#
+        ));
+        assert_eq!(state.audio.audio_output_host.as_deref(), Some("ASIO"));
+    }
+}
+
+#[cfg(test)]
+mod brir_layout_tests {
+    use super::*;
+
+    /// A renderer state carrying a BRIR set's loudspeakers puts them in the
+    /// model, read-only; one without (or with `null`) takes them away, and the
+    /// editable layout is what the speakers are again.
+    #[test]
+    fn a_brir_layout_in_the_renderer_state_replaces_the_speakers_read_only() {
+        let mut state = AppState::default();
+        assert!(!state.speakers_read_only());
+        let with_layout = r#"{"binaural": {"brir": {"layout": {"radius_m": 1.0, "speakers": [
+            {"name": "C", "coord_mode": "cartesian", "x": 0.0, "y": 1.0, "z": 0.0,
+             "azimuth": 0.0, "elevation": 0.0, "distance": 1.0, "spatialize": true},
+            {"name": "FL", "coord_mode": "cartesian", "x": -0.57735, "y": 1.0, "z": 0.0,
+             "azimuth": -30.0, "elevation": 0.0, "distance": 1.1547, "spatialize": true},
+            {"name": "LFE", "coord_mode": "polar", "x": 0.0, "y": 0.866, "z": -0.5,
+             "azimuth": 0.0, "elevation": -30.0, "distance": 1.0, "spatialize": false}
+        ]}}}}"#;
+        assert!(apply_renderer_domain_state(&mut state, with_layout));
+        let speakers = state
+            .brir_speakers
+            .as_ref()
+            .expect("the set's loudspeakers");
+        let names: Vec<&str> = speakers.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(names, ["C", "FL", "LFE"]);
+        assert_eq!(speakers[2].spatialize, 0);
+        assert!(state.speakers_read_only());
+
+        assert!(apply_renderer_domain_state(
+            &mut state,
+            r#"{"binaural": {"brir": {"layout": null}}}"#
+        ));
+        assert!(state.brir_speakers.is_none());
+        assert!(!state.speakers_read_only());
     }
 }

@@ -430,6 +430,11 @@ pub struct RuntimeAudioState {
     pub audio_sample_format: Option<String>,
     #[serde(rename = "audioError")]
     pub audio_error: Option<String>,
+    /// The host the engine's output stream plays through, as the engine
+    /// names it: `ASIO`, `WASAPI (fallback: no ASIO driver)`, `CoreAudio`.
+    /// `None` when no stream is open or the backend names no host.
+    #[serde(rename = "audioOutputHost")]
+    pub audio_output_host: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -519,6 +524,11 @@ pub struct AppState {
     /// the UI without a typed mirror here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binaural: Option<serde_json::Value>,
+    /// The loudspeakers of the BRIR set a headphone render pans onto in place
+    /// of the editable layout (`binaural.brir.layout`), while it does. Set
+    /// from the renderer state; read-only, the measurement fixes them.
+    #[serde(skip)]
+    pub brir_speakers: Option<Vec<super::layouts::Speaker>>,
     /// Declared live options (`options` block of `/state/renderer`, canonical
     /// snake_case keys straight from the renderer's registry). Passthrough
     /// JSON: a registry row needs no typed mirror here (registry RFC phase 1).
@@ -772,6 +782,29 @@ impl ContractMismatch {
     }
 }
 
+/// What is wrong with the connected renderer's decoder bridge, as its
+/// `render/bridge_error` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BridgeProblemKind {
+    /// No bridge was asked for and auto-discovery found none
+    /// (osc-contract `BRIDGE_ERROR_NONE_FOUND`). The renderer runs without a
+    /// decoder: PCM and channel input still work. A degraded but normal state,
+    /// the usual one for Studio's standby renderer while the player, which has
+    /// its own bridge, plays films.
+    NoDecoder,
+    /// A bridge was asked for (`render.bridge_path`, `--bridge-path`) or
+    /// found, and could not be loaded: a wrong path, a mismatched release, a
+    /// file that is no bridge. Something to fix.
+    LoadFailed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgeProblem {
+    pub kind: BridgeProblemKind,
+    /// The engine's own report, trimmed: what it searched, what it refused.
+    pub report: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigRefusal {
     /// `parse_error`: the file failed to parse, and the renderer runs on its
@@ -783,6 +816,30 @@ pub enum ConfigRefusal {
 }
 
 impl AppState {
+    /// Whether the speakers shown cannot be edited: the backend froze them,
+    /// or they are a BRIR set's own loudspeakers.
+    pub fn speakers_read_only(&self) -> bool {
+        self.render_backend_state.frozen_speakers || self.brir_speakers.is_some()
+    }
+
+    /// The renderer's decoder bridge problem, if it reported one. An engine
+    /// predating the "none found" marker reports every problem as a failure.
+    pub fn bridge_problem(&self) -> Option<BridgeProblem> {
+        let report = self.render_bridge_error.as_deref()?.trim();
+        if report.is_empty() {
+            return None;
+        }
+        let kind = if report.contains(crate::osc_contract::BRIDGE_ERROR_NONE_FOUND) {
+            BridgeProblemKind::NoDecoder
+        } else {
+            BridgeProblemKind::LoadFailed
+        };
+        Some(BridgeProblem {
+            kind,
+            report: report.to_owned(),
+        })
+    }
+
     /// Why the renderer will not write its configuration file, if it said so.
     /// A Reload that reads the file publishes the status again, which lifts
     /// it.
@@ -943,6 +1000,14 @@ impl AppState {
         self.audio.audio_sample_format = Some(value);
     }
 
+    pub fn set_audio_output_host(&mut self, value: &str) {
+        self.audio.audio_output_host = if value.trim().is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        };
+    }
+
     pub fn set_audio_error(&mut self, value: &str) -> Option<String> {
         self.audio.audio_error = if value.trim().is_empty() {
             None
@@ -980,6 +1045,7 @@ impl Default for AppState {
             render_evaluation_mode_state: RenderEvaluationModeState::default(),
             object_size_intervals: 0,
             binaural: None,
+            brir_speakers: None,
             options: None,
             vbap_allow_negative_z: None,
             adaptive_resampling: Some(0),
@@ -1308,5 +1374,63 @@ mod contract_mismatch_tests {
     #[test]
     fn nothing_is_said_before_the_capabilities_arrive() {
         assert_eq!(with_caps(None).contract_mismatch(), None);
+    }
+}
+
+#[cfg(test)]
+mod bridge_problem_tests {
+    use super::{AppState, BridgeProblemKind};
+    use crate::osc_contract::BRIDGE_ERROR_NONE_FOUND;
+
+    fn with_error(error: Option<&str>) -> AppState {
+        let mut app = AppState::new(Vec::new());
+        app.render_bridge_error = error.map(str::to_owned);
+        app
+    }
+
+    /// What the CLI publishes when nothing was asked for and nothing found:
+    /// its own context in front of the engine's marker.
+    #[test]
+    fn nothing_found_is_no_decoder_not_a_failure() {
+        let error = format!(
+            "format bridge unavailable: {BRIDGE_ERROR_NONE_FOUND}: none requested \
+             (no explicit path, no render.bridge_path) and none in the \
+             auto-discovery directories: No bridge plugin found."
+        );
+        let problem = with_error(Some(&error)).bridge_problem().unwrap();
+        assert_eq!(problem.kind, BridgeProblemKind::NoDecoder);
+        assert_eq!(problem.report, error);
+    }
+
+    #[test]
+    fn a_requested_bridge_that_does_not_load_is_a_failure() {
+        for error in [
+            "format bridge unavailable: render.bridge_path '/x/libh_bridge.so' \
+             (from config) does not exist or is not a file.",
+            "Failed to load bridge plugin from /x/libh_bridge.so: bridge_api 0.4.0",
+            // An engine from before the marker: its "none found" text included.
+            "no decoder bridge requested (no explicit path, no render.bridge_path) \
+             and none found by auto-discovery",
+        ] {
+            let problem = with_error(Some(error)).bridge_problem().unwrap();
+            assert_eq!(problem.kind, BridgeProblemKind::LoadFailed, "{error}");
+        }
+    }
+
+    #[test]
+    fn no_error_or_a_blank_one_is_no_problem() {
+        assert_eq!(with_error(None).bridge_problem(), None);
+        assert_eq!(with_error(Some("  \n")).bridge_problem(), None);
+    }
+
+    /// The published report is shown trimmed, as the banner did before.
+    #[test]
+    fn the_report_is_trimmed() {
+        let error = format!("  {BRIDGE_ERROR_NONE_FOUND}: none requested\n");
+        let problem = with_error(Some(&error)).bridge_problem().unwrap();
+        assert_eq!(
+            problem.report,
+            format!("{BRIDGE_ERROR_NONE_FOUND}: none requested")
+        );
     }
 }

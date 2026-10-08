@@ -82,7 +82,7 @@ render:
 EOF
 ```
 
-Only append this if the file has no `render:` section yet (Studio writes one).
+Only append this if the file has no `render:` section yet (Studio writes one when you press Save).
 Otherwise, put the `bridge_path:` line under the `render:` already there. The
 path must be absolute: `~` is not expanded.
 
@@ -148,6 +148,11 @@ xattr -dr com.apple.quarantine omniphony-studio-egui-v0.6.0-macos-arm64
 
 1. Start the player first, with OSC on: `mpv --ad=orender --ad-orender-osc film.mkv`
    (or set `osc: true` under `render:` in the config).
+   From the next release, the flag is only needed with a config file that
+   leaves OSC off: with no config file the engine turns OSC on by itself, and
+   the config Studio then writes when you press Save keeps it on. (A config
+   that says `osc: false`, or one saved before that release without
+   `osc: true`, leaves it off.)
 2. Then, from another Terminal window, start
    `~/omniphony/omniphony-studio-egui-v0.6.0-macos-arm64/omniphony-studio-egui`.
    It connects by itself.
@@ -156,6 +161,12 @@ Start them in this order. If Studio finds no renderer for six seconds, it starts
 its own (*Auto-start local renderer*, in the connection settings), and that one
 holds the port the player needs. When you only use Studio with the player,
 switch that option off.
+
+Studio's own renderer reads the same `config.yaml`, so the `bridge_path` of
+step 2 serves it too. Without one there, it uses the bridge named in
+`~/.config/mpv/mpv.conf` (`ad-orender-bridge-path=`, with an absolute path).
+Without a bridge it still runs, and Studio shows an orange *No decoder* banner:
+films keep playing in the player.
 
 ## When it does not work
 

@@ -47,6 +47,11 @@ pub struct AppliedAudioOutputState {
     pub output_sample_rate_hz: Option<u32>,
     pub sample_format: String,
     pub audio_error: Option<String>,
+    /// The host the open output stream plays through, as Studio shows it
+    /// (`ASIO`, `WASAPI (fallback: no ASIO driver)`, `CoreAudio`); `None`
+    /// when no stream is open or the backend has no host to name (PipeWire,
+    /// file).
+    pub output_host: Option<&'static str>,
 }
 
 pub struct AudioControl {
@@ -307,6 +312,14 @@ impl AudioControl {
 
     pub fn set_effective_output_device(&self, output_device: Option<String>) {
         self.update_applied(|applied| applied.output_device = output_device);
+    }
+
+    pub fn set_effective_output_host(&self, output_host: Option<&'static str>) {
+        self.update_applied(|applied| applied.output_host = output_host);
+    }
+
+    pub fn effective_output_host(&self) -> Option<&'static str> {
+        self.applied.lock().output_host
     }
 
     pub fn set_audio_error(&self, error: Option<String>) {
