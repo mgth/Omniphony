@@ -231,68 +231,170 @@ fn resolve_orender_launch_spec(
     Ok(OrenderLaunchSpec { orender_path, args })
 }
 
-/// Path of the `orender` binary this Studio would launch, so the UI can compare
-/// it with the path the connected renderer reports over OSC.
+/// Whether the renderer this Studio launched is still running.
 ///
-/// A mismatch means Studio is driving a renderer it did not start — typically
-/// one left running by another environment, or a system-wide install that
-/// happened to hold the OSC port. Every control still *sends*, but anything the
-/// other build does not implement is silently dropped, which is close to
-/// undiagnosable from the UI. Returns `None` when no binary can be resolved at
-/// all; that is a separate, already-reported condition.
-/// Whether quitting Studio stops the renderer: one it launched and still
-/// runs, unless the user asked to keep it alive. What the quit prompt tells
-/// the user about their unsaved edits depends on it.
-pub fn quitting_stops_renderer(state: &SharedState) -> bool {
-    let running = state
+/// One lock and one `try_wait`, nothing that waits: the restart banner asks
+/// this on every frame it is drawn, and a quit under way on the worker (see
+/// [`quit_launched_renderer`]) must not hold the answer back.
+pub fn launched_renderer_running(state: &SharedState) -> bool {
+    state
         .renderer_child
         .lock()
         .unwrap()
         .as_mut()
-        .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
-    running && !state.config.snapshot().keep_renderer_alive_on_quit
+        .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+}
+
+/// Whether quitting Studio stops the renderer: one it launched and still
+/// runs, unless the user asked to keep it alive. What the quit prompt tells
+/// the user about their unsaved edits depends on it.
+pub fn quitting_stops_renderer(state: &SharedState) -> bool {
+    launched_renderer_running(state) && !state.config.snapshot().keep_renderer_alive_on_quit
 }
 
 /// At quit, take a renderer this Studio launched down with it, unless the
-/// user asked to keep it: a graceful quit first, so it writes its live-state
-/// handoff, then a kill if it has not gone within two seconds. A renderer this
-/// Studio did not start (a service, mpv's own) is left alone.
+/// user asked to keep it. A renderer this Studio did not start (a service,
+/// mpv's own) is left alone.
 pub fn stop_launched_renderer(state: &SharedState) {
     if !quitting_stops_renderer(state) {
         return;
     }
-    let mut guard = state.renderer_child.lock().unwrap();
-    let Some(child) = guard.as_mut() else {
+    quit_launched_renderer(state);
+}
+
+/// Restart the renderer this Studio launched from the binary on disk, so a
+/// rebuilt or updated `orender` is the one that runs. The old instance quits
+/// first, handing its live state over, and the new one is launched with the
+/// saved OSC settings, like the Launch button.
+pub fn restart_launched_renderer(
+    app: &HostPaths,
+    state: &SharedState,
+    host: String,
+    osc_rx_port: u16,
+    osc_port: u16,
+    osc_metering_enabled: bool,
+) -> Result<serde_json::Value, String> {
+    if !launched_renderer_running(state) {
+        return Err("the running renderer was not launched by this Studio".to_string());
+    }
+    // Keep the watchdog from starting a standby in the gap; the launch below
+    // re-arms it.
+    state.watchdog.lock().unwrap().suppressed = true;
+    quit_launched_renderer(state);
+    launch_orender(
+        app,
+        state,
+        host,
+        osc_rx_port,
+        osc_port,
+        osc_metering_enabled,
+        None,
+        None,
+    )
+}
+
+/// How long a renderer asked to quit gets to write its live-state handoff
+/// and go before it is killed.
+const QUIT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Quit the renderer this Studio launched: a graceful quit first, so it
+/// writes its live-state handoff, then a kill if it has not gone within
+/// [`QUIT_GRACE`].
+///
+/// The child's lock is taken for one `try_wait` at a time and released while
+/// this sleeps. Holding it across the grace period stalled everyone asking
+/// whether the renderer still runs, the restart banner first: its frame waited
+/// up to the full two seconds on a renderer slow to answer.
+fn quit_launched_renderer(state: &SharedState) {
+    if state.renderer_child.lock().unwrap().is_none() {
         return;
-    };
+    }
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
             address: osc_contract::CONTROL_QUIT.to_string(),
         },
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + QUIT_GRACE;
     loop {
+        let mut guard = state.renderer_child.lock().unwrap();
+        // Reaped by the watchdog in the meantime: it has gone.
+        let Some(child) = guard.as_mut() else {
+            return;
+        };
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(_)) => return,
             Ok(None) if std::time::Instant::now() < deadline => {
+                drop(guard);
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                break;
+                return;
             }
         }
     }
 }
 
+/// Path of the `orender` binary this Studio would launch, so the UI can compare
+/// it with the path the connected renderer reports over OSC (see
+/// [`renderer_mismatch`]). Returns `None` when no binary can be resolved at
+/// all; that is a separate, already-reported condition.
 pub fn expected_orender_path(app: &HostPaths, orender_path: Option<String>) -> Option<String> {
     // Takes the same optional override the launch commands do, so the caller
     // gets the answer for the settings it is actually about to use.
     resolve_orender_binary(&app, orender_path)
         .ok()
         .map(|path| path.display().to_string())
+}
+
+/// What Linux appends to `/proc/self/exe` (and so to `current_exe()`) once
+/// the file a process was started from has been replaced or removed. The
+/// renderer reports that raw answer; [`renderer_mismatch`] reads it.
+const REPLACED_EXECUTABLE_SUFFIX: &str = " (deleted)";
+
+/// How the renderer answering differs from the one this Studio would launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RendererMismatch {
+    /// The same executable, but its file was replaced since the renderer
+    /// started — typically rebuilt: it still runs the older build, and a
+    /// restart loads the new one.
+    Replaced { path: String },
+    /// Another executable altogether: one left running by another
+    /// environment, or a system-wide install that happened to hold the OSC
+    /// port. Every control still *sends*, but anything that build does not
+    /// implement is silently dropped, which is close to undiagnosable from
+    /// the UI.
+    Foreign { running: String, expected: String },
+}
+
+/// Compare the executable the renderer reports (`running`) with the one this
+/// Studio would launch (`expected`). `None` when they match, while either is
+/// unknown, and always for an embedded producer, which was never ours to
+/// start.
+pub fn renderer_mismatch(
+    embedded: bool,
+    running: Option<&str>,
+    expected: Option<&str>,
+) -> Option<RendererMismatch> {
+    if embedded {
+        return None;
+    }
+    let running = running?.trim();
+    let expected = expected?.trim();
+    if running.is_empty() || expected.is_empty() || running == expected {
+        return None;
+    }
+    if running.strip_suffix(REPLACED_EXECUTABLE_SUFFIX) == Some(expected) {
+        return Some(RendererMismatch::Replaced {
+            path: expected.to_owned(),
+        });
+    }
+    Some(RendererMismatch::Foreign {
+        running: running.to_owned(),
+        expected: expected.to_owned(),
+    })
 }
 
 fn run_command(mut cmd: ProcessCommand, action: &str) -> Result<String, String> {
@@ -886,6 +988,101 @@ pub fn stop_orender(state: &SharedState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mismatch_is_only_claimed_when_both_paths_are_known_and_differ() {
+        let ours = Some("/usr/bin/orender");
+        let theirs = Some("/opt/other/orender");
+        assert_eq!(
+            renderer_mismatch(false, theirs, ours),
+            Some(RendererMismatch::Foreign {
+                running: "/opt/other/orender".into(),
+                expected: "/usr/bin/orender".into(),
+            })
+        );
+        assert_eq!(renderer_mismatch(false, ours, ours), None);
+        // Half the answer is no answer: an unknown path must not be reported
+        // as a mismatch.
+        assert_eq!(renderer_mismatch(false, None, ours), None);
+        assert_eq!(renderer_mismatch(false, theirs, None), None);
+        assert_eq!(renderer_mismatch(false, Some("  "), ours), None);
+        // An embedded producer is never one this Studio started.
+        assert_eq!(renderer_mismatch(true, theirs, ours), None);
+    }
+
+    #[test]
+    fn a_rebuilt_binary_is_the_same_renderer_running_an_older_build() {
+        let ours = Some("/w/omniphony-renderer/target/release/orender");
+        // What Linux reports once the binary was rebuilt under the process.
+        let replaced = Some("/w/omniphony-renderer/target/release/orender (deleted)");
+        assert_eq!(
+            renderer_mismatch(false, replaced, ours),
+            Some(RendererMismatch::Replaced {
+                path: "/w/omniphony-renderer/target/release/orender".into(),
+            })
+        );
+        // A replaced binary elsewhere is still someone else's renderer, shown
+        // as reported.
+        assert_eq!(
+            renderer_mismatch(false, Some("/opt/other/orender (deleted)"), ours),
+            Some(RendererMismatch::Foreign {
+                running: "/opt/other/orender (deleted)".into(),
+                expected: "/w/omniphony-renderer/target/release/orender".into(),
+            })
+        );
+        assert_eq!(renderer_mismatch(true, replaced, ours), None);
+    }
+
+    /// The restart banner's question, asked every frame, must come back at
+    /// once while the worker is quitting the renderer: a renderer that does
+    /// not answer the quit keeps the worker in its grace loop for two seconds,
+    /// and the lock it took across that loop held every frame back with it.
+    #[cfg(unix)]
+    #[test]
+    fn asking_whether_the_renderer_runs_never_waits_on_its_quit() {
+        use crate::host::services::operations::{Action, Operations};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let (state, outbox) = crate::host::commands::tests::state_with_outbox(Arc::new(|| {}));
+        let state = Arc::new(state);
+        // Stands in for a renderer deaf to OSC: the quit runs its whole grace
+        // period to the kill.
+        let child = ProcessCommand::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .spawn()
+            .expect("sh and sleep are available on unix");
+        *state.renderer_child.lock().unwrap() = Some(child);
+        assert!(launched_renderer_running(&state));
+
+        let quitting = {
+            let state = Arc::clone(&state);
+            std::thread::spawn(move || quit_launched_renderer(&state))
+        };
+        // The quit message goes out before the grace loop starts: once it is
+        // here, the worker is in the loop.
+        outbox
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the quit is sent before the grace loop");
+
+        let asked = Instant::now();
+        let action = Operations::default().restart_action(&state);
+        let waited = asked.elapsed();
+        assert!(
+            matches!(action, Some(Action::Restart)),
+            "the renderer is still ours while it is being quit"
+        );
+        assert!(
+            waited < Duration::from_millis(500),
+            "restart_action waited {waited:?} on the quit in progress"
+        );
+
+        quitting.join().unwrap();
+        assert!(
+            !launched_renderer_running(&state),
+            "the grace period ended in a kill"
+        );
+    }
 
     #[test]
     fn the_repo_root_is_the_checkout_that_holds_this_crate() {
