@@ -232,6 +232,10 @@ fn resolve_orender_launch_spec(
 }
 
 /// Whether the renderer this Studio launched is still running.
+///
+/// One lock and one `try_wait`, nothing that waits: the restart banner asks
+/// this on every frame it is drawn, and a quit under way on the worker (see
+/// [`quit_launched_renderer`]) must not hold the answer back.
 pub fn launched_renderer_running(state: &SharedState) -> bool {
     state
         .renderer_child
@@ -289,31 +293,45 @@ pub fn restart_launched_renderer(
     )
 }
 
+/// How long a renderer asked to quit gets to write its live-state handoff
+/// and go before it is killed.
+const QUIT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Quit the renderer this Studio launched: a graceful quit first, so it
-/// writes its live-state handoff, then a kill if it has not gone within two
-/// seconds.
+/// writes its live-state handoff, then a kill if it has not gone within
+/// [`QUIT_GRACE`].
+///
+/// The child's lock is taken for one `try_wait` at a time and released while
+/// this sleeps. Holding it across the grace period stalled everyone asking
+/// whether the renderer still runs, the restart banner first: its frame waited
+/// up to the full two seconds on a renderer slow to answer.
 fn quit_launched_renderer(state: &SharedState) {
-    let mut guard = state.renderer_child.lock().unwrap();
-    let Some(child) = guard.as_mut() else {
+    if state.renderer_child.lock().unwrap().is_none() {
         return;
-    };
+    }
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
             address: osc_contract::CONTROL_QUIT.to_string(),
         },
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + QUIT_GRACE;
     loop {
+        let mut guard = state.renderer_child.lock().unwrap();
+        // Reaped by the watchdog in the meantime: it has gone.
+        let Some(child) = guard.as_mut() else {
+            return;
+        };
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(_)) => return,
             Ok(None) if std::time::Instant::now() < deadline => {
+                drop(guard);
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                break;
+                return;
             }
         }
     }
@@ -1013,6 +1031,57 @@ mod tests {
             })
         );
         assert_eq!(renderer_mismatch(true, replaced, ours), None);
+    }
+
+    /// The restart banner's question, asked every frame, must come back at
+    /// once while the worker is quitting the renderer: a renderer that does
+    /// not answer the quit keeps the worker in its grace loop for two seconds,
+    /// and the lock it took across that loop held every frame back with it.
+    #[cfg(unix)]
+    #[test]
+    fn asking_whether_the_renderer_runs_never_waits_on_its_quit() {
+        use crate::host::services::operations::{Action, Operations};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let (state, outbox) = crate::host::commands::tests::state_with_outbox(Arc::new(|| {}));
+        let state = Arc::new(state);
+        // Stands in for a renderer deaf to OSC: the quit runs its whole grace
+        // period to the kill.
+        let child = ProcessCommand::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .spawn()
+            .expect("sh and sleep are available on unix");
+        *state.renderer_child.lock().unwrap() = Some(child);
+        assert!(launched_renderer_running(&state));
+
+        let quitting = {
+            let state = Arc::clone(&state);
+            std::thread::spawn(move || quit_launched_renderer(&state))
+        };
+        // The quit message goes out before the grace loop starts: once it is
+        // here, the worker is in the loop.
+        outbox
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the quit is sent before the grace loop");
+
+        let asked = Instant::now();
+        let action = Operations::default().restart_action(&state);
+        let waited = asked.elapsed();
+        assert!(
+            matches!(action, Some(Action::Restart)),
+            "the renderer is still ours while it is being quit"
+        );
+        assert!(
+            waited < Duration::from_millis(500),
+            "restart_action waited {waited:?} on the quit in progress"
+        );
+
+        quitting.join().unwrap();
+        assert!(
+            !launched_renderer_running(&state),
+            "the grace period ended in a kill"
+        );
     }
 
     #[test]

@@ -282,14 +282,19 @@ impl StudioSpike {
                         .size(theme::FONT_SIZE_SMALL)
                         .color(theme::TEXT_MUTED),
                 );
-                if restart.is_some() {
+                // The spinner outlives the button: between the old
+                // renderer's exit and the new one's launch there is, for a
+                // frame, no renderer of ours to restart.
+                if restart.is_some() || pending {
                     ui.horizontal_wrapped(|ui| {
-                        clicked = ui
-                            .add_enabled(
-                                !pending,
-                                egui::Button::new(t("status.replacedRendererRestart")),
-                            )
-                            .clicked();
+                        if restart.is_some() {
+                            clicked = ui
+                                .add_enabled(
+                                    !pending,
+                                    egui::Button::new(t("status.replacedRendererRestart")),
+                                )
+                                .clicked();
+                        }
                         if pending {
                             ui.spinner();
                         }
