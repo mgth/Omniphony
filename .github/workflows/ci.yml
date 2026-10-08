@@ -6,7 +6,8 @@ name: CI
 # that touches nothing it builds. The deprecated Tauri Studio is no longer
 # checked (it gets no more changes; release.yml still packages it). macOS (arm64) and Windows (x64) build and test the renderer
 # workspace, the OSC contract and the native Studio; Windows also checks the
-# shared core on stable. Linux arm64 builds and tests the renderer workspace,
+# shared core on stable, and that its binaries need no Visual C++ runtime.
+# Linux arm64 builds and tests the renderer workspace,
 # the engine an embedded box runs. Release archives are built by release.yml.
 # The supported targets, and what each job guarantees for them, are listed in
 # the README ("Supported platforms"); keep the two in step.
@@ -723,6 +724,18 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: omniphony-studio-egui
         run: cargo test --workspace --locked --no-fail-fast
+
+      # The static C runtime (each workspace's .cargo/config.toml): a binary
+      # built without it runs here, where the redistributable is installed,
+      # and fails on a fresh Windows. Only its import table tells.
+      - name: Check the binaries need no Visual C++ runtime (Windows x64)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          python scripts/check_windows_crt_imports.py \
+            omniphony-renderer/target/debug/orender.exe \
+            omniphony-renderer/target/debug/orender.dll \
+            omniphony-studio-egui/target/debug/omniphony-studio-egui.exe
 
   build-linux-arm64:
     # Linux arm64 build and test gate, on GitHub's native arm64 runner (no

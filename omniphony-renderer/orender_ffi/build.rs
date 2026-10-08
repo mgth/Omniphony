@@ -75,6 +75,19 @@ fn main() {
         if profile != "release" {
             println!("cargo:rustc-cdylib-link-arg=/PDBALTPATH:{}", pdb.display());
         }
+
+        // The static C runtime comes from the workspace's .cargo/config.toml,
+        // which a RUSTFLAGS variable silently replaces: the player's workflow
+        // builds this library with one. Without the flag the DLL needs the
+        // Visual C++ Redistributable, and fails to load on a fresh Windows.
+        let features = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+        if !features.split(',').any(|f| f == "crt-static") {
+            println!(
+                "cargo:warning=orender.dll is built without the static C runtime and will \
+                 need the Visual C++ Redistributable: add `-C target-feature=+crt-static` \
+                 to RUSTFLAGS (it replaces omniphony-renderer/.cargo/config.toml)"
+            );
+        }
     }
 
     // Load cbindgen.toml explicitly: the library Builder (unlike the cbindgen

@@ -227,6 +227,19 @@ jobs:
           cargo build --release --locked
           cargo build --release --locked -p orender_ffi
 
+      # What the archives and installers below ship must start on a Windows
+      # without the Visual C++ Redistributable (static C runtime, each
+      # workspace's .cargo/config.toml); the runner has it installed, so only
+      # the import tables tell.
+      - name: Check the binaries need no Visual C++ runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python scripts/check_windows_crt_imports.py \
+            omniphony-renderer/target/release/orender.exe \
+            omniphony-renderer/target/release/orender.dll \
+            omniphony-studio-egui/target/release/omniphony-studio-egui.exe
+
       # Installers of the native Studio (#677): deb + AppImage, NSIS + MSI,
       # .dmg. cargo-packager, configured in omniphony-studio-egui/Cargo.toml;
       # the script also stages orender and the engine library into the

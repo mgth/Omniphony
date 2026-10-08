@@ -188,10 +188,12 @@ which is misleading here: the bridge is not the problem, the engine is.
   and why a copy was rejected:
   `.\mpv -v --no-config --ao=null --vo=null --length=1 av://lavfi:sine 2>&1 | Select-String orender`
 - `The specified module could not be found` in that output, for an
-  `orender.dll` that is there: the engine and the bridge are built with
-  Microsoft's compiler and need the
+  `orender.dll` that is there: the 0.6.0 engine is built with Microsoft's
+  compiler and needs the
   [Microsoft Visual C++ Redistributable (x64)](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist).
-  Install it and try again.
+  Install it and try again. From the next release, Studio, its `orender.exe`
+  and the engine it ships carry that runtime inside and no longer need it;
+  the bridge still does (failure 2).
 - `orender: rejecting '…': ABI major …`: a stale engine, usually the one an
   older Tauri Studio left in `%LOCALAPPDATA%\omniphony\lib\`. Update that Studio,
   or delete the file.
@@ -205,6 +207,11 @@ just before it, starting with `orender_create failed:`:
   not next to `mpv.exe`. Extract it there (step 2).
 - `render.bridge_path '…' (from config) does not exist or is not a file`: the
   config names a path that is wrong. Fix it or remove it (step 2).
+- `Failed to load bridge plugin from …` and, further on, `The specified
+  module could not be found`, for a `harletty_bridge.dll` that is there: the
+  bridge is built with Microsoft's compiler and needs the
+  [Microsoft Visual C++ Redistributable (x64)](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist).
+  Install it and try again.
 - `Failed to load bridge plugin from …` followed by a long
   `Compared <this>: --- Type Layout ---` dump that names two `bridge_api`
   versions: the bridge and the engine come from releases that do not match.
