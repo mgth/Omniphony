@@ -51,8 +51,8 @@ orender: loaded liborender ABI 0.8 0.6.0 … from C:\omniphony\orender.dll (next
 ```
 
 The text in the last brackets says which copy was loaded. `(next to mpv)` is
-the one from the zip. `(studio install)` means a copy deployed by the Tauri
-Studio installer in `%LOCALAPPDATA%\omniphony\lib\` was found first. That copy
+the one from the zip. `(studio install)` means a copy deployed by
+Studio in `%LOCALAPPDATA%\omniphony\lib\` was found first. That copy
 wins over the one next to mpv, so it must be of the same release as the bridge.
 
 From a terminal, `.\mpv` runs `mpv.com`, the console version: it shows the
@@ -237,7 +237,7 @@ which is misleading here: the bridge is not the problem, the engine is.
   and the engine it ships carry that runtime inside and no longer need it;
   the bridge still does (failure 2).
 - `orender: rejecting '…': ABI major …`: a stale engine, usually the one an
-  older Tauri Studio left in `%LOCALAPPDATA%\omniphony\lib\`. Update that Studio,
+  older Studio left in `%LOCALAPPDATA%\omniphony\lib\`. Update that Studio,
   or delete the file.
 
 ### 2. `orender_create failed — decoding natively`, after the engine loaded

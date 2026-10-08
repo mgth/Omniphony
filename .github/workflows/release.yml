@@ -1,11 +1,11 @@
 name: Release
 
 # Triggered by a version tag (v*) or manually.
-# Creates a draft GitHub release with Linux (.deb, .AppImage), Windows (.msi,
-# .exe) and macOS arm64 (.dmg/.app) bundles of the Tauri Studio, the same
-# installers of the native (egui/wgpu) Studio plus one plain archive of it per
-# platform, one archive per platform of the standalone liborender, and the
-# release's compatibility manifest (#676).
+# Creates a draft GitHub release with the Studio's installers (Linux .deb and
+# .AppImage, Windows .exe and .msi, macOS arm64 .dmg) plus one plain archive of
+# it per platform, one archive per platform of the standalone liborender, and
+# the release's compatibility manifest (#676). The Studio is the native
+# (egui/wgpu) one: the Tauri Studio was removed before 0.7.0 (#677).
 on:
   push:
     tags: ['v*']
@@ -39,8 +39,35 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: python3 scripts/release_version.py check --tag "$GITHUB_REF_NAME"
 
-  build-studio:
+  # The draft every build below attaches its files to, created once before
+  # the three platforms start so none of them races another to create it.
+  # A rerun finds the draft already there and keeps it. A manual dispatch has
+  # no tag and no draft: the workflow artifacts are its output.
+  draft:
     needs: guard
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # `gh release view` finds a draft by its tag name too.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "A release for $GITHUB_REF_NAME already exists; reusing it."
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --title "Omniphony $GITHUB_REF_NAME" \
+              --notes "Release notes to come."
+          fi
+
+  build-studio:
+    needs: [guard, draft]
+    # The draft is skipped on a manual dispatch: build anyway.
+    if: ${{ !cancelled() && needs.guard.result == 'success' && needs.draft.result != 'failure' }}
     permissions:
       contents: write
 
@@ -51,9 +78,8 @@ jobs:
           - platform: ubuntu-22.04
           - platform: windows-latest
           # macOS Apple Silicon: CoreAudio output backend, no extra system deps.
-          # tauri-action emits a .dmg/.app; ad-hoc signed (see
-          # APPLE_SIGNING_IDENTITY below) until real signing secrets are
-          # configured.
+          # The .app is ad-hoc signed (omniphony-studio-egui/scripts/package.sh)
+          # until real signing secrets are configured.
           - platform: macos-14
 
     runs-on: ${{ matrix.platform }}
@@ -61,11 +87,6 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       # ── Toolchains ────────────────────────────────────────────────────────
-
-      - name: Setup Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: 20
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
@@ -80,8 +101,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             omniphony-renderer/target
-            omniphony-studio/src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock', 'omniphony-studio/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       # ── Platform dependencies ─────────────────────────────────────────────
@@ -129,13 +149,12 @@ jobs:
             fi
             sleep 20
           done
+          # What the renderer links (PipeWire, ALSA through cpal), the same
+          # list as ci.yml's build-and-test. The Studio links nothing that
+          # needs a -dev package (it dlopens Wayland and xkbcommon).
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
             libpipewire-0.3-dev \
+            libasound2-dev \
             libxkbcommon-dev \
             libwayland-dev \
             pkg-config
@@ -154,52 +173,12 @@ jobs:
 
       # ── Build ─────────────────────────────────────────────────────────────
 
-      - name: Install npm dependencies
-        working-directory: omniphony-studio
-        run: npm ci
-
-      # tauri-action runs tauri.conf.json's beforeBuildCommand automatically:
-      #   "npm run build && npm run prepare-sidecar"
-      # prepare-sidecar compiles orender (cargo build --release) and copies
-      # the binary into src-tauri/binaries/ before Tauri packages the app.
-      - name: Build and publish
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # "-" = ad-hoc codesign of the whole .app during bundling (before the
-          # .app.tar.gz/.dmg are packaged and uploaded — signing after this step
-          # would be too late). No Developer ID: Gatekeeper still blocks the
-          # quarantined download, but the bundle gets a coherent seal so a
-          # quarantine-cleared app launches instead of showing the "damaged"
-          # dialog (#201). Replace with a real identity + notarization once
-          # Apple signing secrets exist. Ignored on Linux/Windows.
-          #
-          # Signing every executable also applies tauri.conf.json's macOS
-          # options: hardenedRuntime is disabled there because it turns on
-          # library validation, which forbids the orender sidecar from
-          # dlopen'ing a bridge signed by another team (#260). Do not re-enable
-          # it without a real Developer ID — see Entitlements.plist.
-          APPLE_SIGNING_IDENTITY: '-'
-        with:
-          projectPath: omniphony-studio
-          # Everything after `--` reaches the cargo Tauri runs for src-tauri,
-          # which is otherwise the one build in the repository that still
-          # resolves its dependencies freely. The CLI places these right after
-          # `build`, before its own flags, so nothing this action appends can
-          # displace them.
-          args: -- --locked
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Omniphony ${{ github.ref_name }}'
-          releaseDraft: true
-          prerelease: false
-
-      # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
-      # The same release ships the native Studio as a plain archive per
+      # ── Studio (egui/wgpu) ────────────────────────────────────────────────
+      # The release ships the Studio as installers and as a plain archive per
       # platform: the binary, the renderer it launches (built from the same
       # commit), the layouts and the head model, laid out as
       # `HostPaths::bundled()` and the asset defaults expect — everything
-      # beside the executable. Built after tauri-action so the draft release
-      # exists by the time the archive is attached to it.
+      # beside the executable.
       #
       # Its own build tree and toolchain: rust-toolchain.toml in the crate
       # pins a newer rustc than the renderer's, and rustup installs it when
@@ -216,11 +195,8 @@ jobs:
         working-directory: omniphony-studio-egui
         run: cargo build --release --locked
 
-      # The renderer the archive ships and the engine library the liborender
-      # archive below ships, built here rather than taken from the Tauri
-      # sidecar staging (src-tauri/binaries/) so neither depends on the
-      # deprecated host's build. Same commands as the Tauri build's
-      # prepare-sidecar, so on this runner they find the build done.
+      # The renderer the Studio ships and the engine library the installers
+      # and the liborender archive below ship, from the same commit.
       - name: Build the renderer and the engine library
         working-directory: omniphony-renderer
         run: |
@@ -337,11 +313,11 @@ jobs:
           name: studio-egui-installers-${{ runner.os }}
           path: ${{ env.studio_installers }}
 
-      # Attached to the draft tauri-action created for this tag. `gh` finds a
-      # draft by its tag name (drafts have no ref yet, so the tag lookup alone
-      # would miss it). A manual dispatch has no tag and no draft: the
-      # workflow artifact above is its output.
-      - name: Attach the native Studio and liborender archives to the draft release
+      # Attached to the draft the `draft` job created for this tag. `gh` finds
+      # a draft by its tag name (drafts have no ref yet, so the tag lookup
+      # alone would miss it). A manual dispatch has no tag and no draft: the
+      # workflow artifacts above are its output.
+      - name: Attach the Studio and liborender archives to the draft release
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:

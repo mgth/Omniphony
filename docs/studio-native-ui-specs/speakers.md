@@ -1,6 +1,11 @@
 # Viewport parity spec — speakers, speaker gauges, per-speaker heatmaps, gain-table transport
 
-Scope: `omniphony-studio/src/speakers.js`, `src/scene/speaker-gaintable.js`, `src/scene/speaker-band-bars.js`, `src/scene/speaker-band-select.js`, `src/scene/speaker-solo-volume.js`, `src/scene/discontinuity-volume.js`, plus the OSC/Tauri path in `src-tauri/src/osc_parser.rs` / `osc_listener.rs` / `commands/diag.rs` and the renderer-side encoder (`omniphony-renderer/renderer/src/band_gaintable.rs`, `runtime_control/src/osc.rs`, `orender_engine/src/osc/{dispatch,gaintable}.rs`). All paths below are relative to `omniphony-studio/` unless prefixed with `omniphony-renderer/`. Line numbers are from the integration tree on 2026-09-10.
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
+Scope: [`omniphony-studio/src/speakers.js`](https://github.com/mgth/Omniphony/blob/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src/speakers.js), `src/scene/speaker-gaintable.js`, `src/scene/speaker-band-bars.js`, `src/scene/speaker-band-select.js`, `src/scene/speaker-solo-volume.js`, `src/scene/discontinuity-volume.js`, plus the OSC/Tauri path in `src-tauri/src/osc_parser.rs` / `osc_listener.rs` / `commands/diag.rs` and the renderer-side encoder (`omniphony-renderer/renderer/src/band_gaintable.rs`, `runtime_control/src/osc.rs`, `orender_engine/src/osc/{dispatch,gaintable}.rs`). All paths below are relative to [`omniphony-studio/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio) unless prefixed with `omniphony-renderer/`. Line numbers are from the integration tree on 2026-09-10.
 
 Helpers that live in other files but that these visuals cannot be reproduced without (`scene/materials.js`, `sources.js` `applySpeakerLevel`/`updateSpeakerColorsFromSelection`, `coordinates.js`, `scene/labels.js`, `scene/gizmos.js`, `scene/energy-volume-core.js`, `scene/object-energy-shared.js`) are quoted with references; their own specs in this directory are authoritative for anything not stated here.
 

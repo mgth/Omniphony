@@ -336,6 +336,11 @@ pub struct TopologyBuildPlan {
     /// layout (set by `RendererControl::prepare_topology_rebuild`); the
     /// built topology carries it as [`RenderTopology::brir_layout`].
     pub brir_layout: bool,
+    /// The grid the evaluation is planned on and the grid request that was
+    /// the latest then (see [`crate::evaluation_grid`]); the built topology
+    /// records both. Set by `RendererControl::prepare_topology_rebuild_for_layout`.
+    pub grid: Option<crate::evaluation_grid::EvaluationGrid>,
+    pub grid_generation: u64,
 }
 
 #[cfg(test)]
@@ -432,7 +437,8 @@ impl TopologyBuildPlan {
             wrap_unsampled_engine(model, effective_mode)
         };
         let mut topology = RenderTopology::new(Arc::new(engine), self.layout.clone())?
-            .with_model_origin(self.geometry_generation, &self.backend_id);
+            .with_model_origin(self.geometry_generation, &self.backend_id)
+            .with_grid(self.grid, self.grid_generation);
         topology.brir_layout = self.brir_layout;
         smoke_test_engine(
             &topology.backend,
@@ -1223,6 +1229,8 @@ pub fn prepare_topology_build_plan(
         evaluation_build_config,
         geometry_generation: 0,
         brir_layout: false,
+        grid: None,
+        grid_generation: 0,
     })
 }
 
@@ -1551,6 +1559,8 @@ mod tests {
             evaluation_build_config: build_config(),
             geometry_generation: 0,
             brir_layout: false,
+            grid: None,
+            grid_generation: 0,
         };
         let built = std::panic::catch_unwind(|| {
             topology(

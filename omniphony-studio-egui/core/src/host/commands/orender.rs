@@ -55,7 +55,7 @@ fn bundled_orender_candidates(app: &HostPaths) -> Vec<PathBuf> {
 /// above the crate that holds the renderer's `omniphony-renderer/Cargo.toml`.
 ///
 /// Searched for rather than counted in `parent()` steps. The Tauri host sat
-/// one level deeper (`omniphony-studio/src-tauri`), and the two steps copied
+/// one level deeper (in its `src-tauri` directory), and the two steps copied
 /// from it climbed out of the checkout to `workflows/<wf>/`, where the
 /// renderer build of the checkout was never found. `None` for a binary run
 /// away from its source tree, where only the configured, bundled and `PATH`
@@ -996,17 +996,18 @@ fn spawn_orender_process(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
-    // The bridge the player is configured with in mpv.conf, as the exact file
-    // (a folder would let the engine pick another bridge sitting beside it).
-    // It only takes part in the engine's auto-discovery: a `render.bridge_path`
-    // in its config wins over it. A bridge variable set in Studio's own
-    // environment is inherited and wins over mpv.conf.
-    if let Some(file) = mpv_bridge::bridge_file_for_renderer(
+    // The bridges the player is configured with in mpv.conf, as the exact
+    // files, a path list (a folder would let the engine load other bridges
+    // sitting beside them). They only take part in the engine's
+    // auto-discovery: `render.bridge_paths` in its config wins over them. A
+    // bridge variable set in Studio's own environment is inherited and wins
+    // over mpv.conf.
+    if let Some(files) = mpv_bridge::bridge_file_for_renderer(
         std::env::var_os(mpv_bridge::BRIDGE_FILE_ENV).as_ref(),
         std::env::var_os(mpv_bridge::BRIDGE_DIR_ENV).as_ref(),
         &mpv_bridge::MpvPaths::from_env(),
     ) {
-        cmd.env(mpv_bridge::BRIDGE_FILE_ENV, file);
+        cmd.env(mpv_bridge::BRIDGE_FILE_ENV, files);
     }
 
     #[cfg(target_os = "windows")]

@@ -168,6 +168,23 @@ pub struct DistanceModelState {
     pub metric: Option<String>,
 }
 
+/// The evaluation grid a bridge hints (`evaluationGridBridge` of
+/// `/state/renderer`): what the grid is while it follows the bridge.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeGrid {
+    pub mode: String,
+    pub x_size: u32,
+    pub y_size: u32,
+    pub z_size: u32,
+    pub z_neg_size: u32,
+    pub allow_negative_z: bool,
+    /// The hinting bridge's place among the loaded bridges of
+    /// [`RenderBridges::bridges`].
+    #[serde(default)]
+    pub bridge_index: Option<usize>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct VbapCartesian {
     #[serde(rename = "xSize")]
@@ -582,6 +599,13 @@ pub struct AppState {
     pub object_size_intervals: u32,
     #[serde(rename = "vbapAllowNegativeZ")]
     pub vbap_allow_negative_z: Option<bool>,
+    /// Where the evaluation grid comes from: `bridge` (the active bridge's
+    /// hint) or `custom`. `None` from a renderer that predates the setting.
+    #[serde(rename = "evaluationGrid")]
+    pub evaluation_grid: Option<String>,
+    /// The grid the active bridge hints, once the renderer knows it.
+    #[serde(rename = "evaluationGridBridge")]
+    pub evaluation_grid_bridge: Option<BridgeGrid>,
     #[serde(rename = "adaptiveResampling")]
     pub adaptive_resampling: Option<u8>,
     #[serde(rename = "adaptiveResamplingEnableFarMode")]
@@ -718,6 +742,10 @@ pub struct AppState {
     /// asked for, then each bridge loaded or failed.
     #[serde(rename = "renderBridges")]
     pub render_bridges: Option<RenderBridges>,
+    /// The bridge list was edited from this Studio since the last restart it
+    /// sent: the only sign of a pending change once the list is emptied.
+    #[serde(skip)]
+    pub render_bridges_edited: bool,
     #[serde(rename = "liveInput")]
     pub live_input: LiveInputState,
     #[serde(rename = "orenderInputPipe")]
@@ -1052,6 +1080,8 @@ impl Default for AppState {
             brir_speakers: None,
             options: None,
             vbap_allow_negative_z: None,
+            evaluation_grid: None,
+            evaluation_grid_bridge: None,
             adaptive_resampling: Some(0),
             adaptive_resampling_enable_far_mode: Some(1),
             adaptive_resampling_force_silence_in_far_mode: Some(1),
@@ -1120,6 +1150,7 @@ impl Default for AppState {
             profile_names: Vec::new(),
             render_bridge_error: None,
             render_bridges: None,
+            render_bridges_edited: false,
             live_input: LiveInputState::default(),
             orender_input_pipe: None,
             producer_capabilities: None,

@@ -158,6 +158,16 @@ pub fn build_renderer_state_json(
         "renderBackendEffective": effective_backend,
         "renderEvaluationMode": live.requested_evaluation_mode().as_str(),
         "renderEvaluationModeEffective": effective_evaluation_mode,
+        // Where the grid comes from (`bridge` or `custom`), and the grid the
+        // active bridge hints (null until known): Studio shows it read-only
+        // while the grid follows the bridge.
+        "evaluationGrid": live.evaluation.source.as_str(),
+        "evaluationGridBridge": live.evaluation.bridge_hint.map(|grid| {
+            let mut json = grid.to_json();
+            // Its place among the loaded bridges of `render/bridges`.
+            json["bridgeIndex"] = live.evaluation.bridge_index.into();
+            json
+        }),
         "objectSizeIntervals": live.evaluation.object_size_intervals,
         "masterGain": live.master_gain,
         "autoGain": live.options.auto_gain,
@@ -748,17 +758,9 @@ pub fn build_live_state_bundle_with_host(
         }),
         OscPacket::Message(OscMessage {
             addr: crate::osc_contract::STATE_VBAP_ALLOW_NEGATIVE_Z.to_string(),
-            args: vec![OscType::Int(
-                if control
-                    .backend_rebuild_params()
-                    .map(|p| p.allow_negative_z)
-                    .unwrap_or(true)
-                {
-                    1
-                } else {
-                    0
-                },
-            )],
+            // The live value, which the gain models are built with; the
+            // engine's default is off.
+            args: vec![OscType::Int(i32::from(live.evaluation.allow_negative_z))],
         }),
         OscPacket::Message(OscMessage {
             addr: crate::osc_contract::STATE_CONFIG_SAVED.to_string(),
@@ -869,9 +871,10 @@ pub fn build_live_state_bundle_with_host(
     // DRC is a decode-stage control owned by the core (lives in liborender).
     // Always publish the DRC fields on /state/input. When a host_audio
     // HostControlHandler is attached, its extend_snapshot() emits a separate
-    // /state/input message carrying the live-input device fields; studio's
-    // Tauri InputDomainState parser merges partial payloads, so two
-    // /state/input messages in one bundle compose cleanly.
+    // /state/input message carrying the live-input device fields; Studio's
+    // InputDomainState parser (omniphony-studio-core, osc/apply.rs) merges
+    // partial payloads, so two /state/input messages in one bundle compose
+    // cleanly.
     messages.push(OscPacket::Message(OscMessage {
         addr: crate::osc_contract::STATE_INPUT.to_string(),
         args: vec![OscType::String(

@@ -1,8 +1,13 @@
 # Viewport parity spec — objects (sources)
 
-Scope: `omniphony-studio/src/` files `sources.js`, `scene/labels.js`, `scene/materials.js`, `scene/object-energy-shared.js` (colormap parts), `picking.js`, `mute-solo.js` (visual side), plus the object-appearance parts of `state.js`, `controls/scene-effects-bar.js`, and the room-warp application in `coordinates.js`. All paths below are relative to `omniphony-studio/src/` unless absolute. `line` references are `file:line`.
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
 
-three.js version: `^0.165.0` (`omniphony-studio/package.json:26`). Renderer defaults apply (no override found anywhere in `src/`): `outputColorSpace = SRGB`, `toneMapping = NoToneMapping`, `setPixelRatio(viewport.dpr)` (`core/render/render-surface-controller.js:24`). All hex colours below are sRGB as written in the JS; three.js converts `Color(hex)` to linear internally for lighting.
+Scope: [`omniphony-studio/src/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src) files `sources.js`, `scene/labels.js`, `scene/materials.js`, `scene/object-energy-shared.js` (colormap parts), `picking.js`, `mute-solo.js` (visual side), plus the object-appearance parts of `state.js`, `controls/scene-effects-bar.js`, and the room-warp application in `coordinates.js`. All paths below are relative to [`omniphony-studio/src/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src) unless absolute. `line` references are `file:line`.
+
+three.js version: `^0.165.0` ([`omniphony-studio/package.json:26`](https://github.com/mgth/Omniphony/blob/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/package.json#L26)). Renderer defaults apply (no override found anywhere in `src/`): `outputColorSpace = SRGB`, `toneMapping = NoToneMapping`, `setPixelRatio(viewport.dpr)` (`core/render/render-surface-controller.js:24`). All hex colours below are sRGB as written in the JS; three.js converts `Color(hex)` to linear internally for lighting.
 
 Scene frame (scene units, room half-width = 1): `scene.x` = depth (front +), `scene.y` = up, `scene.z` = right. Camera `PerspectiveCamera(65°, aspect, 0.1, 100)` at `(-3.8, 1.1, 0)` looking at `HEAD_PIVOT (0, 0.25, 0)` (`scene/setup.js:20-26`). Background `0x0a0b10`. Lights (`scene/setup.js:234-246`): Ambient `0xffffff` 0.24; Directional `0xfff7ea` 2.35 at `(3.6, 4.8, 1.4)`; Directional `0xb8d4ff` 1.05 at `(-2.8, 1.1, -3.8)`; Hemisphere sky `0xdcecff` ground `0x0d0f14` 0.12; PointLight `0xfff4dc` 0.9 dist 2.2 decay 2 at `(-0.18, 0.42, 0.22)` under `brassempouyAnchor` (head fill).
 
@@ -45,7 +50,7 @@ Mesh `userData` (sources.js:990-1003): `sourceId`, `baseOpacity` (=0.7, from `so
 
 ## 2. Data feed (OSC → Rust `OscEvent` → Tauri event → JS)
 
-Backend parser: `omniphony-studio/src-tauri/src/osc_parser.rs`; forwarding: `src-tauri/src/osc_listener.rs`. High-frequency events are coalesced into one `state:batch` Tauri event (`{events:[{event, payload}]}`) and replayed (`tauri-bridge.js:90-139`), individually-listened events at :174-236, :378-391.
+Backend parser: [`omniphony-studio/src-tauri/src/osc_parser.rs`](https://github.com/mgth/Omniphony/blob/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src-tauri/src/osc_parser.rs); forwarding: `src-tauri/src/osc_listener.rs`. High-frequency events are coalesced into one `state:batch` Tauri event (`{events:[{event, payload}]}`) and replayed (`tauri-bridge.js:90-139`), individually-listened events at :174-236, :378-391.
 
 | Viewport need | OSC address (lower-cased, split on `/`) | Args | `OscEvent` variant (osc_parser.rs) | Tauri event / payload | JS entry |
 |---|---|---|---|---|---|

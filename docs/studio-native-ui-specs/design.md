@@ -1,5 +1,10 @@
 # Omniphony Studio — Visual Design System Specification (for the egui port)
 
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
 Scope: the *look* of the web Studio — theme tokens, layout geometry, generic widget
 appearance and states, animation, responsiveness, and the i18n application rules.
 Panel-by-panel control inventories are covered by other Phase-2 specs; this document
@@ -7,7 +12,7 @@ is what an engineer needs to build the egui `Visuals` / `Style` / reusable widge
 that those panels then compose.
 
 All sources are under
-`omniphony-studio/`.
+[`omniphony-studio/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio).
 Cited paths are relative to that directory. Line numbers refer to the state of the
 tree at the time of writing.
 

@@ -472,6 +472,7 @@ mod tests {
             family: family.to_owned(),
             label: label.to_owned(),
             tags: Vec::new(),
+            grid: None,
         };
         Some(StreamDeclaration::new(declaration, &table()))
     }

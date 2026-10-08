@@ -244,7 +244,25 @@ impl SpatialRenderer {
         )?
         // The initial live backend (`backend_id: "vbap"` below) at generation 0,
         // so an evaluation-only rebuild can re-wrap this model.
-        .with_model_origin(0, "vbap");
+        .with_model_origin(0, "vbap")
+        // The grid the live params below describe, so a grid request can
+        // take this topology back as it is (`crate::evaluation_grid`).
+        .with_grid(
+            Some(crate::evaluation_grid::EvaluationGrid {
+                mode: match table_mode {
+                    VbapTableMode::Polar => LiveEvaluationMode::PrecomputedPolar,
+                    VbapTableMode::Cartesian { .. } => LiveEvaluationMode::PrecomputedCartesian,
+                },
+                cartesian: CartesianEvaluationParams {
+                    x_size: cartesian_default_x_size.max(1),
+                    y_size: cartesian_default_y_size.max(1),
+                    z_size: cartesian_default_z_size.max(1),
+                    z_neg_size: cartesian_default_z_neg_size,
+                },
+                allow_negative_z,
+            }),
+            0,
+        );
 
         log::info!(
             "Created spatial renderer: {} total speakers, {} spatializable, {} triangles, spread_res={}, table_mode={:?}, distance_model={}",
@@ -449,6 +467,13 @@ impl SpatialRenderer {
                     distance_max: distance_max.max(0.01),
                 },
                 object_size_intervals: 0,
+                allow_negative_z,
+                // The declared default. A host's build says where the grid
+                // comes from, and gives the bridge's hint
+                // (`orender_engine::renderer_build`).
+                source: Default::default(),
+                bridge_hint: None,
+                bridge_index: None,
             },
             distance_model,
             distance_model_metric: crate::spatial_vbap::DistanceMetric::default(),

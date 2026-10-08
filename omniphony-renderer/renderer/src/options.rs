@@ -232,6 +232,16 @@ pub static EVALUATION: OptionGroup = OptionGroup {
     i18n_key: "evaluation.title",
 };
 
+/// Rendering below the floor (`vbap_allow_negative_z`), part of the
+/// evaluation grid but baked into the gain models: the panner keeps or
+/// clamps a negative z. A change rebuilds the models.
+pub static NEGATIVE_Z: OptionGroup = OptionGroup {
+    key: "negative_z",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::Topology,
+    i18n_key: "evaluation.allowNegativeZ",
+};
+
 /// The render backend and the hybrid backend's legs and blend: a change
 /// builds new gain models.
 pub static BACKEND: OptionGroup = OptionGroup {
@@ -247,6 +257,7 @@ pub static OPTION_GROUPS: &[&OptionGroup] = &[
     &DISTANCE_MODEL,
     &DISTANCE_DIFFUSE,
     &EVALUATION,
+    &NEGATIVE_Z,
     &BACKEND,
     &HRIR_SOURCE,
     &BRIR,
@@ -320,6 +331,11 @@ impl OptionFlags {
     /// and the snapshot, a write refused, and a save keeps what the file says
     /// for the host that does use it.
     pub const EMBEDDED_ONLY: Self = Self(1 << 2);
+    /// Part of the evaluation grid the active bridge hints: while the grid
+    /// follows the bridge (`evaluation_grid: bridge`), a client write and a
+    /// command-line flag are refused ([`GRID_FOLLOWS_THE_BRIDGE`]), and a
+    /// save does not write it.
+    pub const BRIDGE_GRID: Self = Self(1 << 3);
 
     pub const fn or(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -436,6 +452,20 @@ impl LegacyAddr {
     }
 }
 
+/// Why a write of a [`OptionFlags::BRIDGE_GRID`] option is refused while the
+/// grid follows the bridge.
+pub const GRID_FOLLOWS_THE_BRIDGE: &str = "the grid follows the bridge";
+
+/// Whether a write of `spec` is refused because the grid follows the bridge,
+/// `source` being where the grid comes from once the write is applied.
+pub fn refused_by_grid_source(
+    spec: &OptionSpec,
+    source: crate::evaluation_grid::EvaluationGridSource,
+) -> bool {
+    spec.flags.contains(OptionFlags::BRIDGE_GRID)
+        && source == crate::evaluation_grid::EvaluationGridSource::Bridge
+}
+
 /// What a row may consult besides the live params: the backends the host
 /// registered and the facts the renderer was built with. It never reaches
 /// the live params themselves — a setter runs under their write lock.
@@ -490,6 +520,25 @@ impl<'a> OptionEnv<'a> {
     pub fn build_facts(&self) -> Option<crate::live_params::BackendRebuildParams> {
         self.control
             .and_then(|control| control.backend_rebuild_params())
+    }
+
+    /// The table `auto` resolves to.
+    pub fn preferred_evaluation_mode(&self) -> crate::live_params::PreferredEvaluationMode {
+        self.build_facts()
+            .map(|facts| facts.preferred_evaluation_mode())
+            .unwrap_or(crate::live_params::PreferredEvaluationMode::PrecomputedCartesian)
+    }
+
+    /// Whether the grid was settled against a bridge's hint
+    /// (`RendererControl::keep_grid_as_loaded`): a save writes it.
+    pub fn grid_settled(&self) -> bool {
+        self.control.is_none_or(|control| control.grid_settled())
+    }
+
+    /// The grid of the table in force, once known: what a switch to a
+    /// forced grid starts from.
+    pub fn installed_grid(&self) -> Option<crate::evaluation_grid::EvaluationGrid> {
+        self.control.and_then(|control| control.installed_grid())
     }
 }
 
@@ -688,21 +737,20 @@ const EVALUATION_MODES: &[&str] = &[
 /// The polar grid as the renderer build lays it out for a config: the cell
 /// counts become integer degree / distance steps and back, so e.g. 100
 /// azimuth cells land as 90 values (a 4° step). Negative elevations follow
-/// the config's pin, else what the running renderer was built with. The seed
+/// the config's pin, else what the live params render (the bridge's hint or
+/// the forced grid's, seeded before the polar rows). The seed
 /// must round-trip exactly like the build, or a profile switch and a restart
 /// into the same profile disagree on the grid.
 fn configured_polar_grid(
     render: &RenderConfig,
-    env: &OptionEnv,
+    live: &LiveParams,
 ) -> crate::live_params::PolarEvaluationParams {
     use crate::config_fields::{
         vbap_azimuth_resolution, vbap_distance_max, vbap_distance_res, vbap_elevation_resolution,
     };
-    let allow_negative_z = render.vbap_allow_negative_z.unwrap_or_else(|| {
-        env.build_facts()
-            .map(|facts| facts.allow_negative_z)
-            .unwrap_or(false)
-    });
+    let allow_negative_z = render
+        .vbap_allow_negative_z
+        .unwrap_or(live.evaluation.allow_negative_z);
     let azimuth_cells =
         vbap_azimuth_resolution::get(render).unwrap_or(vbap_azimuth_resolution::DEFAULT);
     let elevation_cells =
@@ -725,20 +773,38 @@ fn configured_polar_grid(
     }
 }
 
-/// Whether a save writes the cartesian grid: when the evaluation in force is
-/// the cartesian table — asked for, or chosen by `auto` because the renderer
-/// was built preferring it.
-fn cartesian_in_force(live: &LiveParams, env: &OptionEnv) -> bool {
-    use crate::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
-    match live.requested_evaluation_mode() {
-        LiveEvaluationMode::PrecomputedCartesian => true,
-        LiveEvaluationMode::PrecomputedPolar | LiveEvaluationMode::Realtime => false,
-        // No renderer to ask (a config edited on its own, such as the
-        // command line's): a size given is kept, as the build may well be
-        // cartesian.
-        LiveEvaluationMode::Auto => env.build_facts().is_none_or(|facts| {
-            facts.preferred_evaluation_mode == PreferredEvaluationMode::PrecomputedCartesian
-        }),
+/// Whether a save writes the grid keys: only a forced grid is the user's.
+/// One that follows the bridge is the active bridge's hint, which the next
+/// start reads from its bridge again; written, it would pin the hint of
+/// whichever bridge was active at the Save. A forced grid is written whole,
+/// whatever the mode, so it never depends on which bridge is active first.
+fn grid_is_forced(live: &LiveParams) -> bool {
+    live.evaluation.source == crate::evaluation_grid::EvaluationGridSource::Custom
+}
+
+/// The grid a config says, read against the bridge's hint the live params
+/// hold (`crate::evaluation_grid::resolve_config`): the hint while the grid
+/// follows the bridge, the forced grid completed from it otherwise. `None`
+/// while following a bridge whose hint is unknown: the grid rows then seed
+/// what the config pins, as before the source existed.
+fn seeded_grid(
+    live: &LiveParams,
+    render: &RenderConfig,
+    env: &OptionEnv,
+) -> Option<crate::evaluation_grid::EvaluationGrid> {
+    use crate::evaluation_grid::{
+        EvaluationGrid, EvaluationGridSource, forced_grid, resolve_config,
+    };
+    let hint = live.evaluation.bridge_hint;
+    let read = resolve_config(render, hint);
+    match (read.source, hint) {
+        (_, Some(_)) => read.grid,
+        // No hint: a forced grid is completed from the live one.
+        (EvaluationGridSource::Custom, None) => Some(forced_grid(
+            render,
+            EvaluationGrid::of_live(live, env.preferred_evaluation_mode()),
+        )),
+        (EvaluationGridSource::Bridge, None) => None,
     }
 }
 
@@ -1332,29 +1398,93 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
     // reuses the backend's gain models. Their dedicated addresses stay as
     // aliases (the grids under their prefixes); the snapshot keeps its
     // `evaluation` block and the per-grid state addresses.
+    // Where the grid comes from; a config from before the key is migrated
+    // (`crate::evaluation_grid::resolve_config`). Before the grid rows: a
+    // reset follows the bridge before the mode goes back to `auto`, which a
+    // forced grid refuses; the grid rows seed the grid it says (the bridge's
+    // hint, or the forced grid completed and its `auto` resolved).
+    OptionSpec {
+        key: "evaluation_grid",
+        kind: OptionKind::Enum(crate::evaluation_grid::EVALUATION_GRID_SOURCES),
+        default: OptionDefault::Str("bridge"),
+        flags: OptionFlags::NONE,
+        group: Some(&EVALUATION),
+        i18n_key: "evaluation.grid.followBridge",
+        help_i18n_key: Some("help.eval.gridSource"),
+        legacy_control_addr: LegacyAddr::None,
+        // Following the bridge takes its hint; forcing the grid starts from
+        // the table in force (the installed one, not one being built), so
+        // nothing moves until it is edited.
+        set: |live, raw, env| {
+            use crate::evaluation_grid::{EvaluationGrid, EvaluationGridSource};
+            let source = EvaluationGridSource::parse(raw_str(raw)?)?;
+            if source != live.evaluation.source {
+                live.evaluation.source = source;
+                let grid = match source {
+                    EvaluationGridSource::Bridge => live.evaluation.bridge_hint,
+                    EvaluationGridSource::Custom => {
+                        Some(env.installed_grid().unwrap_or_else(|| {
+                            EvaluationGrid::of_live(live, env.preferred_evaluation_mode())
+                        }))
+                    }
+                };
+                if let Some(grid) = grid {
+                    grid.apply(live);
+                }
+            }
+            Some(source.as_str().to_string())
+        },
+        get_json: |live| live.evaluation.source.as_str().into(),
+        // Always written: a config this build saved is never migrated again.
+        config_store: |render, live, env| {
+            // A renderer that never settled its grid against a bridge (the
+            // standby runtime) keeps the grid keys as the file has them.
+            if !env.grid_settled() {
+                return;
+            }
+            render.evaluation_grid = Some(live.evaluation.source.as_str().to_string());
+        },
+        config_seed: |live, render, _env| {
+            live.evaluation.source =
+                crate::evaluation_grid::resolve_config(render, live.evaluation.bridge_hint).source;
+        },
+    },
     OptionSpec {
         key: "render_evaluation_mode",
         kind: OptionKind::Enum(EVALUATION_MODES),
         default: OptionDefault::Str("auto"),
-        flags: OptionFlags::NONE,
+        flags: OptionFlags::BRIDGE_GRID,
         group: Some(&EVALUATION),
         i18n_key: "evaluation.title",
         help_i18n_key: None,
         legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_RENDER_EVALUATION_MODE),
         set: |live, raw, _env| {
             let mode = crate::live_params::LiveEvaluationMode::from_str(raw_str(raw)?)?;
+            // A forced grid has a concrete mode: `auto` would make it
+            // depend on the bridge again.
+            if mode == crate::live_params::LiveEvaluationMode::Auto && grid_is_forced(live) {
+                return None;
+            }
             live.set_evaluation_mode(mode);
             Some(mode.as_str().to_string())
         },
         get_json: |live| live.requested_evaluation_mode().as_str().into(),
-        config_store: |render, live, _env| {
+        config_store: |render, live, env| {
+            // A renderer that never settled its grid against a bridge (the
+            // standby runtime) keeps the grid keys as the file has them.
+            if !env.grid_settled() {
+                return;
+            }
             render.render_evaluation_mode = match live.requested_evaluation_mode() {
+                _ if !grid_is_forced(live) => None,
                 crate::live_params::LiveEvaluationMode::Auto => None,
                 other => Some(other.as_str().to_string()),
             };
         },
-        config_seed: |live, render, _env| {
-            if let Some(mode) = render
+        config_seed: |live, render, env| {
+            if let Some(grid) = seeded_grid(live, render, env) {
+                live.set_evaluation_mode(grid.mode);
+            } else if let Some(mode) = render
                 .render_evaluation_mode
                 .as_deref()
                 .and_then(crate::live_params::LiveEvaluationMode::from_str)
@@ -1395,7 +1525,7 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         key: "evaluation_cartesian_x_size",
         kind: GRID_CELLS_KIND,
         default: OptionDefault::Build,
-        flags: OptionFlags::NONE,
+        flags: OptionFlags::BRIDGE_GRID,
         group: Some(&EVALUATION),
         i18n_key: "evaluation.cartesian.xSize",
         help_i18n_key: Some("help.eval.cartesianGrid"),
@@ -1410,12 +1540,20 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         },
         get_json: |live| live.evaluation.cartesian.x_size.into(),
         config_store: |render, live, env| {
+            // A renderer that never settled its grid against a bridge (the
+            // standby runtime) keeps the grid keys as the file has them.
+            if !env.grid_settled() {
+                return;
+            }
             render.evaluation_cartesian_x_size =
-                cartesian_in_force(live, env).then_some(live.evaluation.cartesian.x_size.max(1));
+                grid_is_forced(live).then_some(live.evaluation.cartesian.x_size.max(1));
         },
-        // Only a pinned size: otherwise the build's (the bridge's) stays.
-        config_seed: |live, render, _env| {
-            if let Some(cells) = render.evaluation_cartesian_x_size {
+        // The grid the config says (see `seeded_grid`), else only a pinned
+        // size: otherwise the build's stays.
+        config_seed: |live, render, env| {
+            if let Some(grid) = seeded_grid(live, render, env) {
+                live.evaluation.cartesian.x_size = grid.cartesian.x_size;
+            } else if let Some(cells) = render.evaluation_cartesian_x_size {
                 live.evaluation.cartesian.x_size = cells.max(1);
             }
         },
@@ -1424,7 +1562,7 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         key: "evaluation_cartesian_y_size",
         kind: GRID_CELLS_KIND,
         default: OptionDefault::Build,
-        flags: OptionFlags::NONE,
+        flags: OptionFlags::BRIDGE_GRID,
         group: Some(&EVALUATION),
         i18n_key: "evaluation.cartesian.ySize",
         help_i18n_key: Some("help.eval.cartesianGrid"),
@@ -1439,12 +1577,20 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         },
         get_json: |live| live.evaluation.cartesian.y_size.into(),
         config_store: |render, live, env| {
+            // A renderer that never settled its grid against a bridge (the
+            // standby runtime) keeps the grid keys as the file has them.
+            if !env.grid_settled() {
+                return;
+            }
             render.evaluation_cartesian_y_size =
-                cartesian_in_force(live, env).then_some(live.evaluation.cartesian.y_size.max(1));
+                grid_is_forced(live).then_some(live.evaluation.cartesian.y_size.max(1));
         },
-        // Only a pinned size: otherwise the build's (the bridge's) stays.
-        config_seed: |live, render, _env| {
-            if let Some(cells) = render.evaluation_cartesian_y_size {
+        // The grid the config says (see `seeded_grid`), else only a pinned
+        // size: otherwise the build's stays.
+        config_seed: |live, render, env| {
+            if let Some(grid) = seeded_grid(live, render, env) {
+                live.evaluation.cartesian.y_size = grid.cartesian.y_size;
+            } else if let Some(cells) = render.evaluation_cartesian_y_size {
                 live.evaluation.cartesian.y_size = cells.max(1);
             }
         },
@@ -1453,7 +1599,7 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         key: "evaluation_cartesian_z_size",
         kind: GRID_CELLS_KIND,
         default: OptionDefault::Build,
-        flags: OptionFlags::NONE,
+        flags: OptionFlags::BRIDGE_GRID,
         group: Some(&EVALUATION),
         i18n_key: "evaluation.cartesian.zSize",
         help_i18n_key: Some("help.eval.cartesianGrid"),
@@ -1468,12 +1614,20 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         },
         get_json: |live| live.evaluation.cartesian.z_size.into(),
         config_store: |render, live, env| {
+            // A renderer that never settled its grid against a bridge (the
+            // standby runtime) keeps the grid keys as the file has them.
+            if !env.grid_settled() {
+                return;
+            }
             render.evaluation_cartesian_z_size =
-                cartesian_in_force(live, env).then_some(live.evaluation.cartesian.z_size.max(1));
+                grid_is_forced(live).then_some(live.evaluation.cartesian.z_size.max(1));
         },
-        // Only a pinned size: otherwise the build's (the bridge's) stays.
-        config_seed: |live, render, _env| {
-            if let Some(cells) = render.evaluation_cartesian_z_size {
+        // The grid the config says (see `seeded_grid`), else only a pinned
+        // size: otherwise the build's stays.
+        config_seed: |live, render, env| {
+            if let Some(grid) = seeded_grid(live, render, env) {
+                live.evaluation.cartesian.z_size = grid.cartesian.z_size;
+            } else if let Some(cells) = render.evaluation_cartesian_z_size {
                 live.evaluation.cartesian.z_size = cells.max(1);
             }
         },
@@ -1482,7 +1636,7 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         key: "evaluation_cartesian_z_neg_size",
         kind: GRID_CELLS_OR_NONE_KIND,
         default: OptionDefault::Build,
-        flags: OptionFlags::NONE,
+        flags: OptionFlags::BRIDGE_GRID,
         group: Some(&EVALUATION),
         i18n_key: "evaluation.cartesian.zNegSize",
         help_i18n_key: Some("help.eval.cartesianGrid"),
@@ -1497,13 +1651,57 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         },
         get_json: |live| live.evaluation.cartesian.z_neg_size.into(),
         config_store: |render, live, env| {
+            // A renderer that never settled its grid against a bridge (the
+            // standby runtime) keeps the grid keys as the file has them.
+            if !env.grid_settled() {
+                return;
+            }
             render.evaluation_cartesian_z_neg_size =
-                cartesian_in_force(live, env).then_some(live.evaluation.cartesian.z_neg_size);
+                grid_is_forced(live).then_some(live.evaluation.cartesian.z_neg_size);
         },
-        // Only a pinned size: otherwise the build's (the bridge's) stays.
-        config_seed: |live, render, _env| {
-            if let Some(cells) = render.evaluation_cartesian_z_neg_size {
+        // The grid the config says (see `seeded_grid`), else only a pinned
+        // size: otherwise the build's stays.
+        config_seed: |live, render, env| {
+            if let Some(grid) = seeded_grid(live, render, env) {
+                live.evaluation.cartesian.z_neg_size = grid.cartesian.z_neg_size;
+            } else if let Some(cells) = render.evaluation_cartesian_z_neg_size {
                 live.evaluation.cartesian.z_neg_size = cells;
+            }
+        },
+    },
+    // Rendering below the floor: the panner keeps a position's negative z or
+    // clamps it onto the floor, and the polar grid spans 180° or 90° of
+    // elevation. Part of the grid a bridge hints; seeded before the polar
+    // rows, which lay their grid out with it.
+    OptionSpec {
+        key: "vbap_allow_negative_z",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Build,
+        flags: OptionFlags::BRIDGE_GRID,
+        group: Some(&NEGATIVE_Z),
+        i18n_key: "evaluation.allowNegativeZ",
+        help_i18n_key: Some("help.eval.allowNegativeZ"),
+        legacy_control_addr: LegacyAddr::None,
+        set: |live, raw, _env| {
+            let on = raw_bool(raw)?;
+            live.evaluation.allow_negative_z = on;
+            Some(bool_canonical(on))
+        },
+        get_json: |live| live.evaluation.allow_negative_z.into(),
+        config_store: |render, live, env| {
+            // A renderer that never settled its grid against a bridge (the
+            // standby runtime) keeps the grid keys as the file has them.
+            if !env.grid_settled() {
+                return;
+            }
+            render.vbap_allow_negative_z =
+                grid_is_forced(live).then_some(live.evaluation.allow_negative_z);
+        },
+        config_seed: |live, render, env| {
+            if let Some(grid) = seeded_grid(live, render, env) {
+                live.evaluation.allow_negative_z = grid.allow_negative_z;
+            } else if let Some(on) = render.vbap_allow_negative_z {
+                live.evaluation.allow_negative_z = on;
             }
         },
     },
@@ -1532,9 +1730,9 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
             )
         },
         // Always seeded, laid out as the build lays it out.
-        config_seed: |live, render, env| {
+        config_seed: |live, render, _env| {
             live.evaluation.polar.azimuth_values =
-                configured_polar_grid(render, env).azimuth_values;
+                configured_polar_grid(render, live).azimuth_values;
         },
     },
     OptionSpec {
@@ -1562,9 +1760,9 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
             )
         },
         // Always seeded, laid out as the build lays it out.
-        config_seed: |live, render, env| {
+        config_seed: |live, render, _env| {
             live.evaluation.polar.elevation_values =
-                configured_polar_grid(render, env).elevation_values;
+                configured_polar_grid(render, live).elevation_values;
         },
     },
     OptionSpec {
@@ -1592,8 +1790,8 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
             )
         },
         // Always seeded, laid out as the build lays it out.
-        config_seed: |live, render, env| {
-            live.evaluation.polar.distance_res = configured_polar_grid(render, env).distance_res;
+        config_seed: |live, render, _env| {
+            live.evaluation.polar.distance_res = configured_polar_grid(render, live).distance_res;
         },
     },
     OptionSpec {
@@ -1620,8 +1818,8 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
                 live.evaluation.polar.distance_max.max(0.01),
             )
         },
-        config_seed: |live, render, env| {
-            live.evaluation.polar.distance_max = configured_polar_grid(render, env).distance_max;
+        config_seed: |live, render, _env| {
+            live.evaluation.polar.distance_max = configured_polar_grid(render, live).distance_max;
         },
     },
     // Read at table-read time (nearest cell or trilinear), synced into the

@@ -19,7 +19,9 @@ use std::time::Instant;
 /// its source family, which selects the placement policy
 /// (`FormatBridge::source_family`), the name it gives the format
 /// (`FormatBridge::source_label`) and the tags it puts on some of its
-/// channels (`FormatBridge::channel_tags`).
+/// channels (`FormatBridge::channel_tags`), and the evaluation grid it hints
+/// (`FormatBridge::vbap_cartesian_defaults` and `preferred_vbap_table_mode`:
+/// with several bridges, each stream's own, see `renderer::evaluation_grid`).
 ///
 /// Read right after the packet that may change it, and carried with that
 /// packet: a host that decodes on a thread of its own renders a frame while
@@ -31,11 +33,19 @@ pub struct Declaration {
     pub family: String,
     pub label: String,
     pub tags: Vec<ChannelTag>,
+    pub grid: Option<renderer::evaluation_grid::BridgeHint>,
 }
 
 impl Declaration {
     pub fn read(bridge: &BridgeSet) -> Self {
         Self {
+            grid: Some(renderer::evaluation_grid::BridgeHint {
+                grid: renderer::evaluation_grid::EvaluationGrid::from_hint(
+                    bridge.vbap_cartesian_defaults(),
+                    bridge.preferred_vbap_table_mode(),
+                ),
+                bridge: bridge.active_index(),
+            }),
             poses: bridge.fixed_channel_poses().into_iter().collect(),
             family: bridge.source_family().as_str().to_owned(),
             label: bridge.source_label().as_str().to_owned(),

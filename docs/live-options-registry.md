@@ -3,6 +3,11 @@
 Status: accepted — written after the Side/Back state-sync bug (see "The
 incident" below); related fix: `fix/studio-live-options-state-sync`.
 
+The web (Tauri) Studio this RFC refers to (its JS binder, `state.js`, the
+`src-tauri` mirror) was removed before 0.7.0 (#677); its sources are at
+[commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio).
+The native Studio reads the same `options` block and schema.
+
 Progress:
 
 - **Phase 0 landed**: the live-options conformance net
@@ -21,7 +26,7 @@ Progress:
   of enumerating options field by field, so a new re-planning option cannot be
   forgotten in a signature.
 - **Phase 2 landed**: the Studio `data-option` binder
-  (`omniphony-studio/src/options-binder.js`). A control declares its option in
+  ([`omniphony-studio/src/options-binder.js`](https://github.com/mgth/Omniphony/blob/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src/options-binder.js)). A control declares its option in
   markup (`data-option="surround_placement"` + `data-option-value` /
   `data-option-on`/`-off` / `data-option-empty` by shape); the binder wires
   both directions through the single generic `control_option` Tauri command.
@@ -61,7 +66,7 @@ Progress:
   generic row (`panels/staged_apply.rs`) offers the Apply of a group while it
   holds staged values, through `/control/options/apply`. The Audio Input
   section shows it under its own Apply, which still sends the section's edits
-  as one document. The web Studio does not have it.
+  as one document. (The web Studio, since removed, never had it.)
 
 ### Current state
 
@@ -98,12 +103,14 @@ Declared options (`renderer::options::LIVE_OPTIONS`):
 | `distance_diffuse_curve` | float [0, 100], step 0.05 | `1` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/curve` |
 | `distance_diffuse_metric` | `spherical` \| `chebyshev` | `"spherical"` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/metric` |
 | `distance_diffuse_mirror_axes` | `none` \| `x` \| `y` \| `z` \| `xy` \| `xz` \| `yz` \| `xyz` | `"xy"` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/mirror_axes` |
-| `render_evaluation_mode` | `auto` \| `realtime` \| `precomputed_polar` \| `precomputed_cartesian` | `"auto"` | `evaluation` (live, evaluation) | — | `/control/render_evaluation_mode` |
+| `evaluation_grid` | `bridge` \| `custom` | `"bridge"` | `evaluation` (live, evaluation) | — | — |
+| `render_evaluation_mode` | `auto` \| `realtime` \| `precomputed_polar` \| `precomputed_cartesian` | `"auto"` | `evaluation` (live, evaluation) | bridge grid | `/control/render_evaluation_mode` |
 | `evaluation_object_size_intervals` | int ≥ 0 | `0` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/object_size_intervals` |
-| `evaluation_cartesian_x_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/x_size` |
-| `evaluation_cartesian_y_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/y_size` |
-| `evaluation_cartesian_z_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/z_size` |
-| `evaluation_cartesian_z_neg_size` | int ≥ 0 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/z_neg_size` |
+| `evaluation_cartesian_x_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | bridge grid | `/control/render_evaluation/cartesian/x_size` |
+| `evaluation_cartesian_y_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | bridge grid | `/control/render_evaluation/cartesian/y_size` |
+| `evaluation_cartesian_z_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | bridge grid | `/control/render_evaluation/cartesian/z_size` |
+| `evaluation_cartesian_z_neg_size` | int ≥ 0 | as built | `evaluation` (live, evaluation) | bridge grid | `/control/render_evaluation/cartesian/z_neg_size` |
+| `vbap_allow_negative_z` | bool | as built | `negative_z` (live, topology) | bridge grid | — |
 | `vbap_azimuth_resolution` | int ≥ 1 | `360` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/azimuth_resolution` |
 | `vbap_elevation_resolution` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/elevation_resolution` |
 | `vbap_distance_res` | int ≥ 1 | `8` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/distance_res` |
@@ -179,8 +186,13 @@ What the implementation settled on, where it differs from the proposal below:
 - **Aliases**: `LegacyAddr::Exact(addr)` for a whole address,
   `LegacyAddr::Prefixed { prefix, tail }` for the contract's prefix families
   (`distance_diffuse/…`, `hybrid/…`, `render_evaluation/{cartesian,polar}/…`).
-- **Flags**: only `REPLAN` (bump `RendererControl::options_epoch` on a real
-  change). `NEEDS_TOPOLOGY` and `ADVANCED` were never needed and do not exist.
+- **Flags**: `REPLAN` (bump `RendererControl::options_epoch` on a real
+  change), `EMBEDDED_ONLY` (offered by the embedded engine only) and
+  `BRIDGE_GRID` (a value of the evaluation grid a bridge hints: while
+  `evaluation_grid` is `bridge`, a client write and a command-line flag are
+  refused with "the grid follows the bridge", and a save does not write it;
+  `docs/multi-bridge.md`, "Evaluation grid"). `NEEDS_TOPOLOGY` and
+  `ADVANCED` were never needed and do not exist.
   `PERSIST`, a write to `config.yaml` on every OSC set, was removed: options
   change what is heard, so every row reaches the file through the Save button
   only and is seeded from it at boot (`docs/persistence-policy.md`). An OSC

@@ -4,16 +4,15 @@ Thanks for your interest in Omniphony! This guide covers how to build, test, and
 contribute to the suite — with a focus on the most common contribution:
 **adding your own spatial render backend**.
 
-Omniphony has a renderer and two Studio frontends:
+Omniphony has a renderer and a Studio frontend:
 
 - **`omniphony-renderer/`** — the real-time decoding, spatial rendering, and OSC
   control engine (a Cargo workspace of several crates).
-- **`omniphony-studio/`** — the supervision / 3D-visualization / live-control
-  desktop app (Tauri + web frontend).
-
-- **`omniphony-studio-egui/`** — native Studio, with separate core, scene and UI crates.
-  Start with its [contributor guide](omniphony-studio-egui/CONTRIBUTING.md) for
-  a first panel change or a toolkit upgrade.
+- **`omniphony-studio-egui/`** — Omniphony Studio, the supervision /
+  3D-visualization / live-control desktop app (native egui/wgpu), with
+  separate core, scene and UI crates. Start with its
+  [contributor guide](omniphony-studio-egui/CONTRIBUTING.md) for a first panel
+  change or a toolkit upgrade.
 
 Most of this guide is about the renderer, since that is where rendering backends
 live and where the realtime contract matters.
@@ -31,7 +30,7 @@ omniphony-renderer/          Cargo workspace (the engine)
   bridge_api/                versioned ABI for external format bridges
   spdif/                     IEC61937 / S/PDIF parsing
   example_backend/           reference backend — copy this to start your own
-omniphony-studio/            Tauri control-surface app
+omniphony-studio-egui/       Omniphony Studio (its own Cargo workspace)
 docs/                        design notes and deep-dive guides
 ```
 
@@ -50,7 +49,7 @@ cargo fmt --all -- --check       # formatting must be clean
 ```
 
 CI (`.github/workflows/ci.yml`) checks formatting, builds and tests the renderer
-and native Studio, checks the Studio frontend and contracts, and compiles the
+and the Studio, checks the contracts, and compiles the
 platform targets. Consult the workflow for the exact current matrix; release
 bundling is separate. It also gates:
 
@@ -257,7 +256,7 @@ for the full contract, the wide matrix, and how deferred thresholds are tracked.
 - **Changed a `Cargo.toml`? Commit the regenerated `Cargo.lock` with it.** CI
   builds with `--locked`, so it fails rather than resolving a dependency the
   repository has not recorded. Each workspace has its own lock:
-  `omniphony-renderer/`, `omniphony-studio-egui/`, `omniphony-studio/src-tauri/`.
+  `omniphony-renderer/` and `omniphony-studio-egui/`.
 
 By contributing, you agree that your contributions are licensed under the
 project's `GPL-3.0-or-later` license.

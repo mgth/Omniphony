@@ -1529,8 +1529,9 @@ mod tests {
     }
 
     /// The playout markers are the native Studio's queue's business
-    /// (`osc::playout` takes them before the parser). The Tauri Studio parses
-    /// every message it gets with this same function and must see nothing.
+    /// (`osc::playout` takes them before the parser). A host that parses
+    /// every message it gets with this same function (as the Tauri Studio
+    /// did) must see nothing.
     #[test]
     fn playout_markers_are_not_events() {
         for (addr, args) in [

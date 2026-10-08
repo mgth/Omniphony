@@ -156,14 +156,19 @@ Prebuilt bundles ship on the Omniphony repo's releases page:
 
 [Omniphony Studio Latest Release](https://github.com/mgth/Omniphony/releases/latest)
 
-- **Linux** — `Omniphony.Studio_<ver>_amd64.deb`,
-  `Omniphony.Studio_<ver>_amd64.AppImage`, or
-  `Omniphony.Studio-<ver>-1.x86_64.rpm`.
-- **Windows** — `Omniphony.Studio_<ver>_x64-setup.exe` (NSIS) or
-  `Omniphony.Studio_<ver>_x64_en-US.msi`.
+- **Linux** — `omniphony-studio-egui_<ver>_amd64.deb`,
+  `omniphony-studio-egui_<ver>_x86_64.AppImage`, or the portable
+  `omniphony-studio-egui-v<ver>-linux-x86_64.tar.gz`.
+- **Windows** — `omniphony-studio-egui_<ver>_x64-setup.exe` (NSIS),
+  `omniphony-studio-egui_<ver>_x64_en-US.msi`, or the portable
+  `omniphony-studio-egui-v<ver>-windows-x86_64.zip`.
+- **macOS (Apple Silicon)** — `omniphony-studio-egui_<ver>_aarch64.dmg`, or the
+  portable `omniphony-studio-egui-v<ver>-macos-arm64.zip`.
 
-The Linux .deb installs an `omniphony-studio` binary; the Windows installers add
-a Start menu entry.
+The Linux .deb installs an `omniphony-studio-egui` binary; the Windows
+installers add a Start menu entry. On Arch, the AUR `omniphony-studio` package
+installs it. (Up to 0.6.0 these names belonged to the web-based Tauri Studio,
+`Omniphony.Studio_<ver>_…`; it was removed in 0.7.0.)
 
 ### Connect Studio to mpv
 

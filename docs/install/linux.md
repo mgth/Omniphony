@@ -77,7 +77,7 @@ orender: loaded liborender ABI 0.8 0.6.0 … from /home/you/omniphony/liborender
 ```
 
 The text in the last brackets says which copy was loaded. `(next to mpv)` is
-the one from the zip. `(studio install)` means a copy deployed by the Tauri
+the one from the zip. `(studio install)` means a copy deployed by
 Studio in `~/.local/share/omniphony/lib/` was found first. That copy wins over
 the one next to mpv, so it must be of the same release as the bridge.
 
@@ -291,7 +291,7 @@ which is misleading here: the bridge is not the problem, the engine is.
   and why a copy was rejected (`orender: rejecting '…': ABI major …`):
   `./mpv -v --no-config --ao=null --vo=null --length=1 av://lavfi:sine 2>&1 | grep orender`
 - Check that `liborender.so.0` is still next to `mpv`.
-- A stale engine in `~/.local/share/omniphony/lib/` (left by an older Tauri
+- A stale engine in `~/.local/share/omniphony/lib/` (left by an older
   Studio) is tried first. Update that Studio, or delete the file.
 
 ### 3. `orender_create failed — decoding natively`, after the engine loaded
