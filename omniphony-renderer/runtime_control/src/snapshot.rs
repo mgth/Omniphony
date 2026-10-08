@@ -871,9 +871,10 @@ pub fn build_live_state_bundle_with_host(
     // DRC is a decode-stage control owned by the core (lives in liborender).
     // Always publish the DRC fields on /state/input. When a host_audio
     // HostControlHandler is attached, its extend_snapshot() emits a separate
-    // /state/input message carrying the live-input device fields; studio's
-    // Tauri InputDomainState parser merges partial payloads, so two
-    // /state/input messages in one bundle compose cleanly.
+    // /state/input message carrying the live-input device fields; Studio's
+    // InputDomainState parser (omniphony-studio-core, osc/apply.rs) merges
+    // partial payloads, so two /state/input messages in one bundle compose
+    // cleanly.
     messages.push(OscPacket::Message(OscMessage {
         addr: crate::osc_contract::STATE_INPUT.to_string(),
         args: vec![OscType::String(

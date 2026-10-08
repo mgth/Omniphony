@@ -1,6 +1,11 @@
 # Viewport parity spec — scene setup, camera, room, axes, head, coordinates, gizmos, hybrid shape
 
-Source tree: `omniphony-studio/src/` (all paths below relative to it unless absolute). three.js **r0.165.0** (`package.json:26`). No file in this scope defines a custom GLSL shader (no `ShaderMaterial`/`RawShaderMaterial`); every material is a stock three material, so §15 gives pipeline-level WGSL notes instead of translations.
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
+Source tree: [`omniphony-studio/src/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src) (all paths below relative to it unless absolute). three.js **r0.165.0** (`package.json:26`). No file in this scope defines a custom GLSL shader (no `ShaderMaterial`/`RawShaderMaterial`); every material is a stock three material, so §15 gives pipeline-level WGSL notes instead of translations.
 
 ## 0. Conventions
 

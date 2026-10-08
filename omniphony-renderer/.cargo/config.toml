@@ -4,8 +4,8 @@
 # `cc` crate (the ASIO SDK, the vendored Lua) follow it and build with /MT.
 # Linux and macOS builds are not affected.
 #
-# Cargo reads this file when it runs from inside this directory (CI, the
-# release workflows and the Tauri sidecar script all do), and a RUSTFLAGS or
+# Cargo reads this file when it runs from inside this directory (CI and the
+# release workflows do), and a RUSTFLAGS or
 # CARGO_ENCODED_RUSTFLAGS environment variable replaces it entirely: a build
 # that sets one must add `-C target-feature=+crt-static` itself.
 # scripts/check_windows_crt_imports.py (run by CI on the Windows builds)

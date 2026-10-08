@@ -173,10 +173,11 @@ name + name list) seeded at boot by both hosts and updated by the ops above;
 
 A compact always-visible row at the top of the left overlay (above the
 accordion sections, so expanding it never resizes the 3D viewport): a
-`form-select` profile picker plus create / rename / delete icon buttons
-(`user-select: none`, WebKitGTK first-click rule). The picker follows the
-output-mode combo pattern: change → Tauri command → OSC, state echoes applied
-back with an `applying` guard, never trusted locally. `app_state.rs` mirrors
+profile picker plus create / rename / delete icon buttons
+(`omniphony-studio-egui/src/panels/profiles.rs`). The picker follows the
+output-mode combo pattern: change → core command
+(`core/src/host/commands/profiles.rs`) → OSC, with the row re-populated from
+the state echo, never trusted locally. `core/src/model/app_state.rs` mirrors
 `{activeProfile, profileNames}` (camelCase renames), fed from
 `/omniphony/state/profiles`. Create prompts for a name, then sends
 `create` + `switch`. All labels through i18n, 8-locale parity gated by

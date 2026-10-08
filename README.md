@@ -83,7 +83,7 @@ the same way — search the AUR for the one your format needs.
 
 ## Which versions go together
 
-One release number covers Omniphony Studio (both hosts), the `orender` engine
+One release number covers Omniphony Studio, the `orender` engine
 and `liborender`. The player and the decoder bridges are released on their own,
 and each must match the engine it runs with: the player needs a `liborender`
 with its ABI major version, and a decoder bridge loads only in an engine built
@@ -138,23 +138,18 @@ The core engine (executable: `orender`) and its supporting crates:
 
 Start with [`omniphony-renderer/QUICKSTART.md`](omniphony-renderer/QUICKSTART.md).
 
-### `omniphony-studio-egui` — supervision & control
+### `omniphony-studio-egui` — Omniphony Studio, supervision & control
 
 A native (egui/wgpu) desktop app that does **not** render audio itself; it
 connects to the engine over OSC to visualize objects in a 3D scene, monitor
-runtime state, and control selected live parameters.
-
-### `omniphony-studio` — the Tauri Studio (deprecated)
-
-The previous, web-based Studio. Deprecated in favour of
-`omniphony-studio-egui`: it still ships, but gets no new features. It reads
-the native Studio's `i18n/` catalogues and `assets/`.
+runtime state, and control selected live parameters. Since 0.7.0 it is the
+only Studio: the previous web-based (Tauri) Studio was removed, and the AUR
+`omniphony-studio` package now installs this one.
 
 ## Repository layout
 
 - `omniphony-renderer/` — engine, CLI, crates, reference bridge
-- `omniphony-studio-egui/` — supervision / visualization app (native)
-- `omniphony-studio/` — the deprecated Tauri Studio
+- `omniphony-studio-egui/` — Omniphony Studio, the supervision / visualization app
 - `docs/` — frontend usage guides (e.g. [mpv-omniphony](docs/mpv-omniphony.md))
 - `assets/` — demo clip, logo, captures
 - `scripts/` — helpers
@@ -165,15 +160,14 @@ the native Studio's `i18n/` catalogues and `assets/`.
 runs its test suite on that platform; "packaged" means a release ships a
 prebuilt download for it.
 
-| Platform | Engine (`orender`, `liborender`) | Native Studio | Packaged |
+| Platform | Engine (`orender`, `liborender`) | Studio | Packaged |
 | --- | --- | --- | --- |
 | Linux x86_64 | tested | tested | yes — Studio bundle, `liborender`, AUR (from source) |
 | Windows x86_64 | tested | tested | yes — Studio bundle, `liborender` |
 | macOS arm64 (Apple Silicon) | tested | tested | yes — Studio bundle, `liborender` |
 | Linux arm64 (aarch64) | tested | not built | no — build from source |
 
-The deprecated Tauri Studio is no longer built by CI; releases still package
-it until it is removed. Tests that need a sound device or a running PipeWire
+Tests that need a sound device or a running PipeWire
 session are skipped by CI on every platform, so the audio backends themselves
 (PipeWire, ASIO, CoreAudio) are compiled but not exercised there. Anything not listed — macOS on Intel, 32-bit targets — is not built by
 CI.

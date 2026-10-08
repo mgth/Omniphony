@@ -1,8 +1,8 @@
 //! The Tauri host's command handlers (`src-tauri/src/commands/*.rs`), ported
 //! mechanically: `#[tauri::command]` gone, `State<SharedState>` became
 //! `&SharedState`, the `AppHandle` path lookups became [`HostPaths`]. The
-//! bodies are otherwise the host's, so both hosts send the same OSC. Keep in
-//! sync with `src-tauri` until the two share a crate.
+//! bodies were otherwise the host's, so both hosts sent the same OSC. (The
+//! Tauri host was removed in 0.7.0, #677.)
 #![allow(dead_code)]
 
 pub mod adaptive;

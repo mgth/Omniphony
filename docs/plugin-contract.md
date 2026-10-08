@@ -43,8 +43,8 @@ values (the scriptable backend) report a dynamic schema.
 ## Parameters: `ParamSpec`
 
 A plugin declares its tunables as data. Nothing else in the renderer or in
-either Studio is written per parameter: the host stores the values
-generically, and the Studios draw the controls from the schema.
+Studio is written per parameter: the host stores the values generically, and
+Studio draws the controls from the schema.
 
 ```rust
 fn param_schema(&self) -> Vec<ParamSpec> {
@@ -153,9 +153,8 @@ A parameter spec on the wire:
   "default": 300.0 }
 ```
 
-Both Studios draw backends, generators and the phantom stage with one
-generated form (`plugin_params_form` in the native Studio,
-`controls/plugin-params.js` in the web one).
+Studio draws backends, generators and the phantom stage with one generated
+form (`plugin_params_form`).
 
 ## Control
 
@@ -225,6 +224,6 @@ master is on. See the built-ins in
    engine.register_object_generator(Box::new(MyFactory));
    ```
 
-   It appears in both Studios' generator selector with its parameters, is
+   It appears in Studio's generator selector with its parameters, is
    selectable by `object_generator_id = "my_generator"`, and its values are
    stored under `generator_params.my_generator`.

@@ -55,7 +55,7 @@ fn bundled_orender_candidates(app: &HostPaths) -> Vec<PathBuf> {
 /// above the crate that holds the renderer's `omniphony-renderer/Cargo.toml`.
 ///
 /// Searched for rather than counted in `parent()` steps. The Tauri host sat
-/// one level deeper (`omniphony-studio/src-tauri`), and the two steps copied
+/// one level deeper (in its `src-tauri` directory), and the two steps copied
 /// from it climbed out of the checkout to `workflows/<wf>/`, where the
 /// renderer build of the checkout was never found. `None` for a binary run
 /// away from its source tree, where only the configured, bundled and `PATH`

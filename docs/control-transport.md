@@ -161,7 +161,7 @@ whole current mechanism. Nothing is removed from the UDP path.
   change, so neither do the panels nor the architecture ratchet.
 - On TCP, Studio skips the state-sync retry loop, the gain-table NACK timer
   and the HRTF pacing. They stay in place for the UDP fallback.
-- The Tauri Studio is not ported: it is deprecated (#677).
+- The Tauri Studio was not ported: it was removed before 0.7.0 (#677).
 
 ### Compatibility
 

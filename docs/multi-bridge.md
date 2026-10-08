@@ -426,8 +426,8 @@ explicit setting:
 - Native Studio (`omniphony-studio-egui`): the Input panel lists the loaded
   bridges with their families and status, and edits the list (add with the
   file picker, remove, reorder). The panel only draws; the list lives in the
-  core, per `ARCHITECTURE.md`. The Tauri Studio, which is being retired, keeps
-  its single field, mapped to the first entry.
+  core, per `ARCHITECTURE.md`. (The Tauri Studio, removed before 0.7.0 —
+  #677 — kept its single field, mapped to the first entry.)
 
 ### harletty-bridge
 

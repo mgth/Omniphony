@@ -5,6 +5,13 @@ Rust host almost verbatim. That was possible because Tauri enforced a boundary:
 the JavaScript UI reached the renderer only through the host's typed commands
 (156 `invoke()` calls to 135 commands) and did not know a single OSC address.
 
+(The web frontend and its Tauri host were removed in 0.7.0, #677. Comments
+in this workspace that say a function was ported from the Tauri host, or cite
+`src-tauri/…` or `*.js` files, refer to that code; its last version is at
+commit
+[49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio)
+of mgth/Omniphony.)
+
 This crate has to stay as replaceable. egui is a choice, not a foundation: the
 day another toolkit serves the Studio better, moving should mean rewriting the
 drawing, not re-porting the behaviour. The port lost the boundary on the way in

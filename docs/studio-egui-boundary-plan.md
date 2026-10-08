@@ -8,6 +8,8 @@ Progress:
   agent rules.
 - **Phase 1 landed**: `omniphony-studio-core` exists and has no UI crate in
   its graph. What changed from the plan below is recorded under the phase.
+- **Phase 5 decided**: the Tauri Studio was retired and deleted before 0.7.0
+  (#677); the native Studio is the only one.
 
 The rules this plan converges on are stated in
 [`omniphony-studio-egui/ARCHITECTURE.md`](../omniphony-studio-egui/ARCHITECTURE.md).
@@ -259,6 +261,13 @@ nudging itself would spin.
 
 ### Phase 5: the Tauri Studio
 
+**Resolved (#677): retired.** The native Studio got installers (#756) and
+became what releases, nightlies and the AUR `omniphony-studio` package
+deliver; `omniphony-studio/` was then deleted, with its CI jobs, lockfiles and
+PKGBUILD. Its last sources are at commit
+[49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio).
+The rest of this section is the record of how the decision was framed.
+
 The Tauri host still receives features, and about 10.6k lines are copied
 between it and the egui crate. Decide at the cutover:
 
@@ -283,7 +292,7 @@ Both are alive. Over the three months to 2026-09-13, 78 commits touched
 `src-tauri` and 120 touched `omniphony-studio-egui`.
 
 **The duplication, measured.** 25 files share a name between
-`omniphony-studio/src-tauri/src/` and `omniphony-studio-egui/core/src/`; 6614 of
+[`omniphony-studio/src-tauri/src/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src-tauri/src) and `omniphony-studio-egui/core/src/`; 6614 of
 their lines are identical, out of 8351 on the Tauri side and 9134 on the core's.
 Six files are the same file twice, at 99% or better:
 
@@ -334,7 +343,7 @@ it lands — `integration-build.yml` on demand is the check that matters, since
 | 2 | contract crate, `Studio` API, about 25 panel PRs, read-only model | 5 to 8 days |
 | 3 | scheduler, 10 ticks, side effects | 4 to 6 days |
 | 4 | neutral 3D engine | about 2 days, deferrable |
-| 5 | Tauri decision | a decision |
+| 5 | Tauri decision | decided: retired (#677) |
 
 About three weeks of small, independent PRs. Phases 1 to 3 carry the value.
 Phase 4 is cheap insurance, and can wait until a migration is actually on the
