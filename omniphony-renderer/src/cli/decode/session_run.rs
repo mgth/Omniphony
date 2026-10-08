@@ -1092,7 +1092,20 @@ fn run_prepared_render(
     run: &ResolvedRun,
 ) -> Result<Vec<std::path::PathBuf>> {
     let effective_args = &run.args;
-    if run.renderer_params.render_evaluation_mode.is_none() {
+    // The evaluation grid, settled against the first bridge's hint now that
+    // the bridges are loaded: a config from before `evaluation_grid` is
+    // migrated (in memory, unsaved), and the renderer is built on the grid
+    // in force (docs/multi-bridge.md, "Evaluation grid").
+    let mut render_cfg = run.render_cfg.clone();
+    let grid = renderer::evaluation_grid::settle_config(
+        &mut render_cfg,
+        renderer::evaluation_grid::EvaluationGrid::from_hint(
+            prepared.vbap_cartesian_defaults,
+            prepared.preferred_evaluation_mode,
+        ),
+    );
+    let renderer_params = super::config_resolution::renderer_params(&render_cfg, effective_args);
+    if renderer_params.render_evaluation_mode.is_none() {
         log::info!(
             "Using bridge-preferred evaluation mode: {:?}",
             prepared.preferred_evaluation_mode
@@ -1103,14 +1116,20 @@ fn run_prepared_render(
     init_render_handler(
         &mut handler,
         effective_args,
-        &run.render_cfg,
-        &run.renderer_params,
+        &render_cfg,
+        &renderer_params,
         &prepared.input_path,
         &run.config_path,
         run.current_layout.clone(),
         prepared.vbap_cartesian_defaults,
         prepared.preferred_evaluation_mode,
     )?;
+    if grid.migrated
+        && let Some(renderer) = &handler.spatial_renderer
+    {
+        // Logged by the settle; Save records it.
+        renderer.renderer_control().mark_dirty();
+    }
     handler.spatial.pipeline.stream.coordinate_format = prepared.coordinate_format;
     // Live DRC changes reach both decoders through this value; the one the
     // live params were seeded with is already in it.

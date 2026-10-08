@@ -90,6 +90,11 @@ pub struct ControlEffects {
     /// Default `false` = treat as a geometry change (full rebuild), which is the
     /// safe assumption; handlers known to be evaluation-only opt in.
     pub evaluation_only: bool,
+    /// The change is where the evaluation grid comes from, alone: request
+    /// the live grid (`RendererControl::request_live_grid`) instead of a
+    /// rebuild, which it starts only when no topology on that grid is at
+    /// hand.
+    pub grid_request: bool,
     pub broadcasts: Vec<BroadcastUpdate>,
     pub log_message: Option<String>,
     /// Config fields to write straight to `config.yaml` (a targeted write, see

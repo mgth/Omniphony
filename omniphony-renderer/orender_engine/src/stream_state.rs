@@ -48,6 +48,9 @@ pub struct StreamDeclaration {
     /// The channels tagged as dialogue, from `tags`: worked out once here so
     /// the per-frame gain compares no strings.
     pub dialogue_channels: Vec<usize>,
+    /// The evaluation grid the stream's bridge hints; `None` for content no
+    /// bridge declared (live PCM), which keeps the grid in force.
+    pub grid: Option<renderer::evaluation_grid::BridgeHint>,
 }
 
 impl Default for StreamDeclaration {
@@ -59,6 +62,7 @@ impl Default for StreamDeclaration {
             label: String::new(),
             tags: Vec::new(),
             dialogue_channels: Vec::new(),
+            grid: None,
         }
     }
 }
@@ -82,6 +86,7 @@ impl StreamDeclaration {
             label: declaration.label,
             tags: declaration.tags,
             dialogue_channels,
+            grid: declaration.grid,
         }
     }
 }
@@ -658,6 +663,7 @@ mod tests {
                 family: "dts".to_owned(),
                 label: "DTS".to_owned(),
                 tags: Vec::new(),
+                grid: None,
             },
             &placement,
         );

@@ -741,9 +741,12 @@ impl StudioSpike {
     // ── evaluation ───────────────────────────────────────────────────────
 
     /// Bar: the mode select and, while the choice is `auto`, the mode it
-    /// resolved to. Inset: the grid of the precomputed mode in force, then
-    /// the interpolation switch and the size intervals — nothing at all in
-    /// realtime with a backend that cannot size events.
+    /// resolved to (while the grid follows the bridge, the bridge it comes
+    /// from). Inset: the "Follow the bridge" switch, the grid of the
+    /// precomputed mode in force — the bridge's, read-only, while it follows
+    /// it —, rendering below the floor, then the interpolation switch and the
+    /// size intervals — nothing at all in realtime with a backend that cannot
+    /// size events.
     fn evaluation_group(&mut self, ui: &mut Ui) {
         let (
             selection,
@@ -756,6 +759,9 @@ impl StudioSpike {
             interpolation,
             intervals,
             meters_per_unit,
+            grid_source,
+            bridge_grid,
+            bridge_name,
         ) = {
             let live = self.host.read();
             let s = &live.app.render_evaluation_mode_state;
@@ -783,14 +789,55 @@ impl StudioSpike {
                 live.app.object_size_intervals,
                 // Room scale: metres per scene unit, from the renderer's room domain.
                 live.app.room_ratio.scale_m.max(0.001),
+                live.app.evaluation_grid.clone(),
+                live.app.evaluation_grid_bridge.clone(),
+                // The file the hinting bridge was loaded from.
+                live.app
+                    .evaluation_grid_bridge
+                    .as_ref()
+                    .and_then(|grid| grid.bridge_index)
+                    .and_then(|index| live.app.render_bridges.as_ref()?.bridges.get(index))
+                    .map(|bridge| {
+                        std::path::Path::new(&bridge.path).file_name().map_or_else(
+                            || bridge.path.clone(),
+                            |name| name.to_string_lossy().into_owned(),
+                        )
+                    }),
             )
         };
+        // `None` from a renderer before the setting: no switch, as before.
+        let follows = grid_source.as_deref() == Some("bridge");
+        let forced = grid_source.as_deref() == Some("custom");
+        // While the grid follows the bridge, what is shown is the bridge's.
+        let (selection, cartesian, allow_neg_z) = match (&bridge_grid, follows) {
+            (Some(grid), true) => (
+                grid.mode.clone(),
+                crate::model::app_state::VbapCartesian {
+                    x_size: Some(grid.x_size),
+                    y_size: Some(grid.y_size),
+                    z_size: Some(grid.z_size),
+                    z_neg_size: Some(grid.z_neg_size),
+                },
+                Some(grid.allow_negative_z),
+            ),
+            _ => (selection, cartesian, allow_neg_z),
+        };
+        // A forced grid has a concrete mode.
+        let allowed: Vec<String> = allowed
+            .into_iter()
+            .filter(|mode| !(forced && mode == "auto"))
+            .collect();
         // What the engine resolved the choice to, when that says more than
-        // the choice itself.
-        let resolved = effective
-            .as_ref()
-            .filter(|mode| **mode != selection)
-            .map(|mode| evaluation_label(mode));
+        // the choice itself; the bridge the grid comes from while it follows
+        // it.
+        let resolved = if follows {
+            bridge_name.map(|name| tf("evaluation.grid.fromBridge", &[("bridge", &name)]))
+        } else {
+            effective
+                .as_ref()
+                .filter(|mode| **mode != selection)
+                .map(|mode| evaluation_label(mode).to_owned())
+        };
         // Which grid block applies: `auto` follows the effective mode.
         let visible_mode = if selection == "auto" {
             effective.clone().unwrap_or_else(|| "auto".to_owned())
@@ -817,28 +864,59 @@ impl StudioSpike {
                             .color(theme::TEXT_MUTED),
                     );
                 }
-                widgets::bounded_combo(ui, 150.0, |ui, w| {
-                    egui::ComboBox::from_id_salt("evaluation-mode")
-                        .selected_text(evaluation_label(&selection))
-                        .width(w)
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            for mode in &allowed {
-                                ui.selectable_value(
-                                    &mut chosen,
-                                    mode.clone(),
-                                    evaluation_label(mode),
-                                );
-                            }
-                        })
+                // The bridge's mode while the grid follows it: shown, not
+                // editable.
+                ui.add_enabled_ui(!follows, |ui| {
+                    widgets::bounded_combo(ui, 150.0, |ui, w| {
+                        egui::ComboBox::from_id_salt("evaluation-mode")
+                            .selected_text(evaluation_label(&selection))
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for mode in &allowed {
+                                    ui.selectable_value(
+                                        &mut chosen,
+                                        mode.clone(),
+                                        evaluation_label(mode),
+                                    );
+                                }
+                            })
+                    })
                 });
             })
             .show(ui, |ui| {
+                if grid_source.is_some() {
+                    let mut follow = follows;
+                    if widgets::switch_row_help(
+                        ui,
+                        t("evaluation.grid.followBridge"),
+                        "help.eval.gridSource",
+                        &mut follow,
+                    ) {
+                        render::set_evaluation_grid_follows_bridge(&self.host, follow);
+                    }
+                }
                 if show_cartesian {
-                    self.cartesian_grid(ui, &cartesian, allow_neg_z, meters_per_unit);
+                    self.cartesian_grid(ui, &cartesian, allow_neg_z, meters_per_unit, !follows);
                 }
                 if show_polar {
                     self.polar_grid(ui, &polar, allow_neg_z);
+                }
+                if grid_source.is_some() {
+                    let mut below = allow_neg_z.unwrap_or(false);
+                    let toggled = ui
+                        .add_enabled_ui(!follows, |ui| {
+                            widgets::switch_row_help(
+                                ui,
+                                t("evaluation.allowNegativeZ"),
+                                "help.eval.allowNegativeZ",
+                                &mut below,
+                            )
+                        })
+                        .inner;
+                    if toggled {
+                        render::set_vbap_allow_negative_z(&self.host, below);
+                    }
                 }
                 if show_cartesian || show_polar {
                     let mut on = interpolation;
@@ -879,13 +957,15 @@ impl StudioSpike {
         }
     }
 
-    /// The cartesian grid's four counts and the step each makes.
+    /// The cartesian grid's four counts and the step each makes; read-only
+    /// unless `editable` (the grid follows the bridge).
     fn cartesian_grid(
         &mut self,
         ui: &mut Ui,
         cartesian: &crate::model::app_state::VbapCartesian,
         allow_neg_z: Option<bool>,
         meters_per_unit: f64,
+        editable: bool,
     ) {
         help::label(
             ui,
@@ -903,6 +983,7 @@ impl StudioSpike {
                 "X",
                 cartesian.x_size,
                 1,
+                editable,
                 render::control_render_evaluation_cartesian_x_size,
             );
             self.grid_field(
@@ -910,6 +991,7 @@ impl StudioSpike {
                 "Y",
                 cartesian.y_size,
                 1,
+                editable,
                 render::control_render_evaluation_cartesian_y_size,
             );
             self.grid_field(
@@ -917,6 +999,7 @@ impl StudioSpike {
                 "Z+",
                 cartesian.z_size,
                 1,
+                editable,
                 render::control_render_evaluation_cartesian_z_size,
             );
             self.grid_field(
@@ -924,6 +1007,7 @@ impl StudioSpike {
                 "Z-",
                 cartesian.z_neg_size,
                 0,
+                editable,
                 render::control_render_evaluation_cartesian_z_neg_size,
             );
         });
@@ -979,6 +1063,7 @@ impl StudioSpike {
                 "az",
                 polar.azimuth_resolution,
                 1,
+                true,
                 render::control_render_evaluation_polar_azimuth_resolution,
             );
             self.grid_field(
@@ -986,6 +1071,7 @@ impl StudioSpike {
                 "el",
                 polar.elevation_resolution,
                 1,
+                true,
                 render::control_render_evaluation_polar_elevation_resolution,
             );
             self.grid_field(
@@ -993,6 +1079,7 @@ impl StudioSpike {
                 "d",
                 polar.distance_res,
                 1,
+                true,
                 render::control_render_evaluation_polar_distance_res,
             );
         });
@@ -1037,13 +1124,15 @@ impl StudioSpike {
     }
 
     /// One integer field of an evaluation grid. `floor` is the smallest value
-    /// the renderer accepts (1 everywhere but the negative-Z count).
+    /// the renderer accepts (1 everywhere but the negative-Z count); shown,
+    /// not editable, unless `editable`.
     fn grid_field(
         &mut self,
         ui: &mut Ui,
         placeholder: &str,
         current: Option<u32>,
         floor: u32,
+        editable: bool,
         send: fn(&SharedState, i32),
     ) {
         let mut value = current.unwrap_or(floor);
@@ -1053,13 +1142,16 @@ impl StudioSpike {
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_MUTED),
             );
-            if ui
-                .add_sized(
-                    egui::vec2(48.0, ui.spacing().interact_size.y),
-                    egui::DragValue::new(&mut value).range(floor..=u32::MAX),
-                )
-                .changed()
-            {
+            let changed = ui
+                .add_enabled_ui(editable, |ui| {
+                    ui.add_sized(
+                        egui::vec2(48.0, ui.spacing().interact_size.y),
+                        egui::DragValue::new(&mut value).range(floor..=u32::MAX),
+                    )
+                    .changed()
+                })
+                .inner;
+            if changed && editable {
                 send(&self.host, value.max(floor) as i32);
             }
         });

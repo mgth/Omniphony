@@ -246,14 +246,6 @@ pub struct RenderArgs {
     #[arg(long, value_name = "SPREAD", default_value_t = renderer::config_fields::vbap_spread::DEFAULT)]
     pub vbap_spread: f32,
 
-    /// Allow negative Z values for VBAP tables (floor below listener).
-    #[arg(long, conflicts_with = "no_vbap_allow_negative_z")]
-    pub vbap_allow_negative_z: bool,
-
-    /// Disable negative Z values for VBAP tables.
-    #[arg(long, conflicts_with = "vbap_allow_negative_z")]
-    pub no_vbap_allow_negative_z: bool,
-
     /// Calculate spread from distance (1.0 at distance=0, 0.0 at distance>=1.0)
     /// When enabled, overrides object spread metadata for spread calculation
     #[arg(long, conflicts_with = "no_spread_from_distance")]

@@ -1391,17 +1391,23 @@ impl SpeakerRenderStage {
         topology: &Arc<RenderTopology>,
     ) -> Result<bool> {
         let wanted = BandSetKey::wanted(control, topology);
+        // A topology a later grid request overtook (`crate::evaluation_grid`)
+        // is not followed: its set is neither asked for nor installed, and the
+        // installed one renders until the topology answering the request is
+        // published, or this one is taken as its answer.
+        let current = control.topology_grid_is_current(topology);
         let mut installed = false;
         match self.worker.take_finished() {
             Some(Finished::Set(set)) => {
                 // A set the topology or the options moved on from is dropped;
-                // so is a duplicate of the installed one.
+                // so is a duplicate of the installed one, and the set of a
+                // topology a later grid request overtook while it was built.
                 if self.requested == Some(set.key) {
                     // That request is answered, whether the set is still
                     // wanted or not.
                     self.requested = None;
                 }
-                if set.key == wanted && self.built != Some(wanted) {
+                if set.key == wanted && self.built != Some(wanted) && current {
                     self.install(control, set);
                     installed = true;
                 } else {
@@ -1451,6 +1457,9 @@ impl SpeakerRenderStage {
             self.install(control, set);
             self.requested = None;
             return Ok(true);
+        }
+        if !current {
+            return Ok(installed);
         }
         if self.requested != Some(wanted) && self.failed.is_none() {
             if self
@@ -1536,6 +1545,9 @@ impl SpeakerRenderStage {
         // Here, not where the set is built: the control must name the bank
         // that renders, and a set built for a key since left is never that.
         control.set_crossover_info(crossover_info);
+        // Likewise the grid its tables were sampled on: what a switch to a
+        // forced grid starts from.
+        control.note_installed_grid(topology.grid);
         self.forget_failure();
         // The filter memory goes with the bank it was made for: the replaced
         // one is freed by the worker with the rest, the new one came built.
