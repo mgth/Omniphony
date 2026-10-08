@@ -1077,7 +1077,7 @@ pub fn speaker_gain_linear(gain_db: f32) -> f32 {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CartesianEvaluationParams {
     pub x_size: usize,
     pub y_size: usize,
@@ -1103,6 +1103,17 @@ pub struct EvaluationLiveParams {
     /// default; `N` ⇒ `N + 1` size tables interpolated at read time). Applies to
     /// both precomputed modes; ignored for backends without `supports_event_size`.
     pub object_size_intervals: usize,
+    /// Positions below the floor keep their negative z (else they are
+    /// clamped onto it). Baked into the gain models.
+    pub allow_negative_z: bool,
+    /// Where the grid (mode, Cartesian cells, negative z) comes from
+    /// (`render.evaluation_grid`, see [`crate::evaluation_grid`]).
+    pub source: crate::evaluation_grid::EvaluationGridSource,
+    /// The grid the active bridge hints, once known: the grid itself while
+    /// it follows the bridge, published either way.
+    pub bridge_hint: Option<crate::evaluation_grid::EvaluationGrid>,
+    /// Which loaded bridge hints it, in load order.
+    pub bridge_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1391,10 +1402,6 @@ impl BackendRebuildParams {
     }
 }
 
-fn rebuild_params_allow_negative_z(params: Option<BackendRebuildParams>) -> bool {
-    params.map(|value| value.allow_negative_z).unwrap_or(false)
-}
-
 fn evaluation_build_config_from_live(
     live: &LiveParams,
     allow_negative_z: bool,
@@ -1469,6 +1476,12 @@ pub struct RenderTopology {
     /// `n` is emitter `n`, and the editable layout's per-speaker rows (gain,
     /// mute, delay) do not apply to it.
     pub brir_layout: bool,
+    /// The grid this topology's evaluation was planned on; `None` for one
+    /// built without a plan.
+    pub grid: Option<crate::evaluation_grid::EvaluationGrid>,
+    /// The grid request it answers ([`crate::evaluation_grid`]): the latest
+    /// when its plan was prepared, or a later one that took it as it is.
+    pub(crate) grid_generation: std::sync::atomic::AtomicU64,
 }
 
 impl RenderTopology {
@@ -1510,7 +1523,20 @@ impl RenderTopology {
             geometry_generation: 0,
             model_backend_id: String::new(),
             brir_layout: false,
+            grid: None,
+            grid_generation: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// Record the grid request this topology answers (chaining helper).
+    pub fn with_grid(
+        mut self,
+        grid: Option<crate::evaluation_grid::EvaluationGrid>,
+        generation: u64,
+    ) -> Self {
+        self.grid = grid;
+        *self.grid_generation.get_mut() = generation;
+        self
     }
 
     /// Record what this topology's gain model was built from: the geometry
@@ -1764,6 +1790,11 @@ pub struct RendererControl {
     /// updated by the OSC profile operations; read by the state snapshot.
     /// Control-plane only, never touched on the audio path.
     profiles_info: Mutex<ProfilesInfo>,
+
+    /// Where the evaluation grid stands: the latest grid request, the hints
+    /// the active bridge offers, the grid the speaker stage installed (see
+    /// [`crate::evaluation_grid`]).
+    pub(crate) grid: crate::evaluation_grid::GridRequests,
 }
 
 /// Client-visible view of the named config profiles (active + names).
@@ -1854,6 +1885,7 @@ impl RendererControl {
                     .to_string(),
             ),
             profiles_info: Mutex::new(ProfilesInfo::default()),
+            grid: Default::default(),
         })
     }
 
@@ -2298,7 +2330,12 @@ impl RendererControl {
         f(&mut layout)
     }
 
+    /// Publish `topology` whatever the grid requests say (the build itself,
+    /// an offline render settling on the calling thread). A rebuild that a
+    /// later grid request may have overtaken publishes through
+    /// [`Self::publish_topology_if_current`] instead.
     pub fn publish_topology(&self, topology: RenderTopology) {
+        self.forget_grid_pair();
         self.topology.store(Arc::new(topology));
     }
 
@@ -2523,11 +2560,27 @@ impl RendererControl {
         layout: SpeakerLayout,
     ) -> Option<TopologyBuildPlan> {
         let live = self.live.read();
-        let backend_rebuild_params = self.backend_rebuild_params();
-        let evaluation_build_config = evaluation_build_config_from_live(
+        // Negative z is a live setting (the bridge's hint, or the user's in
+        // a forced grid), not the build's fact: the gain models and the
+        // polar grid take it from the live params.
+        let allow_negative_z = live.evaluation.allow_negative_z;
+        let backend_rebuild_params = self.backend_rebuild_params().map(|mut params| {
+            params.allow_negative_z = allow_negative_z;
+            if let Some(vbap) = params.vbap.as_mut() {
+                vbap.allow_negative_z = allow_negative_z;
+            }
+            params
+        });
+        let evaluation_build_config = evaluation_build_config_from_live(&live, allow_negative_z);
+        let grid = crate::evaluation_grid::EvaluationGrid::of_live(
             &live,
-            rebuild_params_allow_negative_z(backend_rebuild_params),
+            backend_rebuild_params
+                .map(|params| params.preferred_evaluation_mode())
+                .unwrap_or(PreferredEvaluationMode::PrecomputedCartesian),
         );
+        // Read before the geometry: a request made meanwhile then reads as
+        // newer than this plan.
+        let grid_generation = self.grid_generation();
         let geometry_generation = self.geometry_generation();
         let registry = self.backend_registry.read();
         // File-kind handles are resolved to absolute renderer paths here too, so
@@ -2543,6 +2596,8 @@ impl RendererControl {
         )
         .map(|mut plan| {
             plan.geometry_generation = geometry_generation;
+            plan.grid = Some(grid);
+            plan.grid_generation = grid_generation;
             plan
         })
     }
@@ -2569,11 +2624,7 @@ impl RendererControl {
         // Same cartesian grid the full gain table uses.
         let (x_positions, y_positions, z_positions, template) = {
             let live = self.live.read();
-            let rebuild_params = self.backend_rebuild_params();
-            let config = evaluation_build_config_from_live(
-                &live,
-                rebuild_params_allow_negative_z(rebuild_params),
-            );
+            let config = evaluation_build_config_from_live(&live, live.evaluation.allow_negative_z);
             // The axes below are as long as the sizes asked for: refuse a
             // grid past the table budget before allocating them.
             let c = &config.cartesian;

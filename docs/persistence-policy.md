@@ -87,6 +87,11 @@ edits: a switch discards them unless it carries `"save"` (the full Save first,
 no switch if it fails), create copies the live state into the new profile
 only, rename and delete leave them pending.
 
+A config read differently than it is written — one from before
+`render.evaluation_grid`, migrated when the bridges load
+(`docs/multi-bridge.md`) — is marked unsaved and left as it is on disk: the
+Save records the migration.
+
 Nothing writes the whole live state to `config.yaml` except the explicit Save.
 A change only a restart can apply (a new bridge) uses `/control/restart`, which
 carries the unsaved state over in the sidecar instead of saving it.

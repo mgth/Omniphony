@@ -136,6 +136,12 @@ pub struct RenderConfig {
     /// round-trip through config without a typed field here.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub backend_params: crate::plugin::ParamBag,
+    /// Where the evaluation grid comes from: `bridge` (the active bridge's
+    /// hint) or `custom` (the grid keys below). Absent in a config from
+    /// before it: migrated when the bridges load
+    /// (`crate::evaluation_grid::resolve_config`). Always written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluation_grid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_evaluation_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

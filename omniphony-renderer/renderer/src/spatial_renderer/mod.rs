@@ -436,7 +436,8 @@ impl SpatialRenderer {
     /// With synchronous builds (offline renders): load the BRIR set a
     /// headphone render asks for, then rebuild the topology on the layout it
     /// pans onto ([`RendererControl::prepare_topology_rebuild`]) when that
-    /// changed, all on the calling thread. Two compares when nothing changed.
+    /// changed, or on the grid a new stream's bridge hints, all on the
+    /// calling thread. A few compares when nothing changed.
     fn settle_brir_layout(&mut self) -> Result<()> {
         {
             let g = self.control.live.read();
@@ -448,7 +449,11 @@ impl SpatialRenderer {
                 self.brir.ensure_loaded(path, &opts, buses);
             }
         }
-        if self.control.render_layout_outdated()
+        // A new stream's grid, settled here too (`crate::evaluation_grid`).
+        let grid_rebuild = self.control.bridge_grid_pending()
+            && self.control.take_bridge_grid()
+            && self.control.request_live_grid() == crate::evaluation_grid::GridDecision::Rebuild;
+        if (grid_rebuild || self.control.render_layout_outdated())
             && let Some(plan) = self.control.prepare_topology_rebuild()
         {
             let current = self.control.active_topology();
@@ -1660,6 +1665,9 @@ impl SpatialRenderer {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod grid_request_tests;
 
 #[cfg(test)]
 mod golden_tests;

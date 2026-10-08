@@ -472,6 +472,12 @@ impl BridgeSet {
         accepted
     }
 
+    /// The bridge per-stream answers come from, in load order: the one that
+    /// took the last packet, the first one while idle.
+    pub fn active_index(&self) -> usize {
+        self.active
+    }
+
     fn current(&self) -> &FormatBridgeBox {
         &self.slots[self.active].bridge
     }
@@ -856,6 +862,7 @@ mod tests {
         log: Arc<Mutex<Log>>,
         format: RCoordinateFormat,
         drc_modes: &'static [&'static str],
+        hint: (RVbapCartesianDefaults, RVbapTableMode),
     }
 
     impl FormatBridge for TestBridge {
@@ -893,10 +900,10 @@ mod tests {
             self.format
         }
         fn vbap_cartesian_defaults(&self) -> RVbapCartesianDefaults {
-            RVbapCartesianDefaults::BALANCED
+            self.hint.0
         }
         fn preferred_vbap_table_mode(&self) -> RVbapTableMode {
-            RVbapTableMode::Cartesian
+            self.hint.1
         }
         fn supported_drc_modes(&self) -> RVec<RString> {
             self.drc_modes.iter().map(|m| RString::from(*m)).collect()
@@ -924,6 +931,24 @@ mod tests {
                 log: Arc::clone(log),
                 format,
                 drc_modes,
+                hint: (RVbapCartesianDefaults::BALANCED, RVbapTableMode::Cartesian),
+            },
+            TD_Opaque,
+        )
+    }
+
+    /// A test bridge that hints `defaults` on a `preferred` table.
+    fn hinting_bridge(
+        log: &Arc<Mutex<Log>>,
+        defaults: RVbapCartesianDefaults,
+        preferred: RVbapTableMode,
+    ) -> FormatBridgeBox {
+        FormatBridge_TO::from_value(
+            TestBridge {
+                log: Arc::clone(log),
+                format: RCoordinateFormat::Cartesian,
+                drc_modes: &[],
+                hint: (defaults, preferred),
             },
             TD_Opaque,
         )
@@ -1118,6 +1143,47 @@ mod tests {
             shown <= 6 * input,
             "{shown} bytes shown to the probes for {input} received"
         );
+    }
+
+    /// The grid a stream's declaration carries is its own bridge's hint
+    /// (docs/multi-bridge.md, "Grid hints"); the first bridge's while idle.
+    #[test]
+    fn the_declared_grid_is_the_active_bridges_hint() {
+        use crate::decode_step::Declaration;
+        use renderer::evaluation_grid::EvaluationGrid;
+        let (a, b) = (Arc::default(), Arc::default());
+        let other = RVbapCartesianDefaults {
+            x_size: 20,
+            z_neg_size: 4,
+            allow_negative_z: true,
+            ..RVbapCartesianDefaults::BALANCED
+        };
+        let mut set = BridgeSet::from_parts(vec![
+            (probe_a as ProbeFn, vec![], test_bridge(&a)),
+            (
+                probe_b as ProbeFn,
+                vec![],
+                hinting_bridge(&b, other, RVbapTableMode::Polar),
+            ),
+        ])
+        .unwrap();
+        let first = Some(EvaluationGrid::from_hint(
+            RVbapCartesianDefaults::BALANCED,
+            RVbapTableMode::Cartesian,
+        ));
+        let grid = |set: &BridgeSet| {
+            Declaration::read(set)
+                .grid
+                .map(|hint| (hint.grid, hint.bridge))
+        };
+        assert_eq!(grid(&set), first.map(|g| (g, 0)));
+        set.push_packet(b"", RInputTransport::Iec61937, 0x0B);
+        assert_eq!(
+            grid(&set),
+            Some((EvaluationGrid::from_hint(other, RVbapTableMode::Polar), 1))
+        );
+        set.push_packet(b"", RInputTransport::Iec61937, 0x15);
+        assert_eq!(grid(&set), first.map(|g| (g, 0)));
     }
 
     #[test]

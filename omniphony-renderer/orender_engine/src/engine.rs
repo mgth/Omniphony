@@ -426,7 +426,7 @@ impl Engine {
         // Client-visible profiles view (active name + list), applied to the
         // control below once it exists; see docs/config-profiles.md.
         let profiles_info = loaded_cfg.as_ref().map(Config::profiles_info);
-        let render_cfg = loaded_cfg.and_then(|c| c.render);
+        let mut render_cfg = loaded_cfg.and_then(|c| c.render);
 
         let layout = if let Some(p) = speaker_layout_path {
             SpeakerLayout::from_file(p)?
@@ -480,6 +480,17 @@ impl Engine {
             "bridge loaded + configured in {:.2}s",
             t_bridge.elapsed().as_secs_f64()
         );
+        // The evaluation grid, settled against the first bridge's hint now
+        // that the bridges are loaded: a config from before `evaluation_grid`
+        // is migrated (in memory, unsaved), and the renderer is built on the
+        // grid in force (docs/multi-bridge.md, "Evaluation grid").
+        let grid_migrated = render_cfg.as_mut().is_some_and(|cfg| {
+            renderer::evaluation_grid::settle_config(
+                cfg,
+                renderer::evaluation_grid::EvaluationGrid::from_hint(vbap_defaults, preferred),
+            )
+            .migrated
+        });
 
         let params = SpatialRendererParams::from_render_config(render_cfg.as_ref());
         let mut renderer = build_spatial_renderer(
@@ -526,8 +537,9 @@ impl Engine {
             }
             control.set_config_status(Some(status.as_str().to_string()));
         }
-        // State restored from a live-handoff sidecar is by definition unsaved.
-        if live_restored {
+        // State restored from a live-handoff sidecar is by definition unsaved,
+        // and so is a migrated grid (logged by the settle; Save records it).
+        if live_restored || grid_migrated {
             control.mark_dirty();
         }
 
