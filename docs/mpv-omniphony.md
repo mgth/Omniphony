@@ -59,25 +59,32 @@ over OSC, showing per-object positions in the room and live meters.*
   library is rejected (one clear log line) and the search falls through to the
   next location. If nothing usable is found, mpv still plays everything through
   its native decoders — spatial rendering is simply unavailable.
-- **The decoder bridge**
-  ([harletty-bridge](https://github.com/harletty/harletty-bridge/releases) — it
-  is not bundled with the player). Without configuration the engine takes the
-  file `$ORENDER_BRIDGE_FILE` names, else the first `*_bridge.{so,dll,dylib}`
-  next to the mpv executable, then in `$ORENDER_BRIDGE_DIR`, then in the
-  per-user engine folder of point 2 above (`<local data>/omniphony/lib/`), then
-  in `/usr/lib/orender` (Unix). Studio's own renderer searches the same folders
-  from its `orender`, so a bridge in the per-user engine folder serves both;
+- **The decoder bridges**
+  ([harletty-bridge](https://github.com/harletty/harletty-bridge/releases) — not
+  bundled with the player; from the release built for `bridge_api` 0.6 it
+  ships one library per codec family, `harletty_dolby_bridge`,
+  `harletty_dts_bridge` and `harletty_iamf_bridge`, with the platform's prefix
+  and suffix). Without configuration the engine takes the files
+  `$ORENDER_BRIDGE_FILE` names (a path list), else every
+  `*_bridge.{so,dll,dylib}` of the first of these folders that holds a usable
+  one: next to the mpv executable, `$ORENDER_BRIDGE_DIR`, the per-user engine
+  folder of point 2 above (`<local data>/omniphony/lib/`), then
+  `/usr/lib/orender` (Unix). Studio's own renderer searches the same folders
+  from its `orender`, so bridges in the per-user engine folder serve both;
   Studio also hands its renderer the exact bridge named by
-  `ad-orender-bridge-path` in `mpv.conf` (an absolute path, default profile) as
-  `$ORENDER_BRIDGE_FILE`. `render.bridge_path`
-  in the config, or `--ad-orender-bridge-path`, names one file instead (no
-  globs, and no fallback when it is wrong).
+  `ad-orender-bridge-path` in `mpv.conf` (one absolute path, default profile)
+  as `$ORENDER_BRIDGE_FILE`. `render.bridge_paths` in the config (a list; a
+  single `render.bridge_path` is read too), or `--ad-orender-bridge-path` (a
+  path list: `:` on Unix, `;` on Windows), names the files instead (no globs,
+  and no fallback to discovery for a path that is wrong; the others still
+  load). A named combined `libharletty_bridge` of `bridge_api` 0.5 stands for
+  the family libraries in its folder for one release.
 - The **shared omniphony config** (the same one the `orender` CLI and Studio
   use): `~/.config/omniphony/config.yaml` on Linux and macOS,
   `%ProgramData%\omniphony\config.yaml` on Windows, or
   `$OMNIPHONY_CONFIG_DIR/config.yaml` when that is set. It carries the speaker
   layout, the output mode (speakers or binaural) and optionally
-  `render.bridge_path`. Without it the engine runs on its defaults: a 7.1.4
+  `render.bridge_paths`. Without it the engine runs on its defaults: a 7.1.4
   speaker render, OSC off.
 
 ### macOS prebuilt releases (Apple Silicon)
@@ -107,7 +114,7 @@ shared omniphony config. Per-invocation overrides:
 | --- | --- |
 | `--ad-orender-library=<path>` | the liborender to load (else the search order above) |
 | `--ad-orender-config=<path>` | the render config YAML (else the shared default) |
-| `--ad-orender-bridge-path=<path>` | `render.bridge_path` (the decoder bridge `.so`) |
+| `--ad-orender-bridge-path=<path>[:<path>…]` | `render.bridge_paths` (the decoder bridge libraries, a path list: `;` on Windows) |
 | `--ad-orender-osc` | force OSC on (else follows `render.osc` in the config; on when there is no config file) |
 | `--ad-orender-osc-port=<n>` | outgoing/monitoring port |
 | `--ad-orender-osc-rx-port=<n>` | incoming control port (studio registers here; default 9000) |

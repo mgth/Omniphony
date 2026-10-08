@@ -9,7 +9,7 @@ bundles, which ship everything in one installer). The mpv package itself
 | `orender`          | this repo (tag `v*`)       | GPL-3.0-only | `/usr/bin/orender`, `liborender.so*`, `orender.h`, `orender.pc`, layouts, the `omniphony-renderer` user service (not enabled) |
 | `omniphony-studio` | this repo (tag `v*`)       | GPL-3.0-only | Studio UI, Tauri host (no bundled sidecar — depends on `orender`) |
 | `omniphony-studio-egui` | this repo (tag `v*`)  | GPL-3.0-only | Studio UI, native egui/wgpu host (depends on `orender`) |
-| `harletty-bridge`  | sibling `harletty-bridge`  | Apache-2.0   | `/usr/lib/orender/libharletty_bridge.so` |
+| `harletty-bridge`  | sibling `harletty-bridge`  | Apache-2.0   | `/usr/lib/orender/libharletty_{dolby,dts,iamf}_bridge.so`, one library per codec family (up to harletty 0.8.x: one `libharletty_bridge.so`, removed on upgrade) |
 
 Dependency shape:
 
@@ -19,8 +19,8 @@ Dependency shape:
   `liborender.so`). The native Studio also reads the layouts `orender`
   installs, through a link under its own share directory.
 - `harletty-bridge` is a hard dependency of **nothing**: it is an `optdepends`
-  everywhere. The bridge is a runtime `dlopen` plugin (the `*_bridge.so`
-  pattern) that adds compressed/object-audio decoding; without it PCM input
+  everywhere. The bridges are runtime `dlopen` plugins (the `*_bridge.so`
+  pattern) that add compressed/object-audio decoding; without them PCM input
   still renders. It is packaged separately (different repo, different license).
 
 ## Install layout
@@ -34,25 +34,32 @@ Dependency shape:
 /usr/lib/pkgconfig/orender.pc
 /usr/share/orender/layouts/**/*.yaml   # virtual-bed fallback looks here
 /usr/lib/systemd/user/omniphony-renderer.service  # not enabled: systemctl --user enable --now omniphony-renderer
-/usr/lib/orender/libharletty_bridge.so # the decoder bridge plugin (optional)
+/usr/lib/orender/libharletty_dolby_bridge.so  # the decoder bridge plugins (optional),
+/usr/lib/orender/libharletty_dts_bridge.so    # one per codec family
+/usr/lib/orender/libharletty_iamf_bridge.so
 /usr/bin/omniphony-studio           # Studio UI, Tauri host (+ .desktop, icons, resources)
 /usr/bin/omniphony-studio-egui      # Studio UI, native host (+ .desktop, icon)
 /usr/share/omniphony-studio-egui/   # its shipped files: layouts → ../orender/layouts, assets/
 ```
 
-The engine auto-discovers the file `$ORENDER_BRIDGE_FILE` names, else a
-`*_bridge.so` next to the host executable, then in `$ORENDER_BRIDGE_DIR`, then in the per-user engine folder
-(`~/.local/share/omniphony/lib`), then in `/usr/lib/orender`, so the packaged
-bridge is found by mpv, the `orender` CLI and Studio's own renderer with no
-configuration. To use another file, name it in `render.bridge_path` in
-`~/.config/omniphony/config.yaml` (shared by the CLI, Studio and mpv) or on the
-mpv command line:
+The engine auto-discovers the files `$ORENDER_BRIDGE_FILE` names (a path
+list), else every `*_bridge.so` of the first of these folders that holds a
+usable one: next to the host executable, `$ORENDER_BRIDGE_DIR`, the per-user
+engine folder (`~/.local/share/omniphony/lib`), then `/usr/lib/orender`. The
+packaged bridges are therefore found by mpv, the `orender` CLI and Studio's own
+renderer with no configuration. To use other files, list them in
+`render.bridge_paths` in `~/.config/omniphony/config.yaml` (shared by the CLI,
+Studio and mpv), or on the mpv command line as a path list:
 
 ```
 mpv --ad=orender \
-    --ad-orender-bridge-path=/usr/lib/orender/libharletty_bridge.so \
+    --ad-orender-bridge-path=/usr/lib/orender/libharletty_dolby_bridge.so:/usr/lib/orender/libharletty_dts_bridge.so \
     --ad-orender-config=/path/to/omniphony.yaml  film.mkv
 ```
+
+A config that still names `/usr/lib/orender/libharletty_bridge.so` keeps
+working for one release: the engine loads the family libraries of that folder
+in its place.
 
 ## Building
 
@@ -60,9 +67,11 @@ These fetch pinned release tarballs — no checkout layout needed:
 
 - `orender` 0.4.1 ← Omniphony `v0.4.1`.
 - `omniphony-studio` 0.4.1 ← Omniphony `v0.4.1`.
-- `harletty-bridge` 0.7.1 ← harletty-bridge `v0.7.1`, plus the matching
-  Omniphony `v0.4.1` source for its workspace path-deps
-  (`bridge_api`/`spdif`/`sys`).
+- `harletty-bridge` ← harletty-bridge `v$pkgver`, plus the matching
+  Omniphony `v$_omniver` source for its workspace path-deps
+  (`bridge_api`/`spdif`/`sys`). From the release that splits it per codec
+  family it builds and installs three plugins; the IAMF one links the
+  system `opus`.
 
 No cross-package build order is required (nothing hard-depends on the bridge;
 Studio needs `orender` **installed** to run, not to build):

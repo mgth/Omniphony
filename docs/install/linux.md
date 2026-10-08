@@ -18,19 +18,26 @@ The engine and the bridge must come from matching releases: the 0.6.0 engine
 loads only a 0.8.x bridge, and refuses older and newer ones. When a newer
 release is out, take the versions its release notes pair together.
 
+From the next release, the bridge zip holds one library per codec family
+instead of one for all: `libharletty_dolby_bridge.so`,
+`libharletty_dts_bridge.so` and `libharletty_iamf_bridge.so`. The engine of
+that release loads all of them. Step 2 says what changes when you upgrade.
+
 ### Which distribution each prebuilt runs on
 
 | Asset | Built on | Runs on |
 | --- | --- | --- |
 | `mpv-omniphony-…-linux-x86_64.zip` | Ubuntu 24.04 | **Ubuntu 24.04 and its derivatives only.** It links the system's FFmpeg 6.1 (`libavcodec.so.60`) and libplacebo (`libplacebo.so.338`). |
-| `harletty-bridge-…-linux-x86_64.zip` | Ubuntu 24.04 | Any x86_64 distribution with glibc 2.39 or newer. It needs nothing else. |
+| `harletty-bridge-…-linux-x86_64.zip` | Ubuntu 24.04 | Any x86_64 distribution with glibc 2.39 or newer. It needs nothing else, except that the IAMF library of the next release (`libharletty_iamf_bridge.so`) also needs the system's Opus library, `libopus.so.0` (`libopus0` on Ubuntu, usually already installed). |
 | `omniphony-studio-egui-…-linux-x86_64.tar.gz` | Ubuntu 22.04 | Any x86_64 distribution with glibc 2.35 or newer and PipeWire. |
 | `Omniphony.Studio_…_amd64.AppImage` (Tauri Studio) | Ubuntu 22.04 | Any x86_64 distribution with glibc 2.35 or newer. |
 
 **On Arch and its derivatives**, skip the downloads: the whole stack is on the
 AUR, built on your machine. `paru -S mpv-omniphony harletty-bridge` installs the
 player, the engine and the bridge (into `/usr/lib/orender/`, where the engine
-looks without any configuration). Continue at [step 3](#3-headphones-or-speakers).
+looks without any configuration; from the next release, the three family
+libraries, and an upgrade removes the old `libharletty_bridge.so`). Continue
+at [step 3](#3-headphones-or-speakers).
 
 **On Fedora, openSUSE, Debian 12 and other distributions**, the 0.6.0 player
 zip does not start (see [failure 1](#1-error-while-loading-shared-libraries)).
@@ -76,8 +83,8 @@ the one next to mpv, so it must be of the same release as the bridge.
 
 ## 2. The decoder bridge
 
-Unzip it **into the same folder**. The engine looks for a `*_bridge.so` next to
-the player, so no configuration is needed:
+Unzip it **into the same folder**. The engine looks for `*_bridge.so` files
+next to the player, so no configuration is needed:
 
 ```bash
 cd ~/omniphony
@@ -88,6 +95,32 @@ If your `~/.config/omniphony/config.yaml` already exists (Studio writes it when 
 sets `render.bridge_path`, that path is used instead, and it must point at this
 file. Remove the line, or change it to `/home/you/omniphony/libharletty_bridge.so`
 (an absolute path).
+
+**From the next release**, the zip adds three libraries, one per codec family,
+and the engine loads every bridge it finds in that folder:
+
+```text
+libharletty_dolby_bridge.so   libharletty_dts_bridge.so   libharletty_iamf_bridge.so
+```
+
+- When you upgrade, delete the old `libharletty_bridge.so`. The new engine
+  refuses it, says so, and loads the others, but it has no use left.
+- A config that names bridges lists them under `render.bridge_paths`, in the
+  order the engine tries them:
+
+  ```yaml
+  render:
+    bridge_paths:
+      - /home/you/omniphony/libharletty_dolby_bridge.so
+      - /home/you/omniphony/libharletty_dts_bridge.so
+      - /home/you/omniphony/libharletty_iamf_bridge.so
+  ```
+
+  A `render.bridge_path` that still names `libharletty_bridge.so` keeps
+  working for that release: the engine loads the family libraries found in the
+  same folder in its place, and the next Save writes them as
+  `render.bridge_paths`. Removing the line, so that the engine finds them on its
+  own, works too.
 
 The check for this step is the first playback, in step 4.
 
@@ -180,7 +213,10 @@ Without one it still runs, and Studio shows an orange *No decoder* banner:
 films keep playing in the player. To give it the bridge too, add
 `ad-orender-bridge-path=/home/you/omniphony/libharletty_bridge.so` to
 `~/.config/mpv/mpv.conf`, or copy `libharletty_bridge.so` into
-`~/.local/share/omniphony/lib/`, a folder the player also searches.
+`~/.local/share/omniphony/lib/`, a folder the player also searches. From the
+next release, copy the three `libharletty_*_bridge.so` files into that folder
+instead (and delete an old `libharletty_bridge.so` there): Studio passes on only
+one file from `mpv.conf`, while the engine loads every bridge of the folder.
 
 ## 6. Optional: the engine at login
 
@@ -252,7 +288,9 @@ The engine is there but could not load the bridge. The reason is on the line
 just before it, starting with `orender_create failed:`:
 
 - `No bridge plugin found` with the folders searched:
-  `libharletty_bridge.so` is not next to `mpv`. Unzip it there (step 2).
+  `libharletty_bridge.so` is not next to `mpv`. Unzip it there (step 2). From
+  the next release: `no decoder bridge found`, for the
+  `libharletty_*_bridge.so` files.
 - `render.bridge_path '…' (from config) does not exist or is not a file`:
   the config names a path that is wrong. Fix it or remove it (step 2).
 - `Failed to load bridge plugin from …` followed by a long

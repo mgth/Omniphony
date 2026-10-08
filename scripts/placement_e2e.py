@@ -13,7 +13,7 @@ position is the rendered direction.
     scripts/placement_e2e.py <orender> <bridge .so> <stream.dts> <rx port> <tx port>
 
     scripts/placement_e2e.py omniphony-renderer/target/debug/orender \\
-        ../harletty-bridge/target/debug/libharletty_bridge.so \\
+        ../harletty-bridge/target/debug/libharletty_dts_bridge.so \\
         dumps/auro3d/demo2017_30s.dts 9021 9022
 
 Expected on an Auro 13.1 carrier: sphere puts L at -30°, Ls at -110°, Lhs

@@ -193,10 +193,16 @@ runners (prefer `auto`), and any step that only runs on a tag push. Never cap
   system. At 0.6.0: the native Studio and the Tauri bundles are built on
   Ubuntu 22.04 (glibc ≥ 2.35; the `orender` beside the Studio also needs a
   system PipeWire); the player zip links Ubuntu 24.04's FFmpeg and libplacebo
-  and runs only there; the bridge is built on Ubuntu 24.04 and needs only glibc.
+  and runs only there; the bridge is built on Ubuntu 24.04 and needs only glibc
+  (from the release with one library per codec family, its IAMF library also
+  needs the system's `libopus.so.0`).
 - After publishing, bump the asset names and release links in
   `docs/install/{linux,windows,macos}.md` on `main` (and the version pairing
   stated at the top of each page) together with the README download badges.
+  The first release whose engine loads the family bridges
+  (`harletty_{dolby,dts,iamf}_bridge`, `docs/multi-bridge.md`) turns each
+  page's "From the next release" paragraphs about them into the main text and
+  drops the combined `harletty_bridge` instructions.
 
 ```sh
 gh release edit vX.Y.Z --repo mgth/Omniphony --notes-file notes.md
@@ -298,7 +304,7 @@ truth: `packaging/arch/` in this repo, `packaging/` in mpv-omniphony).
 | `omniphony-studio-egui` | every `v*` release (from 0.6.0; template in `packaging/arch/omniphony-studio-egui`, depends on `orender` and links its layouts) |
 | `mpv-omniphony` | when an `mpv-v*` bundle was cut: `_tag`, `depends=('orender>=X.Y.Z')` (the release-train couple) |
 | `mpv-omniphony-fel` | with mpv-omniphony; `_tag` names the tag whose `patches-master/` apply to `_mpvcommit` — at 0.6.0 the FEL beta tag `v0.6.0-fel-beta.2` (the master-track rebase), with `pkgver=0.6.0` — and `_mpvcommit` the mpv master SHA those patches were rebased on and a build verified (`makepkg -fCd` itself, or `scripts/build-fel-local.sh`) |
-| `harletty-bridge` | on its own line only (0.7.x, 0.8.x…) — never the stack number. Its `_omniver` names the Omniphony source tag the bridge's path-deps (`bridge_api`/`spdif`/`sys`) are taken from: the current Studio `v*` tag, fetched as the `v<_omniver>` archive (directory `Omniphony-<_omniver>`) — not a `liborender-v*` tag, which the PKGBUILD used to fetch and which no longer exists past 0.4.3 |
+| `harletty-bridge` | on its own line only (0.7.x, 0.8.x…) — never the stack number. Its `_omniver` names the Omniphony source tag the bridge's path-deps (`bridge_api`/`spdif`/`sys`) are taken from: the current Studio `v*` tag, fetched as the `v<_omniver>` archive (directory `Omniphony-<_omniver>`) — not a `liborender-v*` tag, which the PKGBUILD used to fetch and which no longer exists past 0.4.3. From the bridge release with one library per codec family, it builds the `harletty-<family>-bridge` crates listed in `_families` (check them against that release's workspace) and installs `libharletty_{dolby,dts,iamf}_bridge.so`; pacman drops the old `libharletty_bridge.so` on upgrade, and `opus` is a dependency of the IAMF one |
 
 The templates in `packaging/arch/` are kept in step with the AUR clones (the
 clones had drifted ahead — licence fix, engine resource — until 0.6.0 synced
