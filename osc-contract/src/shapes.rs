@@ -91,6 +91,7 @@ pub const STATE: &[(&str, &[Arg])] = &[
     (STATE_RENDER_BRIDGE_API, &[String]),
     (STATE_RENDER_BRIDGE_ERROR, &[String]),
     (STATE_RENDER_BRIDGE_PATH, &[String]),
+    (STATE_RENDER_BRIDGES, &[Json]),
     (STATE_RENDER_CONFIG_PATH, &[String]),
     (STATE_RENDER_CONFIG_STATUS, &[String]),
     (STATE_RENDERER, &[Json]),

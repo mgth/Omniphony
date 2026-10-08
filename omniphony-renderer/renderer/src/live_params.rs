@@ -1542,6 +1542,18 @@ impl RenderTopology {
 /// lock-free. The OSC listener writes
 /// `live`, edits the staging layout, rebuilds a new `RenderTopology` in the
 /// background, then publishes it atomically.
+/// One decoder bridge as a host reports it (`/omniphony/state/render/bridges`):
+/// one that loaded, with the source families it declares, or one that was
+/// asked for or found and did not, with why.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BridgeStatus {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub families: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 pub struct RendererControl {
     /// Live-tunable parameters: read lock-free, written under a mutex that
     /// only writers take (see [`LiveCell`]).
@@ -1677,8 +1689,13 @@ pub struct RendererControl {
 
     /// Actual renderer input path used for this process.
     pub input_path: Mutex<Option<String>>,
-    /// Requested format bridge path to be persisted into render.bridge_path.
-    pub bridge_path: Mutex<Option<PathBuf>>,
+    /// The decoder bridges asked for, in load order, to be persisted as
+    /// `render.bridge_path(s)` (`RenderConfig::set_bridges`); empty for
+    /// auto-discovery.
+    pub bridge_paths: Mutex<Vec<PathBuf>>,
+    /// The bridges the host loaded, then those that failed, as it reports
+    /// them; empty before a load.
+    pub bridges_status: Mutex<Vec<BridgeStatus>>,
     /// Supported DRC modes reported by the bridge.
     pub bridge_supported_drc_modes: Mutex<Vec<String>>,
 
@@ -1815,7 +1832,8 @@ impl RendererControl {
             crossover_info: Mutex::new(None),
             band_build_error: Mutex::new(None),
             input_path: Mutex::new(None),
-            bridge_path: Mutex::new(None),
+            bridge_paths: Mutex::new(Vec::new()),
+            bridges_status: Mutex::new(Vec::new()),
             bridge_supported_drc_modes: Mutex::new(Vec::new()),
             // Seeded by the renderer at construction; 48 kHz until then.
             sample_rate: std::sync::atomic::AtomicU32::new(48_000),
@@ -2691,12 +2709,25 @@ impl RendererControl {
         self.input_path.lock().clone()
     }
 
-    pub fn set_bridge_path(&self, bridge_path: Option<PathBuf>) {
-        *self.bridge_path.lock() = bridge_path;
+    pub fn set_bridge_paths(&self, paths: Vec<PathBuf>) {
+        *self.bridge_paths.lock() = paths;
     }
 
-    pub fn bridge_path(&self) -> Option<PathBuf> {
-        self.bridge_path.lock().clone()
+    pub fn bridge_paths(&self) -> Vec<PathBuf> {
+        self.bridge_paths.lock().clone()
+    }
+
+    pub fn set_bridges_status(&self, status: Vec<BridgeStatus>) {
+        *self.bridges_status.lock() = status;
+    }
+
+    pub fn bridges_status(&self) -> Vec<BridgeStatus> {
+        self.bridges_status.lock().clone()
+    }
+
+    /// The first bridge asked for, for clients that only know one.
+    pub fn first_bridge_path(&self) -> Option<PathBuf> {
+        self.bridge_paths.lock().first().cloned()
     }
 
     pub fn set_bridge_supported_drc_modes(&self, modes: Vec<String>) {

@@ -125,6 +125,10 @@ pub(crate) static ENGINE_COMMANDS: &[Command<EngineHandler>] = &[
         realtime_speaker_gain,
     ),
     Command::exact(osc_contract::CONTROL_RENDER_BRIDGE_PATH, render_bridge_path),
+    Command::exact(
+        osc_contract::CONTROL_RENDER_BRIDGE_PATHS,
+        render_bridge_paths,
+    ),
     Command::exact(osc_contract::CONTROL_RENDER_INPUT_PIPE, render_input_pipe),
     Command::exact(osc_contract::CONTROL_BACKEND_FILE_GET, backend_file_get),
     Command::exact(osc_contract::CONTROL_BACKEND_FILE_LIST, backend_file_list),
@@ -2094,38 +2098,65 @@ fn realtime_speaker_gain(d: &mut Dispatch) -> ControlOutcome {
 }
 
 fn render_bridge_path(d: &mut Dispatch) -> ControlOutcome {
-    let msg = d.msg;
-    let control = d.control;
-    let host = d.host;
-    let socket = d.socket;
-    let clients = d.clients;
-    let value = match msg.args.first() {
+    let value = match d.msg.args.first() {
         Some(OscType::String(s)) => s.trim(),
         _ => return ControlOutcome::invalid("expected a string"),
     };
     let next = if value.is_empty() {
-        None
+        Vec::new()
     } else {
-        Some(std::path::PathBuf::from(value))
+        vec![std::path::PathBuf::from(value)]
     };
-    if control.bridge_path() != next {
-        control.set_bridge_path(next.clone());
-        notify_changed(control, host, socket, clients, Notify::DirtyOnly);
-        let state_value = next
-            .as_ref()
+    set_requested_bridges(d, next)
+}
+
+fn render_bridge_paths(d: &mut Dispatch) -> ControlOutcome {
+    let mut next = Vec::with_capacity(d.msg.args.len());
+    for arg in &d.msg.args {
+        match arg {
+            OscType::String(s) if !s.trim().is_empty() => {
+                next.push(std::path::PathBuf::from(s.trim()));
+            }
+            OscType::String(_) => {}
+            _ => return ControlOutcome::invalid("expected one string per bridge path"),
+        }
+    }
+    set_requested_bridges(d, next)
+}
+
+/// Record the bridges asked for: unsaved state, applied at the next restart
+/// or config reload.
+fn set_requested_bridges(d: &mut Dispatch, next: Vec<std::path::PathBuf>) -> ControlOutcome {
+    let control = d.control;
+    if control.bridge_paths() != next {
+        control.set_bridge_paths(next.clone());
+        notify_changed(control, d.host, d.socket, d.clients, Notify::DirtyOnly);
+        let first = next
+            .first()
             .map(|path| path.display().to_string())
             .unwrap_or_default();
         broadcast_string(
-            socket,
-            clients,
+            d.socket,
+            d.clients,
             osc_contract::STATE_RENDER_BRIDGE_PATH,
-            &state_value,
+            &first,
+        );
+        broadcast_string(
+            d.socket,
+            d.clients,
+            osc_contract::STATE_RENDER_BRIDGES,
+            &runtime_control::snapshot::bridges_state_json(control),
         );
         log::info!(
-            "OSC: render.bridge_path → {}",
-            next.as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<auto>".to_string())
+            "OSC: render.bridge_path(s) → {}",
+            if next.is_empty() {
+                "<auto>".to_string()
+            } else {
+                next.iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
         );
     }
     ControlOutcome::Handled

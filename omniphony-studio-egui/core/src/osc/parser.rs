@@ -521,6 +521,11 @@ pub enum OscEvent {
     StateRenderBridgeError {
         value: String,
     },
+    /// JSON: the bridges asked for, then each one loaded or failed.
+    #[serde(rename = "state:render:bridges")]
+    StateRenderBridges {
+        value: String,
+    },
     #[serde(rename = "state:input_pipe")]
     StateInputPipe {
         value: String,
@@ -1277,6 +1282,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (4, "render") if parts[3] == "bridge_error" => Some(OscEvent::StateRenderBridgeError {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
+        (4, "render") if parts[3] == "bridges" => Some(OscEvent::StateRenderBridges {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (4, "object_test") if parts[3] == "clip" => Some(OscEvent::StateObjectTestClip {

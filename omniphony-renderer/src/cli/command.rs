@@ -151,9 +151,10 @@ pub struct RenderArgs {
     #[arg(long, value_name = "VALUE", default_value = renderer::config_fields::presentation::DEFAULT)]
     pub presentation: String,
 
-    /// Path to the format bridge plugin library.
-    #[arg(long, value_name = "FILE")]
-    pub bridge_path: Option<PathBuf>,
+    /// Path to a format bridge plugin library; repeat it to load several, in
+    /// load order (each stream goes to the bridge that decodes it).
+    #[arg(long = "bridge-path", value_name = "FILE")]
+    pub bridge_paths: Vec<PathBuf>,
 
     /// Enable bed conformance for spatial audio content
     #[arg(long, conflicts_with = "no_bed_conform")]

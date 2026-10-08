@@ -100,8 +100,16 @@ pub struct RenderConfig {
     pub output_file_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presentation: Option<u8>,
+    /// The decoder bridge, when there is one: see [`Self::bridges`]. Written
+    /// when exactly one is asked for, so a build that predates
+    /// [`Self::bridge_paths`] reads it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge_path: Option<PathBuf>,
+    /// The decoder bridges, in load order, when there are several
+    /// (`docs/multi-bridge.md`). An older build keeps the key through a save
+    /// (`extra`) and auto-discovers its bridge instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridge_paths: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_vbap: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -661,6 +669,31 @@ pub struct LiveInputConfig {
 }
 
 impl RenderConfig {
+    /// The bridges asked for, in load order: `bridge_paths`, else the one
+    /// `bridge_path`; empty for auto-discovery.
+    pub fn bridges(&self) -> Vec<PathBuf> {
+        if self.bridge_paths.is_empty() {
+            self.bridge_path.iter().cloned().collect()
+        } else {
+            self.bridge_paths.clone()
+        }
+    }
+
+    /// Store `paths` as [`bridges`](Self::bridges): one path in
+    /// `bridge_path`, as every build reads it; several in `bridge_paths`.
+    pub fn set_bridges(&mut self, paths: &[PathBuf]) {
+        match paths {
+            [one] => {
+                self.bridge_path = Some(one.clone());
+                self.bridge_paths.clear();
+            }
+            _ => {
+                self.bridge_path = None;
+                self.bridge_paths = paths.to_vec();
+            }
+        }
+    }
+
     /// The input an absent `input_mode` stands for: the bridge pipe.
     pub fn input_mode_or_default(&self) -> InputModeConfig {
         self.input_mode.clone().unwrap_or(InputModeConfig::Bridge)
@@ -1141,6 +1174,7 @@ impl Config {
             incoming.input_pipe = outgoing.input_pipe.clone();
             incoming.live_input = outgoing.live_input.clone();
             incoming.bridge_path = outgoing.bridge_path.clone();
+            incoming.bridge_paths = outgoing.bridge_paths.clone();
         }
         incoming.normalize_room_meters();
         self.render = Some(incoming);
@@ -2066,6 +2100,38 @@ render:
             out.contains("bridge_path: /tmp/x.so"),
             "typed field missing:\n{out}"
         );
+    }
+
+    /// One bridge is written as `bridge_path`, which every build reads;
+    /// several as `bridge_paths`, which an older build keeps through a save
+    /// as an unknown key. Reading takes `bridge_paths` first.
+    #[test]
+    fn bridges_are_written_the_way_older_builds_read_them() {
+        let mut render = RenderConfig::default();
+        render.set_bridges(&[PathBuf::from("/opt/libone_bridge.so")]);
+        let out = serde_yaml_ng::to_string(&render).expect("serialize");
+        assert!(out.contains("bridge_path: /opt/libone_bridge.so"), "{out}");
+        assert!(!out.contains("bridge_paths"), "{out}");
+
+        let several = [
+            PathBuf::from("/opt/liba_bridge.so"),
+            PathBuf::from("/opt/libb_bridge.so"),
+        ];
+        render.set_bridges(&several);
+        let out = serde_yaml_ng::to_string(&render).expect("serialize");
+        assert!(!out.contains("bridge_path:"), "{out}");
+        let read: RenderConfig = serde_yaml_ng::from_str(&out).expect("parse");
+        assert_eq!(read.bridges(), several);
+
+        render.set_bridges(&[]);
+        let out = serde_yaml_ng::to_string(&render).expect("serialize");
+        assert!(!out.contains("bridge_path"), "{out}");
+
+        let both: RenderConfig = serde_yaml_ng::from_str(
+            "bridge_path: /opt/libold_bridge.so\nbridge_paths: [/opt/liba_bridge.so]\n",
+        )
+        .expect("parse");
+        assert_eq!(both.bridges(), [PathBuf::from("/opt/liba_bridge.so")]);
     }
 
     #[test]

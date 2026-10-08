@@ -59,7 +59,7 @@ pub mod stream;
 /// a change to arguments only is for the author to remember.
 ///
 /// An engine that predates this advertises none, which a client reads as 0.
-pub const CONTRACT_REVISION: u32 = 3;
+pub const CONTRACT_REVISION: u32 = 4;
 
 /// The port the engine's stream transport listens on is the OSC/UDP control
 /// port's number, on loopback (TCP and UDP ports are separate spaces). A
@@ -429,7 +429,13 @@ pub const CONTROL_OBJECT_TEST_CLIP: &str = "/omniphony/control/object_test/clip"
 pub const CONTROL_SPEAKER_TEST_IDLE_FEED: &str = "/omniphony/control/speaker_test/idle_feed";
 pub const CONTROL_RENDER_BACKEND: &str = "/omniphony/control/render_backend";
 pub const CONTROL_RENDER_BACKEND_RESTORE: &str = "/omniphony/control/render_backend/restore";
+/// One decoder bridge (a string; empty for auto-discovery): the same as
+/// [`CONTROL_RENDER_BRIDGE_PATHS`] with one path.
 pub const CONTROL_RENDER_BRIDGE_PATH: &str = "/omniphony/control/render/bridge_path";
+/// The decoder bridges to load, in load order: one string argument per path,
+/// none for auto-discovery. Saved as `render.bridge_path(s)`; it takes effect
+/// when the engine restarts or reloads its config.
+pub const CONTROL_RENDER_BRIDGE_PATHS: &str = "/omniphony/control/render/bridge_paths";
 pub const CONTROL_RENDER_EVALUATION_MODE: &str = "/omniphony/control/render_evaluation_mode";
 pub const CONTROL_RENDER_EVALUATION_MODE_FROM_FILE: &str =
     "/omniphony/control/render_evaluation_mode/from_file";
@@ -600,7 +606,14 @@ pub const STATE_RENDER_BRIDGE_ERROR: &str = "/omniphony/state/render/bridge_erro
 /// context; an engine predating it never sends it, so its errors all read as
 /// failures.
 pub const BRIDGE_ERROR_NONE_FOUND: &str = "no decoder bridge found";
+/// The first decoder bridge asked for (empty for auto-discovery), for
+/// clients that only know one; [`STATE_RENDER_BRIDGES`] has them all.
 pub const STATE_RENDER_BRIDGE_PATH: &str = "/omniphony/state/render/bridge_path";
+/// The decoder bridges, as JSON: `requested`, the paths asked for (empty for
+/// auto-discovery), and `bridges`, each one the engine loaded (`path`,
+/// `families`, the source families it declares) then each one asked for or
+/// found that did not load (`path`, `error`).
+pub const STATE_RENDER_BRIDGES: &str = "/omniphony/state/render/bridges";
 pub const STATE_RENDER_CONFIG_PATH: &str = "/omniphony/state/render/config_path";
 pub const STATE_RENDER_CONFIG_STATUS: &str = "/omniphony/state/render/config_status";
 pub const STATE_RENDERER: &str = "/omniphony/state/renderer";
@@ -819,6 +832,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_RENDER_BACKEND,
     CONTROL_RENDER_BACKEND_RESTORE,
     CONTROL_RENDER_BRIDGE_PATH,
+    CONTROL_RENDER_BRIDGE_PATHS,
     CONTROL_OBJECT_TEST,
     CONTROL_OBJECT_TEST_CLIP,
     CONTROL_OBJECT_TEST_ROTATION,
@@ -930,6 +944,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_RENDER_BRIDGE_API,
     STATE_RENDER_BRIDGE_ERROR,
     STATE_RENDER_BRIDGE_PATH,
+    STATE_RENDER_BRIDGES,
     STATE_RENDER_CONFIG_PATH,
     STATE_RENDER_CONFIG_STATUS,
     STATE_RENDERER,
@@ -1169,7 +1184,7 @@ mod tests {
     /// `(revision, fingerprint)`. Change both together, and only together with
     /// a bump: a new fingerprint under the old revision tells clients nothing
     /// changed when it did.
-    const PINNED_ADDRESS_SET: (u32, u64) = (3, 0x9e77_a313_a880_fc97);
+    const PINNED_ADDRESS_SET: (u32, u64) = (4, 0xd47b_da03_4f3d_745d);
 
     /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
     /// and not the order the lists happen to be written in.

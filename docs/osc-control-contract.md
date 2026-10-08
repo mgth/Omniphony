@@ -299,7 +299,8 @@ same wire format; `null` unsets a nullable field.
 | `/control/input/drc_weight` | f `[0,1]` | DRC weight. Registry option alias. |
 | `/control/option dialogue_gain_db <f>` | f `[-12,12]` | Level of the channels the bridge tags as dialogue (`channelTags` on `/state/input`: `[{kind, language, label, channels}]`, empty when the stream tags nothing). Registry option, no alias. |
 | `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,clock_mode,map,lfe_mode}` | varies | Live-capture parameters, staged. `backend` accepts only `pipewire`; the retired `asio` value (never implemented) and any other value are rejected with a warning, leaving the staged backend unchanged. All but `layout_import` (an imported layout, structured) are host options `live_input_*`; a non-positive `channels` / `sample_rate` sent here is ignored, as before (through `/control/option(s)` it unsets the value, as the JSON patch does). |
-| `/control/render/bridge_path` | s | Path to the format bridge library. |
+| `/control/render/bridge_path` | s | Path to one decoder bridge library (`""`: auto-discovery). |
+| `/control/render/bridge_paths` | s… | The decoder bridge libraries, in load order, one argument each (none: auto-discovery). Saved as `render.bridge_path(s)`; takes effect on restart or `reload_config`. |
 | `/control/render/input_pipe` | s | Named-pipe input path. |
 
 ### Head tracking (binaural)
@@ -749,7 +750,12 @@ exhaustive machine-readable list.
   (`loaded`, `missing`, `parse_error` — running on built-in defaults — or
   `newer_schema` — written by a newer build, read as far as this one
   understands it and never written; `""` without a config path),
-  `render/bridge_path`, `render/bridge_error` (bounded to 2 KB: the first
+  `render/bridge_path` (the first bridge asked for), `render/bridges` (JSON:
+  `requested`, the bridge paths asked for, empty for auto-discovery, and
+  `bridges`, each bridge loaded with its `path` and the source `families` it
+  declares, then each one asked for or found that did not load, with its
+  `path` and `error`), `render/bridge_error` (set only when no bridge loaded;
+  bounded to 2 KB: the first
   line and the distinct verdicts of a plugin load failure, the full report
   stays in the renderer log; it contains `no decoder bridge found`
   (`BRIDGE_ERROR_NONE_FOUND`) when none was asked for and auto-discovery found
@@ -971,6 +977,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/control/reload_config`
 - `/omniphony/control/restart`
 - `/omniphony/control/render/bridge_path`
+- `/omniphony/control/render/bridge_paths`
 - `/omniphony/control/render/input_pipe`
 - `/omniphony/control/render_backend`
 - `/omniphony/control/render_backend/restore`
@@ -1056,6 +1063,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/render/bridge_api`
 - `/omniphony/state/render/bridge_error`
 - `/omniphony/state/render/bridge_path`
+- `/omniphony/state/render/bridges`
 - `/omniphony/state/render/config_path`
 - `/omniphony/state/render/config_status`
 - `/omniphony/state/render/executable`

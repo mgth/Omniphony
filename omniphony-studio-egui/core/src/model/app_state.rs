@@ -714,6 +714,10 @@ pub struct AppState {
     pub profile_names: Vec<String>,
     #[serde(rename = "renderBridgeError")]
     pub render_bridge_error: Option<String>,
+    /// The decoder bridges (`/omniphony/state/render/bridges`): the paths
+    /// asked for, then each bridge loaded or failed.
+    #[serde(rename = "renderBridges")]
+    pub render_bridges: Option<RenderBridges>,
     #[serde(rename = "liveInput")]
     pub live_input: LiveInputState,
     #[serde(rename = "orenderInputPipe")]
@@ -1115,6 +1119,7 @@ impl Default for AppState {
             active_profile: None,
             profile_names: Vec::new(),
             render_bridge_error: None,
+            render_bridges: None,
             live_input: LiveInputState::default(),
             orender_input_pipe: None,
             producer_capabilities: None,
@@ -1433,4 +1438,26 @@ mod bridge_problem_tests {
             format!("{BRIDGE_ERROR_NONE_FOUND}: none requested")
         );
     }
+}
+
+/// The renderer's decoder bridges (`/omniphony/state/render/bridges`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderBridges {
+    /// The paths asked for, in load order; empty for auto-discovery.
+    #[serde(default)]
+    pub requested: Vec<String>,
+    /// Each bridge loaded, then each one that failed.
+    #[serde(default)]
+    pub bridges: Vec<RenderBridge>,
+}
+
+/// One decoder bridge as the renderer reports it: loaded, with the source
+/// families it declares, or failed, with why.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderBridge {
+    pub path: String,
+    #[serde(default)]
+    pub families: Vec<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }

@@ -259,94 +259,287 @@ extern "C" fn forward_bridge_log_to_host(level: RLogLevel, target: RStr<'_>, mes
     live_log::emit_external_record(level, target.as_str(), message.as_str());
 }
 
-/// Resolve the path to the bridge plugin.
-///
-/// Search order:
-/// 1. `--bridge-path` / config-provided explicit file path
-/// 2. Any file matching `*_bridge.so` / `.dll` / `.dylib` in the
-///    auto-discovery directories (see [`auto_discovery_dirs`]), the host
-///    executable's directory first
-///
-/// The exe-relative fallback applies to *any* host: the `orender` CLI, but
-/// also library hosts like mpv loading `liborender.dll`/`.so`. On Windows in
-/// particular the typical install pattern (extract a release zip into a single
-/// folder) lands `mpv.exe`, `orender.dll` and the bridge `.dll` side by side,
-/// so `current_exe()` -> mpv.exe's parent dir is exactly where the bridge
-/// sits. On systems where the host binary is in a system path that won't
-/// contain bridge plugins (e.g. `/usr/bin/mpv` on Linux), the fallback simply
-/// finds nothing and the caller gets the regular missing-bridge error.
-pub fn resolve_bridge_path(explicit: Option<&Path>) -> Result<PathBuf> {
-    resolve_bridge(explicit, None)
+/// A bridge that was asked for or found but did not load, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgeFailure {
+    pub path: PathBuf,
+    pub error: String,
 }
 
-/// Unified, strict bridge-path resolution shared by the CLI (`resolve_bridge_path`)
-/// and the FFI/mpv host (`Engine::from_paths`), so both behave identically.
-///
-/// Order of precedence — an *explicitly requested* path (CLI `--bridge-path`,
-/// FFI param, or `render.bridge_path` in the config) is taken **as a strict
-/// instruction**: it must point at an existing file (the *named* one — we never
-/// substitute a different bridge), else error. We do not fall through to the
-/// auto-discovery glob when a path was requested. Only when no path is requested
-/// at all do we auto-discover a `*_bridge.{so,dll,dylib}` next to the host
-/// executable (the "drop the bundle in one folder" install).
-///
-/// A requested path that is **relative** is resolved CWD-independently — against
-/// the process working dir first, then the host executable's directory (see
-/// `resolve_requested`) — so a bare `harletty_bridge.dll` next to `mpv.exe`
-/// works regardless of which folder the host was launched from. This is the
-/// common real-world footgun: a relative `render.bridge_path` / `--bridge-path`
-/// that previously only resolved against the CWD.
-///
-/// 1. `explicit` set → must resolve to a file, else error.
-/// 2. else `config` (`render.bridge_path`) set → must resolve to a file, else error.
-/// 3. else → [`find_bridge_next_to_exe`]: the exact file in
-///    `$ORENDER_BRIDGE_FILE` if it names one, else a scan of the host
-///    executable's directory, then `$ORENDER_BRIDGE_DIR`, then the per-user
-///    engine directory, then the system plugin directory
-///    ([`auto_discovery_dirs`]).
-///    Finding none there is not a failure of the engine: the error then
-///    contains [`osc_contract::BRIDGE_ERROR_NONE_FOUND`], which a client reads
-///    as "running without a decoder" rather than "a bridge failed to load".
-pub fn resolve_bridge(explicit: Option<&Path>, config: Option<&Path>) -> Result<PathBuf> {
-    if let Some(path) = explicit {
-        if let Some(found) = resolve_requested(path) {
-            return Ok(found);
-        }
-        bail!(
-            "bridge path '{}' does not exist or is not a file{}. \
-             Give an absolute path to the decoder bridge, or drop a \
-             *_bridge.{{so,dll,dylib}} next to the host binary and remove the \
-             explicit path.",
-            path.display(),
-            searched_locations_hint(path),
-        );
+impl std::fmt::Display for BridgeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.path.display(), self.error)
     }
-    if let Some(path) = config {
-        if let Some(found) = resolve_requested(path) {
-            return Ok(found);
-        }
-        bail!(
-            "render.bridge_path '{}' (from config) does not exist or is not a file{}. \
-             Fix it to an existing file (an absolute path is safest), or remove it \
-             and drop a *_bridge.{{so,dll,dylib}} next to the host binary.",
-            path.display(),
-            searched_locations_hint(path),
-        );
-    }
-    discover(&|key| std::env::var_os(key), &auto_discovery_dirs())
 }
 
-/// Auto-discovery ([`auto_discover`]) over `dirs`, its failure worded as
-/// "nothing found" with the contract's
-/// [`osc_contract::BRIDGE_ERROR_NONE_FOUND`] marker in front.
-fn discover(env: &dyn Fn(&str) -> Option<OsString>, dirs: &[PathBuf]) -> Result<PathBuf> {
-    auto_discover(env, dirs).with_context(|| {
-        format!(
-            "{}: none requested (no explicit path, no render.bridge_path) and none \
-             in the auto-discovery directories",
-            osc_contract::BRIDGE_ERROR_NONE_FOUND
-        )
+/// The bridge files a host is to load ([`resolve_bridges`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BridgeRequest {
+    /// The files to load, in load order.
+    pub files: Vec<PathBuf>,
+    /// Asked-for paths that resolve to no file.
+    pub failures: Vec<BridgeFailure>,
+    /// What the host records as asked for (the live `render.bridge_path(s)`,
+    /// which a Save writes): the paths as asked, a combined harletty library
+    /// replaced by its family libraries. Empty when the bridges were found
+    /// by auto-discovery, which is never saved.
+    pub recorded: Vec<PathBuf>,
+}
+
+/// Which bridges a host loads (`docs/multi-bridge.md`, "Loading"). Shared by
+/// the CLI, the FFI/mpv host (`Engine::from_paths`) and `sync-play`, so they
+/// behave identically.
+///
+/// 1. `explicit` (CLI `--bridge-path`, repeatable; the FFI's `bridge_path`,
+///    a path list) when not empty, else `config` (`render.bridge_path(s)`):
+///    every path is a strict instruction. It must name an existing file and
+///    is never replaced by a discovered one; a path that does not is a
+///    failure, reported while the others load. Only when none resolves is it
+///    an error. A **relative** path is tried against the working directory,
+///    then the host executable's directory. The one exception is the combined
+///    harletty library of `bridge_api` 0.5, replaced by its family libraries
+///    ([`family_libraries_beside`]).
+/// 2. Nothing asked for: auto-discovery ([`discover_bridges`]), every bridge
+///    of the first folder that holds a usable one. Finding none is not a
+///    failure of the engine: the error then contains
+///    [`osc_contract::BRIDGE_ERROR_NONE_FOUND`].
+pub fn resolve_bridges(explicit: &[PathBuf], config: &[PathBuf]) -> Result<BridgeRequest> {
+    resolve_bridges_with(
+        explicit,
+        config,
+        &|key| std::env::var_os(key),
+        &auto_discovery_dirs(),
+    )
+}
+
+fn resolve_bridges_with(
+    explicit: &[PathBuf],
+    config: &[PathBuf],
+    env: &dyn Fn(&str) -> Option<OsString>,
+    dirs: &[PathBuf],
+) -> Result<BridgeRequest> {
+    let (requested, origin) = if !explicit.is_empty() {
+        (explicit, "bridge path")
+    } else if !config.is_empty() {
+        (config, "render.bridge_path (from config)")
+    } else {
+        return discover_bridges(env, dirs, &check_bridge_header);
+    };
+    let mut request = BridgeRequest::default();
+    let mut combined_unreplaced = false;
+    for path in requested {
+        if is_combined_library(path) {
+            let families = family_libraries_beside(path);
+            if families.is_empty() {
+                log::warn!(
+                    "{origin} '{}' is the combined harletty bridge, which bridge_api {} \
+                     replaced with one library per codec family; none is next to it",
+                    path.display(),
+                    bridge_api::VERSION
+                );
+                combined_unreplaced = true;
+            } else {
+                log::info!(
+                    "{origin} '{}' is the combined harletty bridge: loading the family \
+                     libraries beside it instead ({})",
+                    path.display(),
+                    families
+                        .iter()
+                        .map(|f| f.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                request.files.extend(families.iter().cloned());
+                request.recorded.extend(families);
+            }
+            continue;
+        }
+        match resolve_requested(path) {
+            Some(found) => {
+                request.files.push(found);
+                request.recorded.push(path.clone());
+            }
+            None => request.failures.push(BridgeFailure {
+                // Still asked for: kept in what a Save writes.
+                path: {
+                    request.recorded.push(path.clone());
+                    path.clone()
+                },
+                error: format!(
+                    "{origin} '{}' does not exist or is not a file{}",
+                    path.display(),
+                    searched_locations_hint(path)
+                ),
+            }),
+        }
+    }
+    if !request.files.is_empty() {
+        return Ok(request);
+    }
+    if combined_unreplaced && request.failures.is_empty() {
+        log::warn!("searching the auto-discovery folders for the family libraries");
+        return discover_bridges(env, dirs, &check_bridge_header);
+    }
+    bail!(
+        "{}. Give an existing path to each decoder bridge (an absolute path is safest), \
+         or remove the explicit path and drop *_bridge.{{so,dll,dylib}} next to the host binary.",
+        request
+            .failures
+            .iter()
+            .map(|f| f.error.clone())
+            .collect::<Vec<_>>()
+            .join("; ")
+    )
+}
+
+/// After the host recorded the bridges it was asked for (`record_bridge_paths`):
+/// when resolving replaced some (a combined harletty library by its family
+/// libraries, or by auto-discovery), record what was resolved instead, as
+/// unsaved state, so the next Save writes it.
+pub fn record_bridge_request(control: &RendererControl, request: &BridgeRequest) {
+    let asked = control.bridge_paths();
+    if !asked.is_empty() && request.recorded != asked {
+        control.set_bridge_paths(request.recorded.clone());
+        control.mark_dirty();
+    }
+}
+
+/// Publish what the host loaded and what it could not
+/// (`/omniphony/state/render/bridges`).
+pub fn publish_bridges(control: &RendererControl, loaded: &LoadedBridges) {
+    control.set_bridges_status(loaded.status());
+}
+
+/// The combined harletty library's file name of `bridge_api` 0.5, which a
+/// config may still name. A transition rule, the only place this host knows
+/// a plugin's name: removed in the minor release after the one that ships
+/// the family libraries (`docs/multi-bridge.md`).
+fn is_combined_library(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("libharletty_bridge.so" | "harletty_bridge.dll" | "libharletty_bridge.dylib")
+    )
+}
+
+/// The harletty family libraries (`harletty_*_bridge`) in the folder of
+/// `combined`, sorted by name, whether `combined` itself is still there or
+/// not; a relative folder is tried where a relative bridge path is.
+fn family_libraries_beside(combined: &Path) -> Vec<PathBuf> {
+    let parent = combined.parent().unwrap_or(Path::new(""));
+    let dirs: Vec<PathBuf> = if parent.is_absolute() {
+        vec![parent.to_path_buf()]
+    } else {
+        requested_search_bases()
+            .into_iter()
+            .map(|base| base.join(parent))
+            .collect()
+    };
+    for dir in dirs {
+        let Ok(mut found) = find_bridge_candidates(&dir) else {
+            continue;
+        };
+        found.retain(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    (name.starts_with("libharletty_") || name.starts_with("harletty_"))
+                        && !is_combined_library(path)
+                })
+        });
+        if !found.is_empty() {
+            found.sort();
+            return found;
+        }
+    }
+    Vec::new()
+}
+
+/// Load every file of `request`, in order. A file that does not load is a
+/// failure, reported with the request's own; an error only when none loads.
+pub fn load_bridges(request: &BridgeRequest) -> Result<LoadedBridges> {
+    let mut libs = Vec::with_capacity(request.files.len());
+    let mut loaded = Vec::with_capacity(request.files.len());
+    let mut failures = request.failures.clone();
+    for path in &request.files {
+        match load_bridge_library(path) {
+            Ok(lib) => {
+                libs.push(lib);
+                loaded.push(path.clone());
+            }
+            Err(error) => failures.push(BridgeFailure {
+                path: path.clone(),
+                error: format!("{error:#}"),
+            }),
+        }
+    }
+    if libs.is_empty() {
+        bail!(
+            "no decoder bridge loaded: {}",
+            failures
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
+    for failure in &failures {
+        log::warn!("decoder bridge skipped: {failure}");
+    }
+    Ok(LoadedBridges {
+        libs: BridgeLibs::new(libs)?,
+        loaded,
+        failures,
     })
+}
+
+/// What [`load_bridges`] loaded, and what it could not.
+pub struct LoadedBridges {
+    pub libs: BridgeLibs,
+    /// The file of each library, in `libs` order.
+    pub loaded: Vec<PathBuf>,
+    pub failures: Vec<BridgeFailure>,
+}
+
+impl LoadedBridges {
+    /// What the host publishes about its bridges
+    /// (`/omniphony/state/render/bridges`): each one loaded, with the
+    /// families it declares, then each one that failed, with why.
+    pub fn status(&self) -> Vec<renderer::live_params::BridgeStatus> {
+        let mut status: Vec<_> = self
+            .libs
+            .iter()
+            .zip(&self.loaded)
+            .map(|(lib, path)| renderer::live_params::BridgeStatus {
+                path: path.display().to_string(),
+                families: lib.source_families()()
+                    .iter()
+                    .map(|family| family.name.as_str().to_owned())
+                    .collect(),
+                error: None,
+            })
+            .collect();
+        status.extend(
+            self.failures
+                .iter()
+                .map(|failure| renderer::live_params::BridgeStatus {
+                    path: failure.path.display().to_string(),
+                    families: Vec::new(),
+                    error: Some(failure.error.clone()),
+                }),
+        );
+        status
+    }
+}
+
+/// The version and layout check a bridge passes before it loads, read from
+/// its header alone: what makes a discovered candidate usable.
+fn check_bridge_header(path: &Path) -> Result<()> {
+    let header = lib_header_from_path(path)
+        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
+    check_bridge_api_version(path, header)?;
+    header
+        .ensure_layout::<BridgeLibRef>()
+        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))
 }
 
 /// Resolve a *requested* bridge path (CLI `--bridge-path`, FFI param, or
@@ -441,33 +634,52 @@ fn current_exe_dir() -> Option<PathBuf> {
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
 }
 
-/// The runtime variable naming one exact bridge file for auto-discovery.
+/// The runtime variable naming the exact bridge files for auto-discovery: a
+/// path list in the platform's syntax (`:` on Unix, `;` on Windows).
 pub const BRIDGE_FILE_ENV: &str = "ORENDER_BRIDGE_FILE";
 
-/// Auto-discovery: the file `$ORENDER_BRIDGE_FILE` names, when it is one,
-/// then the first `*_bridge.*` of `dirs` ([`auto_discovery_dirs`] outside tests).
+/// Auto-discovery: the files `$ORENDER_BRIDGE_FILE` names, when any is one,
+/// else every `*_bridge.*` of the first of `dirs` ([`auto_discovery_dirs`]
+/// outside tests) that holds a usable one (`usable`: the header check).
 ///
-/// The variable is how a host that knows *which* bridge it wants hands it
-/// over without making it a requested path: Studio passes the bridge
+/// The variable is how a host that knows *which* bridges it wants hands them
+/// over without making them requested paths: Studio passes the bridge
 /// mpv-omniphony is configured with (`ad-orender-bridge-path` in
-/// `mpv.conf`) to the renderer it spawns. A folder would not do: the scan
-/// takes the first bridge of a folder in name order, which need not be the
-/// named one when the folder holds several. It sits at auto-discovery's
-/// level, below `--bridge-path` and `render.bridge_path`, and is checked
-/// before the folders because it names one file. A value naming no file is
-/// logged and skipped, as a missing folder is.
-fn auto_discover(env: &dyn Fn(&str) -> Option<OsString>, dirs: &[PathBuf]) -> Result<PathBuf> {
-    if let Some(file) = env(BRIDGE_FILE_ENV).filter(|value| !value.is_empty()) {
-        let file = PathBuf::from(file);
-        if file.is_file() {
-            return Ok(file);
+/// `mpv.conf`) to the renderer it spawns. It sits at auto-discovery's level,
+/// below `--bridge-path` and `render.bridge_path(s)`, and is checked before
+/// the folders because it names files. Files it names that do not exist are
+/// logged and skipped; when none does, the folders are searched.
+///
+/// Folders are not merged: a stale per-user bridge must not be added to the
+/// system ones. A folder that only holds refused candidates (a leftover
+/// bridge of another `bridge_api` minor next to the executable) does not stop
+/// the search; its refusals are reported with what is found later.
+fn discover_bridges(
+    env: &dyn Fn(&str) -> Option<OsString>,
+    dirs: &[PathBuf],
+    usable: &dyn Fn(&Path) -> Result<()>,
+) -> Result<BridgeRequest> {
+    if let Some(value) = env(BRIDGE_FILE_ENV).filter(|value| !value.is_empty()) {
+        let named: Vec<PathBuf> = std::env::split_paths(&value)
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect();
+        let (files, missing): (Vec<PathBuf>, Vec<PathBuf>) =
+            named.into_iter().partition(|path| path.is_file());
+        for path in &missing {
+            log::warn!(
+                "${BRIDGE_FILE_ENV} names '{}', which is not a file",
+                path.display()
+            );
         }
-        log::warn!(
-            "${BRIDGE_FILE_ENV} '{}' is not a file; searching the auto-discovery folders",
-            file.display()
-        );
+        if !files.is_empty() {
+            return Ok(BridgeRequest {
+                files,
+                ..BridgeRequest::default()
+            });
+        }
+        log::warn!("${BRIDGE_FILE_ENV} names no file; searching the auto-discovery folders");
     }
-    find_bridge_in_dirs(dirs)
+    find_bridges_in_dirs(dirs, usable)
 }
 
 /// [`auto_discovery_dirs`] with the executable's directory and the
@@ -520,42 +732,68 @@ fn user_engine_dir(env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     Some(data.join("omniphony").join("lib"))
 }
 
-/// Look for a bridge the way auto-discovery does ([`auto_discover`]): the
-/// file `$ORENDER_BRIDGE_FILE` names, else a `*_bridge.{so,dll,dylib}` in the
-/// auto-discovery directories.
-/// [`resolve_bridge`] (the CLI's and [`crate::engine::Engine::from_paths`]'s
-/// resolution) falls back to it only when no path was requested at all: a
-/// requested path that does not resolve to a file is an error, never a cue
-/// to load some other bridge.
-pub fn find_bridge_next_to_exe() -> Result<PathBuf> {
-    auto_discover(&|key| std::env::var_os(key), &auto_discovery_dirs())
-}
-
-/// First `*_bridge.*` found scanning `dirs` in order. Split out from
-/// [`find_bridge_next_to_exe`] so the priority rules are testable without
-/// touching the process environment or the test binary's own directory.
-fn find_bridge_in_dirs(dirs: &[PathBuf]) -> Result<PathBuf> {
+/// Every `*_bridge.*` of the first of `dirs` holding a usable one, sorted
+/// by name: the refused ones of that folder go along to be reported when
+/// loading fails them. Split out from [`discover_bridges`] so the rules are
+/// testable without touching the process environment, the test binary's own
+/// directory or real plugins.
+fn find_bridges_in_dirs(
+    dirs: &[PathBuf],
+    usable: &dyn Fn(&Path) -> Result<()>,
+) -> Result<BridgeRequest> {
+    let mut refused: Vec<BridgeFailure> = Vec::new();
     for dir in dirs {
         // A missing or unreadable directory is not an error here: the list is
         // speculative by nature (the system dir is absent on a portable install,
         // and vice versa). Only an empty *search* is worth reporting.
-        let Ok(mut matches) = find_bridge_candidates(dir) else {
+        let Ok(mut candidates) = find_bridge_candidates(dir) else {
             continue;
         };
-        matches.sort();
-        if let Some(found) = matches.into_iter().next() {
-            return Ok(found);
+        candidates.sort();
+        let mut here = Vec::new();
+        for path in &candidates {
+            if let Err(error) = usable(path) {
+                here.push(BridgeFailure {
+                    path: path.clone(),
+                    error: format!("{error:#}"),
+                });
+            }
         }
+        if here.len() < candidates.len() {
+            let files = candidates
+                .into_iter()
+                .filter(|path| !here.iter().any(|failure| &failure.path == path))
+                .collect();
+            refused.extend(here);
+            return Ok(BridgeRequest {
+                files,
+                failures: refused,
+                recorded: Vec::new(),
+            });
+        }
+        refused.extend(here);
     }
     let searched = dirs
         .iter()
         .map(|d| d.display().to_string())
         .collect::<Vec<_>>()
         .join("\n  ");
+    if !refused.is_empty() {
+        bail!(
+            "no usable decoder bridge in the auto-discovery folders: {}",
+            refused
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
     bail!(
-        "No bridge plugin found.\n\
+        "{}: none requested (no explicit path, no render.bridge_path) and none \
+         in the auto-discovery directories.\n\
          Searched in:\n  {searched}\n\
-         Expected one file matching: *_bridge.so / *_bridge.dll / *_bridge.dylib"
+         Expected files matching: *_bridge.so / *_bridge.dll / *_bridge.dylib",
+        osc_contract::BRIDGE_ERROR_NONE_FOUND
     )
 }
 
@@ -588,6 +826,31 @@ mod tests {
     use super::*;
     use std::fs;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Every candidate passes the header check: these tests use stand-in
+    /// files, not plugins.
+    fn usable(_: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    /// The first file a request asked for one bridge resolves to.
+    fn resolve_bridge(explicit: Option<&Path>, config: Option<&Path>) -> Result<PathBuf> {
+        let explicit: Vec<PathBuf> = explicit.into_iter().map(Path::to_path_buf).collect();
+        let config: Vec<PathBuf> = config.into_iter().map(Path::to_path_buf).collect();
+        resolve_bridges(&explicit, &config).map(|request| request.files[0].clone())
+    }
+
+    fn find_bridge_in_dirs(dirs: &[PathBuf]) -> Result<PathBuf> {
+        find_bridges_in_dirs(dirs, &usable).map(|request| request.files[0].clone())
+    }
+
+    fn auto_discover(env: &dyn Fn(&str) -> Option<OsString>, dirs: &[PathBuf]) -> Result<PathBuf> {
+        discover(env, dirs).map(|request| request.files[0].clone())
+    }
+
+    fn discover(env: &dyn Fn(&str) -> Option<OsString>, dirs: &[PathBuf]) -> Result<BridgeRequest> {
+        discover_bridges(env, dirs, &usable)
+    }
 
     // Unique temp file per call so parallel tests don't collide.
     fn tmp_bridge(stem: &str) -> PathBuf {
@@ -760,7 +1023,10 @@ mod tests {
     fn missing_directories_are_skipped_and_listed() {
         let missing = PathBuf::from("/nonexistent/orender/plugins");
         let err = find_bridge_in_dirs(&[missing]).unwrap_err().to_string();
-        assert!(err.contains("No bridge plugin found"), "unexpected: {err}");
+        assert!(
+            err.contains(osc_contract::BRIDGE_ERROR_NONE_FOUND),
+            "unexpected: {err}"
+        );
         assert!(
             err.contains("/nonexistent/orender/plugins"),
             "the error must name what was searched: {err}"
@@ -978,5 +1244,148 @@ mod tests {
         assert_eq!(resolve_bridge(Some(&requested), None).unwrap(), requested);
         assert_eq!(resolve_bridge(None, Some(&requested)).unwrap(), requested);
         fs::remove_file(&requested).ok();
+    }
+
+    /// Every bridge of the first folder holding one is loaded, in name order;
+    /// a later folder's are not added.
+    #[test]
+    fn discovery_takes_every_bridge_of_the_first_folder_only() {
+        let near = dir_with_bridge("allnear", "libb_bridge.so");
+        fs::write(near.join("liba_bridge.so"), b"x").unwrap();
+        let later = dir_with_bridge("alllater", "libc_bridge.so");
+        let found = find_bridges_in_dirs(&[near.clone(), later.clone()], &usable).unwrap();
+        fs::remove_dir_all(&near).ok();
+        fs::remove_dir_all(&later).ok();
+        assert_eq!(
+            found.files,
+            [near.join("liba_bridge.so"), near.join("libb_bridge.so")]
+        );
+        assert!(
+            found.recorded.is_empty(),
+            "a discovered bridge is never saved"
+        );
+    }
+
+    /// A folder that only holds refused candidates (a leftover bridge of
+    /// another bridge_api minor) does not stop the search; its refusals are
+    /// reported with what is found later. A refused candidate next to usable
+    /// ones is reported and left out.
+    #[test]
+    fn a_folder_of_refused_bridges_does_not_stop_the_search() {
+        let stale = dir_with_bridge("stale", "libharletty_bridge.so");
+        let fresh = dir_with_bridge("fresh", "libharletty_dolby_bridge.so");
+        fs::write(fresh.join("libold_bridge.so"), b"x").unwrap();
+        let refuse_old = |path: &Path| -> Result<()> {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            if name == "libharletty_bridge.so" || name == "libold_bridge.so" {
+                bail!("built against bridge_api 0.5.0")
+            }
+            Ok(())
+        };
+        let found = find_bridges_in_dirs(&[stale.clone(), fresh.clone()], &refuse_old).unwrap();
+        let refused_only = find_bridges_in_dirs(std::slice::from_ref(&stale), &refuse_old);
+        fs::remove_dir_all(&stale).ok();
+        fs::remove_dir_all(&fresh).ok();
+        assert_eq!(found.files, [fresh.join("libharletty_dolby_bridge.so")]);
+        let failed: Vec<&PathBuf> = found.failures.iter().map(|f| &f.path).collect();
+        assert_eq!(
+            failed,
+            [
+                &stale.join("libharletty_bridge.so"),
+                &fresh.join("libold_bridge.so")
+            ]
+        );
+        let text = format!("{:#}", refused_only.unwrap_err());
+        assert!(text.contains("bridge_api 0.5.0"), "{text}");
+        assert!(
+            !text.contains(osc_contract::BRIDGE_ERROR_NONE_FOUND),
+            "a refused bridge is a failure, not an empty search: {text}"
+        );
+    }
+
+    /// The variable takes a path list; names that are no file are skipped.
+    #[test]
+    fn the_bridge_file_variable_takes_a_list() {
+        let dir = dir_with_bridge("filelist", "liba_bridge.so");
+        fs::write(dir.join("libb_bridge.so"), b"x").unwrap();
+        let list = std::env::join_paths([
+            dir.join("libb_bridge.so"),
+            PathBuf::from("/nonexistent/libgone_bridge.so"),
+            dir.join("liba_bridge.so"),
+        ])
+        .unwrap();
+        let env = |key: &str| (key == BRIDGE_FILE_ENV).then(|| list.clone());
+        let found = discover(&env, &[]).unwrap();
+        fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            found.files,
+            [dir.join("libb_bridge.so"), dir.join("liba_bridge.so")]
+        );
+    }
+
+    /// Several requested bridges load in the order asked; one that is
+    /// missing is a failure while the others resolve, and is kept in what a
+    /// Save writes. Only when none resolves is it an error.
+    #[test]
+    fn requested_bridges_resolve_in_order_and_a_missing_one_is_reported() {
+        let a = tmp_bridge("multi_a");
+        let b = tmp_bridge("multi_b");
+        let missing = PathBuf::from("/nonexistent/libmissing_bridge.so");
+        let request = resolve_bridges(&[b.clone(), missing.clone(), a.clone()], &[]).unwrap();
+        let none = resolve_bridges(&[], std::slice::from_ref(&missing));
+        fs::remove_file(&a).ok();
+        fs::remove_file(&b).ok();
+        assert_eq!(request.files, [b.clone(), a.clone()]);
+        assert_eq!(request.recorded, [b, missing.clone(), a]);
+        assert_eq!(request.failures.len(), 1);
+        assert_eq!(request.failures[0].path, missing);
+        let text = format!("{:#}", none.unwrap_err());
+        assert!(text.contains("libmissing_bridge.so"), "{text}");
+    }
+
+    /// A path naming the combined harletty library stands for the family
+    /// libraries in its folder, whether it is still there or not, and they
+    /// are what a Save records.
+    #[test]
+    fn the_combined_library_stands_for_the_family_libraries_beside_it() {
+        let dir = dir_with_bridge("combined", "libharletty_bridge.so");
+        fs::write(dir.join("libharletty_dts_bridge.so"), b"x").unwrap();
+        fs::write(dir.join("libharletty_dolby_bridge.so"), b"x").unwrap();
+        fs::write(dir.join("libother_bridge.so"), b"x").unwrap();
+        let combined = dir.join("libharletty_bridge.so");
+        let with_old = resolve_bridges(std::slice::from_ref(&combined), &[]).unwrap();
+        fs::remove_file(&combined).unwrap();
+        let without_old = resolve_bridges(&[], std::slice::from_ref(&combined)).unwrap();
+        fs::remove_dir_all(&dir).ok();
+        let families = [
+            dir.join("libharletty_dolby_bridge.so"),
+            dir.join("libharletty_dts_bridge.so"),
+        ];
+        assert_eq!(with_old.files, families);
+        assert_eq!(with_old.recorded, families);
+        assert_eq!(without_old.files, families);
+    }
+
+    /// With no family library beside it, the combined library's path falls
+    /// back to auto-discovery; any other missing path stays an error.
+    #[test]
+    fn a_combined_library_without_families_falls_back_to_discovery() {
+        let old = dir_with_bridge("combinedalone", "libharletty_bridge.so");
+        let installed = dir_with_bridge("installed", "libharletty_iamf_bridge.so");
+        let combined = old.join("libharletty_bridge.so");
+        let request = resolve_bridges_with(
+            std::slice::from_ref(&combined),
+            &[],
+            &|_: &str| None,
+            std::slice::from_ref(&installed),
+        );
+        fs::remove_dir_all(&old).ok();
+        fs::remove_dir_all(&installed).ok();
+        // The discovered candidate is a stand-in file, refused by the real
+        // header check: what matters is that discovery ran, not this folder.
+        let text = format!("{:#}", request.unwrap_err());
+        assert!(text.contains("libharletty_iamf_bridge.so"), "{text}");
+        let other = resolve_bridges(&[PathBuf::from("/nonexistent/liby_bridge.so")], &[]);
+        assert!(other.is_err());
     }
 }
