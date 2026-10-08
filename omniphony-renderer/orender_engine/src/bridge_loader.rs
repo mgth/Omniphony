@@ -327,32 +327,42 @@ fn resolve_bridges_with(
     } else {
         return discover_bridges(env, dirs, usable);
     };
+    if requested
+        .iter()
+        .all(|path| is_combined_library(path) && family_libraries_beside(path).is_empty())
+    {
+        // Only the old library was asked for, with no family library beside
+        // it: as if nothing had been, and nothing discovered is recorded.
+        log::warn!(
+            "{origin} names only the combined harletty bridge, which bridge_api {} replaced \
+             with one library per codec family, and none is next to it; searching the \
+             auto-discovery folders",
+            bridge_api::VERSION
+        );
+        return discover_bridges(env, dirs, usable);
+    }
     let mut request = BridgeRequest::default();
-    let mut combined_unreplaced: Vec<&PathBuf> = Vec::new();
+    let search = || discover_bridges(env, dirs, usable);
+    let mut fallback = CombinedFallback::new(&search);
     for path in requested {
         if is_combined_library(path) {
-            let families = family_libraries_beside(path);
-            if families.is_empty() {
-                log::warn!(
-                    "{origin} '{}' is the combined harletty bridge, which bridge_api {} \
-                     replaced with one library per codec family; none is next to it",
-                    path.display(),
-                    bridge_api::VERSION
-                );
-                combined_unreplaced.push(path);
-            } else {
-                log::info!(
-                    "{origin} '{}' is the combined harletty bridge: loading the family \
-                     libraries beside it instead ({})",
-                    path.display(),
-                    families
-                        .iter()
-                        .map(|f| f.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                request.files.extend(families.iter().cloned());
-                request.recorded.extend(families);
+            // The replacements take the old library's place in the order,
+            // which is the priority between bridges, and in what a Save writes.
+            match fallback.replace(path, origin) {
+                Ok((files, failures)) => {
+                    for file in files {
+                        if !request.files.contains(&file) {
+                            request.recorded.push(file.clone());
+                            request.files.push(file);
+                        }
+                    }
+                    request.failures.extend(failures);
+                }
+                Err(failure) => {
+                    // Still asked for: kept in what a Save writes.
+                    request.recorded.push(path.clone());
+                    request.failures.push(failure);
+                }
             }
             continue;
         }
@@ -373,39 +383,6 @@ fn resolve_bridges_with(
                     searched_locations_hint(path)
                 ),
             }),
-        }
-    }
-    if !combined_unreplaced.is_empty() {
-        log::warn!("searching the auto-discovery folders for the family libraries");
-        if combined_unreplaced.len() == requested.len() {
-            // Only the old library was asked for: as if nothing had been,
-            // and nothing discovered is recorded, as ever.
-            return discover_bridges(env, dirs, usable);
-        }
-        // Next to other bridges: the discovered family libraries join them,
-        // and are what a Save writes in the old library's place.
-        match discover_bridges(env, dirs, usable) {
-            Ok(found) => {
-                for file in found.files {
-                    if !request.files.contains(&file) {
-                        request.recorded.push(file.clone());
-                        request.files.push(file);
-                    }
-                }
-                request.failures.extend(found.failures);
-            }
-            Err(error) => {
-                for path in combined_unreplaced {
-                    request.recorded.push(path.clone());
-                    request.failures.push(BridgeFailure {
-                        path: path.clone(),
-                        error: format!(
-                            "the combined harletty bridge, replaced by one library per codec \
-                             family; none is next to it and auto-discovery found none: {error:#}"
-                        ),
-                    });
-                }
-            }
         }
     }
     if !request.files.is_empty() {
@@ -439,6 +416,73 @@ pub fn record_bridge_request(control: &RendererControl, request: &BridgeRequest)
 /// (`/omniphony/state/render/bridges`).
 pub fn publish_bridges(control: &RendererControl, loaded: &LoadedBridges) {
     control.set_bridges_status(loaded.status());
+}
+
+/// What a path naming the combined harletty library stands for: the family
+/// libraries beside it, else what the fallback search finds (run once, at
+/// the first such path; later ones add nothing it has not).
+struct CombinedFallback<'a> {
+    search: &'a dyn Fn() -> Result<BridgeRequest>,
+    searched: Option<std::result::Result<BridgeRequest, String>>,
+}
+
+impl<'a> CombinedFallback<'a> {
+    fn new(search: &'a dyn Fn() -> Result<BridgeRequest>) -> Self {
+        Self {
+            search,
+            searched: None,
+        }
+    }
+
+    /// The files `combined` stands for, with the failures found on the way;
+    /// a failure for `combined` itself when there are none.
+    fn replace(
+        &mut self,
+        combined: &Path,
+        origin: &str,
+    ) -> std::result::Result<(Vec<PathBuf>, Vec<BridgeFailure>), BridgeFailure> {
+        let families = family_libraries_beside(combined);
+        if !families.is_empty() {
+            log::info!(
+                "{origin} '{}' is the combined harletty bridge: loading the family \
+                 libraries beside it instead ({})",
+                combined.display(),
+                families
+                    .iter()
+                    .map(|f| f.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            return Ok((families, Vec::new()));
+        }
+        log::warn!(
+            "{origin} '{}' is the combined harletty bridge, which bridge_api {} replaced \
+             with one library per codec family; none is next to it, searching further",
+            combined.display(),
+            bridge_api::VERSION
+        );
+        let first = self.searched.is_none();
+        let searched = self
+            .searched
+            .get_or_insert_with(|| (self.search)().map_err(|error| format!("{error:#}")));
+        match searched {
+            Ok(found) => Ok((
+                found.files.clone(),
+                if first {
+                    found.failures.clone()
+                } else {
+                    Vec::new()
+                },
+            )),
+            Err(error) => Err(BridgeFailure {
+                path: combined.to_path_buf(),
+                error: format!(
+                    "the combined harletty bridge, replaced by one library per codec family; \
+                     none is next to it and none was found elsewhere: {error}"
+                ),
+            }),
+        }
+    }
 }
 
 /// The combined harletty library's file name of `bridge_api` 0.5, which a
@@ -712,24 +756,40 @@ fn discover_bridges(
     usable: &dyn Fn(&Path) -> Result<()>,
 ) -> Result<BridgeRequest> {
     if let Some(value) = env(BRIDGE_FILE_ENV).filter(|value| !value.is_empty()) {
-        let named: Vec<PathBuf> = std::env::split_paths(&value)
-            .filter(|path| !path.as_os_str().is_empty())
-            .collect();
-        let (files, missing): (Vec<PathBuf>, Vec<PathBuf>) =
-            named.into_iter().partition(|path| path.is_file());
-        for path in &missing {
-            log::warn!(
-                "${BRIDGE_FILE_ENV} names '{}', which is not a file",
-                path.display()
-            );
+        let mut found = BridgeRequest::default();
+        let search = || find_bridges_in_dirs(dirs, usable);
+        let mut fallback = CombinedFallback::new(&search);
+        for path in std::env::split_paths(&value).filter(|path| !path.as_os_str().is_empty()) {
+            if is_combined_library(&path) {
+                // As for a requested path: the family libraries beside it,
+                // else the folders' (never the old file again: a folder of
+                // refused bridges does not stop that search).
+                match fallback.replace(&path, &format!("${BRIDGE_FILE_ENV}")) {
+                    Ok((files, failures)) => {
+                        for file in files {
+                            if !found.files.contains(&file) {
+                                found.files.push(file);
+                            }
+                        }
+                        found.failures.extend(failures);
+                    }
+                    Err(failure) => found.failures.push(failure),
+                }
+            } else if path.is_file() {
+                if !found.files.contains(&path) {
+                    found.files.push(path);
+                }
+            } else {
+                log::warn!(
+                    "${BRIDGE_FILE_ENV} names '{}', which is not a file",
+                    path.display()
+                );
+            }
         }
-        if !files.is_empty() {
-            return Ok(BridgeRequest {
-                files,
-                ..BridgeRequest::default()
-            });
+        if !found.files.is_empty() {
+            return Ok(found);
         }
-        log::warn!("${BRIDGE_FILE_ENV} names no file; searching the auto-discovery folders");
+        log::warn!("${BRIDGE_FILE_ENV} names no usable file; searching the auto-discovery folders");
     }
     find_bridges_in_dirs(dirs, usable)
 }
@@ -1468,5 +1528,61 @@ mod tests {
         assert_eq!(nothing.failures[0].path, combined);
         let missing = resolve_bridges(&[PathBuf::from("/nonexistent/liby_bridge.so")], &[]);
         assert!(missing.is_err());
+    }
+
+    /// The replacements take the old library's place in the order, which is
+    /// the priority between bridges: first when it was asked for first.
+    #[test]
+    fn the_combined_library_s_replacements_keep_its_place() {
+        let old = dir_with_bridge("combinedfirst", "libharletty_bridge.so");
+        let installed = dir_with_bridge("installedfirst", "libharletty_iamf_bridge.so");
+        let combined = old.join("libharletty_bridge.so");
+        let other = tmp_bridge("after_combined");
+        let request = resolve_bridges_with(
+            &[combined, other.clone()],
+            &[],
+            &|_: &str| None,
+            std::slice::from_ref(&installed),
+            &usable,
+        )
+        .unwrap();
+        fs::remove_dir_all(&old).ok();
+        fs::remove_dir_all(&installed).ok();
+        fs::remove_file(&other).ok();
+        let family = installed.join("libharletty_iamf_bridge.so");
+        assert_eq!(request.files, [family.clone(), other.clone()]);
+        assert_eq!(request.recorded, [family, other]);
+    }
+
+    /// `$ORENDER_BRIDGE_FILE` naming the combined library (how Studio passes
+    /// mpv's bridge) stands for the family libraries beside it, else for the
+    /// folders' bridges, as a requested path does.
+    #[test]
+    fn the_bridge_file_variable_migrates_the_combined_library() {
+        let dir = dir_with_bridge("envcombined", "libharletty_bridge.so");
+        fs::write(dir.join("libharletty_dolby_bridge.so"), b"x").unwrap();
+        let combined = dir.join("libharletty_bridge.so").into_os_string();
+        let env = |key: &str| (key == BRIDGE_FILE_ENV).then(|| combined.clone());
+        let beside = discover(&env, &[]).unwrap();
+
+        let alone = dir_with_bridge("envcombinedalone", "libharletty_bridge.so");
+        let installed = dir_with_bridge("envinstalled", "libharletty_dts_bridge.so");
+        let alone_combined = alone.join("libharletty_bridge.so").into_os_string();
+        let alone_env = |key: &str| (key == BRIDGE_FILE_ENV).then(|| alone_combined.clone());
+        // The old file's own folder comes first among the folders; refused
+        // there, it does not stop the search.
+        let refuse_old = |path: &Path| -> Result<()> {
+            if path.file_name().unwrap() == "libharletty_bridge.so" {
+                bail!("built against bridge_api 0.5.0")
+            }
+            Ok(())
+        };
+        let folders =
+            discover_bridges(&alone_env, &[alone.clone(), installed.clone()], &refuse_old).unwrap();
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&alone).ok();
+        fs::remove_dir_all(&installed).ok();
+        assert_eq!(beside.files, [dir.join("libharletty_dolby_bridge.so")]);
+        assert_eq!(folders.files, [installed.join("libharletty_dts_bridge.so")]);
     }
 }
