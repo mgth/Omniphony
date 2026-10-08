@@ -754,6 +754,17 @@ impl OscSender {
                                 &gaintable_cache,
                             );
                         }
+                        // A stream's bridge hinted another evaluation grid:
+                        // rebuilt while the grid follows the bridge, at idle
+                        // priority, the installed table rendering meanwhile.
+                        if ctrl.bridge_grid_pending() {
+                            recompute::follow_bridge_grid(
+                                ctrl,
+                                &socket,
+                                &clients,
+                                &gaintable_cache,
+                            );
+                        }
                         // One-shot clip notification carrying the offending speaker
                         // index (set on the audio thread on any detected clip,
                         // regardless of auto-gain). Coalesced to the poll cadence so a

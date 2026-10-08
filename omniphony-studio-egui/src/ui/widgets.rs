@@ -185,6 +185,53 @@ fn labelled<R>(
     .inner
 }
 
+/// One entry of an editable list (the decoder bridges): its name on the first
+/// line with the entry's buttons at the right, and a detail line under it in
+/// `colour`. Both lines are one line high whatever they hold — the name and
+/// the detail truncate — so an entry never changes height under the buttons
+/// of the entries below it. The name shows `full` on hover, the detail
+/// itself when cut.
+pub fn list_entry(
+    ui: &mut Ui,
+    name: &str,
+    full: &str,
+    detail: &str,
+    colour: Color32,
+    add_right: impl FnOnce(&mut Ui),
+) {
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            add_right(ui);
+            // As `labelled` does: the name takes exactly what the buttons
+            // left, laid out, cut and painted at that width.
+            let space = ui.available_rect_before_wrap();
+            let galley = egui::WidgetText::from(name).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                space.width().max(0.0),
+                egui::TextStyle::Body,
+            );
+            let row_height = ui.spacing().interact_size.y.max(galley.size().y);
+            let (rect, response) =
+                ui.allocate_exact_size(vec2(space.width(), row_height), Sense::hover());
+            let at = egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
+            let text = ui.visuals().text_color();
+            ui.painter()
+                .with_clip_rect(rect.intersect(ui.clip_rect()))
+                .galley(at, galley, text);
+            response.on_hover_text(full);
+        });
+    });
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(detail)
+                .size(theme::FONT_SIZE_SMALL)
+                .color(colour),
+        )
+        .truncate(),
+    );
+}
+
 /// The width a dropdown in a `label_row` takes: its usual width, but never more
 /// than 60 % of the row, so its label keeps room to be read when the panel is
 /// narrow. Called inside the row's controls closure, where the row is still

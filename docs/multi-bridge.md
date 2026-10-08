@@ -370,6 +370,48 @@ explicit setting:
   `/state/vbap/allow_negative_z` stops defaulting to `true` when the rebuild
   parameters are unset; the engine itself defaults to `false`.
 
+- **As built (step 4b)** — where the implementation settles what the above
+  leaves open, or departs from it:
+  - The grid requests live on the control (`renderer::evaluation_grid`,
+    `RendererControl::request_live_grid`). A topology records the grid its
+    plan was prepared on and the request generation it answers;
+    `publish_topology_if_current` (the OSC recompute and the layout
+    follower) refuses one a later request overtook, and the speaker stage
+    neither asks for nor installs the bands of a topology that does not
+    answer the latest request. A request whose grid is already in force, or
+    is the grid of the topology a grid-only rebuild just replaced (A → B →
+    A after B was published), puts that topology back instead of building:
+    nothing is rebuilt, and a band set the stage still holds is reused.
+  - A stream's hint travels with the bridge's declaration (read with it,
+    from the active bridge) and is offered to the control by the frame
+    pipeline once per change, lock-free (`try_lock`, retried on the next
+    frame when busy). The OSC listener, or without one the renderer's
+    layout follower (an offline render: the render thread), takes it.
+  - In `bridge` the live mode is the bridge's concrete mode, not `auto`.
+    A Save writes no grid key in `bridge` (`render_evaluation_mode`, the
+    sizes and `vbap_allow_negative_z` stay out, so the next start reads
+    the bridge again) and the whole grid in `custom`, sizes included
+    whatever the mode.
+  - `vbap_allow_negative_z` is in a group of its own (`negative_z`,
+    topology effect): the panner keeps or clamps z, so a change rebuilds
+    the gain models, not only the table. A grid request whose negative z
+    differs does the same.
+  - `evaluationGridBridge` also carries `bridgeIndex`, the hinting bridge's
+    place among the loaded bridges of `render/bridges`, so Studio names the
+    bridge the values come from.
+  - Command line: a grid flag (`--render-evaluation-mode`,
+    `--evaluation-cartesian-*`, `--[no-]vbap-allow-negative-z`, now
+    generated from the registry like the other option flags) is refused
+    when the file or `--evaluation-grid` says `bridge`; on a config without
+    the key it forces the grid (`evaluation_grid: custom`), a grid given on
+    the command line being a grid chosen.
+  - An unknown value of the key reads as `bridge`, with a warning. A
+    renderer built without a host's bridge hint (tests, tools) follows the
+    bridge by default and has no hint.
+  - A renderer that loaded no bridge (the standby runtime) cannot migrate a
+    config: it refuses grid writes, and its Save keeps the grid keys as the
+    file has them, key absent included, for the next start with a bridge.
+
 ### OSC and Studio
 
 - New state `/omniphony/state/render/bridges`, JSON: `requested`, the paths

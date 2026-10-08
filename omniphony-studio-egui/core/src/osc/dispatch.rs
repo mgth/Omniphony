@@ -1189,7 +1189,9 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateRenderBridges { value } => {
             live.app.render_bridges = serde_json::from_str(&value).ok();
-            Change::None
+            // The Input panel draws the list: a change another client made,
+            // or the restart's new status, must show without other traffic.
+            Change::Snapshot
         }
 
         // ── panels: renderer evaluation grid ──────────────────────────────
@@ -1453,6 +1455,49 @@ mod panel_event_tests {
         assert_eq!(l.app.config_refusal(), None);
         apply_event(&mut l, status(""));
         assert_eq!(l.app.config_refusal(), None);
+    }
+
+    /// The engine's bridge list: a loaded entry carries its families, a
+    /// failed one its error and no families; anything unreadable is no list.
+    #[test]
+    fn the_bridge_list_is_read_from_its_json() {
+        use crate::model::app_state::{RenderBridge, RenderBridges};
+        let mut l = live();
+        let change = apply_event(
+            &mut l,
+            OscEvent::StateRenderBridges {
+                value: r#"{"requested":["/a.so","/b.so"],"bridges":[
+                    {"path":"/a.so","families":["dts"]},
+                    {"path":"/b.so","error":"does not exist"}]}"#
+                    .to_owned(),
+            },
+        );
+        assert_eq!(change, Change::Snapshot);
+        assert_eq!(
+            l.app.render_bridges,
+            Some(RenderBridges {
+                requested: vec!["/a.so".into(), "/b.so".into()],
+                bridges: vec![
+                    RenderBridge {
+                        path: "/a.so".into(),
+                        families: vec!["dts".into()],
+                        error: None,
+                    },
+                    RenderBridge {
+                        path: "/b.so".into(),
+                        families: Vec::new(),
+                        error: Some("does not exist".into()),
+                    },
+                ],
+            })
+        );
+        apply_event(
+            &mut l,
+            OscEvent::StateRenderBridges {
+                value: "not json".to_owned(),
+            },
+        );
+        assert_eq!(l.app.render_bridges, None);
     }
 
     #[test]

@@ -114,14 +114,18 @@ decoder: PCM and channel input work, and the published
 `/omniphony/state/render/bridge_error` contains `no decoder bridge found`,
 which Studio shows as a warning rather than an error.
 
-Studio also uses the bridge path from `mpv.conf`: before it spawns its own
+Studio also uses the bridge paths from `mpv.conf`: before it spawns its own
 `orender`, it reads mpv-omniphony's `ad-orender-bridge-path` from the player's
 config (mpv's own lookup: `$MPV_HOME`, else `$XDG_CONFIG_HOME/mpv` or
 `~/.config/mpv`, `~/.mpv`, `/etc/mpv`; `%APPDATA%\mpv` on Windows; default
-profile only) and, when it names an existing file, passes that exact file as
-`$ORENDER_BRIDGE_FILE` (step 3.1). Files, not their folder: the folder scan
-loads every bridge of the folder, which need not be the ones named. A bridge named in the engine's own config (`render.bridge_path`)
-or on its command line still comes first, and when Studio's own environment
+profile only) as a path list (`:` on Unix, `;` on Windows), keeps the entries
+that name an existing file, in order, and passes them as
+`$ORENDER_BRIDGE_FILE` (step 3.1). A missing entry naming the combined
+harletty library is passed on too, for the engine's substitution (see the
+combined library's path above). Files, not their folder: the folder scan
+loads every bridge of the folder, which need not be the ones named. Bridges
+named in the engine's own config (`render.bridge_paths`) or on its command
+line still come first, and when Studio's own environment
 already sets `ORENDER_BRIDGE_FILE` or `ORENDER_BRIDGE_DIR`, the renderer
 inherits that and `mpv.conf` is not read. A bridge that only sits next to the
 player, with no `mpv.conf` line naming it, stays unknown to Studio.

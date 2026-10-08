@@ -541,6 +541,32 @@ pub fn control_render_evaluation_mode(state: &SharedState, value: String) {
     );
 }
 
+/// Follow the active bridge's grid, or force the one in force
+/// (`evaluation_grid`, docs/multi-bridge.md). A switch rebuilds only when no
+/// table on that grid is at hand, so no recompute is awaited: the state
+/// says what came of it.
+pub fn set_evaluation_grid_follows_bridge(state: &SharedState, follow: bool) {
+    let source = if follow { "bridge" } else { "custom" };
+    state.inner.lock().unwrap().app.evaluation_grid = Some(source.to_owned());
+    super::engine::control_option(
+        state,
+        "evaluation_grid".to_owned(),
+        serde_json::json!(source),
+    );
+}
+
+/// Render below the floor, in a forced grid (`vbap_allow_negative_z`): the
+/// gain models are rebuilt.
+pub fn set_vbap_allow_negative_z(state: &SharedState, on: bool) {
+    state.inner.lock().unwrap().app.vbap_allow_negative_z = Some(on);
+    mark_recompute_pending(state);
+    super::engine::control_option(
+        state,
+        "vbap_allow_negative_z".to_owned(),
+        serde_json::json!(on),
+    );
+}
+
 pub fn control_render_evaluation_polar_azimuth_resolution(state: &SharedState, value: i32) {
     mark_recompute_pending(state);
     send_control(

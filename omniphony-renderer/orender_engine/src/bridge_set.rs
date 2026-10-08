@@ -77,6 +77,10 @@ pub struct BridgeSet {
     slots: Vec<Slot>,
     /// The bridge that took the last packet; per-stream answers come from it.
     active: usize,
+    /// Whether `active` has taken a packet since the set was opened or
+    /// reset. Before that it is only the idle default, so a first burst for
+    /// another bridge is no switch: nothing to reset, no new segment.
+    fed: bool,
     raw: RawRoute,
     /// The bridge `input_codec` named, which takes raw input unprobed.
     forced: Option<usize>,
@@ -170,6 +174,7 @@ impl BridgeSet {
         Ok(Self {
             slots,
             active: 0,
+            fed: false,
             raw: RawRoute::Undecided,
             forced: None,
             iec_route: [IEC_UNPROBED; 256],
@@ -214,11 +219,12 @@ impl BridgeSet {
             });
             return empty_result();
         };
-        let switched = index != self.active;
+        let switched = index != self.active && self.fed;
         if switched {
             self.slots[self.active].bridge.reset();
-            self.active = index;
         }
+        self.active = index;
+        self.fed = true;
         let mut result =
             self.slots[index]
                 .bridge
@@ -255,6 +261,7 @@ impl BridgeSet {
 
     fn deliver(&mut self, index: usize, data: &[u8]) -> RPushResult {
         self.active = index;
+        self.fed = true;
         self.slots[index]
             .bridge
             .push_packet(data.into(), RInputTransport::Raw, 0)
@@ -391,6 +398,7 @@ impl BridgeSet {
         };
         self.undecided.clear();
         self.unrouted = Unrouted::default();
+        self.fed = false;
     }
 
     /// Send a configuration key. `input_codec` names the bridge raw input
@@ -462,6 +470,12 @@ impl BridgeSet {
             accepted |= slot.bridge.set_drc_mode(mode.into());
         }
         accepted
+    }
+
+    /// The bridge per-stream answers come from, in load order: the one that
+    /// took the last packet, the first one while idle.
+    pub fn active_index(&self) -> usize {
+        self.active
     }
 
     fn current(&self) -> &FormatBridgeBox {
@@ -848,6 +862,7 @@ mod tests {
         log: Arc<Mutex<Log>>,
         format: RCoordinateFormat,
         drc_modes: &'static [&'static str],
+        hint: (RVbapCartesianDefaults, RVbapTableMode),
     }
 
     impl FormatBridge for TestBridge {
@@ -885,10 +900,10 @@ mod tests {
             self.format
         }
         fn vbap_cartesian_defaults(&self) -> RVbapCartesianDefaults {
-            RVbapCartesianDefaults::BALANCED
+            self.hint.0
         }
         fn preferred_vbap_table_mode(&self) -> RVbapTableMode {
-            RVbapTableMode::Cartesian
+            self.hint.1
         }
         fn supported_drc_modes(&self) -> RVec<RString> {
             self.drc_modes.iter().map(|m| RString::from(*m)).collect()
@@ -916,6 +931,24 @@ mod tests {
                 log: Arc::clone(log),
                 format,
                 drc_modes,
+                hint: (RVbapCartesianDefaults::BALANCED, RVbapTableMode::Cartesian),
+            },
+            TD_Opaque,
+        )
+    }
+
+    /// A test bridge that hints `defaults` on a `preferred` table.
+    fn hinting_bridge(
+        log: &Arc<Mutex<Log>>,
+        defaults: RVbapCartesianDefaults,
+        preferred: RVbapTableMode,
+    ) -> FormatBridgeBox {
+        FormatBridge_TO::from_value(
+            TestBridge {
+                log: Arc::clone(log),
+                format: RCoordinateFormat::Cartesian,
+                drc_modes: &[],
+                hint: (defaults, preferred),
             },
             TD_Opaque,
         )
@@ -1112,6 +1145,47 @@ mod tests {
         );
     }
 
+    /// The grid a stream's declaration carries is its own bridge's hint
+    /// (docs/multi-bridge.md, "Grid hints"); the first bridge's while idle.
+    #[test]
+    fn the_declared_grid_is_the_active_bridges_hint() {
+        use crate::decode_step::Declaration;
+        use renderer::evaluation_grid::EvaluationGrid;
+        let (a, b) = (Arc::default(), Arc::default());
+        let other = RVbapCartesianDefaults {
+            x_size: 20,
+            z_neg_size: 4,
+            allow_negative_z: true,
+            ..RVbapCartesianDefaults::BALANCED
+        };
+        let mut set = BridgeSet::from_parts(vec![
+            (probe_a as ProbeFn, vec![], test_bridge(&a)),
+            (
+                probe_b as ProbeFn,
+                vec![],
+                hinting_bridge(&b, other, RVbapTableMode::Polar),
+            ),
+        ])
+        .unwrap();
+        let first = Some(EvaluationGrid::from_hint(
+            RVbapCartesianDefaults::BALANCED,
+            RVbapTableMode::Cartesian,
+        ));
+        let grid = |set: &BridgeSet| {
+            Declaration::read(set)
+                .grid
+                .map(|hint| (hint.grid, hint.bridge))
+        };
+        assert_eq!(grid(&set), first.map(|g| (g, 0)));
+        set.push_packet(b"", RInputTransport::Iec61937, 0x0B);
+        assert_eq!(
+            grid(&set),
+            Some((EvaluationGrid::from_hint(other, RVbapTableMode::Polar), 1))
+        );
+        set.push_packet(b"", RInputTransport::Iec61937, 0x15);
+        assert_eq!(grid(&set), first.map(|g| (g, 0)));
+    }
+
     #[test]
     fn iec_bursts_go_by_type_and_a_switch_resets_the_old_bridge() {
         let (mut set, a, b) = set_ab();
@@ -1125,6 +1199,25 @@ mod tests {
         assert!(unknown.frames.is_empty());
         assert_eq!(a.lock().unwrap().bursts, [0x15]);
         assert_eq!(a.lock().unwrap().resets, 1);
+        assert_eq!(b.lock().unwrap().bursts, [0x0B, 0x0B]);
+    }
+
+    /// The first bridge is active only by default until a packet arrives: a
+    /// first burst for another bridge, at start or after a seek, is no
+    /// switch.
+    #[test]
+    fn a_first_burst_for_a_later_bridge_is_no_switch() {
+        let (mut set, a, b) = set_ab();
+        let first = set.push_packet(b"", RInputTransport::Iec61937, 0x0B);
+        assert!(!first.did_reset);
+        assert_eq!(a.lock().unwrap().resets, 0);
+        set.reset();
+        let resets = a.lock().unwrap().resets;
+        let after_seek = set.push_packet(b"", RInputTransport::Iec61937, 0x15);
+        assert!(!after_seek.did_reset);
+        assert_eq!(a.lock().unwrap().resets, resets);
+        let switched = set.push_packet(b"", RInputTransport::Iec61937, 0x0B);
+        assert!(switched.did_reset);
         assert_eq!(b.lock().unwrap().bursts, [0x0B, 0x0B]);
     }
 

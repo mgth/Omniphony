@@ -130,6 +130,9 @@ impl NoBridgeRuntime {
         )?;
 
         let control = renderer.renderer_control();
+        // No bridge hint: the grid is not migrated here, and a save keeps the
+        // file's grid keys for the next start with a bridge.
+        control.keep_grid_as_loaded();
         // The generator catalogue, the phantom-extraction schema and the
         // fixed-channel catalogue, as a decoding host publishes them.
         ChannelObjectStages::new().publish_static_state(&control);

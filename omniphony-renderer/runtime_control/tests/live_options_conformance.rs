@@ -328,6 +328,8 @@ mod registry {
                 "evaluation_object_size_intervals",
                 RawOptionValue::Number(3.0),
             ),
+            // Not the fixture's (it renders above the floor only).
+            ("vbap_allow_negative_z", RawOptionValue::Bool(true)),
             ("evaluation_cartesian_x_size", RawOptionValue::Number(7.0)),
             ("evaluation_cartesian_y_size", RawOptionValue::Number(6.0)),
             ("evaluation_cartesian_z_size", RawOptionValue::Number(4.0)),

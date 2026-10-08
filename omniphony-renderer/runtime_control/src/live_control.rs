@@ -370,12 +370,48 @@ fn apply_options(
     let mut host_items = Vec::new();
     // What is refused, pair by pair: the others still apply.
     let mut refused = Vec::new();
+    // Where the grid comes from once this message is applied: a grid value
+    // written while it follows the bridge is refused, unless the same
+    // message forces the grid.
+    let grid_source = pairs
+        .iter()
+        .zip(&values)
+        .filter(|(pair, _)| pair.key == "evaluation_grid")
+        .filter_map(|(_, value)| match value.raw() {
+            Some(renderer::options::RawOptionValue::Str(source)) => {
+                renderer::evaluation_grid::EvaluationGridSource::parse(source)
+            }
+            _ => None,
+        })
+        .next_back()
+        .unwrap_or_else(|| ctx.renderer.live.read().evaluation.source);
     for (pair, value) in pairs.iter().zip(&values) {
         let Some(raw) = value.raw() else {
             refused.push(format!("{}: rejected value", pair.key));
             continue;
         };
         match pair.target {
+            OptionTarget::Core(spec)
+                if !ctx.renderer.grid_settled()
+                    && (spec.key == "evaluation_grid"
+                        || spec
+                            .flags
+                            .contains(renderer::options::OptionFlags::BRIDGE_GRID)) =>
+            {
+                refused.push(format!(
+                    "{}: no decoder bridge is loaded to settle the grid against",
+                    pair.key
+                ))
+            }
+            OptionTarget::Core(spec)
+                if renderer::options::refused_by_grid_source(spec, grid_source) =>
+            {
+                refused.push(format!(
+                    "{}: {}",
+                    pair.key,
+                    renderer::options::GRID_FOLLOWS_THE_BRIDGE
+                ))
+            }
             OptionTarget::Core(spec) => core_items.push((spec, raw)),
             OptionTarget::Host => host_items.push((pair.key, raw)),
             OptionTarget::NotOffered => {
@@ -445,6 +481,20 @@ fn apply_options(
     let mut effects = ControlEffects::dirty(Notify::Snapshot);
     effects.rejected = rejected;
     effects.log_message = Some(format!("OSC option {}", applied.join(", ")));
+    // The grid's source switched and nothing else changed: a grid request,
+    // which rebuilds nothing when a table on that grid is at hand.
+    let grid_switch_only = core.as_ref().is_some_and(|core| {
+        let mut changed = core_items
+            .iter()
+            .zip(&core.results)
+            .filter(|(_, result)| result.as_ref().is_some_and(|r| r.changed))
+            .map(|((spec, _), _)| spec.key);
+        changed.next() == Some("evaluation_grid") && changed.next().is_none()
+    });
+    if grid_switch_only {
+        effects.grid_request = true;
+        return effects;
+    }
     match core.map(|core| core.rebuild).unwrap_or(Rebuild::None) {
         Rebuild::None => {}
         Rebuild::Evaluation => {
@@ -777,6 +827,9 @@ mod tests {
             &msg(
                 osc_contract::CONTROL_OPTIONS,
                 vec![
+                    // The grid is the user's from this message on.
+                    s("evaluation_grid"),
+                    s("custom"),
                     s("render_evaluation_mode"),
                     s("precomputed_cartesian"),
                     s("evaluation_cartesian_x_size"),
@@ -819,6 +872,102 @@ mod tests {
                 .to_string(),
             "yz"
         );
+    }
+
+    /// While the grid follows the bridge, a grid value is refused with the
+    /// reason, the rest of the message still applies; forcing the grid in the
+    /// same message lets it through. The source switching alone is a grid
+    /// request, not a rebuild.
+    #[test]
+    fn grid_values_are_refused_while_the_grid_follows_the_bridge() {
+        let ctx = ctx();
+        let before = ctx.renderer.live.read().evaluation.cartesian;
+        let effects = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTIONS,
+                vec![
+                    s("evaluation_cartesian_x_size"),
+                    OscType::Int(11),
+                    s("vbap_allow_negative_z"),
+                    OscType::Bool(true),
+                    s("auto_gain"),
+                    OscType::Bool(true),
+                ],
+            ),
+            &ctx,
+            None,
+        )
+        .expect("handled");
+        let reason = effects.rejected.expect("refused");
+        assert!(
+            reason.contains("evaluation_cartesian_x_size: the grid follows the bridge")
+                && reason.contains("vbap_allow_negative_z: the grid follows the bridge"),
+            "{reason}"
+        );
+        assert!(effects.mark_dirty, "the rest applies");
+        assert!(!effects.trigger_layout_recompute);
+        {
+            let live = ctx.renderer.live.read();
+            assert_eq!(live.evaluation.cartesian, before);
+            assert!(live.options.auto_gain);
+        }
+        // The legacy address is refused the same way.
+        let legacy = apply_live_control(
+            &msg(
+                &format!(
+                    "{}x_size",
+                    osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX
+                ),
+                vec![OscType::Int(11)],
+            ),
+            &ctx,
+            None,
+        )
+        .expect("handled");
+        assert!(
+            legacy
+                .rejected
+                .is_some_and(|r| r.contains(renderer::options::GRID_FOLLOWS_THE_BRIDGE))
+        );
+
+        let switched = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTION,
+                vec![s("evaluation_grid"), s("custom")],
+            ),
+            &ctx,
+            None,
+        )
+        .expect("handled");
+        assert!(switched.grid_request && switched.mark_dirty);
+        assert!(!switched.trigger_layout_recompute);
+        // A forced grid has a concrete mode.
+        assert_ne!(
+            ctx.renderer.live.read().evaluation.mode,
+            renderer::live_params::LiveEvaluationMode::Auto
+        );
+        let auto = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTION,
+                vec![s("render_evaluation_mode"), s("auto")],
+            ),
+            &ctx,
+            None,
+        )
+        .expect("handled");
+        assert!(auto.rejected.is_some());
+        let edited = apply_live_control(
+            &msg(
+                osc_contract::CONTROL_OPTION,
+                vec![s("evaluation_cartesian_x_size"), OscType::Int(11)],
+            ),
+            &ctx,
+            None,
+        )
+        .expect("handled");
+        assert!(edited.rejected.is_none());
+        assert!(edited.trigger_layout_recompute && edited.evaluation_only);
+        assert_eq!(ctx.renderer.live.read().evaluation.cartesian.x_size, 11);
     }
 
     /// The prefix-family addresses are exact aliases of their rows.

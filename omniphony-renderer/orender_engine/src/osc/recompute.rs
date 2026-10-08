@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use renderer::evaluation_grid::GridDecision;
 use renderer::live_params::RendererControl;
 use runtime_control::context::RuntimeControlContext;
 use runtime_control::osc::gaintable_chunk_broadcasts;
@@ -11,11 +12,70 @@ use super::transport::{broadcast_int, broadcast_string, publish_state, send_upda
 use rosc::{OscMessage, OscType};
 use runtime_control::osc_contract;
 
+/// Rebuild the topology from the live state, off the listener's thread, and
+/// publish it with the state that goes with it. A rebuild already running
+/// queues one more.
 pub(crate) fn trigger_layout_recompute(
     control: &Arc<RendererControl>,
     socket: &Arc<std::net::UdpSocket>,
     clients: &Arc<OscClientRegistry>,
     gaintable_cache: &Arc<GaintableCache>,
+) {
+    start_recompute(control, socket, clients, gaintable_cache, false);
+}
+
+/// A stream's bridge hinted another grid: take it, and while the grid
+/// follows the bridge, request it ([`request_grid`]). Either way the clients
+/// learn the bridge's grid with the next state bundle.
+pub(crate) fn follow_bridge_grid(
+    control: &Arc<RendererControl>,
+    socket: &Arc<std::net::UdpSocket>,
+    clients: &Arc<OscClientRegistry>,
+    gaintable_cache: &Arc<GaintableCache>,
+) {
+    if control.take_bridge_grid() {
+        request_grid(control, socket, clients, gaintable_cache);
+    }
+}
+
+/// The grid alone changed (its source switched, the bridge's hint moved):
+/// request the live grid (`renderer::evaluation_grid`). The rebuild it may
+/// start is an evaluation-only one at idle priority; until it lands, the
+/// installed table keeps rendering. When a topology on that grid is at hand
+/// it is put back in force and nothing is built; a rebuild running for an
+/// older request is then dropped when it finishes, and one that covered
+/// more than the grid is run again from the live state.
+pub(crate) fn request_grid(
+    control: &Arc<RendererControl>,
+    socket: &Arc<std::net::UdpSocket>,
+    clients: &Arc<OscClientRegistry>,
+    gaintable_cache: &Arc<GaintableCache>,
+) {
+    match control.request_live_grid() {
+        GridDecision::Unchanged => {}
+        GridDecision::Adopted => {
+            log::info!("Evaluation grid: a topology on the requested grid is in force, no rebuild");
+            if control
+                .recomputing
+                .load(std::sync::atomic::Ordering::Relaxed)
+                && !control.grid_only_rebuild_in_flight()
+            {
+                control
+                    .recompute_pending
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            control.bump_live_state();
+        }
+        GridDecision::Rebuild => start_recompute(control, socket, clients, gaintable_cache, true),
+    }
+}
+
+fn start_recompute(
+    control: &Arc<RendererControl>,
+    socket: &Arc<std::net::UdpSocket>,
+    clients: &Arc<OscClientRegistry>,
+    gaintable_cache: &Arc<GaintableCache>,
+    grid_only: bool,
 ) {
     if control.prepare_topology_rebuild().is_none() {
         log::warn!(
@@ -40,10 +100,16 @@ pub(crate) fn trigger_layout_recompute(
         return;
     }
 
+    // A rebuild that covers more than the grid answers the live grid: a
+    // grid-only one still running for another is out of date.
+    if !grid_only {
+        control.record_live_grid();
+    }
     let rebuild_plan = match control.prepare_topology_rebuild() {
         Some(plan) => plan,
         None => {
             log::warn!("OSC apply: failed to prepare render backend recompute plan");
+            control.grid_rebuild_failed();
             broadcast_int(socket, clients, osc_contract::STATE_SPEAKERS_RECOMPUTING, 0);
             return;
         }
@@ -52,6 +118,7 @@ pub(crate) fn trigger_layout_recompute(
     control
         .recomputing
         .store(true, std::sync::atomic::Ordering::Relaxed);
+    control.set_grid_only_rebuild_in_flight(grid_only);
     broadcast_int(socket, clients, osc_contract::STATE_SPEAKERS_RECOMPUTING, 1);
     broadcast_string(
         socket,
@@ -91,9 +158,44 @@ pub(crate) fn trigger_layout_recompute(
                     "render backend panicked during build_topology: {detail}"
                 ))
             });
-            match build_result {
-                Ok(new_topology) => {
-                    control_clone.publish_topology(new_topology);
+            // Published unless a later grid request overtook it, whatever its
+            // identity.
+            let published = build_result.map(|new_topology| {
+                control_clone.publish_topology_if_current(
+                    new_topology,
+                    grid_only.then(|| Arc::clone(&current_topology)),
+                )
+            });
+            match published {
+                Ok(false) => {
+                    // The topology in force stays, and the request that
+                    // overtook it has its own rebuild or none.
+                    log::info!(
+                        "Render backend recompute discarded: a later evaluation grid request \
+                         overtook it"
+                    );
+                    control_clone
+                        .recomputing
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                    broadcast_int(
+                        &socket_clone,
+                        &clients_clone,
+                        osc_contract::STATE_SPEAKERS_RECOMPUTING,
+                        0,
+                    );
+                    if control_clone
+                        .recompute_pending
+                        .swap(false, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        trigger_layout_recompute(
+                            &control_clone,
+                            &socket_clone,
+                            &clients_clone,
+                            &gaintable_cache_clone,
+                        );
+                    }
+                }
+                Ok(true) => {
                     control_clone
                         .recomputing
                         .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -219,6 +321,7 @@ pub(crate) fn trigger_layout_recompute(
                         e
                     );
                     log::error!("{message}");
+                    control_clone.grid_rebuild_failed();
                     control_clone
                         .recomputing
                         .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -338,6 +441,189 @@ mod tests {
             }
         }
         None
+    }
+
+    /// A Cartesian hint of `x` × 5 × 3 cells.
+    fn hint(x: u32) -> renderer::evaluation_grid::EvaluationGrid {
+        renderer::evaluation_grid::EvaluationGrid::from_hint(
+            bridge_api::RVbapCartesianDefaults {
+                x_size: x,
+                y_size: 5,
+                z_size: 3,
+                z_neg_size: 0,
+                allow_negative_z: false,
+            },
+            bridge_api::RVbapTableMode::Cartesian,
+        )
+    }
+
+    /// A renderer a host built on bridge A's hint (`hint(5)`), the grid
+    /// following the bridge, and what its listener holds.
+    struct Listener {
+        renderer: renderer::spatial_renderer::SpatialRenderer,
+        control: Arc<RendererControl>,
+        socket: Arc<UdpSocket>,
+        clients: Arc<OscClientRegistry>,
+        cache: Arc<GaintableCache>,
+    }
+
+    impl Listener {
+        fn new() -> Self {
+            let a = hint(5);
+            let renderer = crate::renderer_build::build_spatial_renderer(
+                &crate::renderer_build::SpatialRendererParams::from_render_config(None),
+                SpeakerLayout::preset("7.1.4").expect("preset"),
+                48_000,
+                bridge_api::RVbapCartesianDefaults {
+                    x_size: a.cartesian.x_size as u32,
+                    y_size: 5,
+                    z_size: 3,
+                    z_neg_size: 0,
+                    allow_negative_z: false,
+                },
+                bridge_api::RVbapTableMode::Cartesian,
+                None,
+            )
+            .expect("renderer");
+            let control = renderer.renderer_control();
+            control.set_relayout_by_host(true);
+            assert_eq!(control.live_grid(), a);
+            Self {
+                renderer,
+                control,
+                socket: Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap()),
+                clients: Arc::new(OscClientRegistry::new(Duration::from_secs(5))),
+                cache: Arc::new(GaintableCache::new()),
+            }
+        }
+
+        /// A stream's bridge hints `grid`; the listener's poll follows it.
+        fn stream(&self, grid: renderer::evaluation_grid::EvaluationGrid) {
+            assert!(self.control.offer_bridge_grid(grid));
+            assert!(self.control.bridge_grid_pending());
+            follow_bridge_grid(&self.control, &self.socket, &self.clients, &self.cache);
+        }
+
+        /// The grid's source switched to `source` over OSC, alone.
+        fn switch_to(&self, source: &str) {
+            let spec = renderer::options::find("evaluation_grid").expect("row");
+            let applied = renderer::options::apply_to_control(
+                &self.control,
+                spec,
+                &renderer::options::RawOptionValue::Str(source),
+            )
+            .expect("accepted");
+            assert!(applied.changed);
+            request_grid(&self.control, &self.socket, &self.clients, &self.cache);
+        }
+
+        fn wait_idle(&self) {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while self.control.recomputing.load(Ordering::Relaxed) {
+                assert!(Instant::now() < deadline, "the recompute never ended");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    /// While the grid follows the bridge, a stream with other hints rebuilds
+    /// the topology on them; one with the same hints rebuilds nothing.
+    #[test]
+    fn a_stream_with_other_hints_rebuilds_once() {
+        let listener = Listener::new();
+        let control = &listener.control;
+        let a = control.active_topology();
+        listener.stream(hint(7));
+        listener.wait_idle();
+        let b = control.active_topology();
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert_eq!(b.grid, Some(hint(7)));
+        assert!(control.topology_grid_is_current(&b));
+
+        // Same hints: not even offered as new.
+        assert!(control.offer_bridge_grid(hint(7)));
+        assert!(!control.bridge_grid_pending());
+        assert!(!control.recomputing.load(Ordering::Relaxed));
+        assert!(Arc::ptr_eq(&b, &control.active_topology()));
+
+        // Back to bridge A's stream: the topology it replaced is in force
+        // again, nothing is built.
+        listener.stream(hint(5));
+        assert!(!control.recomputing.load(Ordering::Relaxed));
+        assert!(Arc::ptr_eq(&a, &control.active_topology()));
+        drop(listener.renderer);
+    }
+
+    /// Forcing the grid while the bridge's new grid is being built keeps the
+    /// grid in force: the rebuild is discarded when it finishes, and nothing
+    /// is rebuilt.
+    #[test]
+    fn forcing_the_grid_while_the_bridges_one_builds_discards_it() {
+        let listener = Listener::new();
+        let control = &listener.control;
+        let a = control.active_topology();
+        let held = hold::hold(control);
+        listener.stream(hint(7));
+        assert!(control.recomputing.load(Ordering::Relaxed));
+
+        listener.switch_to("custom");
+        assert_eq!(control.live_grid(), hint(5), "the grid in force, not B's");
+        assert!(!control.recompute_pending.load(Ordering::Relaxed));
+        drop(held);
+        listener.wait_idle();
+        assert!(Arc::ptr_eq(&a, &control.active_topology()), "B discarded");
+        assert!(control.topology_grid_is_current(&a));
+        assert!(!control.recompute_pending.load(Ordering::Relaxed));
+        drop(listener.renderer);
+    }
+
+    /// A → B → A while B is being built ends on A, with no rebuild.
+    #[test]
+    fn a_hint_that_comes_back_during_the_build_ends_on_it() {
+        let listener = Listener::new();
+        let control = &listener.control;
+        let a = control.active_topology();
+        let held = hold::hold(control);
+        listener.stream(hint(7));
+        listener.stream(hint(5));
+        drop(held);
+        listener.wait_idle();
+        assert!(Arc::ptr_eq(&a, &control.active_topology()));
+        assert!(control.topology_grid_is_current(&a));
+        assert_eq!(control.live_grid(), hint(5));
+        drop(listener.renderer);
+    }
+
+    /// A rebuild that covers more than the grid (a speaker edit) and that a
+    /// grid request overtakes is run again from the live state: the edit is
+    /// not lost with the discarded result.
+    #[test]
+    fn an_overtaken_rebuild_of_more_than_the_grid_runs_again() {
+        let listener = Listener::new();
+        let control = &listener.control;
+        let held = hold::hold(control);
+        control.with_editable_layout(|layout| layout.speakers[0].name = "Edited".to_string());
+        control.bump_geometry_generation();
+        trigger_layout_recompute(
+            control,
+            &listener.socket,
+            &listener.clients,
+            &listener.cache,
+        );
+        listener.stream(hint(7));
+        assert!(control.recompute_pending.load(Ordering::Relaxed));
+        drop(held);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while control.active_topology().grid != Some(hint(7))
+            || control.recomputing.load(Ordering::Relaxed)
+        {
+            assert!(Instant::now() < deadline, "never rebuilt on B");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let topology = control.active_topology();
+        assert_eq!(topology.speaker_layout.speakers[0].name, "Edited");
+        assert!(control.topology_grid_is_current(&topology));
+        drop(listener.renderer);
     }
 
     /// Studio grows the layout past what the renderer's gains hold

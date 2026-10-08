@@ -105,6 +105,10 @@ struct RendererDomainState {
     render_backend_effective: Option<String>,
     render_evaluation_mode: Option<String>,
     render_evaluation_mode_effective: Option<String>,
+    /// `bridge` or `custom`; absent from a renderer before the setting.
+    evaluation_grid: Option<String>,
+    /// The active bridge's grid, `null` until the renderer knows it.
+    evaluation_grid_bridge: Option<crate::model::app_state::BridgeGrid>,
     object_size_intervals: Option<u32>,
     binaural: Option<serde_json::Value>,
     master_gain: Option<f64>,
@@ -599,6 +603,12 @@ pub fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
     }
     if let Some(object_size_intervals) = parsed.object_size_intervals {
         s.object_size_intervals = object_size_intervals;
+    }
+    // Together: a renderer that says where the grid comes from also says
+    // what the bridge's grid is, `null` included.
+    if let Some(source) = parsed.evaluation_grid {
+        s.evaluation_grid = Some(source);
+        s.evaluation_grid_bridge = parsed.evaluation_grid_bridge;
     }
     if let Some(binaural) = parsed.binaural {
         s.brir_speakers = brir_layout_speakers(&binaural);
@@ -1492,5 +1502,45 @@ mod brir_layout_tests {
         ));
         assert!(state.brir_speakers.is_none());
         assert!(!state.speakers_read_only());
+    }
+}
+
+#[cfg(test)]
+mod evaluation_grid_tests {
+    use super::*;
+
+    /// Where the grid comes from and the bridge's grid are read together;
+    /// a renderer that predates them leaves them unknown.
+    #[test]
+    fn the_evaluation_grid_and_the_bridges_grid_are_read_from_the_renderer_state() {
+        let mut state = AppState::default();
+        assert!(apply_renderer_domain_state(
+            &mut state,
+            r#"{"renderEvaluationMode": "precomputed_cartesian"}"#
+        ));
+        assert_eq!(state.evaluation_grid, None);
+
+        assert!(apply_renderer_domain_state(
+            &mut state,
+            r#"{"evaluationGrid": "bridge", "evaluationGridBridge": {"mode": "precomputed_cartesian",
+                "xSize": 62, "ySize": 62, "zSize": 15, "zNegSize": 0, "allowNegativeZ": false,
+                "bridgeIndex": 1}}"#
+        ));
+        assert_eq!(state.evaluation_grid.as_deref(), Some("bridge"));
+        let grid = state
+            .evaluation_grid_bridge
+            .clone()
+            .expect("the bridge's grid");
+        assert_eq!(
+            (grid.x_size, grid.z_size, grid.bridge_index),
+            (62, 15, Some(1))
+        );
+
+        assert!(apply_renderer_domain_state(
+            &mut state,
+            r#"{"evaluationGrid": "custom", "evaluationGridBridge": null}"#
+        ));
+        assert_eq!(state.evaluation_grid.as_deref(), Some("custom"));
+        assert!(state.evaluation_grid_bridge.is_none());
     }
 }

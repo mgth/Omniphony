@@ -236,6 +236,7 @@ pub fn store_given_values(
         .iter()
         .map(|(key, value)| (*key, value.raw()))
         .partition(|(key, _)| host_keys.contains(key));
+    settle_grid_flags(render, values)?;
     let env = OptionEnv::detached().with_host_io(true);
     let mut refused = renderer::options::store_client_values(render, &core, &env);
     refused.extend(host_audio::store_host_values(render, &host));
@@ -254,6 +255,54 @@ pub fn store_given_values(
         })
         .collect();
     anyhow::bail!("invalid option value(s): {}", flags.join(", "))
+}
+
+/// The evaluation grid flags against where the grid comes from
+/// (`render.evaluation_grid`, docs/multi-bridge.md): refused while it
+/// follows the bridge, as a client write is. With neither the file nor
+/// `--evaluation-grid` saying (a config from before the key, migrated when
+/// the bridges load), a grid given on the command line is a grid chosen:
+/// the render forces it.
+fn settle_grid_flags(
+    render: &mut RenderConfig,
+    values: &[(&'static str, CliValue)],
+) -> anyhow::Result<()> {
+    use renderer::evaluation_grid::EvaluationGridSource;
+    let grid_flags: Vec<String> = values
+        .iter()
+        .filter(|(key, _)| {
+            renderer::options::find(key)
+                .is_some_and(|spec| spec.flags.contains(OptionFlags::BRIDGE_GRID))
+        })
+        .map(|(key, _)| format!("--{}", long(key)))
+        .collect();
+    if grid_flags.is_empty() {
+        return Ok(());
+    }
+    let given = values.iter().rev().find_map(|(key, value)| match value {
+        CliValue::Str(source) if *key == "evaluation_grid" => EvaluationGridSource::parse(source),
+        _ => None,
+    });
+    let stored = render
+        .evaluation_grid
+        .as_deref()
+        .and_then(EvaluationGridSource::parse);
+    match given.or(stored) {
+        Some(EvaluationGridSource::Bridge) => anyhow::bail!(
+            "{}: {} (add --evaluation-grid custom to force it)",
+            grid_flags.join(", "),
+            renderer::options::GRID_FOLLOWS_THE_BRIDGE
+        ),
+        Some(EvaluationGridSource::Custom) => {}
+        None => {
+            log::info!(
+                "{}: the evaluation grid is forced (evaluation_grid: custom)",
+                grid_flags.join(", ")
+            );
+            render.evaluation_grid = Some(EvaluationGridSource::Custom.as_str().to_string());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -423,6 +472,68 @@ mod tests {
         )
         .expect_err("refused");
         assert!(err.to_string().contains("--render-backend"), "{err}");
+    }
+
+    /// The grid flags against `render.evaluation_grid`: refused while the
+    /// grid follows the bridge, with the reason a client write gets; taken
+    /// with `--evaluation-grid custom`; and on a config from before the key,
+    /// a grid given on the command line forces it.
+    #[test]
+    fn the_grid_flags_are_refused_while_the_grid_follows_the_bridge() {
+        let values = |words: &[&str]| {
+            let argv = ["orender", "render"].iter().chain(words).copied();
+            ParsedCli::parse_from(argv)
+                .expect("parses")
+                .render_sources()
+                .option_values()
+        };
+        let following = || RenderConfig {
+            evaluation_grid: Some("bridge".into()),
+            ..RenderConfig::default()
+        };
+        for words in [
+            &["--evaluation-cartesian-x-size", "7"][..],
+            &["--render-evaluation-mode", "precomputed_polar"],
+            &["--vbap-allow-negative-z"],
+            &["--no-vbap-allow-negative-z"],
+            &[
+                "--evaluation-grid",
+                "bridge",
+                "--evaluation-cartesian-z-size",
+                "3",
+            ],
+        ] {
+            let mut render = following();
+            let err = store_given_values(&mut render, &values(words)).expect_err("refused");
+            assert!(
+                err.to_string()
+                    .contains(renderer::options::GRID_FOLLOWS_THE_BRIDGE),
+                "{words:?}: {err}"
+            );
+        }
+
+        let mut render = following();
+        store_given_values(
+            &mut render,
+            &values(&[
+                "--evaluation-grid",
+                "custom",
+                "--evaluation-cartesian-x-size",
+                "7",
+            ]),
+        )
+        .expect("forced");
+        assert_eq!(render.evaluation_grid.as_deref(), Some("custom"));
+        assert_eq!(render.evaluation_cartesian_x_size, Some(7));
+
+        let mut render = RenderConfig::default();
+        store_given_values(&mut render, &values(&["--vbap-allow-negative-z"])).expect("taken");
+        assert_eq!(render.evaluation_grid.as_deref(), Some("custom"));
+        assert_eq!(render.vbap_allow_negative_z, Some(true));
+
+        // Not a grid value: taken whatever the source.
+        let mut render = following();
+        store_given_values(&mut render, &values(&["--vbap-distance-res", "4"])).expect("taken");
     }
 
     #[test]

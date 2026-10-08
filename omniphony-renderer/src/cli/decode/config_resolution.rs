@@ -59,8 +59,8 @@ pub(super) fn apply_render_cfg_overrides(
 }
 
 /// Write the renderer flags given explicitly on the command line that are not
-/// registry options (the VBAP build switches and spread keys, the master gain
-/// in dB) into a render config, over whatever the file says.
+/// registry options (the VBAP spread keys, the master gain in dB) into a
+/// render config, over whatever the file says.
 ///
 /// The CLI's renderer params are [`renderer_params`] of the result, which is
 /// [`SpatialRendererParams::from_render_config`] — the resolution the embedded
@@ -79,11 +79,6 @@ pub(super) fn apply_explicit_renderer_args(
     sources: &RenderArgSources<'_>,
 ) {
     let explicit = |id: &str| sources.is_explicit(id);
-    if explicit("vbap_allow_negative_z") {
-        render.vbap_allow_negative_z = Some(true);
-    } else if explicit("no_vbap_allow_negative_z") {
-        render.vbap_allow_negative_z = Some(false);
-    }
     if explicit("spread_from_distance") {
         render.spread_from_distance = Some(true);
     } else if explicit("no_spread_from_distance") {
