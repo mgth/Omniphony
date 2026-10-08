@@ -2,7 +2,7 @@
 """The release version, the one number every Omniphony component ships under.
 
 `omniphony-renderer/Cargo.toml`'s `[workspace.package] version` is the source
-of truth; Studio (Tauri and native), orender and liborender all carry it. Its
+of truth; Studio, orender and liborender all carry it. Its
 copies live in manifests and lockfiles no tool keeps together, so this script
 moves them as one and refuses a tree where they disagree (#676).
 
@@ -36,7 +36,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RENDERER = ROOT / "omniphony-renderer"
-STUDIO = ROOT / "omniphony-studio"
 STUDIO_EGUI = ROOT / "omniphony-studio-egui"
 README = ROOT / "README.md"
 
@@ -58,10 +57,6 @@ class Mismatch(Exception):
 def load_toml(path: Path) -> dict:
     with path.open("rb") as f:
         return tomllib.load(f)
-
-
-def load_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def rel(path: Path) -> str:
@@ -145,15 +140,6 @@ def copies() -> list[tuple[str, str]]:
         manifest = STUDIO_EGUI / member / "Cargo.toml"
         found.append((rel(manifest), package_version(manifest, egui_version)))
 
-    found.append(("omniphony-studio/src-tauri/Cargo.toml",
-                  package_version(STUDIO / "src-tauri" / "Cargo.toml", None)))
-    found.append(("omniphony-studio/src-tauri/tauri.conf.json",
-                  load_json(STUDIO / "src-tauri" / "tauri.conf.json")["version"]))
-    found.append(("omniphony-studio/package.json", load_json(STUDIO / "package.json")["version"]))
-    lock = load_json(STUDIO / "package-lock.json")
-    found.append(("omniphony-studio/package-lock.json", lock["version"]))
-    found.append(('omniphony-studio/package-lock.json packages[""]', lock["packages"][""]["version"]))
-
     for lockfile, names in lockfiles():
         versions = {p["name"]: p["version"] for p in load_toml(lockfile)["package"]
                     if "source" not in p}
@@ -164,14 +150,13 @@ def copies() -> list[tuple[str, str]]:
 
 def lockfiles() -> list[tuple[Path, list[str]]]:
     """Each lockfile with the release-version packages it records: whichever
-    of the repository's own crates it reaches by path (the Tauri Studio, for
-    one, links the native Studio's core). Read from the lockfile rather than
-    listed, so a new path dependency is moved and checked without a change
-    here."""
-    own = set(renderer_followers()) | set(egui_packages()) | {"omniphony-studio"}
+    of the repository's own crates it reaches by path (the Studio, for one,
+    builds omniphony_geometry from the renderer's tree). Read from the
+    lockfile rather than listed, so a new path dependency is moved and
+    checked without a change here."""
+    own = set(renderer_followers()) | set(egui_packages())
     found = []
-    for lockfile in (RENDERER / "Cargo.lock", STUDIO / "src-tauri" / "Cargo.lock",
-                     STUDIO_EGUI / "Cargo.lock"):
+    for lockfile in (RENDERER / "Cargo.lock", STUDIO_EGUI / "Cargo.lock"):
         names = [p["name"] for p in load_toml(lockfile)["package"]
                  if "source" not in p and p["name"] in own]
         found.append((lockfile, names))
@@ -296,14 +281,8 @@ def set_version(version: str, player: str | None) -> None:
     set_toml_key(RENDERER / "Cargo.toml", "workspace.package", "version", version)
     set_toml_key(RENDERER / "omniphony_geometry" / "Cargo.toml", "package", "version", version)
     set_toml_key(STUDIO_EGUI / "Cargo.toml", "workspace.package", "version", version)
-    set_toml_key(STUDIO / "src-tauri" / "Cargo.toml", "package", "version", version)
     if player is not None:
         set_toml_key(RENDERER / "Cargo.toml", "workspace.metadata.release", "player", player)
-    json_version = r'^(\s*"version": ")[^"]+(")'
-    replace_version(STUDIO / "package.json", json_version, version)
-    replace_version(STUDIO / "src-tauri" / "tauri.conf.json", json_version, version)
-    # The lockfile's own version, then packages[""]'s: its first two fields.
-    replace_version(STUDIO / "package-lock.json", json_version, version, count=2)
     for lockfile, names in lockfiles():
         for name in names:
             replace_version(

@@ -3,10 +3,9 @@ name: CI
 # Integration gate for the `main` (integration) and `release` branches.
 # Linux x64 validates formatting and tests (build-and-test) and, in a job of
 # its own beside it, the native Studio (studio), skipped on a pull request
-# that touches nothing it builds. The deprecated Tauri Studio is no longer
-# checked (it gets no more changes; release.yml still packages it). macOS (arm64) and Windows (x64) build and test the renderer
-# workspace, the OSC contract and the native Studio; Windows also checks the
-# shared core on stable, and that its binaries need no Visual C++ runtime.
+# that touches nothing it builds. macOS (arm64) and Windows (x64) build and
+# test the renderer workspace, the OSC contract and the native Studio;
+# Windows also checks that its binaries need no Visual C++ runtime.
 # Linux arm64 builds and tests the renderer workspace,
 # the engine an embedded box runs. Release archives are built by release.yml.
 # The supported targets, and what each job guarantees for them, are listed in
@@ -123,7 +122,7 @@ jobs:
       # ── Platform dependencies ─────────────────────────────────────────────
       # Same PipeWire PPA as release.yml: ubuntu-22.04 ships PipeWire 0.3.48 but
       # pipewire-rs 0.9.x needs >= 0.3.65. What the renderer workspace links,
-      # nothing more: the GTK/WebKit stack went with the Tauri host's check.
+      # nothing more.
       - name: Install Linux system dependencies
         run: |
           # `apt-get update` reaches Launchpad and can hang rather than fail
@@ -387,7 +386,7 @@ jobs:
           # scene take the OSC contract and omniphony_geometry), its i18n check,
           # and what the version-bump step resolves: every manifest and
           # lockfile, and the script itself. This workflow too.
-          studio_paths='^(omniphony-studio-egui/|osc-contract/|omniphony-renderer/omniphony_geometry/|omniphony-studio/src-tauri/tauri\.conf\.json$|omniphony-studio/package(-lock)?\.json$|scripts/release_version\.py$|\.github/workflows/ci\.yml$)|(^|/)Cargo\.(toml|lock)$'
+          studio_paths='^(omniphony-studio-egui/|osc-contract/|omniphony-renderer/omniphony_geometry/|scripts/release_version\.py$|\.github/workflows/ci\.yml$)|(^|/)Cargo\.(toml|lock)$'
           # A here-string, not a pipe: `grep -q` stops at its first match,
           # and under pipefail the writer it leaves behind dies of SIGPIPE
           # and turns a match into a miss on a long list.
@@ -426,9 +425,8 @@ jobs:
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Dependencies only, saved from main only: see build-and-test. The
-      # renderer and the Tauri host are listed for their registry entries
-      # alone, which the version bump resolves offline; this job builds
-      # neither.
+      # renderer is listed for its registry entries alone, which the version
+      # bump resolves offline; this job does not build it.
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         continue-on-error: true
@@ -436,7 +434,6 @@ jobs:
           workspaces: |
             omniphony-studio-egui
             omniphony-renderer
-            omniphony-studio/src-tauri
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -522,24 +519,21 @@ jobs:
 
       # `check` only sees the tree at its current version; a copy the bump
       # forgets to move shows up at the next release, when the release build
-      # refuses its lockfile (#712 review: the Tauri lock's studio-core
-      # entry). So bump for real, resolve the three workspaces `--locked` as
-      # the builds will, then put the tree back. The Tauri host is no longer
-      # built by CI but release.yml still packages it, so its lockfile is
-      # checked too. Offline, for this runner's platform only: the native
-      # Studio build fetched its dependencies and the fetches below the other
-      # two workspaces' (this job builds neither), not the Windows/macOS-only
-      # ones, and the lockfile is checked as a whole either way.
+      # refuses its lockfile (#712 review: a path dependency's entry in
+      # another workspace's lock). So bump for real, resolve both workspaces
+      # `--locked` as the builds will, then put the tree back. Offline, for
+      # this runner's platform only: the native Studio build fetched its
+      # dependencies and the fetch below the renderer's (this job does not
+      # build it), not the Windows/macOS-only ones, and the lockfile is
+      # checked as a whole either way.
       - name: Bump the release version and resolve every lockfile
         run: |
           set -euo pipefail
           host="$(rustc -vV | sed -n 's/^host: //p')"
-          for workspace in omniphony-renderer omniphony-studio/src-tauri; do
-            (cd "$workspace" && cargo fetch --locked --target "$host")
-          done
+          (cd omniphony-renderer && cargo fetch --locked --target "$host")
           trap 'git checkout -- .' EXIT
           python3 scripts/release_version.py set 99.0.0 --player mpv-v99.0.0
-          for workspace in omniphony-renderer omniphony-studio/src-tauri omniphony-studio-egui; do
+          for workspace in omniphony-renderer omniphony-studio-egui; do
             (cd "$workspace" && cargo metadata --locked --offline --filter-platform "$host" \
               --format-version 1 > /dev/null)
             echo "$workspace: lockfile valid at 99.0.0"
@@ -556,7 +550,7 @@ jobs:
   build-macos:
     # macOS arm64 build and test gate. The renderer workspace pulls the
     # CoreAudio output backend (cpal) and the `sys` signal/IO layer, both of
-    # which carry macOS-specific code paths. No PipeWire and no Tauri; the
+    # which carry macOS-specific code paths. No PipeWire; the
     # test suites are the same as on Linux, so a macOS regression shows on
     # the PR rather than in a user's report after a release (#200, #201,
     # #205 and #260 all reached users that way). The job name is a required
@@ -651,7 +645,7 @@ jobs:
     # ever built by the tag-triggered release.yml — a broken SDK setup surfaced at
     # release time, not on the PR that caused it.
     #
-    # No Tauri bundle, and no vcpkg/SAF since saf_vbap is opt-in and the
+    # No installer, and no vcpkg/SAF since saf_vbap is opt-in and the
     # default VBAP backend is pure Rust. bindgen finds libclang on the runner
     # image without any setup, which is why no LLVM step appears here. The
     # test suites are the same as on Linux. The job name is a required check
@@ -744,7 +738,7 @@ jobs:
     # nothing for it: the aarch64 code paths (the FPCR flush-to-zero the
     # render thread claims, see renderer/src/dsp) were only ever built on
     # macOS and only ever run by hand. The engine only: the native Studio
-    # and the Tauri host are not shipped for Linux arm64.
+    # is not shipped for Linux arm64.
     #
     # Ubuntu 24.04 rather than the x64 job's 22.04 because its stock PipeWire
     # (1.0) already satisfies pipewire-rs 0.9 (>= 0.3.65), so no PPA is

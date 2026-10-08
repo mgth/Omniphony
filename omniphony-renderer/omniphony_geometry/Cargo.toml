@@ -11,8 +11,8 @@ rust-version = "1.88"
 
 # Deliberately dependency-free.
 #
-# This crate is consumed from OUTSIDE the renderer workspace (the Studio's
-# `src-tauri`, which is its own cargo project). Anything pulled in here lands in
-# the Studio build too, so the renderer's DSP dependencies (realfft, rayon, sys)
-# must never reach this crate. Keep it std-only.
+# This crate is consumed from OUTSIDE the renderer workspace (the Studio,
+# `omniphony-studio-egui/`, which is its own cargo workspace). Anything pulled
+# in here lands in the Studio build too, so the renderer's DSP dependencies
+# (realfft, rayon, sys) must never reach this crate. Keep it std-only.
 [dependencies]

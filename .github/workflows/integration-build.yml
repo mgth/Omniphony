@@ -9,11 +9,11 @@ name: Integration Build
 # release (Latest = newest non-prerelease, non-draft). Testers always grab the
 # same URL; assets are replaced each run, not accumulated.
 #
-# Assets are renamed to `Omniphony-Studio-integration-<os>-x86_64.<ext>` (the
-# Tauri Studio) and `Omniphony-Studio-native-integration-<os>-x86_64.<ext>` (the
-# native one) rather than the version-stamped names the bundlers emit, so they
-# can't be mistaken for a stable release (consistent with mpv-omniphony's
-# integration bundles).
+# Assets are renamed to `Omniphony-Studio-integration-<os>-x86_64.<ext>`
+# rather than the version-stamped names the packager emits, so they can't be
+# mistaken for a stable release (consistent with mpv-omniphony's integration
+# bundles). The Studio is the native (egui/wgpu) one: the Tauri Studio was
+# removed before 0.7.0 (#677).
 on:
   workflow_dispatch:
   schedule:
@@ -68,11 +68,6 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       # ── Toolchains ────────────────────────────────────────────────────────
 
-      - name: Setup Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: 20
-
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - name: Cache Cargo registry
@@ -86,8 +81,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             omniphony-renderer/target
-            omniphony-studio/src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock', 'omniphony-studio/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       # ── Platform dependencies ─────────────────────────────────────────────
@@ -117,13 +111,13 @@ jobs:
             fi
             sleep 10
           done
+          # What the renderer links (PipeWire, ALSA through cpal), as in
+          # release.yml. The Studio links nothing that needs a -dev package.
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
             libpipewire-0.3-dev \
+            libasound2-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
             pkg-config
 
       # Required to compile cpal with ASIO on Windows. Licensing rationale and
@@ -134,34 +128,17 @@ jobs:
 
       # ── Build (no publish — we rename + publish ourselves below) ──────────
 
-      - name: Install npm dependencies
-        working-directory: omniphony-studio
-        run: npm ci
+      # The renderer and the engine library the installers ship, from this
+      # commit.
+      - name: Build the renderer and the engine library
+        working-directory: omniphony-renderer
+        run: |
+          cargo build --release --locked
+          cargo build --release --locked -p orender_ffi
 
-      # The cargo cache restores src-tauri/target, which still holds bundle
-      # artifacts from earlier runs (older versions). The staging step below
-      # globs the bundle dir and picks matches[0] — the lowest version present —
-      # so a fresh 0.3.3 build was being published as a stale 0.3.2 bundle. Wipe
-      # stale bundles before rebuilding; compiled deps in target/ are kept, so
-      # this does not force a full recompile.
-      - name: Remove stale bundles restored from cache
-        shell: bash
-        run: rm -rf omniphony-studio/src-tauri/target/release/bundle
-
-      # No tagName → tauri-action only builds (runs beforeBuildCommand: frontend
-      # build + prepare-sidecar), leaving bundles under src-tauri/target/.../bundle/.
-      - name: Build Studio bundles
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: omniphony-studio
-          # Passed through to the cargo Tauri runs for src-tauri; see release.yml.
-          args: -- --locked
-
-      # The native Studio's installers (#677), from the orender and engine
-      # library prepare-sidecar just built in omniphony-renderer/target/release.
-      # Its own build tree and toolchain (rust-toolchain.toml in the crate).
+      # The Studio's installers (#677), with the orender and engine library
+      # built above. Its own build tree and toolchain (rust-toolchain.toml in
+      # the crate).
       - name: Cache the native Studio build
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
@@ -198,7 +175,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          B=omniphony-studio/src-tauri/target/release/bundle
+          N=omniphony-studio-egui/target/packages
           mkdir -p staging
           shopt -s nullglob
           copy_one() { # <glob> <dest>
@@ -208,16 +185,10 @@ jobs:
               echo "staged $2  <-  ${matches[0]}"
             fi
           }
-          copy_one "$B/deb/*.deb"            "Omniphony-Studio-integration-linux-x86_64.deb"
-          copy_one "$B/appimage/*.AppImage"  "Omniphony-Studio-integration-linux-x86_64.AppImage"
-          copy_one "$B/rpm/*.rpm"            "Omniphony-Studio-integration-linux-x86_64.rpm"
-          copy_one "$B/msi/*.msi"            "Omniphony-Studio-integration-windows-x86_64.msi"
-          copy_one "$B/nsis/*-setup.exe"     "Omniphony-Studio-integration-windows-x86_64-setup.exe"
-          N=omniphony-studio-egui/target/packages
-          copy_one "$N/*.deb"                "Omniphony-Studio-native-integration-linux-x86_64.deb"
-          copy_one "$N/*.AppImage"           "Omniphony-Studio-native-integration-linux-x86_64.AppImage"
-          copy_one "$N/*.msi"                "Omniphony-Studio-native-integration-windows-x86_64.msi"
-          copy_one "$N/*-setup.exe"          "Omniphony-Studio-native-integration-windows-x86_64-setup.exe"
+          copy_one "$N/*.deb"                "Omniphony-Studio-integration-linux-x86_64.deb"
+          copy_one "$N/*.AppImage"           "Omniphony-Studio-integration-linux-x86_64.AppImage"
+          copy_one "$N/*.msi"                "Omniphony-Studio-integration-windows-x86_64.msi"
+          copy_one "$N/*-setup.exe"          "Omniphony-Studio-integration-windows-x86_64-setup.exe"
           ls -la staging/
 
       - name: Upload bundles
