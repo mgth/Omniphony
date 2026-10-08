@@ -1455,14 +1455,14 @@ mod tests {
         fs::remove_file(&other).ok();
         let family = installed.join("libharletty_iamf_bridge.so");
         // Alone: plain auto-discovery, nothing recorded.
-        assert_eq!(alone.files, [family.clone()]);
+        assert_eq!(alone.files, std::slice::from_ref(&family));
         assert!(alone.recorded.is_empty());
         // Next to another bridge: the discovered family joins it and is
         // what a Save writes instead of the old library.
         assert_eq!(mixed.files, [other.clone(), family.clone()]);
         assert_eq!(mixed.recorded, [other.clone(), family]);
         // Nothing discovered: the old library stays asked for, reported.
-        assert_eq!(nothing.files, [other.clone()]);
+        assert_eq!(nothing.files, std::slice::from_ref(&other));
         assert_eq!(nothing.recorded, [other, combined.clone()]);
         assert_eq!(nothing.failures.len(), 1);
         assert_eq!(nothing.failures[0].path, combined);
