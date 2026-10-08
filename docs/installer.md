@@ -423,6 +423,10 @@ Each step can be merged on its own and changes something for a user.
    manual path below it; release notes link the installer assets
    (`docs/release-process.md` §4-5).
 
+Status: step 1 is the pull request that adds this paragraph. The packaged unit
+is `packaging/systemd/omniphony-renderer.service`, checked against
+`linux_service_unit` by a test in the Studio core.
+
 ## Open questions
 
 - **Bridge distribution:** A (bundled), B (downloaded at install) or C

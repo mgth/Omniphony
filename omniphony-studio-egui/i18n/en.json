@@ -171,6 +171,7 @@
   "osc.service.stop": "Stop service",
   "osc.service.restart": "Restart service",
   "osc.service.installFirst": "Install service first",
+  "osc.service.appImageRefused": "The service cannot use the orender inside this AppImage ({path}): the AppImage is unmounted when Studio closes, and the service would then fail to start. Install the Studio .deb or the AUR orender package instead. Both ship the service, which you enable with: systemctl --user enable --now omniphony-renderer",
   "osc.service.installShort": "Install",
   "osc.service.uninstallShort": "Uninstall",
   "osc.service.serviceNoun": "service",

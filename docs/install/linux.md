@@ -36,8 +36,11 @@ looks without any configuration). Continue at [step 3](#3-headphones-or-speakers
 zip does not start (see [failure 1](#1-error-while-loading-shared-libraries)).
 The next player release adds an AppImage that runs on any desktop with glibc
 2.38 or newer, and this page will switch to it. Until then, build the player
-from [mpv-omniphony](https://github.com/mgth/mpv-omniphony); the bridge and
-Studio prebuilts above work as they are.
+from [mpv-omniphony](https://github.com/mgth/mpv-omniphony). The Studio
+prebuilt works as it is. The bridge prebuilt needs glibc 2.39, as the table
+says: it runs on Fedora 40 and newer, but not on Debian 12 (glibc 2.36), where
+the bridge has to be built from
+[harletty-bridge](https://github.com/harletty/harletty-bridge) as well.
 
 ## 1. The player
 
@@ -178,6 +181,42 @@ films keep playing in the player. To give it the bridge too, add
 `ad-orender-bridge-path=/home/you/omniphony/libharletty_bridge.so` to
 `~/.config/mpv/mpv.conf`, or copy `libharletty_bridge.so` into
 `~/.local/share/omniphony/lib/`, a folder the player also searches.
+
+## 6. Optional: the engine at login
+
+From the next release, the Studio deb and the AUR `orender` package install
+the engine as a systemd user service, `omniphony-renderer`. It runs
+`/usr/bin/orender` on its own: it renders what arrives on its input pipe
+(`/tmp/orender.pipe`) and answers Studio on OSC port 9000 without Studio
+having to start it. The packages install it but do not turn it on. To run it
+at every login, starting now:
+
+```bash
+systemctl --user enable --now omniphony-renderer
+```
+
+To stop it until the next login, `systemctl --user stop omniphony-renderer`.
+To stop starting it at login, `systemctl --user disable --now omniphony-renderer`.
+Its messages: `journalctl --user -u omniphony-renderer`.
+
+- **It steps aside for the player.** When mpv starts with its engine's OSC on
+  (step 5), the player's engine asks it to yield: it releases the OSC port and
+  the audio output, waits, and takes both back when the player exits. A player
+  with OSC off does not ask, and then both play at once: stop the service, or
+  turn OSC on in the player.
+- **Studio sees it.** The service controls in Studio's connection settings
+  show it as installed and running, *Restart service* and *Uninstall service*
+  act on it (uninstalling disables it; the packaged file stays), and Studio
+  starts no renderer of its own while it runs.
+- **It uses Studio's default settings**: OSC on `127.0.0.1:9000`, no metering,
+  log level `info`. For other ones, press *Install service* in Studio: it
+  writes the same unit with your settings to `~/.config/systemd/user/`, which
+  takes precedence over the packaged one. Studio started from the portable
+  archive does the same with its own `orender`.
+- **Not from the AppImage.** Studio started from its AppImage refuses to
+  install the service: the AppImage's `orender` disappears when Studio closes,
+  and the service would no longer start. Install the deb or the AUR package
+  instead.
 
 ## When it does not work
 

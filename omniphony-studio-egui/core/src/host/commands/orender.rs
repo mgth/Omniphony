@@ -177,9 +177,60 @@ fn resolve_orender_launch_spec(
     log_level: Option<String>,
 ) -> Result<OrenderLaunchSpec, String> {
     let orender_path = resolve_orender_binary(app, orender_path)?;
+    Ok(orender_launch_spec(
+        state,
+        orender_path,
+        host,
+        osc_rx_port,
+        osc_port,
+        osc_metering_enabled,
+        log_level,
+    ))
+}
 
-    let input_path = default_orender_input_path();
+/// The launch spec for an already resolved binary, persisting the connection
+/// settings it was built from.
+fn orender_launch_spec(
+    state: &SharedState,
+    orender_path: PathBuf,
+    host: String,
+    osc_rx_port: u16,
+    osc_port: u16,
+    osc_metering_enabled: bool,
+    log_level: Option<String>,
+) -> OrenderLaunchSpec {
+    let args = orender_render_args(
+        &default_orender_input_path(),
+        &host,
+        osc_rx_port,
+        osc_metering_enabled,
+        log_level.as_deref(),
+    );
 
+    // Persist the connection settings used for this launch, preserving the
+    // fields this function doesn't manage (auto-start / keep-alive toggles).
+    if let Err(error) = state.config.update(|cfg| {
+        cfg.host = host.trim().to_string();
+        cfg.osc_rx_port = osc_rx_port;
+        cfg.osc_port = osc_port;
+        cfg.osc_metering_enabled = osc_metering_enabled;
+    }) {
+        log::warn!("[osc] {error}");
+    }
+
+    OrenderLaunchSpec { orender_path, args }
+}
+
+/// The command line after `orender` for the renderer Studio launches and for
+/// the service it installs. Pure, so the unit file the packages ship can be
+/// checked against it (see the tests).
+fn orender_render_args(
+    input_path: &Path,
+    host: &str,
+    osc_rx_port: u16,
+    osc_metering_enabled: bool,
+    log_level: Option<&str>,
+) -> Vec<String> {
     let mut args = vec![
         "render".to_string(),
         input_path.display().to_string(),
@@ -202,7 +253,6 @@ fn resolve_orender_launch_spec(
     }
 
     let level = log_level
-        .as_deref()
         .map(str::trim)
         .filter(|s| matches!(*s, "off" | "error" | "warn" | "info" | "debug" | "trace"))
         .unwrap_or("info");
@@ -216,19 +266,7 @@ fn resolve_orender_launch_spec(
     // Studio's selection before a renderer connects is only a display default
     // (7.1.4); forwarding it overrode the saved layout, and the live-state
     // handoff then carried that override from instance to instance.
-
-    // Persist the connection settings used for this launch, preserving the
-    // fields this function doesn't manage (auto-start / keep-alive toggles).
-    if let Err(error) = state.config.update(|cfg| {
-        cfg.host = host.trim().to_string();
-        cfg.osc_rx_port = osc_rx_port;
-        cfg.osc_port = osc_port;
-        cfg.osc_metering_enabled = osc_metering_enabled;
-    }) {
-        log::warn!("[osc] {error}");
-    }
-
-    Ok(OrenderLaunchSpec { orender_path, args })
+    args
 }
 
 /// Whether the renderer this Studio launched is still running.
@@ -473,7 +511,7 @@ fn run_elevated_windows(program: &str, args: &[String], action: &str) -> Result<
     run_command(cmd, action)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn systemd_escape_arg(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -488,8 +526,12 @@ fn systemd_escape_arg(value: &str) -> String {
     out
 }
 
-#[cfg(target_os = "linux")]
-fn linux_service_unit(exec_path: &PathBuf, args: &[String]) -> String {
+/// The systemd user unit for `exec_path args…`. The Studio deb and the AUR
+/// `orender` package ship the text this returns for `/usr/bin/orender` and the
+/// default settings (`packaging/systemd/omniphony-renderer.service`, checked by
+/// a test), so a packaged unit and one Studio installs replace each other.
+#[cfg(any(target_os = "linux", test))]
+fn linux_service_unit(exec_path: &Path, args: &[String]) -> String {
     let mut exec = Vec::with_capacity(args.len() + 1);
     exec.push(systemd_escape_arg(&exec_path.display().to_string()));
     exec.extend(args.iter().map(|arg| systemd_escape_arg(arg)));
@@ -497,6 +539,89 @@ fn linux_service_unit(exec_path: &PathBuf, args: &[String]) -> String {
         "[Unit]\nDescription=Omniphony Renderer\nAfter=graphical-session.target pipewire.service wireplumber.service\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={}\nRestart=on-failure\nRestartSec=2\nKillSignal=SIGINT\nTimeoutStopSec=30\n\n[Install]\nWantedBy=default.target\n",
         exec.join(" ")
     )
+}
+
+/// What the AppImage runtime tells the process it starts, read once by the
+/// install command and built by hand in the tests.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Default)]
+struct AppImageEnv {
+    /// `$APPDIR`: where the image is mounted (or extracted, with
+    /// `--appimage-extract-and-run`), removed when the AppImage exits.
+    appdir: Option<PathBuf>,
+    /// `$TMPDIR`, under which the runtime makes its `.mount_*` directory when
+    /// it is set; `/tmp` otherwise.
+    tmpdir: Option<PathBuf>,
+}
+
+#[cfg(target_os = "linux")]
+impl AppImageEnv {
+    fn from_env() -> Self {
+        let var = |name| {
+            env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
+        Self {
+            appdir: var("APPDIR"),
+            tmpdir: var("TMPDIR"),
+        }
+    }
+}
+
+/// Whether `path` lies inside an AppImage's mount: under `$APPDIR`, or in a
+/// `.mount_*` directory right under `/tmp` or `$TMPDIR`, the runtime's mount
+/// point (which also catches an orender found in *another* running AppImage).
+/// A unit naming such a path stops working when that AppImage exits.
+#[cfg(any(target_os = "linux", test))]
+fn inside_appimage_mount(path: &Path, env: &AppImageEnv) -> bool {
+    if env
+        .appdir
+        .as_deref()
+        .is_some_and(|appdir| path.starts_with(appdir))
+    {
+        return true;
+    }
+    let tmp_roots = [Some(Path::new("/tmp")), env.tmpdir.as_deref()];
+    path.ancestors().any(|dir| {
+        let is_mount = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".mount_"));
+        is_mount
+            && tmp_roots
+                .iter()
+                .flatten()
+                .any(|root| dir.parent() == Some(*root))
+    })
+}
+
+/// `(installed, running)` from `systemctl --user show -p LoadState -p
+/// UnitFileState -p ActiveState`. Installed means enabled, or running: the
+/// unit the Studio deb and the AUR package ship is loaded but disabled until
+/// the user enables it, and is offered for installation like a missing one.
+#[cfg(any(target_os = "linux", test))]
+fn systemd_service_state(show: &str) -> (bool, bool) {
+    let mut loaded = false;
+    let mut enabled = false;
+    let mut running = false;
+    for line in show.lines() {
+        match line.trim().split_once('=') {
+            Some(("LoadState", value)) => loaded = value == "loaded",
+            Some(("UnitFileState", value)) => {
+                enabled = matches!(
+                    value,
+                    "enabled" | "enabled-runtime" | "linked" | "linked-runtime" | "alias"
+                )
+            }
+            Some(("ActiveState", value)) => {
+                running = matches!(value, "active" | "reloading" | "refreshing")
+            }
+            _ => {}
+        }
+    }
+    let running = loaded && running;
+    (loaded && (enabled || running), running)
 }
 
 #[cfg(target_os = "linux")]
@@ -550,29 +675,19 @@ pub fn get_orender_service_status() -> Result<OrenderServiceStatus, String> {
                 "show",
                 "-p",
                 "LoadState",
-                "--value",
+                "-p",
+                "UnitFileState",
+                "-p",
+                "ActiveState",
                 &service_name,
             ]),
             std::time::Duration::from_secs(2),
         )
         .map_err(|e| format!("query service status: {e}"))?;
-        let load_state = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let installed =
-            output.status.success() && load_state != "not-found" && !load_state.is_empty();
-        let running = if installed {
-            crate::host::process::capture(
-                ProcessCommand::new("systemctl").args([
-                    "--user",
-                    "is-active",
-                    "--quiet",
-                    &service_name,
-                ]),
-                std::time::Duration::from_secs(2),
-            )
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        let (installed, running) = if output.status.success() {
+            systemd_service_state(&String::from_utf8_lossy(&output.stdout))
         } else {
-            false
+            (false, false)
         };
         return Ok(OrenderServiceStatus {
             installed,
@@ -625,18 +740,27 @@ pub fn install_orender_service(
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    stop_non_service_orender_if_running(&state)?;
+    let orender_binary = resolve_orender_binary(app, orender_path)?;
+    // Refused before anything is stopped or written.
+    #[cfg(target_os = "linux")]
+    if inside_appimage_mount(&orender_binary, &AppImageEnv::from_env()) {
+        return Err(crate::i18n::tf(
+            "osc.service.appImageRefused",
+            &[("path", &orender_binary.display().to_string())],
+        ));
+    }
 
-    let spec = resolve_orender_launch_spec(
-        &app,
-        &state,
+    stop_non_service_orender_if_running(state)?;
+
+    let spec = orender_launch_spec(
+        state,
+        orender_binary,
         host,
         osc_rx_port,
         osc_port,
         osc_metering_enabled,
-        orender_path,
         log_level,
-    )?;
+    );
 
     #[cfg(target_os = "linux")]
     {
@@ -1082,6 +1206,149 @@ mod tests {
             !launched_renderer_running(&state),
             "the grace period ended in a kill"
         );
+    }
+
+    /// The unit the Studio deb and the AUR `orender` package install, from
+    /// the repository root. Both put `orender` at `/usr/bin/orender`, so one
+    /// file serves both.
+    const SHIPPED_UNIT: &str = "packaging/systemd/omniphony-renderer.service";
+
+    #[test]
+    fn the_shipped_unit_is_the_one_install_service_writes() {
+        let root = repo_root().expect("tests run from a source tree");
+        let shipped = std::fs::read_to_string(root.join(SHIPPED_UNIT))
+            .unwrap_or_else(|e| panic!("{SHIPPED_UNIT}: {e}"))
+            .replace("\r\n", "\n");
+        // The leading `#` block explains the file; systemd ignores it, and the
+        // rest must be byte for byte what Studio writes.
+        let body = shipped
+            .lines()
+            .skip_while(|line| line.starts_with('#') || line.is_empty())
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        assert!(
+            shipped.starts_with('#'),
+            "{SHIPPED_UNIT} keeps its header saying where its settings come from"
+        );
+        let defaults = crate::host::config::OscConfig::default();
+        // Studio's defaults: `default_orender_input_path()` with neither
+        // `$TMPDIR` nor `OMNIPHONY_INPUT_PIPE` set, the default OSC target,
+        // metering off and the default log level.
+        let args = orender_render_args(
+            Path::new("/tmp/orender.pipe"),
+            &defaults.host,
+            crate::host::runtime_env::DEFAULT_OSC_RX_PORT,
+            false,
+            None,
+        );
+        assert_eq!(
+            body,
+            linux_service_unit(Path::new("/usr/bin/orender"), &args),
+            "{SHIPPED_UNIT} drifted from linux_service_unit(); regenerate it"
+        );
+    }
+
+    #[test]
+    fn the_render_args_carry_only_what_differs_from_the_defaults() {
+        let base = orender_render_args(Path::new("/p"), " 10.0.0.2 ", 9100, false, None);
+        assert_eq!(
+            base.join(" "),
+            "render /p --continuous --enable-vbap --osc --osc-host 10.0.0.2 \
+             --osc-port 9100 --osc-rx-port 9100 --osc-yield"
+        );
+        assert_eq!(
+            orender_render_args(Path::new("/p"), "h", 1, false, Some(" info ")),
+            orender_render_args(Path::new("/p"), "h", 1, false, None)
+        );
+        assert_eq!(
+            orender_render_args(Path::new("/p"), "h", 1, false, Some("nonsense")),
+            orender_render_args(Path::new("/p"), "h", 1, false, None)
+        );
+        let full = orender_render_args(Path::new("/p"), "h", 1, true, Some("debug"));
+        assert!(full.ends_with(&[
+            "--osc-yield".to_string(),
+            "--osc-metering".to_string(),
+            "--loglevel".to_string(),
+            "debug".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn an_orender_inside_an_appimage_mount_is_recognised() {
+        let none = AppImageEnv::default();
+        let running = AppImageEnv {
+            appdir: Some("/tmp/.mount_OmniphA1b2C3".into()),
+            tmpdir: None,
+        };
+        let inside = Path::new("/tmp/.mount_OmniphA1b2C3/usr/bin/orender");
+        assert!(inside_appimage_mount(inside, &running));
+        // Without the runtime's variables (an orender path remembered from an
+        // earlier run, another AppImage's mount), the mount point still tells.
+        assert!(inside_appimage_mount(inside, &none));
+        assert!(inside_appimage_mount(
+            Path::new("/tmp/.mount_Other999/usr/bin/orender"),
+            &running
+        ));
+        // `--appimage-extract-and-run` extracts under a name of its own and
+        // deletes it on exit; `$APPDIR` names it.
+        let extracted = AppImageEnv {
+            appdir: Some("/tmp/appimage_extracted_0123abcd".into()),
+            tmpdir: None,
+        };
+        assert!(inside_appimage_mount(
+            Path::new("/tmp/appimage_extracted_0123abcd/usr/bin/orender"),
+            &extracted
+        ));
+        // The runtime mounts under `$TMPDIR` when it is set.
+        let moved_tmp = AppImageEnv {
+            appdir: None,
+            tmpdir: Some("/run/user/1000/tmp".into()),
+        };
+        assert!(inside_appimage_mount(
+            Path::new("/run/user/1000/tmp/.mount_OmniphX/usr/bin/orender"),
+            &moved_tmp
+        ));
+        assert!(!inside_appimage_mount(
+            Path::new("/run/user/1000/tmp/.mount_OmniphX/usr/bin/orender"),
+            &none
+        ));
+
+        // Installed binaries, whether Studio runs from an AppImage or not.
+        for installed in [
+            "/usr/bin/orender",
+            "/home/u/.local/bin/orender",
+            "/home/u/src/omniphony-renderer/target/release/orender",
+            // A component that merely looks alike, away from the temp dir.
+            "/home/u/.mount_backup/orender",
+            "/tmp/backup/.mount_x/orender",
+        ] {
+            for env in [&none, &running, &moved_tmp] {
+                assert!(
+                    !inside_appimage_mount(Path::new(installed), env),
+                    "{installed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_shipped_but_disabled_unit_is_not_installed() {
+        let show = |load: &str, file: &str, active: &str| {
+            systemd_service_state(&format!(
+                "LoadState={load}\nUnitFileState={file}\nActiveState={active}\n"
+            ))
+        };
+        // The unit the deb or the AUR package ships, before the user enables it.
+        assert_eq!(show("loaded", "disabled", "inactive"), (false, false));
+        // Installed by Studio, or enabled by hand, and running or not.
+        assert_eq!(show("loaded", "enabled", "inactive"), (true, false));
+        assert_eq!(show("loaded", "enabled", "active"), (true, true));
+        assert_eq!(show("loaded", "linked", "inactive"), (true, false));
+        // Started without being enabled: it runs, so it is Studio's to stop.
+        assert_eq!(show("loaded", "disabled", "active"), (true, true));
+        // No unit at all.
+        assert_eq!(show("not-found", "", "inactive"), (false, false));
+        assert_eq!(systemd_service_state(""), (false, false));
     }
 
     #[test]

@@ -171,6 +171,7 @@
   "osc.service.stop": "Arrêter le service",
   "osc.service.restart": "Redémarrer le service",
   "osc.service.installFirst": "Installer le service d’abord",
+  "osc.service.appImageRefused": "Le service ne peut pas utiliser l’orender de cette AppImage ({path}) : l’AppImage est démontée à la fermeture de Studio, et le service ne pourrait plus démarrer. Installez plutôt le paquet .deb de Studio ou le paquet AUR orender. Tous deux fournissent le service, à activer avec : systemctl --user enable --now omniphony-renderer",
   "osc.service.installShort": "Installer",
   "osc.service.uninstallShort": "Désinstaller",
   "osc.service.serviceNoun": "service",
