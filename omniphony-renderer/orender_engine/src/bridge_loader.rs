@@ -1,11 +1,11 @@
+use crate::bridge_set::BridgeSet;
 use crate::decode_step::LogLevelSync;
-use abi_stable::library::{RootModule, lib_header_from_path};
+use abi_stable::library::{LibHeader, RootModule, lib_header_from_path};
 use abi_stable::sabi_types::VersionNumber;
 use abi_stable::std_types::RStr;
 use anyhow::{Context, Result, bail};
 use bridge_api::{
-    BridgeHostLogSink, BridgeLibRef, FormatBridgeBox, RLogLevel, RVbapCartesianDefaults,
-    RVbapTableMode,
+    BridgeHostLogSink, BridgeLibRef, RLogLevel, RVbapCartesianDefaults, RVbapTableMode,
 };
 use omniphony_osc_contract as osc_contract;
 use renderer::live_params::RendererControl;
@@ -13,17 +13,51 @@ use renderer::placement::PlacementMode;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// Loaded bridge library + live bridge instance.
-///
-/// Both fields must be kept alive together: `lib` holds the reference-count
-/// that prevents the `.so` from being unloaded while `bridge` is in use.
+/// The decoder bridge plugins a host loaded, in load order: what it opens
+/// bridge instances from ([`open_bridges`]) and declares source families from.
+/// The libraries stay resident for the life of the process (abi_stable never
+/// unloads one).
+#[derive(Clone)]
+pub struct BridgeLibs {
+    libs: Vec<BridgeLibRef>,
+}
+
+impl BridgeLibs {
+    /// One plugin.
+    pub fn single(lib: BridgeLibRef) -> Self {
+        Self { libs: vec![lib] }
+    }
+
+    /// Plugins already loaded, in load order.
+    pub fn new(libs: Vec<BridgeLibRef>) -> Result<Self> {
+        if libs.is_empty() {
+            bail!("no decoder bridge loaded");
+        }
+        Ok(Self { libs })
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &BridgeLibRef> {
+        self.libs.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.libs.len()
+    }
+
+    /// Never true: [`new`](Self::new) refuses an empty list.
+    pub fn is_empty(&self) -> bool {
+        self.libs.is_empty()
+    }
+}
+
+/// Loaded bridge plugins + the live set of instances the host decodes with.
 pub struct LoadedBridge {
-    /// Keeps the `.so` resident in memory.
-    pub lib: BridgeLibRef,
-    /// The live bridge instance (stateful, called per chunk).
-    pub bridge: FormatBridgeBox,
+    /// The plugins, for more instances and their source families.
+    pub libs: BridgeLibs,
+    /// The live bridges (stateful, called per chunk), routed per stream.
+    pub bridge: BridgeSet,
     /// The log level `bridge` was opened with, for the host that drives it to
-    /// keep in line with its own ([`open_bridge`]).
+    /// keep in line with its own ([`open_bridges`]).
     pub log_level: LogLevelSync,
 }
 
@@ -31,14 +65,16 @@ impl LoadedBridge {
     /// Load a bridge plugin from `path` and create one instance.
     ///
     /// Format-specific options (e.g. presentation index) are applied afterwards via
-    /// [`FormatBridgeBox::configure`] before the first [`FormatBridgeBox::push_packet`].
+    /// [`BridgeSet::configure`] before the first [`BridgeSet::push_packet`].
     pub fn load_with_params(path: &Path) -> Result<Self> {
-        check_bridge_api_version(path)?;
-        let lib = BridgeLibRef::load_from_file(path)
-            .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
-        let (bridge, log_level) = open_bridge(&lib);
+        Self::open(BridgeLibs::single(load_bridge_library(path)?))
+    }
+
+    /// One instance of every plugin in `libs`, routed per stream.
+    pub fn open(libs: BridgeLibs) -> Result<Self> {
+        let (bridge, log_level) = open_bridges(&libs)?;
         Ok(Self {
-            lib,
+            libs,
             bridge,
             log_level,
         })
@@ -54,7 +90,7 @@ impl LoadedBridge {
 
     /// Set a bridge configuration option. Must be called before the first packet.
     pub fn configure(&mut self, key: &str, value: &str) -> bool {
-        self.bridge.configure(key.into(), value.into())
+        self.bridge.configure(key, value)
     }
 
     /// Default Cartesian VBAP grid dimensions suggested by the bridge.
@@ -68,6 +104,26 @@ impl LoadedBridge {
     }
 }
 
+/// Open the bridge plugin at `path` and return its root module.
+///
+/// Not `BridgeLibRef::load_from_file`: abi_stable's `RootModule::load_from`
+/// keeps the first root module it loads in a process-wide static and returns
+/// it for every later path, so a second, different bridge (a config reloaded
+/// with another `bridge_path`, another engine in the same player) would
+/// silently be the first one again. Initialising the root module from the
+/// library's own header runs the same version and layout checks without that
+/// cache: each library keeps its root module in its header, so opening one
+/// file twice still yields one module, and two files yield two.
+pub fn load_bridge_library(path: &Path) -> Result<BridgeLibRef> {
+    let header = lib_header_from_path(path)
+        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
+    check_bridge_api_version(path, header)?;
+    header
+        .init_root_module::<BridgeLibRef>()
+        .and_then(RootModule::initialization)
+        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))
+}
+
 /// Refuse a plugin built against another `bridge_api` minor than this host,
 /// with a message naming both versions (`BRIDGE_API.md`, "Versioning").
 ///
@@ -76,9 +132,7 @@ impl LoadedBridge {
 /// plugin of another minor fails with a layout error ("too many fields",
 /// "package version") that says nothing a user can act on. So the version
 /// the plugin declares in its header is read first.
-fn check_bridge_api_version(path: &Path) -> Result<()> {
-    let header = lib_header_from_path(path)
-        .with_context(|| format!("Failed to load bridge plugin from {}", path.display()))?;
+fn check_bridge_api_version(path: &Path, header: &LibHeader) -> Result<()> {
     let host = host_bridge_api_version();
     let bridge = header.version_strings().parsed().with_context(|| {
         format!(
@@ -132,28 +186,25 @@ fn bridge_api_compatible(host: VersionNumber, bridge: VersionNumber) -> Result<(
     ))
 }
 
-/// One more bridge instance from an already-loaded plugin, its logs routed to
-/// the host's and filtered at the host's level: how every host opens one, from
-/// a path ([`LoadedBridge`]) or from the plugin a session already holds (the
-/// PipeWire sink's own bridge). Later level changes reach it through the
-/// [`LogLevelSync`] returned with it, which the host keeps with the bridge.
-pub fn open_bridge(lib: &BridgeLibRef) -> (FormatBridgeBox, LogLevelSync) {
-    install_bridge_host_log_sink(lib);
-    let new_bridge = lib.new_bridge();
-    // strict mode removed from the host; bridges ignore the flag. The ABI
-    // parameter is kept for compatibility and always passed as `false`.
-    let mut bridge = new_bridge(false);
+/// One instance of every plugin in `libs`, as a [`BridgeSet`], their logs
+/// routed to the host's and filtered at the host's level: how every host
+/// opens its bridges, from paths ([`LoadedBridge`]) or from the plugins a
+/// session already holds (the PipeWire sink's own set). Later level changes
+/// reach them through the [`LogLevelSync`] returned with it, which the host
+/// keeps with the set.
+pub fn open_bridges(libs: &BridgeLibs) -> Result<(BridgeSet, LogLevelSync)> {
+    let mut bridge = BridgeSet::open(libs)?;
     let log_level = LogLevelSync::open(live_log::current_runtime_level(), &mut bridge);
-    (bridge, log_level)
+    Ok((bridge, log_level))
 }
 
 /// Ask `bridge` to format and forward only the diagnostics at `level` or
 /// below, so the ones the host would drop cost it nothing. `false` from a
 /// bridge that predates the `log_level` key: it keeps its own level
 /// (`HARLETTY_LOG`, info by default), which is no fault worth a warning.
-pub fn configure_log_level(bridge: &mut FormatBridgeBox, level: log::LevelFilter) -> bool {
+pub fn configure_log_level(bridge: &mut BridgeSet, level: log::LevelFilter) -> bool {
     let name = live_log::level_name(level);
-    let accepted = bridge.configure("log_level".into(), name.into());
+    let accepted = bridge.configure("log_level", name);
     if !accepted {
         log::debug!("bridge does not take log_level {name}; it keeps its own level");
     }
@@ -163,45 +214,38 @@ pub fn configure_log_level(bridge: &mut FormatBridgeBox, level: log::LevelFilter
 /// Ask `bridge` for `presentation` (before its first packet); an error naming
 /// the value when the bridge refuses it. Whether that is fatal is the host's
 /// call: the CLI stops, a player keeps the bridge's default.
-pub fn configure_presentation(bridge: &mut FormatBridgeBox, presentation: &str) -> Result<()> {
-    if !bridge.configure("presentation".into(), presentation.into()) {
+pub fn configure_presentation(bridge: &mut BridgeSet, presentation: &str) -> Result<()> {
+    if !bridge.configure("presentation", presentation) {
         bail!("Bridge rejected presentation value '{presentation}'");
     }
     Ok(())
 }
 
-/// Put the plugin's source families (`BridgeLib::source_families`) in the
+/// Put the plugins' source families (`BridgeLib::source_families`) in the
 /// renderer's family table, so they can be configured — and the config's
-/// settings for them apply — before a stream of theirs plays. Called once
-/// per loaded plugin, after the renderer is built (seeding the config keeps
-/// the table, so the order does not matter).
-pub fn declare_source_families(lib: &BridgeLibRef, control: &RendererControl) {
-    let Some(source_families) = lib.source_families() else {
-        return;
-    };
-    let families = source_families();
+/// settings for them apply — before a stream of theirs plays. Called once,
+/// after the renderer is built (seeding the config keeps the table, so the
+/// order does not matter). A family two plugins declare is the first one's.
+pub fn declare_source_families(libs: &BridgeLibs, control: &RendererControl) {
+    let mut declared: Vec<String> = Vec::new();
     let mut live = control.live.write();
-    for family in families.iter() {
-        let mode =
-            PlacementMode::parse(family.default_mode.as_str()).unwrap_or(PlacementMode::Room);
-        live.placement
-            .declare(family.name.as_str(), family.label.as_str(), mode);
+    for lib in libs.iter() {
+        for family in lib.source_families()().iter() {
+            if declared.iter().any(|name| name == family.name.as_str()) {
+                continue;
+            }
+            let mode =
+                PlacementMode::parse(family.default_mode.as_str()).unwrap_or(PlacementMode::Room);
+            live.placement
+                .declare(family.name.as_str(), family.label.as_str(), mode);
+            declared.push(family.name.as_str().to_owned());
+        }
     }
-    log::info!(
-        "Bridge source families: {}",
-        families
-            .iter()
-            .map(|family| family.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    log::info!("Bridge source families: {}", declared.join(", "));
 }
 
 pub fn install_bridge_host_log_sink(lib: &BridgeLibRef) {
-    let Some(set_host_log_sink) = lib.set_host_log_sink() else {
-        return;
-    };
-    set_host_log_sink(forward_bridge_log_to_host as BridgeHostLogSink as usize);
+    lib.set_host_log_sink()(forward_bridge_log_to_host as BridgeHostLogSink as usize);
 }
 
 extern "C" fn forward_bridge_log_to_host(level: RLogLevel, target: RStr<'_>, message: RStr<'_>) {

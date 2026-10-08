@@ -134,7 +134,7 @@ impl StudioSpike {
             (
                 speaker,
                 speakers.len(),
-                live.app.render_backend_state.frozen_speakers,
+                live.app.speakers_read_only(),
                 live.app.room_ratio.scale_m.max(0.001),
             )
         };
@@ -752,7 +752,7 @@ impl StudioSpike {
             let live = self.host.read();
             (
                 live.selected_speakers().to_vec(),
-                live.app.render_backend_state.frozen_speakers,
+                live.app.speakers_read_only(),
                 live.app.room_ratio.scale_m.max(0.01),
             )
         };

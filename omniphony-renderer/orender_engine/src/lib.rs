@@ -11,6 +11,7 @@
 //!   owns audio output and A/V sync.
 
 pub mod bridge_loader;
+pub mod bridge_set;
 pub mod channel_layout;
 pub mod channel_objects;
 pub mod decode_step;

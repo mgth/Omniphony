@@ -153,8 +153,10 @@ impl SessionToken {
         {
             return Err("Layout import discarded: renderer session or profile changed".into());
         }
-        if live.app.render_backend_state.frozen_speakers {
-            return Err("Layout import refused: speakers are frozen".into());
+        if live.app.speakers_read_only() {
+            return Err(
+                "Layout import refused: the speakers are frozen or come from the BRIR set".into(),
+            );
         }
         let payload = replace_layout_payload(&layout);
         let base = layout.key.clone();

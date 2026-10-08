@@ -24,7 +24,7 @@ impl StudioSpike {
     pub(crate) fn layout_actions(&mut self, ui: &mut Ui) {
         let frozen = {
             let live = self.host.read();
-            live.app.render_backend_state.frozen_speakers
+            live.app.speakers_read_only()
         };
         // Four buttons need ~350 points on one line, more than the panel's
         // minimum width. Laid out on a plain row they overflowed it, and the

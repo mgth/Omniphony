@@ -332,6 +332,10 @@ pub struct TopologyBuildPlan {
     /// models can be reused (see `build_topology_reusing`). Set by
     /// `RendererControl::prepare_topology_rebuild_for_layout`.
     pub geometry_generation: u64,
+    /// `layout` is a BRIR set's virtual loudspeakers, not the editable
+    /// layout (set by `RendererControl::prepare_topology_rebuild`); the
+    /// built topology carries it as [`RenderTopology::brir_layout`].
+    pub brir_layout: bool,
 }
 
 #[cfg(test)]
@@ -427,8 +431,9 @@ impl TopologyBuildPlan {
         } else {
             wrap_unsampled_engine(model, effective_mode)
         };
-        let topology = RenderTopology::new(Arc::new(engine), self.layout.clone())?
+        let mut topology = RenderTopology::new(Arc::new(engine), self.layout.clone())?
             .with_model_origin(self.geometry_generation, &self.backend_id);
+        topology.brir_layout = self.brir_layout;
         smoke_test_engine(
             &topology.backend,
             &self.evaluation_build_config,
@@ -1217,6 +1222,7 @@ pub fn prepare_topology_build_plan(
         evaluation_mode,
         evaluation_build_config,
         geometry_generation: 0,
+        brir_layout: false,
     })
 }
 
@@ -1544,6 +1550,7 @@ mod tests {
             evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
             evaluation_build_config: build_config(),
             geometry_generation: 0,
+            brir_layout: false,
         };
         let built = std::panic::catch_unwind(|| {
             topology(

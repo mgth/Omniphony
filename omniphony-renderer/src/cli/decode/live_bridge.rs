@@ -9,7 +9,8 @@
 
 use super::decoder_thread::{DecodedAudioData, DecodedSource, DecoderMessage};
 use anyhow::{Result, anyhow};
-use bridge_api::{FormatBridgeBox, RInputTransport};
+use bridge_api::RInputTransport;
+use orender_engine::bridge_set::BridgeSet;
 use orender_engine::decode_step::{
     Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
 };
@@ -42,7 +43,7 @@ pub struct LiveBridgeDiag {
 /// `log_level` holds the log level the bridge was opened with (`open_bridge`);
 /// each reaches the bridge before the next packet whenever it changes.
 pub fn spawn_live_bridge_decoder(
-    bridge: FormatBridgeBox,
+    bridge: BridgeSet,
     log_level: LogLevelSync,
     raw_rx: mpsc::Receiver<(u8, Vec<u8>)>,
     requested_drc_mode: Option<Arc<RwLock<String>>>,
@@ -58,7 +59,7 @@ pub fn spawn_live_bridge_decoder(
 }
 
 fn run_live_bridge_decoder(
-    mut bridge: FormatBridgeBox,
+    mut bridge: BridgeSet,
     mut log_level: LogLevelSync,
     raw_rx: mpsc::Receiver<(u8, Vec<u8>)>,
     requested_drc_mode: Option<Arc<RwLock<String>>>,
@@ -257,6 +258,7 @@ mod tests {
                 x_size: 3,
                 y_size: 3,
                 z_size: 3,
+                z_neg_size: 0,
                 allow_negative_z: false,
             }
         }
@@ -291,22 +293,22 @@ mod tests {
         }
     }
 
-    fn bridge(drc_modes: &Arc<Mutex<Vec<String>>>) -> FormatBridgeBox {
+    fn bridge(drc_modes: &Arc<Mutex<Vec<String>>>) -> BridgeSet {
         bridge_recording(drc_modes, &Arc::default())
     }
 
     fn bridge_recording(
         drc_modes: &Arc<Mutex<Vec<String>>>,
         configured: &Arc<Mutex<Vec<String>>>,
-    ) -> FormatBridgeBox {
-        FormatBridge_TO::from_value(
+    ) -> BridgeSet {
+        BridgeSet::single(FormatBridge_TO::from_value(
             ScriptedBridge {
                 labels: Vec::new(),
                 drc_modes: Arc::clone(drc_modes),
                 configured: Arc::clone(configured),
             },
             TD_Opaque,
-        )
+        ))
     }
 
     /// The worker hands the bridge the host's log level before its first

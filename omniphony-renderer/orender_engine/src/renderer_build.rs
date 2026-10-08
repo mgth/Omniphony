@@ -229,7 +229,9 @@ fn resolve_evaluation_table_mode(
             let z_cells = params
                 .evaluation_cartesian_z_size
                 .unwrap_or(vbap_cartesian_defaults.z_size as usize);
-            let z_neg_cells = params.evaluation_cartesian_z_neg_size.unwrap_or(0);
+            let z_neg_cells = params
+                .evaluation_cartesian_z_neg_size
+                .unwrap_or(vbap_cartesian_defaults.z_neg_size as usize);
             if x_cells < 1 || y_cells < 1 || z_cells < 1 {
                 bail!(
                     "Invalid cartesian VBAP cell count: x={}, y={}, z+={} (each must be >= 1)",
@@ -340,7 +342,9 @@ pub fn build_spatial_renderer(
             cartesian_default_z_size: params
                 .evaluation_cartesian_z_size
                 .unwrap_or(vbap_cartesian_defaults.z_size as usize),
-            cartesian_default_z_neg_size: params.evaluation_cartesian_z_neg_size.unwrap_or(0),
+            cartesian_default_z_neg_size: params
+                .evaluation_cartesian_z_neg_size
+                .unwrap_or(vbap_cartesian_defaults.z_neg_size as usize),
         })?;
         let elapsed = start_time.elapsed();
         // No gain table yet: the speaker stage samples one per crossover band
@@ -768,6 +772,7 @@ mod tests {
                 x_size: 9,
                 y_size: 9,
                 z_size: 5,
+                z_neg_size: 0,
                 allow_negative_z: true,
             },
             bridge_api::RVbapTableMode::Cartesian,
@@ -880,6 +885,7 @@ mod tests {
                 x_size: 9,
                 y_size: 9,
                 z_size: 5,
+                z_neg_size: 0,
                 allow_negative_z: true,
             },
             // The bridge prefers the other table: the config must win.
@@ -1043,12 +1049,41 @@ mod tests {
                 x_size: 9,
                 y_size: 9,
                 z_size: 5,
+                z_neg_size: 0,
                 allow_negative_z: false,
             },
             bridge_api::RVbapTableMode::Cartesian,
             cfg,
         )
         .expect("renderer")
+    }
+
+    /// The cells below the floor follow the bridge's hint when the config
+    /// leaves them unset, and the config's value otherwise.
+    #[test]
+    fn the_cells_below_the_floor_follow_the_bridge_unless_configured() {
+        let hint = RVbapCartesianDefaults {
+            x_size: 9,
+            y_size: 9,
+            z_size: 5,
+            z_neg_size: 4,
+            allow_negative_z: true,
+        };
+        let z_neg = |params: &SpatialRendererParams| match resolve_evaluation_table_mode(
+            params,
+            hint,
+            RVbapTableMode::Cartesian,
+        )
+        .expect("resolve")
+        .0
+        {
+            VbapTableMode::Cartesian { z_neg_size, .. } => z_neg_size,
+            other => panic!("expected a Cartesian table, got {other:?}"),
+        };
+        let mut params = SpatialRendererParams::from_render_config(None);
+        assert_eq!(z_neg(&params), 4);
+        params.evaluation_cartesian_z_neg_size = Some(2);
+        assert_eq!(z_neg(&params), 2);
     }
 
     /// The seed before the first rebuild asks for one only for what the
@@ -1069,6 +1104,7 @@ mod tests {
                     x_size: 9,
                     y_size: 9,
                     z_size: 5,
+                    z_neg_size: 0,
                     allow_negative_z: false,
                 },
                 bridge_api::RVbapTableMode::Cartesian,
@@ -1173,6 +1209,7 @@ mod tests {
                 x_size: 9,
                 y_size: 9,
                 z_size: 5,
+                z_neg_size: 0,
                 allow_negative_z: true,
             },
             bridge_api::RVbapTableMode::Cartesian,

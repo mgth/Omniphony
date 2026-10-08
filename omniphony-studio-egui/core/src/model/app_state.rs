@@ -524,6 +524,11 @@ pub struct AppState {
     /// the UI without a typed mirror here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binaural: Option<serde_json::Value>,
+    /// The loudspeakers of the BRIR set a headphone render pans onto in place
+    /// of the editable layout (`binaural.brir.layout`), while it does. Set
+    /// from the renderer state; read-only, the measurement fixes them.
+    #[serde(skip)]
+    pub brir_speakers: Option<Vec<super::layouts::Speaker>>,
     /// Declared live options (`options` block of `/state/renderer`, canonical
     /// snake_case keys straight from the renderer's registry). Passthrough
     /// JSON: a registry row needs no typed mirror here (registry RFC phase 1).
@@ -811,6 +816,12 @@ pub enum ConfigRefusal {
 }
 
 impl AppState {
+    /// Whether the speakers shown cannot be edited: the backend froze them,
+    /// or they are a BRIR set's own loudspeakers.
+    pub fn speakers_read_only(&self) -> bool {
+        self.render_backend_state.frozen_speakers || self.brir_speakers.is_some()
+    }
+
     /// The renderer's decoder bridge problem, if it reported one. An engine
     /// predating the "none found" marker reports every problem as a failure.
     pub fn bridge_problem(&self) -> Option<BridgeProblem> {
@@ -1034,6 +1045,7 @@ impl Default for AppState {
             render_evaluation_mode_state: RenderEvaluationModeState::default(),
             object_size_intervals: 0,
             binaural: None,
+            brir_speakers: None,
             options: None,
             vbap_allow_negative_z: None,
             adaptive_resampling: Some(0),

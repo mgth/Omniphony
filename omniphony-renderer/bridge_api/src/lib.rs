@@ -33,6 +33,67 @@ pub enum RInputTransport {
     Iec61937 = 1,
 }
 
+/// What a bridge's [`BridgeLib::probe`] finds in the bytes it is shown.
+#[repr(u8)]
+#[derive(StableAbi, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RProbeVerdict {
+    /// A stream this bridge decodes starts at [`RProbe::offset`], validated
+    /// by the bridge's own criteria (a header checksum, the next frame's
+    /// sync at the declared size, …) within a bounded number of bytes.
+    Claim = 0,
+    /// A stream may start at [`RProbe::offset`], but its header is not
+    /// complete yet: [`RProbe::needed`] says how many bytes from the offset
+    /// the bridge needs before it can answer again.
+    Pending = 1,
+    /// No stream of this bridge starts before [`RProbe::offset`]: the host
+    /// need not show it those bytes again.
+    None = 2,
+}
+
+/// A bridge's answer to [`BridgeLib::probe`].
+#[repr(C)]
+#[derive(StableAbi, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RProbe {
+    pub verdict: RProbeVerdict,
+    /// `Claim` / `Pending`: the offset, in the bytes shown, of the frame the
+    /// stream starts with (not of its sync word). `None`: every byte before
+    /// it is ruled out.
+    pub offset: u32,
+    /// `Pending` only: how many bytes from `offset` the bridge needs before
+    /// it can answer again; more than it was shown. Zero otherwise.
+    pub needed: u32,
+}
+
+impl RProbe {
+    /// A validated stream start at `offset`.
+    pub const fn claim(offset: u32) -> Self {
+        Self {
+            verdict: RProbeVerdict::Claim,
+            offset,
+            needed: 0,
+        }
+    }
+
+    /// A possible start at `offset`, decidable once `needed` bytes from it
+    /// are available.
+    pub const fn pending(offset: u32, needed: u32) -> Self {
+        Self {
+            verdict: RProbeVerdict::Pending,
+            offset,
+            needed,
+        }
+    }
+
+    /// Nothing of this bridge's before `offset`.
+    pub const fn none(offset: u32) -> Self {
+        Self {
+            verdict: RProbeVerdict::None,
+            offset,
+            needed: 0,
+        }
+    }
+}
+
 /// ABI-stable log level used by bridges to forward diagnostics to the host.
 #[repr(u8)]
 #[derive(StableAbi, Clone, Copy, Debug, PartialEq, Eq)]
@@ -317,18 +378,24 @@ pub struct RVbapCartesianDefaults {
     pub x_size: u32,
     pub y_size: u32,
     pub z_size: u32,
+    /// Cells below the floor (`z < 0`); 0 for none, in which case a
+    /// below-floor position is clamped onto `z = 0` by a Cartesian table.
+    pub z_neg_size: u32,
     pub allow_negative_z: bool,
 }
 
 impl RVbapCartesianDefaults {
-    /// A balanced grid (62 × 62 × 15, no negative z): the hint the reference
-    /// bridge declares, matching the production bridge's, and what a host
-    /// with no bridge at all builds its renderer against. A constant, not
-    /// part of the type's layout: adding it does not change the ABI.
+    /// A balanced grid (62 × 62 × 15, nothing below the floor, no negative
+    /// z): the hint the reference bridge declares and what a host with no
+    /// bridge at all builds its renderer against. A bridge whose positions
+    /// can go below the floor declares `allow_negative_z` on top of it. A
+    /// constant, not part of the type's layout: adding it does not change
+    /// the ABI.
     pub const BALANCED: Self = Self {
         x_size: 62,
         y_size: 62,
         z_size: 15,
+        z_neg_size: 0,
         allow_negative_z: false,
     };
 }
@@ -489,13 +556,9 @@ pub struct BridgeLib {
     ///
     /// Format-specific options (e.g. substream selection) are set afterwards
     /// via [`FormatBridge::configure`] before the first [`FormatBridge::push_packet`].
-    #[sabi(last_prefix_field)]
     pub new_bridge: extern "C" fn(strict: bool) -> FormatBridgeBox,
-    /// Install a host log sink for bridge diagnostics.
-    ///
-    /// New hosts should register this immediately after loading the bridge.
-    /// Older bridges may not expose it; in that case bridge diagnostics fall
-    /// back to stderr.
+    /// Install a host log sink for bridge diagnostics. The host registers it
+    /// right after loading the bridge.
     pub set_host_log_sink: extern "C" fn(usize),
     /// The source families this plugin's bridges declare (see
     /// [`RSourceFamily`]): every name [`FormatBridge::source_family`] can
@@ -506,6 +569,27 @@ pub struct BridgeLib {
     /// A root-module field rather than a trait method: it describes the
     /// plugin, not a stream.
     pub source_families: extern "C" fn() -> RVec<RSourceFamily>,
+    /// Where, if anywhere, a stream this plugin decodes starts in `data`, so
+    /// that a host holding several bridges can route a stream to one of them
+    /// (`BRIDGE_API.md`, "Probing"). Stateless and cheap: the host calls it
+    /// before it creates or picks an instance, and only while a stream's
+    /// route is undecided.
+    ///
+    /// - [`RInputTransport::Iec61937`]: `data` is a burst payload and
+    ///   `data_type` its burst type; the answer is `Claim` at 0 for a burst
+    ///   type this plugin decodes, `None` otherwise.
+    /// - [`RInputTransport::Raw`]: `data` is a window of undecided bytes,
+    ///   which may start mid-frame or end inside a header, and `data_type`
+    ///   is zero. A `Claim` must be validated within the plugin's own
+    ///   bounded probe length.
+    pub probe:
+        extern "C" fn(data: RSlice<'_, u8>, transport: RInputTransport, data_type: u8) -> RProbe,
+    /// The `input_codec` names this plugin decodes (lower case, e.g.
+    /// `"truehd"`, `"eac3"`), by which a host routes a stream whose codec it
+    /// was told (a player knows it). Every name in it is one
+    /// `configure("input_codec", …)` accepts.
+    #[sabi(last_prefix_field)]
+    pub input_codecs: extern "C" fn() -> RVec<RString>,
 }
 
 impl RootModule for BridgeLibRef {

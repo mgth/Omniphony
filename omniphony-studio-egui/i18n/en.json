@@ -746,6 +746,8 @@
   "experimentalDistance.infoBody": "Distance backend is an experimental renderer that scores speakers from their geometric relationship to the target point.<br><br>The exposed controls tune how many speakers can participate, how aggressively nearest speakers dominate, and how much position error is tolerated before gains are clamped or spread wider.<br><br>Use it for backend comparison and tuning, not as the safest default.",
   "objects.none": "No objects.",
   "speakers.none": "No speakers.",
+  "speakers.brirLayout": "BRIR set's loudspeakers",
+  "speakers.brirReadOnly": "These are the loudspeakers of the measured room (BRIR) the headphones render through. They come from the file and cannot be edited, trimmed, muted or delayed; your speaker layout is kept as it is and comes back with another headphone source or on the speakers.",
   "config.saved": "Saved",
   "config.modified": "Modified (unsaved)",
   "unsaved.quitTitle": "The renderer has unsaved changes",

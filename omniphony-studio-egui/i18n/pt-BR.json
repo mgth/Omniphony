@@ -726,6 +726,8 @@
   "experimentalDistance.infoBody": "O backend de distância é um renderer experimental que pontua as caixas a partir de sua relação geométrica com o ponto-alvo.<br><br>Os controles expostos ajustam quantas caixas podem participar, o quão fortemente as mais próximas dominam e quanto erro de posição é tolerado antes de os ganhos serem limitados ou espalhados.<br><br>Use-o para comparar e ajustar backends, não como o padrão mais seguro.",
   "objects.none": "Nenhum objeto.",
   "speakers.none": "Nenhuma caixa.",
+  "speakers.brirLayout": "Caixas do conjunto BRIR",
+  "speakers.brirReadOnly": "Estas são as caixas da sala medida (BRIR) pelas quais os fones são renderizados. Elas vêm do arquivo e não podem ser editadas, ajustadas, silenciadas nem atrasadas; seu layout de caixas é mantido como está e volta com outra fonte de fones ou nas caixas.",
   "config.saved": "Salvo",
   "config.modified": "Modificado (não salvo)",
   "status.initializing": "Inicializando...",
