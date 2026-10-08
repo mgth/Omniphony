@@ -28,7 +28,10 @@ The `saf_vbap` feature depends on two C libraries:
 1. **SAF** (Spatial Audio Framework) — provides VBAP spatial audio algorithms
 2. **OpenBLAS** (with LAPACK + LAPACKE) — linear algebra backend for SAF
 
-Both must be built as **static libraries** with **MSVC**.
+Both must be built as **static libraries** with **MSVC**, against the static C
+runtime (`/MT`, as below): the workspace links it statically on Windows
+(`.cargo/config.toml`), and a library built with `/MD` would pull the
+Visual C++ Redistributable back in, or fail to link.
 
 Licensing note:
 
@@ -68,7 +71,7 @@ C:\dev\vcpkg\downloads\tools\cmake-3.31.10-windows\cmake-3.31.10-windows-x86_64\
   -B C:\dev\openblas-build ^
   -G "NMake Makefiles" ^
   -DCMAKE_BUILD_TYPE=Release ^
-  -DCMAKE_C_FLAGS_RELEASE="/MD /Od /DNDEBUG" ^
+  -DCMAKE_C_FLAGS_RELEASE="/MT /Od /DNDEBUG" ^
   -DBUILD_WITHOUT_LAPACK=OFF ^
   -DNOFORTRAN=ON ^
   -DC_LAPACK=ON ^
@@ -119,7 +122,7 @@ C:\dev\vcpkg\downloads\tools\cmake-3.31.10-windows\cmake-3.31.10-windows-x86_64\
   -S . -B build-win ^
   -G "NMake Makefiles" ^
   -DCMAKE_BUILD_TYPE=Release ^
-  -DCMAKE_C_FLAGS_RELEASE="/MD /O1 /DNDEBUG /DWIN32" ^
+  -DCMAKE_C_FLAGS_RELEASE="/MT /O1 /DNDEBUG /DWIN32" ^
   -DSAF_PERFORMANCE_LIB=SAF_USE_OPEN_BLAS_AND_LAPACKE ^
   -DSAF_BUILD_EXAMPLES=OFF ^
   -DSAF_BUILD_TESTS=OFF ^

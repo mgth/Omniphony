@@ -423,9 +423,25 @@ Each step can be merged on its own and changes something for a user.
    manual path below it; release notes link the installer assets
    (`docs/release-process.md` §4-5).
 
-Status: step 1 is the pull request that adds this paragraph. The packaged unit
+Status: step 1 is #786. The packaged unit
 is `packaging/systemd/omniphony-renderer.service`, checked against
 `linux_service_unit` by a test in the Studio core.
+
+Step 2 is the pull request that adds this paragraph. The static C
+runtime is set for every MSVC target in `omniphony-renderer/.cargo/config.toml`
+and `omniphony-studio-egui/.cargo/config.toml`; `cc` builds the ASIO SDK, Lua
+and ring with `/MT` to match. Nothing crosses either ABI in a way the change
+affects: the `liborender` C ABI hands out only an opaque handle freed by
+`orender_destroy`, a static string, and caller-owned buffers; the bridge ABI's
+`RVec`, `RString` and `RBox` free through the vtable of the side that
+allocated them, and Rust's allocator on Windows is the process heap
+(`HeapAlloc`), not the C runtime's. `scripts/check_windows_crt_imports.py`
+fails the Windows CI job, the release and the integration build when
+`orender.exe`, `orender.dll` or the Studio executable imports a runtime DLL.
+Left: the clean-VM check by hand. The player's workflow builds `orender.dll`
+with its own `RUSTFLAGS`, which replaces the config file
+(mgth/mpv-omniphony#83 adds the flag there), and the bridge gets the same
+change in harletty/harletty-bridge#134.
 
 ## Open questions
 
