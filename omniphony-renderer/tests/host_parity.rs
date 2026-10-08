@@ -115,7 +115,7 @@ fn render_with_engine(work: &Path) -> (Vec<f32>, u32) {
     let mut engine = Engine::from_paths(
         Some(&work.join("config/config.yaml")),
         Some(&layout()),
-        Some(&reference_bridge_path()),
+        &[reference_bridge_path()],
         None,
         DEMO_RATE,
     )

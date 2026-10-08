@@ -178,8 +178,8 @@ pub(super) fn merge_render_config(
     // The registered options' flags are already folded into `cfg`, so the
     // fields below that mirror them are read from it unconditionally.
     args.output_sample_rate = cfg.output_sample_rate;
-    if args.bridge_path.is_none() {
-        args.bridge_path = cfg.bridge_path.clone();
+    if args.bridge_paths.is_empty() {
+        args.bridge_paths = cfg.bridges();
     }
     // In continuous (studio bridge) mode the config is the source of truth for the
     // input pipe, overriding the positional default the studio passes at launch.
@@ -296,7 +296,7 @@ pub(super) fn effective_to_config(
         None
     };
     renderer::config_fields::presentation::store(&mut render, &args.presentation);
-    render.bridge_path = args.bridge_path.clone();
+    render.set_bridges(&args.bridge_paths);
     renderer::config_fields::enable_vbap::store(&mut render, args.enable_vbap);
     // Persist the embedded layout instead of a path link. Only override when a
     // layout path is supplied on the CLI; otherwise keep the config's existing

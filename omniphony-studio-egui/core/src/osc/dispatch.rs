@@ -1187,6 +1187,10 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             live.app.render_bridge_error = non_empty(value);
             Change::None
         }
+        OscEvent::StateRenderBridges { value } => {
+            live.app.render_bridges = serde_json::from_str(&value).ok();
+            Change::None
+        }
 
         // ── panels: renderer evaluation grid ──────────────────────────────
         // `0` means "not set" for every size but `z_neg_size`, where the

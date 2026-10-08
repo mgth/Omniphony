@@ -5,7 +5,10 @@
 //! It performs no audio I/O: the host (the `orender` CLI, or `liborender.so`
 //! inside mpv) feeds packets in and consumes rendered samples.
 
-use crate::bridge_loader::{LoadedBridge, configure_presentation, resolve_bridge};
+use crate::bridge_loader::{
+    LoadedBridge, configure_presentation, load_bridges, publish_bridges, record_bridge_request,
+    resolve_bridges,
+};
 use crate::decode_step::{
     Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
 };
@@ -16,11 +19,11 @@ use crate::overlay;
 use crate::renderer_build::{SpatialRendererParams, build_spatial_renderer};
 use anyhow::{Result, anyhow, bail};
 use bridge_api::{RChannelLabel, RDecodedFrame, RInputTransport};
-use renderer::config::Config;
+use renderer::config::{Config, RenderConfig};
 use renderer::metering::AudioMeter;
 use renderer::spatial_renderer::SpatialRenderer;
 use renderer::speaker_layout::SpeakerLayout;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 
@@ -394,12 +397,13 @@ impl Engine {
     /// resolve the speaker layout (explicit path → config layout → 7.1.4 preset),
     /// load + configure the decoder bridge, and build the renderer. This is the
     /// path both the FFI and the test harness use.
-    /// `bridge_path`: explicit decoder-bridge path, or `None` to take it from
-    /// the config YAML's `render.bridge_path`. As a last-resort fallback, when
-    /// neither is set (or the config path no longer exists), we look for a
-    /// `*_bridge.{so,dll,dylib}` next to the current executable — covers the
+    /// `bridge_paths`: the decoder bridges asked for, in load order, or empty
+    /// to take them from the config YAML's `render.bridge_path(s)`. When
+    /// neither names any, auto-discovery loads every bridge of the first
+    /// folder holding one, next to the current executable first — covers the
     /// Windows bundle case where the user extracted a zip with mpv.exe,
-    /// orender.dll and the bridge .dll all in the same folder.
+    /// orender.dll and the bridge .dlls all in the same folder
+    /// ([`resolve_bridges`]).
     /// `input_codec`: codec identifier of the raw access units the host will
     /// feed (matching the bridge's supported codec IDs). Declared to the
     /// bridge so its `Raw` transport routes to the right decoder; `None`
@@ -407,7 +411,7 @@ impl Engine {
     pub fn from_paths(
         config_yaml_path: Option<&Path>,
         speaker_layout_path: Option<&Path>,
-        bridge_path: Option<&Path>,
+        bridge_paths: &[PathBuf],
         input_codec: Option<&str>,
         sample_rate: u32,
     ) -> Result<Self> {
@@ -432,18 +436,23 @@ impl Engine {
             SpeakerLayout::preset("7.1.4")?
         };
 
-        // Resolve the bridge path with the shared strict policy (identical for
-        // the CLI and this FFI/mpv host): an explicitly requested path (FFI
-        // param or config render.bridge_path) must exist or it's an error; only
-        // when nothing is requested do we auto-discover *_bridge.* next to the
-        // host binary. See `bridge_loader::resolve_bridge`.
-        let config_bridge = render_cfg.as_ref().and_then(|c| c.bridge_path.clone());
-        let resolved_bridge = resolve_bridge(bridge_path, config_bridge.as_deref())?;
+        // Resolve the bridges with the shared strict policy (identical for
+        // the CLI and this FFI/mpv host): explicitly requested paths (FFI
+        // param or config render.bridge_path(s)) are never replaced by a
+        // discovered bridge; only when nothing is requested do we
+        // auto-discover *_bridge.* next to the host binary. See
+        // `bridge_loader::resolve_bridges`.
+        let config_bridges = render_cfg
+            .as_ref()
+            .map(RenderConfig::bridges)
+            .unwrap_or_default();
+        let bridge_request = resolve_bridges(bridge_paths, &config_bridges)?;
 
-        // The renderer's table mode/defaults come from the bridge, so load and
-        // configure it before building the renderer.
+        // The renderer's table mode/defaults come from the bridges, so load
+        // and configure them before building the renderer.
         let t_bridge = std::time::Instant::now();
-        let mut bridge = LoadedBridge::load_with_params(&resolved_bridge)?;
+        let loaded_bridges = load_bridges(&bridge_request)?;
+        let mut bridge = LoadedBridge::open(loaded_bridges.libs.clone())?;
         // Honour `render.presentation` like the CLI does. This host has no
         // flags, so the config is the only way to ask for anything other than
         // the default — hard-coding it here made the setting silently
@@ -537,7 +546,9 @@ impl Engine {
         // The path asked for (host override, else the config's), not the
         // resolved one: an auto-discovered bridge next to the host binary must
         // not end up in the shared config on the next save.
-        crate::renderer_build::record_bridge_path(&control, bridge_path, config_bridge.as_deref());
+        crate::renderer_build::record_bridge_paths(&control, bridge_paths, &config_bridges);
+        record_bridge_request(&control, &bridge_request);
+        publish_bridges(&control, &loaded_bridges);
         // This host reads its input from the player, not from a pipe: keep the
         // config's `render.input_pipe` as is on the next save.
         crate::renderer_build::record_input_path(&control, render_cfg.as_ref());
