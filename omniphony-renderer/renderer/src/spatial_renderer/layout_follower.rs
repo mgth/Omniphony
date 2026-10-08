@@ -106,7 +106,9 @@ fn follow(control: &RendererControl) {
             std::thread::sleep(BUSY_RETRY);
             continue;
         }
-        let mut rebuild = owed || control.render_layout_outdated();
+        // The debt is paid by this round; only a round overtaken again, or
+        // a host queuing behind it, owes another.
+        let mut rebuild = std::mem::take(&mut owed) || control.render_layout_outdated();
         // A new stream's grid: no rebuild when a topology on it is at hand
         // (`RendererControl::request_live_grid`).
         let mut grid_only = false;
@@ -147,5 +149,61 @@ fn follow(control: &RendererControl) {
         if !owed && !control.render_layout_outdated() && !control.bridge_grid_pending() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::evaluation_grid::{EvaluationGrid, EvaluationGridSource};
+    use crate::spatial_renderer::SpatialRenderer;
+    use crate::speaker_layout::SpeakerLayout;
+    use crate::test_support;
+    use bridge_api::{RVbapCartesianDefaults, RVbapTableMode};
+
+    fn hint(x: u32) -> EvaluationGrid {
+        EvaluationGrid::from_hint(
+            RVbapCartesianDefaults {
+                x_size: x,
+                y_size: 5,
+                z_size: 3,
+                z_neg_size: 3,
+                allow_negative_z: false,
+            },
+            RVbapTableMode::Cartesian,
+        )
+    }
+
+    /// A rebuild a host queued while the worker held `recomputing` is run
+    /// once, then the worker goes back to rest: the debt does not outlive
+    /// the round that pays it.
+    #[test]
+    fn a_queued_rebuild_runs_once_and_the_worker_returns() {
+        let layout = SpeakerLayout::preset("7.1.4").expect("7.1.4 preset");
+        let mut r = SpatialRenderer::new(test_support::small_grid_spec(layout)).expect("renderer");
+        let control = r.renderer_control();
+        control.seed_bridge_grid(hint(5));
+        {
+            let mut live = control.live.write();
+            live.evaluation.source = EvaluationGridSource::Bridge;
+            hint(5).apply(&mut live);
+        }
+        control.set_relayout_by_host(false);
+        r.prepare_speaker_stage().expect("bands");
+
+        assert!(control.offer_bridge_grid(hint(7)));
+        control.recompute_pending.store(true, Ordering::Release);
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = Arc::clone(&control);
+        std::thread::spawn(move || {
+            follow(&worker);
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the follower returns once the queued rebuild ran");
+        assert!(!control.bridge_grid_pending());
+        assert!(!control.recompute_pending.load(Ordering::Acquire));
+        assert_eq!(control.live.read().evaluation.cartesian.x_size, 7);
     }
 }
