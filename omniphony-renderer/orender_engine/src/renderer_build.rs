@@ -9,6 +9,7 @@
 use anyhow::{Result, anyhow, bail};
 use bridge_api::{RVbapCartesianDefaults, RVbapTableMode};
 use renderer::config::RenderConfig;
+use renderer::evaluation_grid::{EvaluationGrid, EvaluationGridSource};
 use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode, RendererControl};
 use renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
 use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
@@ -66,6 +67,10 @@ pub struct SpatialRendererParams {
     pub evaluation_cartesian_z_neg_size: Option<usize>,
     pub vbap_allow_negative_z: bool,
     pub no_vbap_allow_negative_z: bool,
+    /// Where the evaluation grid comes from (`render.evaluation_grid`). In
+    /// `bridge` the grid fields above are left unset: the build takes the
+    /// bridge's hint.
+    pub evaluation_grid: EvaluationGridSource,
     pub render_evaluation_position_interpolation: bool,
     pub vbap_distance_model: String,
     pub spread_from_distance: bool,
@@ -99,8 +104,18 @@ impl SpatialRendererParams {
     /// config-set table mode is an explicit choice: the live evaluation mode
     /// starts on it, so the config seed that follows construction finds it
     /// already applied and does not rebuild the topology a second time.
+    ///
+    /// A grid that follows the bridge (`render.evaluation_grid`, see
+    /// [`renderer::evaluation_grid::resolve_config`]) reads none of the grid
+    /// keys: the bridge's hint is the grid. A host settles the config
+    /// against its bridges' hint first
+    /// ([`renderer::evaluation_grid::settle_config`]).
     pub fn from_render_config(cfg: Option<&RenderConfig>) -> Self {
-        let render_evaluation_mode = cfg
+        let evaluation_grid = cfg
+            .map(|c| renderer::evaluation_grid::resolve_config(c, None).source)
+            .unwrap_or_default();
+        let grid_keys = cfg.filter(|_| evaluation_grid == EvaluationGridSource::Custom);
+        let render_evaluation_mode = grid_keys
             .and_then(|c| c.render_evaluation_mode.as_deref())
             .and_then(parse_eval_mode);
         Self {
@@ -118,15 +133,20 @@ impl SpatialRendererParams {
                 .and_then(renderer::config_fields::vbap_distance_max::get)
                 .unwrap_or(renderer::config_fields::vbap_distance_max::DEFAULT),
             render_evaluation_mode,
-            evaluation_cartesian_x_size: cfg.and_then(|c| c.evaluation_cartesian_x_size),
-            evaluation_cartesian_y_size: cfg.and_then(|c| c.evaluation_cartesian_y_size),
-            evaluation_cartesian_z_size: cfg.and_then(|c| c.evaluation_cartesian_z_size),
-            evaluation_cartesian_z_neg_size: cfg.and_then(|c| c.evaluation_cartesian_z_neg_size),
-            vbap_allow_negative_z: matches!(cfg.and_then(|c| c.vbap_allow_negative_z), Some(true)),
+            evaluation_cartesian_x_size: grid_keys.and_then(|c| c.evaluation_cartesian_x_size),
+            evaluation_cartesian_y_size: grid_keys.and_then(|c| c.evaluation_cartesian_y_size),
+            evaluation_cartesian_z_size: grid_keys.and_then(|c| c.evaluation_cartesian_z_size),
+            evaluation_cartesian_z_neg_size: grid_keys
+                .and_then(|c| c.evaluation_cartesian_z_neg_size),
+            vbap_allow_negative_z: matches!(
+                grid_keys.and_then(|c| c.vbap_allow_negative_z),
+                Some(true)
+            ),
             no_vbap_allow_negative_z: matches!(
-                cfg.and_then(|c| c.vbap_allow_negative_z),
+                grid_keys.and_then(|c| c.vbap_allow_negative_z),
                 Some(false)
             ),
+            evaluation_grid,
             render_evaluation_position_interpolation: cfg
                 .and_then(renderer::config_fields::render_evaluation_position_interpolation::get)
                 .unwrap_or(
@@ -356,6 +376,23 @@ pub fn build_spatial_renderer(
     log::info!("VBAP spatial rendering enabled");
     {
         let control = renderer.renderer_control();
+        // The grid: the bridge's hint, taken as the one in force, and where
+        // the grid comes from. A forced grid has a concrete mode: `auto`
+        // resolves to the table the renderer was just built with.
+        let hint = EvaluationGrid::from_hint(vbap_cartesian_defaults, preferred_evaluation_mode);
+        control.seed_bridge_grid(hint);
+        {
+            let mut live = control.live.write();
+            live.evaluation.source = params.evaluation_grid;
+            match params.evaluation_grid {
+                EvaluationGridSource::Bridge => hint.apply(&mut live),
+                EvaluationGridSource::Custom => {
+                    if live.evaluation.mode == LiveEvaluationMode::Auto {
+                        live.evaluation.mode = hint.mode;
+                    }
+                }
+            }
+        }
         // The demonstration backend (`backend_id = "example"`), only in builds
         // made with the `example-backend` feature.
         #[cfg(feature = "example-backend")]

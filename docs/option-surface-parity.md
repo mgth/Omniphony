@@ -37,10 +37,11 @@ Status: ✅ OK · 🟡 **justified** gap (do not fix) · 🔴 gap **to fix**.
 |---|:--:|:--:|:--:|:--:|---|
 | `enable_vbap` | ✅ | ✅ | ✅ | ✅ | — |
 | polar resolutions (az/el/dist/dist-max) | ✅ | ✅ | ✅ | ✅ | — |
-| Cartesian grid (x/y/z/z-neg) | ✅ | ✅ | ✅ | ✅ | — |
-| `render_evaluation_mode` (polar/cartesian) | ✅ | ✅ | ✅ | ✅ | — |
+| `evaluation_grid` (`bridge` / `custom`) | ✅ | ✅ | ✅ | ✅ | — |
+| Cartesian grid (x/y/z/z-neg) | ✅ | ✅ | ✅ | ✅ | editable in `custom` only: the bridge's hint otherwise. |
+| `render_evaluation_mode` (polar/cartesian) | ✅ | ✅ | ✅ | ✅ | editable in `custom` only (a concrete mode). |
 | `position_interpolation` | ✅ | ✅ | ✅ | ✅ | — |
-| `vbap_allow_negative_z` | ✅ | ✅ | ✅ | ✅ | — |
+| `vbap_allow_negative_z` | ✅ | ✅ | ✅ | ✅ | registry option, editable in `custom` only. |
 | `vbap_table` (precomputed table) | ✅ | — | — | 🟡 | a *load-time* path, not editable live (reinitialisation). |
 | `speaker_layout` / `current_layout` | ✅ | ✅ | ✅ | ✅ | live editing through `config/layout`. |
 

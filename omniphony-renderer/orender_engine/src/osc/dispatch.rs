@@ -372,6 +372,9 @@ fn apply_control_effects(
     if let Some(message) = effects.log_message {
         log::info!("{message}");
     }
+    if effects.grid_request {
+        super::recompute::request_grid(control, socket, clients, gaintable_cache);
+    }
     if effects.trigger_layout_recompute {
         // A change that affects the backend geometry (triangulation / decorator
         // metrics) bumps the geometry generation so the upcoming recompute rebuilds

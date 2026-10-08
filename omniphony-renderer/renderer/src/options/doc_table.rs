@@ -137,6 +137,9 @@ fn flags_cell(flags: OptionFlags) -> String {
     if flags.contains(OptionFlags::EMBEDDED_ONLY) {
         names.push("embedded only");
     }
+    if flags.contains(OptionFlags::BRIDGE_GRID) {
+        names.push("bridge grid");
+    }
     if names.is_empty() {
         "—".into()
     } else {

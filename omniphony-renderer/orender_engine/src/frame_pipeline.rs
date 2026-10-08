@@ -83,6 +83,9 @@ pub struct FramePipeline {
     /// and takes a spare back, so metering allocates nothing once warm.
     meter_snapshot: MeterSnapshot,
     overlay_levels: Vec<(u32, f64)>,
+    /// The evaluation grid last offered to the renderer's control: a
+    /// stream's bridge hint is offered once, when it changes.
+    offered_grid: Option<renderer::evaluation_grid::BridgeHint>,
 }
 
 impl FramePipeline {
@@ -94,6 +97,7 @@ impl FramePipeline {
             unmapped_labels: false,
             meter_snapshot: MeterSnapshot::default(),
             overlay_levels: Vec::new(),
+            offered_grid: None,
         }
     }
 
@@ -123,6 +127,7 @@ impl FramePipeline {
         }
         if let Some(renderer) = renderer.as_deref_mut() {
             render::follow_stream_rate(renderer, frame.sampling_frequency)?;
+            self.offer_bridge_grid(renderer);
         }
         let renderer = renderer.map(|renderer| &*renderer);
         let want_osc = osc.as_deref().is_some_and(OscSender::has_osc_clients);
@@ -173,6 +178,20 @@ impl FramePipeline {
             }
         }
         Ok(())
+    }
+
+    /// Offer the grid the stream's bridge hints to the renderer's control,
+    /// once per change; a host off the audio thread takes it and rebuilds
+    /// when the grid follows the bridge (`renderer::evaluation_grid`). A
+    /// compare per frame; the offer itself never blocks and is made again
+    /// on a later frame when the control was busy.
+    fn offer_bridge_grid(&mut self, renderer: &SpatialRenderer) {
+        if let Some(grid) = self.stream.declaration.grid
+            && self.offered_grid != Some(grid)
+            && renderer.renderer_control().offer_bridge_hint(grid)
+        {
+            self.offered_grid = Some(grid);
+        }
     }
 
     /// Render `frame`, the block starting at `sample_pos`, after
@@ -467,6 +486,53 @@ mod tests {
             dialogue_level: ROption::RNone,
             is_new_segment: false,
         }
+    }
+
+    /// The grid a stream's bridge hints is offered to the renderer once per
+    /// change, with the frame its declaration came with; content no bridge
+    /// declared keeps the one in force.
+    #[test]
+    fn a_streams_grid_hint_is_offered_once_per_change() {
+        use renderer::evaluation_grid::EvaluationGrid;
+        let mut renderer = renderer();
+        let control = renderer.renderer_control();
+        let mut pipeline = FramePipeline::new(RCoordinateFormat::Cartesian);
+        let frame = frame(&[RChannelLabel::L, RChannelLabel::R], &[1000, 1000]);
+        let other = EvaluationGrid::from_hint(
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 20,
+                y_size: 20,
+                z_size: 8,
+                z_neg_size: 0,
+                allow_negative_z: false,
+            },
+            bridge_api::RVbapTableMode::Polar,
+        );
+        let offers = control.bridge_grids_offered();
+
+        // No declaration yet, then the stream's: offered once.
+        pipeline
+            .prepare(&frame, 0, Some(&mut renderer), None)
+            .unwrap();
+        assert_eq!(control.bridge_grids_offered(), offers);
+        pipeline.stream.declaration.grid = Some(renderer::evaluation_grid::BridgeHint {
+            grid: other,
+            bridge: 1,
+        });
+        for _ in 0..3 {
+            pipeline
+                .prepare(&frame, 0, Some(&mut renderer), None)
+                .unwrap();
+        }
+        assert_eq!(control.bridge_grids_offered(), offers + 1);
+        assert!(control.bridge_grid_pending());
+
+        // Undeclared content (live PCM) keeps it.
+        pipeline.stream.declaration.grid = None;
+        pipeline
+            .prepare(&frame, 0, Some(&mut renderer), None)
+            .unwrap();
+        assert_eq!(control.bridge_grids_offered(), offers + 1);
     }
 
     /// Energy of output channel `channel` in an interleaved block.

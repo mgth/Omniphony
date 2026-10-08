@@ -86,7 +86,7 @@ than discarded.
 UDP loses datagrams and the engine answers nothing by default, so the session
 carries what a client needs to notice either. The contract crate's
 `CONTRACT_REVISION` (`osc-contract`) is the revision this section describes:
-**3**.
+**5**.
 
 - **Stream transport** (revision 2) — the engine also listens on TCP, on
   loopback, on the OSC/UDP control port's number. A connection carries the
@@ -163,6 +163,20 @@ carries what a client needs to notice either. The contract crate's
   runs queues one follow-up build, which starts right after the first one's
   `0`: a `0` says that a build ended, not that every earlier change is built.
   Over UDP the ack only says the engine heard the sync.
+- **Evaluation grid** (revision 5) — the grid the gain table is sampled on
+  follows the active bridge or is forced (option `evaluation_grid`,
+  `docs/multi-bridge.md`). `/state/renderer` carries `evaluationGrid`
+  (`bridge` or `custom`) and `evaluationGridBridge`, the grid the active
+  bridge hints (`{mode, xSize, ySize, zSize, zNegSize, allowNegativeZ}`, null
+  until known). While the grid follows the bridge, a write of a grid value
+  (options flagged `bridge grid` below, their dedicated addresses included) is
+  refused with `invalid_arguments` and a message naming the key and saying
+  `the grid follows the bridge`; the other pairs of the same
+  `/control/options` write still apply, and a write that forces the grid
+  (`evaluation_grid custom`) lets the grid values after it through.
+  `vbap_allow_negative_z` is a registry option, and
+  `/state/vbap/allow_negative_z` is its live value (off by default; it said
+  on before the renderer reported one).
 - **Contract revision** — `/state/capabilities` carries `contractRevision`.
   A client compares it with its own and says so when they differ; an engine
   that advertises none predates revisions and counts as 0. The revision moves
@@ -434,12 +448,14 @@ dedicated address, under `/omniphony`):
 | `distance_diffuse_curve` | float [0, 100], step 0.05 | `1` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/curve` |
 | `distance_diffuse_metric` | `spherical` \| `chebyshev` | `"spherical"` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/metric` |
 | `distance_diffuse_mirror_axes` | `none` \| `x` \| `y` \| `z` \| `xy` \| `xz` \| `yz` \| `xyz` | `"xy"` | `distance_diffuse` (live, topology) | — | `/control/distance_diffuse/mirror_axes` |
-| `render_evaluation_mode` | `auto` \| `realtime` \| `precomputed_polar` \| `precomputed_cartesian` | `"auto"` | `evaluation` (live, evaluation) | — | `/control/render_evaluation_mode` |
+| `evaluation_grid` | `bridge` \| `custom` | `"bridge"` | `evaluation` (live, evaluation) | — | — |
+| `render_evaluation_mode` | `auto` \| `realtime` \| `precomputed_polar` \| `precomputed_cartesian` | `"auto"` | `evaluation` (live, evaluation) | bridge grid | `/control/render_evaluation_mode` |
 | `evaluation_object_size_intervals` | int ≥ 0 | `0` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/object_size_intervals` |
-| `evaluation_cartesian_x_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/x_size` |
-| `evaluation_cartesian_y_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/y_size` |
-| `evaluation_cartesian_z_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/z_size` |
-| `evaluation_cartesian_z_neg_size` | int ≥ 0 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/cartesian/z_neg_size` |
+| `evaluation_cartesian_x_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | bridge grid | `/control/render_evaluation/cartesian/x_size` |
+| `evaluation_cartesian_y_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | bridge grid | `/control/render_evaluation/cartesian/y_size` |
+| `evaluation_cartesian_z_size` | int ≥ 1 | as built | `evaluation` (live, evaluation) | bridge grid | `/control/render_evaluation/cartesian/z_size` |
+| `evaluation_cartesian_z_neg_size` | int ≥ 0 | as built | `evaluation` (live, evaluation) | bridge grid | `/control/render_evaluation/cartesian/z_neg_size` |
+| `vbap_allow_negative_z` | bool | as built | `negative_z` (live, topology) | bridge grid | — |
 | `vbap_azimuth_resolution` | int ≥ 1 | `360` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/azimuth_resolution` |
 | `vbap_elevation_resolution` | int ≥ 1 | as built | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/elevation_resolution` |
 | `vbap_distance_res` | int ≥ 1 | `8` | `evaluation` (live, evaluation) | — | `/control/render_evaluation/polar/distance_res` |
@@ -760,7 +776,8 @@ exhaustive machine-readable list.
   stays in the renderer log; it contains `no decoder bridge found`
   (`BRIDGE_ERROR_NONE_FOUND`) when none was asked for and auto-discovery found
   none, a normal state for a standby renderer, and anything else is a failed
-  load), `vbap/allow_negative_z`,
+  load), `vbap/allow_negative_z` (the live value the gain models are built
+  with, see the option),
   `render_evaluation/*` (mirrors of the control resolutions), `speakers`,
   `speakers/recomputing`, `speakers/recompute_error`, `layout`.
 - **Schemas & profiles** — `options_schema`, `object_generators` (the height
