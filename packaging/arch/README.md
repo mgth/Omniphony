@@ -7,17 +7,19 @@ bundles, which ship everything in one installer). The mpv package itself
 | Package            | Builds from                | License      | Installs |
 |--------------------|----------------------------|--------------|----------|
 | `orender`          | this repo (tag `v*`)       | GPL-3.0-only | `/usr/bin/orender`, `liborender.so*`, `orender.h`, `orender.pc`, layouts, the `omniphony-renderer` user service (not enabled) |
-| `omniphony-studio` | this repo (tag `v*`)       | GPL-3.0-only | Studio UI, Tauri host (no bundled sidecar — depends on `orender`) |
-| `omniphony-studio-egui` | this repo (tag `v*`)  | GPL-3.0-only | Studio UI, native egui/wgpu host (depends on `orender`) |
+| `omniphony-studio` | this repo (tag `v*`)       | GPL-3.0-only | Omniphony Studio, the native egui/wgpu UI (depends on `orender`) |
 | `harletty-bridge`  | sibling `harletty-bridge`  | Apache-2.0   | `/usr/lib/orender/libharletty_bridge.so` |
 
 Dependency shape:
 
-- `omniphony-studio`, `omniphony-studio-egui` and `mpv-omniphony` **depend on
-  `orender`** (either Studio finds the system binary next to its own
-  executable — `/usr/bin/orender` — then via `which orender`; mpv links
-  `liborender.so`). The native Studio also reads the layouts `orender`
-  installs, through a link under its own share directory.
+- `omniphony-studio` and `mpv-omniphony` **depend on `orender`** (Studio
+  finds the system binary next to its own executable — `/usr/bin/orender` —
+  then via `which orender`; mpv links `liborender.so`). Studio also reads the
+  layouts `orender` installs, through a link under its own share directory.
+- Up to 0.6.0, `omniphony-studio` built the web-based Tauri Studio and the
+  native one was a separate `omniphony-studio-egui` package. From 0.7.0 the
+  native Studio is the only one: `omniphony-studio` builds it and
+  `provides`/`conflicts`/`replaces` `omniphony-studio-egui`.
 - `harletty-bridge` is a hard dependency of **nothing**: it is an `optdepends`
   everywhere. The bridge is a runtime `dlopen` plugin (the `*_bridge.so`
   pattern) that adds compressed/object-audio decoding; without it PCM input
@@ -35,8 +37,8 @@ Dependency shape:
 /usr/share/orender/layouts/**/*.yaml   # virtual-bed fallback looks here
 /usr/lib/systemd/user/omniphony-renderer.service  # not enabled: systemctl --user enable --now omniphony-renderer
 /usr/lib/orender/libharletty_bridge.so # the decoder bridge plugin (optional)
-/usr/bin/omniphony-studio           # Studio UI, Tauri host (+ .desktop, icons, resources)
-/usr/bin/omniphony-studio-egui      # Studio UI, native host (+ .desktop, icon)
+/usr/bin/omniphony-studio-egui      # Studio UI (+ .desktop, icon)
+/usr/bin/omniphony-studio           # → omniphony-studio-egui (the Tauri Studio's command name)
 /usr/share/omniphony-studio-egui/   # its shipped files: layouts → ../orender/layouts, assets/
 ```
 
@@ -71,7 +73,6 @@ Studio needs `orender` **installed** to run, not to build):
 cd orender          && makepkg -si
 cd ../harletty-bridge && makepkg -si   # optional but recommended
 cd ../omniphony-studio && makepkg -si
-cd ../omniphony-studio-egui && makepkg -si   # the native Studio, same dependency shape
 ```
 
 Then the mpv package from the separate `mpv-omniphony` repo (depends on

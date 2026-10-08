@@ -28,7 +28,7 @@ Parts already exist, each covering one piece:
 |---|---|
 | Studio installers (deb, AppImage, NSIS with `installer-mode = "both"`, MSI, dmg), each carrying `orender` and the engine library | `omniphony-studio-egui/Cargo.toml` `[package.metadata.packager]`, `omniphony-studio-egui/scripts/package.sh`, `.github/workflows/release.yml` (cargo-packager 0.11.8) |
 | Studio copies its engine to `<local data>/omniphony/lib/` on every start, when the bytes differ | `omniphony-studio-egui/core/src/host/engine_deploy.rs` |
-| Arch packages: `orender` (`/usr/bin/orender`, `/usr/lib/liborender.so.0`), the bridge in `/usr/lib/orender/`, both Studios | `packaging/arch/*/PKGBUILD`, `packaging/arch/README.md` |
+| Arch packages: `orender` (`/usr/bin/orender`, `/usr/lib/liborender.so.0`), the bridge in `/usr/lib/orender/`, Studio (`omniphony-studio`) | `packaging/arch/*/PKGBUILD`, `packaging/arch/README.md` |
 | Studio installs, starts, stops and removes the engine as a service: a systemd **user** unit on Linux, a Windows service through `New-Service` | `omniphony-studio-egui/core/src/host/commands/orender.rs:390-399`, `:516-626`; offered from `host/services/operations.rs:95-112` |
 | `orender` runs under the Windows Service Control Manager and reports readiness to systemd (`Type=notify`) | `omniphony-renderer/src/main.rs:73-100`, `sys/src/lib.rs:43-71` |
 | A machine-wide config on Windows, so a service and the user's processes read one file | `renderer/src/config.rs:1552-1600` |

@@ -1,7 +1,12 @@
 # Phase 2 spec — the state & event contract between the web Studio and its Tauri host
 
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
 Scope: everything that crosses the host↔webview boundary in
-`omniphony-studio/` — the events the Rust host emits, the derived numbers it
+[`omniphony-studio/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio) — the events the Rust host emits, the derived numbers it
 computes before emitting, the connection/auto-start state machine, the JS
 `app` state object those events write into, the repaint (`dirty`) scheduling,
 the log pipeline, and the `get_state` snapshot. It says, per item, whether the

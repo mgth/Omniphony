@@ -1,4 +1,5 @@
-//! Studio look, ported from `omniphony-studio/src/styles/app.css`.
+//! Studio look, ported from the web Studio's `src/styles/app.css` (removed in
+//! 0.7.0, #677; last version at commit 49372dd6 of mgth/Omniphony).
 //!
 //! egui has no cascade, so the CSS variables and the recurring rules become
 //! named constants here and one `Style` the app installs at startup. Hex

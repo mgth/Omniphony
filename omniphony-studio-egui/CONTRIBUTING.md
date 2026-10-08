@@ -25,9 +25,10 @@ cargo fmt --all --check
 ```
 
 After dependencies are cached, `--offline` makes these checks independent of
-the network. Keep all three workspace lockfiles in sync when a shared core
-manifest changes: native Studio, renderer, and `omniphony-studio/src-tauri`.
-A dependency used only by the UI belongs in the native frontend manifest.
+the network. Keep both workspace lockfiles in sync when a shared manifest
+changes (`omniphony_geometry`, the OSC contract): the Studio's and the
+renderer's. A dependency used only by the UI belongs in the frontend manifest,
+not the core's.
 
 For an isolated visualization session on Linux/macOS:
 
@@ -131,11 +132,7 @@ check feature flags, minimum Rust version and the pinned toolchain. Do not
 remove AccessKit, Wayland, or another platform feature merely to pass a local
 build. Commit the resolved lockfiles.
 
-Run the native workspace tests, architecture gates and Tauri host compilation
-when its shared core changes. For Tauri development without release sidecars,
-the CI check supplies `TAURI_CONFIG` with empty `bundle.externalBin` and null
-`bundle.resources`; that override is for checking, never for release packaging.
-Require green platform CI on the final commit and an independent review.
+Run the workspace tests and the architecture gates. Require green platform CI on the final commit and an independent review.
 
 For a UI/GPU upgrade, also record manual results for keyboard navigation,
 focus, CJK/IME, scale-factor changes, narrow panels, help dialogs and viewport

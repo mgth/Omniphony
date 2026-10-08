@@ -1,10 +1,15 @@
 # Omniphony Studio — LEFT overlay panel specification (phase 2, egui port)
 
-Scope: everything inside `#overlay` of the web Studio (`omniphony-studio/src/index.html`
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
+Scope: everything inside `#overlay` of the web Studio ([`omniphony-studio/src/index.html`](https://github.com/mgth/Omniphony/blob/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src/index.html)
 lines 41–773) plus the shared machinery those panels rely on (`state.js`, `flush.js`,
 `i18n.js`, `controls/inline-help.js`, `runtime-connection.js`, `options-binder.js`).
 All paths below are relative to
-`omniphony-studio/`
+[`omniphony-studio/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio)
 (`src/…` = web frontend, `src-tauri/src/…` = Tauri host). Line numbers are from the
 `feat/studio-egui-panels` worktree at the time of writing.
 

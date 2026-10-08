@@ -8,8 +8,7 @@ amend this file whenever a release teaches something new.
 
 | Component | Repo | Tag namespace | Version line |
 |---|---|---|---|
-| Omniphony Studio bundle (Tauri host) | `mgth/Omniphony` | `v*` (e.g. `v0.5.1`) | stack version |
-| Omniphony Studio, native host (egui/wgpu) | `mgth/Omniphony` | same `v*` tag, one archive per platform on the same release | stack version (`omniphony-studio-egui/Cargo.toml`, `[workspace.package]`) |
+| Omniphony Studio (egui/wgpu, `omniphony-studio-egui/`) | `mgth/Omniphony` | `v*` (e.g. `v0.7.0`): installers plus one archive per platform | stack version (`omniphony-studio-egui/Cargo.toml`, `[workspace.package]`) |
 | Standalone liborender | `mgth/Omniphony` | same `v*` tag, `liborender-vX.Y.Z-<platform>.zip` assets (its own `liborender-v*` releases stopped at 0.4.3) | stack version |
 | mpv player bundle | assets on `mgth/Omniphony`, source in `mgth/mpv-omniphony` | `mpv-v*` | stack version |
 | mpv fork branches | `mgth/mpv` | `orender-v*` | stack version (plain `v*` collides with upstream mpv's ancient tags) |
@@ -18,7 +17,15 @@ amend this file whenever a release teaches something new.
 A patch release usually only involves the first track. Cut the others only when
 their component actually changed.
 
-One number, the **release version**, is carried by both Studios, `orender`,
+**0.7.0 drops the web Studio.** Up to 0.6.0 a release shipped two Studios: the
+web-based Tauri host (the `omniphony-studio` tree, assets `Omniphony.Studio_…`) and the
+native one. From 0.7.0 the native Studio is the only one (#677): the Tauri
+tree, its CI jobs and lockfiles are gone, the release's Studio assets are the
+native installers and archives (`omniphony-studio-egui_…`,
+`omniphony-studio-egui-v…`), and the AUR `omniphony-studio` package installs
+the native Studio. Say so in the 0.7.0 notes (step 5).
+
+One number, the **release version**, is carried by Studio, `orender`,
 `liborender` and every renderer crate except `bridge_api` (the plugin ABI
 contract), `spdif` (required by version from the bridge repository) and the
 OSC contract. Its source of truth is `omniphony-renderer/Cargo.toml`'s
@@ -65,15 +72,12 @@ stays. The script rewrites, keeping their formatting:
 - `omniphony-renderer/Cargo.toml` — `[workspace.package] version` (every
   renderer crate but `bridge_api`/`spdif` inherits it) and
   `[workspace.metadata.release] player`;
-- `omniphony-renderer/omniphony_geometry/Cargo.toml` (spelled out: the Studios
-  build it from outside the workspace);
+- `omniphony-renderer/omniphony_geometry/Cargo.toml` (spelled out: the Studio
+  builds it from outside the workspace);
 - `omniphony-studio-egui/Cargo.toml` — `[workspace.package] version`, the
-  native Studio's About box and what its update check compares against tags;
-- `omniphony-studio/package.json`, `package-lock.json` (both of its fields),
-  `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`;
-- the entries of the repository's own crates in the three tracked lockfiles
-  (`omniphony-renderer/`, `omniphony-studio/src-tauri/` — which also records
-  the native Studio's core — and `omniphony-studio-egui/`). CI builds with
+  Studio's About box and what its update check compares against tags;
+- the entries of the repository's own crates in the two tracked lockfiles
+  (`omniphony-renderer/` and `omniphony-studio-egui/`). CI builds with
   `--locked` and rejects a stale entry within a minute (it did at 0.6.0);
 - the README's compatibility table: a new first row for `vX.Y.Z`, read from the
   tree (liborender ABI from `orender_ffi/src/lib.rs`, `bridge_api` series from
@@ -127,42 +131,42 @@ The tag push triggers `release.yml`:
   compatibility table must open with this release's row. A polish tag on a
   tree whose liborender ABI or `bridge_api` moved since the row was written
   is refused: that is a new release number, not a polish build.
-- **build-studio** — Linux (`.deb`/`.rpm`/`.AppImage`), Windows
-  (`.msi`/`.exe`), macOS arm64 (`.dmg`/`.app.tar.gz`, ad-hoc signed, not
-  notarized). tauri-action creates a **draft** release named
-  "Omniphony vX.Y.Z". Seven Tauri assets expected; whole run took ~17 min at
-  0.5.1 (Linux is the slowest job at ~11 min).
-- **native Studio**, same job, after tauri-action: builds
-  `omniphony-studio-egui` on its pinned toolchain and attaches
-  `omniphony-studio-egui-vX.Y.Z-{linux-x86_64.tar.gz,windows-x86_64.zip,macos-arm64.zip}`
-  to the draft with `gh release upload` — the Studio, `orender` (built by its
-  own step with the same command as the Tauri sidecar, so it finds that build
-  done), `engine/` (the engine library), `layouts/`, `assets/` and the
-  licence, in one directory. Three more assets. The Studio finds those files
-  next to its executable (`core/src/host/bundle.rs`).
-- **native Studio installers**, same job, before the archive (#677):
+- **draft** — creates the **draft** release named "Omniphony vX.Y.Z" (once,
+  before the three builds, so they do not race to create it; a rerun reuses
+  it). Its body is a placeholder until step 5. (Up to 0.6.0 tauri-action
+  created it.)
+- **build-studio**, one job per platform (Linux x86_64, Windows x86_64, macOS
+  arm64): builds `omniphony-studio-egui` on its pinned toolchain, and
+  `orender` and the engine library in `omniphony-renderer/`.
+- **Studio installers**, same job (#677):
   `omniphony-studio-egui/scripts/package.sh` runs cargo-packager (configured
   in `omniphony-studio-egui/Cargo.toml`) and attaches
   `omniphony-studio-egui_X.Y.Z_amd64.deb`, `…_x86_64.AppImage`,
   `…_x64-setup.exe`, `…_x64_en-US.msi` and `…_aarch64.dmg` (the .app signed ad
-  hoc, without the hardened runtime, as the Tauri bundle). Five more assets.
-  Every form ships `orender` and the engine library; the Studio copies the
-  library to `<local data>/omniphony/lib/` on startup for mpv
-  (`core/src/host/engine_deploy.rs`), as the Tauri Studio does.
+  hoc, without the hardened runtime). Five assets. Every form ships `orender`
+  and the engine library; the Studio copies the library to
+  `<local data>/omniphony/lib/` on startup for mpv
+  (`core/src/host/engine_deploy.rs`).
+- **Studio archive**, same job, after the installers:
+  `omniphony-studio-egui-vX.Y.Z-{linux-x86_64.tar.gz,windows-x86_64.zip,macos-arm64.zip}`
+  attached to the draft with `gh release upload` — the Studio, `orender`,
+  `engine/` (the engine library), `layouts/`, `assets/` and the licence, in
+  one directory. Three more assets. The Studio finds those files next to its
+  executable (`core/src/host/bundle.rs`).
 - **standalone liborender**, same job: the engine library (built by the
-  same step as the native Studio's `orender`), with `orender.h`, as `liborender-vX.Y.Z-{linux-x86_64,windows-x86_64,macos-arm64}.zip`
+  same step as the Studio's `orender`), with `orender.h`, as `liborender-vX.Y.Z-{linux-x86_64,windows-x86_64,macos-arm64}.zip`
   (flat, like the old `liborender-v*` archives). Three more assets.
 - **manifest**, after the three builds: `omniphony-vX.Y.Z-manifest.json` —
-  the README row as JSON, plus the commit. One more asset, **nineteen** in
-  all.
+  the README row as JSON, plus the commit. One more asset, **twelve** in
+  all (nineteen up to 0.6.0, with the seven Tauri bundles).
 
 The draft's URL is `releases/tag/untagged-<hash>` until it is published —
 that is normal, not a broken tag association; it becomes `releases/tag/vX.Y.Z`
 at publish.
 
-The native Studio's release build (fat LTO, one codegen unit) adds six to
-eight minutes per platform after tauri-action: the whole run took 19 min at
-0.6.0, ten assets attached. Read the run's timestamps as UTC — a two-hour
+The Studio's release build (fat LTO, one codegen unit) takes six to eight
+minutes per platform: the whole run, with the Tauri bundles still in it, took
+19 min at 0.6.0. Read the run's timestamps as UTC — a two-hour
 "hang" at 0.6.0 was the local clock.
 
 Expect a first-of-its-kind release build to expose latent build breakage that
@@ -190,20 +194,22 @@ runners (prefer `auto`), and any step that only runs on a tag push. Never cap
 
 - Every Linux asset says what it runs on, in the notes and in the table of
   `docs/install/linux.md`: the build image and what the binary takes from the
-  system. At 0.6.0: the native Studio and the Tauri bundles are built on
+  system. At 0.6.0: the Studio (native and, until 0.7.0, Tauri) is built on
   Ubuntu 22.04 (glibc ≥ 2.35; the `orender` beside the Studio also needs a
   system PipeWire); the player zip links Ubuntu 24.04's FFmpeg and libplacebo
   and runs only there; the bridge is built on Ubuntu 24.04 and needs only glibc.
 - After publishing, bump the asset names and release links in
   `docs/install/{linux,windows,macos}.md` on `main` (and the version pairing
   stated at the top of each page) together with the README download badges.
+  At 0.7.0, also drop the Tauri Studio's row (`Omniphony.Studio_…`) from the
+  Linux page's asset table.
 
 ```sh
 gh release edit vX.Y.Z --repo mgth/Omniphony --notes-file notes.md
 gh release edit vX.Y.Z --repo mgth/Omniphony --draft=false --latest
 ```
 
-Only the Studio bundle `v*` release is marked `--latest`; `mpv-v*` is
+Only the Studio `v*` release is marked `--latest`; `mpv-v*` is
 published not-latest.
 
 To verify the latest marker, use `gh api repos/mgth/Omniphony/releases/latest`
@@ -294,8 +300,8 @@ truth: `packaging/arch/` in this repo, `packaging/` in mpv-omniphony).
 | Package | Bump when |
 |---|---|
 | `orender` | every `v*` release |
-| `omniphony-studio` | every `v*` release |
-| `omniphony-studio-egui` | every `v*` release (from 0.6.0; template in `packaging/arch/omniphony-studio-egui`, depends on `orender` and links its layouts) |
+| `omniphony-studio` | every `v*` release (template in `packaging/arch/omniphony-studio`, depends on `orender` and links its layouts). From 0.7.0 it builds the native Studio and `provides`/`replaces` `omniphony-studio-egui`; up to 0.6.0 it built the Tauri Studio |
+| `omniphony-studio-egui` | no longer bumped from 0.7.0: the native Studio's separate package (0.6.0 only), folded into `omniphony-studio`. Ask the AUR for a merge into `omniphony-studio` once that package ships 0.7.0 |
 | `mpv-omniphony` | when an `mpv-v*` bundle was cut: `_tag`, `depends=('orender>=X.Y.Z')` (the release-train couple) |
 | `mpv-omniphony-fel` | with mpv-omniphony; `_tag` names the tag whose `patches-master/` apply to `_mpvcommit` — at 0.6.0 the FEL beta tag `v0.6.0-fel-beta.2` (the master-track rebase), with `pkgver=0.6.0` — and `_mpvcommit` the mpv master SHA those patches were rebased on and a build verified (`makepkg -fCd` itself, or `scripts/build-fel-local.sh`) |
 | `harletty-bridge` | on its own line only (0.7.x, 0.8.x…) — never the stack number. Its `_omniver` names the Omniphony source tag the bridge's path-deps (`bridge_api`/`spdif`/`sys`) are taken from: the current Studio `v*` tag, fetched as the `v<_omniver>` archive (directory `Omniphony-<_omniver>`) — not a `liborender-v*` tag, which the PKGBUILD used to fetch and which no longer exists past 0.4.3 |

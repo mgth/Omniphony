@@ -1,6 +1,11 @@
 # Viewport parity spec: object trails + ray-marched energy volumes
 
-Source tree: `omniphony-studio/src/` (all JS paths below are relative to it unless prefixed). Rust paths are relative to ``. three.js version is `0.165.0` (`package.json:26`), `ColorManagement.enabled = true` (three default), `renderer.outputColorSpace` left at its default (`SRGBColorSpace`); no `setPixelRatio` call anywhere, so 1 canvas pixel = 1 CSS pixel.
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
+Source tree: [`omniphony-studio/src/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src) (all JS paths below are relative to it unless prefixed). Rust paths are relative to ``. three.js version is `0.165.0` (`package.json:26`), `ColorManagement.enabled = true` (three default), `renderer.outputColorSpace` left at its default (`SRGBColorSpace`); no `setPixelRatio` call anywhere, so 1 canvas pixel = 1 CSS pixel.
 
 Files covered: `trails.js`, `scene/energy-volume-core.js`, `scene/global-energy-volume.js`, `scene/object-energy-volume.js`, `scene/object-energy-shared.js`, `scene/gradient-editor.js`, `controls/scene-effects-bar.js`, `listeners/trails-and-display-listeners.js` (there is no `controls/trails-and-display-listeners.js`). Supporting reads: `sources.js`, `coordinates.js`, `state.js`, `app.js`, `controls/room-geometry.js`, `scene/speaker-gaintable.js`, `scene/speaker-solo-volume.js`, `scene/discontinuity-volume.js`, `mpvOverlay.js`, `index.html`, `i18n/en.json`, `src-tauri/src/osc_parser.rs`, `src-tauri/src/osc_listener.rs`, `src-tauri/src/commands/diag.rs`, `src-tauri/src/commands/mpv_overlay.rs`, `omniphony-renderer/renderer/src/band_gaintable.rs`, `omniphony-renderer/renderer/src/live_params.rs`, `omniphony-renderer/runtime_control/src/osc.rs`, `omniphony-renderer/omniphony_geometry/src/lib.rs`.
 

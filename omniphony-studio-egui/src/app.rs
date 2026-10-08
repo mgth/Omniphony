@@ -74,7 +74,7 @@ pub struct StudioSpike {
     /// prefs; see `panels::essentials`.
     pub(crate) advanced: bool,
     pub(crate) log_filter: String,
-    /// OSC form fields (`osc_config.json`, shared with the Tauri Studio).
+    /// OSC form fields (`osc_config.json`, the file the Tauri Studio wrote too).
     pub(crate) osc_host: String,
     pub(crate) osc_port: u16,
     /// `auto_start_renderer` / `keep_renderer_alive_on_quit`, as last saved:
@@ -367,8 +367,8 @@ impl StudioSpike {
         let mut layout = prefs.side_panels;
         layout.clamp_all(cc.egui_ctx.content_rect().width().max(800.0));
         prefs.side_panels = layout;
-        // The OSC form starts from the same file the Tauri Studio writes, so
-        // both hosts point at the same renderer by default.
+        // The OSC form starts from the same file the Tauri Studio wrote, so a
+        // user coming from it keeps pointing at the same renderer.
         let (osc_host, osc_port) = startup
             .target
             .clone()

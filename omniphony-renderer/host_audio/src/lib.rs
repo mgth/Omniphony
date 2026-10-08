@@ -653,8 +653,9 @@ impl HostControlHandler for HostAudio {
         // /state/input: live-input device state. DRC fields (drcMode/drcWeight/
         // supportedDrcModes) are owned by the core (decode-stage) and emitted by
         // the core's build_live_state_bundle in a separate /state/input message;
-        // studio's Tauri InputDomainState parser merges partial payloads, so two
-        // /state/input messages in one bundle compose cleanly.
+        // Studio's InputDomainState parser (omniphony-studio-core, osc/apply.rs)
+        // merges partial payloads, so two /state/input messages in one bundle
+        // compose cleanly.
         let requested = input.requested_snapshot();
         let applied = input.applied_snapshot();
         messages.push(OscPacket::Message(OscMessage {

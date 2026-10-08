@@ -2,9 +2,9 @@
 name = "omniphony-studio-core"
 version.workspace = true
 edition = "2024"
-# The app's pin is egui's (1.97); the core's own floor is lower, and saying so
-# is what lets the Tauri Studio depend on this crate from a stable toolchain.
-# Verified building on 1.94.
+# The app's pin is egui's (1.97); the core's own floor is lower, so another
+# frontend can build it from an older stable toolchain. Verified building on
+# 1.94.
 rust-version = "1.94"
 license = "GPL-3.0-or-later"
 description = "Omniphony Studio's core: the renderer protocol, the application state and behaviour, and no UI toolkit"
@@ -27,7 +27,7 @@ serde_json = "1"
 flate2 = "1"
 log = "0.4"
 tempfile = "3"
-# Cross-platform RSS readout for the stats panel (also used by the Tauri Studio).
+# Cross-platform RSS readout for the stats panel.
 memory-stats = "1"
 # The one HTTP client, for the SOFA catalogue. Same crate and major as the
 # Tauri host's; `rustls` rather than a system TLS stack so the three CI

@@ -1,7 +1,7 @@
 # OSC Protocol
 
-This document describes the OSC messages exchanged between `orender`, `omniphony-studio`,
-and compatible metadata producers such as `adm-player`.
+This document describes the OSC messages exchanged between `orender`, Omniphony Studio
+(`omniphony-studio-egui`), and compatible metadata producers such as `adm-player`.
 
 ## Overview
 

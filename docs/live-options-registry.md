@@ -3,6 +3,11 @@
 Status: accepted — written after the Side/Back state-sync bug (see "The
 incident" below); related fix: `fix/studio-live-options-state-sync`.
 
+The web (Tauri) Studio this RFC refers to (its JS binder, `state.js`, the
+`src-tauri` mirror) was removed before 0.7.0 (#677); its sources are at
+[commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio).
+The native Studio reads the same `options` block and schema.
+
 Progress:
 
 - **Phase 0 landed**: the live-options conformance net
@@ -21,7 +26,7 @@ Progress:
   of enumerating options field by field, so a new re-planning option cannot be
   forgotten in a signature.
 - **Phase 2 landed**: the Studio `data-option` binder
-  (`omniphony-studio/src/options-binder.js`). A control declares its option in
+  ([`omniphony-studio/src/options-binder.js`](https://github.com/mgth/Omniphony/blob/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src/options-binder.js)). A control declares its option in
   markup (`data-option="surround_placement"` + `data-option-value` /
   `data-option-on`/`-off` / `data-option-empty` by shape); the binder wires
   both directions through the single generic `control_option` Tauri command.
@@ -61,7 +66,7 @@ Progress:
   generic row (`panels/staged_apply.rs`) offers the Apply of a group while it
   holds staged values, through `/control/options/apply`. The Audio Input
   section shows it under its own Apply, which still sends the section's edits
-  as one document. The web Studio does not have it.
+  as one document. (The web Studio, since removed, never had it.)
 
 ### Current state
 

@@ -3,7 +3,7 @@
 //! Lets any thread in the renderer publish named, grouped, labelled metrics
 //! that the Studio plot discovers dynamically. The intent is to make adding
 //! a new instrumentation point a 2-line change at the producer site, with
-//! zero plumbing through OSC/Tauri/JS:
+//! zero plumbing through OSC or the Studio:
 //!
 //! ```ignore
 //! let metric = diag.register("my_metric", "My metric", "iec958", "us");

@@ -1,7 +1,7 @@
 //! In-process spatial overlay generator for the mpv host.
 //!
 //! Historically the front-view object overlay was produced outside the
-//! renderer: orender broadcast OSC → omniphony-studio rebuilt a compact CSV →
+//! renderer: orender broadcast OSC → the (since removed) web Studio rebuilt a compact CSV →
 //! pushed it to mpv over the JSON IPC socket → a ~530-line Lua script parsed it
 //! and built the ASS markup. orender already owns the positions and meter
 //! levels first-hand, so this module moves the whole rendering into Rust: it
@@ -85,8 +85,9 @@ const Y_TICK_HALF: f64 = 5.0; // half-length of the Y=0 perpendicular tick, px
 /// How long after the last FFI pull the overlay keeps doing per-frame work.
 const ACTIVE_TIMEOUT_MS: u64 = 1000;
 
-/// Mirror of `OBJECT_COLOR_PALETTE` in omniphony-studio so the overlay shows the
-/// same colour Studio's 3D view picks for the same object.
+/// Mirror of `PALETTE` in `omniphony-studio-egui/scene/src/view/objects.rs`
+/// so the overlay shows the same colour Studio's 3D view picks for the same
+/// object.
 const STUDIO_PALETTE: [&str; 16] = [
     "FF6B6B", "4ECDC4", "FFE66D", "5DADE2", "AF7AC5", "F5B041", "58D68D", "EC7063", "48C9B0",
     "F4D03F", "5499C7", "A569BD", "EB984E", "45B39D", "7FB3D5", "F1948A",
@@ -108,7 +109,7 @@ struct TrailCfg {
 
 impl Default for TrailCfg {
     fn default() -> Self {
-        // Match omniphony-studio's UI defaults (trails on, diffuse, 7 s,
+        // Match Studio's UI defaults (trails on, diffuse, 7 s,
         // teleport threshold 0.5 → squared 0.25) so the overlay shows trails
         // out of the box without an OSC controller. Studio can still override
         // these live over OSC when it is connected.
@@ -683,7 +684,7 @@ pub fn build_ass(res_x: u32, res_y: u32) -> String {
     render(&mut s, res_x as f64, res_y as f64, now)
 }
 
-// ── labels (mirror of omniphony-studio's getObjectDisplayName/formatObjectLabel) ─
+// ── labels (the web Studio's getObjectDisplayName/formatObjectLabel rules) ────
 
 /// Clean an object name into a display label, matching Studio's 3D-view rules:
 /// strip a leading `a_`/`v_`/`obj_` (or `:`/`-` separator) prefix, then keep the
@@ -724,7 +725,7 @@ fn ass_escape(s: &str) -> String {
         .collect()
 }
 
-// ── colours (ported from omniphony-studio osc_listener.rs) ─────────────────
+// ── colours (ported from the web Studio's host, removed in 0.7.0) ───────────
 
 fn parse_hex(hex: &str) -> (u8, u8, u8) {
     let b = hex.as_bytes();
