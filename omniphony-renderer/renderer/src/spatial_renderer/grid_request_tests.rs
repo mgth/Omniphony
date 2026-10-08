@@ -122,7 +122,13 @@ fn a_forced_grid_does_not_follow_a_new_hint() {
     let builds = r.speaker_stage_builds();
 
     assert!(control.offer_bridge_grid(hint(7)));
-    render_until(&mut r, "the hint taken", |_| !control.bridge_grid_pending());
+    // Taken is not yet published: `take_bridge_grid` marks the hint taken
+    // before it writes it to the live params, so wait for what the
+    // assertions read.
+    render_until(&mut r, "the hint published", |_| {
+        !control.bridge_grid_pending()
+            && control.live.read().evaluation.bridge_hint == Some(hint(7))
+    });
     for _ in 0..8 {
         frame(&mut r);
     }
