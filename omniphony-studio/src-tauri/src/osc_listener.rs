@@ -2995,6 +2995,9 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            // The web Studio, being retired, keeps its single bridge field
+            // (`bridge_path`, the first entry); the list is native-only.
+            OscEvent::StateRenderBridges { .. } => (None, removed_ids),
             OscEvent::StateRenderConfigPath { value } => {
                 s.render_config_path = if value.trim().is_empty() {
                     None
