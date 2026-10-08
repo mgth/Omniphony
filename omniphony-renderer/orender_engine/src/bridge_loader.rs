@@ -309,6 +309,7 @@ pub fn resolve_bridges(explicit: &[PathBuf], config: &[PathBuf]) -> Result<Bridg
         config,
         &|key| std::env::var_os(key),
         &auto_discovery_dirs(),
+        &check_bridge_header,
     )
 }
 
@@ -317,16 +318,17 @@ fn resolve_bridges_with(
     config: &[PathBuf],
     env: &dyn Fn(&str) -> Option<OsString>,
     dirs: &[PathBuf],
+    usable: &dyn Fn(&Path) -> Result<()>,
 ) -> Result<BridgeRequest> {
     let (requested, origin) = if !explicit.is_empty() {
         (explicit, "bridge path")
     } else if !config.is_empty() {
         (config, "render.bridge_path (from config)")
     } else {
-        return discover_bridges(env, dirs, &check_bridge_header);
+        return discover_bridges(env, dirs, usable);
     };
     let mut request = BridgeRequest::default();
-    let mut combined_unreplaced = false;
+    let mut combined_unreplaced: Vec<&PathBuf> = Vec::new();
     for path in requested {
         if is_combined_library(path) {
             let families = family_libraries_beside(path);
@@ -337,7 +339,7 @@ fn resolve_bridges_with(
                     path.display(),
                     bridge_api::VERSION
                 );
-                combined_unreplaced = true;
+                combined_unreplaced.push(path);
             } else {
                 log::info!(
                     "{origin} '{}' is the combined harletty bridge: loading the family \
@@ -373,12 +375,41 @@ fn resolve_bridges_with(
             }),
         }
     }
+    if !combined_unreplaced.is_empty() {
+        log::warn!("searching the auto-discovery folders for the family libraries");
+        if combined_unreplaced.len() == requested.len() {
+            // Only the old library was asked for: as if nothing had been,
+            // and nothing discovered is recorded, as ever.
+            return discover_bridges(env, dirs, usable);
+        }
+        // Next to other bridges: the discovered family libraries join them,
+        // and are what a Save writes in the old library's place.
+        match discover_bridges(env, dirs, usable) {
+            Ok(found) => {
+                for file in found.files {
+                    if !request.files.contains(&file) {
+                        request.recorded.push(file.clone());
+                        request.files.push(file);
+                    }
+                }
+                request.failures.extend(found.failures);
+            }
+            Err(error) => {
+                for path in combined_unreplaced {
+                    request.recorded.push(path.clone());
+                    request.failures.push(BridgeFailure {
+                        path: path.clone(),
+                        error: format!(
+                            "the combined harletty bridge, replaced by one library per codec \
+                             family; none is next to it and auto-discovery found none: {error:#}"
+                        ),
+                    });
+                }
+            }
+        }
+    }
     if !request.files.is_empty() {
         return Ok(request);
-    }
-    if combined_unreplaced && request.failures.is_empty() {
-        log::warn!("searching the auto-discovery folders for the family libraries");
-        return discover_bridges(env, dirs, &check_bridge_header);
     }
     bail!(
         "{}. Give an existing path to each decoder bridge (an absolute path is safest), \
@@ -492,6 +523,11 @@ pub fn load_bridges(request: &BridgeRequest) -> Result<LoadedBridges> {
     })
 }
 
+/// The most bytes of one failure's error in the published bridges state.
+pub const BRIDGE_STATUS_ERROR_MAX_BYTES: usize = 512;
+/// The most failures the published bridges state lists.
+pub const BRIDGE_STATUS_MAX_FAILURES: usize = 16;
+
 /// What [`load_bridges`] loaded, and what it could not.
 pub struct LoadedBridges {
     pub libs: BridgeLibs,
@@ -503,7 +539,12 @@ pub struct LoadedBridges {
 impl LoadedBridges {
     /// What the host publishes about its bridges
     /// (`/omniphony/state/render/bridges`): each one loaded, with the
-    /// families it declares, then each one that failed, with why.
+    /// families it declares, then each one that failed, with why. Bounded to
+    /// fit one datagram with the rest of the state: each error is summarised
+    /// ([`BRIDGE_STATUS_ERROR_MAX_BYTES`]; abi_stable's full layout report
+    /// runs to tens of kilobytes and stays in the log) and at most
+    /// [`BRIDGE_STATUS_MAX_FAILURES`] failures are listed, the last entry
+    /// counting the rest.
     pub fn status(&self) -> Vec<renderer::live_params::BridgeStatus> {
         let mut status: Vec<_> = self
             .libs
@@ -518,15 +559,26 @@ impl LoadedBridges {
                 error: None,
             })
             .collect();
-        status.extend(
-            self.failures
-                .iter()
-                .map(|failure| renderer::live_params::BridgeStatus {
-                    path: failure.path.display().to_string(),
-                    families: Vec::new(),
-                    error: Some(failure.error.clone()),
-                }),
-        );
+        let shown = self.failures.len().min(BRIDGE_STATUS_MAX_FAILURES);
+        status.extend(self.failures[..shown].iter().map(|failure| {
+            renderer::live_params::BridgeStatus {
+                path: failure.path.display().to_string(),
+                families: Vec::new(),
+                error: Some(crate::degraded::summarize_bridge_error_within(
+                    &failure.error,
+                    BRIDGE_STATUS_ERROR_MAX_BYTES,
+                )),
+            }
+        }));
+        let hidden = self.failures.len() - shown;
+        if hidden > 0
+            && let Some(last) = status.last_mut()
+        {
+            let error = last.error.get_or_insert_with(String::new);
+            error.push_str(&format!(
+                "\n({hidden} more bridges failed to load; see the renderer log)"
+            ));
+        }
         status
     }
 }
@@ -1373,19 +1425,48 @@ mod tests {
         let old = dir_with_bridge("combinedalone", "libharletty_bridge.so");
         let installed = dir_with_bridge("installed", "libharletty_iamf_bridge.so");
         let combined = old.join("libharletty_bridge.so");
-        let request = resolve_bridges_with(
+        let alone = resolve_bridges_with(
             std::slice::from_ref(&combined),
             &[],
             &|_: &str| None,
             std::slice::from_ref(&installed),
-        );
+            &usable,
+        )
+        .unwrap();
+        let other = tmp_bridge("mixed_other");
+        let mixed = resolve_bridges_with(
+            &[other.clone(), combined.clone()],
+            &[],
+            &|_: &str| None,
+            std::slice::from_ref(&installed),
+            &usable,
+        )
+        .unwrap();
+        let nothing = resolve_bridges_with(
+            &[other.clone(), combined.clone()],
+            &[],
+            &|_: &str| None,
+            &[PathBuf::from("/nonexistent/orender/plugins")],
+            &usable,
+        )
+        .unwrap();
         fs::remove_dir_all(&old).ok();
         fs::remove_dir_all(&installed).ok();
-        // The discovered candidate is a stand-in file, refused by the real
-        // header check: what matters is that discovery ran, not this folder.
-        let text = format!("{:#}", request.unwrap_err());
-        assert!(text.contains("libharletty_iamf_bridge.so"), "{text}");
-        let other = resolve_bridges(&[PathBuf::from("/nonexistent/liby_bridge.so")], &[]);
-        assert!(other.is_err());
+        fs::remove_file(&other).ok();
+        let family = installed.join("libharletty_iamf_bridge.so");
+        // Alone: plain auto-discovery, nothing recorded.
+        assert_eq!(alone.files, [family.clone()]);
+        assert!(alone.recorded.is_empty());
+        // Next to another bridge: the discovered family joins it and is
+        // what a Save writes instead of the old library.
+        assert_eq!(mixed.files, [other.clone(), family.clone()]);
+        assert_eq!(mixed.recorded, [other.clone(), family]);
+        // Nothing discovered: the old library stays asked for, reported.
+        assert_eq!(nothing.files, [other.clone()]);
+        assert_eq!(nothing.recorded, [other, combined.clone()]);
+        assert_eq!(nothing.failures.len(), 1);
+        assert_eq!(nothing.failures[0].path, combined);
+        let missing = resolve_bridges(&[PathBuf::from("/nonexistent/liby_bridge.so")], &[]);
+        assert!(missing.is_err());
     }
 }

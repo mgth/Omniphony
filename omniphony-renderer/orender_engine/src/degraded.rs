@@ -226,11 +226,17 @@ const BRIDGE_ERROR_MAX_BYTES: usize = 2048;
 /// Shorten a bridge load error to what a UI can show (see
 /// `BRIDGE_ERROR_MAX_BYTES`); a short error passes through unchanged.
 pub fn summarize_bridge_error(text: &str) -> String {
-    if text.len() <= BRIDGE_ERROR_MAX_BYTES {
+    summarize_bridge_error_within(text, BRIDGE_ERROR_MAX_BYTES)
+}
+
+/// [`summarize_bridge_error`] within `max_bytes` (plus its one-line
+/// trailer naming the full report's size).
+pub fn summarize_bridge_error_within(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
         return text.to_string();
     }
     let mut out = text.lines().next().unwrap_or("").trim_end().to_string();
-    truncate_at_char_boundary(&mut out, BRIDGE_ERROR_MAX_BYTES / 2);
+    truncate_at_char_boundary(&mut out, max_bytes / 2);
 
     // abi_stable's verdicts: an `Error:` line, then `Expected:` / `Found:`
     // labels each followed by an indented value (possibly several lines),
@@ -264,7 +270,7 @@ pub fn summarize_bridge_error(text: &str) -> String {
         text.len()
     );
     for verdict in verdicts {
-        if out.len() + 1 + verdict.len() + trailer.len() > BRIDGE_ERROR_MAX_BYTES {
+        if out.len() + 1 + verdict.len() + trailer.len() > max_bytes {
             break;
         }
         out.push('\n');
