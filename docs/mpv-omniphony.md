@@ -71,9 +71,9 @@ over OSC, showing per-object positions in the room and live meters.*
   folder of point 2 above (`<local data>/omniphony/lib/`), then
   `/usr/lib/orender` (Unix). Studio's own renderer searches the same folders
   from its `orender`, so bridges in the per-user engine folder serve both;
-  Studio also hands its renderer the exact bridge named by
-  `ad-orender-bridge-path` in `mpv.conf` (one absolute path, default profile)
-  as `$ORENDER_BRIDGE_FILE`. `render.bridge_paths` in the config (a list; a
+  Studio also hands its renderer the exact bridges named by
+  `ad-orender-bridge-path` in `mpv.conf` (absolute paths, a path list,
+  default profile) as `$ORENDER_BRIDGE_FILE`. `render.bridge_paths` in the config (a list; a
   single `render.bridge_path` is read too), or `--ad-orender-bridge-path` (a
   path list: `:` on Unix, `;` on Windows), names the files instead (no globs,
   and no fallback to discovery for a path that is wrong; the others still

@@ -204,19 +204,31 @@ its own (*Auto-start local renderer*, in the connection settings), and that one
 holds the port the player needs. When you only use Studio with the player,
 switch that option off.
 
-Studio's own renderer uses the bridge your `mpv.conf` names
-(`ad-orender-bridge-path=`, with an absolute path), else it looks next to its
+Studio's own renderer uses the bridges your `mpv.conf` names
+(`ad-orender-bridge-path=`, with absolute paths), else it looks next to its
 `orender`, in `~/.local/share/omniphony/lib/`, then in `/usr/lib/orender/`
-(where the AUR puts it). It does not know the player's folder: a bridge that
-only sits next to `mpv`, with no `mpv.conf` line naming it, is not found.
+(where the AUR puts them). It does not know the player's folder: bridges that
+only sit next to `mpv`, with no `mpv.conf` line naming them, are not found.
 Without one it still runs, and Studio shows an orange *No decoder* banner:
 films keep playing in the player. To give it the bridge too, add
 `ad-orender-bridge-path=/home/you/omniphony/libharletty_bridge.so` to
 `~/.config/mpv/mpv.conf`, or copy `libharletty_bridge.so` into
-`~/.local/share/omniphony/lib/`, a folder the player also searches. From the
-next release, copy the three `libharletty_*_bridge.so` files into that folder
-instead (and delete an old `libharletty_bridge.so` there): Studio passes on only
-one file from `mpv.conf`, while the engine loads every bridge of the folder.
+`~/.local/share/omniphony/lib/`, a folder the player also searches.
+
+From the next release, the line lists the three family libraries, separated by
+`:`, and Studio hands them all to its renderer (the player reads the same
+list):
+
+```text
+ad-orender-bridge-path=/home/you/omniphony/libharletty_dolby_bridge.so:/home/you/omniphony/libharletty_dts_bridge.so:/home/you/omniphony/libharletty_iamf_bridge.so
+```
+
+A line that still names `libharletty_bridge.so` keeps working for that
+release, even once the file is deleted: the engine loads the family libraries
+of the same folder in its place. Copying the three `libharletty_*_bridge.so`
+files into `~/.local/share/omniphony/lib/` (and deleting an old
+`libharletty_bridge.so` there) remains an alternative that needs no
+`mpv.conf` line.
 
 ## 6. Optional: the engine at login
 

@@ -193,8 +193,9 @@ switch that option off.
 
 Studio's own renderer reads the same `config.yaml`, so the `bridge_path` (or,
 from the next release, `bridge_paths`) of step 2 serves it too. Without one
-there, it uses the bridge named in `~/.config/mpv/mpv.conf`
-(`ad-orender-bridge-path=`, with an absolute path).
+there, it uses the bridges named in `~/.config/mpv/mpv.conf`
+(`ad-orender-bridge-path=`, with absolute paths; from the next release,
+several separated by `:`, all handed to the renderer).
 Without a bridge it still runs, and Studio shows an orange *No decoder* banner:
 films keep playing in the player.
 

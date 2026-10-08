@@ -182,19 +182,30 @@ its own (*Auto-start local renderer*, in the connection settings), and that one
 holds the port the player needs. When you only use Studio with the player,
 switch that option off.
 
-Studio's own renderer uses the bridge `%APPDATA%\mpv\mpv.conf` names
-(`ad-orender-bridge-path=`, with an absolute path), else it looks next to its
-`orender.exe`, then in `%LOCALAPPDATA%\omniphony\lib\`. It does not know the player's folder: a
-bridge that only sits next to `mpv.exe`, with no `mpv.conf` line naming it, is
-not found (nor is a `portable_config` folder read). Without one it still runs,
-and Studio shows an orange *No decoder* banner: films keep playing in the
-player. To give it the bridge too, add
+Studio's own renderer uses the bridges `%APPDATA%\mpv\mpv.conf` names
+(`ad-orender-bridge-path=`, with absolute paths), else it looks next to its
+`orender.exe`, then in `%LOCALAPPDATA%\omniphony\lib\`. It does not know the
+player's folder: bridges that only sit next to `mpv.exe`, with no `mpv.conf`
+line naming them, are not found (nor is a `portable_config` folder read).
+Without one it still runs, and Studio shows an orange *No decoder* banner:
+films keep playing in the player. To give it the bridge too, add
 `ad-orender-bridge-path=C:\omniphony\harletty_bridge.dll` to
 `%APPDATA%\mpv\mpv.conf`, or copy `harletty_bridge.dll` into
-`%LOCALAPPDATA%\omniphony\lib\`, a folder the player also searches. From the
-next release, copy the three `harletty_*_bridge.dll` files into that folder
-instead (and delete an old `harletty_bridge.dll` there): Studio passes on only
-one file from `mpv.conf`, while the engine loads every bridge of the folder.
+`%LOCALAPPDATA%\omniphony\lib\`, a folder the player also searches.
+
+From the next release, the line lists the three family libraries, separated by
+`;`, and Studio hands them all to its renderer (the player reads the same
+list):
+
+```text
+ad-orender-bridge-path=C:\omniphony\harletty_dolby_bridge.dll;C:\omniphony\harletty_dts_bridge.dll;C:\omniphony\harletty_iamf_bridge.dll
+```
+
+A line that still names `harletty_bridge.dll` keeps working for that release,
+even once the file is deleted: the engine loads the family libraries of the
+same folder in its place. Copying the three `harletty_*_bridge.dll` files into
+`%LOCALAPPDATA%\omniphony\lib\` (and deleting an old `harletty_bridge.dll`
+there) remains an alternative that needs no `mpv.conf` line.
 
 A renderer that Studio starts itself plays through ASIO when an ASIO driver is
 installed (your interface's own, or FlexASIO / ASIO4ALL). Without one, it falls
