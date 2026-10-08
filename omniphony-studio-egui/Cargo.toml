@@ -86,6 +86,12 @@ depends = [
     "libxi6",
     "libxrandr2",
 ]
+# The renderer as a systemd user service, installed but not enabled: the user
+# runs `systemctl --user enable --now omniphony-renderer`. The same text
+# Studio's "Install service" writes for /usr/bin/orender, where this package
+# puts it (a test in core/src/host/commands/orender.rs keeps them equal). The
+# source is relative to this directory, where package.sh runs the packager.
+files = { "../packaging/systemd/omniphony-renderer.service" = "/usr/lib/systemd/user/omniphony-renderer.service" }
 
 [package.metadata.packager.appimage]
 # The host's own copies, never bundled: PipeWire's client library must match

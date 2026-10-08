@@ -152,6 +152,7 @@
   "osc.service.stop": "停止服务",
   "osc.service.restart": "重启服务",
   "osc.service.installFirst": "请先安装服务",
+  "osc.service.appImageRefused": "服务无法使用此 AppImage 内的 orender（{path}）：Studio 关闭时 AppImage 会被卸载，服务将无法再启动。请改为安装 Studio 的 .deb 包或 AUR 的 orender 包。两者都附带该服务，可用以下命令启用：systemctl --user enable --now omniphony-renderer",
   "osc.service.installShort": "安装",
   "osc.service.uninstallShort": "卸载",
   "osc.service.serviceNoun": "服务",

@@ -86,7 +86,8 @@ case "$os" in
   linux)
     tree="$(find "$out/.cargo-packager" -type d -path '*/data/usr' -print -quit)"
     check "$tree/bin/orender" "$tree/lib/omniphony-studio-egui/engine/$lib_name" \
-      "$tree/lib/omniphony-studio-egui/layouts/7.1.4.yaml" ;;
+      "$tree/lib/omniphony-studio-egui/layouts/7.1.4.yaml" \
+      "$tree/lib/systemd/user/omniphony-renderer.service" ;;
   macos)
     check "$app/Contents/MacOS/orender" "$app/Contents/Resources/engine/$lib_name" \
       "$app/Contents/Resources/layouts/7.1.4.yaml" ;;

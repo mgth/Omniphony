@@ -152,6 +152,7 @@
   "osc.service.stop": "サービスを停止",
   "osc.service.restart": "サービスを再起動",
   "osc.service.installFirst": "先にサービスをインストールしてください",
+  "osc.service.appImageRefused": "サービスはこの AppImage 内の orender を使用できません（{path}）。AppImage は Studio を閉じるとアンマウントされ、サービスが起動できなくなります。代わりに Studio の .deb パッケージか AUR の orender パッケージをインストールしてください。どちらにもサービスが含まれており、次のコマンドで有効にできます: systemctl --user enable --now omniphony-renderer",
   "osc.service.installShort": "インストール",
   "osc.service.uninstallShort": "アンインストール",
   "osc.service.serviceNoun": "サービス",

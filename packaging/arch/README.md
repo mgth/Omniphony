@@ -6,7 +6,7 @@ bundles, which ship everything in one installer). The mpv package itself
 
 | Package            | Builds from                | License      | Installs |
 |--------------------|----------------------------|--------------|----------|
-| `orender`          | this repo (tag `v*`)       | GPL-3.0-only | `/usr/bin/orender`, `liborender.so*`, `orender.h`, `orender.pc`, layouts |
+| `orender`          | this repo (tag `v*`)       | GPL-3.0-only | `/usr/bin/orender`, `liborender.so*`, `orender.h`, `orender.pc`, layouts, the `omniphony-renderer` user service (not enabled) |
 | `omniphony-studio` | this repo (tag `v*`)       | GPL-3.0-only | Studio UI, Tauri host (no bundled sidecar — depends on `orender`) |
 | `omniphony-studio-egui` | this repo (tag `v*`)  | GPL-3.0-only | Studio UI, native egui/wgpu host (depends on `orender`) |
 | `harletty-bridge`  | sibling `harletty-bridge`  | Apache-2.0   | `/usr/lib/orender/libharletty_bridge.so` |
@@ -33,6 +33,7 @@ Dependency shape:
 /usr/include/orender.h
 /usr/lib/pkgconfig/orender.pc
 /usr/share/orender/layouts/**/*.yaml   # virtual-bed fallback looks here
+/usr/lib/systemd/user/omniphony-renderer.service  # not enabled: systemctl --user enable --now omniphony-renderer
 /usr/lib/orender/libharletty_bridge.so # the decoder bridge plugin (optional)
 /usr/bin/omniphony-studio           # Studio UI, Tauri host (+ .desktop, icons, resources)
 /usr/bin/omniphony-studio-egui      # Studio UI, native host (+ .desktop, icon)
