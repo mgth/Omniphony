@@ -263,6 +263,7 @@
   "input.bridges.removed": "Entfernt, geladen bis zum nächsten Übernehmen: {families}",
   "input.bridges.failed": "Fehlgeschlagen: {error}",
   "input.bridges.notLoaded": "Noch nicht geladen: wird beim nächsten Übernehmen geladen",
+  "input.bridges.decoding": "Dekodiert",
   "help.input.bridges": "Die Decoder-Bridge-Bibliotheken, die der Renderer lädt, in Reihenfolge, jede mit den Quellfamilien, die sie dekodiert, oder dem Grund ihres Fehlschlags. Nehmen zwei Bridges denselben Stream an, gewinnt die weiter oben. Ohne Konfiguration lädt der Renderer jede Bridge im ersten Suchordner, der eine brauchbare enthält. Eine Änderung wirkt beim nächsten Übernehmen und gelangt nur über Speichern in die Konfiguration.",
   "help.input.bridgesAddPath": "Eine Bridge über ihren Pfad hinzufügen, wie ihn der Rechner des Renderers sieht (für einen Renderer auf einem anderen Rechner); Enter fügt sie hinzu.",
   "help.input.pipe": "Named Pipe, in die die Bridge dekodiertes PCM schreibt; bei leer auto-erkannt.",

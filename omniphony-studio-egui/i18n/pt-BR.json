@@ -263,6 +263,7 @@
   "input.bridges.removed": "Removido, carregado até o próximo Aplicar: {families}",
   "input.bridges.failed": "Falhou: {error}",
   "input.bridges.notLoaded": "Ainda não carregado: carrega no próximo Aplicar",
+  "input.bridges.decoding": "Decodificando",
   "help.input.bridges": "As bibliotecas de bridge de decodificação que o renderer carrega, em ordem, cada uma com as famílias de fontes que decodifica ou o motivo da falha. Quando dois bridges aceitam o mesmo fluxo, vence o que está mais acima. Sem configuração, o renderer carrega todos os bridges da primeira pasta de descoberta que tenha um utilizável. Uma mudança vale a partir do próximo Aplicar e só chega à configuração por Salvar.",
   "help.input.bridgesAddPath": "Adicione um bridge pelo caminho como a máquina do renderer o vê (para um renderer em outra máquina); pressione Enter para adicioná-lo.",
   "help.input.pipe": "Pipe nomeado em que o bridge escreve o PCM decodificado; auto-detectado quando deixado vazio.",
