@@ -252,6 +252,36 @@ mod tests {
         );
     }
 
+    /// The frame everything is drawn in and converted through: the live
+    /// room through the speaker stage, the unit room (at the renderer's
+    /// distance scale) on the direct path.
+    #[test]
+    fn the_display_room_is_the_unit_room_on_the_direct_path_only() {
+        use crate::model::app_state::{AppState, RoomRatio};
+        let mut app = AppState::new(Vec::new());
+        app.room_ratio = RoomRatio {
+            length: 2.0,
+            scale_m: 1.7,
+            ..RoomRatio::default()
+        };
+        app.binaural = Some(json!({
+            "outputMode": "binaural", "mode": "direct", "modeEffective": "direct",
+            "hrirSource": "saf", "unitScaleM": 3.0,
+        }));
+        let direct = app.display_room();
+        assert_eq!((direct.length, direct.rear, direct.lower), (1.0, 1.0, 1.0));
+        assert_eq!(direct.center_blend, 0.0);
+        assert_eq!(direct.scale_m, 3.0);
+        app.binaural = Some(json!({
+            "outputMode": "binaural", "mode": "cascaded", "modeEffective": "cascaded",
+            "hrirSource": "saf", "unitScaleM": 3.0,
+        }));
+        let cascaded = app.display_room();
+        assert_eq!((cascaded.length, cascaded.scale_m), (2.0, 1.7));
+        app.binaural = Some(json!({ "outputMode": "speaker", "mode": "direct" }));
+        assert_eq!(app.display_room().length, 2.0);
+    }
+
     /// The file sources name the file a bare choice reopens; nothing named,
     /// or another source, says nothing.
     #[test]

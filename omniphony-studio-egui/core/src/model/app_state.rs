@@ -873,6 +873,21 @@ impl AppState {
         super::binaural::RenderPath::of(self.binaural.as_ref(), self.brir_speakers.is_some())
     }
 
+    /// The frame the scene draws in and the editors convert through: the
+    /// live room on every path through the speaker stage, the unit room on
+    /// the direct binaural path, which reads a direction straight off a
+    /// position (`RenderPath::warps_with_room`). One resolution for the
+    /// forward projection, the gizmos' inverse, the channel editor's polar
+    /// conversions and the heatmap volumes, so a drag lands where the
+    /// pointer is and a volume sits on its sources whatever the path.
+    pub fn display_room(&self) -> RoomRatio {
+        if self.render_path().warps_with_room() {
+            self.room_ratio.clone()
+        } else {
+            RoomRatio::unit(self.binaural_unit_scale_m())
+        }
+    }
+
     /// Metres to one unit of the direct binaural path's cube
     /// (`binaural.unitScaleM`, the renderer's distance scale).
     pub fn binaural_unit_scale_m(&self) -> f64 {

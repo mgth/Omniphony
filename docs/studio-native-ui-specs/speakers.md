@@ -116,7 +116,7 @@ Colour, opacity and size carry other meanings, so the kind of speaker is said by
 
 The speaker list's position thumbnail draws its frame dashed for the two wire kinds, and the Speakers section summary reads "Virtual room · <layout>" through the virtual room.
 
-On the direct path the scene places every position with the unit room (`RoomRatio::unit`, the engine's `RoomRatios::UNIT`), draws the listener's cube (`RoomStyle::LISTENER_CUBE`, no screen) in place of the user's room, with a "1 unit = `unitScaleM` m" guide, and leaves out the room's grid, the hybrid surface and the dimension guides, which describe the speaker stage.
+On the direct path the scene places every position with the unit room (`AppState::display_room()` → `RoomRatio::unit`, the engine's `RoomRatios::UNIT`; the gizmos' inverse, the channel editor's polar conversions and the heatmap volumes read the same room, so a drag lands where the pointer is and a volume stays on its sources), draws the listener's cube (`RoomStyle::LISTENER_CUBE`, no screen) in place of the user's room, with a "1 unit = `unitScaleM` m" guide, and leaves out the room's grid, the hybrid surface and the dimension guides, which describe the speaker stage.
 
 ### 1.6 Band base colour (crossover layouts)
 

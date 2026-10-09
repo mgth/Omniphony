@@ -326,15 +326,11 @@ pub fn build_frame(
     // The frame positions are placed in, as the engine places them: the live
     // room on every path through the speaker stage, the unit cube on the
     // direct binaural path, which reads a direction straight off a position
-    // (`RenderPath::warps_with_room`). The room's grid, the hybrid surface
-    // and the dimension guides describe the speaker stage, so they go with
-    // the room.
+    // (`AppState::display_room`, which the editors and the volumes share).
+    // The room's grid, the hybrid surface and the dimension guides describe
+    // the speaker stage, so they go with the room.
     let path = live.app.render_path();
-    let room = if path.warps_with_room() {
-        live.app.room_ratio.clone()
-    } else {
-        RoomRatio::unit(live.app.binaural_unit_scale_m())
-    };
+    let room = live.app.display_room();
     let bounds = RoomBounds::from_ratio(&room);
     if path.warps_with_room() {
         room::emit_room(&bounds, cam_pos, &room::RoomStyle::SPEAKER_ROOM, &mut frame);
@@ -662,6 +658,14 @@ mod tests {
         let left = [0.5, 0.866, 0.0];
         let warped = scene_position(left, &RoomRatio::default());
         assert!((warped - scene_position(left, &unit)).length() > 0.1);
+        // And the gizmos' inverse brings a point back through the same
+        // room, so a drag lands where the pointer is.
+        for adm in [[0.2, 0.8, 0.0], [-0.7, -0.3, 0.5]] {
+            let back = gizmos::scene_to_normalized(scene_position(adm, &unit), &unit);
+            for axis in 0..3 {
+                assert!((back[axis] - adm[axis]).abs() < 1e-5, "{adm:?} → {back:?}");
+            }
+        }
     }
 
     /// A speaker the layout does not cut is full-band, and its bar is lit end

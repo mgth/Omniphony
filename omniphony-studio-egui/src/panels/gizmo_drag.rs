@@ -246,7 +246,7 @@ impl StudioSpike {
             return scene;
         };
         let adm_axis = gizmos::adm_axis_of(axis);
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.host.read().app.display_room();
         let mut adm = gizmos::scene_to_normalized(scene, &room);
         adm[adm_axis] = gizmos::snap_to_nodes(adm[adm_axis], &axes[adm_axis]);
         crate::view::scene_position(adm, &room)
@@ -260,7 +260,7 @@ impl StudioSpike {
         if *pinned != index {
             return None;
         }
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.host.read().app.display_room();
         Some(speaker_at(
             speaker,
             gizmos::scene_to_normalized(*scene, &room),
@@ -280,7 +280,7 @@ impl StudioSpike {
         let Some((target, _)) = self.gizmo_target.clone() else {
             return;
         };
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.host.read().app.display_room();
         let adm = gizmos::scene_to_normalized(scene, &room);
         // Both targets live in the layout's cube: the conversion above clamps
         // to it, and so does the bed's `polar_to_adm` for a channel. Anchoring
