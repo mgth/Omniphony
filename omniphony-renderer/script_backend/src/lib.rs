@@ -765,8 +765,18 @@ impl BackendFactory for ScriptFactory {
     }
 
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
-        // Unit speaker directions from the layout (captured on the build thread).
-        let (azimuth_elevation, _) = ctx.layout.spatializable_positions();
+        // Unit speaker directions from the layout (captured on the build
+        // thread), in the room the topology pans in: a cartesian speaker is
+        // a fraction of it (a BRIR set's loudspeakers are, of their measured
+        // room), and the `vbap(pos)` helper warps the object with the same
+        // room, so the two must share it (#803).
+        let room = ctx.room;
+        let (azimuth_elevation, _) = ctx.layout.spatializable_positions_for_room(
+            room.ratio,
+            room.rear,
+            room.lower,
+            room.center_blend,
+        );
         let speakers: Vec<[f32; 3]> = azimuth_elevation
             .iter()
             .map(|[az, el]| {
@@ -1266,6 +1276,125 @@ mod tests {
         assert!(
             (energy - 1.0).abs() < 1e-4,
             "constant-power, energy={energy}"
+        );
+    }
+
+    /// The factory reads its speaker directions in the room the topology
+    /// pans in, as the `vbap` helper warps the object with it (#803): on a
+    /// BRIR set's loudspeakers, which are fractions of their measured room,
+    /// the shipped VBAP script agrees with the native panner — all of the
+    /// gain on a loudspeaker at its own place, an even split halfway in
+    /// angle between two. Read as cube directions, the fractions of an
+    /// elongated room sent 11 % of the power of an object on FL to C.
+    #[test]
+    fn speaker_directions_are_read_in_the_topologys_room() {
+        use renderer::backend_registry::{BackendBuildCtx, BackendRegistry};
+        use renderer::binaural::brir::MeasuredRoom;
+        use std::collections::HashMap;
+
+        // Fronts far, sides near, backs in between, four heights.
+        let emitters: [[f32; 3]; 11] = [
+            [0.0, 3.0, 0.0],
+            [-1.5, 3.0, 0.0],
+            [1.5, 3.0, 0.0],
+            [-2.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [-1.5, -2.0, 0.0],
+            [1.5, -2.0, 0.0],
+            [-1.5, 3.0, 1.5],
+            [1.5, 3.0, 1.5],
+            [-1.5, -2.0, 1.5],
+            [1.5, -2.0, 1.5],
+        ];
+        let measured = MeasuredRoom::of(&emitters, None);
+        let room = measured.ratios(0.5);
+        let layout =
+            SpeakerLayout::from_brir_emitters(&emitters, &room, measured.radius_m()).unwrap();
+        assert_eq!(layout.speakers[1].name, "FL");
+
+        // The native panner on that layout in that room: the reference, and
+        // the request template of a topology built there.
+        let control = renderer::test_support::fixture_control();
+        let native_plan = control
+            .prepare_topology_rebuild_for_layout(layout.clone(), room)
+            .expect("a native plan");
+        let native = native_plan
+            .backend_build
+            .build_gain_model()
+            .expect("the native model");
+        let template = native_plan.evaluation_build_config.request_template;
+        assert_eq!(template.room_ratio, room.ratio);
+
+        // The shipped VBAP script, built through the factory on the same
+        // layout and room, with no spread.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../script-backends/vbap_blend.lua"
+        );
+        let mut params: HashMap<String, HashMap<String, ParamValue>> = HashMap::new();
+        params.insert(
+            "script".to_string(),
+            HashMap::from([
+                ("path".to_string(), ParamValue::Text(path.to_string())),
+                ("spread".to_string(), ParamValue::Float(0.0)),
+            ]),
+        );
+        let registry = BackendRegistry::builtin();
+        let live = control.live.read();
+        let ctx = BackendBuildCtx {
+            layout: &layout,
+            live: &live,
+            room,
+            backend_rebuild_params: None,
+            registry: &registry,
+            backend_params: &params,
+        };
+        let script = ScriptFactory
+            .build_plan(&ctx)
+            .expect("a script plan")
+            .build_gain_model()
+            .expect("the script model");
+
+        let both = |position: [f32; 3]| {
+            let mut req = template;
+            req.adm_position = [position[0] as f64, position[1] as f64, position[2] as f64];
+            (
+                native.compute_gains(&req).gains.to_vec(),
+                script.compute_gains(&req).gains.to_vec(),
+            )
+        };
+        let unit = |p: [f32; 3]| {
+            let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            [p[0] / n, p[1] / n, p[2] / n]
+        };
+        // An object on FL, and one halfway in angle between C and FR, in
+        // the room's own metric.
+        let fl = &layout.speakers[1];
+        let bisector = {
+            let (a, b) = (unit(emitters[0]), unit(emitters[2]));
+            let d = unit([a[0] + b[0], a[1] + b[1], a[2] + b[2]]);
+            let r = measured.radius_m();
+            room.inverse([d[0] / r, d[1] / r, d[2] / r])
+        };
+        for (what, position) in [("on FL", [fl.x, fl.y, fl.z]), ("C–FR bisector", bisector)] {
+            let (native, script) = both(position);
+            assert_eq!(native.len(), script.len(), "{what}");
+            for (i, (n, s)) in native.iter().zip(&script).enumerate() {
+                assert!(
+                    (n - s).abs() < 1e-3,
+                    "{what}: speaker {i} native {n} vs script {s}\n{native:?}\n{script:?}"
+                );
+            }
+        }
+        let (_, on_fl) = both([fl.x, fl.y, fl.z]);
+        assert!(
+            on_fl[1] > 0.999 && on_fl[0].abs() < 1e-3,
+            "all on FL: {on_fl:?}"
+        );
+        let (_, split) = both(bisector);
+        assert!(
+            (split[0] - split[2]).abs() < 1e-3 && split[0] > 0.5,
+            "even split: {split:?}"
         );
     }
 

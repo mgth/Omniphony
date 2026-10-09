@@ -180,8 +180,13 @@ impl BackendFactory for ExampleFactory {
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
         // Capture the spatializable speaker directions now (build thread), so the
         // model builder closure owns everything it needs and the hot path does no
-        // layout lookups. Azimuth/elevation pairs are converted to unit vectors.
-        let (azimuth_elevation, _spatializable_indices) = ctx.layout.spatializable_positions();
+        // layout lookups. Read in the room the topology pans in, as the
+        // objects are warped with it (a cartesian speaker is a fraction of
+        // that room). Azimuth/elevation pairs are converted to unit vectors.
+        let room = ctx.room;
+        let (azimuth_elevation, _spatializable_indices) = ctx
+            .layout
+            .spatializable_positions_for_room(room.ratio, room.rear, room.lower, room.center_blend);
         let speaker_positions: Vec<[f32; 3]> = azimuth_elevation
             .iter()
             .map(|[az, el]| {
