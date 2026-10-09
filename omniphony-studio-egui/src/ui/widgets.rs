@@ -191,14 +191,24 @@ fn labelled<R>(
 /// the detail truncate — so an entry never changes height under the buttons
 /// of the entries below it. The name shows `full` on hover, the detail
 /// itself when cut.
+///
+/// `mark` highlights the entry (the bridge decoding the stream): an accent
+/// outline painted around it, outside its rect, and a tag of that text at the
+/// right end of its detail line, in the detail's own font. Neither takes
+/// space, so marking an entry moves nothing: only its detail truncates
+/// sooner.
 pub fn list_entry(
     ui: &mut Ui,
     name: &str,
     full: &str,
     detail: &str,
     colour: Color32,
+    mark: Option<&str>,
     add_right: impl FnOnce(&mut Ui),
 ) {
+    // Filled once the entry is laid out, under it.
+    let outline = ui.painter().add(egui::Shape::Noop);
+    let top = ui.cursor().top();
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             add_right(ui);
@@ -222,15 +232,79 @@ pub fn list_entry(
             response.on_hover_text(full);
         });
     });
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(detail)
+    let small = |text: &str, colour: Color32| {
+        egui::WidgetText::from(
+            egui::RichText::new(text)
                 .size(theme::FONT_SIZE_SMALL)
                 .color(colour),
         )
-        .truncate(),
+    };
+    let width = ui.available_width().max(0.0);
+    let tag = mark.map(|mark| {
+        small(mark, theme::ACCENT).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+    });
+    let tag_width = tag
+        .as_ref()
+        .map_or(0.0, |tag| tag.size().x + 2.0 * TAG_PADDING_X);
+    let galley = small(detail, colour).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (width - tag_width - if tag.is_some() { TAG_GAP } else { 0.0 }).max(0.0),
+        egui::TextStyle::Body,
+    );
+    // The line is as high as the detail's text, tag or not: the tag is
+    // that font too.
+    let height = galley.size().y;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let truncated = galley.elided;
+    painter.galley(rect.left_top(), galley, colour);
+    if truncated {
+        response.on_hover_text(detail);
+    }
+    let Some(tag) = tag else {
+        return;
+    };
+    let pill = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - tag_width, rect.top()),
+        rect.right_bottom(),
+    );
+    painter.rect(
+        pill,
+        pill.height() / 2.0,
+        theme::ACCENT.gamma_multiply(0.15),
+        egui::Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.6)),
+        egui::StrokeKind::Inside,
+    );
+    let at = pill.center() - tag.size() / 2.0;
+    painter.galley(at, tag, theme::ACCENT);
+    // Around the whole entry, in the margin the rows already leave.
+    let entry = egui::Rect::from_min_max(egui::pos2(rect.left(), top), rect.max)
+        .expand2(vec2(MARK_OUTSET_X, MARK_OUTSET_Y));
+    ui.painter().set(
+        outline,
+        egui::epaint::RectShape::new(
+            entry,
+            theme::CONTROL_RADIUS,
+            theme::ACCENT.gamma_multiply(0.06),
+            egui::Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.5)),
+            egui::StrokeKind::Inside,
+        ),
     );
 }
+
+/// A [`list_entry`] tag's text inset, and its gap to the detail it ends.
+const TAG_PADDING_X: f32 = 5.0;
+const TAG_GAP: f32 = 4.0;
+/// How far a marked [`list_entry`]'s outline reaches past the entry: inside
+/// the group's padding and the spacing between entries, never into the next.
+const MARK_OUTSET_X: f32 = 4.0;
+const MARK_OUTSET_Y: f32 = 1.0;
 
 /// The width a dropdown in a `label_row` takes: its usual width, but never more
 /// than 60 % of the row, so its label keeps room to be read when the panel is

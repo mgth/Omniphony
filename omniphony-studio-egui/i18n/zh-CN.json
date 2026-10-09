@@ -263,6 +263,7 @@
   "input.bridges.removed": "已移除，下次应用前仍加载：{families}",
   "input.bridges.failed": "失败：{error}",
   "input.bridges.notLoaded": "尚未加载：下次应用时加载",
+  "input.bridges.decoding": "解码中",
   "help.input.bridges": "渲染器按顺序加载的解码桥库，每个都显示其可解码的源类型或加载失败的原因。两个桥都接受同一流时，列表中靠上的优先。未配置时，渲染器加载第一个包含可用桥的发现目录中的所有桥。更改在下次应用时生效，只有保存才会写入配置。",
   "help.input.bridgesAddPath": "按渲染器所在机器上的路径添加桥（用于另一台机器上的渲染器）；按回车添加。",
   "help.input.pipe": "桥写入解码后 PCM 的命名管道；留空时自动检测。",

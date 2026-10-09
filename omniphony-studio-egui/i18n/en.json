@@ -282,6 +282,7 @@
   "input.bridges.removed": "Removed, loaded until the next Apply: {families}",
   "input.bridges.failed": "Failed: {error}",
   "input.bridges.notLoaded": "Not loaded yet: loads at the next Apply",
+  "input.bridges.decoding": "Decoding",
   "help.input.bridges": "The decoder bridge libraries the renderer loads, in order, each with the source families it decodes or why it failed to load. When two bridges accept the same stream, the one higher in the list wins. With none configured, the renderer loads every bridge in the first discovery folder that holds a usable one. A change takes effect at the next Apply and reaches the config only through Save.",
   "help.input.bridgesAddPath": "Append a bridge by its path as the renderer's machine sees it (for a renderer on another machine); press Enter to add it.",
   "help.input.pipe": "Named pipe the bridge writes decoded PCM into; auto-detected when left empty.",

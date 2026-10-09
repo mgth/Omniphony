@@ -282,6 +282,7 @@
   "input.bridges.removed": "Retiré, chargé jusqu'au prochain Appliquer : {families}",
   "input.bridges.failed": "Échec : {error}",
   "input.bridges.notLoaded": "Pas encore chargé : se charge au prochain Appliquer",
+  "input.bridges.decoding": "Décodage",
   "help.input.bridges": "Les bibliothèques de bridge décodeur que le renderer charge, dans l'ordre, chacune avec les familles de sources qu'elle décode ou la raison de son échec. Quand deux bridges acceptent le même flux, celui placé plus haut l'emporte. Sans configuration, le renderer charge tous les bridges du premier dossier de découverte qui en contient un utilisable. Un changement prend effet au prochain Appliquer et n'est écrit dans la config que par Sauvegarder.",
   "help.input.bridgesAddPath": "Ajoute un bridge par son chemin tel que la machine du renderer le voit (pour un renderer sur une autre machine) ; Entrée pour l'ajouter.",
   "help.input.pipe": "Pipe nommé dans lequel le bridge écrit le PCM décodé ; auto-détecté quand laissé vide.",

@@ -427,7 +427,14 @@ explicit setting:
   bridges with their families and status, and edits the list (add with the
   file picker, remove, reorder). The panel only draws; the list lives in the
   core, per `ARCHITECTURE.md`. (The Tauri Studio, removed before 0.7.0 —
-  #677 — kept its single field, mapped to the first entry.)
+  #677 — kept its single field, mapped to the first entry.) The bridge
+  decoding the stream is outlined and tagged. No state carries it: Studio
+  derives it from the playing stream's family (`fixedChannelProcessing`) as
+  the first loaded bridge, in load order, that declares that family — the
+  bridge the router picks when two claim a stream. Exact while the bridges
+  declare disjoint families, as harletty's family plugins do; nothing is
+  marked while idle, for the generic family, or for a family no bridge
+  declares (the reference bridge's `pcm`).
 
 ### harletty-bridge
 
