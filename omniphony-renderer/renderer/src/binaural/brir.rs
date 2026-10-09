@@ -767,33 +767,63 @@ impl BrirSet {
 }
 
 /// `RoomCornerA` and `RoomCornerB` of a SOFA file in SOFA cartesian metres,
-/// when both are present and their encoding is understood: the coordinate
-/// metadata is each variable's own `Type` / `Units`, else the convention's
-/// `RoomCorners:Type` / `RoomCorners:Units` among the global attributes
-/// (`globals`), else the convention's default, cartesian metres.
+/// when both are present and their encoding is understood
+/// ([`room_corner_metadata`] says where the encoding is read from).
 #[cfg(feature = "sofa")]
 fn sofa_room_corners(
     bytes: &[u8],
     globals: &std::collections::HashMap<String, String>,
 ) -> Option<[[f32; 3]; 2]> {
+    use std::collections::HashMap;
     let parsed = sofar::hdf::parse_with_children(bytes).ok()?;
+    let attributes_of = |obj: &sofar::hdf::DataObject| -> HashMap<String, String> {
+        obj.parsed_attributes
+            .iter()
+            .filter_map(|a| a.value.as_ref().map(|v| (a.name.clone(), v.clone())))
+            .collect()
+    };
+    // The convention's `RoomCorners` variable exists for its attributes
+    // alone: the two corners' `Type` and `Units`.
+    let shared = parsed
+        .get_child("RoomCorners")
+        .and_then(|r| r.ok())
+        .map(|obj| attributes_of(&obj))
+        .unwrap_or_default();
     let corner = |name: &str| -> Option<[f32; 3]> {
         let obj = parsed.get_child(name)?.ok()?;
         let values = hdf_floats(&obj, 3)?;
-        let attribute = |key: &str| {
-            obj.parsed_attributes
-                .iter()
-                .find(|a| a.name == key)
-                .and_then(|a| a.value.clone())
-                .or_else(|| globals.get(&format!("RoomCorners:{key}")).cloned())
-        };
+        let (kind, units) = room_corner_metadata(&shared, &attributes_of(&obj), globals);
         room_corner_metres(
             [values[0], values[1], values[2]],
-            attribute("Type").as_deref(),
-            attribute("Units").as_deref(),
+            kind.as_deref(),
+            units.as_deref(),
         )
     };
     Some([corner("RoomCornerA")?, corner("RoomCornerB")?])
+}
+
+/// The coordinate metadata (`Type`, `Units`) of a room corner, from where
+/// a SOFA file keeps it, in the order it is looked for: the `RoomCorners`
+/// variable the convention includes for that alone (`shared`: its
+/// `RoomCorners:Type` / `RoomCorners:Units` are that variable's
+/// attributes), then the corner variable's own attributes (`own`, which
+/// some writers duplicate), then the same names among the global
+/// attributes (`globals`, where a writer that knows no `RoomCorners`
+/// variable leaves them). `None` where none states it: the convention's
+/// default, cartesian metres, applies.
+pub fn room_corner_metadata(
+    shared: &std::collections::HashMap<String, String>,
+    own: &std::collections::HashMap<String, String>,
+    globals: &std::collections::HashMap<String, String>,
+) -> (Option<String>, Option<String>) {
+    let find = |key: &str| {
+        shared
+            .get(key)
+            .or_else(|| own.get(key))
+            .or_else(|| globals.get(&format!("RoomCorners:{key}")))
+            .cloned()
+    };
+    (find("Type"), find("Units"))
 }
 
 /// A room corner in SOFA cartesian metres, from its stored triplet and its
@@ -915,6 +945,60 @@ mod tests {
             |got: [f32; 3], want: [f32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-6);
         assert!(near(a, [2.0, -3.0, -1.2]), "{a:?}");
         assert!(near(b, [-2.0, 3.0, 1.3]), "{b:?}");
+    }
+
+    /// The corners' encoding is read where the convention keeps it, the
+    /// `RoomCorners` variable's attributes, before a corner's own duplicate
+    /// or a global copy; a file stating it nowhere gets the default.
+    #[test]
+    fn room_corner_metadata_comes_from_the_room_corners_variable_first() {
+        use std::collections::HashMap;
+        let map = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let shared = map(&[("Type", "spherical"), ("Units", "degree, degree, metre")]);
+        let own = map(&[("Type", "cartesian"), ("Units", "metre")]);
+        let globals = map(&[
+            ("RoomCorners:Type", "cartesian"),
+            ("RoomCorners:Units", "metre"),
+        ]);
+        let none = HashMap::new();
+        assert_eq!(
+            room_corner_metadata(&shared, &own, &globals),
+            (
+                Some("spherical".into()),
+                Some("degree, degree, metre".into())
+            )
+        );
+        assert_eq!(
+            room_corner_metadata(&none, &own, &globals),
+            (Some("cartesian".into()), Some("metre".into()))
+        );
+        let globals = map(&[("RoomCorners:Type", "spherical")]);
+        assert_eq!(
+            room_corner_metadata(&none, &none, &globals),
+            (Some("spherical".into()), None)
+        );
+        assert_eq!(room_corner_metadata(&none, &none, &none), (None, None));
+        // Shared metadata applies to both corners: a spherical pair under
+        // it lands on its cartesian twins.
+        let r = (36.0f32 + 16.0 + 6.25).sqrt();
+        let spherical = [
+            4.0f32.atan2(6.0).to_degrees(),
+            (2.5 / r).asin().to_degrees(),
+            r,
+        ];
+        let (kind, units) = room_corner_metadata(&shared, &none, &none);
+        let got = room_corner_metres(spherical, kind.as_deref(), units.as_deref()).expect("read");
+        assert!(
+            got.iter()
+                .zip([6.0, 4.0, 2.5])
+                .all(|(g, w)| (g - w).abs() < 1e-3),
+            "{got:?}"
+        );
     }
 
     /// A corner stored as spherical degrees and metres lands where its
