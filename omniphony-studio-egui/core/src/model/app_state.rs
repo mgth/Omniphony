@@ -83,6 +83,23 @@ impl Default for RoomRatio {
     }
 }
 
+impl RoomRatio {
+    /// The unit cube: no warp at all, every half-axis one unit, `scale_m`
+    /// metres to the unit. What the direct binaural path renders in (the
+    /// renderer's `RoomRatios::UNIT`, scaled by its `unit_scale_m`).
+    pub fn unit(scale_m: f64) -> Self {
+        Self {
+            width: 1.0,
+            length: 1.0,
+            height: 1.0,
+            rear: 1.0,
+            lower: 1.0,
+            center_blend: 0.0,
+            scale_m,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SpreadState {
     pub min: Option<f64>,
@@ -850,6 +867,38 @@ pub enum ConfigRefusal {
 impl AppState {
     /// Whether the speakers shown cannot be edited: the backend froze them,
     /// or they are a BRIR set's own loudspeakers.
+    /// The path the render takes to the output, from the binaural document
+    /// and the loudspeakers in use (`model::binaural::RenderPath`).
+    pub fn render_path(&self) -> super::binaural::RenderPath {
+        super::binaural::RenderPath::of(self.binaural.as_ref(), self.brir_speakers.is_some())
+    }
+
+    /// The frame the scene draws in and the editors convert through: the
+    /// live room on every path through the speaker stage, the unit room on
+    /// the direct binaural path, which reads a direction straight off a
+    /// position (`RenderPath::warps_with_room`). One resolution for the
+    /// forward projection, the gizmos' inverse, the channel editor's polar
+    /// conversions and the heatmap volumes, so a drag lands where the
+    /// pointer is and a volume sits on its sources whatever the path.
+    pub fn display_room(&self) -> RoomRatio {
+        if self.render_path().warps_with_room() {
+            self.room_ratio.clone()
+        } else {
+            RoomRatio::unit(self.binaural_unit_scale_m())
+        }
+    }
+
+    /// Metres to one unit of the direct binaural path's cube
+    /// (`binaural.unitScaleM`, the renderer's distance scale).
+    pub fn binaural_unit_scale_m(&self) -> f64 {
+        self.binaural
+            .as_ref()
+            .and_then(|b| b.get("unitScaleM"))
+            .and_then(serde_json::Value::as_f64)
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .unwrap_or(1.0)
+    }
+
     pub fn speakers_read_only(&self) -> bool {
         self.render_backend_state.frozen_speakers || self.brir_speakers.is_some()
     }

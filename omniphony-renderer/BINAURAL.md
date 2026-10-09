@@ -60,6 +60,15 @@ render:
 Everything below is also live-tunable from the **Binaural / Headphones** panel
 in Studio and over OSC (addresses listed at the end).
 
+Studio's 3D view follows the path that renders. On the direct path the
+objects sit in the listener's cube — no room warp, `unit_scale_m` metres to
+the unit, read off a guide on its edge — and the speaker layout is hidden,
+since nothing feeds it (Display → *Speaker layout on headphones* keeps it as
+a ghosted reference). Through the virtual room the user's room is drawn
+with its speakers as wireframe cubes: the virtual speakers the cascade
+convolves, metered. A measured room's loudspeakers are wireframe cubes in
+the room's own colour.
+
 ## Configuration reference (`render.binaural`)
 
 | Key | Default | Meaning |

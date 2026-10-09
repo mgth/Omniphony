@@ -12,6 +12,45 @@ use crate::render::{
 
 use super::Label;
 
+/// The colour of a measured room (BRIR): its loudspeakers, and the box the
+/// set's geometry will be drawn in. Amber, which no crossover band and
+/// neither the selection nor the feed colour comes near.
+pub const MEASURED_ROOM_COLOR: u32 = 0xffb86b;
+
+/// How a box is drawn: the user's room, with walls and a screen, or the
+/// listener's cube of the direct binaural path, which has neither.
+pub struct RoomStyle {
+    /// Fill colour and alpha of the box.
+    pub fill: (u32, f32),
+    /// Edge colour and alpha.
+    pub edge: (u32, f32),
+    /// Far-side face colour and alpha.
+    pub face: (u32, f32),
+    /// Whether the 16:9 screen sits on the front wall.
+    pub screen: bool,
+}
+
+impl RoomStyle {
+    /// The speaker room (`scene/setup.js`): `#4d6eff` α 0.08, edges
+    /// `#6f8dff` α 0.45, faces `#233047` α 0.18, the screen on the front.
+    pub const SPEAKER_ROOM: Self = Self {
+        fill: (0x4d6eff, 0.08),
+        edge: (0x6f8dff, 0.45),
+        face: (0x233047, 0.18),
+        screen: true,
+    };
+
+    /// The listener's cube: the normalized positions as the direct path reads
+    /// them, no walls, no screen. Its own colour so it never passes for the
+    /// room.
+    pub const LISTENER_CUBE: Self = Self {
+        fill: (0x7fd1b9, 0.04),
+        edge: (0x8fe0c8, 0.5),
+        face: (0x1f3a33, 0.12),
+        screen: false,
+    };
+}
+
 /// Warped room bounds in scene units.
 #[derive(Clone, Copy, Debug)]
 pub struct RoomBounds {
@@ -128,22 +167,23 @@ fn faces(b: &RoomBounds) -> [(Vec3, Vec3, Mat4); 6] {
     ]
 }
 
-/// Box fill, edges, far-side faces and the screen plane.
-pub fn emit_room(bounds: &RoomBounds, cam_pos: Vec3, frame: &mut FrameData) {
-    // Fill: MeshBasicMaterial #4d6eff α 0.08, depth test on, write off.
+/// Box fill, edges, far-side faces and, for the speaker room, the screen
+/// plane.
+pub fn emit_room(bounds: &RoomBounds, cam_pos: Vec3, style: &RoomStyle, frame: &mut FrameData) {
+    // Fill: MeshBasicMaterial, depth test on, write off.
     frame.meshes.push(MeshItem {
         kind: MeshKind::Cube,
         instance: MeshInstance::unlit(
             Mat4::from_scale_rotation_translation(bounds.size(), Quat::IDENTITY, bounds.center()),
-            with_alpha(hex_linear(0x4d6eff), 0.08),
+            with_alpha(hex_linear(style.fill.0), style.fill.1),
         ),
         blend: true,
         depth_test: true,
         order: 0,
     });
 
-    // Edges: #6f8dff α 0.45, no depth test.
-    let edge = with_alpha(hex_linear(0x6f8dff), 0.45);
+    // Edges, no depth test.
+    let edge = with_alpha(hex_linear(style.edge.0), style.edge.1);
     let (x0, x1, y0, y1, z0, z1) = (
         bounds.x_min,
         bounds.x_max,
@@ -176,8 +216,8 @@ pub fn emit_room(bounds: &RoomBounds, cam_pos: Vec3, frame: &mut FrameData) {
         }
     }
 
-    // Faces: #233047 α 0.18, double-sided, no depth; only the far side.
-    let face_color = with_alpha(hex_linear(0x233047), 0.18);
+    // Faces, double-sided, no depth; only the far side.
+    let face_color = with_alpha(hex_linear(style.face.0), style.face.1);
     for (inward, pos, model) in faces(bounds) {
         if inward.dot(cam_pos - pos) > 0.0 {
             frame.meshes.push(MeshItem {
@@ -190,6 +230,9 @@ pub fn emit_room(bounds: &RoomBounds, cam_pos: Vec3, frame: &mut FrameData) {
         }
     }
 
+    if !style.screen {
+        return;
+    }
     // Screen: 16:9 white α 0.18 on the front wall (`fitScreenToUpperHalf`).
     let avail_w = (z1 - z0).max(0.01);
     let avail_h = (y1 - y0).max(0.01);
@@ -284,6 +327,55 @@ pub fn emit_axes(
                 depth,
             });
         }
+    }
+}
+
+/// The direct path's scale: one unit of the listener's cube in metres (the
+/// renderer's `unit_scale_m`), laid along the top front edge the way the
+/// room guides are, so the Distance scale slider has a reading in the scene.
+pub fn emit_unit_guide(
+    b: &RoomBounds,
+    scale_m: f32,
+    frame: &mut FrameData,
+    project: &dyn Fn(Vec3) -> Option<(screen::ScreenPos, f32)>,
+    points_per_unit: &dyn Fn(f32) -> f32,
+    labels: &mut Vec<Label>,
+) {
+    const OFF: f32 = 0.08;
+    const TICK: f32 = 0.04;
+    const LABEL_AT: f32 = 2.2;
+    const HEX: u32 = 0x88c7ff;
+    let y_top = b.y_max + 0.06;
+    // One unit: from the centre line to the right face, along the width.
+    let start = Vec3::new(b.x_max + OFF, y_top, 0.0);
+    let end = Vec3::new(b.x_max + OFF, y_top, b.z_max.min(1.0));
+    let colour = with_alpha(hex_linear(HEX), 0.85);
+    let tick = Vec3::X * TICK;
+    let mut segment = |a: Vec3, z: Vec3| {
+        frame.overlay_lines.push(LineVertex {
+            pos: a.to_array(),
+            color: colour,
+        });
+        frame.overlay_lines.push(LineVertex {
+            pos: z.to_array(),
+            color: colour,
+        });
+    };
+    segment(start, end);
+    segment(start - tick, start + tick);
+    segment(end - tick, end + tick);
+    if let Some((p, depth)) = project((start + end) * 0.5 + tick * LABEL_AT) {
+        labels.push(Label {
+            pos: p,
+            text: format!("1 unit = {scale_m:.2} m"),
+            color: screen::rgb(
+                ((HEX >> 16) & 0xff) as u8,
+                ((HEX >> 8) & 0xff) as u8,
+                (HEX & 0xff) as u8,
+            ),
+            size: (0.052 * points_per_unit(depth)).clamp(6.0, 40.0).round(),
+            depth,
+        });
     }
 }
 

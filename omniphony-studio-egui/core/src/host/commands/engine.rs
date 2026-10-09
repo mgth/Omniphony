@@ -350,7 +350,9 @@ pub fn switch_placement_to_manual(state: &SharedState, family: Family) {
     use crate::host::channels::{adm_to_polar, build_layout_payload, effective_channels_for};
     let payload = {
         let live = state.inner.lock().unwrap();
-        let room = live.app.room_ratio.clone();
+        // The renderer's positions are read in the room the output renders
+        // in (`display_room`): on the direct path, straight off the sphere.
+        let room = live.app.display_room();
         let playing = crate::host::channels::playing_family(&live.app) == Some(family);
         let mut channels = effective_channels_for(&live.channels, &live.app, family);
         if playing {

@@ -47,6 +47,10 @@ pub struct ViewSettings {
     /// composited, the one-band readouts use the full-band gains instead.
     pub heatmap_all_bands: bool,
     pub speakers_visible: bool,
+    /// Keep the speaker layout in view on the direct headphone path, where
+    /// nothing feeds it: hidden by default there, ghosted when shown, a
+    /// reference for where the objects are.
+    pub speakers_on_headphones: bool,
     /// `app.speakerLabelsEnabled` (default false in the Studio).
     pub speaker_labels_enabled: bool,
     /// `app.speakerBandBarsEnabled`: the per-speaker frequency-extent gauge.
@@ -91,6 +95,7 @@ impl Default for ViewSettings {
             heatmap_band_index: 0,
             heatmap_all_bands: true,
             speakers_visible: true,
+            speakers_on_headphones: false,
             speaker_labels_enabled: false,
             speaker_band_bars_enabled: false,
             speaker_face_listener_enabled: false,
@@ -318,21 +323,46 @@ pub fn build_frame(
     let half_fov_tan = (camera.fov_y * 0.5).tan();
     let points_per_unit = |d: f32| rect.height() / (2.0 * d.max(0.05) * half_fov_tan);
 
-    let room = live.app.room_ratio.clone();
+    // The frame positions are placed in, as the engine places them: the live
+    // room on every path through the speaker stage, the unit cube on the
+    // direct binaural path, which reads a direction straight off a position
+    // (`AppState::display_room`, which the editors and the volumes share).
+    // The room's grid, the hybrid surface and the dimension guides describe
+    // the speaker stage, so they go with the room.
+    let path = live.app.render_path();
+    let room = live.app.display_room();
     let bounds = RoomBounds::from_ratio(&room);
-    room::emit_room(&bounds, cam_pos, &mut frame);
-    if settings.vbap_grid {
-        room::emit_vbap_grids(
+    if path.warps_with_room() {
+        room::emit_room(&bounds, cam_pos, &room::RoomStyle::SPEAKER_ROOM, &mut frame);
+        if settings.vbap_grid {
+            room::emit_vbap_grids(
+                &bounds,
+                &room,
+                cam_pos,
+                &live.app.vbap_cartesian,
+                &mut frame,
+            );
+        }
+    } else {
+        room::emit_room(
             &bounds,
-            &room,
             cam_pos,
-            &live.app.vbap_cartesian,
+            &room::RoomStyle::LISTENER_CUBE,
             &mut frame,
+        );
+        room::emit_unit_guide(
+            &bounds,
+            room.scale_m as f32,
+            &mut frame,
+            &project,
+            &points_per_unit,
+            &mut labels,
         );
     }
     room::emit_axes(&mut frame, &project, &points_per_unit, &mut labels);
     // The hybrid backend's iso-distance surface, for the selected curve point.
-    if live.app.render_backend_state.selection.as_deref() == Some("hybrid")
+    if path.warps_with_room()
+        && live.app.render_backend_state.selection.as_deref() == Some("hybrid")
         && let Some(index) = settings.hybrid_point
         && let Some(stop) = live.app.render_backend_state.hybrid.curve.get(index)
     {
@@ -343,7 +373,7 @@ pub fn build_frame(
         let radius = stop[0] as f32 * if spherical { 3.0f32.sqrt() } else { 1.0 };
         room::emit_hybrid_distance(radius, spherical, &room, &mut frame);
     }
-    if settings.room_guides_visible {
+    if path.warps_with_room() && settings.room_guides_visible {
         room::emit_dimension_guides(
             &bounds,
             &room,
@@ -397,7 +427,11 @@ pub fn build_frame(
             scene_pos: s.scene_pos,
         })
         .collect();
-    if settings.speakers_visible {
+    // On the direct path nothing feeds the speakers: the layout is hidden
+    // there unless asked for as a reference.
+    let speakers_shown =
+        settings.speakers_visible && (path.speakers_render() || settings.speakers_on_headphones);
+    if speakers_shown {
         for sp in &speaker_visuals {
             speakers::emit(sp, settings, &mut frame);
             pick_speakers.push((
@@ -429,7 +463,7 @@ pub fn build_frame(
                 labels.push(Label {
                     pos: p + glam::Vec2::new(0.0, 0.03 * points_per_unit(depth)),
                     text: sp.name.clone(),
-                    color: if sp.ghosted {
+                    color: if sp.ghosted() {
                         screen::white_alpha(77)
                     } else {
                         screen::WHITE
@@ -604,6 +638,34 @@ mod tests {
         // Anything off the axis is clamped onto it rather than drawn outside.
         assert_eq!(BandBar::log_pos(1.0), BandBar::log_pos(20.0));
         assert_eq!(BandBar::log_pos(96_000.0), BandBar::log_pos(20_000.0));
+    }
+
+    /// The unit room is the engine's direct path: a normalized position
+    /// lands where `adm_to_scene` puts it, with no warp, where the live room
+    /// would have moved it.
+    #[test]
+    fn the_unit_room_does_not_warp() {
+        let unit = RoomRatio::unit(3.0);
+        assert_eq!(unit.scale_m, 3.0);
+        for adm in [[0.5, 0.866, 0.0], [-1.0, -1.0, -1.0], [0.3, 0.2, 0.9]] {
+            let s = omniphony_geometry::f64::adm_to_scene(adm);
+            let expected = Vec3::new(s[0] as f32, s[1] as f32, s[2] as f32);
+            assert!(
+                (scene_position(adm, &unit) - expected).length() < 1e-6,
+                "{adm:?} is warped by the unit room"
+            );
+        }
+        let left = [0.5, 0.866, 0.0];
+        let warped = scene_position(left, &RoomRatio::default());
+        assert!((warped - scene_position(left, &unit)).length() > 0.1);
+        // And the gizmos' inverse brings a point back through the same
+        // room, so a drag lands where the pointer is.
+        for adm in [[0.2, 0.8, 0.0], [-0.7, -0.3, 0.5]] {
+            let back = gizmos::scene_to_normalized(scene_position(adm, &unit), &unit);
+            for axis in 0..3 {
+                assert!((back[axis] - adm[axis]).abs() < 1e-5, "{adm:?} → {back:?}");
+            }
+        }
     }
 
     /// A speaker the layout does not cut is full-band, and its bar is lit end

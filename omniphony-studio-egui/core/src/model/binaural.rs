@@ -69,6 +69,59 @@ impl OutputMode {
     }
 }
 
+/// The path the render takes to the output: what the scene depicts, and
+/// what the panels stand down for. Resolved from the binaural document and
+/// from whether the topology renders on a BRIR set's own loudspeakers
+/// (`binaural.brir.layout` present, `AppState::brir_speakers`): a `brir`
+/// source whose set is not resident, or does not fit the speaker stage,
+/// renders the virtual room on the HRTF stage, which is what the view must
+/// show.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RenderPath {
+    /// The speaker stage feeds the loudspeakers.
+    Speakers,
+    /// Each source through its own HRTF pair, read as a direction straight
+    /// off its normalized position: no room warp, the unit cube.
+    Direct,
+    /// The speaker stage on the editable layout, warped by the live room,
+    /// then one HRTF pair per virtual speaker.
+    VirtualRoom,
+    /// The speaker stage on the BRIR set's loudspeakers, each convolved with
+    /// its measured pair.
+    MeasuredRoom,
+}
+
+impl RenderPath {
+    pub fn of(binaural: Option<&Value>, brir_layout: bool) -> Self {
+        match OutputMode::from_state(binaural) {
+            OutputMode::Speaker => RenderPath::Speakers,
+            OutputMode::BinauralDirect => RenderPath::Direct,
+            OutputMode::BinauralCascaded if brir_layout => RenderPath::MeasuredRoom,
+            OutputMode::BinauralCascaded => RenderPath::VirtualRoom,
+        }
+    }
+
+    /// Headphones, by any path.
+    pub fn is_binaural(self) -> bool {
+        self != RenderPath::Speakers
+    }
+
+    /// Whether a normalized position is warped by the live room before it
+    /// is rendered: on every path through the speaker stage, and not on the
+    /// direct one, which reads the direction straight off the position
+    /// (the renderer's `RoomRatios::for_output`). The scene places things
+    /// the same way.
+    pub fn warps_with_room(self) -> bool {
+        self != RenderPath::Direct
+    }
+
+    /// Whether the speakers drawn are what renders: the loudspeakers, or
+    /// the virtual ones of a room. On the direct path nothing feeds them.
+    pub fn speakers_render(self) -> bool {
+        self != RenderPath::Direct
+    }
+}
+
 fn text<'a>(binaural: Option<&'a Value>, key: &str) -> Option<&'a str> {
     binaural
         .and_then(|b| b.get(key))
@@ -166,6 +219,67 @@ mod tests {
         let room_under_direct = doc("binaural", "direct", Some("cascaded"), BRIR);
         assert!(hrir_source_offered(Some(&room_under_direct), BRIR));
         assert!(!hrir_source_offered(None, BRIR));
+    }
+
+    /// The path follows the output and the mode that renders, and a
+    /// measured room only once the topology is on the set's loudspeakers:
+    /// a `brir` source without a resident set is the virtual room.
+    #[test]
+    fn the_render_path_is_what_the_engine_does() {
+        assert_eq!(RenderPath::of(None, false), RenderPath::Speakers);
+        let speakers = doc("speaker", "cascaded", Some("cascaded"), BRIR);
+        assert_eq!(RenderPath::of(Some(&speakers), true), RenderPath::Speakers);
+        let direct = doc("binaural", "direct", Some("direct"), "saf");
+        assert_eq!(RenderPath::of(Some(&direct), false), RenderPath::Direct);
+        let virtual_room = doc("binaural", "cascaded", Some("cascaded"), "sofa");
+        assert_eq!(
+            RenderPath::of(Some(&virtual_room), false),
+            RenderPath::VirtualRoom
+        );
+        let room_loading = doc("binaural", "direct", Some("cascaded"), BRIR);
+        assert_eq!(
+            RenderPath::of(Some(&room_loading), false),
+            RenderPath::VirtualRoom
+        );
+        assert_eq!(
+            RenderPath::of(Some(&room_loading), true),
+            RenderPath::MeasuredRoom
+        );
+        assert!(!RenderPath::Speakers.is_binaural() && RenderPath::Direct.is_binaural());
+        assert!(!RenderPath::Direct.warps_with_room() && RenderPath::VirtualRoom.warps_with_room());
+        assert!(
+            !RenderPath::Direct.speakers_render() && RenderPath::MeasuredRoom.speakers_render()
+        );
+    }
+
+    /// The frame everything is drawn in and converted through: the live
+    /// room through the speaker stage, the unit room (at the renderer's
+    /// distance scale) on the direct path.
+    #[test]
+    fn the_display_room_is_the_unit_room_on_the_direct_path_only() {
+        use crate::model::app_state::{AppState, RoomRatio};
+        let mut app = AppState::new(Vec::new());
+        app.room_ratio = RoomRatio {
+            length: 2.0,
+            scale_m: 1.7,
+            ..RoomRatio::default()
+        };
+        app.binaural = Some(json!({
+            "outputMode": "binaural", "mode": "direct", "modeEffective": "direct",
+            "hrirSource": "saf", "unitScaleM": 3.0,
+        }));
+        let direct = app.display_room();
+        assert_eq!((direct.length, direct.rear, direct.lower), (1.0, 1.0, 1.0));
+        assert_eq!(direct.center_blend, 0.0);
+        assert_eq!(direct.scale_m, 3.0);
+        app.binaural = Some(json!({
+            "outputMode": "binaural", "mode": "cascaded", "modeEffective": "cascaded",
+            "hrirSource": "saf", "unitScaleM": 3.0,
+        }));
+        let cascaded = app.display_room();
+        assert_eq!((cascaded.length, cascaded.scale_m), (2.0, 1.7));
+        app.binaural = Some(json!({ "outputMode": "speaker", "mode": "direct" }));
+        assert_eq!(app.display_room().length, 2.0);
     }
 
     /// The file sources name the file a bare choice reopens; nothing named,

@@ -97,11 +97,26 @@ if index === selectedSpeakerIndex: color = 0x4dff88   // selection overrides eve
 | Situation | Opacity | Ref |
 |---|---|---|
 | Base | `getSpeakerBaseOpacity`: `spatialize === 0 ? 0.3 : 0.65` (non-spatialised / direct feeds such as an LFE output) | `coordinates.js:409-411`; `speakers.js:2334-2336` |
-| Binaural output (ghosted) | `base × 0.18`; labels 0.3 | `speakers.js:993-1012`; trigger `controls/binaural.js:423-429` when renderer state `outputMode === 'binaural'` |
+| Binaural output (ghosted) | `base × 0.18`; labels 0.3 | `speakers.js:993-1012`; trigger `controls/binaural.js:423-429` when renderer state `outputMode === 'binaural'`. **Native Studio (2026-10): only on the direct path, and only when Display → *Speaker layout on headphones* keeps the layout in view (hidden by default there). The two headphone rooms draw their speakers in full: see §1.5a.** |
 | An object is selected | `mix ≤ 1e-6 ? min(base, 0.08) : base` — speakers the selected object does not feed fade to 0.08 | `sources.js:933-939` |
 | No selected object | `base` | `sources.js:934-937` |
 
 As coded: `updateSpeakerColorsFromSelection` writes `baseOpacity` without the ghost factor, so a ghosted speaker returns to full opacity on the next selection/gains update (`setSpeakersGhosted` early-returns when the state is unchanged). Port faithfully or fix deliberately.
+
+### 1.5a Kind of speaker (native Studio, `view/speakers.rs::SpeakerLook`)
+
+Colour, opacity and size carry other meanings, so the kind of speaker is said by its shape, from `model::binaural::RenderPath`:
+
+| Kind | Path | Look |
+|---|---|---|
+| Real | speakers | solid cube, band colour, driver disc (the rules above) |
+| Virtual | headphones through the virtual room (HRTF cascade) | wireframe cube (twelve depth-tested edges) in the band colour, alpha `min(1, opacity × 1.4)`; disc, level scaling, selection and feed colours as for a solid |
+| Measured | headphones through a measured room (BRIR, `binaural.brir.layout` present) | wireframe cube in `MEASURED_ROOM_COLOR` (`#ffb86b`); the set carries no band |
+| Reference | direct headphones, layout kept in view | the ghost above |
+
+The speaker list's position thumbnail draws its frame dashed for the two wire kinds, and the Speakers section summary reads "Virtual room · <layout>" through the virtual room.
+
+On the direct path the scene places every position with the unit room (`AppState::display_room()` → `RoomRatio::unit`, the engine's `RoomRatios::UNIT`; the gizmos' inverse, the channel editor's polar conversions and the heatmap volumes read the same room, so a drag lands where the pointer is and a volume stays on its sources), draws the listener's cube (`RoomStyle::LISTENER_CUBE`, no screen) in place of the user's room, with a "1 unit = `unitScaleM` m" guide, and leaves out the room's grid, the hybrid surface and the dimension guides, which describe the speaker stage.
 
 ### 1.6 Band base colour (crossover layouts)
 
