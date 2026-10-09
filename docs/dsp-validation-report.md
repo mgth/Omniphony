@@ -579,7 +579,20 @@ A group with a vertex inside its boundary is left alone: four loudspeakers a
 degree apart around a fifth read as coplanar within the tolerance, but the
 patch is a shallow dome whose apex is a loudspeaker, the hull's fan around it
 is already right, and a virtual centre would have silenced it (found in
-review, `a_loudspeaker_inside_a_flat_patch_keeps_its_faces`).
+review, `a_loudspeaker_inside_a_flat_patch_keeps_its_faces`). So is a group
+whose centre does not see every boundary edge from inside, the signed volume
+of a fan triangle at or below 1e-9: faces merged along a chain of
+near-coplanar neighbours can form a concave patch, over which a fan reverses
+and overlaps and the wrong face matches (also found in review,
+`a_concave_flat_patch_keeps_its_faces`).
+
+The review also caught a step in the MDAP spread path that the new fan edges
+exposed: `vbap3d`'s spread loop summed every face that held a cloud member,
+and within the hit tolerance of a shared edge that is both neighbours, so a
+member crossing an edge counted twice — 0.115 in L2 norm over 0.00003° at
+the rear quad's fan edge on the 7.1.4, and the same at every hull edge
+before this change. The loop now takes the first face that holds the member,
+as the pure path always did (`spread_sources_are_continuous_across_edges`).
 The centre's gain is downmixed at `1/√n` over the polygon's loudspeakers
 through the `DummyRing` mechanism of the virtual poles, in every out-of-hull
 mode. At the centre every loudspeaker of the face plays at equal power (0.5

@@ -393,6 +393,12 @@ pub fn prepare_effective_speaker_dirs(
 /// larger.
 const COPLANAR_FACE_EPS: f64 = 1e-3;
 
+/// Smallest signed volume `det(a, b, centre)` a fan triangle may have for
+/// the fan to stand: positive means the centre lies inside the boundary
+/// edge `a → b`'s great circle, on the faces' outward winding. A planar quad
+/// a degree across still clears this by five orders of magnitude.
+const FAN_MIN_DET: f64 = 1e-9;
+
 /// A triangulation ready for VBAP: the effective directions — the real
 /// loudspeakers first, then the virtual poles that close the hull
 /// ([`prepare_effective_speaker_dirs`]), then one virtual centre per coplanar
@@ -494,7 +500,10 @@ fn cart_to_sph_deg(v: [f32; 3]) -> [f32; 2] {
 /// apart around a fifth read as coplanar within [`COPLANAR_FACE_EPS`]. Its
 /// hull faces, the fan around that apex, are the right triangulation already,
 /// and a fan around a virtual centre would drop the apex from every face:
-/// such a group is left as it is.
+/// such a group is left as it is. So is a group whose centre does not see
+/// every boundary edge from inside ([`FAN_MIN_DET`]): faces merged along a
+/// chain of near-coplanar neighbours can form a concave patch, and a fan over
+/// it would reverse and overlap, so that a direction matches the wrong face.
 fn close_coplanar_faces(tri: &mut Triangulation) {
     let groups = coplanar_face_groups(&tri.u_spkr, &tri.ls_groups);
     if groups.is_empty() {
@@ -537,6 +546,19 @@ fn close_coplanar_faces(tri: &mut Triangulation) {
         let Some(centre) = try_normalize(sum, 1e-3) else {
             continue;
         };
+        // The fan must keep the faces' outward winding on every boundary
+        // edge, the centre strictly inside: else the patch is concave.
+        let det = |a: [f32; 3], b: [f32; 3], c: [f32; 3]| -> f64 {
+            let (a, b, c) = (a.map(f64::from), b.map(f64::from), c.map(f64::from));
+            a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0])
+        };
+        if boundary
+            .iter()
+            .any(|&(a, b)| det(tri.u_spkr[a], tri.u_spkr[b], centre) <= FAN_MIN_DET)
+        {
+            continue;
+        }
         let c = tri.dirs.len();
         tri.dirs.push(cart_to_sph_deg(centre));
         tri.u_spkr.push(centre);
@@ -976,7 +998,12 @@ pub fn vbap3d(
                 let u = *u_vec;
                 let mut hit = false;
 
-                // Find matching triangle and accumulate gains
+                // Find the matching triangle and accumulate its gains. The
+                // first face that holds the member is the one, as on the pure
+                // path below: within the hit tolerance of a shared edge both
+                // neighbours hold it, and summing both counted the member
+                // twice — a step in the cloud's gains wherever a member
+                // crossed an edge.
                 for (fi, face) in ls_groups.iter().enumerate() {
                     let inv = &layout_inv_mtx[fi];
 
@@ -999,6 +1026,7 @@ pub fn vbap3d(
                             gains[face[2]] += gr[2];
                         }
                         hit = true;
+                        break;
                     }
                 }
 

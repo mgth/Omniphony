@@ -496,20 +496,102 @@ mod tests {
             // A ring closed by two poles has no planar face.
             let ring = NativeVbapLayout::from_speaker_dirs(&horizontal_7_layout(), mode).unwrap();
             assert_eq!(ring.n_centres, 0, "{mode:?}");
-            // Every real loudspeaker is still a vertex of some face.
-            for (name, layout, n) in [
-                ("cube", &cube, 8),
-                ("bbc", &bbc, 13),
-                ("7.1.4", &seven_one_four, 11),
-                ("ring", &ring, 7),
+            // Every real loudspeaker is still a vertex of some face, and
+            // alone at its own place.
+            for (name, layout, dirs) in [
+                ("cube", &cube, &cube_4_4_layout()[..]),
+                ("bbc", &bbc, &bbc_system_g_layout()[..]),
+                ("7.1.4", &seven_one_four, &layout_714()[..]),
+                ("ring", &ring, &horizontal_7_layout()[..]),
             ] {
-                for i in 0..n {
+                for (i, d) in dirs.iter().enumerate() {
                     assert!(
                         layout.ls_groups.iter().any(|face| face.contains(&i)),
                         "{name} {mode:?}: speaker {i} is on no face"
                     );
+                    let g = layout.vbap_gains(d[0], d[1], 0.0).unwrap();
+                    assert!(
+                        (g[i] - 1.0).abs() < 1e-3,
+                        "{name} {mode:?}: speaker {i} at its own place got {}",
+                        g[i]
+                    );
                 }
             }
+        }
+    }
+
+    /// A chain of near-coplanar faces can merge into a concave patch whose
+    /// centre does not see every boundary edge from inside; a fan over it
+    /// would reverse and overlap, and a direction would match the wrong
+    /// face — the first loudspeaker here got 0.145 at its own place, the
+    /// sixth 0.898. Such a group keeps its hull faces. Review of #810.
+    #[test]
+    fn a_concave_flat_patch_keeps_its_faces() {
+        let dirs: [[f32; 2]; 10] = [
+            [0.5, -1.5],
+            [1.0, 2.0],
+            [1.0, -1.0],
+            [-2.0, -1.5],
+            [-2.0, 0.0],
+            [1.0, -2.0],
+            [2.0, -1.0],
+            [0.5, 2.0],
+            [-1.9, -2.0],
+            [-120.0, 0.0],
+        ];
+        for mode in modes() {
+            let layout = NativeVbapLayout::from_speaker_dirs(&dirs, mode).unwrap();
+            for (i, d) in dirs.iter().enumerate() {
+                let g = layout.vbap_gains(d[0], d[1], 0.0).unwrap();
+                assert!(
+                    (g[i] - 1.0).abs() < 1e-3,
+                    "{mode:?}: speaker {i} at its own place got {}",
+                    g[i]
+                );
+            }
+        }
+    }
+
+    /// Each member of the MDAP cloud counts once. Within the hit tolerance
+    /// of a shared edge both faces hold a member, and summing both made the
+    /// cloud's gains step wherever a member crossed an edge: 0.115 in L2
+    /// norm over 0.00003° at the rear quad's new fan edge. Review of #810.
+    #[test]
+    fn spread_sources_are_continuous_across_edges() {
+        let layout =
+            NativeVbapLayout::from_speaker_dirs(&layout_714(), OutOfHullMode::VirtualPoles)
+                .unwrap();
+        let spread = 1.0 / 3.0; // 60°
+        let diff = |a: &Gains, b: &Gains| {
+            (0..a.len())
+                .map(|i| (a[i] - b[i]) * (a[i] - b[i]))
+                .sum::<f32>()
+                .sqrt()
+        };
+        // A fine sweep across the rear quad's fan edges at the reviewer's
+        // elevation, and a coarse one round the sphere.
+        for (lo, hi, step, bound) in [
+            (-136.0f32, -133.0f32, 0.0005f32, 0.002f32),
+            (-180.0, 180.0, 0.05, 0.02),
+        ] {
+            let mut az = lo;
+            let mut prev = layout.vbap_gains(az, 27.0, spread).unwrap();
+            let mut worst = (0.0f32, az);
+            while az < hi {
+                az += step;
+                let g = layout.vbap_gains(az, 27.0, spread).unwrap();
+                let d = diff(&prev, &g);
+                if d > worst.0 {
+                    worst = (d, az);
+                }
+                prev = g;
+            }
+            assert!(
+                worst.0 < bound,
+                "step {step}°: a jump of {} at azimuth {}",
+                worst.0,
+                worst.1
+            );
         }
     }
 
