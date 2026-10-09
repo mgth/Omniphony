@@ -121,9 +121,9 @@ impl StudioSpike {
     pub(crate) fn headphones_section(&mut self, ui: &mut Ui) {
         let mode = {
             let live = self.host.read();
-            crate::panels::renderer::OutputMode::from_state(live.app.binaural.as_ref())
+            crate::model::binaural::OutputMode::from_state(live.app.binaural.as_ref())
         };
-        if mode == crate::panels::renderer::OutputMode::Speaker {
+        if mode == crate::model::binaural::OutputMode::Speaker {
             return;
         }
         // A mute pattern that no longer matches the solo interpretation
@@ -239,9 +239,9 @@ impl StudioSpike {
         // through the speakers into the ears.
         let mode = {
             let live = self.host.read();
-            crate::panels::renderer::OutputMode::from_state(live.app.binaural.as_ref())
+            crate::model::binaural::OutputMode::from_state(live.app.binaural.as_ref())
         };
-        if mode == crate::panels::renderer::OutputMode::BinauralDirect {
+        if mode == crate::model::binaural::OutputMode::BinauralDirect {
             return;
         }
         let rows = self.speaker_rows();

@@ -13,18 +13,9 @@ use crate::app::StudioSpike;
 use crate::host::commands::SharedState;
 use crate::host::commands::binaural as cmd;
 use crate::i18n::{t, tf};
+use crate::model::binaural::{HRIR_SOURCES, OutputMode, hrir_source_offered, last_hrir_file};
 use crate::ui::group::Group;
 use crate::ui::{theme, widgets};
-
-/// HRTF sources, in the select's order.
-const HRIR_SOURCES: &[(&str, &str)] = &[
-    ("saf", "binaural.hrtfSource.kemar"),
-    ("synthetic", "binaural.hrtfSource.synthetic"),
-    ("pinna", "binaural.hrtfSource.pinna"),
-    ("prtf", "binaural.hrtfSource.prtf"),
-    ("sofa", "binaural.hrtfSource.sofa"),
-    ("brir", "binaural.hrtfSource.brir"),
-];
 
 /// Which measured head orientations of a BRIR stay resident, as the
 /// renderer reports it (`auto` follows the head-tracking address).
@@ -219,8 +210,20 @@ impl StudioSpike {
                         .width(w)
                         .truncate()
                         .show_ui(ui, |ui| {
+                            // The output mode says which sources apply: a
+                            // measured room is listed under the virtual room
+                            // only (`hrir_source_offered`).
                             for (id, key) in HRIR_SOURCES {
-                                ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                                if !hrir_source_offered(doc, id) {
+                                    continue;
+                                }
+                                let entry =
+                                    ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                                // A file source names the file it reopens.
+                                if let Some(name) = last_hrir_file(doc, id) {
+                                    entry
+                                        .on_hover_text(tf("binaural.lastFile", &[("name", &name)]));
+                                }
                             }
                         })
                 });
@@ -304,6 +307,12 @@ impl StudioSpike {
                     );
                 }
             }
+        }
+
+        // Where a measured room is chosen: under the virtual room, the one
+        // headphone path that can render it.
+        if !OutputMode::virtual_room(doc) {
+            widgets::note(ui, t("binaural.brirUnderVirtualRoom"));
         }
 
         if !full {
