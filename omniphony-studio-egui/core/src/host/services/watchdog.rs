@@ -53,6 +53,9 @@ pub struct Watchdog {
     /// so a countdown is not promised on the strength of probes that are only
     /// asked once the wait is over.
     refused: bool,
+    /// The renderer's goodbye the last pass saw, so a new one is acted on at
+    /// once rather than at the next pass.
+    goodbye: Option<Instant>,
 }
 
 /// What a tick decided.
@@ -241,7 +244,10 @@ impl Watchdog {
         now: Instant,
         stop: &crate::host::runtime::StopToken,
     ) -> Tick {
-        if self.next_at.is_some_and(|at| now < at) {
+        let goodbye = state.stats.goodbye.at();
+        let heard = goodbye.is_some() && goodbye != self.goodbye;
+        self.goodbye = goodbye;
+        if !heard && self.next_at.is_some_and(|at| now < at) {
             return Tick {
                 changed: false,
                 next: self.next_at,
@@ -257,7 +263,6 @@ impl Watchdog {
             self.refused = false;
             let unpublished = {
                 let mut wd = state.watchdog.lock().unwrap();
-                wd.check_requested_at = None;
                 wd.last_failure = None;
                 wd.awaiting_answer = false;
                 wd.countdown.take().is_some()
@@ -272,11 +277,10 @@ impl Watchdog {
         // without a restart.
         let cfg = state.config.snapshot();
         let target = *state.stats.target.lock().unwrap();
-        let (goodbye_for, suppressed, attempts, cooldown_left) = {
+        let goodbye_for = goodbye.map(|at| now.saturating_duration_since(at));
+        let (suppressed, attempts, cooldown_left) = {
             let wd = state.watchdog.lock().unwrap();
             (
-                wd.check_requested_at
-                    .map(|at| now.saturating_duration_since(at)),
                 wd.suppressed,
                 wd.attempts,
                 wd.cooldown_until
@@ -331,7 +335,10 @@ impl Watchdog {
             }
             Verdict::PortHeld => {
                 self.refused = true;
-                state.watchdog.lock().unwrap().check_requested_at = None;
+                // Its port was not freed after all: back to the debounce.
+                if let Some(at) = goodbye {
+                    state.stats.goodbye.forget_if(at);
+                }
                 return due;
             }
             Verdict::Start => self.refused = false,
@@ -856,6 +863,83 @@ mod tests {
             shown(&state, t0 + Duration::from_secs(8)),
             EngineStartProgress::Countdown { fraction: 0.4 }
         );
+    }
+
+    /// A pass at `t0 + millis`.
+    fn tick_at_ms(watchdog: &mut Watchdog, state: &SharedState, t0: Instant, millis: u64) -> Tick {
+        watchdog.tick(
+            state,
+            t0 + Duration::from_millis(millis),
+            &crate::host::runtime::StopToken::cancelled_for_test(),
+        )
+    }
+
+    /// A renderer on this machine answers, and the watchdog's pass that saw
+    /// it is not due again for a second.
+    fn connected_then_passed(t0: Instant) -> (SharedState, Watchdog) {
+        let state = local_target_down();
+        state.stats.registered.store(true, Ordering::Relaxed);
+        let mut watchdog = Watchdog::default();
+        let tick = tick_at(&mut watchdog, &state, t0, 0);
+        assert_eq!(tick.next, Some(t0 + TICK));
+        (state, watchdog)
+    }
+
+    #[test]
+    fn a_goodbye_restarts_the_renderer_after_the_grace_not_the_debounce() {
+        let t0 = Instant::now();
+        let (state, mut watchdog) = connected_then_passed(t0);
+        // The renderer says goodbye 200 ms into the pass's second, which is
+        // what the listener does with `STATE_SHUTDOWN`.
+        let goodbye = t0 + Duration::from_millis(200);
+        state.stats.registered.store(false, Ordering::Relaxed);
+        state.stats.goodbye.heard(goodbye);
+        // Woken for it, the pass is not throttled: the grace counts down from
+        // the goodbye, and the next pass is due when it ends — the one that
+        // starts the renderer.
+        let heard = tick_at_ms(&mut watchdog, &state, t0, 200);
+        assert!(heard.changed, "the countdown appearing must wake the UI");
+        assert_eq!(heard.next, Some(goodbye + GOODBYE_GRACE));
+        assert_eq!(
+            state.watchdog.lock().unwrap().countdown,
+            Some(Countdown {
+                from: goodbye,
+                due: goodbye + GOODBYE_GRACE
+            })
+        );
+        assert_eq!(
+            shown(&state, goodbye + GOODBYE_GRACE / 2),
+            EngineStartProgress::Countdown { fraction: 0.5 }
+        );
+        // The same goodbye does not keep lifting the throttle.
+        let again = tick_at_ms(&mut watchdog, &state, t0, 300);
+        assert!(!again.changed);
+        assert_eq!(again.next, Some(goodbye + GOODBYE_GRACE));
+    }
+
+    #[test]
+    fn without_a_goodbye_a_lost_link_waits_out_the_debounce() {
+        let t0 = Instant::now();
+        let (state, mut watchdog) = connected_then_passed(t0);
+        state.stats.registered.store(false, Ordering::Relaxed);
+        // Nothing heard: the pass keeps its cadence.
+        let early = tick_at_ms(&mut watchdog, &state, t0, 200);
+        assert!(!early.changed);
+        assert_eq!(early.next, Some(t0 + TICK));
+        // The link is seen down at the next pass, and the debounce counts
+        // from there.
+        let seen = t0 + TICK;
+        assert!(tick_at(&mut watchdog, &state, t0, 1).changed);
+        let debounce = Some(Countdown {
+            from: seen,
+            due: seen + DEBOUNCE,
+        });
+        assert_eq!(state.watchdog.lock().unwrap().countdown, debounce);
+        for secs in 2..=6 {
+            let tick = tick_at(&mut watchdog, &state, t0, secs);
+            assert!(!tick.changed, "{secs}s");
+            assert_eq!(state.watchdog.lock().unwrap().countdown, debounce);
+        }
     }
 
     #[test]

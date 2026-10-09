@@ -96,6 +96,51 @@ pub struct OscStats {
     /// not yet sent: the sender waits on it, so a file never sits whole in
     /// the control queue (see [`SendWindow`]).
     pub send_window: SendWindow,
+    /// The renderer's last goodbye, for the auto-start watchdog.
+    pub goodbye: Goodbye,
+}
+
+/// When the renderer last said goodbye (`STATE_SHUTDOWN`). A renderer that
+/// announced its exit is not coming back on its own and frees its port at
+/// once, so the auto-start watchdog gives it a short grace instead of the
+/// debounce it gives a renderer that merely went quiet. Forgotten when a
+/// renderer registers again, when the target changes, and at a spawn.
+#[derive(Default)]
+pub struct Goodbye {
+    at: Mutex<Option<Instant>>,
+    /// Unparked when a goodbye is heard, so the grace starts counting down
+    /// then rather than at the watchdog's next pass, up to a second later.
+    waiter: Mutex<Option<std::thread::Thread>>,
+}
+
+impl Goodbye {
+    pub fn at(&self) -> Option<Instant> {
+        *self.at.lock().unwrap()
+    }
+
+    pub(crate) fn heard(&self, now: Instant) {
+        *self.at.lock().unwrap() = Some(now);
+        if let Some(waiter) = &*self.waiter.lock().unwrap() {
+            waiter.unpark();
+        }
+    }
+
+    pub fn forget(&self) {
+        *self.at.lock().unwrap() = None;
+    }
+
+    /// Forget the goodbye heard at `seen`, but not one heard since.
+    pub fn forget_if(&self, seen: Instant) {
+        let mut at = self.at.lock().unwrap();
+        if *at == Some(seen) {
+            *at = None;
+        }
+    }
+
+    /// The thread to wake on a goodbye; `None` when it stops.
+    pub fn wake(&self, waiter: Option<std::thread::Thread>) {
+        *self.waiter.lock().unwrap() = waiter;
+    }
 }
 
 /// Flow control between a large transfer and the listener: the sender
@@ -178,6 +223,7 @@ impl OscStats {
             target: Mutex::new(None),
             stream_link: AtomicBool::new(false),
             send_window: SendWindow::default(),
+            goodbye: Goodbye::default(),
         })
     }
 
@@ -510,6 +556,8 @@ fn listener_loop(
                     register = Some(target);
                     *stats.target.lock().unwrap() = register;
                     stats.registered.store(false, Ordering::Relaxed);
+                    // A goodbye from the old target says nothing of the new.
+                    stats.goodbye.forget();
                     last_ack = Instant::now();
                     last_snapshot_request = Instant::now();
                     playout.reset();
@@ -762,6 +810,9 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
     stats.messages.fetch_add(1, Ordering::Relaxed);
     if m.addr == crate::osc_contract::STATE_SHUTDOWN {
         stats.registered.store(false, Ordering::Relaxed);
+        // After the registration is dropped: the watchdog it wakes must find
+        // the link down.
+        stats.goodbye.heard(Instant::now());
         live.app.osc_snapshot_ready = false;
         out.change = out.change.max(Change::Snapshot);
         return;
@@ -794,6 +845,9 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
                 live.state_sync.on_ack(generation);
             }
             if !stats.registered.swap(true, Ordering::Relaxed) {
+                // A renderer answers again: whatever said goodbye before is
+                // not what the next outage will be about.
+                stats.goodbye.forget();
                 stats.connection_epoch.fetch_add(1, Ordering::Relaxed);
                 out.change = out.change.max(Change::Snapshot);
             }
@@ -1325,6 +1379,62 @@ mod connection_tests {
         );
         assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
         assert_eq!(outcome.change, Change::Snapshot);
+    }
+
+    #[test]
+    fn a_goodbye_is_kept_for_the_watchdog_until_a_renderer_registers_again() {
+        let stats = OscStats::new();
+        *stats.target.lock().unwrap() = Some("127.0.0.1:9000".parse().unwrap());
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        let mut handle = |addr: &str| {
+            handle_message(
+                &OscMessage {
+                    addr: addr.into(),
+                    args: vec![],
+                },
+                &mut live,
+                &stats,
+                &mut PacketOutcome::default(),
+            )
+        };
+        let ack = crate::osc_contract::HEARTBEAT_ACK;
+        handle(ack);
+        assert_eq!(stats.goodbye.at(), None, "a registration is no goodbye");
+        let before = Instant::now();
+        handle(crate::osc_contract::STATE_SHUTDOWN);
+        let heard = stats.goodbye.at().expect("the goodbye is recorded");
+        assert!(heard >= before);
+        // The watchdog thread, parked on its next pass, is woken for it.
+        let woken = Arc::new(AtomicBool::new(false));
+        let waiter = std::thread::spawn({
+            let woken = woken.clone();
+            move || {
+                std::thread::park();
+                woken.store(true, Ordering::Relaxed);
+            }
+        });
+        stats.goodbye.wake(Some(waiter.thread().clone()));
+        handle(crate::osc_contract::STATE_SHUTDOWN);
+        waiter.join().unwrap();
+        assert!(woken.load(Ordering::Relaxed));
+        stats.goodbye.wake(None);
+        // A renderer answers again: the goodbye is forgotten.
+        handle(ack);
+        assert_eq!(stats.connection_state(), ConnectionState::Connected);
+        assert_eq!(stats.goodbye.at(), None);
+    }
+
+    #[test]
+    fn a_goodbye_forgotten_by_the_watchdog_is_only_the_one_it_saw() {
+        let goodbye = Goodbye::default();
+        let first = Instant::now();
+        goodbye.heard(first);
+        let second = first + Duration::from_millis(10);
+        goodbye.heard(second);
+        goodbye.forget_if(first);
+        assert_eq!(goodbye.at(), Some(second));
+        goodbye.forget_if(second);
+        assert_eq!(goodbye.at(), None);
     }
 
     #[test]
