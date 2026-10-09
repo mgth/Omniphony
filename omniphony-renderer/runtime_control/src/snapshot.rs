@@ -363,6 +363,16 @@ pub fn build_renderer_state_json(
                         .unwrap_or(serde_json::Value::Null)
                 }),
                 "layoutError": brir_layout_error,
+                // The measured room those loudspeakers stand in, which the
+                // render pans in instead of the user's room (#803): its box
+                // in metres, whether that box is an estimate around the
+                // loudspeakers rather than the file's, and the stage's
+                // ratios of it in the shape of `roomRatio` (its scale is
+                // the metres to one unit). `null` with `layout`.
+                "room": active_topology
+                    .measured_room
+                    .as_ref()
+                    .map(|measured| brir_room_json(measured, active_topology.room)),
             },
             "headPose": {
                 "w": live.binaural.head_pose.w,
@@ -414,6 +424,29 @@ fn brir_loaded_json(set: &renderer::binaural::BrirSummary) -> serde_json::Value 
         "emittersM": set.emitter_positions,
         "roomType": set.room_type,
         "roomCornersM": set.room_corners_m,
+    })
+}
+
+/// The measured room a BRIR set's loudspeakers stand in, as the stage pans
+/// in it ([`renderer::binaural::brir::MeasuredRoom`]): the box, whether it
+/// is an estimate, and the ratios in the `roomRatio` shape so that a client
+/// reads it as it reads the user's room.
+fn brir_room_json(
+    measured: &renderer::binaural::brir::MeasuredRoom,
+    room: renderer::live_params::RoomRatios,
+) -> serde_json::Value {
+    json!({
+        "boxM": measured.box_m,
+        "estimated": measured.estimated,
+        "ratio": {
+            "width": room.ratio[0],
+            "length": room.ratio[1],
+            "height": room.ratio[2],
+            "rear": room.rear,
+            "lower": room.lower,
+            "centerBlend": room.center_blend,
+            "scaleM": measured.radius_m(),
+        },
     })
 }
 
@@ -1001,8 +1034,26 @@ fn placement_families_json(state: &renderer::placement::PlacementState) -> serde
 
 #[cfg(test)]
 mod brir_loaded_tests {
-    use super::brir_loaded_json;
+    use super::{brir_loaded_json, brir_room_json};
     use renderer::binaural::BrirSummary;
+    use renderer::binaural::brir::MeasuredRoom;
+
+    /// The room the render pans in travels in the user's room's shape, with
+    /// its box and whether the box is an estimate.
+    #[test]
+    fn a_measured_room_publishes_its_box_and_ratios() {
+        let measured = MeasuredRoom {
+            box_m: [[-2.0, -1.0, -1.2], [3.0, 4.5, 1.8]],
+            estimated: true,
+        };
+        let json = brir_room_json(&measured, measured.ratios(0.5));
+        assert_eq!(json["boxM"][1][1], 4.5);
+        assert_eq!(json["estimated"], true);
+        assert_eq!(json["ratio"]["width"], 1.0);
+        assert_eq!(json["ratio"]["length"], 1.5);
+        assert_eq!(json["ratio"]["scaleM"], 3.0);
+        assert_eq!(json["ratio"]["centerBlend"], 0.5);
+    }
 
     /// The set's geometry travels with its shape: the loudspeakers in
     /// metres in the set's order, the room's corners when the file has

@@ -208,6 +208,8 @@
   "room.axis.rear": "posteriore",
   "room.axis.height": "altezza",
   "room.axis.lower": "inferiore",
+  "room.measuredFile": "Stanza misurata del set in uso, dal suo file: le cuffie vengono renderizzate al suo interno; la tua stanza è conservata e torna con un'altra sorgente.",
+  "room.measuredEstimated": "Stanza misurata del set in uso, stimata dai suoi diffusori (il file non indica alcuna stanza): le cuffie vengono renderizzate al suo interno; la tua stanza è conservata e torna con un'altra sorgente.",
   "room.centerBlend": "Blend centrale Y",
   "room.centerBlend.resetTitle": "Doppio clic per ripristinare 50/50",
   "room.infoTitle": "Geometria della stanza",

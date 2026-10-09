@@ -208,6 +208,8 @@
   "room.axis.rear": "arrière",
   "room.axis.height": "hauteur",
   "room.axis.lower": "bas",
+  "room.measuredFile": "Pièce mesurée du set en usage, d'après son fichier : le casque y est rendu ; votre pièce est conservée et revient avec une autre source.",
+  "room.measuredEstimated": "Pièce mesurée du set en usage, estimée d'après ses enceintes (le fichier n'indique aucune pièce) : le casque y est rendu ; votre pièce est conservée et revient avec une autre source.",
   "room.centerBlend": "Blend centre Y",
   "room.centerBlend.resetTitle": "Double-clic pour réinitialiser à 50/50",
   "room.infoTitle": "Géométrie de la pièce",

@@ -111,7 +111,7 @@ Colour, opacity and size carry other meanings, so the kind of speaker is said by
 |---|---|---|
 | Real | speakers | solid cube, band colour, driver disc (the rules above) |
 | Virtual | headphones through the virtual room (HRTF cascade) | wireframe cube (twelve depth-tested edges) in the band colour, alpha `min(1, opacity × 1.4)`; disc, level scaling, selection and feed colours as for a solid |
-| Measured | headphones through a measured room (BRIR, `binaural.brir.layout` present) | wireframe cube in `MEASURED_ROOM_COLOR` (`#ffb86b`) at the loudspeaker's measured position (`brir.loaded.emittersM`, metres at the room's reach per unit, `AppState::brir_geometry`); the set carries no band; the appended LFE keeps the layout's place |
+| Measured | headphones through a measured room (BRIR, `binaural.brir.layout` present) | wireframe cube in `MEASURED_ROOM_COLOR` (`#ffb86b`) at the loudspeaker's measured position (`brir.loaded.emittersM`, metres at the room's scale per unit — `brir.room.ratio.scaleM`, the reach from an older renderer — `AppState::brir_geometry`); the set carries no band; the appended LFE keeps the layout's place |
 | Reference | direct headphones, layout kept in view | the ghost above |
 
 The speaker list's position thumbnail draws its frame dashed for the two wire kinds, and the Speakers section summary reads "Virtual room · <layout>" through the virtual room.

@@ -293,7 +293,7 @@ impl FramePipeline {
             // but never seen.
             let want_osc = osc.as_deref().is_some_and(OscSender::has_osc_clients);
             if want_osc || overlay_active {
-                let shown = self.stream.bed_frame_metas(&control, labels, output_layout);
+                let shown = self.stream.bed_frame_metas(&control, labels, &topology);
                 if !shown.is_empty() {
                     if want_osc && let Some(osc) = osc.as_deref_mut() {
                         osc.send_object_frame(sample_pos, 0, 0, &shown);

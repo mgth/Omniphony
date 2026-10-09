@@ -13,3 +13,6 @@ name = "script_backend"
 renderer.workspace = true
 anyhow.workspace = true
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
+
+[dev-dependencies]
+renderer = { workspace = true, features = ["test-support"] }

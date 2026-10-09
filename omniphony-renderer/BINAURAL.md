@@ -69,9 +69,14 @@ with its speakers as wireframe cubes: the virtual speakers the cascade
 convolves, metered. A measured room replaces the user's room: its
 loudspeakers are wireframe cubes at their measured positions in metres,
 in the room's own colour, inside the box the file states (`RoomCornerA`,
-`RoomCornerB`) or, without one, a box around the loudspeakers; a set
-that does not fit the speaker stage is flagged in the HRTF group and the
-view stays on the layout that renders. A badge at the bottom left of the
+`RoomCornerB`) or, without one, a box around the loudspeakers. That box
+is also the room the render pans in — the set's loudspeakers are placed
+in it as fractions and the objects are warped into it, so an object is
+panned among them in the room's own metric, not the user's room ratio
+(#803); the room panel shows the measured room's dimensions, read-only,
+and says when the box is an estimate rather than the file's. A set that
+does not fit the speaker stage is flagged in the HRTF group and the view
+stays on the layout that renders. A badge at the bottom left of the
 view names the path and the set in force, and says *fallback* with the
 reason when what renders is not what was asked for. On the two HRTF paths, while the early reflections
 are on, the listening room they mirror sources in is drawn as a dashed box
@@ -387,7 +392,11 @@ listening room the reflections mirror sources in (the configured extents
 grown to hold the scene, see *Scale* above), `brir.loaded.emittersM`,
 `roomCornersM` and `roomType` (a resident set's loudspeakers in metres
 around the listener, renderer frame, and its room when the file states
-one), `hrirEffective`, the set actually being convolved, and `hrirError`: when a SOFA file cannot be loaded the
+one), `brir.room` while the render pans onto those loudspeakers (the
+measured room it pans in: `boxM`, `estimated` when the box is derived
+from the loudspeakers rather than the file, and `ratio` in the shape of
+`roomRatio`, `scaleM` being the metres to one unit),
+`hrirEffective`, the set actually being convolved, and `hrirError`: when a SOFA file cannot be loaded the
 renderer falls back to the embedded KEMAR set, and these two say so
 (`hrirSource` keeps the request) — plus a dedicated lightweight
 `/omniphony/state/head_pose` (`ffff` = w x y z, ~30 Hz) for low-latency pose
