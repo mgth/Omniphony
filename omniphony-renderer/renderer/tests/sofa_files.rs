@@ -106,20 +106,43 @@ fn a_multispeaker_brir_file_loads_its_speakers() {
     );
 }
 
-fn assert_room_corners(set: &BrirSet, expected: [[f32; 3]; 2], name: &str) {
+fn assert_same_responses(set: &BrirSet, base: &BrirSet, name: &str) {
+    assert_eq!(set.emitters().len(), base.emitters().len(), "{name}");
+    assert_eq!(set.orientations(), base.orientations(), "{name}");
+    assert_eq!(set.max_taps(), base.max_taps(), "{name}");
+    for e in 0..base.emitters().len() {
+        for o in 0..base.orientations().len() {
+            let actual = set.pair(e, o);
+            let expected = base.pair(e, o);
+            assert_eq!(
+                actual.left, expected.left,
+                "{name}: emitter {e}, orientation {o}, left"
+            );
+            assert_eq!(
+                actual.right, expected.right,
+                "{name}: emitter {e}, orientation {o}, right"
+            );
+        }
+    }
+}
+
+fn assert_room_corners(set: &BrirSet, base: &BrirSet, expected: [[f32; 3]; 2], name: &str) {
     let actual = set
         .room_corners()
         .unwrap_or_else(|| panic!("{name}: no corners"));
-    for (actual, expected) in actual.iter().flatten().zip(expected.iter().flatten()) {
-        assert!(
-            (actual - expected).abs() < 1e-5,
-            "{name}: expected {expected}, got {actual}"
-        );
+    for (corner, (actual, expected)) in ["A", "B"].iter().zip(actual.iter().zip(&expected)) {
+        for (axis, (value, target)) in ["x", "y", "z"].iter().zip(actual.iter().zip(expected)) {
+            assert!(
+                (value - target).abs() < 1e-5,
+                "{name}: corner {corner}, axis {axis}: expected {expected:?}, got {actual:?}"
+            );
+        }
     }
     assert_eq!(set.room_type(), Some("shoebox"), "{name}");
     assert_eq!(set.emitters().len(), 3, "{name}");
     assert!(set.max_taps() > 0, "{name}");
     assert!(finite_brir(set), "{name}");
+    assert_same_responses(set, base, name);
 }
 
 /// Exercise the file loader, including the HDF datasets and their metadata:
@@ -127,13 +150,15 @@ fn assert_room_corners(set: &BrirSet, expected: [[f32; 3]; 2], name: &str) {
 /// frame +x is right and +y is front, so the far corner is (-4, 6, 2.5).
 #[test]
 fn room_corners_load_from_cartesian_and_spherical_files() {
+    let base = brir(&fixture("chunked_multispeaker_brir.sofa")).expect("base loads");
     for name in [
         "room_corners_cartesian.sofa",
         "room_corners_spherical.sofa",
         "room_corners_own_metadata.sofa",
+        "room_corners_global_metadata.sofa",
     ] {
         let set = brir(&fixture(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert_room_corners(&set, [[0.0, 0.0, 0.0], [-4.0, 6.0, 2.5]], name);
+        assert_room_corners(&set, &base, [[0.0, 0.0, 0.0], [-4.0, 6.0, 2.5]], name);
     }
 }
 
@@ -143,26 +168,21 @@ fn room_corners_load_from_cartesian_and_spherical_files() {
 fn room_corners_load_relative_to_the_files_listener() {
     let name = "room_corners_offset_listener.sofa";
     let set = brir(&fixture(name)).expect("offset-listener room loads");
-    assert_room_corners(&set, [[2.0, -3.0, -1.2], [-2.0, 3.0, 1.3]], name);
+    let base = brir(&fixture("chunked_multispeaker_brir.sofa")).expect("base loads");
+    assert_room_corners(&set, &base, [[2.0, -3.0, -1.2], [-2.0, 3.0, 1.3]], name);
 }
 
 /// Unknown units suppress the room box, without preventing its responses
 /// and speakers from loading for the loudspeaker-box fallback.
 #[test]
 fn room_corners_with_unsupported_units_do_not_discard_the_brir() {
-    let set = brir(&fixture("room_corners_unsupported_unit.sofa")).expect("room loads");
+    let name = "room_corners_unsupported_unit.sofa";
+    let set = brir(&fixture(name)).expect("room loads");
     let base = brir(&fixture("chunked_multispeaker_brir.sofa")).expect("base loads");
     assert_eq!(set.room_corners(), None);
     assert_eq!(set.room_type(), Some("shoebox"));
     assert_eq!(set.emitters(), base.emitters());
-    assert_eq!(set.orientations(), base.orientations());
-    assert_eq!(set.max_taps(), base.max_taps());
-    for e in 0..base.emitters().len() {
-        for o in 0..base.orientations().len() {
-            assert_eq!(set.pair(e, o).left, base.pair(e, o).left);
-            assert_eq!(set.pair(e, o).right, base.pair(e, o).right);
-        }
-    }
+    assert_same_responses(&set, &base, name);
 }
 
 /// Loaded or refused, never a panic, never a non-finite response; a refusal
