@@ -853,6 +853,8 @@
   "binaural.hrtfSource.pinna": "Pabellón (paramétrico)",
   "binaural.hrtfSource.prtf": "PRTF (Spagnol)",
   "binaural.hrtfSource.sofa": "Archivo SOFA",
+  "binaural.brirUnderVirtualRoom": "Una sala medida (BRIR) se ofrece bajo Auriculares (sala virtual).",
+  "binaural.lastFile": "Último archivo: {name}",
   "binaural.sofaBrowseTitle": "Explorar la base de datos de HRTF de sofacoustics.org",
   "binaural.hrtfFallback": "{effective} en uso: no se pudo cargar la HRTF seleccionada (pase el ratón para ver el motivo).",
   "binaural.headRadius": "Radio de la cabeza (cm)",

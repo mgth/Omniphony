@@ -207,7 +207,8 @@ layout included: the user's loudspeaker room shapes the panning onto a
 measured room that has its own geometry. Candidates: (a) `UNIT` for the BRIR
 layout (its loudspeakers are already placed by direction); (b) a ratio
 derived from the loudspeakers' extents. Own issue and PR, after a listening
-pass with the BBC System G set (`dumps/brir/bbcrdlr_systemG.sofa`); not part
+pass with the BBC System G set (`bbcrdlr_systemG.sofa`, see *Where to get
+one* in `BINAURAL.md`); not part
 of the view work, whose §2d draws what the engine does either way.
 
 ## 4. Further visualisation proposals

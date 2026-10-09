@@ -853,6 +853,8 @@
   "binaural.hrtfSource.pinna": "Ohrmuschel (parametrisch)",
   "binaural.hrtfSource.prtf": "PRTF (Spagnol)",
   "binaural.hrtfSource.sofa": "SOFA-Datei",
+  "binaural.brirUnderVirtualRoom": "Ein gemessener Raum (BRIR) wird unter Kopfhörer (virtueller Raum) angeboten.",
+  "binaural.lastFile": "Letzte Datei: {name}",
   "binaural.sofaBrowseTitle": "Die HRTF-Datenbank von sofacoustics.org durchsuchen",
   "binaural.hrtfFallback": "{effective} aktiv: die gewählte HRTF konnte nicht geladen werden (Grund per Mauszeiger).",
   "binaural.headRadius": "Kopfradius (cm)",
