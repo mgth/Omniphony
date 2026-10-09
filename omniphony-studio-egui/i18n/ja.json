@@ -884,6 +884,7 @@
   "binaural.earlyReflections": "初期反射",
   "binaural.reflectionLevel": "反射レベル",
   "binaural.roomDims": "部屋 幅 × 奥行 × 高さ（m）",
+  "binaural.roomInUse": "使用中: {w} × {d} × {h} m（シーンを収めるために拡大）",
   "binaural.wallDamping": "壁の減衰 (kHz)",
   "binaural.lateReverb": "後期残響",
   "binaural.reverbLevel": "残響レベル",

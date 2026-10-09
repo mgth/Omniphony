@@ -888,6 +888,34 @@ impl AppState {
         }
     }
 
+    /// The listening room the early reflections mirror sources in, full
+    /// extents in metres in the renderer's frame (width, depth, height):
+    /// `reflections.roomEffectiveM`, the configured room grown to hold the
+    /// scene, or `roomM` from a renderer that publishes only that. `None`
+    /// while the reflections are off.
+    pub fn binaural_reflection_room_m(&self) -> Option<[f64; 3]> {
+        let reflections = self.binaural.as_ref()?.get("reflections")?;
+        if reflections
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            return None;
+        }
+        let room = reflections
+            .get("roomEffectiveM")
+            .or_else(|| reflections.get("roomM"))?
+            .as_array()?;
+        if room.len() != 3 {
+            return None;
+        }
+        let mut out = [0.0; 3];
+        for (axis, value) in out.iter_mut().zip(room) {
+            *axis = value.as_f64().filter(|v| v.is_finite() && *v > 0.0)?;
+        }
+        Some(out)
+    }
+
     /// Metres to one unit of the direct binaural path's cube
     /// (`binaural.unitScaleM`, the renderer's distance scale).
     pub fn binaural_unit_scale_m(&self) -> f64 {

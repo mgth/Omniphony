@@ -884,6 +884,7 @@
   "binaural.earlyReflections": "早期反射",
   "binaural.reflectionLevel": "反射电平",
   "binaural.roomDims": "房间 宽 × 深 × 高（m）",
+  "binaural.roomInUse": "当前使用：{w} × {d} × {h} m，已放大以容纳场景",
   "binaural.wallDamping": "墙面阻尼 (kHz)",
   "binaural.lateReverb": "后期混响",
   "binaural.reverbLevel": "混响电平",

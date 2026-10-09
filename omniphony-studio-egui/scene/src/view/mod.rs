@@ -18,6 +18,7 @@ use glam::{Mat4, Quat, Vec3, Vec4};
 use screen::{Color, ScreenPos, ScreenRect, Shape};
 
 use crate::model::app_state::RoomRatio;
+use crate::model::binaural::RenderPath;
 use crate::osc::dispatch::Live;
 use crate::render::camera::OrbitCamera;
 use crate::render::{FrameData, MeshInstance, MeshItem, MeshKind, hex_linear, with_alpha};
@@ -359,6 +360,21 @@ pub fn build_frame(
             &mut labels,
         );
     }
+    // The listening room of the early reflections, on the two HRTF paths
+    // (a measured room carries its own), while they are on: at the distance
+    // scale the binaural stage reads the frame at.
+    if matches!(path, RenderPath::Direct | RenderPath::VirtualRoom)
+        && let Some(room_m) = live.app.binaural_reflection_room_m()
+    {
+        room::emit_listening_room(
+            [room_m[0] as f32, room_m[1] as f32, room_m[2] as f32],
+            live.app.binaural_unit_scale_m() as f32,
+            &mut frame,
+            &project,
+            &points_per_unit,
+            &mut labels,
+        );
+    }
     room::emit_axes(&mut frame, &project, &points_per_unit, &mut labels);
     // The hybrid backend's iso-distance surface, for the selected curve point.
     if path.warps_with_room()
@@ -665,6 +681,34 @@ mod tests {
             for axis in 0..3 {
                 assert!((back[axis] - adm[axis]).abs() < 1e-5, "{adm:?} → {back:?}");
             }
+        }
+    }
+
+    /// The listening room is placed around the listener in the renderer's
+    /// frame: its width across the scene's z, its depth along x, its height
+    /// along y, at the distance scale; and it is drawn as dashes, twelve
+    /// edges of six.
+    #[test]
+    fn the_listening_room_sits_around_the_listener_at_the_distance_scale() {
+        let half = room::listening_room_half_extents([4.0, 5.0, 2.7], 2.0);
+        assert!(
+            (half - Vec3::new(1.25, 0.675, 1.0)).length() < 1e-6,
+            "{half:?}"
+        );
+        let mut frame = FrameData::new(Mat4::IDENTITY, Vec3::ZERO, Vec3::X, Vec3::Y, [1, 1]);
+        let mut labels = Vec::new();
+        room::emit_listening_room(
+            [4.0, 5.0, 2.7],
+            2.0,
+            &mut frame,
+            &|_| None,
+            &|_| 1.0,
+            &mut labels,
+        );
+        assert_eq!(frame.overlay_lines.len(), 12 * 6 * 2);
+        for v in &frame.overlay_lines {
+            let p = Vec3::from_array(v.pos).abs();
+            assert!(p.x <= 1.25 + 1e-6 && p.y <= 0.675 + 1e-6 && p.z <= 1.0 + 1e-6);
         }
     }
 

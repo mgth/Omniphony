@@ -282,6 +282,28 @@ mod tests {
         assert_eq!(app.display_room().length, 2.0);
     }
 
+    /// The listening room is read while the reflections are on: the room in
+    /// use when the renderer publishes it, the configured one from an older
+    /// renderer, nothing with the reflections off or a malformed room.
+    #[test]
+    fn the_reflection_room_is_the_one_in_use_while_reflections_are_on() {
+        use crate::model::app_state::AppState;
+        let mut app = AppState::new(Vec::new());
+        app.binaural = Some(json!({ "reflections": {
+            "enabled": true, "roomM": [4.0, 5.0, 2.7], "roomEffectiveM": [6.7, 6.7, 6.7],
+        }}));
+        assert_eq!(app.binaural_reflection_room_m(), Some([6.7, 6.7, 6.7]));
+        app.binaural = Some(json!({ "reflections": { "enabled": true, "roomM": [4.0, 5.0, 2.7] }}));
+        assert_eq!(app.binaural_reflection_room_m(), Some([4.0, 5.0, 2.7]));
+        app.binaural =
+            Some(json!({ "reflections": { "enabled": false, "roomM": [4.0, 5.0, 2.7] }}));
+        assert_eq!(app.binaural_reflection_room_m(), None);
+        app.binaural = Some(json!({ "reflections": { "enabled": true, "roomM": [4.0, 0.0, 2.7] }}));
+        assert_eq!(app.binaural_reflection_room_m(), None);
+        app.binaural = None;
+        assert_eq!(app.binaural_reflection_room_m(), None);
+    }
+
     /// The file sources name the file a bare choice reopens; nothing named,
     /// or another source, says nothing.
     #[test]
