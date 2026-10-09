@@ -856,6 +856,7 @@
   "binaural.hrtfSource.pinna": "Pabellón (paramétrico)",
   "binaural.hrtfSource.prtf": "PRTF (Spagnol)",
   "binaural.hrtfSource.sofa": "Archivo SOFA",
+  "binaural.brirLayoutError": "Los altavoces del conjunto no caben en la etapa de altavoces: los auriculares se renderizan sobre tu layout (pasa el cursor para ver por qué).",
   "binaural.brirUnderVirtualRoom": "Una sala medida (BRIR) se ofrece bajo Auriculares (sala virtual).",
   "binaural.lastFile": "Último archivo: {name}",
   "binaural.sofaBrowseTitle": "Explorar la base de datos de HRTF de sofacoustics.org",

@@ -66,8 +66,12 @@ the unit, read off a guide on its edge — and the speaker layout is hidden,
 since nothing feeds it (Display → *Speaker layout on headphones* keeps it as
 a ghosted reference). Through the virtual room the user's room is drawn
 with its speakers as wireframe cubes: the virtual speakers the cascade
-convolves, metered. A measured room's loudspeakers are wireframe cubes in
-the room's own colour. On the two HRTF paths, while the early reflections
+convolves, metered. A measured room replaces the user's room: its
+loudspeakers are wireframe cubes at their measured positions in metres,
+in the room's own colour, inside the box the file states (`RoomCornerA`,
+`RoomCornerB`) or, without one, a box around the loudspeakers; a set
+that does not fit the speaker stage is flagged in the HRTF group and the
+view stays on the layout that renders. On the two HRTF paths, while the early reflections
 are on, the listening room they mirror sources in is drawn as a dashed box
 around the listener, in metres at the distance scale, with its dimensions
 — the room in use, grown to hold the scene when the configured one is
@@ -378,8 +382,10 @@ carry no license at all). Accordingly:
 State broadcast: the `binaural` object inside `/omniphony/state/renderer`
 (10 Hz when the pose moves) — including `reflections.roomEffectiveM`, the
 listening room the reflections mirror sources in (the configured extents
-grown to hold the scene, see *Scale* above), `hrirEffective`, the set actually
-being convolved, and `hrirError`: when a SOFA file cannot be loaded the
+grown to hold the scene, see *Scale* above), `brir.loaded.emittersM`,
+`roomCornersM` and `roomType` (a resident set's loudspeakers in metres
+around the listener, renderer frame, and its room when the file states
+one), `hrirEffective`, the set actually being convolved, and `hrirError`: when a SOFA file cannot be loaded the
 renderer falls back to the embedded KEMAR set, and these two say so
 (`hrirSource` keeps the request) — plus a dedicated lightweight
 `/omniphony/state/head_pose` (`ffff` = w x y z, ~30 Hz) for low-latency pose

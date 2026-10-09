@@ -856,6 +856,7 @@
   "binaural.hrtfSource.pinna": "耳介（パラメトリック）",
   "binaural.hrtfSource.prtf": "PRTF（Spagnol）",
   "binaural.hrtfSource.sofa": "SOFA ファイル",
+  "binaural.brirLayoutError": "セットのスピーカーがスピーカーステージに収まりません。ヘッドホンはあなたのレイアウトでレンダリングされます（理由はマウスオーバーで表示）。",
   "binaural.brirUnderVirtualRoom": "測定済みルーム（BRIR）はヘッドホン（仮想ルーム）で選べます。",
   "binaural.lastFile": "前回のファイル: {name}",
   "binaural.sofaBrowseTitle": "sofacoustics.org の HRTF データベースを参照",

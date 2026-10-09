@@ -274,6 +274,13 @@ pub fn scene_position(adm: [f64; 3], room: &RoomRatio) -> Vec3 {
     Vec3::new(s[0] as f32, s[1] as f32, s[2] as f32)
 }
 
+/// A point of the renderer's frame (x right, y front, z up) in scene units,
+/// as it is: no clamp, no warp — a measured position.
+pub fn scene_point(adm: [f64; 3]) -> Vec3 {
+    let s = omniphony_geometry::f64::adm_to_scene(adm);
+    Vec3::new(s[0] as f32, s[1] as f32, s[2] as f32)
+}
+
 /// Build the frame. `rect` is the viewport in points, `ppp` pixels per point.
 pub fn build_frame(
     live: &Live,
@@ -333,7 +340,22 @@ pub fn build_frame(
     let path = live.app.render_path();
     let room = live.app.display_room();
     let bounds = RoomBounds::from_ratio(&room);
-    if path.warps_with_room() {
+    // A measured room (BRIR): the set's own box replaces the user's room,
+    // which does not render there; the sources keep the stage's frame.
+    let measured = (path == RenderPath::MeasuredRoom)
+        .then(|| live.app.brir_geometry())
+        .flatten();
+    if let Some(geometry) = &measured {
+        room::emit_measured_room(
+            geometry.room_box_m(),
+            geometry.reach_m(),
+            cam_pos,
+            &mut frame,
+            &project,
+            &points_per_unit,
+            &mut labels,
+        );
+    } else if path.warps_with_room() {
         room::emit_room(&bounds, cam_pos, &room::RoomStyle::SPEAKER_ROOM, &mut frame);
         if settings.vbap_grid {
             room::emit_vbap_grids(
@@ -378,6 +400,7 @@ pub fn build_frame(
     room::emit_axes(&mut frame, &project, &points_per_unit, &mut labels);
     // The hybrid backend's iso-distance surface, for the selected curve point.
     if path.warps_with_room()
+        && measured.is_none()
         && live.app.render_backend_state.selection.as_deref() == Some("hybrid")
         && let Some(index) = settings.hybrid_point
         && let Some(stop) = live.app.render_backend_state.hybrid.curve.get(index)
@@ -389,7 +412,7 @@ pub fn build_frame(
         let radius = stop[0] as f32 * if spherical { 3.0f32.sqrt() } else { 1.0 };
         room::emit_hybrid_distance(radius, spherical, &room, &mut frame);
     }
-    if path.warps_with_room() && settings.room_guides_visible {
+    if path.warps_with_room() && measured.is_none() && settings.room_guides_visible {
         room::emit_dimension_guides(
             &bounds,
             &room,
@@ -710,6 +733,29 @@ mod tests {
             let p = Vec3::from_array(v.pos).abs();
             assert!(p.x <= 1.25 + 1e-6 && p.y <= 0.675 + 1e-6 && p.z <= 1.0 + 1e-6);
         }
+    }
+
+    /// A measured room's box lands around the listener in scene units: the
+    /// renderer's front along x, up along y, right along z, at the metres
+    /// per unit it is given.
+    #[test]
+    fn a_measured_room_box_is_placed_in_the_renderers_frame() {
+        let b = room::metres_box_bounds([[-2.0, -3.0, -1.2], [2.0, 3.0, 1.3]], 3.0);
+        let near = |a: f32, w: f32| (a - w).abs() < 1e-6;
+        assert!(
+            near(b.x_min, -1.0) && near(b.x_max, 1.0),
+            "front along x: {b:?}"
+        );
+        assert!(
+            near(b.y_min, -0.4) && near(b.y_max, 1.3 / 3.0),
+            "up along y: {b:?}"
+        );
+        assert!(
+            near(b.z_min, -2.0 / 3.0) && near(b.z_max, 2.0 / 3.0),
+            "right along z: {b:?}"
+        );
+        let p = scene_point([2.0, 3.0, 1.3]);
+        assert!((p - Vec3::new(3.0, 1.3, 2.0)).length() < 1e-6, "{p:?}");
     }
 
     /// A speaker the layout does not cut is full-band, and its bar is lit end

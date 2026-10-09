@@ -105,6 +105,11 @@ pub struct BrirSummary {
     pub max_taps: usize,
     pub sample_rate: u32,
     pub bytes: usize,
+    /// The file's `RoomType`, when it states one.
+    pub room_type: Option<String>,
+    /// The room's two opposite corners, relative to the listener in the
+    /// renderer's frame, metres, when the file states them.
+    pub room_corners_m: Option<[[f32; 3]; 2]>,
 }
 
 impl BrirSummary {
@@ -117,6 +122,8 @@ impl BrirSummary {
             max_taps: set.max_taps(),
             sample_rate: set.sample_rate(),
             bytes: set.bytes(),
+            room_type: set.room_type().map(str::to_owned),
+            room_corners_m: set.room_corners(),
         }
     }
 }

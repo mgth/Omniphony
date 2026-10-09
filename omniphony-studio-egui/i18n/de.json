@@ -856,6 +856,7 @@
   "binaural.hrtfSource.pinna": "Ohrmuschel (parametrisch)",
   "binaural.hrtfSource.prtf": "PRTF (Spagnol)",
   "binaural.hrtfSource.sofa": "SOFA-Datei",
+  "binaural.brirLayoutError": "Die Lautsprecher des Sets passen nicht in die Lautsprecherstufe: die Kopfhörer rendern stattdessen auf deinem Layout (für den Grund den Mauszeiger darüber halten).",
   "binaural.brirUnderVirtualRoom": "Ein gemessener Raum (BRIR) wird unter Kopfhörer (virtueller Raum) angeboten.",
   "binaural.lastFile": "Letzte Datei: {name}",
   "binaural.sofaBrowseTitle": "Die HRTF-Datenbank von sofacoustics.org durchsuchen",

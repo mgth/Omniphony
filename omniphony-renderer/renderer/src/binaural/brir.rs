@@ -157,6 +157,27 @@ pub struct BrirSet {
     pairs: Vec<BrirPair>,
     max_taps: usize,
     conventions: String,
+    /// The file's `RoomType` attribute (`shoebox`, `reverberant`, …), when
+    /// it states one.
+    room_type: Option<String>,
+    /// The room's two opposite corners (`RoomCornerA`, `RoomCornerB`), when
+    /// the file states them: relative to the listener, renderer frame,
+    /// metres — the box the loudspeakers stand in.
+    room_corners: Option<[[f32; 3]; 2]>,
+}
+
+/// The two corners of a SOFA shoebox room, SOFA frame, taken relative to
+/// the listener and into the renderer's frame: the box a client draws the
+/// set's loudspeakers in.
+pub fn room_corners_relative(corners: [[f32; 3]; 2], listener: [f32; 3]) -> [[f32; 3]; 2] {
+    let relative = |c: [f32; 3]| {
+        omniphony_geometry::f32::sofa_to_adm([
+            c[0] - listener[0],
+            c[1] - listener[1],
+            c[2] - listener[2],
+        ])
+    };
+    [relative(corners[0]), relative(corners[1])]
 }
 
 /// Row `i` of a `[M][C]` or `[I][C]` array (the single row when the array
@@ -543,6 +564,8 @@ impl BrirSet {
             pairs,
             max_taps,
             conventions: raw.conventions.to_string(),
+            room_type: None,
+            room_corners: None,
         };
         log::info!(
             "BRIR: {} ({}): {} emitters × {} orientations, up to {} taps ({:.3} s) at {} Hz, {:.1} MiB",
@@ -585,7 +608,20 @@ impl BrirSet {
             pairs,
             max_taps,
             conventions: "test".to_string(),
+            room_type: None,
+            room_corners: None,
         }
+    }
+
+    /// The file's `RoomType`, when it states one.
+    pub fn room_type(&self) -> Option<&str> {
+        self.room_type.as_deref()
+    }
+
+    /// The room's two opposite corners, relative to the listener in the
+    /// renderer's frame, when the file states them.
+    pub fn room_corners(&self) -> Option<[[f32; 3]; 2]> {
+        self.room_corners
     }
 
     /// Engine rate the pairs are at.
@@ -714,8 +750,34 @@ impl BrirSet {
             data_ir: &h.data_ir.values,
             data_delay: &h.data_delay.values,
         };
-        Self::from_raw(&raw, engine_rate, opts).map_err(|e| anyhow::anyhow!("SOFA '{path}': {e}"))
+        let mut set = Self::from_raw(&raw, engine_rate, opts)
+            .map_err(|e| anyhow::anyhow!("SOFA '{path}': {e}"))?;
+        // The room the loudspeakers stand in, when the file describes it:
+        // its type is an attribute, its corners are variables of their own,
+        // read from the HDF structure like the shape above.
+        set.room_type = h
+            .attributes
+            .get("RoomType")
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        set.room_corners = sofa_room_corners(&bytes)
+            .map(|c| room_corners_relative(c, row3(raw.listener_position, 0)));
+        Ok(set)
     }
+}
+
+/// `RoomCornerA` and `RoomCornerB` of a SOFA file, SOFA frame, when both
+/// are present and finite.
+#[cfg(feature = "sofa")]
+fn sofa_room_corners(bytes: &[u8]) -> Option<[[f32; 3]; 2]> {
+    let parsed = sofar::hdf::parse_with_children(bytes).ok()?;
+    let corner = |name: &str| -> Option<[f32; 3]> {
+        let obj = parsed.get_child(name)?.ok()?;
+        let values = hdf_floats(&obj, 3)?;
+        let corner = [values[0], values[1], values[2]];
+        corner.iter().all(|v| v.is_finite()).then_some(corner)
+    };
+    Some([corner("RoomCornerA")?, corner("RoomCornerB")?])
 }
 
 /// The file's sampling rate and the true `[M, R, E, N]` shape of `Data.IR`
@@ -747,6 +809,13 @@ fn sofa_ir_shape(bytes: &[u8]) -> anyhow::Result<(f32, [usize; 4])> {
 /// reader assumes).
 #[cfg(feature = "sofa")]
 fn hdf_first_float(obj: &sofar::hdf::DataObject) -> Option<f32> {
+    hdf_floats(obj, 1).map(|v| v[0])
+}
+
+/// The first `count` values of a floating-point HDF dataset (little-endian,
+/// as the SOFA reader assumes); `None` for another class, or too short.
+#[cfg(feature = "sofa")]
+fn hdf_floats(obj: &sofar::hdf::DataObject, count: usize) -> Option<Vec<f32>> {
     if obj.dt.class_and_version & 0x0F != 1 {
         return None;
     }
@@ -754,22 +823,40 @@ fn hdf_first_float(obj: &sofar::hdf::DataObject) -> Option<f32> {
         Some(sofar::hdf::DataFormat::Float { bit_precision, .. }) => *bit_precision,
         _ => 64,
     };
-    match precision {
-        64 => obj
-            .data
-            .get(..8)
-            .map(|b| f64::from_le_bytes(b.try_into().expect("8 bytes")) as f32),
-        32 => obj
-            .data
-            .get(..4)
-            .map(|b| f32::from_le_bytes(b.try_into().expect("4 bytes"))),
-        _ => None,
-    }
+    let width = match precision {
+        64 => 8,
+        32 => 4,
+        _ => return None,
+    };
+    let bytes = obj.data.get(..width * count)?;
+    Some(
+        bytes
+            .chunks_exact(width)
+            .map(|b| match width {
+                8 => f64::from_le_bytes(b.try_into().expect("8 bytes")) as f32,
+                _ => f32::from_le_bytes(b.try_into().expect("4 bytes")),
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A room's corners are published around the listener in the renderer's
+    /// frame: a listener at (3, 2, 1.2) in a 6 × 4 × 2.5 m SOFA room has
+    /// the corners 3 m behind and ahead, 2 m to either side, 1.2 m down and
+    /// 1.3 m up, with SOFA's left-positive y becoming the renderer's
+    /// right-positive x.
+    #[test]
+    fn room_corners_are_taken_around_the_listener_in_the_renderers_frame() {
+        let [a, b] = room_corners_relative([[0.0, 0.0, 0.0], [6.0, 4.0, 2.5]], [3.0, 2.0, 1.2]);
+        let near =
+            |got: [f32; 3], want: [f32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-6);
+        assert!(near(a, [2.0, -3.0, -1.2]), "{a:?}");
+        assert!(near(b, [-2.0, 3.0, 1.3]), "{b:?}");
+    }
 
     /// SOFA spherical (az ccw-positive, el, r) → SOFA cartesian.
     fn sph(az_deg: f32, el_deg: f32, r: f32) -> [f32; 3] {

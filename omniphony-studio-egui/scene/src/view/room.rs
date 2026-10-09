@@ -54,6 +54,78 @@ impl RoomStyle {
         face: (0x1f3a33, 0.12),
         screen: false,
     };
+
+    /// A measured room (BRIR): the box its loudspeakers stand in, in the
+    /// colour the loudspeakers are drawn in, no screen.
+    pub const MEASURED_ROOM: Self = Self {
+        fill: (MEASURED_ROOM_COLOR, 0.05),
+        edge: (MEASURED_ROOM_COLOR, 0.6),
+        face: (0x3a2e1c, 0.12),
+        screen: false,
+    };
+}
+
+/// The bounds, in scene units, of a box `[min, max]` given in metres in the
+/// renderer's frame (x right, y front, z up) around the listener, at
+/// `metres_per_unit`: scene x is the front, y the height, z the width.
+pub fn metres_box_bounds(box_m: [[f64; 3]; 2], metres_per_unit: f64) -> RoomBounds {
+    let s = metres_per_unit.max(0.01);
+    let [lo, hi] = box_m;
+    RoomBounds {
+        x_min: (lo[1] / s) as f32,
+        x_max: (hi[1] / s) as f32,
+        y_min: (lo[2] / s) as f32,
+        y_max: (hi[2] / s) as f32,
+        z_min: (lo[0] / s) as f32,
+        z_max: (hi[0] / s) as f32,
+    }
+}
+
+/// A measured room's box with its dimensions in metres on its top front
+/// edge, and the scale guide, in the measured room's colour.
+pub fn emit_measured_room(
+    box_m: [[f64; 3]; 2],
+    metres_per_unit: f64,
+    cam_pos: Vec3,
+    frame: &mut FrameData,
+    project: &dyn Fn(Vec3) -> Option<(screen::ScreenPos, f32)>,
+    points_per_unit: &dyn Fn(f32) -> f32,
+    labels: &mut Vec<Label>,
+) {
+    let bounds = metres_box_bounds(box_m, metres_per_unit);
+    emit_room(&bounds, cam_pos, &RoomStyle::MEASURED_ROOM, frame);
+    let [lo, hi] = box_m;
+    let at = Vec3::new(
+        bounds.x_max,
+        bounds.y_max + 0.06,
+        (bounds.z_min + bounds.z_max) * 0.5,
+    );
+    if let Some((p, depth)) = project(at) {
+        labels.push(Label {
+            pos: p,
+            text: format!(
+                "{:.1} × {:.1} × {:.1} m",
+                hi[0] - lo[0],
+                hi[1] - lo[1],
+                hi[2] - lo[2]
+            ),
+            color: screen::rgb(
+                ((MEASURED_ROOM_COLOR >> 16) & 0xff) as u8,
+                ((MEASURED_ROOM_COLOR >> 8) & 0xff) as u8,
+                (MEASURED_ROOM_COLOR & 0xff) as u8,
+            ),
+            size: (0.052 * points_per_unit(depth)).clamp(6.0, 40.0).round(),
+            depth,
+        });
+    }
+    emit_unit_guide(
+        &bounds,
+        metres_per_unit as f32,
+        frame,
+        project,
+        points_per_unit,
+        labels,
+    );
 }
 
 /// Warped room bounds in scene units.

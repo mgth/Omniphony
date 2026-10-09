@@ -528,6 +528,12 @@ impl StudioSpike {
                 theme::TEXT_MUTED,
             ));
         }
+        // The set's loudspeakers did not fit the speaker stage: the room
+        // renders on the editable layout instead, and the view shows that.
+        if let Some(error) = text(doc, &["brir", "layoutError"]) {
+            ui.label(small(t("binaural.brirLayoutError").to_owned(), theme::WARN))
+                .on_hover_text(error);
+        }
 
         // Load options: a change reloads the set on the renderer.
         let tracking = match status.and_then(|b| b.get("headTracking")) {

@@ -856,6 +856,7 @@
   "binaural.hrtfSource.pinna": "耳廓（参数化）",
   "binaural.hrtfSource.prtf": "PRTF（Spagnol）",
   "binaural.hrtfSource.sofa": "SOFA 文件",
+  "binaural.brirLayoutError": "该套件的扬声器超出了扬声器级的容量：耳机改为在你的布局上渲染（悬停查看原因）。",
   "binaural.brirUnderVirtualRoom": "实测房间（BRIR）在耳机（虚拟房间）下提供。",
   "binaural.lastFile": "上次的文件：{name}",
   "binaural.sofaBrowseTitle": "浏览 sofacoustics.org 的 HRTF 数据库",

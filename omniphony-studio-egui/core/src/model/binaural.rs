@@ -304,6 +304,49 @@ mod tests {
         assert_eq!(app.binaural_reflection_room_m(), None);
     }
 
+    /// A set's geometry is read while its loudspeakers render: the metres
+    /// in the set's order, the file's corners when it has them, else a box
+    /// around the loudspeakers with a margin, a floor and headroom; the
+    /// reach puts its farthest extent at one unit.
+    #[test]
+    fn a_resident_set_has_its_loudspeakers_and_a_room_to_draw() {
+        use crate::model::app_state::{AppState, BrirGeometry};
+        use crate::model::layouts::Speaker;
+        let speaker: Speaker =
+            serde_json::from_value(json!({ "id": "L", "x": -0.5, "y": 0.866, "z": 0.0 }))
+                .expect("a speaker");
+        let mut app = AppState::new(Vec::new());
+        let loaded = json!({
+            "emittersM": [[-1.0, 1.7, 0.0], [1.0, 1.7, 0.0], [0.0, -2.0, 0.6]],
+            "roomType": "shoebox",
+            "roomCornersM": [[-2.0, -3.0, -1.2], [2.0, 3.0, 1.3]],
+        });
+        app.binaural = Some(json!({ "brir": { "loaded": loaded } }));
+        // Not on the set's loudspeakers: nothing to draw as a measured room.
+        assert_eq!(app.brir_geometry(), None);
+        app.brir_speakers = Some(vec![speaker]);
+        let g = app.brir_geometry().expect("geometry");
+        assert_eq!(g.emitters_m.len(), 3);
+        assert_eq!(g.room_type.as_deref(), Some("shoebox"));
+        assert_eq!(g.room_box_m(), [[-2.0, -3.0, -1.2], [2.0, 3.0, 1.3]]);
+        assert_eq!(g.reach_m(), 3.0);
+        // No corners: the loudspeakers' box, with the margin, floor and headroom.
+        let g = BrirGeometry {
+            room_corners_m: None,
+            ..g
+        };
+        let [lo, hi] = g.room_box_m();
+        let m = BrirGeometry::BOX_MARGIN_M;
+        assert!((lo[0] - (-1.0 - m)).abs() < 1e-9 && (hi[0] - (1.0 + m)).abs() < 1e-9);
+        assert!((lo[1] - (-2.0 - m)).abs() < 1e-9 && (hi[1] - (1.7 + m)).abs() < 1e-9);
+        assert_eq!(lo[2], -BrirGeometry::FLOOR_M);
+        assert_eq!(hi[2], BrirGeometry::HEADROOM_M);
+        assert!((g.reach_m() - (2.0 + m)).abs() < 1e-9);
+        // A renderer without the metres: nothing.
+        app.binaural = Some(json!({ "brir": { "loaded": { "emitters": 3 } } }));
+        assert_eq!(app.brir_geometry(), None);
+    }
+
     /// The file sources name the file a bare choice reopens; nothing named,
     /// or another source, says nothing.
     #[test]

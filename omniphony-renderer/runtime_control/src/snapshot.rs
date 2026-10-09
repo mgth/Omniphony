@@ -352,14 +352,7 @@ pub fn build_renderer_state_json(
                 "maxLengthS": live.binaural.brir.max_length_s,
                 "tailFloorDb": live.binaural.brir.tail_floor_db,
                 "path": brir_status.path,
-                "loaded": brir_status.loaded.as_ref().map(|s| json!({
-                    "conventions": s.conventions,
-                    "emitters": s.emitters,
-                    "orientations": s.orientations,
-                    "maxTaps": s.max_taps,
-                    "sampleRate": s.sample_rate,
-                    "bytes": s.bytes,
-                })),
+                "loaded": brir_status.loaded.as_ref().map(brir_loaded_json),
                 "error": brir_status.error,
                 // The set's own loudspeakers, once the topology renders on
                 // them (`RenderTopology::brir_layout`): what the listener is
@@ -406,6 +399,24 @@ pub fn build_renderer_state_json(
 /// tagged `variant: "embedded"` / `host: "mpv"` for the connection label.
 /// The parametric HRIR sources' settings (`hrirParams`), `null` for the
 /// others.
+/// A resident BRIR set: its shape, and its geometry for a client to draw —
+/// the loudspeakers in metres around the listener (renderer frame, the
+/// set's order, the order of `brir.layout`), and the room they stand in
+/// when the file describes it (`RoomType`, the two corners of a shoebox).
+fn brir_loaded_json(set: &renderer::binaural::BrirSummary) -> serde_json::Value {
+    json!({
+        "conventions": set.conventions,
+        "emitters": set.emitters,
+        "orientations": set.orientations,
+        "maxTaps": set.max_taps,
+        "sampleRate": set.sample_rate,
+        "bytes": set.bytes,
+        "emittersM": set.emitter_positions,
+        "roomType": set.room_type,
+        "roomCornersM": set.room_corners_m,
+    })
+}
+
 /// The early-reflection settings, with the room the stage mirrors sources
 /// in: the configured extents grown to contain the scene
 /// (`reflections::room_containing_scene`), so a client draws the room the
@@ -986,6 +997,48 @@ fn placement_families_json(state: &renderer::placement::PlacementState) -> serde
         .chain(std::iter::once(name(SourceFamily::PCM)))
         .collect();
     json!(names)
+}
+
+#[cfg(test)]
+mod brir_loaded_tests {
+    use super::brir_loaded_json;
+    use renderer::binaural::BrirSummary;
+
+    /// The set's geometry travels with its shape: the loudspeakers in
+    /// metres in the set's order, the room's corners when the file has
+    /// them, null otherwise.
+    #[test]
+    fn a_resident_set_publishes_its_loudspeakers_and_room() {
+        let summary = BrirSummary {
+            conventions: "MultiSpeakerBRIR".into(),
+            emitters: 2,
+            emitter_positions: vec![[-1.0, 1.7, 0.0], [1.0, 1.7, 0.0]],
+            orientations: 1,
+            max_taps: 100,
+            sample_rate: 48_000,
+            bytes: 800,
+            room_type: Some("shoebox".into()),
+            room_corners_m: Some([[-2.0, -3.0, -1.2], [2.0, 3.0, 1.3]]),
+        };
+        let json = brir_loaded_json(&summary);
+        assert_eq!(json["emitters"], 2);
+        assert_eq!(json["emittersM"][1][0], 1.0);
+        assert_eq!(
+            json["emittersM"][1][1]
+                .as_f64()
+                .map(|v| (v - 1.7).abs() < 1e-6),
+            Some(true)
+        );
+        assert_eq!(json["roomType"], "shoebox");
+        assert_eq!(json["roomCornersM"][0][1], -3.0);
+        let bare = BrirSummary {
+            room_type: None,
+            room_corners_m: None,
+            ..summary
+        };
+        let json = brir_loaded_json(&bare);
+        assert!(json["roomType"].is_null() && json["roomCornersM"].is_null());
+    }
 }
 
 #[cfg(test)]

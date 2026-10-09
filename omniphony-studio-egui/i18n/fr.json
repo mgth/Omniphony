@@ -890,6 +890,7 @@
   "binaural.hrtfSource.pinna": "Pavillon (paramétrique)",
   "binaural.hrtfSource.prtf": "PRTF (Spagnol)",
   "binaural.hrtfSource.sofa": "Fichier SOFA",
+  "binaural.brirLayoutError": "Les enceintes du set ne tiennent pas dans l'étage enceintes : le casque est rendu sur ton layout (survoler pour la raison).",
   "binaural.hrtfSource.brir": "BRIR (salle mesurée)",
   "binaural.brirBrowseTitle": "Choisir un fichier SOFA de réponse de salle (MultiSpeakerBRIR, ou un jeu par direction aux réponses longues)",
   "binaural.brirNoFile": "Aucun fichier BRIR choisi — le KEMAR embarqué joue tant que vous n'en choisissez pas un (Parcourir…).",

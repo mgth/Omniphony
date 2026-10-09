@@ -890,6 +890,7 @@
   "binaural.hrtfSource.pinna": "Pinna (parametric)",
   "binaural.hrtfSource.prtf": "PRTF (Spagnol)",
   "binaural.hrtfSource.sofa": "SOFA file",
+  "binaural.brirLayoutError": "The set's loudspeakers do not fit the speaker stage: the headphones render on your layout instead (hover for why).",
   "binaural.hrtfSource.brir": "BRIR (measured room)",
   "binaural.brirBrowseTitle": "Pick a SOFA room-response file (MultiSpeakerBRIR, or a per-direction set carrying room-length responses)",
   "binaural.brirNoFile": "No BRIR file selected — the embedded KEMAR plays until you pick one (Browse…).",
