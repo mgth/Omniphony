@@ -547,13 +547,7 @@ impl StudioSpike {
     fn ease_head_pose(&mut self, ctx: &egui::Context) {
         let target = {
             let live = self.host.read();
-            let binaural = live
-                .app
-                .binaural
-                .as_ref()
-                .and_then(|b| b.get("outputMode"))
-                .and_then(|m| m.as_str())
-                == Some("binaural");
+            let binaural = live.app.render_path().is_binaural();
             match (binaural, live.head_pose) {
                 (true, Some([w, x, y, z])) => Quat::from_xyzw(-y, -z, -x, w).normalize(),
                 _ => Quat::IDENTITY,
