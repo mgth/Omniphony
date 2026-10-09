@@ -469,14 +469,23 @@ impl SpeakerLayout {
     /// subwoofer, and the cascade's direct-bus policy feeds it to both ears.
     ///
     /// `positions` are the emitters relative to the listener in the
-    /// renderer's frame (`x` right, `y` front, `z` up, any unit). Each is
-    /// projected onto the normalised cube along its own direction, so the
-    /// speaker points exactly at its emitter. No delay, gain or crossover
-    /// band: the measurement carries the room's own. An emitter within
-    /// [`BRIR_NAME_MATCH_DEG`] of a standard position takes that position's
-    /// name (each name once, nearest first), so beds placed by channel name
-    /// still find their speaker; the others are `E<n>`, `n` counted from 1.
-    pub fn from_brir_emitters(positions: &[[f32; 3]]) -> Result<Self> {
+    /// renderer's frame (`x` right, `y` front, `z` up, metres). Each is
+    /// placed as a fraction of the measured room they stand in — `room`,
+    /// `radius_m` metres to its unit ([`crate::binaural::brir::MeasuredRoom`])
+    /// — by the inverse of the stage's warp, so that warping the layout
+    /// with that same room returns every speaker to its measured position
+    /// (up to scale) and an object is panned among them in the room's own
+    /// metric. No delay, gain or crossover band: the measurement carries the
+    /// room's own. An emitter within [`BRIR_NAME_MATCH_DEG`] of a standard
+    /// position takes that position's name (each name once, nearest
+    /// first), so beds placed by channel name still find their speaker; the
+    /// others are `E<n>`, `n` counted from 1.
+    pub fn from_brir_emitters(
+        positions: &[[f32; 3]],
+        room: &crate::live_params::RoomRatios,
+        radius_m: f32,
+    ) -> Result<Self> {
+        let radius_m = radius_m.max(0.01);
         let directions: Vec<(f32, f32)> = positions
             .iter()
             .map(|&[x, y, z]| {
@@ -508,10 +517,9 @@ impl SpeakerLayout {
             .zip(&names)
             .enumerate()
             .map(|(e, (&[x, y, z], name))| {
-                let scale = x.abs().max(y.abs()).max(z.abs());
-                let scale = if scale > 0.0 { 1.0 / scale } else { 0.0 };
+                let [x, y, z] = room.inverse([x / radius_m, y / radius_m, z / radius_m]);
                 let name = name.map_or_else(|| format!("E{}", e + 1), str::to_string);
-                Speaker::from_cartesian(name, x * scale, y * scale, z * scale, true, 0.0)
+                Speaker::from_cartesian(name, x, y, z, true, 0.0)
             })
             .collect();
         speakers.push(Speaker::new_with_spatialize("LFE", 0.0, -30.0, false));
@@ -794,6 +802,8 @@ impl SpeakerLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binaural::brir::MeasuredRoom;
+    use crate::live_params::RoomRatios;
 
     /// The 13 loudspeakers of a generic 9+4 measured room, as the BRIR loader
     /// reports them: renderer frame, metres.
@@ -821,17 +831,39 @@ mod tests {
         .collect()
     }
 
+    /// The layout of a set whose loudspeakers stand at `emitters` (metres,
+    /// renderer frame), in the room estimated from them with the default
+    /// front/rear blend: what `RendererControl::brir_layout` builds.
+    fn brir_layout_of(emitters: &[[f32; 3]]) -> (SpeakerLayout, RoomRatios) {
+        let measured = MeasuredRoom::of(emitters, None);
+        let room = measured.ratios(0.5);
+        let layout =
+            SpeakerLayout::from_brir_emitters(emitters, &room, measured.radius_m()).unwrap();
+        (layout, room)
+    }
+
     #[test]
     fn a_brir_layout_has_one_speaker_per_emitter_pointing_at_it() {
         let emitters = nine_plus_four_room_emitters();
-        let layout = SpeakerLayout::from_brir_emitters(&emitters).unwrap();
+        let (layout, room) = brir_layout_of(&emitters);
         assert_eq!(layout.num_speakers(), emitters.len() + 1);
-        for (speaker, e) in layout.speakers.iter().zip(&emitters) {
-            let (az, el, _) = geometry::to_spherical(e[0], e[1], e[2]);
+        // Placed as fractions of the measured room, the speakers point at
+        // their emitters once the stage warps them with that room — not
+        // before: the cube reading is the room-fraction, which an
+        // elongated room moves off the direction.
+        let (positions, mapping) = layout.spatializable_positions_for_room(
+            room.ratio,
+            room.rear,
+            room.lower,
+            room.center_blend,
+        );
+        assert_eq!(mapping.len(), emitters.len());
+        for ((speaker, e), [az, el]) in layout.speakers.iter().zip(&emitters).zip(&positions) {
+            let (want_az, want_el, _) = geometry::to_spherical(e[0], e[1], e[2]);
             assert!(
                 // f32 `acos` near 1 resolves a few hundredths of a degree.
-                angle_between_deg(speaker.azimuth, speaker.elevation, az, el) < 0.1,
-                "{} points at its emitter",
+                angle_between_deg(*az, *el, want_az, want_el) < 0.1,
+                "{} points at its emitter in the room: {az} {el} vs {want_az} {want_el}",
                 speaker.name
             );
             assert!(speaker.spatialize);
@@ -851,9 +883,46 @@ mod tests {
         assert!(!lfe.spatialize, "the LFE is a direct bus");
     }
 
+    /// Warping a speaker's room fraction with the room it was placed in
+    /// returns its measured position, to the metre scale of the room: the
+    /// topology pans an object onto the loudspeakers where they stand.
+    #[test]
+    fn a_brir_speaker_warps_back_to_its_measured_position() {
+        // A room the listener is not centred in: fronts far, sides near,
+        // a back wall closer than the front one.
+        let emitters: Vec<[f32; 3]> = vec![
+            [0.0, 3.0, 0.0],
+            [-1.5, 3.0, 0.0],
+            [1.5, 3.0, 0.0],
+            [-2.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [-1.5, -2.0, 0.0],
+            [1.5, -2.0, 0.0],
+            [-1.5, 3.0, 1.5],
+            [1.5, 3.0, 1.5],
+        ];
+        let measured = MeasuredRoom::of(&emitters, None);
+        let room = measured.ratios(0.5);
+        let radius = measured.radius_m();
+        let layout = SpeakerLayout::from_brir_emitters(&emitters, &room, radius).unwrap();
+        assert_ne!(room.ratio[1], room.rear, "the room is deeper to the front");
+        for (speaker, e) in layout.speakers.iter().zip(&emitters) {
+            let back = room.scale([speaker.x, speaker.y, speaker.z]);
+            for axis in 0..3 {
+                assert!(
+                    (back[axis] * radius - e[axis]).abs() < 1e-3,
+                    "{}: axis {axis} warps back to {} m, measured {} m",
+                    speaker.name,
+                    back[axis] * radius,
+                    e[axis]
+                );
+            }
+        }
+    }
+
     #[test]
     fn brir_emitters_take_the_nearest_free_standard_name() {
-        let layout = SpeakerLayout::from_brir_emitters(&nine_plus_four_room_emitters()).unwrap();
+        let (layout, _) = brir_layout_of(&nine_plus_four_room_emitters());
         assert_eq!(
             layout.speaker_names(),
             [
@@ -864,13 +933,12 @@ mod tests {
             ]
         );
         // Nothing standard near it: numbered from 1 in the set's order.
-        let odd = SpeakerLayout::from_brir_emitters(&[
+        let (odd, _) = brir_layout_of(&[
             [0.0, 1.0, 0.0],
             [-1.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
             [0.0, 0.3, -1.0],
-        ])
-        .unwrap();
+        ]);
         assert_eq!(odd.speaker_names(), ["C", "SL", "SR", "E4", "LFE"]);
     }
 

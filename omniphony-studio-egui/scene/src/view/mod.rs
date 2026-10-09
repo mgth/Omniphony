@@ -348,7 +348,7 @@ pub fn build_frame(
     if let Some(geometry) = &measured {
         room::emit_measured_room(
             geometry.room_box_m(),
-            geometry.reach_m(),
+            geometry.metres_per_unit(),
             cam_pos,
             &mut frame,
             &project,

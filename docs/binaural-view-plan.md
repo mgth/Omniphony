@@ -202,14 +202,17 @@ reads the path without the Advanced board.
 
 ## 3. Engine question, listening required: the warp in the measured room
 
-`RoomRatios::for_output` returns the live room for every cascade, the BRIR
-layout included: the user's loudspeaker room shapes the panning onto a
+`RoomRatios::for_output` returned the live room for every cascade, the BRIR
+layout included: the user's loudspeaker room shaped the panning onto a
 measured room that has its own geometry. Candidates: (a) `UNIT` for the BRIR
 layout (its loudspeakers are already placed by direction); (b) a ratio
-derived from the loudspeakers' extents. Own issue and PR, after a listening
-pass with the BBC System G set (`bbcrdlr_systemG.sofa`, see *Where to get
-one* in `BINAURAL.md`); not part
-of the view work, whose §2d draws what the engine does either way.
+derived from the loudspeakers' extents. Settled as (b) in #803: the
+topology carries the room it pans in (`RenderTopology::room`), a BRIR
+layout's is derived from the set's box (the file's corners, else an
+estimate around the loudspeakers), its loudspeakers are placed in it as
+fractions, and `brir.room` publishes it for the view (`display_room`
+reads it on the measured-room path). (a) is its degenerate case for a
+centred cubic box.
 
 ## 4. Further visualisation proposals
 

@@ -208,6 +208,8 @@
   "room.axis.rear": "rear",
   "room.axis.height": "height",
   "room.axis.lower": "lower",
+  "room.measuredFile": "Measured room of the set in use, from its file: the headphones render in it, your room is kept and comes back with another source.",
+  "room.measuredEstimated": "Measured room of the set in use, estimated from its loudspeakers (the file states no room): the headphones render in it, your room is kept and comes back with another source.",
   "room.centerBlend": "Y center blend",
   "room.centerBlend.resetTitle": "Double click to reset 50/50",
   "room.infoTitle": "Room Geometry",

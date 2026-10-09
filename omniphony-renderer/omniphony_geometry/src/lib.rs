@@ -319,6 +319,47 @@ macro_rules! geometry_for {
                 ]
             }
 
+            /// Inverse of [`room_scaled_position`] for a position that states
+            /// a direction: one that reaches past a wall is drawn back along
+            /// its own line until it fits the room, then inverted, so the
+            /// direction it renders at survives. The plain inverse clamps each
+            /// axis on its own, which bends such a position towards the wall:
+            /// a 30° height in a room whose height ratio is 0.4 came back at
+            /// 24.8°. A position inside the room is inverted as it is.
+            #[inline]
+            pub fn inverse_room_scaled_direction(
+                position: [$f; 3],
+                room_ratio: [$f; 3],
+                rear_ratio: $f,
+                lower_ratio: $f,
+                center_blend: $f,
+            ) -> [$f; 3] {
+                let half = |value: $f, positive: $f, negative: $f| {
+                    (if value >= 0.0 { positive } else { negative }).max(MIN_ROOM_RATIO)
+                };
+                let extents = [
+                    room_ratio[0].max(MIN_ROOM_RATIO),
+                    half(position[1], room_ratio[1], rear_ratio),
+                    half(position[2], room_ratio[2], lower_ratio),
+                ];
+                let mut overshoot: $f = 1.0;
+                for axis in 0..3 {
+                    overshoot = overshoot.max(position[axis].abs() / extents[axis]);
+                }
+                let fitted = [
+                    position[0] / overshoot,
+                    position[1] / overshoot,
+                    position[2] / overshoot,
+                ];
+                inverse_room_scaled_position(
+                    fitted,
+                    room_ratio,
+                    rear_ratio,
+                    lower_ratio,
+                    center_blend,
+                )
+            }
+
             // ---------------------------------------------------------------
             // Sampling grids
             // ---------------------------------------------------------------
@@ -791,6 +832,53 @@ mod tests {
                     back
                 );
             }
+        }
+    }
+
+    /// A direction past a wall keeps its angle through the direction
+    /// inverse, where the plain inverse bends it: the position is drawn back
+    /// along its line into the room, and warping the result renders the
+    /// same angle. Inside the room the two inverses agree.
+    #[test]
+    fn the_direction_inverse_keeps_the_angle_of_a_position_past_a_wall() {
+        // A low room, deeper to the front than to the rear.
+        let ratio = [1.0, 1.2, 0.4];
+        let (rear, lower, blend) = (0.8, 0.48, 0.5);
+        let angles = |p: [f64; 3]| {
+            (
+                p[0].atan2(p[1]).to_degrees(),
+                p[2].atan2((p[0] * p[0] + p[1] * p[1]).sqrt()).to_degrees(),
+            )
+        };
+        for (az, el) in [
+            (-30.0f64, 30.0f64),
+            (110.0, 30.0),
+            (0.0, 45.0),
+            (-135.0, 0.0),
+            (180.0, -20.0),
+        ] {
+            let (x, y, z) = from_spherical(az, el, 1.0);
+            let kept = inverse_room_scaled_direction([x, y, z], ratio, rear, lower, blend);
+            assert!(
+                kept.iter().all(|c| c.abs() <= 1.0 + 1e-9),
+                "{az}/{el}: inside the cube"
+            );
+            let (got_az, got_el) = angles(room_scaled_position(kept, ratio, rear, lower, blend));
+            close(got_az, az);
+            close(got_el, el);
+        }
+        // The plain inverse does bend a height past the ceiling (the reason
+        // this function exists).
+        let (x, y, z) = from_spherical(-30.0, 30.0, 1.0);
+        let bent = inverse_room_scaled_position([x, y, z], ratio, rear, lower, blend);
+        let (_, el) = angles(room_scaled_position(bent, ratio, rear, lower, blend));
+        assert!(el < 26.0, "the plain inverse bends it to {el}°");
+        // Inside the room both agree.
+        let inside = [0.2, -0.3, 0.1];
+        let a = inverse_room_scaled_direction(inside, ratio, rear, lower, blend);
+        let b = inverse_room_scaled_position(inside, ratio, rear, lower, blend);
+        for axis in 0..3 {
+            close(a[axis], b[axis]);
         }
     }
 

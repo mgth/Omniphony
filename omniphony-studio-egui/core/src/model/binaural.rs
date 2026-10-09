@@ -106,11 +106,12 @@ impl RenderPath {
         self != RenderPath::Speakers
     }
 
-    /// Whether a normalized position is warped by the live room before it
-    /// is rendered: on every path through the speaker stage, and not on the
+    /// Whether a normalized position is warped by a room before it is
+    /// rendered: on every path through the speaker stage — the live room,
+    /// or the measured room of a BRIR set's loudspeakers — and not on the
     /// direct one, which reads the direction straight off the position
     /// (the renderer's `RoomRatios::for_output`). The scene places things
-    /// the same way.
+    /// the same way, in the room `AppState::display_room` resolves.
     pub fn warps_with_room(self) -> bool {
         self != RenderPath::Direct
     }
@@ -464,6 +465,80 @@ mod tests {
         // A renderer without the metres: nothing.
         app.binaural = Some(json!({ "brir": { "loaded": { "emitters": 3 } } }));
         assert_eq!(app.brir_geometry(), None);
+    }
+
+    /// The room the render pans in on a BRIR set's loudspeakers is the
+    /// published measured room (#803): the scene's frame and the editors'
+    /// conversions use its ratios, the loudspeakers are drawn at its scale
+    /// and inside its box, and the room panel learns whether the box is an
+    /// estimate. A renderer that publishes none pans in the live room,
+    /// which the view then keeps.
+    #[test]
+    fn the_measured_room_in_force_is_the_published_one() {
+        use crate::model::app_state::{AppState, RoomRatio};
+        use crate::model::layouts::Speaker;
+        let speaker: Speaker =
+            serde_json::from_value(json!({ "id": "L", "x": -0.5, "y": 0.866, "z": 0.0 }))
+                .expect("a speaker");
+        let mut app = AppState::new(Vec::new());
+        app.room_ratio = RoomRatio {
+            width: 1.0,
+            length: 2.0,
+            height: 1.0,
+            rear: 2.0,
+            lower: 0.5,
+            center_blend: 0.5,
+            scale_m: 1.7,
+        };
+        let loaded = json!({
+            "emittersM": [[-1.0, 1.7, 0.0], [1.0, 1.7, 0.0], [0.0, -2.0, 0.6]],
+            "roomCornersM": [[-2.0, -3.0, -1.2], [2.0, 3.0, 1.3]],
+        });
+        let measured = json!({
+            "boxM": [[-2.0, -3.0, -1.2], [2.0, 3.0, 1.3]],
+            "estimated": false,
+            "ratio": {
+                "width": 1.0, "length": 1.5, "height": 0.65, "rear": 1.5, "lower": 0.6,
+                "centerBlend": 0.5, "scaleM": 2.0,
+            },
+        });
+        let binaural = |brir: serde_json::Value| {
+            json!({
+                "outputMode": "binaural", "mode": "cascaded", "modeEffective": "cascaded",
+                "hrirSource": "brir", "brir": brir,
+            })
+        };
+        app.brir_speakers = Some(vec![speaker]);
+        app.binaural = Some(binaural(json!({ "loaded": loaded, "room": measured })));
+        assert_eq!(app.render_path(), RenderPath::MeasuredRoom);
+        let room = app.brir_room().expect("the measured room");
+        assert!(!room.estimated);
+        assert_eq!(room.box_m[1], [2.0, 3.0, 1.3]);
+        assert_eq!(room.ratio.length, 1.5);
+        assert_eq!(
+            app.display_room(),
+            room.ratio,
+            "the scene's frame is the measured room"
+        );
+        let g = app.brir_geometry().expect("geometry");
+        assert_eq!(g.metres_per_unit(), 2.0, "the room's scale, not its reach");
+        assert_eq!(g.room_box_m(), room.box_m);
+
+        // An estimate says so; a renderer without the block pans in the
+        // live room.
+        let mut estimate = measured.clone();
+        estimate["estimated"] = json!(true);
+        app.binaural = Some(binaural(json!({ "loaded": loaded, "room": estimate })));
+        assert!(app.brir_room().expect("the measured room").estimated);
+        app.binaural = Some(binaural(json!({ "loaded": loaded })));
+        assert_eq!(app.brir_room(), None);
+        assert_eq!(app.display_room(), app.room_ratio);
+        let g = app.brir_geometry().expect("geometry");
+        assert_eq!(g.metres_per_unit(), g.reach_m());
+        // Off the set's loudspeakers, the block is not read.
+        app.brir_speakers = None;
+        app.binaural = Some(binaural(json!({ "loaded": loaded, "room": measured })));
+        assert_eq!(app.brir_room(), None);
     }
 
     /// The badge names the path and the set in force, and says when that

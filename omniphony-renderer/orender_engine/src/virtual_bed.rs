@@ -18,61 +18,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use omniphony_geometry::f32::inverse_room_scaled_position;
-
-/// The room warp the output applies: the ratios the live params carry for it,
-/// taken together so a pose resolver reads one value instead of four. A pose
-/// stated as an angle is pre-compensated for it ([`angles_to_normalized`]), so
-/// it must be the warp that is actually undone downstream ([`Self::for_output`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RoomRatios {
-    /// `[width, front, height]`.
-    pub ratio: [f32; 3],
-    pub rear: f32,
-    pub lower: f32,
-    pub center_blend: f32,
-}
-
-impl RoomRatios {
-    /// The unit cube: no warp at all.
-    pub const UNIT: Self = Self {
-        ratio: [1.0, 1.0, 1.0],
-        rear: 1.0,
-        lower: 1.0,
-        center_blend: 0.0,
-    };
-
-    /// The warp the output in force applies to a normalized position: the
-    /// live room on the speaker stage (which the cascaded binaural mode also
-    /// pans through), none on the direct binaural path, which reads the
-    /// direction straight off the position
-    /// ([`renderer::live_params::BinauralLiveParams::renders_direct`]).
-    /// Pre-compensating a direct binaural pose for the live room left it
-    /// warped: `L` at −49° instead of −30° in the default room (#781).
-    pub fn for_output(live: &renderer::live_params::LiveParams) -> Self {
-        if live.binaural.renders_direct() {
-            return Self::UNIT;
-        }
-        Self {
-            ratio: live.room_ratio,
-            rear: live.room_ratio_rear,
-            lower: live.room_ratio_lower,
-            center_blend: live.room_ratio_center_blend,
-        }
-    }
-
-    /// Inverse room warp of a real ADM position, clamped into the normalized
-    /// cube ([`inverse_room_scaled_position`]).
-    fn inverse(&self, position: [f32; 3]) -> [f32; 3] {
-        inverse_room_scaled_position(
-            position,
-            self.ratio,
-            self.rear,
-            self.lower,
-            self.center_blend,
-        )
-    }
-}
+/// The room warp the output applies, taken together so a pose resolver reads
+/// one value instead of four ([`renderer::live_params::RoomRatios`]): a pose
+/// stated as an angle is pre-compensated for it ([`angles_to_normalized`]),
+/// so it must be the warp that is actually undone downstream
+/// ([`RoomRatios::for_output`]).
+pub use renderer::live_params::RoomRatios;
 
 #[derive(Clone)]
 struct VirtualBedLayouts {
@@ -265,7 +216,9 @@ fn speaker_pose_to_normalized(
             speaker.elevation,
             speaker.distance,
         );
-        let [x, y, z] = room.inverse([sx, sy, sz]);
+        // The entry states an angle: kept whatever the room's extent along
+        // it (a measured room can be lower than the entry's radius).
+        let [x, y, z] = room.inverse_direction([sx, sy, sz]);
         (speaker.name.clone(), x, y, z)
     }
 }
@@ -276,10 +229,14 @@ fn speaker_pose_to_normalized(
 /// polar branch of [`speaker_pose_to_normalized`] makes for a placement entry
 /// that states an angle. A corner channel is deliberately carried around by
 /// the room warp; a channel stated as an angle — a pose the bridge declared,
-/// or a height-tier label — must land on that angle whatever the room is.
+/// or a height-tier label — must land on that angle whatever the room is,
+/// a room lower or shorter than the unit radius included: the direction is
+/// drawn back into the room rather than clamped axis by axis
+/// ([`RoomRatios::inverse_direction`]), which bent a 30° height to 24.8° in
+/// a measured room of height ratio 0.4 (#803).
 fn angles_to_normalized(azimuth_deg: f32, elevation_deg: f32, room: RoomRatios) -> (f32, f32, f32) {
     let (sx, sy, sz) = renderer::spatial_vbap::spherical_to_adm(azimuth_deg, elevation_deg, 1.0);
-    let [x, y, z] = room.inverse([sx, sy, sz]);
+    let [x, y, z] = room.inverse_direction([sx, sy, sz]);
     (x, y, z)
 }
 
@@ -961,15 +918,15 @@ pub fn build_fixed_channel_objects(
         return None;
     }
     let control = renderer.renderer_control();
+    let topology = control.active_topology();
     let (placement, surround_placement, room) = {
         let live = control.live.read();
         (
             OwnedPlacement::from_live(&live, family),
             live.options.surround_placement,
-            RoomRatios::for_output(&live),
+            RoomRatios::for_output(&live, &topology),
         )
     };
-    let topology = control.active_topology();
     build_virtual_bed_objects(
         fixed_labels,
         &placement.policy(declared_poses),
@@ -1012,13 +969,16 @@ struct ChannelPlanKey {
 }
 
 impl ChannelPlanKey {
+    /// `topology` is the active one: the room the plan pans in
+    /// ([`RoomRatios::for_output`]) and the generation that names its layout
+    /// are read off it.
     fn capture(
         live: &renderer::live_params::LiveParams,
         mode: renderer::live_params::ChannelRenderMode,
         channel_labels: &[RChannelLabel],
         family: SourceFamily,
         declared_poses: &[RChannelPose],
-        layout_generation: u64,
+        topology: &renderer::live_params::RenderTopology,
     ) -> Self {
         Self {
             labels: channel_labels.to_vec(),
@@ -1027,8 +987,8 @@ impl ChannelPlanKey {
             mode,
             placement: OwnedPlacement::from_live(live, family),
             surround_placement: live.options.surround_placement,
-            room: RoomRatios::for_output(live),
-            layout_generation,
+            room: RoomRatios::for_output(live, topology),
+            layout_generation: topology.geometry_generation,
         }
     }
 
@@ -1047,7 +1007,7 @@ impl ChannelPlanKey {
         channel_labels: &[RChannelLabel],
         family: SourceFamily,
         declared_poses: &[RChannelPose],
-        layout_generation: u64,
+        topology: &renderer::live_params::RenderTopology,
     ) -> bool {
         let Self {
             labels,
@@ -1056,14 +1016,14 @@ impl ChannelPlanKey {
             mode: planned_mode,
             placement,
             surround_placement,
-            room,
+            room: planned_room,
             layout_generation: planned_generation,
         } = self;
 
-        *planned_generation == layout_generation
+        *planned_generation == topology.geometry_generation
             && *planned_mode == mode
             && *surround_placement == live.options.surround_placement
-            && *room == RoomRatios::for_output(live)
+            && *planned_room == RoomRatios::for_output(live, topology)
             && *planned_family == family
             && labels.as_slice() == channel_labels
             && planned_poses.as_slice() == declared_poses
@@ -1105,7 +1065,9 @@ impl PlanCache {
         ChannelPlanKey,
         std::sync::Arc<renderer::live_params::RenderTopology>,
     )> {
-        let layout_generation = control.topology.load().geometry_generation;
+        // One load for the generation, the room and the layout the plan
+        // reads: the three describe the same topology.
+        let topology = control.active_topology();
         let live = control.live.read();
         let mode = mode.unwrap_or(live.channel_render_mode);
         if self.key.as_ref().is_some_and(|key| {
@@ -1115,22 +1077,18 @@ impl PlanCache {
                 channel_labels,
                 family,
                 declared_poses,
-                layout_generation,
+                &topology,
             )
         }) {
             return None;
         }
-        // The layout the key's generation names. Loaded after the generation
-        // was read, so at worst it is newer than the key says — which replans
-        // once more on the next frame, never keeps a stale plan.
-        let topology = control.active_topology();
         let key = ChannelPlanKey::capture(
             &live,
             mode,
             channel_labels,
             family,
             declared_poses,
-            layout_generation,
+            &topology,
         );
         Some((key, topology))
     }
@@ -1895,6 +1853,59 @@ pub(crate) mod tests {
         )
     }
 
+    /// Azimuth/elevation a normalized pose renders at once warped with a
+    /// whole room (all five ratios and the blend).
+    fn rendered_angles_in(pos: (f32, f32, f32), room: RoomRatios) -> (f32, f32) {
+        let [px, py, pz] = room.scale([pos.0, pos.1, pos.2]);
+        (
+            px.atan2(py).to_degrees(),
+            pz.atan2((px * px + py * py).sqrt()).to_degrees(),
+        )
+    }
+
+    /// A channel placed by angle keeps its angle in a measured room that is
+    /// lower, or shorter to the rear, than its unit radius (#803): the
+    /// height tier at 30° and the top tier at 45° render at those
+    /// elevations through the room's warp, and so does a polar manual
+    /// entry, where the clamping inverse bent them (30° read 24.8°).
+    #[test]
+    fn angle_poses_keep_their_angles_in_a_low_measured_room() {
+        use RChannelLabel::{Ch, L, Lh, Lhs, Ls, Tbl, Tfl};
+        use renderer::binaural::brir::MeasuredRoom;
+        // The reviewer's room: 5 m wide, 2 m behind, 3 m ahead, a 1 m
+        // ceiling over the ears and 1.2 m of floor.
+        let room = MeasuredRoom {
+            box_m: [[-2.5, -2.0, -1.2], [2.5, 3.0, 1.0]],
+            estimated: false,
+        }
+        .ratios(0.5);
+        assert!((room.ratio[2] - 0.4).abs() < 1e-6 && (room.rear - 0.8).abs() < 1e-6);
+        let manual = bed_with_l_at(-30.0);
+        let cases: [(RChannelLabel, bool, PlacementPolicy<'_>, f32, f32); 7] = [
+            (Lh, false, PlacementPolicy::sphere(&[]), -30.0, 30.0),
+            (Ch, false, PlacementPolicy::sphere(&[]), 0.0, 30.0),
+            (Lhs, false, PlacementPolicy::sphere(&[]), -110.0, 30.0),
+            (Tfl, true, PlacementPolicy::sphere(&[]), -45.0, 45.0),
+            (Tbl, true, PlacementPolicy::sphere(&[]), -135.0, 45.0),
+            (Ls, false, PlacementPolicy::sphere(&[]), -110.0, 0.0),
+            (L, false, PlacementPolicy::manual(&manual), -30.0, 0.0),
+        ];
+        for (label, use_7_1, policy, want_az, want_el) in &cases {
+            let (_, x, y, z) =
+                resolve_virtual_bed_pose(*label, *use_7_1, policy, room, SurroundPlacement::Side)
+                    .unwrap_or_else(|| panic!("no pose for {label:?}"));
+            assert!(
+                x.abs() <= 1.0 && y.abs() <= 1.0 && z.abs() <= 1.0,
+                "{label:?}: inside the cube, got ({x}, {y}, {z})"
+            );
+            let (az, el) = rendered_angles_in((x, y, z), room);
+            assert!(
+                (az - want_az).abs() < 0.05 && (el - want_el).abs() < 0.05,
+                "{label:?}: renders at {az:.2}/{el:.2}, stated {want_az}/{want_el}"
+            );
+        }
+    }
+
     /// A channel placed by angle — a sphere direction or a polar manual entry
     /// — renders at that angle on every output, in the engine's default room
     /// too: pre-compensated for no warp on the direct binaural path, which
@@ -1925,7 +1936,7 @@ pub(crate) mod tests {
             (L, false, PlacementPolicy::manual(&manual), -30.0, 0.0),
         ];
         let resolve = |label, use_7_1, policy: &PlacementPolicy<'_>| {
-            let room = RoomRatios::for_output(&control.live.read());
+            let room = RoomRatios::for_output(&control.live.read(), &control.active_topology());
             let (_, x, y, z) =
                 resolve_virtual_bed_pose(label, use_7_1, policy, room, SurroundPlacement::Side)
                     .unwrap_or_else(|| panic!("no pose for {label:?}"));
@@ -2831,7 +2842,10 @@ pub(crate) mod tests {
         planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
         let l_cube = event_position(&out, 0).expect("L event");
 
-        // What the room OSC handler does: new ratios, then a geometry bump.
+        // What the room OSC handler does: new ratios, then a geometry bump,
+        // and the recompute lands a topology whose speakers are placed in
+        // the new room. That topology's room is the one the plan reads
+        // (#803), keyed by the generation it carries.
         {
             let mut live = control.live.write();
             live.room_ratio[1] *= 2.0;
@@ -2839,6 +2853,13 @@ pub(crate) mod tests {
         }
         control.bump_geometry_generation();
         out.clear();
+        planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
+        assert!(
+            out.is_empty(),
+            "until the rebuild lands, the stage still pans in the old room → cached plan"
+        );
+        let plan = control.prepare_topology_rebuild().expect("rebuild plan");
+        control.publish_topology(plan.build_topology().expect("topology"));
         planner.plan_object_stream_fixed(&labels, dolby, &[], &renderer, &mut out);
         let l_deep = event_position(&out, 0).expect("L event after the room edit");
         assert_ne!(l_deep, l_cube, "a deeper room moves the sphere-mode L");
@@ -2993,8 +3014,9 @@ pub(crate) mod tests {
             .clone();
         lfe2.name = "LFE2".to_string();
         with_lfe2.speakers.push(lfe2);
+        let room = RoomRatios::of_live(&control.live.read());
         let plan = control
-            .prepare_topology_rebuild_for_layout(with_lfe2)
+            .prepare_topology_rebuild_for_layout(with_lfe2, room)
             .expect("rebuild plan");
         control.publish_topology(plan.build_topology().expect("topology"));
 

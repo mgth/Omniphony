@@ -208,6 +208,8 @@
   "room.axis.rear": "后方",
   "room.axis.height": "高度",
   "room.axis.lower": "下方",
+  "room.measuredFile": "所用集合的实测房间（来自其文件）：耳机在此房间中渲染；您的房间会被保留，并随另一个来源恢复。",
+  "room.measuredEstimated": "所用集合的实测房间（根据其扬声器估计，文件未说明房间）：耳机在此房间中渲染；您的房间会被保留，并随另一个来源恢复。",
   "room.centerBlend": "Y 中心混合",
   "room.centerBlend.resetTitle": "双击重置为 50/50",
   "room.infoTitle": "房间几何",

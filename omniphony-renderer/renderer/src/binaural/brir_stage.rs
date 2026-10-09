@@ -880,6 +880,33 @@ pub(crate) mod test_support {
             let az = az_deg.to_radians();
             [r * az.cos(), r * az.sin(), 0.0]
         };
+        let emitters: Vec<[f32; 3]> = spk_az.iter().map(|&a| sph(a, 2.0)).collect();
+        synth_set_at_decay(&emitters, yaws, n, decay_samples)
+    }
+
+    /// [`synth_set`] with the emitters at `emitters_sofa` (SOFA frame: `x`
+    /// front, `y` left, `z` up, metres) instead of a 2 m ring: a measured
+    /// room of a chosen geometry.
+    pub(crate) fn synth_set_at(emitters_sofa: &[[f32; 3]], yaws: &[f32], n: usize) -> Arc<BrirSet> {
+        synth_set_at_decay(emitters_sofa, yaws, n, 60.0)
+    }
+
+    fn synth_set_at_decay(
+        emitters_sofa: &[[f32; 3]],
+        yaws: &[f32],
+        n: usize,
+        decay_samples: f32,
+    ) -> Arc<BrirSet> {
+        let sph = |az_deg: f32, r: f32| {
+            let az = az_deg.to_radians();
+            [r * az.cos(), r * az.sin(), 0.0]
+        };
+        // The crude interaural level difference below reads the emitter's
+        // side off its SOFA azimuth.
+        let spk_az: Vec<f32> = emitters_sofa
+            .iter()
+            .map(|e| e[1].atan2(e[0]).to_degrees())
+            .collect();
         let (m, r, e) = (yaws.len(), 2, spk_az.len());
         let mut ir = vec![0.0f32; m * r * e * n];
         for mi in 0..m {
@@ -905,7 +932,7 @@ pub(crate) mod test_support {
                 }
             }
         }
-        let emitter: Vec<f32> = spk_az.iter().flat_map(|&a| sph(a, 2.0)).collect();
+        let emitter: Vec<f32> = emitters_sofa.iter().flat_map(|e| *e).collect();
         let view: Vec<f32> = yaws.iter().flat_map(|&y| sph(y, 1.0)).collect();
         let raw = RawRoomIr {
             conventions: "MultiSpeakerBRIR",

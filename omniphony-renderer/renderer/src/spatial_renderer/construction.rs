@@ -210,6 +210,12 @@ impl SpatialRenderer {
         // The published topology's engine samples no table: the speaker
         // stage's band engines do, on the first frame (see
         // `wrap_unsampled_engine`).
+        let room = crate::live_params::RoomRatios {
+            ratio: room_ratio,
+            rear: room_ratio_rear,
+            lower: room_ratio_lower,
+            center_blend: room_ratio_center_blend,
+        };
         let topology = RenderTopology::new(
             Arc::new(wrap_unsampled_engine(
                 build_decorated_model(
@@ -249,6 +255,9 @@ impl SpatialRenderer {
         // The initial live backend (`backend_id: "vbap"` below) at generation 0,
         // so an evaluation-only rebuild can re-wrap this model.
         .with_model_origin(0, "vbap")
+        // The room the speakers were placed in above, which the objects
+        // pan in.
+        .with_room(room)
         // The grid the live params below describe, so a grid request can
         // take this topology back as it is (`crate::evaluation_grid`).
         .with_grid(

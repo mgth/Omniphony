@@ -3109,6 +3109,285 @@ fn brir_layout_test_renderer(synchronous: bool) -> SpatialRenderer {
     r
 }
 
+/// A renderer like [`brir_layout_test_renderer`] whose resident set's
+/// loudspeakers stand at `emitters` (metres, renderer frame: `x` right, `y`
+/// front, `z` up): a measured room with a geometry of its own, which the
+/// user's room (the fixture's `1 × 2 × 0.5`, rear 2) does not describe.
+fn brir_room_test_renderer(emitters: &[[f32; 3]]) -> SpatialRenderer {
+    use crate::binaural::brir_stage::test_support::synth_set_at;
+
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+    r.set_synchronous_stage_builds(true);
+    let path = "synthetic-room.sofa";
+    let opts = {
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        live.binaural.hrir_source = crate::binaural::HrirSource::Brir(path.into());
+        cascade::brir_load_options(&live.binaural)
+    };
+    // SOFA frame: `x` front, `y` left.
+    let sofa: Vec<[f32; 3]> = emitters.iter().map(|&[x, y, z]| [y, -x, z]).collect();
+    let set = synth_set_at(&sofa, &[0.0], 400);
+    r.brir.install_set_as(path, opts, set, 12);
+    r
+}
+
+/// A measured room the listener is not centred in: fronts far, sides near,
+/// backs in between, four heights over the fronts and the backs. Eleven
+/// loudspeakers, the stage's width less the LFE.
+const ELONGATED_ROOM_EMITTERS: [[f32; 3]; 11] = [
+    [0.0, 3.0, 0.0],
+    [-1.5, 3.0, 0.0],
+    [1.5, 3.0, 0.0],
+    [-2.0, 0.0, 0.0],
+    [2.0, 0.0, 0.0],
+    [-1.5, -2.0, 0.0],
+    [1.5, -2.0, 0.0],
+    [-1.5, 3.0, 1.5],
+    [1.5, 3.0, 1.5],
+    [-1.5, -2.0, 1.5],
+    [1.5, -2.0, 1.5],
+];
+
+/// The gains the set's topology pans a normalized position with, in layout
+/// speaker order (the LFE's entry stays 0), read off the published
+/// topology's model in the room it pans in.
+fn brir_layout_gains(
+    topology: &crate::live_params::RenderTopology,
+    position: [f32; 3],
+) -> Vec<f32> {
+    let room = topology.room;
+    let response = topology
+        .backend
+        .compute_gains(&crate::render_backend::RenderRequest {
+            adm_position: [position[0] as f64, position[1] as f64, position[2] as f64],
+            event_size: [0.0; 3],
+            room_ratio: room.ratio,
+            room_ratio_rear: room.rear,
+            room_ratio_lower: room.lower,
+            room_ratio_center_blend: room.center_blend,
+            use_distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
+            distance_model: crate::spatial_vbap::DistanceModel::None,
+        });
+    (0..topology.num_speakers)
+        .map(|speaker| {
+            topology
+                .backend_speaker_index_for_layout_speaker(speaker)
+                .map_or(0.0, |i| response.gains[i])
+        })
+        .collect()
+}
+
+/// #803: a BRIR set's loudspeakers are panned onto in their measured room's
+/// own geometry. The topology's room is derived from the set (the
+/// loudspeakers' box, an estimate without corners in the file), its
+/// speakers are placed in it as fractions, and the objects pan in it: an
+/// object at a loudspeaker's place lands on it alone, one halfway in angle
+/// between two neighbours splits evenly between them, and the user's room
+/// ratio changes none of it.
+#[test]
+fn a_measured_room_pans_in_its_own_geometry_whatever_the_users_room() {
+    let topology_in = |user_room: Option<([f32; 3], f32, f32)>| {
+        let mut r = brir_room_test_renderer(&ELONGATED_ROOM_EMITTERS);
+        if let Some((ratio, rear, lower)) = user_room {
+            let mut live = r.control.live.write();
+            live.room_ratio = ratio;
+            live.room_ratio_rear = rear;
+            live.room_ratio_lower = lower;
+        }
+        render_noise_object(&mut r, 2);
+        let topology = r.control.active_topology();
+        assert!(topology.brir_layout, "the topology is the set's");
+        topology
+    };
+    let topology = topology_in(None);
+    let measured = topology.measured_room.as_ref().expect("the measured room");
+    assert!(measured.estimated, "no corners in a synthetic file");
+    // With the user's front/rear blend: a panning policy, not a room.
+    let blend = test_support::spec(SpeakerLayout::preset("7.1.4").unwrap()).room_ratio_center_blend;
+    assert_eq!(
+        topology.room,
+        measured.ratios(blend),
+        "the stage pans in the measured room"
+    );
+    assert_ne!(topology.room.ratio, [1.0, 2.0, 0.5], "not in the user's");
+    let radius = measured.radius_m();
+    let layout = &topology.speaker_layout;
+
+    // 1. A loudspeaker's own place: all of the gain on it.
+    for (i, speaker) in layout.speakers.iter().enumerate().take(11) {
+        let gains = brir_layout_gains(&topology, [speaker.x, speaker.y, speaker.z]);
+        let peak = gains.iter().cloned().fold(0.0f32, f32::max);
+        assert!(peak > 0.0);
+        for (j, g) in gains.iter().enumerate() {
+            if j == i {
+                assert!(
+                    (g - peak).abs() < 1e-6,
+                    "{}: its own gain is the peak",
+                    speaker.name
+                );
+            } else {
+                assert!(
+                    g.abs() < 1e-3 * peak,
+                    "{}: {} gets {g}",
+                    speaker.name,
+                    layout.speakers[j].name
+                );
+            }
+        }
+    }
+
+    // 2. Halfway in angle between two neighbours, in the room's metric: an
+    //    even split. The direction bisects the loudspeakers' directions in
+    //    metres; the cube reading of a point along it is the inverse warp.
+    let bisector = |a: usize, b: usize| {
+        let unit = |p: [f32; 3]| {
+            let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            [p[0] / n, p[1] / n, p[2] / n]
+        };
+        let (ua, ub) = (
+            unit(ELONGATED_ROOM_EMITTERS[a]),
+            unit(ELONGATED_ROOM_EMITTERS[b]),
+        );
+        let d = unit([ua[0] + ub[0], ua[1] + ub[1], ua[2] + ub[2]]);
+        // One metre out, well inside the room.
+        topology
+            .room
+            .inverse([d[0] / radius, d[1] / radius, d[2] / radius])
+    };
+    for (a, b) in [(0usize, 2usize), (4, 6), (1, 3)] {
+        let gains = brir_layout_gains(&topology, bisector(a, b));
+        let (ga, gb) = (gains[a], gains[b]);
+        assert!(ga > 0.0 && gb > 0.0, "{a}/{b}: both play: {gains:?}");
+        assert!(
+            (ga - gb).abs() < 1e-3 * ga.max(gb),
+            "{}/{}: an even split, got {ga} / {gb}",
+            layout.speakers[a].name,
+            layout.speakers[b].name
+        );
+        for (j, g) in gains.iter().enumerate() {
+            if j != a && j != b {
+                assert!(
+                    g.abs() < 1e-3 * ga,
+                    "{}: {g} on a bisector of others",
+                    layout.speakers[j].name
+                );
+            }
+        }
+    }
+
+    // 3. The user's room no longer plays: a cube gives the same answers.
+    let cube = topology_in(Some(([1.0, 1.0, 1.0], 1.0, 1.0)));
+    assert_eq!(cube.room, topology.room);
+    for position in [
+        [
+            layout.speakers[1].x,
+            layout.speakers[1].y,
+            layout.speakers[1].z,
+        ],
+        bisector(0, 2),
+        [0.3, -0.6, 0.4],
+    ] {
+        let (a, b) = (
+            brir_layout_gains(&topology, position),
+            brir_layout_gains(&cube, position),
+        );
+        for (ga, gb) in a.iter().zip(&b) {
+            assert!((ga - gb).abs() < 1e-6, "{position:?}: {a:?} vs {b:?}");
+        }
+    }
+}
+
+/// The per-frame render reads the room off the topology too: with the
+/// user's room stretched to an absurd depth, an object at a loudspeaker's
+/// place still feeds that loudspeaker's bus alone.
+#[test]
+fn a_measured_rooms_buses_ignore_the_users_room_per_frame() {
+    let mut r = brir_room_test_renderer(&ELONGATED_ROOM_EMITTERS);
+    {
+        let mut live = r.control.live.write();
+        live.room_ratio = [1.0, 5.0, 1.0];
+        live.room_ratio_rear = 5.0;
+    }
+    render_noise_object(&mut r, 2);
+    let topology = r.control.active_topology();
+    assert!(topology.brir_layout);
+    // The front-left loudspeaker's place in the cube.
+    let fl = &topology.speaker_layout.speakers[1];
+    assert_eq!(fl.name, "FL");
+    let position = [fl.x as f64, fl.y as f64, fl.z as f64];
+    drop(topology);
+
+    let mut lcg: u32 = 0x1234_5678;
+    let mut noise_block = move || -> Vec<f32> {
+        (0..40)
+            .map(|_| {
+                lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                (lcg >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            })
+            .collect()
+    };
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(40),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some(position),
+        sample_pos: Some(0),
+    }];
+    let mut energy = vec![0.0f32; 12];
+    for i in 0..40 {
+        let pcm = noise_block();
+        let events: &[SpatialChannelEvent] = if i == 0 { &event } else { &[] };
+        r.render_frame(&pcm, 1, events, Vec::new(), false).unwrap();
+        if i >= 20 {
+            let (bus, buses) = r.virtual_bus().expect("a cascaded frame");
+            for frame in bus.chunks(buses) {
+                for (e, s) in energy.iter_mut().zip(frame) {
+                    *e += s * s;
+                }
+            }
+        }
+    }
+    let total: f32 = energy.iter().sum();
+    assert!(total > 0.0);
+    // The bands read a precomputed cartesian table, interpolated between
+    // its cells: a sliver reaches the neighbours. In the user's room the
+    // depth would be stretched fivefold and the fronts would take most.
+    assert!(energy[1] > 0.99 * total, "FL alone: {energy:?}");
+
+    // The cascade's virtual speakers stand where the stage pans onto them:
+    // the room fractions warped with the measured room point at the
+    // emitters (a cube reading of a fraction would not: the heights of an
+    // elongated room read 15° too high), so the BRIR stage maps each bus
+    // to its own emitter and the HRTF stage, on another set, would convolve
+    // the right direction.
+    let cascade = r.cascade.as_ref().expect("the cascade");
+    for (i, e) in ELONGATED_ROOM_EMITTERS.iter().enumerate() {
+        let p = cascade.bin_pos[i];
+        let az = |x: f64, y: f64| x.atan2(y).to_degrees();
+        let el = |x: f64, y: f64, z: f64| z.atan2((x * x + y * y).sqrt()).to_degrees();
+        let (want_az, want_el) = (
+            az(e[0] as f64, e[1] as f64),
+            el(e[0] as f64, e[1] as f64, e[2] as f64),
+        );
+        let (got_az, got_el) = (az(p[0], p[1]), el(p[0], p[1], p[2]));
+        assert!(
+            (got_az - want_az).abs() < 0.05 && (got_el - want_el).abs() < 0.05,
+            "bus {i}: virtual speaker at {got_az:.1}/{got_el:.1}, emitter at {want_az:.1}/{want_el:.1}"
+        );
+    }
+    assert_eq!(
+        &r.brir.bus_emitters()[..11],
+        &(0..11).map(Some).collect::<Vec<_>>()[..],
+        "each bus on its own emitter"
+    );
+}
+
 /// A hard-right noise object for the BRIR layout tests: `frames` blocks of
 /// 40 samples, the stereo energy of the last half returned as `(L, R)`.
 fn render_noise_object(r: &mut SpatialRenderer, frames: usize) -> (f32, f32) {
