@@ -341,6 +341,11 @@ pub fn build_renderer_state_json(
                 renderer::binaural::HrirSource::Brir(p) => p.as_str(),
                 _ => "",
             },
+            // The files last named for the two file sources, kept while
+            // another source renders: what a bare `sofa` / `brir` reopens,
+            // and what the config keeps.
+            "hrtfSofaPathLast": live.binaural.last_sofa_path,
+            "brirSofaPathLast": live.binaural.last_brir_path,
             // A room response (`brir` source): its load options, and what
             // the renderer holds of it — or why it holds nothing, in which
             // case the virtual room is binauralised by the HRTF stage.

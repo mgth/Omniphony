@@ -1756,8 +1756,11 @@ fn binaural_hrtf_upload_end(
             match write {
                 Ok(()) => {
                     let path = dir.join(&up.name).to_string_lossy().into_owned();
-                    ctx.renderer.live.write().binaural.hrir_source =
-                        renderer::binaural::HrirSource::Sofa(path.clone());
+                    let source = renderer::binaural::HrirSource::Sofa(path.clone());
+                    let mut live = ctx.renderer.live.write();
+                    renderer::options::remember_hrir_file(&mut live.binaural, &source);
+                    live.binaural.hrir_source = source;
+                    drop(live);
                     effects.mark_dirty = true;
                     effects.log_message = Some(format!("hrtf upload complete, activated: {path}"));
                 }

@@ -649,6 +649,13 @@ pub struct BinauralLiveParams {
     pub diffuse_field_eq: bool,
     /// Load-time choices for a BRIR source (see [`BrirLiveParams`]).
     pub brir: BrirLiveParams,
+    /// The last SOFA HRTF file and the last room-response file a source
+    /// named (`sofa:<path>`, `brir:<path>`, or the config's own keys). A
+    /// bare `sofa` / `brir` selector reopens them, and the config keeps them
+    /// while another source renders, so switching away from a file and back
+    /// does not lose it. Empty when none was ever named.
+    pub last_sofa_path: String,
+    pub last_brir_path: String,
 }
 
 impl Default for BinauralLiveParams {
@@ -668,6 +675,8 @@ impl Default for BinauralLiveParams {
             air_absorption: true,
             diffuse_field_eq: false,
             brir: BrirLiveParams::default(),
+            last_sofa_path: String::new(),
+            last_brir_path: String::new(),
         }
     }
 }
