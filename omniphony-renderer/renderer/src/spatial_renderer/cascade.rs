@@ -82,9 +82,23 @@ impl CascadeStage {
     ) -> Self {
         let speakers = &topology.speaker_layout.speakers;
         let total = width.max(speakers.len());
+        // Where the stage pans onto each speaker, so the binaural stages
+        // convolve the direction the gains place a source at: a cartesian
+        // entry is a fraction of the room the topology pans in (a BRIR
+        // set's loudspeakers are, of their measured room — #803), warped
+        // with it as `spatializable_positions_for_room` does; a polar entry
+        // states its direction and is read as it is.
+        let room = topology.room;
         let mut bin_pos: Vec<[f64; 3]> = speakers
             .iter()
-            .map(|s| [s.x as f64, s.y as f64, s.z as f64])
+            .map(|s| {
+                let p = if s.coord_mode.eq_ignore_ascii_case("cartesian") {
+                    room.scale([s.x, s.y, s.z])
+                } else {
+                    [s.x, s.y, s.z]
+                };
+                [p[0] as f64, p[1] as f64, p[2] as f64]
+            })
             .collect();
         let mut bin_direct: Vec<bool> = speakers.iter().map(|s| !s.spatialize).collect();
         bin_pos.resize(total, [0.0, 1.0, 0.0]);

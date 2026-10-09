@@ -1376,6 +1376,98 @@ impl LiveParams {
     }
 }
 
+/// The room warp a position goes through before it is panned: the ratios
+/// the live params carry for it, taken together so a reader has one value
+/// instead of four. Both ends of a render read the same one — the layout's
+/// cartesian speakers are placed with it when a topology is built
+/// ([`RenderTopology::room`]) and every object follows it per frame — so
+/// the stage pans in one room. For the editable layout it is the live room;
+/// for a BRIR set's loudspeakers, the measured room they stand in
+/// ([`crate::binaural::brir::MeasuredRoom`]), which the user's room cannot
+/// describe.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoomRatios {
+    /// `[width, front, height]`.
+    pub ratio: [f32; 3],
+    pub rear: f32,
+    pub lower: f32,
+    pub center_blend: f32,
+}
+
+impl RoomRatios {
+    /// The unit cube: no warp at all.
+    pub const UNIT: Self = Self {
+        ratio: [1.0, 1.0, 1.0],
+        rear: 1.0,
+        lower: 1.0,
+        center_blend: 0.0,
+    };
+
+    /// The user's room, as the live params hold it.
+    pub fn of_live(live: &LiveParams) -> Self {
+        Self {
+            ratio: live.room_ratio,
+            rear: live.room_ratio_rear,
+            lower: live.room_ratio_lower,
+            center_blend: live.room_ratio_center_blend,
+        }
+    }
+
+    /// The warp the output in force applies to a normalized position: the
+    /// room `topology` pans in on the speaker stage (which the cascaded
+    /// binaural mode also pans through), none on the direct binaural path,
+    /// which reads the direction straight off the position
+    /// ([`BinauralLiveParams::renders_direct`]). A pose stated as an angle
+    /// is pre-compensated for it, so it must be the warp that is actually
+    /// undone downstream: pre-compensating a direct binaural pose for the
+    /// live room left it warped, `L` at −49° instead of −30° in the default
+    /// room (#781), and a measured room's pose for the user's room moved it
+    /// off its loudspeaker (#803).
+    pub fn for_output(live: &LiveParams, topology: &RenderTopology) -> Self {
+        if live.binaural.renders_direct() {
+            return Self::UNIT;
+        }
+        topology.room
+    }
+
+    /// Room warp of a normalized position
+    /// ([`omniphony_geometry::f32::room_scaled_position`]).
+    #[inline]
+    pub fn scale(&self, position: [f32; 3]) -> [f32; 3] {
+        omniphony_geometry::f32::room_scaled_position(
+            position,
+            self.ratio,
+            self.rear,
+            self.lower,
+            self.center_blend,
+        )
+    }
+
+    /// Inverse room warp of a real ADM position, clamped into the normalized
+    /// cube ([`omniphony_geometry::f32::inverse_room_scaled_position`]).
+    #[inline]
+    pub fn inverse(&self, position: [f32; 3]) -> [f32; 3] {
+        omniphony_geometry::f32::inverse_room_scaled_position(
+            position,
+            self.ratio,
+            self.rear,
+            self.lower,
+            self.center_blend,
+        )
+    }
+}
+
+/// What a headphone render with a BRIR source pans onto
+/// ([`RendererControl::brir_layout`]): the set's loudspeakers as a layout,
+/// placed as fractions of the measured room, and that room as the stage's
+/// warp.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrirLayout {
+    pub layout: SpeakerLayout,
+    pub room: RoomRatios,
+    pub measured: crate::binaural::brir::MeasuredRoom,
+}
+
 /// Parse a `"width,length,height"` string into `[f32; 3]`.
 /// Returns `[1.0, 1.0, 1.0]` on any parse error.
 pub fn parse_room_ratio(s: &str) -> [f32; 3] {
@@ -1411,18 +1503,22 @@ impl BackendRebuildParams {
     }
 }
 
+/// The evaluation layer's build config: the request template carries `room`,
+/// the room the topology being planned pans in, so a sampled table reads
+/// its positions in the room its speakers were placed in.
 fn evaluation_build_config_from_live(
     live: &LiveParams,
+    room: RoomRatios,
     allow_negative_z: bool,
 ) -> EvaluationBuildConfig {
     EvaluationBuildConfig {
         request_template: RenderRequest {
             adm_position: [0.0, 0.0, 0.0],
             event_size: [0.0, 0.0, 0.0],
-            room_ratio: live.room_ratio,
-            room_ratio_rear: live.room_ratio_rear,
-            room_ratio_lower: live.room_ratio_lower,
-            room_ratio_center_blend: live.room_ratio_center_blend,
+            room_ratio: room.ratio,
+            room_ratio_rear: room.rear,
+            room_ratio_lower: room.lower,
+            room_ratio_center_blend: room.center_blend,
             use_distance_diffuse: live.use_distance_diffuse,
             distance_diffuse_threshold: live.distance_diffuse_threshold,
             distance_diffuse_curve: live.distance_diffuse_curve,
@@ -1485,6 +1581,16 @@ pub struct RenderTopology {
     /// `n` is emitter `n`, and the editable layout's per-speaker rows (gain,
     /// mute, delay) do not apply to it.
     pub brir_layout: bool,
+    /// The room the stage pans in on this topology: the one
+    /// `speaker_layout`'s cartesian speakers were placed in when it was
+    /// built, which every object follows per frame
+    /// ([`RoomRatios::for_output`]). The live room for the editable layout,
+    /// the measured room for a BRIR set's loudspeakers (`brir_layout`).
+    pub room: RoomRatios,
+    /// The measured room `room` was derived from, while `brir_layout`: the
+    /// box in metres and whether it is the file's or an estimate, for the
+    /// state. `None` on the editable layout.
+    pub measured_room: Option<crate::binaural::brir::MeasuredRoom>,
     /// The grid this topology's evaluation was planned on; `None` for one
     /// built without a plan.
     pub grid: Option<crate::evaluation_grid::EvaluationGrid>,
@@ -1532,9 +1638,20 @@ impl RenderTopology {
             geometry_generation: 0,
             model_backend_id: String::new(),
             brir_layout: false,
+            // Every construction records the room it placed the speakers
+            // in (`with_room`); the cube until then.
+            room: RoomRatios::UNIT,
+            measured_room: None,
             grid: None,
             grid_generation: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// Record the room this topology's speakers were placed in, which its
+    /// objects pan in (chaining helper; see [`Self::room`]).
+    pub fn with_room(mut self, room: RoomRatios) -> Self {
+        self.room = room;
+        self
     }
 
     /// Record the grid request this topology answers (chaining helper).
@@ -2421,25 +2538,47 @@ impl RendererControl {
     }
 
     /// The layout a headphone render with a BRIR source pans onto, when one
-    /// applies: the output is binaural, the source is a BRIR set, and that
-    /// file's set is resident. `Ok(None)` otherwise (the editable layout
-    /// applies); `Err` when the set's layout cannot be used (too wide for
-    /// the speaker stage, or not a valid layout), which also falls back to
-    /// the editable one.
-    pub fn brir_layout(&self) -> Result<Option<SpeakerLayout>, String> {
-        let Some(positions) = self.brir_emitters_in_use(|p| p.to_vec()) else {
+    /// applies, and the room it pans in: the output is binaural, the source
+    /// is a BRIR set, and that file's set is resident. The room is the
+    /// measured one the set's loudspeakers stand in
+    /// ([`crate::binaural::brir::MeasuredRoom`]), with the user's front/rear
+    /// blend, which is a panning policy rather than a room; the loudspeakers
+    /// are placed in it as fractions, so the stage's warp returns each to
+    /// its measured position and an object is panned among them in the
+    /// room's own metric, not the user's room's (#803). `Ok(None)` otherwise
+    /// (the editable layout applies, in the live room); `Err` when the set's
+    /// layout cannot be used (too wide for the speaker stage, or not a valid
+    /// layout), which also falls back to the editable one.
+    pub fn brir_layout(&self) -> Result<Option<BrirLayout>, String> {
+        let Some((loaded, center_blend)) =
+            self.brir_set_in_use(|loaded, live| (loaded.clone(), live.room_ratio_center_blend))
+        else {
             return Ok(None);
         };
-        let layout = SpeakerLayout::from_brir_emitters(&positions).map_err(|e| e.to_string())?;
+        let measured = crate::binaural::brir::MeasuredRoom::of(
+            &loaded.emitter_positions,
+            loaded.room_corners_m,
+        );
+        let room = measured.ratios(center_blend);
+        let layout = SpeakerLayout::from_brir_emitters(
+            &loaded.emitter_positions,
+            &room,
+            measured.radius_m(),
+        )
+        .map_err(|e| e.to_string())?;
         let width = self.speaker_stage_width.load(Ordering::Relaxed);
-        if !Self::brir_layout_fits(positions.len(), width) {
+        if !Self::brir_layout_fits(loaded.emitter_positions.len(), width) {
             return Err(format!(
                 "the BRIR set needs {} virtual speakers (with the LFE) but the renderer \
                  was opened with {width}; it renders on the speaker layout instead",
                 layout.num_speakers()
             ));
         }
-        Ok(Some(layout))
+        Ok(Some(BrirLayout {
+            layout,
+            room,
+            measured,
+        }))
     }
 
     /// Whether a set of `emitters` (plus the LFE bus) fits a speaker stage
@@ -2449,9 +2588,12 @@ impl RendererControl {
         width == 0 || emitters < width
     }
 
-    /// `f` of the resident BRIR set's emitters when a headphone render uses
-    /// them.
-    fn brir_emitters_in_use<R>(&self, f: impl FnOnce(&[[f32; 3]]) -> R) -> Option<R> {
+    /// `f` of the resident BRIR set and the live params when a headphone
+    /// render uses the set.
+    fn brir_set_in_use<R>(
+        &self,
+        f: impl FnOnce(&crate::binaural::BrirSummary, &LiveParams) -> R,
+    ) -> Option<R> {
         let status = self.binaural_brir_status();
         let loaded = status.loaded.as_ref()?;
         let live = self.live.read();
@@ -2460,7 +2602,7 @@ impl RendererControl {
                 &live.binaural.hrir_source,
                 crate::binaural::HrirSource::Brir(path) if *path == status.path
             );
-        in_use.then(|| f(&loaded.emitter_positions))
+        in_use.then(|| f(loaded, &live))
     }
 
     /// The [`Self::render_layout_key`] a rebuild prepared now would record:
@@ -2471,7 +2613,9 @@ impl RendererControl {
         // outdated once more, never as current with the older set.
         let generation = self.brir_status_generation.load(Ordering::Acquire);
         let width = self.speaker_stage_width.load(Ordering::Relaxed);
-        match self.brir_emitters_in_use(|p| Self::brir_layout_fits(p.len(), width)) {
+        match self.brir_set_in_use(|loaded, _| {
+            Self::brir_layout_fits(loaded.emitter_positions.len(), width)
+        }) {
             Some(true) => generation,
             _ => 0,
         }
@@ -2557,16 +2701,30 @@ impl RendererControl {
                 None
             })
         };
-        let brir_layout = brir.is_some();
-        let layout = brir.unwrap_or_else(|| self.editable_layout());
-        let mut plan = self.prepare_topology_rebuild_for_layout(layout)?;
-        plan.brir_layout = brir_layout;
+        let (layout, room, measured_room) = match brir {
+            Some(brir) => (brir.layout, brir.room, Some(brir.measured)),
+            None => (
+                self.editable_layout(),
+                RoomRatios::of_live(&self.live.read()),
+                None,
+            ),
+        };
+        let mut plan = self.prepare_topology_rebuild_for_layout(layout, room)?;
+        plan.brir_layout = measured_room.is_some();
+        plan.measured_room = measured_room;
         Some(plan)
     }
 
+    /// Plan a rebuild of the render topology on `layout`, panning in `room`:
+    /// the live room for the editable layout and its bands, a measured room
+    /// for a BRIR set's loudspeakers ([`Self::prepare_topology_rebuild`]
+    /// picks both). The plan places the layout's cartesian speakers in it
+    /// and the built topology records it for its objects
+    /// ([`RenderTopology::room`]).
     pub fn prepare_topology_rebuild_for_layout(
         &self,
         layout: SpeakerLayout,
+        room: RoomRatios,
     ) -> Option<TopologyBuildPlan> {
         let live = self.live.read();
         // Negative z is a live setting (the bridge's hint, or the user's in
@@ -2580,7 +2738,8 @@ impl RendererControl {
             }
             params
         });
-        let evaluation_build_config = evaluation_build_config_from_live(&live, allow_negative_z);
+        let evaluation_build_config =
+            evaluation_build_config_from_live(&live, room, allow_negative_z);
         let grid = crate::evaluation_grid::EvaluationGrid::of_live(
             &live,
             backend_rebuild_params
@@ -2599,6 +2758,7 @@ impl RendererControl {
             &registry,
             layout,
             &live,
+            room,
             backend_rebuild_params,
             &backend_params,
             evaluation_build_config,
@@ -2633,7 +2793,14 @@ impl RendererControl {
         // Same cartesian grid the full gain table uses.
         let (x_positions, y_positions, z_positions, template) = {
             let live = self.live.read();
-            let config = evaluation_build_config_from_live(&live, live.evaluation.allow_negative_z);
+            // The published topology's room: the bands are built from its
+            // layout, so the table reads positions in the room its speakers
+            // were placed in.
+            let config = evaluation_build_config_from_live(
+                &live,
+                topology.room,
+                live.evaluation.allow_negative_z,
+            );
             // The axes below are as long as the sizes asked for: refuse a
             // grid past the table budget before allocating them.
             let c = &config.cartesian;
@@ -2684,7 +2851,7 @@ impl RendererControl {
                         .collect(),
                 };
                 let band_topology = self
-                    .prepare_topology_rebuild_for_layout(band_layout)
+                    .prepare_topology_rebuild_for_layout(band_layout, topology.room)
                     .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology"))?
                     .build_band_topology_reusing(None)?;
                 let per_cell: Vec<crate::spatial_vbap::Gains> =

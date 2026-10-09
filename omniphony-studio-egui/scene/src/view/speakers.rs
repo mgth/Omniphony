@@ -150,16 +150,18 @@ pub fn collect(
     let selected_gains = selected_object.and_then(|id| live.app.object_speaker_gains.get(id));
     let look = SpeakerLook::of(live.app.render_path());
     // A measured room's loudspeakers stand where they were measured, in
-    // metres at the room's reach; the LFE bus the layout appends has no
+    // metres at the room's scale — the frame the objects are warped into
+    // (`AppState::display_room`), so they sit among the loudspeakers as
+    // the render pans them; the LFE bus the layout appends has no
     // measurement and keeps the layout's place.
     let measured: Option<Vec<Vec3>> = (look == SpeakerLook::Measured)
         .then(|| live.app.brir_geometry())
         .flatten()
         .map(|g| {
-            let reach = g.reach_m();
+            let unit = g.metres_per_unit();
             g.emitters_m
                 .iter()
-                .map(|e| scene_point([e[0] / reach, e[1] / reach, e[2] / reach]))
+                .map(|e| scene_point([e[0] / unit, e[1] / unit, e[2] / unit]))
                 .collect()
         });
     let size_scale = settings.speaker_size.clamp(0.04, 0.2) / SPEAKER_BASE_SIZE;

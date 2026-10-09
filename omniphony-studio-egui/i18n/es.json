@@ -189,6 +189,8 @@
   "room.axis.rear": "trasero",
   "room.axis.height": "altura",
   "room.axis.lower": "inferior",
+  "room.measuredFile": "Sala medida del conjunto en uso, según su archivo: los auriculares se renderizan en ella; su sala se conserva y vuelve con otra fuente.",
+  "room.measuredEstimated": "Sala medida del conjunto en uso, estimada a partir de sus altavoces (el archivo no indica ninguna sala): los auriculares se renderizan en ella; su sala se conserva y vuelve con otra fuente.",
   "room.centerBlend": "Mezcla central Y",
   "room.centerBlend.resetTitle": "Doble clic para restablecer a 50/50",
   "room.infoTitle": "Geometría de la sala",

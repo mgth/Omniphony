@@ -189,6 +189,8 @@
   "room.axis.rear": "hinten",
   "room.axis.height": "Höhe",
   "room.axis.lower": "unten",
+  "room.measuredFile": "Gemessener Raum des verwendeten Sets, aus seiner Datei: der Kopfhörer rendert darin; Ihr Raum bleibt erhalten und kehrt mit einer anderen Quelle zurück.",
+  "room.measuredEstimated": "Gemessener Raum des verwendeten Sets, aus seinen Lautsprechern geschätzt (die Datei nennt keinen Raum): der Kopfhörer rendert darin; Ihr Raum bleibt erhalten und kehrt mit einer anderen Quelle zurück.",
   "room.centerBlend": "Y-Mittenblendung",
   "room.centerBlend.resetTitle": "Doppelklick zum Zurücksetzen auf 50/50",
   "room.infoTitle": "Raumgeometrie",

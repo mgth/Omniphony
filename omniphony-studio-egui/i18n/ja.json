@@ -189,6 +189,8 @@
   "room.axis.rear": "後方",
   "room.axis.height": "高さ",
   "room.axis.lower": "下側",
+  "room.measuredFile": "使用中のセットの測定された部屋（ファイルに基づく）：ヘッドフォンはこの部屋でレンダリングされます。あなたの部屋は保持され、別のソースで戻ります。",
+  "room.measuredEstimated": "使用中のセットの測定された部屋（スピーカーから推定。ファイルに部屋の記載なし）：ヘッドフォンはこの部屋でレンダリングされます。あなたの部屋は保持され、別のソースで戻ります。",
   "room.centerBlend": "Y中央ブレンド",
   "room.centerBlend.resetTitle": "ダブルクリックで 50/50 に戻す",
   "room.infoTitle": "ルームジオメトリ",

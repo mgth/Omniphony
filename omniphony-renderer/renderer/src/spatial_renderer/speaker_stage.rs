@@ -1651,6 +1651,7 @@ impl SpeakerRenderStage {
         let (render_bands, crossover_filter_bank, crossover_info) = Self::build_crossover(
             control,
             layout,
+            topology.room,
             topology.geometry_generation,
             num_speakers,
             sample_rate,
@@ -2126,14 +2127,16 @@ impl SpeakerRenderStage {
     /// `render_bands` always has at least one entry. The filter engine and
     /// FIR transition ratio are the ones the set is built for
     /// ([`BandSetKey`]); `info` describes the result, for the control once
-    /// the set is installed. `geometry_generation` is the one of the topology
-    /// `layout` comes from, which the band gain models are built for.
-    /// `prev_bands_same_topology` says `prev_bands` were built for that very
-    /// topology: they are then taken over, table and all.
+    /// the set is installed. `geometry_generation` and `room` are the ones
+    /// of the topology `layout` comes from, which the band gain models are
+    /// built for and in. `prev_bands_same_topology` says `prev_bands` were
+    /// built for that very topology: they are then taken over, table and
+    /// all.
     #[allow(clippy::too_many_arguments)]
     fn build_crossover(
         control: &Arc<RendererControl>,
         layout: &SpeakerLayout,
+        room: crate::live_params::RoomRatios,
         geometry_generation: u64,
         num_speakers: usize,
         sample_rate: u32,
@@ -2154,6 +2157,7 @@ impl SpeakerRenderStage {
                 _ => BandRenderer::from_band(
                     b,
                     layout,
+                    room,
                     geometry_generation,
                     num_speakers,
                     control,

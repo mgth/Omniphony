@@ -10,6 +10,7 @@ use crate::app::StudioSpike;
 use crate::host::commands::speakers;
 use crate::i18n::t;
 use crate::model::app_state::RoomRatio;
+use crate::model::binaural::RenderPath;
 use crate::ui::section::Section;
 use crate::ui::{help, theme, widgets};
 
@@ -62,11 +63,18 @@ impl RoomDimensions {
 
 impl StudioSpike {
     pub(crate) fn room_geometry_section(&mut self, ui: &mut Ui) {
-        let (ratio, frozen) = {
+        let (ratio, frozen, measured) = {
             let live = self.host.read();
+            // The measured room a BRIR set's loudspeakers stand in, while
+            // the headphones render on them: the room in force, not the
+            // user's (#803).
+            let measured = (live.app.render_path() == RenderPath::MeasuredRoom)
+                .then(|| live.app.brir_room())
+                .flatten();
             (
                 live.app.room_ratio.clone(),
                 live.app.render_backend_state.frozen_room_ratio,
+                measured,
             )
         };
         let current = RoomDimensions::from_ratio(&ratio);
@@ -75,7 +83,14 @@ impl StudioSpike {
         if self.room_edit != Some(current) && !self.room_editing {
             self.room_edit = Some(current);
         }
-        let mut edit = self.room_edit.unwrap_or(current);
+        // A measured room shows its own dimensions, read-only, as a backend
+        // that freezes the room does; the user's room keeps its edit and
+        // comes back with it.
+        let frozen = frozen || measured.is_some();
+        let mut edit = match &measured {
+            Some(room) => RoomDimensions::from_ratio(&room.ratio),
+            None => self.room_edit.unwrap_or(current),
+        };
         let summary = format!(
             "m/u {:.2} • X {:.2}m • Y {:.2}m • Z {:.2}m",
             edit.meters_per_unit(),
@@ -90,6 +105,16 @@ impl StudioSpike {
             .info("room")
             .summary(summary)
             .show(ui, |ui| {
+                if let Some(room) = &measured {
+                    widgets::note(
+                        ui,
+                        t(if room.estimated {
+                            "room.measuredEstimated"
+                        } else {
+                            "room.measuredFile"
+                        }),
+                    );
+                }
                 ui.add_enabled_ui(!frozen, |ui| {
                     let mut step = Step::default();
                     // `#roomGeometryForm`: three columns, one per axis — the
@@ -160,6 +185,11 @@ impl StudioSpike {
                         step |= center_blend_row(ui, &mut edit.center_blend);
                     }
 
+                    if measured.is_some() {
+                        // Nothing to keep or send: the fields are disabled
+                        // and show the set's room, not the user's.
+                        return;
+                    }
                     self.room_edit = Some(edit);
                     if step.commit {
                         self.apply_room_geometry(edit);

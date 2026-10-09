@@ -189,6 +189,8 @@
   "room.axis.rear": "traseiro",
   "room.axis.height": "altura",
   "room.axis.lower": "inferior",
+  "room.measuredFile": "Sala medida do conjunto em uso, conforme seu arquivo: os fones são renderizados nela; sua sala é mantida e volta com outra fonte.",
+  "room.measuredEstimated": "Sala medida do conjunto em uso, estimada a partir de seus alto-falantes (o arquivo não indica sala): os fones são renderizados nela; sua sala é mantida e volta com outra fonte.",
   "room.centerBlend": "Mistura central Y",
   "room.centerBlend.resetTitle": "Duplo clique para redefinir 50/50",
   "room.infoTitle": "Geometria da sala",
