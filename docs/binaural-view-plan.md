@@ -6,6 +6,50 @@ in force (a BRIR renders a measured room, so that is the room to draw), and
 the output mode must drive the HRTF select, not the reverse. The rest is a
 tour of the mode with the visualisation changes it suggests.
 
+## Status (2026-10-09)
+
+Delivered, all on `main`:
+
+| PR | Content | Merged as |
+|---|---|---|
+| #798 | §1: the output mode drives the HRTF source; the engine keeps the last SOFA and BRIR files | `b95dc2a5` |
+| #799 | §2a `RenderPath` in the core; §2b the unit room on the direct path, the speaker-layout switch; §2e the speaker looks | `198528bc` |
+| #800 | §2c the listening room the reflections use, published (`reflections.roomEffectiveM`) and drawn | `dcabe61e` |
+| #801 | §2d the measured room in metres (`brir.loaded.emittersM`, `roomCornersM`, `roomType`), `layoutError` shown; and §2f the badge (#802, folded into it) | `336a7d05` |
+
+What the reviews added on the way, kept as rules:
+
+- **One display frame.** `AppState::display_room()` is the room everything
+  converts through — the scene, the gizmos' inverse, the channel editor's
+  polar conversions, the channel model (`effective_channels_for`), the
+  heatmap volumes: the unit room on the direct path, the live room
+  elsewhere. A reader of `room_ratio` that converts a pose uses it; the
+  room panel's own editing and the metre scales of the speaker editor and
+  the VBAP group, which describe the layout, do not.
+- **A SOFA room corner is read in the file's encoding.** `RoomCorners:Type`
+  and `RoomCorners:Units` are the attributes of the convention's dummy
+  `RoomCorners` variable; a corner's own duplicate and a global copy are
+  read after it; spherical corners are converted; another type or unit is
+  refused and the loudspeakers' own box stands in.
+- **The badge describes the sound that renders.** Headphone warnings on the
+  headphone paths only; a resident room response is named by its file even
+  when its loudspeakers do not fit the stage (the stage still convolves it;
+  `hrirEffective` is the HRTF grid's set meanwhile); the click uncollapses
+  the right overlay before asking the sections to open.
+- **A measured room without corners is an estimate**: the loudspeakers'
+  bounding box with a 0.3 m margin, a 1.2 m floor and 1 m of headroom,
+  drawn as such.
+
+Every PR was checked on screen on an isolated renderer and Studio pair
+(the BBC System G set, a paced 7.1.4 stream, a 9.1.6 layout so the set
+fits the stage); none was listened to — they change what is selected and
+drawn, and the engine's state keys, not the sound.
+
+Follow-ups, each with its issue: §3 → #803; a SOFA fixture with room
+corners for the loader's tests → #804; the BRIR strings in the six other
+catalogues → #805. Not taken up from §4: the ear meters on the head, the
+image sources, the head ring, the sphere reading (#773), the scale bar.
+
 ## 0. What renders, and what the view draws
 
 The engine has three headphone paths (`BinauralLiveParams`,
@@ -211,6 +255,15 @@ pass with the BBC System G set (`bbcrdlr_systemG.sofa`, see *Where to get
 one* in `BINAURAL.md`); not part
 of the view work, whose §2d draws what the engine does either way.
 
+Filed as #803, with (b) preferred: it is the physical-layout model applied
+to the measured room (emitters as fractions of the set's box, the ratio
+derived from it, the stage restoring the metres), and (a) is its degenerate
+case for an equidistant set. The issue asks for a measurement first — the
+gain split in `object_speaker_gains` at a loudspeaker's direction and at
+mid-angle, the same with a 1×1×1 and a 1×2×1 user room — and a listening
+pass after. The Studio follows in one line (`RenderPath::warps_with_room`,
+`display_room()`).
+
 ## 4. Further visualisation proposals
 
 - **Ear meters on the head**: two bars at the ears from the ear meters, in
@@ -227,13 +280,13 @@ of the view work, whose §2d draws what the engine does either way.
 
 ## 5. Sequencing
 
-| PR | Content | Side |
-|---|---|---|
-| A | §1: the output mode drives the source; remembered paths | Studio + engine |
-| B | §2a `RenderPath` in the core; §2b Direct on the unit cube; speaker visibility switch; §2e speaker looks (wire cube, list thumbnail) | Studio |
-| C | §2c effective listening room published and drawn | engine + Studio |
-| D | §2d BRIR geometry published; measured room drawn; `layoutError` surfaced | engine + Studio |
-| E | §2f badge, then the §4 picks | Studio |
+| PR | Content | Side | State |
+|---|---|---|---|
+| A | §1: the output mode drives the source; remembered paths | Studio + engine | #798, merged |
+| B | §2a `RenderPath` in the core; §2b Direct on the unit cube; speaker visibility switch; §2e speaker looks (wire cube, list thumbnail) | Studio | #799, merged |
+| C | §2c effective listening room published and drawn | engine + Studio | #800, merged |
+| D | §2d BRIR geometry published; measured room drawn; `layoutError` surfaced | engine + Studio | #801, merged |
+| E | §2f badge, then the §4 picks | Studio | #802, merged through #801; the §4 picks not taken up |
 
 §3 as its own issue after listening. Each PR: the architecture ratchet
 (panels draw, the path resolution and the OSC reading live in the core),
