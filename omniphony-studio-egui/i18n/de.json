@@ -884,6 +884,7 @@
   "binaural.earlyReflections": "Frühe Reflexionen",
   "binaural.reflectionLevel": "Reflexionspegel",
   "binaural.roomDims": "Raum B × T × H (m)",
+  "binaural.roomInUse": "In Gebrauch: {w} × {d} × {h} m, vergrößert, damit die Szene hineinpasst",
   "binaural.wallDamping": "Wanddämpfung (kHz)",
   "binaural.lateReverb": "Später Nachhall",
   "binaural.reverbLevel": "Nachhallpegel",

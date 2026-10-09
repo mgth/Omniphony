@@ -306,12 +306,7 @@ pub fn build_renderer_state_json(
             })).collect::<Vec<_>>(),
             "unitScaleM": live.binaural.unit_scale_m,
             "headRadiusM": live.binaural.head_radius_m,
-            "reflections": {
-                "enabled": live.binaural.reflections.enabled,
-                "roomM": live.binaural.reflections.room_size_m,
-                "level": live.binaural.reflections.level,
-                "wallCutoffHz": live.binaural.reflections.wall_cutoff_hz,
-            },
+            "reflections": reflections_json(&live.binaural),
             "reverb": {
                 "enabled": live.binaural.reverb.enabled,
                 "level": live.binaural.reverb.level,
@@ -411,6 +406,24 @@ pub fn build_renderer_state_json(
 /// tagged `variant: "embedded"` / `host: "mpv"` for the connection label.
 /// The parametric HRIR sources' settings (`hrirParams`), `null` for the
 /// others.
+/// The early-reflection settings, with the room the stage mirrors sources
+/// in: the configured extents grown to contain the scene
+/// (`reflections::room_containing_scene`), so a client draws the room the
+/// listener is in rather than the minimum that was asked for.
+fn reflections_json(binaural: &renderer::live_params::BinauralLiveParams) -> serde_json::Value {
+    let reflections = &binaural.reflections;
+    json!({
+        "enabled": reflections.enabled,
+        "roomM": reflections.room_size_m,
+        "roomEffectiveM": renderer::binaural::reflections::room_containing_scene(
+            reflections.room_size_m,
+            binaural.unit_scale_m,
+        ),
+        "level": reflections.level,
+        "wallCutoffHz": reflections.wall_cutoff_hz,
+    })
+}
+
 fn hrir_params_json(source: &renderer::binaural::HrirSource) -> serde_json::Value {
     match source {
         renderer::binaural::HrirSource::Pinna {
@@ -973,6 +986,48 @@ fn placement_families_json(state: &renderer::placement::PlacementState) -> serde
         .chain(std::iter::once(name(SourceFamily::PCM)))
         .collect();
     json!(names)
+}
+
+#[cfg(test)]
+mod reflections_tests {
+    use super::reflections_json;
+    use renderer::live_params::BinauralLiveParams;
+
+    /// The room published as in use is the configured one grown to hold
+    /// the scene: at a distance scale of 3 every axis is 6.7 m; a room
+    /// already larger than the scene is published as it is.
+    #[test]
+    fn the_room_in_use_is_the_configured_one_grown_to_hold_the_scene() {
+        let mut binaural = BinauralLiveParams::default();
+        binaural.reflections.room_size_m = [4.0, 5.0, 2.7];
+        binaural.unit_scale_m = 3.0;
+        // The extents travel as `f32`, so they are read back as numbers
+        // rather than compared as JSON.
+        let axes = |value: &serde_json::Value| -> Vec<f64> {
+            value
+                .as_array()
+                .expect("an array")
+                .iter()
+                .map(|v| v.as_f64().expect("a number"))
+                .collect()
+        };
+        let near = |got: &[f64], want: [f64; 3]| {
+            got.len() == 3 && got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-4)
+        };
+        let json = reflections_json(&binaural);
+        assert!(near(&axes(&json["roomM"]), [4.0, 5.0, 2.7]), "{json}");
+        assert!(
+            near(&axes(&json["roomEffectiveM"]), [6.7, 6.7, 6.7]),
+            "{json}"
+        );
+        binaural.unit_scale_m = 1.0;
+        binaural.reflections.room_size_m = [8.0, 9.0, 10.0];
+        let json = reflections_json(&binaural);
+        assert!(
+            near(&axes(&json["roomEffectiveM"]), [8.0, 9.0, 10.0]),
+            "{json}"
+        );
+    }
 }
 
 #[cfg(test)]

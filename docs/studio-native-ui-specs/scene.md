@@ -361,6 +361,7 @@ No custom GLSL in this scope. Required native pipelines (all colour = sRGB hex, 
 | Room dimension guides | off (`app.js:246`) | `#roomGeometryToggleBtn` (▸/▾, i18n `room.title`) → `app.roomGeometryExpanded` | no |
 | Axes triad | always on | none | — |
 | Head model + pose | model always; pose only when `binaural.outputMode === 'binaural'` (select `#outputModeSelect`, out of scope) | — | renderer state |
+| Listening room (native Studio, 2026-10) | dashed sand box around the listener, `binaural.reflections.roomEffectiveM` metres at `unitScaleM` per unit, with its dimensions; on the direct and virtual-room paths while `reflections.enabled` (`view/room.rs::emit_listening_room`) | Binaural tab → Early reflections | renderer state |
 | VBAP face grid | off | `#vbapCartesianGridToggleBtn` (`display.grid`) / `fxGridBtn` | no |
 | Polar / cartesian gizmo | off | "3D Edit" buttons (§13) | no |
 | Face shadows | on whenever a speaker/source is selected | selection | — |

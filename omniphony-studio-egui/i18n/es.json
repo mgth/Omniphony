@@ -884,6 +884,7 @@
   "binaural.earlyReflections": "Reflexiones tempranas",
   "binaural.reflectionLevel": "Nivel de reflexiones",
   "binaural.roomDims": "Sala An × Pr × Al (m)",
+  "binaural.roomInUse": "En uso: {w} × {d} × {h} m, ampliada para contener la escena",
   "binaural.wallDamping": "Amortiguación de paredes (kHz)",
   "binaural.lateReverb": "Reverberación tardía",
   "binaural.reverbLevel": "Nivel de reverberación",

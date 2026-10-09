@@ -17,6 +17,11 @@ use super::Label;
 /// neither the selection nor the feed colour comes near.
 pub const MEASURED_ROOM_COLOR: u32 = 0xffb86b;
 
+/// The colour of the listening room the early reflections mirror sources
+/// in (`binaural.reflections`): sand, apart from the blue room, the teal
+/// cube and the amber measured room.
+pub const LISTENING_ROOM_COLOR: u32 = 0xe0c9a0;
+
 /// How a box is drawn: the user's room, with walls and a screen, or the
 /// listener's cube of the direct binaural path, which has neither.
 pub struct RoomStyle {
@@ -372,6 +377,85 @@ pub fn emit_unit_guide(
                 ((HEX >> 16) & 0xff) as u8,
                 ((HEX >> 8) & 0xff) as u8,
                 (HEX & 0xff) as u8,
+            ),
+            size: (0.052 * points_per_unit(depth)).clamp(6.0, 40.0).round(),
+            depth,
+        });
+    }
+}
+
+/// Half-extents, in scene units, of the listening room: `room_m` is the
+/// renderer's `[width, depth, height]` in metres around the listener, and
+/// scene x is the depth (front), y the height, z the width.
+/// `metres_per_unit` is the binaural stage's distance scale, the scale it
+/// reads the sources' frame at.
+pub fn listening_room_half_extents(room_m: [f32; 3], metres_per_unit: f32) -> Vec3 {
+    let mpu = metres_per_unit.max(1e-3);
+    Vec3::new(
+        room_m[1] * 0.5 / mpu,
+        room_m[2] * 0.5 / mpu,
+        room_m[0] * 0.5 / mpu,
+    )
+}
+
+/// Dashes per edge of the listening room.
+const LISTENING_ROOM_DASHES: usize = 6;
+
+/// The listening room of the early reflections: a box of `room_m` metres
+/// with the listener at its centre, world-fixed, drawn as dashed edges in
+/// its own colour so it never passes for a wall of the layout, with its
+/// dimensions on its top front edge. It sits in the frame the sources are
+/// drawn in at the distance scale; through the virtual room, whose
+/// positions the live room warps, it is the stage's own reading of that
+/// frame, an indication rather than a wall the warped positions meet.
+pub fn emit_listening_room(
+    room_m: [f32; 3],
+    metres_per_unit: f32,
+    frame: &mut FrameData,
+    project: &dyn Fn(Vec3) -> Option<(screen::ScreenPos, f32)>,
+    points_per_unit: &dyn Fn(f32) -> f32,
+    labels: &mut Vec<Label>,
+) {
+    let half = listening_room_half_extents(room_m, metres_per_unit);
+    let colour = with_alpha(hex_linear(LISTENING_ROOM_COLOR), 0.7);
+    let corner = |i: usize| {
+        Vec3::new(
+            if i & 1 == 0 { -half.x } else { half.x },
+            if i & 2 == 0 { -half.y } else { half.y },
+            if i & 4 == 0 { -half.z } else { half.z },
+        )
+    };
+    for a in 0..8usize {
+        for bit in [1usize, 2, 4] {
+            let b = a | bit;
+            if b == a {
+                continue;
+            }
+            let (from, to) = (corner(a), corner(b));
+            // Dashes: the odd fractions of the edge are left open.
+            let steps = LISTENING_ROOM_DASHES * 2;
+            for step in (0..steps).step_by(2) {
+                let (t0, t1) = (step as f32 / steps as f32, (step + 1) as f32 / steps as f32);
+                frame.overlay_lines.push(LineVertex {
+                    pos: from.lerp(to, t0).to_array(),
+                    color: colour,
+                });
+                frame.overlay_lines.push(LineVertex {
+                    pos: from.lerp(to, t1).to_array(),
+                    color: colour,
+                });
+            }
+        }
+    }
+    let at = Vec3::new(half.x, half.y + 0.06, 0.0);
+    if let Some((p, depth)) = project(at) {
+        labels.push(Label {
+            pos: p,
+            text: format!("{:.1} × {:.1} × {:.1} m", room_m[0], room_m[1], room_m[2]),
+            color: screen::rgb(
+                ((LISTENING_ROOM_COLOR >> 16) & 0xff) as u8,
+                ((LISTENING_ROOM_COLOR >> 8) & 0xff) as u8,
+                (LISTENING_ROOM_COLOR & 0xff) as u8,
             ),
             size: (0.052 * points_per_unit(depth)).clamp(6.0, 40.0).round(),
             depth,

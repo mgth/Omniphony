@@ -710,6 +710,32 @@ impl StudioSpike {
                     cmd::control_binaural_reflections_room(&self.host, axis.to_owned(), value);
                 }
             }
+            // The room in use: the configured one grown to hold the scene
+            // (`roomEffectiveM`), said when it differs, since the sliders
+            // above are then a minimum rather than the room.
+            if let Some(in_use) = doc
+                .and_then(|d| d.get("reflections"))
+                .and_then(|r| r.get("roomEffectiveM"))
+                .and_then(|v| v.as_array())
+                .filter(|a| a.len() == 3)
+            {
+                let value = |i: usize| in_use[i].as_f64().unwrap_or(room[i]);
+                let grown = (0..3).any(|i| (value(i) - room[i]).abs() > 0.05);
+                if grown {
+                    ui.label(
+                        RichText::new(tf(
+                            "binaural.roomInUse",
+                            &[
+                                ("w", &format!("{:.1}", value(0))),
+                                ("d", &format!("{:.1}", value(1))),
+                                ("h", &format!("{:.1}", value(2))),
+                            ],
+                        ))
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                    );
+                }
+            }
             // The cutoff travels in hertz; the slider is in kilohertz.
             let mut cutoff_khz =
                 (number(doc, &["reflections", "wallCutoffHz"], 6000.0) / 1000.0) as f32;

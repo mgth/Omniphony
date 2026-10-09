@@ -933,6 +933,7 @@
   "binaural.earlyReflections": "Early reflections",
   "binaural.reflectionLevel": "Reflection level",
   "binaural.roomDims": "Room W × D × H (m)",
+  "binaural.roomInUse": "In use: {w} × {d} × {h} m, grown to hold the scene",
   "binaural.wallDamping": "Wall damping (kHz)",
   "binaural.lateReverb": "Late reverb",
   "binaural.reverbLevel": "Reverb level",
