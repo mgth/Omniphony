@@ -180,31 +180,52 @@ pub fn path_badge(app: &crate::model::app_state::AppState) -> PathBadge {
             .map(|(_, key)| t(key).to_owned())
             .unwrap_or_else(|| id.to_owned())
     };
-    // The HRTF in force: what is convolved (`hrirEffective`), by its file
-    // for a SOFA set; a fallback says what was asked for and why not.
+    // The set in force on headphones, and why it is not what was asked
+    // for when it is not. On the speakers none of this renders, so the
+    // badge says nothing of it: a headphone setup left behind the output
+    // is not a fallback of the sound playing.
     let effective = text(binaural, "hrirEffective").unwrap_or(source);
-    let hrtf = match effective {
+    let mut hrtf = match effective {
         "sofa" => text(binaural, "hrtfSofaPath")
             .map(file_name)
             .unwrap_or_else(|| label_of("sofa")),
         other => label_of(other),
     };
     let mut warning = None;
-    if source == BRIR {
-        // A room response renders as a measured room only once resident
-        // and on its own loudspeakers; until then the virtual room on the
-        // HRTF stage, and the badge says why.
+    if !path.is_binaural() {
+        // Nothing to say.
+    } else if source == BRIR {
+        // A resident room response is what the stage convolves, on its
+        // own loudspeakers (the measured room) or, when they do not fit
+        // the stage, on the editable layout's buses mapped to its nearest
+        // loudspeakers — the set is still the file, and the badge says so
+        // with the layout's error. `hrirEffective` is the HRTF grid's
+        // KEMAR meanwhile, which only renders while the file is not
+        // resident: loading, or failed.
         let brir = binaural.and_then(|b| b.get("brir"));
         let field = |key: &str| {
             brir.and_then(|b| b.get(key))
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
         };
-        if path != RenderPath::MeasuredRoom {
-            warning = Some(match (field("layoutError"), field("error")) {
-                (Some(error), _) => format!("{}: {error}", t("binaural.brirLayoutError")),
-                (None, Some(error)) => format!("{}: {error}", t("binaural.brirError")),
-                (None, None) => t("binaural.brirLoading").to_owned(),
+        let resident = brir
+            .and_then(|b| b.get("loaded"))
+            .is_some_and(|l| !l.is_null())
+            && field("error").is_none();
+        if resident {
+            hrtf = text(binaural, "brirSofaPath")
+                .map(file_name)
+                .unwrap_or_else(|| label_of(BRIR));
+            if path != RenderPath::MeasuredRoom {
+                warning = Some(match field("layoutError") {
+                    Some(error) => format!("{}: {error}", t("binaural.brirLayoutError")),
+                    None => t("binaural.brirLoading").to_owned(),
+                });
+            }
+        } else {
+            warning = Some(match field("error") {
+                Some(error) => format!("{}: {error}", t("binaural.brirError")),
+                None => t("binaural.brirLoading").to_owned(),
             });
         }
     } else if effective != source {
@@ -507,17 +528,52 @@ mod tests {
         app.binaural = Some(room(json!({})));
         let badge = path_badge(&app);
         assert_eq!(badge.path, RenderPath::VirtualRoom);
+        assert!(
+            badge.text.contains("KEMAR"),
+            "not resident: the HRTF stage renders"
+        );
         assert!(badge.warning.is_some(), "loading is said");
+        app.binaural = Some(room(json!({ "error": "not a SOFA file" })));
+        let badge = path_badge(&app);
+        assert!(badge.text.contains("KEMAR"));
+        assert!(
+            badge
+                .warning
+                .as_deref()
+                .is_some_and(|w| w.contains("not a SOFA file"))
+        );
+        // Resident but wider than the stage: the file is what convolves,
+        // on the editable layout's buses, and the badge names it.
         app.binaural = Some(room(
             json!({ "loaded": { "emitters": 13 }, "layoutError": "needs 14" }),
         ));
         let badge = path_badge(&app);
+        assert_eq!(badge.path, RenderPath::VirtualRoom);
+        assert!(
+            badge.text.contains("g.sofa") && !badge.text.contains("KEMAR"),
+            "{}",
+            badge.text
+        );
         assert!(
             badge
                 .warning
                 .as_deref()
                 .is_some_and(|w| w.contains("needs 14"))
         );
+        // A headphone setup left behind the speakers is no fallback of
+        // the sound playing: nothing is said of it.
+        let mut on_speakers = room(json!({}));
+        on_speakers["outputMode"] = json!("speaker");
+        app.binaural = Some(on_speakers);
+        let badge = path_badge(&app);
+        assert_eq!(badge.path, RenderPath::Speakers);
+        assert!(badge.warning.is_none(), "{:?}", badge.warning);
+        app.binaural = Some(json!({
+            "outputMode": "speaker", "mode": "direct", "modeEffective": "direct",
+            "hrirSource": "sofa", "hrirEffective": "saf", "hrirError": "no such file",
+            "hrtfSofaPath": "/hrtf/pp12.sofa",
+        }));
+        assert!(path_badge(&app).warning.is_none());
         let speaker: Speaker =
             serde_json::from_value(json!({ "id": "L", "x": -0.5, "y": 0.866, "z": 0.0 }))
                 .expect("a speaker");

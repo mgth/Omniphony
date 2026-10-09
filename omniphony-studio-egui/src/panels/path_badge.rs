@@ -10,13 +10,18 @@ use crate::app::StudioSpike;
 use crate::i18n::t;
 use crate::model::binaural::path_badge;
 use crate::panels::renderer::RendererTab;
-use crate::ui::{layout::OverlayLayout, section, theme};
+use crate::ui::layout::{OverlayLayout, Side};
+use crate::ui::{section, theme};
 
 /// Room between the left overlay and the badge.
 const SIDE_GAP: f32 = 16.0;
 
 impl StudioSpike {
-    pub(crate) fn path_badge(&mut self, ctx: &egui::Context, layout: &OverlayLayout) {
+    /// `layout` is the frame's working copy of the side panels, written
+    /// back by the caller: the click uncollapses the right overlay through
+    /// it, since a request to open a section goes nowhere while the panel
+    /// holding it is not drawn.
+    pub(crate) fn path_badge(&mut self, ctx: &egui::Context, layout: &mut OverlayLayout) {
         let badge = {
             let live = self.host.read();
             path_badge(&live.app)
@@ -69,7 +74,11 @@ impl StudioSpike {
             .inner;
         if clicked {
             // The listening settings: the Essentials section, and the
-            // Renderer section on its Binaural tab for the Advanced board.
+            // Renderer section on its Binaural tab for the Advanced board —
+            // in the right overlay, opened first when it is collapsed.
+            if layout.right.collapsed {
+                layout.toggle_collapsed(Side::Right, ctx.content_rect().width());
+            }
             section::request_open(ctx, "listeningSection");
             section::request_open(ctx, "rendererSection");
             self.renderer_tab = RendererTab::Binaural;
