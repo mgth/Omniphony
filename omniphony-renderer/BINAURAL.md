@@ -71,7 +71,9 @@ loudspeakers are wireframe cubes at their measured positions in metres,
 in the room's own colour, inside the box the file states (`RoomCornerA`,
 `RoomCornerB`) or, without one, a box around the loudspeakers; a set
 that does not fit the speaker stage is flagged in the HRTF group and the
-view stays on the layout that renders. On the two HRTF paths, while the early reflections
+view stays on the layout that renders. A badge at the bottom left of the
+view names the path and the set in force, and says *fallback* with the
+reason when what renders is not what was asked for. On the two HRTF paths, while the early reflections
 are on, the listening room they mirror sources in is drawn as a dashed box
 around the listener, in metres at the distance scale, with its dimensions
 — the room in use, grown to hold the scene when the configured one is

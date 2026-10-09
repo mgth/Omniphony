@@ -148,6 +148,104 @@ pub fn hrir_source_offered(binaural: Option<&Value>, id: &str) -> bool {
     id != BRIR || OutputMode::virtual_room(binaural) || hrir_source(binaural) == Some(BRIR)
 }
 
+/// What the viewport's badge says: the path that renders and the set in
+/// force, and why that is a fallback when it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathBadge {
+    pub path: RenderPath,
+    /// "Headphones · KEMAR (measured)", "Measured room · room.sofa, 13
+    /// loudspeakers", …
+    pub text: String,
+    /// What went wrong when what renders is not what was asked for: a SOFA
+    /// file that failed to load, a room response still loading, failed, or
+    /// wider than the speaker stage.
+    pub warning: Option<String>,
+}
+
+/// The last component of a path, for a badge.
+fn file_name(path: &str) -> String {
+    path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned()
+}
+
+/// The badge of the binaural document and the loudspeakers in use.
+pub fn path_badge(app: &crate::model::app_state::AppState) -> PathBadge {
+    use crate::i18n::{t, tf};
+    let binaural = app.binaural.as_ref();
+    let path = app.render_path();
+    let source = hrir_source(binaural).unwrap_or("saf");
+    let label_of = |id: &str| {
+        HRIR_SOURCES
+            .iter()
+            .find(|(s, _)| *s == id)
+            .map(|(_, key)| t(key).to_owned())
+            .unwrap_or_else(|| id.to_owned())
+    };
+    // The HRTF in force: what is convolved (`hrirEffective`), by its file
+    // for a SOFA set; a fallback says what was asked for and why not.
+    let effective = text(binaural, "hrirEffective").unwrap_or(source);
+    let hrtf = match effective {
+        "sofa" => text(binaural, "hrtfSofaPath")
+            .map(file_name)
+            .unwrap_or_else(|| label_of("sofa")),
+        other => label_of(other),
+    };
+    let mut warning = None;
+    if source == BRIR {
+        // A room response renders as a measured room only once resident
+        // and on its own loudspeakers; until then the virtual room on the
+        // HRTF stage, and the badge says why.
+        let brir = binaural.and_then(|b| b.get("brir"));
+        let field = |key: &str| {
+            brir.and_then(|b| b.get(key))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+        };
+        if path != RenderPath::MeasuredRoom {
+            warning = Some(match (field("layoutError"), field("error")) {
+                (Some(error), _) => format!("{}: {error}", t("binaural.brirLayoutError")),
+                (None, Some(error)) => format!("{}: {error}", t("binaural.brirError")),
+                (None, None) => t("binaural.brirLoading").to_owned(),
+            });
+        }
+    } else if effective != source {
+        let mut why = tf(
+            "binaural.hrtfFallback",
+            &[("effective", &label_of(effective))],
+        );
+        if let Some(error) = text(binaural, "hrirError") {
+            why.push_str(": ");
+            why.push_str(error);
+        }
+        warning = Some(why);
+    }
+    let text = match path {
+        RenderPath::Speakers => t("outputMode.speakers").to_owned(),
+        RenderPath::Direct => format!("{} · {hrtf}", t("outputMode.headphones")),
+        RenderPath::VirtualRoom => format!("{} · {hrtf}", t("outputMode.headphonesVirtual")),
+        RenderPath::MeasuredRoom => {
+            let file = text(binaural, "brirSofaPath")
+                .map(file_name)
+                .unwrap_or_else(|| label_of(BRIR));
+            let count = binaural
+                .and_then(|b| b.get("brir"))
+                .and_then(|b| b.get("loaded"))
+                .and_then(|l| l.get("emitters"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            format!(
+                "{} · {file}, {}",
+                t("badge.measuredRoom"),
+                tf("badge.loudspeakers", &[("n", &count.to_string())])
+            )
+        }
+    };
+    PathBadge {
+        path,
+        text,
+        warning,
+    }
+}
+
 /// The file a bare `sofa` / `brir` choice reopens, by name: the renderer
 /// keeps the last file each source named (`hrtfSofaPathLast`,
 /// `brirSofaPathLast`). `None` for the other sources, and while none was
@@ -345,6 +443,94 @@ mod tests {
         // A renderer without the metres: nothing.
         app.binaural = Some(json!({ "brir": { "loaded": { "emitters": 3 } } }));
         assert_eq!(app.brir_geometry(), None);
+    }
+
+    /// The badge names the path and the set in force, and says when that
+    /// is a fallback: a SOFA file that failed, a room response not yet a
+    /// measured room.
+    #[test]
+    fn the_badge_names_the_path_and_the_set_and_flags_a_fallback() {
+        use crate::model::app_state::AppState;
+        use crate::model::layouts::Speaker;
+        let mut app = AppState::new(Vec::new());
+        app.binaural = Some(json!({ "outputMode": "speaker", "mode": "direct" }));
+        let badge = path_badge(&app);
+        assert_eq!(badge.path, RenderPath::Speakers);
+        assert!(badge.warning.is_none());
+
+        app.binaural = Some(json!({
+            "outputMode": "binaural", "mode": "direct", "modeEffective": "direct",
+            "hrirSource": "saf", "hrirEffective": "saf",
+        }));
+        let badge = path_badge(&app);
+        assert_eq!(badge.path, RenderPath::Direct);
+        assert!(badge.text.contains("KEMAR"), "{}", badge.text);
+        assert!(badge.warning.is_none());
+
+        // A SOFA file names itself; one that failed is a fallback to KEMAR.
+        app.binaural = Some(json!({
+            "outputMode": "binaural", "mode": "cascaded", "modeEffective": "cascaded",
+            "hrirSource": "sofa", "hrirEffective": "sofa", "hrtfSofaPath": "/hrtf/pp12.sofa",
+        }));
+        let badge = path_badge(&app);
+        assert_eq!(badge.path, RenderPath::VirtualRoom);
+        assert!(badge.text.ends_with("pp12.sofa"), "{}", badge.text);
+        assert!(badge.warning.is_none());
+        app.binaural = Some(json!({
+            "outputMode": "binaural", "mode": "direct", "modeEffective": "direct",
+            "hrirSource": "sofa", "hrirEffective": "saf", "hrirError": "no such file",
+            "hrtfSofaPath": "/hrtf/pp12.sofa",
+        }));
+        let badge = path_badge(&app);
+        assert!(badge.text.contains("KEMAR"), "{}", badge.text);
+        assert!(
+            badge
+                .warning
+                .as_deref()
+                .is_some_and(|w| w.contains("no such file"))
+        );
+
+        // A room response: loading, then too wide, then measured.
+        let room = |extra: Value| {
+            let mut b = json!({
+                "outputMode": "binaural", "mode": "direct", "modeEffective": "cascaded",
+                "hrirSource": "brir", "hrirEffective": "saf",
+                "brirSofaPath": "/rooms/g.sofa", "brir": { "path": "/rooms/g.sofa" },
+            });
+            if let Some(o) = extra.as_object() {
+                for (k, v) in o {
+                    b["brir"][k] = v.clone();
+                }
+            }
+            b
+        };
+        app.binaural = Some(room(json!({})));
+        let badge = path_badge(&app);
+        assert_eq!(badge.path, RenderPath::VirtualRoom);
+        assert!(badge.warning.is_some(), "loading is said");
+        app.binaural = Some(room(
+            json!({ "loaded": { "emitters": 13 }, "layoutError": "needs 14" }),
+        ));
+        let badge = path_badge(&app);
+        assert!(
+            badge
+                .warning
+                .as_deref()
+                .is_some_and(|w| w.contains("needs 14"))
+        );
+        let speaker: Speaker =
+            serde_json::from_value(json!({ "id": "L", "x": -0.5, "y": 0.866, "z": 0.0 }))
+                .expect("a speaker");
+        app.brir_speakers = Some(vec![speaker]);
+        app.binaural = Some(room(json!({ "loaded": { "emitters": 13 } })));
+        let badge = path_badge(&app);
+        assert_eq!(badge.path, RenderPath::MeasuredRoom);
+        assert!(
+            badge.text.contains("g.sofa") && badge.text.contains("13"),
+            "{}",
+            badge.text
+        );
+        assert!(badge.warning.is_none());
     }
 
     /// The file sources name the file a bare choice reopens; nothing named,
