@@ -68,8 +68,8 @@ in Studio and over OSC (addresses listed at the end).
 | `unit_scale_m` | `1.0` | metres per ADM unit — isotropic distance scale (the anisotropic `room_ratio` is deliberately not used here) |
 | `head_radius_m` | `0.0875` | effective head radius (half the inter-ear distance) for the Woodworth ITD model; fit it to the listener (clamped 0.05–0.15) |
 | `hrir_source` | `saf` | `saf`/`kemar` (embedded measured KEMAR), `synthetic` (analytic head shadow), `sofa` (personalised set, needs the `sofa` build feature), `brir` (a measured room, see *Room responses* below; same build feature) |
-| `hrtf_sofa_path` | — | SOFA file used when `hrir_source: sofa` |
-| `brir_sofa_path` | — | SOFA room-response file used when `hrir_source: brir` |
+| `hrtf_sofa_path` | — | SOFA file used when `hrir_source: sofa`; kept while another source is selected, and reopened by a bare `sofa` |
+| `brir_sofa_path` | — | SOFA room-response file used when `hrir_source: brir`; kept while another source is selected, and reopened by a bare `brir` |
 | `brir_head_tracking` | — | keep every measured head orientation of the BRIR resident. Unset: follows `head_tracking.osc_address` (orientations are loaded when it is set, a single one otherwise) |
 | `brir_max_length_s` | `2.0` | longest response kept, seconds (`0` = whole responses) |
 | `brir_tail_floor_db` | `60` | decibels below a response's total energy at which its tail is cut |
@@ -209,8 +209,11 @@ How it renders:
   BRIR options above. The diffuse-field EQ, head radius, update lattice,
   distance scale, air absorption, reflections and reverb shape the HRTF
   stage, which a room response bypasses; Studio does not show them for a
-  room, and the output-mode select offers only the virtual room. The state
-  snapshot's `binaural.modeEffective` says which path renders.
+  room, and lists the room source under the virtual-room output mode only:
+  choosing the direct headphone mode over a room brings the source back to
+  KEMAR, and the room's file is kept (`brir_sofa_path`) for the next time
+  the room is chosen. The state snapshot's `binaural.modeEffective` says
+  which path renders.
 
 ### Where to get one
 
@@ -329,7 +332,7 @@ carry no license at all). Accordingly:
 | Address | Args | Meaning |
 |---|---|---|
 | `/omniphony/control/output_mode` | `s: speaker\|binaural` | select the output stage |
-| `/omniphony/control/binaural/hrir_source` | `s: synthetic\|saf\|sofa:<path>\|brir:<path>` | HRIR set, or a room response (see *Room responses*) |
+| `/omniphony/control/binaural/hrir_source` | `s: synthetic\|saf\|sofa:<path>\|brir:<path>` | HRIR set, or a room response (see *Room responses*); a bare `sofa` / `brir` reopens the file last named for it |
 | `/omniphony/control/binaural/brir/head_tracking` | `s: auto` or `i\|f` (bool) | which head orientations of a BRIR stay resident: `auto` follows the tracking address, true = all, false = front only |
 | `/omniphony/control/binaural/brir/max_length` | `f` (s) | longest response kept (0 = whole) |
 | `/omniphony/control/binaural/brir/tail_floor` | `f` (dB) | tail cut, decibels below the response's total energy |
