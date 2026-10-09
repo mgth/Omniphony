@@ -3597,3 +3597,107 @@ fn cell_caches_do_not_change_the_render() {
         }
     }
 }
+
+/// The gains the published topology's model pans a normalized position with,
+/// in layout speaker order (the LFE's entry stays 0), in the fixture's room.
+fn topology_gains(topology: &crate::live_params::RenderTopology, position: [f32; 3]) -> Vec<f32> {
+    let response = topology
+        .backend
+        .compute_gains(&crate::render_backend::RenderRequest {
+            adm_position: [position[0] as f64, position[1] as f64, position[2] as f64],
+            event_size: [0.0; 3],
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            use_distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
+            distance_model: crate::spatial_vbap::DistanceModel::None,
+        });
+    (0..topology.num_speakers)
+        .map(|speaker| {
+            topology
+                .backend_speaker_index_for_layout_speaker(speaker)
+                .map_or(0.0, |i| response.gains[i])
+        })
+        .collect()
+}
+
+/// The convex hull split every planar face of a layout — the rear quad, the
+/// ceiling — along a diagonal picked by its tie-breaking jitter, so an object
+/// dead centre at the rear of a 9.1.6 played 0.81 / 0.30 on the two backs
+/// and a position's mirror image did not get the mirrored gains. Each such
+/// face is now fanned around a virtual centre
+/// (`spatial_vbap::vbap_native::Triangulation`): a position and its mirror
+/// across the median plane pan alike, and a position on that plane plays
+/// each left/right pair alike.
+#[test]
+fn a_position_and_its_mirror_pan_alike_across_planar_faces() {
+    let probes: [[f32; 3]; 12] = [
+        [0.4, -0.9, 0.0],
+        [0.4, -0.9, 0.5],
+        [0.0, -0.9, 0.5],
+        [0.3, 0.2, 0.95],
+        [0.0, -0.3, 0.9],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.3, 0.9],
+        [0.9, 0.0, 0.7],
+        [0.4, 0.95, 0.6],
+        [0.6, -0.6, 0.8],
+        [0.2, -1.0, 0.3],
+        [0.5, -0.5, -0.4],
+    ];
+    let mirror = |name: &str| -> String {
+        if let Some(stem) = name.strip_suffix('L') {
+            format!("{stem}R")
+        } else if let Some(stem) = name.strip_suffix('R') {
+            format!("{stem}L")
+        } else {
+            name.to_string()
+        }
+    };
+    for preset in ["7.1.4", "9.1.6"] {
+        let layout = SpeakerLayout::preset(preset).unwrap();
+        let r = SpatialRenderer::new(test_support::spec(layout)).unwrap();
+        let control = r.renderer_control();
+        let topology = control.active_topology();
+        let names: Vec<&str> = topology
+            .speaker_layout
+            .speakers
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        let index_of = |name: &str| {
+            names
+                .iter()
+                .position(|n| *n == name)
+                .unwrap_or_else(|| panic!("{preset} has no {name}"))
+        };
+        for p in probes {
+            let g = topology_gains(&topology, p);
+            let m = topology_gains(&topology, [-p[0], p[1], p[2]]);
+            for (i, name) in names.iter().enumerate() {
+                let j = index_of(&mirror(name));
+                assert!(
+                    (g[i] - m[j]).abs() < 1e-4,
+                    "{preset} {p:?}: {name} {} vs {} {} on the mirror",
+                    g[i],
+                    names[j],
+                    m[j]
+                );
+            }
+        }
+        // Dead centre at the rear, half way up: the rear face's four
+        // loudspeakers, each left/right pair alike.
+        let g = topology_gains(&topology, [0.0, -0.9, 0.5]);
+        for (left, right) in [("BL", "BR"), ("TBL", "TBR")] {
+            let (l, r) = (g[index_of(left)], g[index_of(right)]);
+            assert!(
+                (l - r).abs() < 1e-4 && l > 0.1,
+                "{preset}: {left} {l} vs {right} {r}"
+            );
+        }
+    }
+}

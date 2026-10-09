@@ -153,56 +153,60 @@ impl SpatialRenderer {
         // loudly rather than failing the whole engine (which would leave the host
         // with no audio at all). The warning surfaces on stderr and in Studio's log
         // panel.
-        let (model, vbap_triangles): (Box<dyn GainModel>, usize) = match VbapPanner::new(
-            &spatializable_positions,
-            az_res_deg,
-            el_res_deg,
-            0.0,
-            Default::default(),
-        ) {
-            Ok(panner) => {
-                let panner = panner.with_negative_z(allow_negative_z);
-                let triangles = panner.num_triangles();
-                (
-                    Box::new(VbapBackend::new(
-                        panner,
-                        crate::render_backend::VbapSpreadParams {
-                            spread_min,
-                            spread_max,
-                            spread_from_distance,
-                            spread_distance_range,
-                            spread_distance_curve,
-                            size_to_spread_mode: Default::default(),
-                        },
-                    )),
-                    triangles,
-                )
-            }
-            Err(e) => {
-                let names: Vec<&str> = speaker_layout
-                    .speakers
-                    .iter()
-                    .filter(|s| s.spatialize)
-                    .map(|s| s.name.as_str())
-                    .collect();
-                log::warn!(
-                    "VBAP triangulation failed for {} spatializable speaker(s) {:?}: {}. \
+        let (model, vbap_triangles, vbap_centres): (Box<dyn GainModel>, usize, usize) =
+            match VbapPanner::new(
+                &spatializable_positions,
+                az_res_deg,
+                el_res_deg,
+                0.0,
+                Default::default(),
+            ) {
+                Ok(panner) => {
+                    let panner = panner.with_negative_z(allow_negative_z);
+                    let triangles = panner.num_triangles();
+                    let centres = panner.num_virtual_centres();
+                    (
+                        Box::new(VbapBackend::new(
+                            panner,
+                            crate::render_backend::VbapSpreadParams {
+                                spread_min,
+                                spread_max,
+                                spread_from_distance,
+                                spread_distance_range,
+                                spread_distance_curve,
+                                size_to_spread_mode: Default::default(),
+                            },
+                        )),
+                        triangles,
+                        centres,
+                    )
+                }
+                Err(e) => {
+                    let names: Vec<&str> = speaker_layout
+                        .speakers
+                        .iter()
+                        .filter(|s| s.spatialize)
+                        .map(|s| s.name.as_str())
+                        .collect();
+                    log::warn!(
+                        "VBAP triangulation failed for {} spatializable speaker(s) {:?}: {}. \
                          Falling back to degenerate directional pan (no triangulation) — audio \
                          continues, but this layout cannot use full VBAP. Check the speaker \
                          geometry (collinear/coplanar speakers, or one placed at the listener).",
-                    num_vbap_speakers,
-                    names,
-                    e
-                );
-                (
-                    Box::new(DegenerateVbapBackend::with_omni(
-                        spatializable_positions.clone(),
-                        crate::backend_registry::collect_omni_mask(&speaker_layout),
-                    )),
-                    0,
-                )
-            }
-        };
+                        num_vbap_speakers,
+                        names,
+                        e
+                    );
+                    (
+                        Box::new(DegenerateVbapBackend::with_omni(
+                            spatializable_positions.clone(),
+                            crate::backend_registry::collect_omni_mask(&speaker_layout),
+                        )),
+                        0,
+                        0,
+                    )
+                }
+            };
         // The published topology's engine samples no table: the speaker
         // stage's band engines do, on the first frame (see
         // `wrap_unsampled_engine`).
@@ -265,10 +269,11 @@ impl SpatialRenderer {
         );
 
         log::info!(
-            "Created spatial renderer: {} total speakers, {} spatializable, {} triangles, spread_res={}, table_mode={:?}, distance_model={}",
+            "Created spatial renderer: {} total speakers, {} spatializable, {} triangles ({} virtual face centres), spread_res={}, table_mode={:?}, distance_model={}",
             num_speakers,
             num_vbap_speakers,
             vbap_triangles,
+            vbap_centres,
             spread_resolution,
             table_mode,
             distance_model
