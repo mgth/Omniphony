@@ -117,6 +117,17 @@ fn toggle_id(section: &str) -> egui::Id {
     egui::Id::new(("section-header-toggle", section))
 }
 
+fn open_request_id(section: &str) -> egui::Id {
+    egui::Id::new(("section-open-request", section))
+}
+
+/// Ask a section to open on its next frame, from outside its panel (the
+/// viewport's badge): the widget takes the request when it draws.
+pub fn request_open(ctx: &egui::Context, section_id: &str) {
+    ctx.data_mut(|d| d.insert_temp(open_request_id(section_id), true));
+    ctx.request_repaint();
+}
+
 impl<'a> Section<'a> {
     /// `id` is the DOM id of the web section, so state survives reordering;
     /// `title_key` is its `data-i18n` key.
@@ -217,6 +228,13 @@ impl<'a> Section<'a> {
             id,
             saved.unwrap_or(default_open),
         );
+        if ui
+            .ctx()
+            .data_mut(|d| d.remove_temp::<bool>(open_request_id(section_id)))
+            .is_some()
+        {
+            state.set_open(true);
+        }
         ui.add_space(theme::PANEL_GAP);
         ui.separator();
         // The whole row senses the click, beneath its children, as a list
