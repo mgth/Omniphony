@@ -14,7 +14,7 @@ use crate::render::{
 
 use super::objects::hsl_to_rgb;
 use super::room::MEASURED_ROOM_COLOR;
-use super::{ViewSettings, dbfs_to_scale, scene_position};
+use super::{ViewSettings, dbfs_to_scale, scene_point, scene_position};
 
 /// `setSpeakersGhosted`: how much of a speaker is left when the renderer is
 /// not feeding speakers at all.
@@ -149,6 +149,19 @@ pub fn collect(
     let band_count = edges.len() - 1;
     let selected_gains = selected_object.and_then(|id| live.app.object_speaker_gains.get(id));
     let look = SpeakerLook::of(live.app.render_path());
+    // A measured room's loudspeakers stand where they were measured, in
+    // metres at the room's reach; the LFE bus the layout appends has no
+    // measurement and keeps the layout's place.
+    let measured: Option<Vec<Vec3>> = (look == SpeakerLook::Measured)
+        .then(|| live.app.brir_geometry())
+        .flatten()
+        .map(|g| {
+            let reach = g.reach_m();
+            g.emitters_m
+                .iter()
+                .map(|e| scene_point([e[0] / reach, e[1] / reach, e[2] / reach]))
+                .collect()
+        });
     let size_scale = settings.speaker_size.clamp(0.04, 0.2) / SPEAKER_BASE_SIZE;
 
     speakers
@@ -207,7 +220,10 @@ pub fn collect(
                 scene_pos: pinned_position(
                     settings.speaker_edit_pin,
                     index,
-                    scene_position([s.x, s.y, s.z], room),
+                    measured
+                        .as_ref()
+                        .and_then(|m| m.get(index).copied())
+                        .unwrap_or_else(|| scene_position([s.x, s.y, s.z], room)),
                 ),
                 spatialize,
                 muted: live.app.speaker_mutes.get(&key).is_some_and(|m| *m != 0),

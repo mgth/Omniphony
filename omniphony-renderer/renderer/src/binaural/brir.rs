@@ -157,6 +157,27 @@ pub struct BrirSet {
     pairs: Vec<BrirPair>,
     max_taps: usize,
     conventions: String,
+    /// The file's `RoomType` attribute (`shoebox`, `reverberant`, …), when
+    /// it states one.
+    room_type: Option<String>,
+    /// The room's two opposite corners (`RoomCornerA`, `RoomCornerB`), when
+    /// the file states them: relative to the listener, renderer frame,
+    /// metres — the box the loudspeakers stand in.
+    room_corners: Option<[[f32; 3]; 2]>,
+}
+
+/// The two corners of a SOFA shoebox room, SOFA frame, taken relative to
+/// the listener and into the renderer's frame: the box a client draws the
+/// set's loudspeakers in.
+pub fn room_corners_relative(corners: [[f32; 3]; 2], listener: [f32; 3]) -> [[f32; 3]; 2] {
+    let relative = |c: [f32; 3]| {
+        omniphony_geometry::f32::sofa_to_adm([
+            c[0] - listener[0],
+            c[1] - listener[1],
+            c[2] - listener[2],
+        ])
+    };
+    [relative(corners[0]), relative(corners[1])]
 }
 
 /// Row `i` of a `[M][C]` or `[I][C]` array (the single row when the array
@@ -543,6 +564,8 @@ impl BrirSet {
             pairs,
             max_taps,
             conventions: raw.conventions.to_string(),
+            room_type: None,
+            room_corners: None,
         };
         log::info!(
             "BRIR: {} ({}): {} emitters × {} orientations, up to {} taps ({:.3} s) at {} Hz, {:.1} MiB",
@@ -585,7 +608,20 @@ impl BrirSet {
             pairs,
             max_taps,
             conventions: "test".to_string(),
+            room_type: None,
+            room_corners: None,
         }
+    }
+
+    /// The file's `RoomType`, when it states one.
+    pub fn room_type(&self) -> Option<&str> {
+        self.room_type.as_deref()
+    }
+
+    /// The room's two opposite corners, relative to the listener in the
+    /// renderer's frame, when the file states them.
+    pub fn room_corners(&self) -> Option<[[f32; 3]; 2]> {
+        self.room_corners
     }
 
     /// Engine rate the pairs are at.
@@ -714,7 +750,122 @@ impl BrirSet {
             data_ir: &h.data_ir.values,
             data_delay: &h.data_delay.values,
         };
-        Self::from_raw(&raw, engine_rate, opts).map_err(|e| anyhow::anyhow!("SOFA '{path}': {e}"))
+        let mut set = Self::from_raw(&raw, engine_rate, opts)
+            .map_err(|e| anyhow::anyhow!("SOFA '{path}': {e}"))?;
+        // The room the loudspeakers stand in, when the file describes it:
+        // its type is an attribute, its corners are variables of their own,
+        // read from the HDF structure like the shape above.
+        set.room_type = h
+            .attributes
+            .get("RoomType")
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        set.room_corners = sofa_room_corners(&bytes, &h.attributes)
+            .map(|c| room_corners_relative(c, row3(raw.listener_position, 0)));
+        Ok(set)
+    }
+}
+
+/// `RoomCornerA` and `RoomCornerB` of a SOFA file in SOFA cartesian metres,
+/// when both are present and their encoding is understood
+/// ([`room_corner_metadata`] says where the encoding is read from).
+#[cfg(feature = "sofa")]
+fn sofa_room_corners(
+    bytes: &[u8],
+    globals: &std::collections::HashMap<String, String>,
+) -> Option<[[f32; 3]; 2]> {
+    use std::collections::HashMap;
+    let parsed = sofar::hdf::parse_with_children(bytes).ok()?;
+    let attributes_of = |obj: &sofar::hdf::DataObject| -> HashMap<String, String> {
+        obj.parsed_attributes
+            .iter()
+            .filter_map(|a| a.value.as_ref().map(|v| (a.name.clone(), v.clone())))
+            .collect()
+    };
+    // The convention's `RoomCorners` variable exists for its attributes
+    // alone: the two corners' `Type` and `Units`.
+    let shared = parsed
+        .get_child("RoomCorners")
+        .and_then(|r| r.ok())
+        .map(|obj| attributes_of(&obj))
+        .unwrap_or_default();
+    let corner = |name: &str| -> Option<[f32; 3]> {
+        let obj = parsed.get_child(name)?.ok()?;
+        let values = hdf_floats(&obj, 3)?;
+        let (kind, units) = room_corner_metadata(&shared, &attributes_of(&obj), globals);
+        room_corner_metres(
+            [values[0], values[1], values[2]],
+            kind.as_deref(),
+            units.as_deref(),
+        )
+    };
+    Some([corner("RoomCornerA")?, corner("RoomCornerB")?])
+}
+
+/// The coordinate metadata (`Type`, `Units`) of a room corner, from where
+/// a SOFA file keeps it, in the order it is looked for: the `RoomCorners`
+/// variable the convention includes for that alone (`shared`: its
+/// `RoomCorners:Type` / `RoomCorners:Units` are that variable's
+/// attributes), then the corner variable's own attributes (`own`, which
+/// some writers duplicate), then the same names among the global
+/// attributes (`globals`, where a writer that knows no `RoomCorners`
+/// variable leaves them). `None` where none states it: the convention's
+/// default, cartesian metres, applies.
+pub fn room_corner_metadata(
+    shared: &std::collections::HashMap<String, String>,
+    own: &std::collections::HashMap<String, String>,
+    globals: &std::collections::HashMap<String, String>,
+) -> (Option<String>, Option<String>) {
+    let find = |key: &str| {
+        shared
+            .get(key)
+            .or_else(|| own.get(key))
+            .or_else(|| globals.get(&format!("RoomCorners:{key}")))
+            .cloned()
+    };
+    (find("Type"), find("Units"))
+}
+
+/// A room corner in SOFA cartesian metres, from its stored triplet and its
+/// coordinate metadata: cartesian in metres as stored, spherical (azimuth
+/// and elevation in degrees, radius in metres) converted, absent metadata
+/// read as the convention's default, cartesian metres. Another type or
+/// unit is refused — the loudspeakers' own box then stands for the room —
+/// rather than published as metres it is not.
+pub fn room_corner_metres(
+    values: [f32; 3],
+    coord_type: Option<&str>,
+    units: Option<&str>,
+) -> Option<[f32; 3]> {
+    if !values.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let lower = |s: Option<&str>| s.map(|s| s.trim().to_ascii_lowercase());
+    let metres = |unit: &str| matches!(unit.trim(), "metre" | "metres" | "meter" | "meters" | "m");
+    let kind = lower(coord_type).unwrap_or_else(|| "cartesian".to_owned());
+    match kind.as_str() {
+        "cartesian" => {
+            let units = lower(units).unwrap_or_else(|| "metre".to_owned());
+            metres(&units).then_some(values)
+        }
+        "spherical" => {
+            // "degree, degree, metre" is the convention's spelling; the
+            // radius is the last unit named.
+            let units = lower(units).unwrap_or_else(|| "degree, degree, metre".to_owned());
+            let radius_unit = units.rsplit(',').next().unwrap_or("");
+            if !metres(radius_unit) {
+                return None;
+            }
+            let [azimuth, elevation, radius] = values;
+            let (az, el) = (azimuth.to_radians(), elevation.to_radians());
+            let horizontal = el.cos() * radius;
+            Some([
+                az.cos() * horizontal,
+                az.sin() * horizontal,
+                el.sin() * radius,
+            ])
+        }
+        _ => None,
     }
 }
 
@@ -747,6 +898,13 @@ fn sofa_ir_shape(bytes: &[u8]) -> anyhow::Result<(f32, [usize; 4])> {
 /// reader assumes).
 #[cfg(feature = "sofa")]
 fn hdf_first_float(obj: &sofar::hdf::DataObject) -> Option<f32> {
+    hdf_floats(obj, 1).map(|v| v[0])
+}
+
+/// The first `count` values of a floating-point HDF dataset (little-endian,
+/// as the SOFA reader assumes); `None` for another class, or too short.
+#[cfg(feature = "sofa")]
+fn hdf_floats(obj: &sofar::hdf::DataObject, count: usize) -> Option<Vec<f32>> {
     if obj.dt.class_and_version & 0x0F != 1 {
         return None;
     }
@@ -754,22 +912,130 @@ fn hdf_first_float(obj: &sofar::hdf::DataObject) -> Option<f32> {
         Some(sofar::hdf::DataFormat::Float { bit_precision, .. }) => *bit_precision,
         _ => 64,
     };
-    match precision {
-        64 => obj
-            .data
-            .get(..8)
-            .map(|b| f64::from_le_bytes(b.try_into().expect("8 bytes")) as f32),
-        32 => obj
-            .data
-            .get(..4)
-            .map(|b| f32::from_le_bytes(b.try_into().expect("4 bytes"))),
-        _ => None,
-    }
+    let width = match precision {
+        64 => 8,
+        32 => 4,
+        _ => return None,
+    };
+    let bytes = obj.data.get(..width * count)?;
+    Some(
+        bytes
+            .chunks_exact(width)
+            .map(|b| match width {
+                8 => f64::from_le_bytes(b.try_into().expect("8 bytes")) as f32,
+                _ => f32::from_le_bytes(b.try_into().expect("4 bytes")),
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A room's corners are published around the listener in the renderer's
+    /// frame: a listener at (3, 2, 1.2) in a 6 × 4 × 2.5 m SOFA room has
+    /// the corners 3 m behind and ahead, 2 m to either side, 1.2 m down and
+    /// 1.3 m up, with SOFA's left-positive y becoming the renderer's
+    /// right-positive x.
+    #[test]
+    fn room_corners_are_taken_around_the_listener_in_the_renderers_frame() {
+        let [a, b] = room_corners_relative([[0.0, 0.0, 0.0], [6.0, 4.0, 2.5]], [3.0, 2.0, 1.2]);
+        let near =
+            |got: [f32; 3], want: [f32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-6);
+        assert!(near(a, [2.0, -3.0, -1.2]), "{a:?}");
+        assert!(near(b, [-2.0, 3.0, 1.3]), "{b:?}");
+    }
+
+    /// The corners' encoding is read where the convention keeps it, the
+    /// `RoomCorners` variable's attributes, before a corner's own duplicate
+    /// or a global copy; a file stating it nowhere gets the default.
+    #[test]
+    fn room_corner_metadata_comes_from_the_room_corners_variable_first() {
+        use std::collections::HashMap;
+        let map = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let shared = map(&[("Type", "spherical"), ("Units", "degree, degree, metre")]);
+        let own = map(&[("Type", "cartesian"), ("Units", "metre")]);
+        let globals = map(&[
+            ("RoomCorners:Type", "cartesian"),
+            ("RoomCorners:Units", "metre"),
+        ]);
+        let none = HashMap::new();
+        assert_eq!(
+            room_corner_metadata(&shared, &own, &globals),
+            (
+                Some("spherical".into()),
+                Some("degree, degree, metre".into())
+            )
+        );
+        assert_eq!(
+            room_corner_metadata(&none, &own, &globals),
+            (Some("cartesian".into()), Some("metre".into()))
+        );
+        let globals = map(&[("RoomCorners:Type", "spherical")]);
+        assert_eq!(
+            room_corner_metadata(&none, &none, &globals),
+            (Some("spherical".into()), None)
+        );
+        assert_eq!(room_corner_metadata(&none, &none, &none), (None, None));
+        // Shared metadata applies to both corners: a spherical pair under
+        // it lands on its cartesian twins.
+        let r = (36.0f32 + 16.0 + 6.25).sqrt();
+        let spherical = [
+            4.0f32.atan2(6.0).to_degrees(),
+            (2.5 / r).asin().to_degrees(),
+            r,
+        ];
+        let (kind, units) = room_corner_metadata(&shared, &none, &none);
+        let got = room_corner_metres(spherical, kind.as_deref(), units.as_deref()).expect("read");
+        assert!(
+            got.iter()
+                .zip([6.0, 4.0, 2.5])
+                .all(|(g, w)| (g - w).abs() < 1e-3),
+            "{got:?}"
+        );
+    }
+
+    /// A corner stored as spherical degrees and metres lands where its
+    /// cartesian twin does; absent metadata is cartesian metres; another
+    /// type or unit is refused rather than read as metres.
+    #[test]
+    fn room_corners_are_read_in_the_encoding_the_file_states() {
+        let cartesian = [6.0, 4.0, 2.5];
+        let near =
+            |got: [f32; 3], want: [f32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-3);
+        assert_eq!(room_corner_metres(cartesian, None, None), Some(cartesian));
+        assert_eq!(
+            room_corner_metres(cartesian, Some("cartesian"), Some("metre")),
+            Some(cartesian)
+        );
+        let r = (36.0f32 + 16.0 + 6.25).sqrt();
+        let spherical = [
+            4.0f32.atan2(6.0).to_degrees(),
+            (2.5 / r).asin().to_degrees(),
+            r,
+        ];
+        let got = room_corner_metres(spherical, Some("spherical"), Some("degree, degree, metre"))
+            .expect("spherical corners are read");
+        assert!(near(got, cartesian), "{got:?}");
+        let got = room_corner_metres(spherical, Some("Spherical"), None).expect("default units");
+        assert!(near(got, cartesian), "{got:?}");
+        assert_eq!(
+            room_corner_metres(cartesian, Some("cartesian"), Some("feet")),
+            None
+        );
+        assert_eq!(
+            room_corner_metres(spherical, Some("spherical"), Some("degree, degree, foot")),
+            None
+        );
+        assert_eq!(room_corner_metres(cartesian, Some("geodesic"), None), None);
+        assert_eq!(room_corner_metres([f32::NAN, 0.0, 0.0], None, None), None);
+    }
 
     /// SOFA spherical (az ccw-positive, el, r) → SOFA cartesian.
     fn sph(az_deg: f32, el_deg: f32, r: f32) -> [f32; 3] {

@@ -27,6 +27,7 @@ pub mod log;
 pub mod mpv_overlay;
 pub mod object_test;
 pub mod object_test_sheet;
+pub mod path_badge;
 pub mod profiles;
 pub mod renderer;
 pub mod renderer_perf;
