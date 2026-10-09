@@ -539,10 +539,10 @@ jobs:
             echo "$workspace: lockfile valid at 99.0.0"
           done
 
-      # Broader catalogue diagnostics (orphaned keys and English leftovers).
-      # Missing translations already fail the core's i18n tests above; this
-      # script also emits ::warning:: annotations on the PR for the other
-      # findings. A plain node script, no npm install.
+      # Catalogue diagnostics, including a heuristic for English leftovers.
+      # Missing/orphaned keys and placeholder mismatches already fail the
+      # core's i18n tests above. This script also emits ::warning:: annotations
+      # on the PR. A plain node script, no npm install.
       - name: Check i18n parity (warn-only)
         continue-on-error: true
         run: node omniphony-studio-egui/scripts/check-i18n.mjs

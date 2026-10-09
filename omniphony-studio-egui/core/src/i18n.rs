@@ -1,11 +1,10 @@
 //! Studio strings. The catalogues are `omniphony-studio-egui/i18n/*.json`,
-//! embedded at build time. The deprecated web Studio imports the same files,
-//! so both hosts stay key-for-key identical while both ship.
+//! embedded at build time.
 //!
-//! Every locale is English overridden by its own entries, exactly as the web
-//! spreads `{...enTranslations, ...frTranslations}`: a key a translator has not
-//! reached yet reads in English rather than as a raw key. `t` resolves a key
-//! and `tf` substitutes `{name}` placeholders.
+//! Every locale overrides English with its own entries: a missing translation
+//! reads in English rather than as a raw key. Tests check the raw catalogues
+//! for key and placeholder parity before this fallback can hide a gap.
+//! `t` resolves a key and `tf` substitutes `{name}` placeholders.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,12 +27,16 @@ const CATALOGUES: &[(&str, &str)] = &[
 /// costs an atomic load and a hash lookup.
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
+fn parse_catalogue(json: &str) -> Result<HashMap<String, String>, serde_json::Error> {
+    serde_json::from_str(json)
+}
+
 /// Every catalogue, parsed once and merged over English.
 fn catalogues() -> &'static Vec<HashMap<String, String>> {
     static ALL: OnceLock<Vec<HashMap<String, String>>> = OnceLock::new();
     ALL.get_or_init(|| {
         let parse = |name: &str, json: &str| {
-            serde_json::from_str::<HashMap<String, String>>(json).unwrap_or_else(|e| {
+            parse_catalogue(json).unwrap_or_else(|e| {
                 log::error!("[i18n] {name}.json: {e}");
                 HashMap::new()
             })
@@ -176,6 +179,7 @@ pub fn tf(key: &str, values: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn a_missing_key_is_leaked_once_not_once_per_call() {
@@ -209,41 +213,99 @@ mod tests {
         let all = catalogues();
         assert_eq!(all.len(), CATALOGUES.len());
         for (index, (name, _)) in CATALOGUES.iter().enumerate() {
-            assert!(
-                all[index].len() >= all[0].len(),
-                "{name} lost keys English has"
-            );
-            // The fallback is what makes a partial translation usable: every
-            // key English knows must resolve in every locale.
+            // Probe the runtime maps as well as the raw catalogue gate below.
             assert!(all[index].contains_key("app.title"), "{name}");
         }
     }
 
+    fn placeholders(value: &str) -> BTreeSet<&str> {
+        value
+            .split('{')
+            .skip(1)
+            .filter_map(|tail| tail.split_once('}').map(|(name, _)| name))
+            .collect()
+    }
+
+    fn catalogue_structure_errors(
+        english: &HashMap<String, String>,
+        translated: &HashMap<String, String>,
+    ) -> Vec<String> {
+        let mut errors = Vec::new();
+        for (key, source) in english {
+            match translated.get(key) {
+                None => errors.push(format!("{key} (missing translation)")),
+                Some(value) => {
+                    let expected = placeholders(source);
+                    let actual = placeholders(value);
+                    if expected != actual {
+                        errors.push(format!(
+                            "{key} (placeholders: expected {expected:?}, found {actual:?})"
+                        ));
+                    }
+                }
+            }
+        }
+        for key in translated.keys() {
+            if !english.contains_key(key) {
+                errors.push(format!("{key} (absent from en.json)"));
+            }
+        }
+        errors.sort();
+        errors
+    }
+
     #[test]
-    fn every_catalogue_contains_all_english_keys() {
+    fn every_catalogue_matches_english_structure() {
         // Read the raw catalogues: catalogues() merges in English, hiding
         // missing translations. With every locale complete, the ratchet is
         // simply zero missing keys; there is no debt baseline to maintain.
         let parse = |name: &str, json: &str| {
-            serde_json::from_str::<HashMap<String, String>>(json)
-                .unwrap_or_else(|error| panic!("{name}.json: {error}"))
+            parse_catalogue(json).unwrap_or_else(|error| panic!("{name}.json: {error}"))
         };
         let english = parse(CATALOGUES[0].0, CATALOGUES[0].1);
-        let mut missing = Vec::new();
+        let mut errors = Vec::new();
         for (name, json) in &CATALOGUES[1..] {
             let translated = parse(name, json);
-            for key in english.keys() {
-                if !translated.contains_key(key) {
-                    missing.push(format!("{name}.json: {key}"));
-                }
-            }
+            errors.extend(
+                catalogue_structure_errors(&english, &translated)
+                    .into_iter()
+                    .map(|error| format!("{name}.json: {error}")),
+            );
         }
-        missing.sort();
         assert!(
-            missing.is_empty(),
-            "Translate new English keys in every i18n catalogue. Missing translations:\n{}",
-            missing.join("\n")
+            errors.is_empty(),
+            "Every i18n catalogue must match en.json's keys and placeholders:\n{}",
+            errors.join("\n")
         );
+    }
+
+    #[test]
+    fn the_structure_gate_rejects_missing_and_orphaned_keys() {
+        let english = parse_catalogue(r#"{"kept":"Title", "missing":"Message"}"#).unwrap();
+        let translated = parse_catalogue(r#"{"kept":"Titel", "orphan":"Nachricht"}"#).unwrap();
+        assert_eq!(
+            catalogue_structure_errors(&english, &translated),
+            [
+                "missing (missing translation)",
+                "orphan (absent from en.json)"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_structure_gate_checks_placeholder_sets() {
+        let english = HashMap::from([("status".into(), "Error: {error} at {path}".into())]);
+        for (value, valid) in [
+            ("Fehler bei {path}", false),
+            ("{fehler} bei {path}", false),
+            ("{error} bei {path}: {extra}", false),
+            ("{path}：エラー {error}", true),
+            ("{path}：{error}（{error}）", true),
+        ] {
+            let translated = HashMap::from([("status".into(), value.into())]);
+            let errors = catalogue_structure_errors(&english, &translated);
+            assert_eq!(errors.is_empty(), valid, "{value:?}: {errors:?}");
+        }
     }
 
     #[test]
