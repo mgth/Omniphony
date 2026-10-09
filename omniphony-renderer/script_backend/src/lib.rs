@@ -21,7 +21,7 @@
 //! -- REQUIRED: one gain per speaker for a position.
 //! function gains(pos, speakers, state, params)
 //!   -- pos      = { x=, y=, z= }            (raw ADM position)
-//!   -- speakers = { {x=,y=,z=}, ... }       (unit speaker directions)
+//!   -- speakers = { {x=,y=,z=}, ... }       (unit speaker directions, in the room-relative space `room_scale(pos)` maps a position into)
 //!   -- state    = value returned by setup(), or nil
 //!   -- params   = { key = number, ... }     (resolved from the schema below)
 //!   -- return an array of #speakers finite numbers, in speaker order.
@@ -1395,6 +1395,75 @@ mod tests {
         assert!(
             (split[0] - split[2]).abs() < 1e-3 && split[0] > 0.5,
             "even split: {split:?}"
+        );
+    }
+
+    /// The shipped distance script warps the position into the speakers'
+    /// room-relative space (`room_scale`): built through the factory on
+    /// cartesian speakers in a non-unit room, an object on a speaker's
+    /// place favours that speaker. Comparing the raw position with the
+    /// warped speakers favoured B for an object on A (#803 review).
+    #[test]
+    fn shipped_distance_example_pans_in_the_room() {
+        use renderer::backend_registry::{BackendBuildCtx, BackendRegistry};
+        use renderer::live_params::RoomRatios;
+        use renderer::speaker_layout::Speaker;
+        use std::collections::HashMap;
+
+        let layout = SpeakerLayout::from_speakers(vec![
+            Speaker::from_cartesian("A", 1.0, 1.0, 0.0, true, 0.0),
+            Speaker::from_cartesian("B", 1.0, 0.5, 0.0, true, 0.0),
+            Speaker::from_cartesian("C", -1.0, -1.0, 0.0, true, 0.0),
+        ])
+        .expect("three speakers");
+        let room = RoomRatios {
+            ratio: [1.0, 2.0, 1.0],
+            rear: 2.0,
+            lower: 1.0,
+            center_blend: 0.5,
+        };
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../script-backends/nearest_inverse_distance.lua"
+        );
+        let mut params: HashMap<String, HashMap<String, ParamValue>> = HashMap::new();
+        params.insert(
+            "script".to_string(),
+            HashMap::from([("path".to_string(), ParamValue::Text(path.to_string()))]),
+        );
+        let control = renderer::test_support::fixture_control();
+        let registry = BackendRegistry::builtin();
+        let live = control.live.read();
+        let ctx = BackendBuildCtx {
+            layout: &layout,
+            live: &live,
+            room,
+            backend_rebuild_params: None,
+            registry: &registry,
+            backend_params: &params,
+        };
+        let model = ScriptFactory
+            .build_plan(&ctx)
+            .expect("a plan")
+            .build_gain_model()
+            .expect("the model");
+        let gains_at = |p: [f64; 3]| {
+            let mut req = request(p);
+            req.room_ratio = room.ratio;
+            req.room_ratio_rear = room.rear;
+            req.room_ratio_lower = room.lower;
+            req.room_ratio_center_blend = room.center_blend;
+            model.compute_gains(&req).gains.to_vec()
+        };
+        let on_a = gains_at([1.0, 1.0, 0.0]);
+        assert!(
+            on_a[0] > on_a[1] && on_a[0] > on_a[2],
+            "on A, A is favoured: {on_a:?}"
+        );
+        let on_c = gains_at([-1.0, -1.0, 0.0]);
+        assert!(
+            on_c[2] > on_c[0] && on_c[2] > on_c[1],
+            "on C, C is favoured: {on_c:?}"
         );
     }
 

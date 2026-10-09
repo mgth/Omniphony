@@ -39,7 +39,9 @@ use renderer::backend_registry::{
     BackendBuildCtx, BackendBuildPlan, BackendFactory, DynamicBackendPlan,
 };
 use renderer::plugin::PluginFactory;
-use renderer::render_backend::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
+use renderer::render_backend::{
+    BackendCapabilities, GainModel, RenderRequest, RenderResponse, room_scaled_position,
+};
 use renderer::spatial_vbap::{Gains, spherical_to_adm};
 use renderer::speaker_layout::SpeakerLayout;
 
@@ -108,11 +110,21 @@ impl GainModel for ExampleBackend {
         // allocate on the heap, so this stays allocation-free.
         let mut gains = Gains::zeroed(n);
 
-        let dir = normalize([
-            req.adm_position[0] as f32,
-            req.adm_position[1] as f32,
-            req.adm_position[2] as f32,
-        ]);
+        // The speakers were placed in the room the topology pans in (the
+        // factory read them so); the object goes through the same warp,
+        // which the request carries, or a non-unit room would pull it off
+        // the speaker it sits on. Pure arithmetic: still allocation-free.
+        let dir = normalize(room_scaled_position(
+            [
+                req.adm_position[0] as f32,
+                req.adm_position[1] as f32,
+                req.adm_position[2] as f32,
+            ],
+            req.room_ratio,
+            req.room_ratio_rear,
+            req.room_ratio_lower,
+            req.room_ratio_center_blend,
+        ));
 
         // Pass 1: raw cosine weights into the gain buffer, accumulating energy.
         let mut sum_sq = 0.0f32;
@@ -255,6 +267,65 @@ mod tests {
 
     fn energy(gains: &[f32]) -> f32 {
         gains.iter().map(|g| g * g).sum()
+    }
+
+    /// Built through the factory on cartesian speakers in a non-unit room,
+    /// the object is warped as the speakers were: an object on a speaker's
+    /// place favours that speaker. Read raw against warped speakers, A's
+    /// object favoured B (#803 review).
+    #[test]
+    fn the_object_is_warped_like_the_speakers() {
+        use renderer::backend_registry::{BackendBuildCtx, BackendRegistry};
+        use renderer::live_params::RoomRatios;
+        use renderer::speaker_layout::Speaker;
+
+        let layout = SpeakerLayout::from_speakers(vec![
+            Speaker::from_cartesian("A", 1.0, 1.0, 0.0, true, 0.0),
+            Speaker::from_cartesian("B", 1.0, 0.5, 0.0, true, 0.0),
+            Speaker::from_cartesian("C", -1.0, -1.0, 0.0, true, 0.0),
+        ])
+        .expect("three speakers");
+        let room = RoomRatios {
+            ratio: [1.0, 2.0, 1.0],
+            rear: 2.0,
+            lower: 1.0,
+            center_blend: 0.5,
+        };
+        let control = renderer::test_support::fixture_control();
+        let registry = BackendRegistry::builtin();
+        let params = std::collections::HashMap::new();
+        let live = control.live.read();
+        let ctx = BackendBuildCtx {
+            layout: &layout,
+            live: &live,
+            room,
+            backend_rebuild_params: None,
+            registry: &registry,
+            backend_params: &params,
+        };
+        let model = ExampleFactory
+            .build_plan(&ctx)
+            .expect("a plan")
+            .build_gain_model()
+            .expect("the model");
+        let gains_at = |p: [f64; 3]| {
+            let mut req = request(p);
+            req.room_ratio = room.ratio;
+            req.room_ratio_rear = room.rear;
+            req.room_ratio_lower = room.lower;
+            req.room_ratio_center_blend = room.center_blend;
+            model.compute_gains(&req).gains.to_vec()
+        };
+        let on_a = gains_at([1.0, 1.0, 0.0]);
+        assert!(
+            on_a[0] > on_a[1] && on_a[0] > on_a[2],
+            "on A, A is favoured: {on_a:?}"
+        );
+        let on_c = gains_at([-1.0, -1.0, 0.0]);
+        assert!(
+            on_c[2] > on_c[0] && on_c[2] > on_c[1],
+            "on C, C is favoured: {on_c:?}"
+        );
     }
 
     #[test]
