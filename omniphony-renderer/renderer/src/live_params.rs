@@ -1455,6 +1455,21 @@ impl RoomRatios {
             self.center_blend,
         )
     }
+
+    /// Inverse room warp of a position that states a direction — a pose
+    /// placed by angle — kept on that direction when it reaches past a wall
+    /// of a room smaller than its radius, which the clamping [`Self::inverse`]
+    /// would bend ([`omniphony_geometry::f32::inverse_room_scaled_direction`]).
+    #[inline]
+    pub fn inverse_direction(&self, position: [f32; 3]) -> [f32; 3] {
+        omniphony_geometry::f32::inverse_room_scaled_direction(
+            position,
+            self.ratio,
+            self.rear,
+            self.lower,
+            self.center_blend,
+        )
+    }
 }
 
 /// What a headphone render with a BRIR source pans onto

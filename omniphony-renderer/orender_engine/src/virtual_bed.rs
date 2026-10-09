@@ -216,7 +216,9 @@ fn speaker_pose_to_normalized(
             speaker.elevation,
             speaker.distance,
         );
-        let [x, y, z] = room.inverse([sx, sy, sz]);
+        // The entry states an angle: kept whatever the room's extent along
+        // it (a measured room can be lower than the entry's radius).
+        let [x, y, z] = room.inverse_direction([sx, sy, sz]);
         (speaker.name.clone(), x, y, z)
     }
 }
@@ -227,10 +229,14 @@ fn speaker_pose_to_normalized(
 /// polar branch of [`speaker_pose_to_normalized`] makes for a placement entry
 /// that states an angle. A corner channel is deliberately carried around by
 /// the room warp; a channel stated as an angle — a pose the bridge declared,
-/// or a height-tier label — must land on that angle whatever the room is.
+/// or a height-tier label — must land on that angle whatever the room is,
+/// a room lower or shorter than the unit radius included: the direction is
+/// drawn back into the room rather than clamped axis by axis
+/// ([`RoomRatios::inverse_direction`]), which bent a 30° height to 24.8° in
+/// a measured room of height ratio 0.4 (#803).
 fn angles_to_normalized(azimuth_deg: f32, elevation_deg: f32, room: RoomRatios) -> (f32, f32, f32) {
     let (sx, sy, sz) = renderer::spatial_vbap::spherical_to_adm(azimuth_deg, elevation_deg, 1.0);
-    let [x, y, z] = room.inverse([sx, sy, sz]);
+    let [x, y, z] = room.inverse_direction([sx, sy, sz]);
     (x, y, z)
 }
 
@@ -1845,6 +1851,59 @@ pub(crate) mod tests {
             z.atan2(horizontal).to_degrees(),
             (horizontal * horizontal + z * z).sqrt(),
         )
+    }
+
+    /// Azimuth/elevation a normalized pose renders at once warped with a
+    /// whole room (all five ratios and the blend).
+    fn rendered_angles_in(pos: (f32, f32, f32), room: RoomRatios) -> (f32, f32) {
+        let [px, py, pz] = room.scale([pos.0, pos.1, pos.2]);
+        (
+            px.atan2(py).to_degrees(),
+            pz.atan2((px * px + py * py).sqrt()).to_degrees(),
+        )
+    }
+
+    /// A channel placed by angle keeps its angle in a measured room that is
+    /// lower, or shorter to the rear, than its unit radius (#803): the
+    /// height tier at 30° and the top tier at 45° render at those
+    /// elevations through the room's warp, and so does a polar manual
+    /// entry, where the clamping inverse bent them (30° read 24.8°).
+    #[test]
+    fn angle_poses_keep_their_angles_in_a_low_measured_room() {
+        use RChannelLabel::{Ch, L, Lh, Lhs, Ls, Tbl, Tfl};
+        use renderer::binaural::brir::MeasuredRoom;
+        // The reviewer's room: 5 m wide, 2 m behind, 3 m ahead, a 1 m
+        // ceiling over the ears and 1.2 m of floor.
+        let room = MeasuredRoom {
+            box_m: [[-2.5, -2.0, -1.2], [2.5, 3.0, 1.0]],
+            estimated: false,
+        }
+        .ratios(0.5);
+        assert!((room.ratio[2] - 0.4).abs() < 1e-6 && (room.rear - 0.8).abs() < 1e-6);
+        let manual = bed_with_l_at(-30.0);
+        let cases: [(RChannelLabel, bool, PlacementPolicy<'_>, f32, f32); 7] = [
+            (Lh, false, PlacementPolicy::sphere(&[]), -30.0, 30.0),
+            (Ch, false, PlacementPolicy::sphere(&[]), 0.0, 30.0),
+            (Lhs, false, PlacementPolicy::sphere(&[]), -110.0, 30.0),
+            (Tfl, true, PlacementPolicy::sphere(&[]), -45.0, 45.0),
+            (Tbl, true, PlacementPolicy::sphere(&[]), -135.0, 45.0),
+            (Ls, false, PlacementPolicy::sphere(&[]), -110.0, 0.0),
+            (L, false, PlacementPolicy::manual(&manual), -30.0, 0.0),
+        ];
+        for (label, use_7_1, policy, want_az, want_el) in &cases {
+            let (_, x, y, z) =
+                resolve_virtual_bed_pose(*label, *use_7_1, policy, room, SurroundPlacement::Side)
+                    .unwrap_or_else(|| panic!("no pose for {label:?}"));
+            assert!(
+                x.abs() <= 1.0 && y.abs() <= 1.0 && z.abs() <= 1.0,
+                "{label:?}: inside the cube, got ({x}, {y}, {z})"
+            );
+            let (az, el) = rendered_angles_in((x, y, z), room);
+            assert!(
+                (az - want_az).abs() < 0.05 && (el - want_el).abs() < 0.05,
+                "{label:?}: renders at {az:.2}/{el:.2}, stated {want_az}/{want_el}"
+            );
+        }
     }
 
     /// A channel placed by angle — a sphere direction or a polar manual entry
