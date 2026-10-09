@@ -575,6 +575,11 @@ measured-room warp are exact and symmetric.
 faces that lie in one plane (every vertex within 1e-3 of the neighbour's
 plane, about 0.06°) and replaces each group by a fan around a virtual
 loudspeaker at the polygon's centre — its vertices' mean, back on the sphere.
+A group with a vertex inside its boundary is left alone: four loudspeakers a
+degree apart around a fifth read as coplanar within the tolerance, but the
+patch is a shallow dome whose apex is a loudspeaker, the hull's fan around it
+is already right, and a virtual centre would have silenced it (found in
+review, `a_loudspeaker_inside_a_flat_patch_keeps_its_faces`).
 The centre's gain is downmixed at `1/√n` over the polygon's loudspeakers
 through the `DummyRing` mechanism of the virtual poles, in every out-of-hull
 mode. At the centre every loudspeaker of the face plays at equal power (0.5

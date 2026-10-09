@@ -496,6 +496,50 @@ mod tests {
             // A ring closed by two poles has no planar face.
             let ring = NativeVbapLayout::from_speaker_dirs(&horizontal_7_layout(), mode).unwrap();
             assert_eq!(ring.n_centres, 0, "{mode:?}");
+            // Every real loudspeaker is still a vertex of some face.
+            for (name, layout, n) in [
+                ("cube", &cube, 8),
+                ("bbc", &bbc, 13),
+                ("7.1.4", &seven_one_four, 11),
+                ("ring", &ring, 7),
+            ] {
+                for i in 0..n {
+                    assert!(
+                        layout.ls_groups.iter().any(|face| face.contains(&i)),
+                        "{name} {mode:?}: speaker {i} is on no face"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Four loudspeakers a degree or two around a fifth read as coplanar
+    /// within the tolerance, but the fifth is inside the patch, not on its
+    /// boundary: the patch is a shallow dome, the hull's fan around the fifth
+    /// is right, and a virtual centre would silence it. Review of #810.
+    #[test]
+    fn a_loudspeaker_inside_a_flat_patch_keeps_its_faces() {
+        let dirs: [[f32; 2]; 8] = [
+            [-1.0, -1.0],
+            [1.0, -1.0],
+            [-1.0, 1.0],
+            [1.0, 1.0],
+            [0.0, 0.0],
+            [120.0, 0.0],
+            [-120.0, 0.0],
+            [0.0, 45.0],
+        ];
+        for mode in modes() {
+            let layout = NativeVbapLayout::from_speaker_dirs(&dirs, mode).unwrap();
+            assert!(
+                layout.ls_groups.iter().any(|face| face.contains(&4)),
+                "{mode:?}: the inner loudspeaker is on no face"
+            );
+            let g = layout.vbap_gains(0.0, 0.0, 0.0).unwrap();
+            assert!((g[4] - 1.0).abs() < 1e-3, "{mode:?}: inner got {}", g[4]);
+            for i in (0..dirs.len()).filter(|&i| i != 4) {
+                assert!(g[i].abs() < 1e-3, "{mode:?}: speaker {i} got {}", g[i]);
+            }
         }
     }
 

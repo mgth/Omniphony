@@ -488,6 +488,13 @@ fn cart_to_sph_deg(v: [f32; 3]) -> [f32; 2] {
 
 /// Replace every group of adjacent coplanar faces by a fan around a virtual
 /// centre: the group's boundary edges, each joined to the centre.
+///
+/// A group with a vertex inside its boundary is not a planar face but a
+/// shallow dome whose apex is a loudspeaker — four loudspeakers a degree
+/// apart around a fifth read as coplanar within [`COPLANAR_FACE_EPS`]. Its
+/// hull faces, the fan around that apex, are the right triangulation already,
+/// and a fan around a virtual centre would drop the apex from every face:
+/// such a group is left as it is.
 fn close_coplanar_faces(tri: &mut Triangulation) {
     let groups = coplanar_face_groups(&tri.u_spkr, &tri.ls_groups);
     if groups.is_empty() {
@@ -509,11 +516,17 @@ fn close_coplanar_faces(tri: &mut Triangulation) {
             .copied()
             .filter(|&(a, b)| !edges.contains(&(b, a)))
             .collect();
-        // The centre: the mean of the polygon's vertices, back on the sphere.
-        let mut sum = [0.0f32; 3];
         let mut vertices: Vec<usize> = boundary.iter().map(|&(a, _)| a).collect();
         vertices.sort_unstable();
         vertices.dedup();
+        let interior = edges
+            .iter()
+            .any(|&(a, _)| vertices.binary_search(&a).is_err());
+        if interior {
+            continue;
+        }
+        // The centre: the mean of the polygon's vertices, back on the sphere.
+        let mut sum = [0.0f32; 3];
         for &v in &vertices {
             for (acc, x) in sum.iter_mut().zip(tri.u_spkr[v]) {
                 *acc += x;
