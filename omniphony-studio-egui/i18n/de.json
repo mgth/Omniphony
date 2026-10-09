@@ -763,6 +763,7 @@
   "status.noEngine.body": "Studio ist die Steuerzentrale der Audio-Engine von Omniphony, und es gibt noch keine Engine zu steuern. Starte sie hier, oder spiele etwas in mpv-omniphony ab, das seine eigene mitbringt.",
   "status.noEngine.bodyRemote": "Studio bekommt keine Antwort von der Audio-Engine, die es steuern soll. Starte diese Engine, oder spiele etwas in mpv-omniphony ab, das seine eigene mitbringt.",
   "status.noEngine.start": "Audio-Engine starten",
+  "status.noEngine.starting": "Audio-Engine wird gestartet…",
   "status.noEngine.getPlayer": "mpv-omniphony herunterladen",
   "status.noEngine.autostartFailed": "Der automatische Start der Engine ist fehlgeschlagen: {error}\nIhr Protokoll: {log}",
   "status.error": "Fehler",
