@@ -1145,7 +1145,24 @@ pub fn vbap3d(
                 }
             }
 
-            downmix_dummy_rings(&mut gains, dummy_rings);
+            if folded_faded {
+                // The fade is the point here and the energy normalise below
+                // is skipped for it, so the centre downmix — which adds
+                // power to loudspeakers already playing — must not change
+                // the power the folded gains came with. Nothing changes
+                // when no centre has gain.
+                let before: f32 = gains.iter().map(|g| g * g).sum();
+                downmix_dummy_rings(&mut gains, dummy_rings);
+                let after: f32 = gains.iter().map(|g| g * g).sum();
+                if after > 1e-30 && (after - before).abs() > 1e-12 {
+                    let k = (before / after).sqrt();
+                    for g in gains.iter_mut() {
+                        *g *= k;
+                    }
+                }
+            } else {
+                downmix_dummy_rings(&mut gains, dummy_rings);
+            }
 
             let out = &mut gain_mtx[ns * n_speakers..(ns + 1) * n_speakers];
             if folded_faded {

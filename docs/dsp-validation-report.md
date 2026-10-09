@@ -593,6 +593,13 @@ member crossing an edge counted twice — 0.115 in L2 norm over 0.00003° at
 the rear quad's fan edge on the 7.1.4, and the same at every hull edge
 before this change. The loop now takes the first face that holds the member,
 as the pure path always did (`spread_sources_are_continuous_across_edges`).
+
+Third round: in `Fade` the pure path skips the energy normalise so the fold's
+attenuation survives, and the centre downmix — power added to loudspeakers
+already playing — amplified a source just below the hull by 1.02 dB instead
+of fading it. The downmix now restores the power the folded gains came with
+(`the_fade_survives_the_centre_downmix`: 0.977 as on the parent); nothing
+changes when no centre has gain.
 The centre's gain is downmixed at `1/√n` over the polygon's loudspeakers
 through the `DummyRing` mechanism of the virtual poles, in every out-of-hull
 mode. At the centre every loudspeaker of the face plays at equal power (0.5

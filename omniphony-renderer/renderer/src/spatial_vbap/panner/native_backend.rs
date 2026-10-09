@@ -742,4 +742,43 @@ mod tests {
             assert!(g[tsl] < 1e-4 && g[tsr] < 1e-4, "{mode:?}");
         }
     }
+
+    /// In `Fade` the fold's attenuation is the point, and the pure path
+    /// skips the energy normalise so it survives. The centre downmix adds
+    /// power to loudspeakers already playing, which amplified a source
+    /// below the hull by 1.02 dB instead of fading it: the downmix now keeps
+    /// the power the folded gains came with. Review of #810.
+    #[test]
+    fn the_fade_survives_the_centre_downmix() {
+        let dirs: [[f32; 2]; 8] = [
+            [45.0, 0.0],
+            [-45.0, 0.0],
+            [135.0, 0.0],
+            [-135.0, 0.0],
+            [45.0, 15.0],
+            [-45.0, 15.0],
+            [135.0, 15.0],
+            [-135.0, 15.0],
+        ];
+        let layout = NativeVbapLayout::from_speaker_dirs(&dirs, OutOfHullMode::Fade).unwrap();
+        assert!(layout.n_centres > 0, "the rear quad has a centre");
+        let power = |g: &Gains| (0..g.len()).map(|i| g[i] * g[i]).sum::<f32>();
+        // Just below the hull behind the right back: the parent's fade,
+        // 0.977 (-0.10 dB), not the 1.265 (+1.02 dB) the downmix made of it.
+        let g = layout.vbap_gains(-151.0, -4.0, 0.0).unwrap();
+        let p = power(&g);
+        assert!(
+            (p - 0.9767).abs() < 2e-3,
+            "power {p}, wanted the parent's 0.9767"
+        );
+        for i in 0..g.len() {
+            assert!(g[i] <= 1.0, "speaker {i} at {}", g[i]);
+        }
+        // Deeper below, the fade keeps decaying.
+        let deeper = power(&layout.vbap_gains(-151.0, -30.0, 0.0).unwrap());
+        assert!(deeper < p, "deeper {deeper} vs {p}");
+        // Above the hull's horizon the direction is in a face: unit power.
+        let inside = power(&layout.vbap_gains(-151.0, 4.0, 0.0).unwrap());
+        assert!((inside - 1.0).abs() < 1e-3, "inside {inside}");
+    }
 }
