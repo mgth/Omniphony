@@ -539,10 +539,10 @@ jobs:
             echo "$workspace: lockfile valid at 99.0.0"
           done
 
-      # The native Studio's translation parity (omniphony-studio-egui/i18n),
-      # reported but never blocking a merge: incomplete locales fall back to
-      # English at runtime, so this is a heads-up, not a gate. Emits
-      # ::warning:: annotations on the PR. A plain node script, no npm install.
+      # Broader catalogue diagnostics (orphaned keys and English leftovers).
+      # Missing translations already fail the core's i18n tests above; this
+      # script also emits ::warning:: annotations on the PR for the other
+      # findings. A plain node script, no npm install.
       - name: Check i18n parity (warn-only)
         continue-on-error: true
         run: node omniphony-studio-egui/scripts/check-i18n.mjs

@@ -118,7 +118,13 @@ node omniphony-studio-egui/scripts/check-options-schema.mjs options-schema.json
 ```
 
 The first compares every locale with `i18n/en.json`; CI runs it without
-`--strict`, as a warning. The second is a hard gate: every option the engine
+`--strict`, as a warning for orphaned keys and English leftovers. Missing keys
+are a hard gate in the core's `every_catalogue_contains_all_english_keys` test:
+all locales are complete, so add translations in every catalogue whenever you
+add an English key. The test reads the raw JSON before the runtime English
+fallback can hide a gap. Run it with
+`cargo test -p omniphony-studio-core --locked i18n::tests` from this directory.
+The second script is a hard gate: every option the engine
 declares must resolve its label and help keys in `i18n/en.json`. CI runs it
 on the engine's schema and on the standalone host's (`host_audio`'s
 `dump_host_options_schema`).

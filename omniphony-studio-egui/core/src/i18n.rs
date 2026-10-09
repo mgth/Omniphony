@@ -220,6 +220,33 @@ mod tests {
     }
 
     #[test]
+    fn every_catalogue_contains_all_english_keys() {
+        // Read the raw catalogues: catalogues() merges in English, hiding
+        // missing translations. With every locale complete, the ratchet is
+        // simply zero missing keys; there is no debt baseline to maintain.
+        let parse = |name: &str, json: &str| {
+            serde_json::from_str::<HashMap<String, String>>(json)
+                .unwrap_or_else(|error| panic!("{name}.json: {error}"))
+        };
+        let english = parse(CATALOGUES[0].0, CATALOGUES[0].1);
+        let mut missing = Vec::new();
+        for (name, json) in &CATALOGUES[1..] {
+            let translated = parse(name, json);
+            for key in english.keys() {
+                if !translated.contains_key(key) {
+                    missing.push(format!("{name}.json: {key}"));
+                }
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "Translate new English keys in every i18n catalogue. Missing translations:\n{}",
+            missing.join("\n")
+        );
+    }
+
+    #[test]
     fn each_catalogue_actually_translates() {
         assert_eq!(catalogue("en")["common.cancel"], "Cancel");
         for name in ["fr", "de", "ja", "es", "it", "pt-BR", "zh-CN"] {
