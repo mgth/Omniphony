@@ -7,7 +7,6 @@ use super::{
     BackendCapabilities, GainModel, GainScratch, HintSlot, NeighbourHint, RenderRequest,
     foreign_scratch,
 };
-use crate::spatial_vbap::MAX_SPEAKERS;
 use crate::speaker_layout::SpeakerLayout;
 use omniphony_geometry::f32::vec3::distance_sq;
 
@@ -57,35 +56,9 @@ const RIDGE: f64 = 1e-6;
 const ENTRY_TOLERANCE: f64 = 1e-9;
 
 impl BarycenterBackend {
-    /// The barycenter model for `speaker_positions`, or an error when there
-    /// are more than [`MAX_SPEAKERS`] of them: the limit of the renderer's
-    /// gain sets, which this backend no longer adds to (its solver works on a
-    /// scratch sized for the layout). Refused here, at configuration time,
-    /// where the error reaches the caller (a recompute reports it to Studio).
-    pub fn try_new(speaker_positions: Vec<[f32; 3]>, localize: f32) -> Result<Self> {
-        if speaker_positions.len() > MAX_SPEAKERS {
-            anyhow::bail!(
-                "the barycenter backend handles at most {MAX_SPEAKERS} spatialized speakers; \
-                 this layout has {}. Pick another backend or spatialize fewer speakers.",
-                speaker_positions.len()
-            );
-        }
-        Ok(Self::new(speaker_positions, localize))
-    }
-
-    /// The barycenter model for `speaker_positions`.
-    ///
-    /// # Panics
-    ///
-    /// With more than [`MAX_SPEAKERS`] positions; [`Self::try_new`] returns an
-    /// error instead.
+    /// The barycenter model for `speaker_positions`, however many they are:
+    /// the solver works on a scratch sized for the layout.
     pub fn new(speaker_positions: Vec<[f32; 3]>, localize: f32) -> Self {
-        assert!(
-            speaker_positions.len() <= MAX_SPEAKERS,
-            "barycenter backend speaker count {} exceeds MAX_SPEAKERS {}",
-            speaker_positions.len(),
-            MAX_SPEAKERS
-        );
         // Start from the identity room so the memo always holds a valid entry.
         let room = RoomParams {
             ratio: [1.0, 1.0, 1.0],
@@ -862,11 +835,10 @@ mod tests {
     fn layouts() -> Vec<Vec<[f32; 3]>> {
         let home = home_layout();
         let mut rng = Lcg(7);
-        let full: Vec<[f32; 3]> = (0..MAX_SPEAKERS)
+        let full: Vec<[f32; 3]> = (0..24)
             .map(|_| [rng.next(), rng.next(), rng.next()])
             .collect();
-        // Wider than the renderer's gain sets: the solver has no width of
-        // its own.
+        // Past any standard layout: the solver has no width of its own.
         let wide: Vec<[f32; 3]> = (0..WIDE)
             .map(|_| [rng.next(), rng.next(), rng.next()])
             .collect();

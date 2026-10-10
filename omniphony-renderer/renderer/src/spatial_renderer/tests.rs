@@ -2235,38 +2235,139 @@ fn try_renderer_for_layout(layout: SpeakerLayout) -> Result<SpatialRenderer> {
     })
 }
 
-/// A layout larger than the renderer's gains hold (`MAX_SPEAKERS`, LFE
-/// included) is refused with a reason when the renderer is built: every
-/// backend sized its gains by it and panicked out of bounds on the
-/// table-building workers. One more speaker than the limit is enough.
+/// A layout wider than the 24 speakers the renderer's gain sets used to hold
+/// (#745) builds and renders like any other, in every ramp mode, with and
+/// without a crossover. An object taken round the room reaches every speaker
+/// of the layout, those past the 24th included, and what each speaker plays
+/// is the object's signal at the gain the renderer reports for it.
 #[test]
-fn a_layout_past_the_speaker_limit_is_refused_with_a_reason() {
-    use crate::spatial_vbap::MAX_SPEAKERS;
+fn a_layout_wider_than_24_speakers_renders() {
     use crate::speaker_layout::Speaker;
-    let ring = |n: usize| {
-        SpeakerLayout::from_speakers(
-            (0..n)
-                .map(|i| {
-                    Speaker::new(
-                        format!("S{i}"),
-                        -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
-                        if i % 2 == 0 { 0.0 } else { 40.0 },
-                    )
-                })
-                .collect(),
-        )
-        .unwrap()
+    const BLOCK: usize = 64;
+    // Two rings of speakers, ear level and 40° up.
+    let ring = |n: usize, crossover: bool| {
+        let mut speakers: Vec<Speaker> = (0..n)
+            .map(|i| {
+                Speaker::new(
+                    format!("S{i}"),
+                    -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
+                    if i % 2 == 0 { 0.0 } else { 40.0 },
+                )
+            })
+            .collect();
+        if crossover {
+            // Band-limited speakers: the objects go through the crossover
+            // and the unified table.
+            speakers[0].freq_low = Some(80.0);
+            speakers[1].freq_low = Some(200.0);
+        }
+        SpeakerLayout::from_speakers(speakers).unwrap()
     };
-    assert!(try_renderer_for_layout(ring(MAX_SPEAKERS)).is_ok());
-    let error = try_renderer_for_layout(ring(MAX_SPEAKERS + 1))
-        .err()
-        .expect("refused");
-    let error = format!("{error:#}");
-    assert!(
-        error.contains(&format!("{} speakers", MAX_SPEAKERS + 1))
-            && error.contains(&format!("at most {MAX_SPEAKERS}")),
-        "{error}"
-    );
+    for (n, crossover, ramp_mode) in [
+        (25, false, RampMode::Frame),
+        (32, false, RampMode::Sample),
+        (64, false, RampMode::Interp),
+        (40, true, RampMode::Frame),
+        (64, true, RampMode::Sample),
+        (33, true, RampMode::Interp),
+    ] {
+        let context = |step: usize| {
+            format!("{n} speakers, crossover {crossover}, {ramp_mode:?}, step {step}")
+        };
+        let mut r = try_renderer_for_layout(ring(n, crossover))
+            .unwrap_or_else(|e| panic!("{}: {e:#}", context(0)));
+        r.set_synchronous_stage_builds(true);
+        r.renderer_control().live.write().options.ramp_mode = ramp_mode;
+        let pcm = noise_block(1, BLOCK, n);
+        // Let the object's gain slew settle at unity before anything is
+        // measured: a quarter of a second.
+        let at = |azimuth: f32| {
+            let (x, y, z) = crate::spatial_vbap::spherical_to_adm(azimuth, 20.0, 1.0);
+            [SpatialChannelEvent {
+                channel_idx: 0,
+                is_bed: false,
+                gain_db: Some(0.0),
+                ramp_length: Some(0),
+                size: Some([0.0; 3]),
+                position: Some([x as f64, y as f64, z as f64]),
+                sample_pos: Some(0),
+            }]
+        };
+        let mut samples = Vec::new();
+        for block in 0..48_000 / 4 / BLOCK {
+            let events = at(0.0);
+            let events: &[SpatialChannelEvent] = if block == 0 { &events } else { &[] };
+            samples = r
+                .render_frame(&pcm, 1, events, samples, false)
+                .expect("render")
+                .samples;
+        }
+        let mut heard = vec![false; n];
+        // Round the room between the two rings, a step per speaker pair.
+        for step in 0..n {
+            let events = at(-180.0 + 360.0 * step as f32 / n as f32);
+            let mut frame = r
+                .render_frame(&pcm, 1, &events, samples, true)
+                .expect("render");
+            // Two more blocks on that position: the gains hold across the
+            // last one in every ramp mode.
+            for _ in 0..2 {
+                frame = r
+                    .render_frame(&pcm, 1, &[], frame.samples, true)
+                    .expect("render");
+            }
+            assert_eq!(frame.n_channels, n, "{}", context(step));
+            assert_eq!(frame.samples.len(), BLOCK * n, "{}", context(step));
+            let (_, gains) = frame
+                .object_gains
+                .iter()
+                .find(|(channel, _)| *channel == 0)
+                .unwrap_or_else(|| panic!("{}: no metered gains", context(step)));
+            assert_eq!(gains.len(), n, "{}", context(step));
+            assert!(
+                gains.iter().all(|gain| gain.is_finite() && *gain >= 0.0),
+                "{}: {gains:?}",
+                context(step)
+            );
+            for (speaker, heard) in heard.iter_mut().enumerate() {
+                let peak = frame
+                    .samples
+                    .chunks_exact(n)
+                    .map(|sample| sample[speaker].abs())
+                    .fold(0.0f32, f32::max);
+                assert!(peak.is_finite(), "{}", context(step));
+                // A speaker plays if and only if the object has gain on it.
+                assert_eq!(
+                    peak > 0.0,
+                    gains[speaker] > 0.0,
+                    "{}: speaker {speaker} peaks at {peak} with gain {}",
+                    context(step),
+                    gains[speaker]
+                );
+                *heard |= peak > 0.0;
+                if !crossover {
+                    // One band, no delay, unit master gain: the speaker's
+                    // signal is the object's, times its gain.
+                    for (sample, input) in frame.samples.chunks_exact(n).zip(&pcm) {
+                        assert!(
+                            (sample[speaker] - input * gains[speaker]).abs() <= 1e-5,
+                            "{}: speaker {speaker} plays {} for {input} at gain {}",
+                            context(step),
+                            sample[speaker],
+                            gains[speaker]
+                        );
+                    }
+                }
+            }
+            samples = frame.samples;
+        }
+        let silent: Vec<usize> = (0..n).filter(|speaker| !heard[*speaker]).collect();
+        assert!(
+            silent.is_empty(),
+            "{}: speakers {silent:?} never played",
+            context(n)
+        );
+    }
 }
 
 /// Render one object between two speakers on the plain 7.1.4 layout, after
