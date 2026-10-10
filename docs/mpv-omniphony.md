@@ -36,6 +36,32 @@ over OSC, showing per-object positions in the room and live meters.*
 4. The output channel map comes from `orender_channel_layout` (per-speaker labels
    → `mp_chmap`).
 
+## Limit: 64 output channels
+
+**Through mpv, a speaker layout can have at most 64 speakers** (every speaker
+of the layout counts, LFE and non-spatialized ones included).
+
+The engine itself has no such limit: it renders layouts of any width, and is
+tested up to 128 speakers. The limit is mpv's. The rendered audio goes back
+through mpv's own audio chain (step 2 above), which describes it with a channel
+map of at most 64 channels (`MP_NUM_CHANNELS`), and every mpv audio output is
+built on that. FFmpeg's resampler, which mpv uses for its audio conversions,
+stops at 64 channels as well.
+
+What happens with a wider layout: `ad_orender` cannot describe the output to
+mpv, so the track plays through mpv's native decoder, without spatial
+rendering, for the rest of the track. mpv logs
+`renderer reported no output layout; decoding natively instead`.
+
+This limit is accepted, not a defect waiting for a fix: lifting it would mean
+changing mpv's channel maps and each of its audio outputs in the fork, and
+doing without mpv's audio conversions past 64 channels.
+
+**For a layout of more than 64 speakers, use the standalone `orender` host.**
+It writes to its own audio output (PipeWire, ASIO, CoreAudio, or a file), which
+does not go through mpv, and takes a file or a live stream as its input
+(`render.input_mode` in the shared config). Studio supervises it the same way.
+
 ## Requirements
 
 - **The engine library (`liborender`) — loaded at runtime, not linked.** mpv
@@ -76,9 +102,10 @@ over OSC, showing per-object positions in the room and live meters.*
   use): `~/.config/omniphony/config.yaml` on Linux and macOS,
   `%ProgramData%\omniphony\config.yaml` on Windows, or
   `$OMNIPHONY_CONFIG_DIR/config.yaml` when that is set. It carries the speaker
-  layout, the output mode (speakers or binaural) and optionally
-  `render.bridge_path`. Without it the engine runs on its defaults: a 7.1.4
-  speaker render, OSC off.
+  layout (at most 64 speakers through mpv, see
+  [above](#limit-64-output-channels)), the output mode (speakers or binaural)
+  and optionally `render.bridge_path`. Without it the engine runs on its
+  defaults: a 7.1.4 speaker render, OSC off.
 
 ### macOS prebuilt releases (Apple Silicon)
 
