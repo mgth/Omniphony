@@ -1115,6 +1115,19 @@ impl AppState {
         Some(out)
     }
 
+    /// The frame a loudspeaker stands in: the display frame without the
+    /// sphere reading. The reading is how the binaural stage hears a source's
+    /// position; a speaker's position is where it stands, drawn and edited
+    /// as it is, including the reference layout shown on the direct path.
+    /// One definition for the scene's projection and the speaker gizmo's
+    /// inverse, so a speaker lands where it is drawn.
+    pub fn speaker_frame(&self) -> RoomRatio {
+        RoomRatio {
+            sphere: false,
+            ..self.display_room()
+        }
+    }
+
     /// Whether the renderer reads positions on the listener's sphere
     /// (`binaural.sphereCoordinates`, #773): the option, on the direct
     /// headphone path, the one that reads a direction off a position (the

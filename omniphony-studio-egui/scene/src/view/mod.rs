@@ -483,11 +483,9 @@ pub fn build_frame(
     }
 
     // Speakers. A speaker's position is where it stands, not a position
-    // the binaural stage reads: the sphere reading is the sources' alone.
-    let speaker_room = RoomRatio {
-        sphere: false,
-        ..room.clone()
-    };
+    // the binaural stage reads: the sphere reading is the sources' alone
+    // (`AppState::speaker_frame`, which the speaker gizmo inverts through).
+    let speaker_room = live.app.speaker_frame();
     let speaker_visuals = speakers::collect(
         live,
         settings,
