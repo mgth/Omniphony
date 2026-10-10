@@ -9,6 +9,7 @@ mod neighbour_hint;
 mod room_transform;
 pub mod size_to_spread;
 mod vbap_backend;
+mod volumetric_backend;
 
 use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical, spherical_to_adm};
 use crate::speaker_layout::SpeakerLayout;
@@ -31,6 +32,9 @@ pub use neighbour_hint::{HintSlot, NeighbourHint};
 pub use room_transform::room_scaled_position;
 pub use size_to_spread::{SizeToSpreadMode, reduce_size_to_spread};
 pub use vbap_backend::{VbapBackend, VbapSpreadParams};
+pub use volumetric_backend::{
+    CentralDistribution, LoudspeakerSurface, VolumetricBackend, VolumetricParams,
+};
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct BackendCapabilities {
@@ -57,6 +61,7 @@ pub struct BackendCapabilities {
 pub fn canonical_builtin_backend_id(raw: &str) -> Option<&'static str> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "vbap" => Some("vbap"),
+        "volumetric" => Some("volumetric"),
         "barycenter" | "barycentre" => Some("barycenter"),
         "experimental_distance" | "distance" | "distance_based" => Some("experimental_distance"),
         "hybrid" => Some("hybrid"),

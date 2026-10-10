@@ -26,6 +26,22 @@ fn sph_to_cart(az_rad: f32, el_rad: f32) -> [f32; 3] {
     [cos_el * az_rad.cos(), cos_el * az_rad.sin(), el_rad.sin()]
 }
 
+/// The unit vector of a direction given in degrees, in the triangulation's
+/// frame: what `vbap3d` tests the faces with, for callers that sweep the
+/// faces themselves (the loudspeaker surface of the volumetric backend).
+#[inline]
+pub(crate) fn unit_direction_deg(az_deg: f32, el_deg: f32) -> [f32; 3] {
+    sph_to_cart(
+        az_deg * std::f32::consts::PI / 180.0,
+        el_deg * std::f32::consts::PI / 180.0,
+    )
+}
+
+/// A face contains a direction when every gain of `inverse · direction` is
+/// above this: slightly negative, so a direction on an edge is in both faces
+/// that share it rather than in neither.
+pub(crate) const FACE_HIT_TOLERANCE: f32 = -0.001;
+
 /// Normalise a 3-vector; returns the original vector if the norm is tiny.
 #[inline]
 fn normalise3(v: [f32; 3]) -> [f32; 3] {
@@ -317,7 +333,7 @@ fn direction_in_hull(u: [f32; 3], layout_inv_mtx: &[[f32; 9]]) -> bool {
         let g0 = inv[0] * u[0] + inv[1] * u[1] + inv[2] * u[2];
         let g1 = inv[3] * u[0] + inv[4] * u[1] + inv[5] * u[2];
         let g2 = inv[6] * u[0] + inv[7] * u[1] + inv[8] * u[2];
-        g0.min(g1).min(g2) > -0.001
+        g0.min(g1).min(g2) > FACE_HIT_TOLERANCE
     })
 }
 
@@ -1012,7 +1028,7 @@ pub fn vbap3d(
                     let g2 = inv[6] * u[0] + inv[7] * u[1] + inv[8] * u[2];
 
                     let min_val = g0.min(g1).min(g2);
-                    if min_val > -0.001 {
+                    if min_val > FACE_HIT_TOLERANCE {
                         let rms = (g0 * g0 + g1 * g1 + g2 * g2).sqrt();
                         if rms > 1e-30 {
                             let raw = [g0 / rms, g1 / rms, g2 / rms];
@@ -1098,7 +1114,7 @@ pub fn vbap3d(
                 let g2 = inv[6] * u[0] + inv[7] * u[1] + inv[8] * u[2];
 
                 let min_val = g0.min(g1).min(g2);
-                if min_val > -0.001 {
+                if min_val > FACE_HIT_TOLERANCE {
                     let rms = (g0 * g0 + g1 * g1 + g2 * g2).sqrt();
                     if rms > 1e-30 {
                         let raw = [g0 / rms, g1 / rms, g2 / rms];

@@ -129,6 +129,9 @@ pub enum BackendBuildPlan {
     /// `VbapTopologyBuildPlan::build_gain_model` as a fallback when the full panner
     /// build fails on a ≥3 but still-degenerate set.
     Degenerate(DegenerateVbapBuildPlan),
+    /// VBAP with the object's depth inside the loudspeaker surface rendered
+    /// as a crossfade towards a central distribution.
+    Volumetric(VolumetricBuildPlan),
     Barycenter(BarycenterBuildPlan),
     ExperimentalDistance(ExperimentalDistanceBuildPlan),
     Hybrid(HybridBuildPlan),
@@ -145,6 +148,7 @@ impl BackendBuildPlan {
         match self {
             BackendBuildPlan::Vbap(plan) => plan.build_gain_model(LiveEvaluationMode::Realtime),
             BackendBuildPlan::Degenerate(plan) => plan.build_gain_model(),
+            BackendBuildPlan::Volumetric(plan) => plan.build_gain_model(),
             BackendBuildPlan::Barycenter(plan) => plan.build_gain_model(),
             BackendBuildPlan::ExperimentalDistance(plan) => plan.build_gain_model(),
             BackendBuildPlan::Hybrid(plan) => plan.build_gain_model(),
@@ -169,6 +173,38 @@ impl DegenerateVbapBuildPlan {
             self.positions.clone(),
             self.omni.clone(),
         )))
+    }
+}
+
+/// The volumetric backend's plan: the VBAP it pans with, plus how far each
+/// of its loudspeakers stands from the listener, which the VBAP plan's
+/// directions do not say.
+#[derive(Clone)]
+pub struct VolumetricBuildPlan {
+    pub vbap: VbapTopologyBuildPlan,
+    /// Per spatializable speaker, in `vbap.positions` order, its distance from
+    /// the listener in the room the directions were placed in.
+    pub speaker_radii: Vec<f32>,
+    /// Tuning, baked at build from the param bag (key = backend id); a change
+    /// rebuilds the topology.
+    pub params: crate::render_backend::VolumetricParams,
+}
+
+impl VolumetricBuildPlan {
+    pub fn build_gain_model(&self) -> Result<Box<dyn GainModel>> {
+        let panner = match self.vbap.build_panner() {
+            Ok(panner) => panner,
+            // The same degradation as plain VBAP: a layout that cannot be
+            // triangulated has no surface to measure depth against either.
+            Err(error) => return Ok(self.vbap.degenerate_fallback(&error)),
+        };
+        let vbap = crate::render_backend::VbapBackend::new(panner, self.vbap.spread_params());
+        Ok(Box::new(crate::render_backend::VolumetricBackend::new(
+            vbap,
+            &self.vbap.positions,
+            &self.speaker_radii,
+            self.params,
+        )?))
     }
 }
 
@@ -240,61 +276,77 @@ pub struct VbapTopologyBuildPlan {
 }
 
 impl VbapTopologyBuildPlan {
-    pub fn build_gain_model(
-        &self,
-        _evaluation_mode: LiveEvaluationMode,
-    ) -> Result<Box<dyn GainModel>> {
-        // The panner is geometry-only: it computes gains directly per position and
-        // owns no table, so the evaluation mode does not affect how it is built.
-        // Any precomputation happens in the evaluation layer that samples it.
-        let vbap = match crate::spatial_vbap::VbapPanner::new(
+    /// The panner this plan describes, or the triangulation's error.
+    ///
+    /// The panner is geometry-only: it computes gains directly per position
+    /// and owns no table, so the evaluation mode does not affect how it is
+    /// built. Any precomputation happens in the evaluation layer that samples
+    /// it.
+    pub fn build_panner(&self) -> Result<crate::spatial_vbap::VbapPanner, String> {
+        crate::spatial_vbap::VbapPanner::new(
             &self.positions,
             self.azimuth_resolution,
             self.elevation_resolution,
             0.0,
             self.out_of_hull_mode,
-        ) {
-            Ok(panner) => panner.with_negative_z(self.allow_negative_z),
-            // Degenerate geometry (collinear/coplanar, or a speaker at the
-            // listener) that can't be triangulated — most often a crossover band
-            // that drops below a triangulable speaker set. Don't kill the engine:
-            // degrade to the triangulation-free directional pan and warn loudly so
-            // it surfaces in the log (stderr + Studio log panel) instead of failing
-            // silently with no audio.
-            Err(e) => {
-                let names: Vec<&str> = self
-                    .layout
-                    .speakers
-                    .iter()
-                    .filter(|s| s.spatialize)
-                    .map(|s| s.name.as_str())
-                    .collect();
-                log::warn!(
-                    "VBAP triangulation failed for {} spatializable speaker(s) {:?}: {}. \
-                     Falling back to degenerate directional pan (no triangulation) — audio \
-                     continues, but this layout/band cannot use full VBAP. Check the speaker \
-                     geometry (collinear/coplanar speakers, or one placed at the listener).",
-                    self.positions.len(),
-                    names,
-                    e
-                );
-                return Ok(Box::new(DegenerateVbapBackend::with_omni(
-                    self.positions.clone(),
-                    collect_omni_mask(&self.layout),
-                )));
-            }
-        };
+        )
+        .map(|panner| panner.with_negative_z(self.allow_negative_z))
+    }
 
+    /// The spread tuning this plan bakes into its backend.
+    pub fn spread_params(&self) -> crate::render_backend::VbapSpreadParams {
+        crate::render_backend::VbapSpreadParams {
+            spread_min: self.spread_min,
+            spread_max: self.spread_max,
+            spread_from_distance: self.spread_from_distance,
+            spread_distance_range: self.spread_distance_range,
+            spread_distance_curve: self.spread_distance_curve,
+            size_to_spread_mode: self.size_to_spread_mode,
+        }
+    }
+
+    /// The model to fall back on when the triangulation failed with `error`.
+    ///
+    /// Degenerate geometry (collinear/coplanar, or a speaker at the listener)
+    /// that can't be triangulated — most often a crossover band that drops
+    /// below a triangulable speaker set. Don't kill the engine: degrade to
+    /// the triangulation-free directional pan and warn loudly so it surfaces
+    /// in the log (stderr + Studio log panel) instead of failing silently
+    /// with no audio.
+    pub fn degenerate_fallback(&self, error: &str) -> Box<dyn GainModel> {
+        let names: Vec<&str> = self
+            .layout
+            .speakers
+            .iter()
+            .filter(|s| s.spatialize)
+            .map(|s| s.name.as_str())
+            .collect();
+        log::warn!(
+            "VBAP triangulation failed for {} spatializable speaker(s) {:?}: {}. \
+             Falling back to degenerate directional pan (no triangulation) — audio \
+             continues, but this layout/band cannot use full VBAP. Check the speaker \
+             geometry (collinear/coplanar speakers, or one placed at the listener).",
+            self.positions.len(),
+            names,
+            error
+        );
+        Box::new(DegenerateVbapBackend::with_omni(
+            self.positions.clone(),
+            collect_omni_mask(&self.layout),
+        ))
+    }
+
+    pub fn build_gain_model(
+        &self,
+        _evaluation_mode: LiveEvaluationMode,
+    ) -> Result<Box<dyn GainModel>> {
+        let vbap = match self.build_panner() {
+            Ok(panner) => panner,
+            Err(error) => return Ok(self.degenerate_fallback(&error)),
+        };
         Ok(Box::new(crate::render_backend::VbapBackend::new(
             vbap,
-            crate::render_backend::VbapSpreadParams {
-                spread_min: self.spread_min,
-                spread_max: self.spread_max,
-                spread_from_distance: self.spread_from_distance,
-                spread_distance_range: self.spread_distance_range,
-                spread_distance_curve: self.spread_distance_curve,
-                size_to_spread_mode: self.size_to_spread_mode,
-            },
+            self.spread_params(),
         )))
     }
 }
@@ -484,6 +536,14 @@ impl TopologyBuildPlan {
                 self.evaluation_mode().as_str(),
                 plan.positions.len()
             ),
+            BackendBuildPlan::Volumetric(plan) => format!(
+                "gain_model=volumetric evaluation_mode={} central={} depth_curve={} azimuth_resolution={} elevation_resolution={}",
+                self.evaluation_mode().as_str(),
+                plan.params.central.as_str(),
+                plan.params.depth_curve,
+                plan.vbap.azimuth_resolution,
+                plan.vbap.elevation_resolution,
+            ),
             BackendBuildPlan::ExperimentalDistance(plan) => format!(
                 "gain_model=experimental_distance evaluation_mode={} speakers={}",
                 self.evaluation_mode().as_str(),
@@ -514,6 +574,7 @@ fn inner_backend_summary(plan: &BackendBuildPlan) -> &'static str {
     match plan {
         BackendBuildPlan::Vbap(_) => "vbap",
         BackendBuildPlan::Degenerate(_) => "vbap",
+        BackendBuildPlan::Volumetric(_) => "volumetric",
         BackendBuildPlan::Barycenter(_) => "barycenter",
         BackendBuildPlan::ExperimentalDistance(_) => "experimental_distance",
         BackendBuildPlan::Hybrid(_) => "hybrid",
@@ -738,6 +799,35 @@ fn barycenter_localize(ctx: &BackendBuildCtx<'_>, backend_id: &str) -> f32 {
         .unwrap_or_else(|| crate::live_params::BarycenterLiveParams::default().localize)
 }
 
+/// The volumetric tuning, read from the param bag under `backend_id`, each
+/// missing or invalid key falling back to the model default.
+fn volumetric_params(
+    ctx: &BackendBuildCtx<'_>,
+    backend_id: &str,
+) -> crate::render_backend::VolumetricParams {
+    use crate::backend_params::ParamValue;
+    use crate::render_backend::{CentralDistribution, VolumetricParams};
+    let defaults = VolumetricParams::default();
+    VolumetricParams {
+        central: ctx
+            .backend_param(backend_id, "central")
+            .and_then(ParamValue::as_str)
+            .and_then(CentralDistribution::parse)
+            .unwrap_or(defaults.central),
+        depth_curve: ctx
+            .backend_param(backend_id, "depth_curve")
+            .and_then(ParamValue::as_f32)
+            .filter(|curve| curve.is_finite())
+            .map(|curve| {
+                curve.clamp(
+                    VolumetricParams::DEPTH_CURVE_MIN,
+                    VolumetricParams::DEPTH_CURVE_MAX,
+                )
+            })
+            .unwrap_or(defaults.depth_curve),
+    }
+}
+
 /// The experimental_distance tuning params, read from the param bag under
 /// `backend_id` with each missing key falling back to the model default.
 fn experimental_params(
@@ -807,6 +897,34 @@ fn build_inner_backend_plan(
             vbap_spread_params(ctx, backend_id),
             vbap_out_of_hull_mode(ctx, backend_id),
         ),
+        // The VBAP it pans with is tuned under its own id (spread, out of
+        // hull), so a volumetric render is set up independently of a plain
+        // VBAP one.
+        "volumetric" => {
+            let vbap = build_vbap_build_plan(
+                ctx.layout,
+                ctx.live,
+                ctx.room,
+                ctx.backend_rebuild_params?,
+                vbap_spread_params(ctx, backend_id),
+                vbap_out_of_hull_mode(ctx, backend_id),
+            )?;
+            Some(match vbap {
+                BackendBuildPlan::Vbap(vbap) => BackendBuildPlan::Volumetric(VolumetricBuildPlan {
+                    speaker_radii: ctx.layout.spatializable_radii_for_room(
+                        ctx.room.ratio,
+                        ctx.room.rear,
+                        ctx.room.lower,
+                        ctx.room.center_blend,
+                    ),
+                    vbap,
+                    params: volumetric_params(ctx, backend_id),
+                }),
+                // Too few speakers to triangulate: no surface to measure depth
+                // against, so the directional fallback as for plain VBAP.
+                degenerate => degenerate,
+            })
+        }
         _ => None,
     }
 }
@@ -938,6 +1056,7 @@ impl PluginRegistry<dyn BackendFactory> {
     pub fn builtin() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(VbapFactory));
+        registry.register(Box::new(VolumetricFactory));
         registry.register(Box::new(BarycenterFactory));
         registry.register(Box::new(ExperimentalDistanceFactory));
         registry.register(Box::new(HybridFactory));
@@ -951,6 +1070,102 @@ impl Default for PluginRegistry<dyn BackendFactory> {
     }
 }
 
+/// The VBAP tunables: the spread policy and the out-of-hull rendering.
+/// Declared by the VBAP backend and by the backends built on it.
+fn vbap_param_specs() -> Vec<crate::backend_params::ParamSpec> {
+    use crate::backend_params::{ParamKind, ParamOption, ParamSpec, ParamValue};
+    let enum_option = |value: &str, label: &str| ParamOption {
+        value: value.to_string(),
+        label: label.to_string(),
+    };
+    vec![
+        ParamSpec::float("spread_min", "Spread min", 0.0, 1.0, 0.01, 0.0).help(
+            "Lower bound of the spread range. A point source (no size, no distance \
+                 spread) pans at this value.",
+        ),
+        ParamSpec::float("spread_max", "Spread max", 0.0, 1.0, 0.01, 1.0).help(
+            "Upper bound of the spread range, reached by a full-size object or, with \
+                 distance spread, at the listener.",
+        ),
+        ParamSpec::bool("spread_from_distance", "Spread from distance", false)
+            .requires("supports_spread_from_distance")
+            .help(
+                "Derive spread from the object's distance instead of its size: closer \
+                     objects spread wider. This is a pure function of position, so it is \
+                     baked into the precomputed table.",
+            ),
+        ParamSpec::float(
+            "spread_distance_range",
+            "Distance range",
+            0.01,
+            4.0,
+            0.01,
+            1.0,
+        )
+        .requires("supports_spread_from_distance")
+        .help("Normalised distance at which distance-based spread falls back to zero."),
+        ParamSpec::float(
+            "spread_distance_curve",
+            "Distance curve",
+            0.1,
+            8.0,
+            0.1,
+            1.0,
+        )
+        .requires("supports_spread_from_distance")
+        .help("Curve exponent applied to the distance-based spread ramp."),
+        ParamSpec {
+            key: "size_to_spread_mode",
+            label: "Object-size policy",
+            i18n_key: None,
+            unit: None,
+            kind: ParamKind::Enum {
+                options: vec![
+                    enum_option("max", "Max axis"),
+                    enum_option("mean", "Mean of axes"),
+                    enum_option("projection_perpendicular", "Perpendicular projection"),
+                ],
+            },
+            default: ParamValue::Text("max".to_string()),
+            requires: Some("supports_event_size"),
+            help: Some(
+                "How a 3-D object-size triplet (w, d, h) is reduced to a scalar spread. \
+                     Object-size spread is applied live and is honoured only in realtime \
+                     evaluation.",
+            ),
+        },
+        ParamSpec {
+            key: "out_of_hull_mode",
+            label: "Out-of-hull mode",
+            i18n_key: None,
+            unit: None,
+            kind: ParamKind::Enum {
+                options: vec![
+                    enum_option("virtual_poles", "Virtual poles (BS.2127)"),
+                    enum_option("blend", "Face blend"),
+                    enum_option("fade", "Original (fade out)"),
+                ],
+            },
+            default: ParamValue::Text("virtual_poles".to_string()),
+            requires: None,
+            help: Some(
+                "How directions outside the speaker hull (overhead on layouts without \
+                     heights, or below the listener) are rendered. Virtual poles (the \
+                     default) follows ITU-R BS.2127: pole energy spreads evenly over the \
+                     nearest speaker ring, at full level. Face blend also plays at full \
+                     level but keeps the image as localised as the layout allows. Original \
+                     is the historical behaviour: level fades with the fold angle, down to \
+                     silence at an uncovered pole. A change rebuilds the topology.",
+            ),
+        },
+        ParamSpec::float("fold_blend_power", "Blend sharpness", 1.0, 64.0, 1.0, 12.0).help(
+            "Sharpness of the face blend (score exponent). Higher values snap to the \
+                 closest boundary face for a tighter image; lower values blend more speakers \
+                 near the poles. Only used in Face blend mode.",
+        ),
+    ]
+}
+
 struct VbapFactory;
 impl PluginFactory for VbapFactory {
     fn id(&self) -> &'static str {
@@ -960,101 +1175,73 @@ impl PluginFactory for VbapFactory {
         "VBAP"
     }
     fn param_schema(&self) -> Vec<crate::backend_params::ParamSpec> {
-        use crate::backend_params::{ParamKind, ParamOption, ParamSpec, ParamValue};
-        let enum_option = |value: &str, label: &str| ParamOption {
-            value: value.to_string(),
-            label: label.to_string(),
-        };
-        vec![
-            ParamSpec::float("spread_min", "Spread min", 0.0, 1.0, 0.01, 0.0).help(
-                "Lower bound of the spread range. A point source (no size, no distance \
-                 spread) pans at this value.",
-            ),
-            ParamSpec::float("spread_max", "Spread max", 0.0, 1.0, 0.01, 1.0).help(
-                "Upper bound of the spread range, reached by a full-size object or, with \
-                 distance spread, at the listener.",
-            ),
-            ParamSpec::bool("spread_from_distance", "Spread from distance", false)
-                .requires("supports_spread_from_distance")
-                .help(
-                    "Derive spread from the object's distance instead of its size: closer \
-                     objects spread wider. This is a pure function of position, so it is \
-                     baked into the precomputed table.",
-                ),
-            ParamSpec::float(
-                "spread_distance_range",
-                "Distance range",
-                0.01,
-                4.0,
-                0.01,
-                1.0,
-            )
-            .requires("supports_spread_from_distance")
-            .help("Normalised distance at which distance-based spread falls back to zero."),
-            ParamSpec::float(
-                "spread_distance_curve",
-                "Distance curve",
-                0.1,
-                8.0,
-                0.1,
-                1.0,
-            )
-            .requires("supports_spread_from_distance")
-            .help("Curve exponent applied to the distance-based spread ramp."),
-            ParamSpec {
-                key: "size_to_spread_mode",
-                label: "Object-size policy",
-                i18n_key: None,
-                unit: None,
-                kind: ParamKind::Enum {
-                    options: vec![
-                        enum_option("max", "Max axis"),
-                        enum_option("mean", "Mean of axes"),
-                        enum_option("projection_perpendicular", "Perpendicular projection"),
-                    ],
-                },
-                default: ParamValue::Text("max".to_string()),
-                requires: Some("supports_event_size"),
-                help: Some(
-                    "How a 3-D object-size triplet (w, d, h) is reduced to a scalar spread. \
-                     Object-size spread is applied live and is honoured only in realtime \
-                     evaluation.",
-                ),
-            },
-            ParamSpec {
-                key: "out_of_hull_mode",
-                label: "Out-of-hull mode",
-                i18n_key: None,
-                unit: None,
-                kind: ParamKind::Enum {
-                    options: vec![
-                        enum_option("virtual_poles", "Virtual poles (BS.2127)"),
-                        enum_option("blend", "Face blend"),
-                        enum_option("fade", "Original (fade out)"),
-                    ],
-                },
-                default: ParamValue::Text("virtual_poles".to_string()),
-                requires: None,
-                help: Some(
-                    "How directions outside the speaker hull (overhead on layouts without \
-                     heights, or below the listener) are rendered. Virtual poles (the \
-                     default) follows ITU-R BS.2127: pole energy spreads evenly over the \
-                     nearest speaker ring, at full level. Face blend also plays at full \
-                     level but keeps the image as localised as the layout allows. Original \
-                     is the historical behaviour: level fades with the fold angle, down to \
-                     silence at an uncovered pole. A change rebuilds the topology.",
-                ),
-            },
-            ParamSpec::float("fold_blend_power", "Blend sharpness", 1.0, 64.0, 1.0, 12.0).help(
-                "Sharpness of the face blend (score exponent). Higher values snap to the \
-                 closest boundary face for a tighter image; lower values blend more speakers \
-                 near the poles. Only used in Face blend mode.",
-            ),
-        ]
+        vbap_param_specs()
     }
 }
 
 impl BackendFactory for VbapFactory {
+    fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
+        build_inner_backend_plan(ctx, self.id())
+    }
+}
+
+struct VolumetricFactory;
+impl PluginFactory for VolumetricFactory {
+    fn id(&self) -> &'static str {
+        "volumetric"
+    }
+    fn label(&self) -> &'static str {
+        "Volumetric"
+    }
+    fn param_schema(&self) -> Vec<crate::backend_params::ParamSpec> {
+        use crate::backend_params::{ParamKind, ParamOption, ParamSpec, ParamValue};
+        use crate::render_backend::{CentralDistribution, VolumetricParams};
+        let enum_option = |value: &str, label: &str| ParamOption {
+            value: value.to_string(),
+            label: label.to_string(),
+        };
+        let mut specs = vec![
+            ParamSpec {
+                key: "central",
+                label: "Central distribution",
+                i18n_key: None,
+                unit: None,
+                kind: ParamKind::Enum {
+                    options: vec![
+                        enum_option(CentralDistribution::ANTIPODE, "Opposite wall"),
+                        enum_option(CentralDistribution::UNIFORM, "All speakers"),
+                    ],
+                },
+                default: ParamValue::Text(CentralDistribution::default().as_str().to_string()),
+                requires: None,
+                help: Some(
+                    "What plays the share an object loses from its VBAP face as it moves \
+                     inside the room. Opposite wall: the speakers facing it across the \
+                     listener, so a near and a far image meet at equal level at the \
+                     listener. All speakers: equal power over the whole array, so the image \
+                     dissolves into it. A change rebuilds the topology.",
+                ),
+            },
+            ParamSpec::float(
+                "depth_curve",
+                "Depth curve",
+                VolumetricParams::DEPTH_CURVE_MIN,
+                VolumetricParams::DEPTH_CURVE_MAX,
+                0.05,
+                VolumetricParams::DEPTH_CURVE_DEFAULT,
+            )
+            .help(
+                "Exponent on the depth, measured along the ray from the listener: 0 on the \
+                 speaker surface, 1 at the listener. 1 is linear; below 1 the centre takes \
+                 over sooner, above 1 the wall holds on longer.",
+            ),
+        ];
+        specs.extend(vbap_param_specs());
+        specs
+    }
+}
+
+impl BackendFactory for VolumetricFactory {
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
         build_inner_backend_plan(ctx, self.id())
     }
@@ -1624,6 +1811,170 @@ mod tests {
         );
     }
 
+    /// A build context over the 7.1.4 preset in the unit room, with the
+    /// geometry params a VBAP-based backend needs and `bag` as the
+    /// `volumetric` entry of the param bag.
+    fn volumetric_plan(
+        layout: &SpeakerLayout,
+        bag: &[(&str, crate::backend_params::ParamValue)],
+    ) -> Option<BackendBuildPlan> {
+        use crate::live_params::{RoomRatios, VbapModelRebuildParams};
+        let registry = BackendRegistry::builtin();
+        let live = LiveParams::default();
+        let mut backend_params = std::collections::HashMap::new();
+        backend_params.insert(
+            "volumetric".to_string(),
+            bag.iter()
+                .map(|(key, value)| (key.to_string(), value.clone()))
+                .collect::<std::collections::HashMap<_, _>>(),
+        );
+        let ctx = BackendBuildCtx {
+            layout,
+            live: &live,
+            room: RoomRatios::UNIT,
+            backend_rebuild_params: Some(BackendRebuildParams {
+                backend_id: "vbap",
+                preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+                allow_negative_z: true,
+                vbap: Some(VbapModelRebuildParams {
+                    az_res_deg: 5,
+                    el_res_deg: 5,
+                    spread_resolution: 0.25,
+                    distance_max: 1.0,
+                    allow_negative_z: true,
+                    distance_model: DistanceModel::default(),
+                }),
+            }),
+            registry: &registry,
+            backend_params: &backend_params,
+        };
+        registry.get("volumetric")?.build_plan(&ctx)
+    }
+
+    #[test]
+    fn the_volumetric_backend_builds_from_the_registry_with_its_bag() {
+        use crate::backend_params::ParamValue;
+        use crate::render_backend::CentralDistribution;
+        let layout = SpeakerLayout::preset_7_1_4().unwrap();
+        let plan = volumetric_plan(
+            &layout,
+            &[
+                ("central", ParamValue::Text("uniform".to_string())),
+                ("depth_curve", ParamValue::Float(2.0)),
+                // The VBAP underneath reads its tuning under the same id.
+                ("out_of_hull_mode", ParamValue::Text("fade".to_string())),
+            ],
+        )
+        .expect("a plan");
+        let BackendBuildPlan::Volumetric(plan) = &plan else {
+            panic!("expected a volumetric plan");
+        };
+        assert_eq!(plan.params.central, CentralDistribution::Uniform);
+        assert_eq!(plan.params.depth_curve, 2.0);
+        assert_eq!(plan.vbap.out_of_hull_mode, OutOfHullMode::Fade);
+        assert_eq!(plan.speaker_radii.len(), plan.vbap.positions.len());
+        let model = plan.build_gain_model().expect("the model builds");
+        assert_eq!(model.backend_id(), "volumetric");
+        assert_eq!(model.speaker_count(), 11);
+        assert!(model.capabilities().supports_precomputed_cartesian);
+
+        // The registry lists it, and the schema carries its own keys plus VBAP's.
+        let keys: Vec<&str> = BackendRegistry::builtin()
+            .get("volumetric")
+            .unwrap()
+            .param_schema()
+            .iter()
+            .map(|spec| spec.key)
+            .collect();
+        for key in ["central", "depth_curve", "spread_min", "out_of_hull_mode"] {
+            assert!(keys.contains(&key), "schema lacks {key}: {keys:?}");
+        }
+    }
+
+    #[test]
+    fn volumetric_params_fall_back_to_their_defaults_on_junk() {
+        use crate::backend_params::ParamValue;
+        use crate::render_backend::VolumetricParams;
+        let layout = SpeakerLayout::preset_7_1_4().unwrap();
+        let plan = volumetric_plan(
+            &layout,
+            &[
+                ("central", ParamValue::Text("nonsense".to_string())),
+                ("depth_curve", ParamValue::Float(f32::NAN)),
+            ],
+        )
+        .expect("a plan");
+        let BackendBuildPlan::Volumetric(plan) = &plan else {
+            panic!("expected a volumetric plan");
+        };
+        assert_eq!(plan.params, VolumetricParams::default());
+
+        let plan =
+            volumetric_plan(&layout, &[("depth_curve", ParamValue::Float(100.0))]).expect("a plan");
+        let BackendBuildPlan::Volumetric(plan) = &plan else {
+            panic!("expected a volumetric plan");
+        };
+        assert_eq!(plan.params.depth_curve, VolumetricParams::DEPTH_CURVE_MAX);
+    }
+
+    #[test]
+    fn too_few_speakers_degrade_the_volumetric_backend_like_vbap() {
+        // A layout needs three speakers, but only two of these spatialize.
+        let layout = SpeakerLayout::from_speakers(vec![
+            crate::speaker_layout::Speaker::new("L", -30.0, 0.0),
+            crate::speaker_layout::Speaker::new("R", 30.0, 0.0),
+            crate::speaker_layout::Speaker::new_with_spatialize("LFE", 0.0, 0.0, false),
+        ])
+        .unwrap();
+        let plan = volumetric_plan(&layout, &[]).expect("a plan");
+        assert!(
+            matches!(plan, BackendBuildPlan::Degenerate(_)),
+            "two speakers have no surface to measure depth against"
+        );
+    }
+
+    #[test]
+    fn the_volumetric_backend_is_a_hybrid_leg() {
+        use crate::live_params::{RoomRatios, VbapModelRebuildParams};
+        let registry = BackendRegistry::builtin();
+        let layout = SpeakerLayout::preset_7_1_4().unwrap();
+        let mut live = LiveParams::default();
+        live.hybrid.external_backend_id = "volumetric".to_string();
+        live.hybrid.internal_backend_id = "barycenter".to_string();
+        let backend_params = std::collections::HashMap::new();
+        let ctx = BackendBuildCtx {
+            layout: &layout,
+            live: &live,
+            room: RoomRatios::UNIT,
+            backend_rebuild_params: Some(BackendRebuildParams {
+                backend_id: "vbap",
+                preferred_evaluation_mode: PreferredEvaluationMode::PrecomputedCartesian,
+                allow_negative_z: true,
+                vbap: Some(VbapModelRebuildParams {
+                    az_res_deg: 5,
+                    el_res_deg: 5,
+                    spread_resolution: 0.25,
+                    distance_max: 1.0,
+                    allow_negative_z: true,
+                    distance_model: DistanceModel::default(),
+                }),
+            }),
+            registry: &registry,
+            backend_params: &backend_params,
+        };
+        let plan = registry
+            .get("hybrid")
+            .unwrap()
+            .build_plan(&ctx)
+            .expect("a hybrid plan");
+        let BackendBuildPlan::Hybrid(plan) = &plan else {
+            panic!("expected a hybrid plan");
+        };
+        assert!(matches!(*plan.external, BackendBuildPlan::Volumetric(_)));
+        let model = plan.build_gain_model().expect("the hybrid builds");
+        assert_eq!(model.backend_id(), "hybrid");
+    }
+
     #[test]
     fn smoke_test_accepts_well_behaved_backend() {
         let engine = realtime_engine(Box::new(GoodBackend));
@@ -1648,7 +1999,13 @@ mod tests {
     fn builtin_registry_exposes_known_backends() {
         let registry = BackendRegistry::builtin();
         let ids: Vec<_> = registry.ids().collect();
-        for expected in ["vbap", "barycenter", "experimental_distance", "hybrid"] {
+        for expected in [
+            "vbap",
+            "volumetric",
+            "barycenter",
+            "experimental_distance",
+            "hybrid",
+        ] {
             assert!(
                 ids.contains(&expected),
                 "missing builtin backend {expected}"
