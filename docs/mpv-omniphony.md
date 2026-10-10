@@ -51,7 +51,9 @@ stops at 64 channels as well.
 What happens with a wider layout: `ad_orender` cannot describe the output to
 mpv, so the track plays through mpv's native decoder, without spatial
 rendering, for the rest of the track. mpv logs
-`renderer reported no output layout; decoding natively instead`.
+`the speaker layout has 80 channels and mpv carries at most 64: decoding
+natively instead, without spatial rendering`; a player older than that message
+logs `renderer reported no output layout; decoding natively instead`.
 
 This limit is accepted, not a defect waiting for a fix: lifting it would mean
 changing mpv's channel maps and each of its audio outputs in the fork, and
