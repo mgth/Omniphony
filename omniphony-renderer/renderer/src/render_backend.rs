@@ -1,3 +1,4 @@
+mod band_gains;
 mod barycenter_backend;
 mod degenerate_vbap_backend;
 mod distance_attenuation;
@@ -12,7 +13,7 @@ pub mod size_to_spread;
 mod vbap_backend;
 mod volumetric_backend;
 
-use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical, spherical_to_adm};
+use crate::spatial_vbap::{DistanceModel, adm_to_spherical, spherical_to_adm};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use rayon::prelude::*;
@@ -20,6 +21,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+pub use band_gains::BandGains;
 pub use barycenter_backend::BarycenterBackend;
 pub use degenerate_vbap_backend::DegenerateVbapBackend;
 use distance_attenuation::DistanceAttenuatedModel;
@@ -1670,8 +1672,6 @@ pub(crate) struct CornerCache {
     /// The eight corner rows back to back, each `[band][speaker]`, in
     /// [`corner_weights`] order.
     rows: Vec<f32>,
-    /// Scratch for one blended `[band][speaker]` row.
-    blended: Vec<f32>,
 }
 
 impl CornerCache {
@@ -1790,45 +1790,34 @@ impl MultiBandTable {
         ]
     }
 
-    /// Make `out` hold `n_bands` gain sets of `num_speakers`. The lookups
-    /// overwrite every gain, so a buffer that already has the shape — the
-    /// steady state — is left alone.
-    #[inline]
-    fn shape_output(&self, out: &mut Vec<Gains>) {
-        if out.len() != self.n_bands || out.iter().any(|g| g.len() != self.num_speakers) {
-            out.clear();
-            out.resize(self.n_bands, Gains::zeroed(self.num_speakers));
-        }
-    }
-
     /// Nearest-cell lookup: the cell's row, one band after the other.
-    fn copy_nearest(&self, cell: usize, out: &mut Vec<Gains>) {
-        let band_stride = self.num_speakers;
-        let cell_base = cell * self.n_bands * band_stride;
-        for (b, g) in out.iter_mut().enumerate() {
-            let base = cell_base + b * band_stride;
-            let Some(src) = self.gains.get(base..base + band_stride) else {
-                return;
-            };
-            for (d, &s) in g[..band_stride].iter_mut().zip(src) {
-                // `0.0 +` reads a `-0.0` table value back as `+0.0`, as the
-                // trilinear blend does.
-                *d = 0.0 + s;
-            }
+    fn copy_nearest(&self, cell: usize, out: &mut BandGains) {
+        let cell_stride = self.n_bands * self.num_speakers;
+        let base = cell * cell_stride;
+        let (Some(src), Some(dst)) = (
+            self.gains.get(base..base + cell_stride),
+            out.as_mut_slice().get_mut(..cell_stride),
+        ) else {
+            return;
+        };
+        for (d, &s) in dst.iter_mut().zip(src) {
+            // `0.0 +` reads a `-0.0` table value back as `+0.0`, as the
+            // trilinear blend does.
+            *d = 0.0 + s;
         }
     }
 
-    /// Trilinear lookup for all bands at `position`. Fills `out` with `n_bands`
-    /// full-size `Gains` (one localisation, the eight corner rows blended in one
-    /// pass straight from the table). The lookup for a caller with no
-    /// per-object state; an object read every sample goes through
-    /// [`Self::sample_cached`].
-    pub(crate) fn sample_into(&self, position: [f32; 3], out: &mut Vec<Gains>) {
+    /// Trilinear lookup for all bands at `position`. Shapes `out` to `n_bands`
+    /// full-size gain sets and fills them (one localisation, the eight corner
+    /// rows blended in one pass straight from the table). The lookup for a
+    /// caller with no per-object state; an object read every sample goes
+    /// through [`Self::sample_cached`].
+    pub(crate) fn sample_into(&self, position: [f32; 3], out: &mut BandGains) {
         let interp = self.position_interpolation.load(Ordering::Relaxed);
         let [x, y, z] = self.locate(position, interp);
         let x_len = self.axes[0].len();
         let y_len = self.axes[1].len();
-        self.shape_output(out);
+        out.shape(self.n_bands, self.num_speakers);
         if !interp {
             self.copy_nearest(((z.lower * y_len) + y.lower) * x_len + x.lower, out);
             return;
@@ -1837,12 +1826,12 @@ impl MultiBandTable {
         let cell_stride = self.n_bands * band_stride;
         let cells = corner_cells(&x, &y, &z, x_len, y_len);
         let weights = corner_weights(&x, &y, &z);
-        for (b, g) in out.iter_mut().enumerate() {
+        for (b, g) in out.bands_mut().enumerate() {
             let rows = cells.map(|cell| {
                 let base = cell * cell_stride + b * band_stride;
                 self.gains.get(base..base + band_stride).unwrap_or(&[])
             });
-            blend_corner_rows(rows, weights, &mut g[..band_stride]);
+            blend_corner_rows(rows, weights, g);
         }
     }
 
@@ -1857,7 +1846,7 @@ impl MultiBandTable {
         &self,
         cache: &mut CornerCache,
         position: [f32; 3],
-        out: &mut Vec<Gains>,
+        out: &mut BandGains,
     ) {
         #[cfg(target_arch = "x86_64")]
         if self.blend_avx2 {
@@ -1878,35 +1867,24 @@ impl MultiBandTable {
     /// take it to 14.7 ns, not worth a third build.
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    fn sample_cached_avx2(
-        &self,
-        cache: &mut CornerCache,
-        position: [f32; 3],
-        out: &mut Vec<Gains>,
-    ) {
+    fn sample_cached_avx2(&self, cache: &mut CornerCache, position: [f32; 3], out: &mut BandGains) {
         self.sample_cached_body(cache, position, out);
     }
 
     /// The read, inlined into each of its builds.
     #[inline(always)]
-    fn sample_cached_body(
-        &self,
-        cache: &mut CornerCache,
-        position: [f32; 3],
-        out: &mut Vec<Gains>,
-    ) {
+    fn sample_cached_body(&self, cache: &mut CornerCache, position: [f32; 3], out: &mut BandGains) {
         let interp = self.position_interpolation.load(Ordering::Relaxed);
         let [x, y, z] = self.locate(position, interp);
         let x_len = self.axes[0].len();
         let y_len = self.axes[1].len();
-        self.shape_output(out);
+        out.shape(self.n_bands, self.num_speakers);
         let low_cell = ((z.lower * y_len) + y.lower) * x_len + x.lower;
         if !interp {
             self.copy_nearest(low_cell, out);
             return;
         }
-        let band_stride = self.num_speakers;
-        let cell_stride = self.n_bands * band_stride;
+        let cell_stride = self.n_bands * self.num_speakers;
         if cell_stride == 0 {
             return;
         }
@@ -1914,7 +1892,6 @@ impl MultiBandTable {
         if cache.table_id != self.id || cache.low_cell != low_cell || cache.high_cell != high_cell {
             // Sized per table: a no-op from the second cell of a table on.
             cache.rows.resize(8 * cell_stride, 0.0);
-            cache.blended.resize(cell_stride, 0.0);
             let cells = corner_cells(&x, &y, &z, x_len, y_len);
             for (row, cell) in cache.rows.chunks_exact_mut(cell_stride).zip(cells) {
                 let base = cell * cell_stride;
@@ -1928,14 +1905,12 @@ impl MultiBandTable {
             cache.high_cell = high_cell;
         }
 
-        // One flat pass over every band: a single loop leaves one scalar tail
-        // where a loop per band would leave one per band.
+        // One flat pass over every band, straight into the caller's gains
+        // (`[band][speaker]`, as a cached row is): a single loop leaves one
+        // scalar tail where a loop per band would leave one per band.
         let mut corner_rows = cache.rows.chunks_exact(cell_stride);
         let rows: [&[f32]; 8] = std::array::from_fn(|_| corner_rows.next().unwrap_or(&[]));
-        blend_corner_rows(rows, corner_weights(&x, &y, &z), &mut cache.blended);
-        for (g, blended) in out.iter_mut().zip(cache.blended.chunks_exact(band_stride)) {
-            g[..band_stride].copy_from_slice(blended);
-        }
+        blend_corner_rows(rows, corner_weights(&x, &y, &z), out.as_mut_slice());
     }
 }
 
@@ -2473,8 +2448,14 @@ mod one_pass_blend_tests {
             .collect()
     }
 
-    /// The multi-band lookup as one accumulation pass per corner.
-    fn reference_sample_into(table: &MultiBandTable, position: [f32; 3], out: &mut Vec<Gains>) {
+    /// [`bits`] of the sets of a [`BandGains`].
+    fn band_bits(gains: &BandGains) -> Vec<Vec<u32>> {
+        bits(&gains.bands().collect::<Vec<_>>())
+    }
+
+    /// The multi-band lookup as one accumulation pass per corner, into one
+    /// vector per band.
+    fn reference_sample_into(table: &MultiBandTable, position: [f32; 3], out: &mut Vec<Vec<f32>>) {
         let interp = table.position_interpolation.load(Ordering::Relaxed);
         let p = table.coord.to_grid(position);
         let x = table.axes[0].sample(p[0], interp);
@@ -2486,7 +2467,7 @@ mod one_pass_blend_tests {
         let cell_stride = table.n_bands * table.num_speakers;
 
         out.clear();
-        out.resize(table.n_bands, Gains::zeroed(table.num_speakers));
+        out.resize(table.n_bands, vec![0.0; table.num_speakers]);
 
         let gains = &table.gains;
         let mut accumulate = |ix: usize, iy: usize, iz: usize, weight: f32| {
@@ -2525,8 +2506,8 @@ mod one_pass_blend_tests {
         y_len: usize,
         [x, y, z]: [AxisSample; 3],
         interpolate: bool,
-    ) -> Gains {
-        let mut gains = Gains::zeroed(speaker_count);
+    ) -> Vec<f32> {
+        let mut gains = vec![0.0; speaker_count];
         if !interpolate {
             write_flat_sample(
                 table,
@@ -2684,8 +2665,8 @@ mod one_pass_blend_tests {
 
     fn assert_lookups_match_reference(table: &MultiBandTable, label: &str) {
         let mut reference = Vec::new();
-        let mut direct = Vec::new();
-        let mut cached = Vec::new();
+        let mut direct = BandGains::new();
+        let mut cached = BandGains::new();
         let mut cache = CornerCache::default();
         for interpolate in [true, false, true] {
             table.set_position_interpolation(interpolate);
@@ -2694,12 +2675,12 @@ mod one_pass_blend_tests {
                 table.sample_into(position, &mut direct);
                 table.sample_cached(&mut cache, position, &mut cached);
                 assert_eq!(
-                    bits(&direct),
+                    band_bits(&direct),
                     bits(&reference),
                     "{label}: direct lookup at {position:?} (interpolate={interpolate})"
                 );
                 assert_eq!(
-                    bits(&cached),
+                    band_bits(&cached),
                     bits(&reference),
                     "{label}: cached lookup at {position:?} (interpolate={interpolate})"
                 );
@@ -2738,13 +2719,13 @@ mod one_pass_blend_tests {
         let position = [0.3, -0.2, 0.4];
         let mut cache = CornerCache::default();
         let mut reference = Vec::new();
-        let mut cached = Vec::new();
+        let mut cached = BandGains::new();
         for round in 0..3 {
             for (t, table) in tables.iter().enumerate() {
                 reference_sample_into(table, position, &mut reference);
                 table.sample_cached(&mut cache, position, &mut cached);
                 assert_eq!(
-                    bits(&cached),
+                    band_bits(&cached),
                     bits(&reference),
                     "round {round}, table {t}: cache served a stale cell"
                 );
@@ -2769,15 +2750,14 @@ mod one_pass_blend_tests {
             MultiBandTable::build_cartesian(&[(part, indices[0]), (part, indices[1])], 5).unwrap();
         reference_sample_into(&small, position, &mut reference);
         small.sample_cached(&mut cache, position, &mut cached);
-        assert_eq!(bits(&cached), bits(&reference), "narrower table");
-        assert_eq!(cached.len(), 2);
-        assert_eq!(cached[0].len(), 5);
+        assert_eq!(band_bits(&cached), bits(&reference), "narrower table");
+        assert_eq!((cached.n_bands(), cached.num_speakers()), (2, 5));
 
         // An emptied cache refills.
         cache.invalidate();
         tables[0].sample_cached(&mut cache, position, &mut cached);
         reference_sample_into(&tables[0], position, &mut reference);
-        assert_eq!(bits(&cached), bits(&reference), "after invalidate");
+        assert_eq!(band_bits(&cached), bits(&reference), "after invalidate");
     }
 
     #[test]
