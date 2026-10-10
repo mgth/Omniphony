@@ -394,6 +394,7 @@ impl StudioSpike {
             control_for_host,
             config_dir.clone(),
             port,
+            crate::host::commands::HostPaths::bundled().with_layouts_dir(args.layouts_dir.clone()),
             osc_stats.clone(),
             waker.clone(),
         ));
