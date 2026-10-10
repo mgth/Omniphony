@@ -52,6 +52,12 @@ impl VbapBackend {
         self.panner.num_speakers()
     }
 
+    /// The panner, for a model built on this one (the volumetric backend
+    /// reads its triangulation).
+    pub(crate) fn panner(&self) -> &VbapPanner {
+        &self.panner
+    }
+
     pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
         let [scaled_x, scaled_y, scaled_z] = room_scaled_position(
             req.adm_position.map(|v| v as f32),

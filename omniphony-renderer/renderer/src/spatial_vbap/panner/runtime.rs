@@ -84,6 +84,22 @@ impl VbapPanner {
         self.n_virtual_centres
     }
 
+    /// The native triangulation this panner pans with, for a model that
+    /// needs the faces' geometry (the volumetric backend measures depth
+    /// against them). `None` under `saf_vbap`, whose layout keeps its own.
+    pub(crate) fn triangulation(
+        &self,
+    ) -> Option<crate::spatial_vbap::vbap_native::TriangulationView<'_>> {
+        #[cfg(not(feature = "saf_vbap"))]
+        {
+            Some(self.source.triangulation())
+        }
+        #[cfg(feature = "saf_vbap")]
+        {
+            None
+        }
+    }
+
     // ── Direct gain computation ──────────────────────────────────────────────
 
     /// Compute panning gains for a source at an ADM cartesian position.

@@ -546,21 +546,23 @@ pub fn build_backend_restore_snapshot(
     config: &EvaluationBuildConfig,
 ) -> Option<BackendRestoreSnapshot> {
     match source_backend_id {
-        "vbap" | "barycenter" | "experimental_distance" => Some(BackendRestoreSnapshot {
-            backend_id: source_backend_id.to_string(),
-            backend_label: source_backend_label.to_string(),
-            evaluation_mode: mode,
-            position_interpolation: config.position_interpolation,
-            allow_negative_z: config.polar.allow_negative_z,
-            cartesian_x_size: config.cartesian.x_size.saturating_sub(1),
-            cartesian_y_size: config.cartesian.y_size.saturating_sub(1),
-            cartesian_z_size: config.cartesian.z_size.saturating_sub(1),
-            cartesian_z_neg_size: config.cartesian.z_neg_size,
-            polar_azimuth_values: config.polar.azimuth_values.max(2),
-            polar_elevation_values: config.polar.elevation_values.max(2),
-            polar_distance_res: config.polar.distance_values.saturating_sub(1).max(1),
-            polar_distance_max: config.polar.distance_max.max(0.01),
-        }),
+        "vbap" | "volumetric" | "barycenter" | "experimental_distance" => {
+            Some(BackendRestoreSnapshot {
+                backend_id: source_backend_id.to_string(),
+                backend_label: source_backend_label.to_string(),
+                evaluation_mode: mode,
+                position_interpolation: config.position_interpolation,
+                allow_negative_z: config.polar.allow_negative_z,
+                cartesian_x_size: config.cartesian.x_size.saturating_sub(1),
+                cartesian_y_size: config.cartesian.y_size.saturating_sub(1),
+                cartesian_z_size: config.cartesian.z_size.saturating_sub(1),
+                cartesian_z_neg_size: config.cartesian.z_neg_size,
+                polar_azimuth_values: config.polar.azimuth_values.max(2),
+                polar_elevation_values: config.polar.elevation_values.max(2),
+                polar_distance_res: config.polar.distance_values.saturating_sub(1).max(1),
+                polar_distance_max: config.polar.distance_max.max(0.01),
+            })
+        }
         _ => None,
     }
 }
