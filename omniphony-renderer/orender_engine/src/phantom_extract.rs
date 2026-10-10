@@ -1566,12 +1566,12 @@ mod tests {
     /// room corners.
     #[test]
     fn phantoms_sit_between_the_bed_poses_of_the_policy() {
-        use crate::virtual_bed::{PlacementPolicy, RoomRatios, resolve_bed_poses};
+        use crate::virtual_bed::{OutputWarp, PlacementPolicy, resolve_bed_poses};
         let mut poses = Vec::new();
         resolve_bed_poses(
             &LABELS_5_1,
             &PlacementPolicy::sphere(&[]),
-            RoomRatios::UNIT,
+            OutputWarp::NONE,
             renderer::live_params::SurroundPlacement::Side,
             &mut poses,
         );

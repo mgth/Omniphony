@@ -63,6 +63,15 @@ pub struct RoomRatio {
     // renderer in the room domain so Studio restores the m/u reliably.
     #[serde(rename = "scaleM", default = "default_room_scale_m")]
     pub scale_m: f64,
+    /// Whether positions are read on the listener's sphere rather than in
+    /// this room: the direct headphone path with the renderer's
+    /// `sphere_coordinates` on (#773). Not a ratio, and never on the wire.
+    /// It is carried here because this value is what the scene and the
+    /// editors convert a position through (`AppState::display_room`), and
+    /// the reading is part of that conversion: the conversions that place a
+    /// source read it, the room's own geometry does not.
+    #[serde(skip)]
+    pub sphere: bool,
 }
 
 fn default_room_scale_m() -> f64 {
@@ -79,6 +88,7 @@ impl Default for RoomRatio {
             lower: 0.5,
             center_blend: 0.5,
             scale_m: 1.0,
+            sphere: false,
         }
     }
 }
@@ -210,6 +220,7 @@ impl RoomRatio {
             lower: 1.0,
             center_blend: 0.0,
             scale_m,
+            sphere: false,
         }
     }
 }
@@ -992,14 +1003,19 @@ impl AppState {
     /// virtual room, the measured room on a BRIR set's loudspeakers
     /// (`brir_room`, #803) — and the unit room on the direct binaural path,
     /// which reads a direction straight off a position
-    /// (`RenderPath::warps_with_room`). One resolution for the forward
-    /// projection, the gizmos' inverse, the channel editor's polar
-    /// conversions and the heatmap volumes, so a drag lands where the
-    /// pointer is and a volume sits on its sources whatever the path.
+    /// (`RenderPath::warps_with_room`), or on the listener's sphere when the
+    /// renderer reads it there (`reads_on_sphere`, `RoomRatio::sphere`). One
+    /// resolution for the forward projection, the gizmos' inverse, the
+    /// channel editor's polar conversions and the heatmap volumes, so a
+    /// drag lands where the pointer is and a volume sits on its sources
+    /// whatever the path.
     pub fn display_room(&self) -> RoomRatio {
         use super::binaural::RenderPath;
         match self.render_path() {
-            RenderPath::Direct => RoomRatio::unit(self.binaural_unit_scale_m()),
+            RenderPath::Direct => RoomRatio {
+                sphere: self.reads_on_sphere(),
+                ..RoomRatio::unit(self.binaural_unit_scale_m())
+            },
             // A renderer that publishes no measured room pans in the live
             // one.
             RenderPath::MeasuredRoom => self
@@ -1099,6 +1115,21 @@ impl AppState {
         Some(out)
     }
 
+    /// Whether the renderer reads positions on the listener's sphere
+    /// (`binaural.sphereCoordinates`, #773): the option, on the direct
+    /// headphone path, the one that reads a direction off a position (the
+    /// renderer's `BinauralLiveParams::reads_on_sphere`). A renderer that
+    /// publishes no such key reads the cube.
+    pub fn reads_on_sphere(&self) -> bool {
+        self.render_path() == super::binaural::RenderPath::Direct
+            && self
+                .binaural
+                .as_ref()
+                .and_then(|b| b.get("sphereCoordinates"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    }
+
     /// Metres to one unit of the direct binaural path's cube
     /// (`binaural.unitScaleM`, the renderer's distance scale).
     pub fn binaural_unit_scale_m(&self) -> f64 {
@@ -1176,6 +1207,7 @@ impl AppState {
                 lower: 0.5,
                 center_blend: 0.5,
                 scale_m: 1.0,
+                sphere: false,
             },
             ..Default::default()
         }
