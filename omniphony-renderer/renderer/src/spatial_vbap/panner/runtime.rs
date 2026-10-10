@@ -86,27 +86,45 @@ impl VbapPanner {
 
     // ── Direct gain computation ──────────────────────────────────────────────
 
-    /// Compute panning gains for a source at an ADM cartesian position.
+    /// Write the panning gains for a source at an ADM cartesian position into
+    /// `out`, one per speaker of the layout.
     ///
-    /// Returns pure panning gains; distance attenuation / diffuse blending are
+    /// Pure panning gains; distance attenuation / diffuse blending are
     /// applied by the shared decorators in `render_backend`, not here.
-    pub fn get_gains_cartesian(&self, x: f32, y: f32, z: f32, spread: f32) -> Gains {
+    pub fn gains_cartesian_into(&self, x: f32, y: f32, z: f32, spread: f32, out: &mut [f32]) {
         let z = if self.allow_negative_z { z } else { z.max(0.0) };
         let (azimuth, elevation, _distance) = adm_to_spherical(x, y, z);
-        self.gains_direct(azimuth, elevation, spread)
+        self.gains_direct(azimuth, elevation, spread, out)
     }
 
-    /// Compute panning gains for a source direction (no spread).
-    pub fn get_gains(&self, azimuth_deg: f32, elevation_deg: f32) -> Gains {
-        self.gains_direct(azimuth_deg, elevation_deg, 0.0)
+    /// Write the panning gains for a source direction with a spread into
+    /// `out`, as [`Self::gains_cartesian_into`] does for a position, but for a
+    /// bare direction: nothing clamps it to the horizon. The volumetric
+    /// backend pans the direction opposite an object with it.
+    pub fn gains_spread_into(
+        &self,
+        azimuth_deg: f32,
+        elevation_deg: f32,
+        spread: f32,
+        out: &mut [f32],
+    ) {
+        self.gains_direct(azimuth_deg, elevation_deg, spread, out)
     }
 
-    /// Compute panning gains for a source direction with a spread, as
-    /// [`Self::get_gains_cartesian`] does for a position, but for a bare
-    /// direction: nothing clamps it to the horizon. The volumetric backend
-    /// pans the direction opposite an object with it.
-    pub fn get_gains_spread(&self, azimuth_deg: f32, elevation_deg: f32, spread: f32) -> Gains {
-        self.gains_direct(azimuth_deg, elevation_deg, spread)
+    /// [`Self::gains_cartesian_into`] in a vector of its own: for tests and
+    /// one-off queries.
+    pub fn get_gains_cartesian(&self, x: f32, y: f32, z: f32, spread: f32) -> Vec<f32> {
+        let mut gains = vec![0.0; self.n_speakers];
+        self.gains_cartesian_into(x, y, z, spread, &mut gains);
+        gains
+    }
+
+    /// Panning gains for a source direction (no spread), in a vector of their
+    /// own: for tests and one-off queries.
+    pub fn get_gains(&self, azimuth_deg: f32, elevation_deg: f32) -> Vec<f32> {
+        let mut gains = vec![0.0; self.n_speakers];
+        self.gains_direct(azimuth_deg, elevation_deg, 0.0, &mut gains);
+        gains
     }
 
     /// Direct triangulation-based VBAP gains. The native backend stores the
@@ -114,19 +132,20 @@ impl VbapPanner {
     /// because its FFI handle is not `Sync` and the evaluation layer samples the
     /// panner in parallel.
     #[inline]
-    fn gains_direct(&self, azimuth_deg: f32, elevation_deg: f32, spread: f32) -> Gains {
+    fn gains_direct(&self, azimuth_deg: f32, elevation_deg: f32, spread: f32, out: &mut [f32]) {
         #[cfg(not(feature = "saf_vbap"))]
-        {
-            self.source
-                .vbap_gains(azimuth_deg, elevation_deg, spread)
-                .expect("native vbap3d failed while computing gains")
-        }
+        let gains = self
+            .source
+            .vbap_gains(azimuth_deg, elevation_deg, spread)
+            .expect("native vbap3d failed while computing gains");
         #[cfg(feature = "saf_vbap")]
-        {
-            saf_backend::SpartaVbapLayout::from_speaker_dirs(&self.speaker_dirs_deg)
-                .expect("failed to initialize SAF VBAP layout")
-                .vbap_gains(azimuth_deg, elevation_deg, spread)
-                .expect("vbap3D failed while computing gains")
+        let gains = saf_backend::SpartaVbapLayout::from_speaker_dirs(&self.speaker_dirs_deg)
+            .expect("failed to initialize SAF VBAP layout")
+            .vbap_gains(azimuth_deg, elevation_deg, spread)
+            .expect("vbap3D failed while computing gains");
+        // One gain per speaker on both sides; a shorter `out` takes what fits.
+        for (out, &gain) in out.iter_mut().zip(&gains) {
+            *out = gain;
         }
     }
 }

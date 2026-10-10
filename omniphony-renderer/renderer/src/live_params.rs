@@ -2924,25 +2924,28 @@ impl RendererControl {
                     .prepare_topology_rebuild_for_layout(band_layout, topology.room)
                     .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology"))?
                     .build_band_topology_reusing(None)?;
-                let per_cell: Vec<crate::spatial_vbap::Gains> =
-                    crate::background_pool::install(|| {
-                        (0..cell_count)
-                            .into_par_iter()
-                            .map(|idx| {
-                                let xi = idx % nx;
-                                let yi = (idx / nx) % ny;
-                                let zi = idx / (nx * ny);
-                                let mut req = template;
-                                req.adm_position = [
-                                    x_positions[xi] as f64,
-                                    y_positions[yi] as f64,
-                                    z_positions[zi] as f64,
-                                ];
-                                band_topology.backend.compute_gains(&req).gains
-                            })
-                            .collect()
-                    });
-                for (idx, cell) in per_cell.iter().enumerate() {
+                // The band's own gains, one row of `n` per cell, then scattered
+                // to the layout's speakers.
+                let backend = &band_topology.backend;
+                let mut per_cell = vec![0.0f32; cell_count * n];
+                crate::background_pool::install(|| {
+                    per_cell.par_chunks_mut(n).enumerate().for_each_init(
+                        || backend.new_scratch(),
+                        |scratch, (idx, cell)| {
+                            let xi = idx % nx;
+                            let yi = (idx / nx) % ny;
+                            let zi = idx / (nx * ny);
+                            let mut req = template;
+                            req.adm_position = [
+                                x_positions[xi] as f64,
+                                y_positions[yi] as f64,
+                                z_positions[zi] as f64,
+                            ];
+                            backend.compute_gains(&req, scratch, cell);
+                        },
+                    )
+                });
+                for (idx, cell) in per_cell.chunks_exact(n).enumerate() {
                     let base = idx * speaker_count;
                     for (gi, &g) in cell.iter().enumerate() {
                         gains[base + indices[gi]] = g;

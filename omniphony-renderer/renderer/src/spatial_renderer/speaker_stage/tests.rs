@@ -128,11 +128,17 @@ fn reference_mix_channels(
         };
 
         let render_params = frame.ramp_context.render_params();
-        let lookup = |position: [f64; 3], size: [f32; 3], out: &mut Vec<Gains>| {
+        // The reference reads the bands on working memory of its own.
+        let mut band_scratches: Vec<_> = stage
+            .render_bands
+            .iter()
+            .map(BandRenderer::new_scratch)
+            .collect();
+        let mut lookup = |position: [f64; 3], size: [f32; 3], out: &mut Vec<Gains>| {
             SpeakerRenderStage::fill_band_gains(
                 &stage.unified_table,
                 None,
-                &stage.render_bands,
+                (&stage.render_bands, &mut band_scratches),
                 render_params,
                 position,
                 size,
@@ -622,6 +628,12 @@ fn object_test_is_bit_identical_to_the_sample_major_mix() {
         let mut prev: Vec<Gains> = Vec::new();
         let mut end: Vec<Gains> = Vec::new();
         let mut filter_states: Option<CrossoverStates> = None;
+        // The reference reads the bands on working memory of its own.
+        let mut band_scratches: Vec<_> = stage
+            .render_bands
+            .iter()
+            .map(BandRenderer::new_scratch)
+            .collect();
 
         for block in 0..12 {
             let az = (block as f32 * 23.0).to_radians();
@@ -647,7 +659,7 @@ fn object_test_is_bit_identical_to_the_sample_major_mix() {
             SpeakerRenderStage::fill_band_gains(
                 &stage.unified_table,
                 None,
-                &stage.render_bands,
+                (&stage.render_bands, &mut band_scratches),
                 render_params,
                 position.map(|v| v as f64),
                 test.size,

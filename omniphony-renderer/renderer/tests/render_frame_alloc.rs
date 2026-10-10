@@ -110,8 +110,18 @@ fn count_steady_state(
     blocks: usize,
     counted: usize,
 ) -> u64 {
-    let mut r = renderer();
+    let r = renderer();
     configure(&mut r.renderer_control().live.write());
+    count_steady_state_of(r, metered, blocks, counted)
+}
+
+/// [`count_steady_state`] on a renderer already configured.
+fn count_steady_state_of(
+    mut r: SpatialRenderer,
+    metered: bool,
+    blocks: usize,
+    counted: usize,
+) -> u64 {
     let speaker_gains =
         r.renderer_control().live.read().binaural.output_mode == OutputMode::SpeakerArray;
     let pcm: Vec<f32> = (0..BLOCK * CHANNELS)
@@ -168,6 +178,42 @@ fn a_warmed_up_render_does_not_allocate() {
                      in 200 warmed-up blocks"
                 );
             }
+        }
+    }
+}
+
+/// Gains computed live (`Realtime` evaluation) by a model that needs working
+/// memory besides the gains it writes: the barycenter solver's arrays, and
+/// the mirror image's gains of the distance-diffuse stage wrapped around it.
+/// Both are sized for the layout when the stage's bands are built and handed
+/// back on every call, so the render thread allocates nothing for them.
+#[test]
+fn a_warmed_up_realtime_render_does_not_allocate() {
+    for crossover in [CrossoverType::Lr4, CrossoverType::Fir] {
+        for ramp_mode in [RampMode::Frame, RampMode::Sample, RampMode::Interp] {
+            let configure = |live: &mut LiveParams| {
+                live.options.crossover_type = crossover;
+                live.options.ramp_mode = ramp_mode;
+                live.use_distance_diffuse = true;
+                live.backend_id = "barycenter".to_string();
+                live.set_evaluation_mode(LiveEvaluationMode::Realtime);
+            };
+            let r = renderer();
+            configure(&mut r.renderer_control().live.write());
+            let control = r.renderer_control();
+            let topology = control
+                .prepare_topology_rebuild()
+                .expect("rebuild plan")
+                .build_topology()
+                .expect("barycenter topology");
+            assert_eq!(topology.backend.backend_id(), "barycenter");
+            control.publish_topology(topology);
+            let allocations = count_steady_state_of(r, false, 400, 200);
+            assert_eq!(
+                allocations, 0,
+                "{crossover:?}, {ramp_mode:?}: {allocations} allocation(s) in 200 warmed-up \
+                 blocks"
+            );
         }
     }
 }

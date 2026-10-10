@@ -3,8 +3,8 @@ use std::f32::consts::FRAC_1_SQRT_2;
 use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
-use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
-use crate::spatial_vbap::{Gains, spherical_to_adm};
+use super::{BackendCapabilities, GainModel, GainScratch, RenderRequest};
+use crate::spatial_vbap::spherical_to_adm;
 use crate::speaker_layout::SpeakerLayout;
 use omniphony_geometry::f32::vec3::dot;
 
@@ -65,15 +65,10 @@ impl DegenerateVbapBackend {
         Self { speaker_dirs, omni }
     }
 
-    fn equal_power(n: usize) -> Gains {
-        let mut g = Gains::zeroed(n);
-        if n > 0 {
-            let v = 1.0 / (n as f32).sqrt();
-            for i in 0..n {
-                g.set(i, v);
-            }
+    fn equal_power(out: &mut [f32]) {
+        if !out.is_empty() {
+            out.fill(1.0 / (out.len() as f32).sqrt());
         }
-        g
     }
 
     /// Local pairwise VBAP between two speaker directions: solve g0*l0 + g1*l1 ≈ p
@@ -103,18 +98,18 @@ impl DegenerateVbapBackend {
         self.speaker_dirs.len()
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let n = self.speaker_dirs.len();
+    pub fn compute_gains(&self, req: &RenderRequest, out: &mut [f32]) {
+        // A buffer of another width than the layout: fill what the two share.
+        let n = self.speaker_dirs.len().min(out.len());
+        let (raw, beyond) = out.split_at_mut(n);
+        beyond.fill(0.0);
         if n == 0 {
-            return RenderResponse {
-                gains: Gains::zeroed(0),
-            };
+            return;
         }
         // One speaker: it gets all the energy regardless of position.
         if n == 1 {
-            let mut g = Gains::zeroed(1);
-            g.set(0, 1.0);
-            return RenderResponse { gains: g };
+            raw[0] = 1.0;
+            return;
         }
 
         // Object direction on the unit sphere (distance dropped via normalisation).
@@ -128,16 +123,14 @@ impl DegenerateVbapBackend {
         let norm_p = dot(scaled, scaled).sqrt();
         if norm_p < 1e-9 {
             // Object at the listener: no direction → split equally.
-            return RenderResponse {
-                gains: Self::equal_power(n),
-            };
+            return Self::equal_power(raw);
         }
         let p = [scaled[0] / norm_p, scaled[1] / norm_p, scaled[2] / norm_p];
 
         // Build raw (un-normalised) gains: directional speakers are panned by the
         // two nearest directions; omni speakers get a constant baseline. A final
         // constant-power normalise scales the whole vector to unit power.
-        let mut raw = Gains::zeroed(n);
+        raw.fill(0.0);
 
         // Two nearest directional speakers to the object direction.
         let mut best = usize::MAX;
@@ -165,7 +158,7 @@ impl DegenerateVbapBackend {
             if best_dot >= COINCIDENT || second == usize::MAX {
                 // Object aligned with a speaker, or only one directional speaker:
                 // 100% on it (before omni mix + normalise).
-                raw.set(best, 1.0);
+                raw[best] = 1.0;
             } else {
                 let (gb, gs) = Self::pair_gains(
                     self.speaker_dirs[best],
@@ -173,36 +166,31 @@ impl DegenerateVbapBackend {
                     best_dot,
                     second_dot,
                 );
-                raw.set(best, gb);
-                raw.set(second, gs);
+                raw[best] = gb;
+                raw[second] = gs;
             }
         }
 
         // Omni baseline: speakers at the listener always get a constant share.
-        for i in 0..n {
-            if self.omni[i] {
-                raw.set(i, OMNI_WEIGHT);
+        for (gain, &omni) in raw.iter_mut().zip(&self.omni) {
+            if omni {
+                *gain = OMNI_WEIGHT;
             }
         }
 
         // Constant-power normalise the assembled vector.
         let mut sumsq = 0.0;
-        for i in 0..n {
-            let v = raw[i];
+        for &v in raw.iter() {
             sumsq += v * v;
         }
         if sumsq <= 1e-12 {
             // No directional and no omni speakers contributed: split equally.
-            return RenderResponse {
-                gains: Self::equal_power(n),
-            };
+            return Self::equal_power(raw);
         }
         let inv = 1.0 / sumsq.sqrt();
-        for i in 0..n {
-            let v = raw[i] * inv;
-            raw.set(i, v);
+        for gain in raw.iter_mut() {
+            *gain *= inv;
         }
-        RenderResponse { gains: raw }
     }
 
     pub fn save_to_file(
@@ -248,8 +236,8 @@ impl GainModel for DegenerateVbapBackend {
         DegenerateVbapBackend::speaker_count(self)
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        DegenerateVbapBackend::compute_gains(self, req)
+    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, out: &mut [f32]) {
+        DegenerateVbapBackend::compute_gains(self, req, out)
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -288,7 +276,7 @@ mod tests {
     fn single_speaker_is_unity_everywhere() {
         let b = DegenerateVbapBackend::new(vec![[30.0, 0.0]]);
         for pos in [adm(0.0, 0.0, 1.0), adm(120.0, 45.0, 3.0), [0.0, 0.0, 0.0]] {
-            let g = b.compute_gains(&req(pos)).gains;
+            let g = b.gains_at(&req(pos));
             assert_eq!(g.len(), 1);
             assert!((g[0] - 1.0).abs() < 1e-6, "got {:?}", &g[..]);
         }
@@ -297,13 +285,13 @@ mod tests {
     #[test]
     fn object_on_speaker_direction_is_full_on_that_speaker() {
         let b = DegenerateVbapBackend::new(vec![[-30.0, 0.0], [30.0, 0.0]]);
-        let g0 = b.compute_gains(&req(adm(-30.0, 0.0, 1.0))).gains;
+        let g0 = b.gains_at(&req(adm(-30.0, 0.0, 1.0)));
         assert!(
             (g0[0] - 1.0).abs() < 1e-6 && g0[1].abs() < 1e-6,
             "{:?}",
             &g0[..]
         );
-        let g1 = b.compute_gains(&req(adm(30.0, 0.0, 1.0))).gains;
+        let g1 = b.gains_at(&req(adm(30.0, 0.0, 1.0)));
         assert!(
             g1[0].abs() < 1e-6 && (g1[1] - 1.0).abs() < 1e-6,
             "{:?}",
@@ -314,7 +302,7 @@ mod tests {
     #[test]
     fn midpoint_is_balanced_constant_power() {
         let b = DegenerateVbapBackend::new(vec![[-30.0, 0.0], [30.0, 0.0]]);
-        let g = b.compute_gains(&req(adm(0.0, 0.0, 1.0))).gains;
+        let g = b.gains_at(&req(adm(0.0, 0.0, 1.0)));
         assert!((g[0] - g[1]).abs() < 1e-5, "{:?}", &g[..]);
         assert!((g[0] - FRAC_1_SQRT_2).abs() < 1e-4, "{:?}", &g[..]);
     }
@@ -323,7 +311,7 @@ mod tests {
     fn constant_power_across_the_arc() {
         let b = DegenerateVbapBackend::new(vec![[-30.0, 0.0], [30.0, 0.0]]);
         for az in [-30.0, -15.0, -5.0, 0.0, 7.0, 20.0, 30.0] {
-            let g = b.compute_gains(&req(adm(az, 0.0, 1.0))).gains;
+            let g = b.gains_at(&req(adm(az, 0.0, 1.0)));
             let power = g[0] * g[0] + g[1] * g[1];
             assert!((power - 1.0).abs() < 1e-4, "az={az} power={power}");
         }
@@ -333,7 +321,7 @@ mod tests {
     fn out_of_arc_collapses_to_nearest() {
         let b = DegenerateVbapBackend::new(vec![[-30.0, 0.0], [30.0, 0.0]]);
         // Far to the left, well outside [-30, 30]: only the left speaker survives.
-        let g = b.compute_gains(&req(adm(-90.0, 0.0, 1.0))).gains;
+        let g = b.gains_at(&req(adm(-90.0, 0.0, 1.0)));
         assert!(
             (g[0] - 1.0).abs() < 1e-6 && g[1].abs() < 1e-6,
             "{:?}",
@@ -346,15 +334,15 @@ mod tests {
         let b = DegenerateVbapBackend::new(vec![[-30.0, 0.0], [30.0, 0.0]]);
         // Keep both probes inside the unit box (the room depth warp clamps |y|≤1,
         // like VBAP): within it the gains depend only on direction, not distance.
-        let near = b.compute_gains(&req(adm(12.0, 10.0, 0.4))).gains;
-        let far = b.compute_gains(&req(adm(12.0, 10.0, 0.8))).gains;
+        let near = b.gains_at(&req(adm(12.0, 10.0, 0.4)));
+        let far = b.gains_at(&req(adm(12.0, 10.0, 0.8)));
         assert!((near[0] - far[0]).abs() < 1e-4 && (near[1] - far[1]).abs() < 1e-4);
     }
 
     #[test]
     fn antipodal_speakers_do_not_nan() {
         let b = DegenerateVbapBackend::new(vec![[0.0, 0.0], [180.0, 0.0]]);
-        let g = b.compute_gains(&req(adm(90.0, 0.0, 1.0))).gains;
+        let g = b.gains_at(&req(adm(90.0, 0.0, 1.0)));
         assert!(g[0].is_finite() && g[1].is_finite(), "{:?}", &g[..]);
         let power = g[0] * g[0] + g[1] * g[1];
         assert!((power - 1.0).abs() < 1e-4, "power={power}");
@@ -367,12 +355,12 @@ mod tests {
         // nearest directions and stays constant-power.
         let b = DegenerateVbapBackend::new(vec![[-60.0, 0.0], [0.0, 0.0], [60.0, 0.0]]);
         for az in [-60.0, -30.0, 0.0, 30.0, 60.0] {
-            let g = b.compute_gains(&req(adm(az, 0.0, 1.0))).gains;
+            let g = b.gains_at(&req(adm(az, 0.0, 1.0)));
             let power: f32 = (0..3).map(|i| g[i] * g[i]).sum();
             assert!((power - 1.0).abs() < 1e-4, "az={az} power={power}");
         }
         // Aligned with the middle speaker: full on it.
-        let g = b.compute_gains(&req(adm(0.0, 0.0, 1.0))).gains;
+        let g = b.gains_at(&req(adm(0.0, 0.0, 1.0)));
         assert!(
             (g[1] - 1.0).abs() < 1e-4 && g[0].abs() < 1e-4 && g[2].abs() < 1e-4,
             "{:?}",
@@ -390,7 +378,7 @@ mod tests {
             vec![true, false, false],
         );
         for az in [-90.0, -45.0, 0.0, 45.0, 90.0] {
-            let g = b.compute_gains(&req(adm(az, 0.0, 1.0))).gains;
+            let g = b.gains_at(&req(adm(az, 0.0, 1.0)));
             assert!(g[0] > 0.1, "omni share too small at az={az}: {:?}", &g[..]);
             let power: f32 = (0..3).map(|i| g[i] * g[i]).sum();
             assert!((power - 1.0).abs() < 1e-4, "az={az} power={power}");

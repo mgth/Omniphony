@@ -4,8 +4,8 @@
 //! struct ([`SpartaVbapLayout`]) that computes VBAP gains directly via
 //! [`SpartaVbapLayout::vbap_gains`].
 
+use super::normalized_spread_to_degrees;
 use super::saf_ffi;
-use super::{Gains, normalized_spread_to_degrees};
 use crate::spatial_vbap::vbap_native::prepare_effective_speaker_dirs;
 use std::ffi::c_int;
 
@@ -14,7 +14,7 @@ use std::ffi::c_int;
 /// Owns the C-allocated `ls_groups` and `layout_inv_mtx` pointers and frees
 /// them on drop.
 pub(crate) struct SpartaVbapLayout {
-    /// Number of *real* (non-dummy) speakers — size of the returned `Gains`.
+    /// Number of *real* (non-dummy) speakers — the number of gains returned.
     pub(crate) n_speakers: usize,
     pub(crate) n_faces: c_int,
     /// Total speaker count used for triangulation (real + dummy virtual speakers).
@@ -101,7 +101,7 @@ impl SpartaVbapLayout {
         azimuth_deg: f32,
         elevation_deg: f32,
         spread: f32,
-    ) -> Result<Gains, String> {
+    ) -> Result<Vec<f32>, String> {
         let mut src_dirs = [azimuth_deg, elevation_deg];
         let spread_deg = normalized_spread_to_degrees(spread);
         let mut gain_mtx: *mut f32 = std::ptr::null_mut();
@@ -129,7 +129,7 @@ impl SpartaVbapLayout {
         // vertices inside vbap3d; the SAF FFI doesn't expose that hook, so a post-hoc
         // k-nearest redistribution table would be needed instead.
         let all_gains = unsafe { std::slice::from_raw_parts(gain_mtx, self.n_eff) };
-        let out = Gains::from_slice(&all_gains[..self.n_speakers]);
+        let out = all_gains[..self.n_speakers].to_vec();
         unsafe { libc::free(gain_mtx as *mut libc::c_void) };
         Ok(out)
     }
