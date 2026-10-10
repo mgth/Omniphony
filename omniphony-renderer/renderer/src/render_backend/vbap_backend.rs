@@ -2,10 +2,10 @@ use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
 use super::{
-    BackendCapabilities, GainModel, GainScratch, RenderRequest, SizeToSpreadMode,
+    BackendCapabilities, GainModel, GainScratch, RenderRequest, SizeToSpreadMode, foreign_scratch,
     reduce_size_to_spread,
 };
-use crate::spatial_vbap::{VbapPanner, adm_to_spherical};
+use crate::spatial_vbap::{VbapPanner, VbapScratch, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 
 /// VBAP spread tuning, baked into the backend at build time (read from the
@@ -87,7 +87,27 @@ impl VbapBackend {
         }
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest, out: &mut [f32]) {
+    /// The working memory of one caller: the panner's, sized for the layout
+    /// (virtual speakers included), so that panning allocates nothing.
+    pub fn new_scratch(&self) -> GainScratch {
+        GainScratch::new(self.panner.new_scratch())
+    }
+
+    pub fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        let Some(scratch) = scratch.state::<VbapScratch>() else {
+            return foreign_scratch(out);
+        };
+        self.compute_gains_on(req, scratch, out)
+    }
+
+    /// [`Self::compute_gains`] on the panner's own scratch, for a model built
+    /// on this one that keeps it inside its own.
+    pub(crate) fn compute_gains_on(
+        &self,
+        req: &RenderRequest,
+        scratch: &mut VbapScratch,
+        out: &mut [f32],
+    ) {
         let scaled = room_scaled_position(
             req.adm_position.map(|v| v as f32),
             req.room_ratio,
@@ -99,8 +119,14 @@ impl VbapBackend {
 
         // Distance diffuse blending is applied by the shared DistanceDiffuseModel
         // decorator; VBAP returns pure panning gains.
-        self.panner
-            .gains_cartesian_into(scaled[0], scaled[1], scaled[2], effective_spread, out);
+        self.panner.gains_cartesian_into(
+            scaled[0],
+            scaled[1],
+            scaled[2],
+            effective_spread,
+            scratch,
+            out,
+        );
     }
 
     pub fn save_to_file(
@@ -146,8 +172,12 @@ impl GainModel for VbapBackend {
         VbapBackend::speaker_count(self)
     }
 
-    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, out: &mut [f32]) {
-        VbapBackend::compute_gains(self, req, out)
+    fn new_scratch(&self) -> GainScratch {
+        VbapBackend::new_scratch(self)
+    }
+
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        VbapBackend::compute_gains(self, req, scratch, out)
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
