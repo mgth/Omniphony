@@ -89,7 +89,7 @@ impl Default for ViewSettings {
             objects_visible: true,
             object_display_mode: ObjectDisplayMode::Circle,
             object_sphere_size: 0.07,
-            object_colors_enabled: false,
+            object_colors_enabled: true,
             object_labels_enabled: true,
             show_object_details: true,
             effective_render_enabled: false,
@@ -99,7 +99,7 @@ impl Default for ViewSettings {
             speakers_on_headphones: false,
             speaker_labels_enabled: false,
             speaker_band_bars_enabled: false,
-            speaker_face_listener_enabled: false,
+            speaker_face_listener_enabled: true,
             room_guides_visible: false,
             gizmo: gizmos::GizmoState::default(),
             hybrid_point: None,
@@ -550,11 +550,18 @@ pub fn build_frame(
     // The edit gizmos: the selected speaker, or a selected object that is a
     // virtual bed channel — the two things whose position this editor moves.
     // Objects, their labels and trails.
+    // The listener's ears, for the perceived image: the head as drawn, in
+    // the scene's frame (X front, Z right).
+    let head = crate::model::perceived::Head {
+        front: (head_rotation * Vec3::X).to_array(),
+        right: (head_rotation * Vec3::Z).to_array(),
+    };
     let objects = objects::collect(
         live,
         settings,
         &room,
         &speaker_refs,
+        &head,
         selection.object.as_deref(),
         selection.speaker,
     );

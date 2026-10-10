@@ -5,3 +5,4 @@
 pub mod app_state;
 pub mod binaural;
 pub mod layouts;
+pub mod perceived;
