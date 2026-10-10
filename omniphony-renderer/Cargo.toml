@@ -14,7 +14,7 @@ resolver = "2"
 # bridges require by version from their own repository, and the OSC contract
 # (`../osc-contract`). Never edit it by hand: `scripts/release_version.py set
 # X.Y.Z` moves it with every other copy (Studio manifests, lockfiles, README).
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/mgth/Omniphony"
@@ -27,7 +27,7 @@ rust-version = "1.89"
 # Read by `scripts/release_version.py` for the release manifest and the
 # README's compatibility table.
 [workspace.metadata.release]
-player = "mpv-v0.6.0"
+player = "mpv-v0.7.0"
 
 # One version requirement per dependency for the whole workspace. Members
 # inherit with `<dep>.workspace = true` and may add features locally.

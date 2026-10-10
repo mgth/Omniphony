@@ -31,7 +31,7 @@ use crate::events::Configuration;
 use crate::object_gen::{PrepareCtx, layout_has_height};
 use crate::osc::{ObjectMeta, OscSender};
 use crate::virtual_bed::{
-    BedChannelPlanner, BedPlanKind, FixedChannelPlanner, OwnedPlacement, RoomRatios,
+    BedChannelPlanner, BedPlanKind, FixedChannelPlanner, OutputWarp, OwnedPlacement,
     build_fixed_channel_objects, build_virtual_bed_objects,
 };
 
@@ -591,7 +591,7 @@ impl StreamState {
             let live = control.live.read();
             (
                 OwnedPlacement::from_live(&live, self.declaration.family),
-                RoomRatios::for_output(&live, topology),
+                OutputWarp::for_output(&live, topology),
                 live.options.surround_placement,
             )
         };

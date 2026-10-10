@@ -27,7 +27,11 @@ const BLOCK: usize = 40;
 /// A 7.1.4 renderer whose front speakers are band-limited, so objects go
 /// through a 4-band crossover and the unified table.
 fn renderer() -> SpatialRenderer {
-    let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
+    renderer_for(SpeakerLayout::preset("7.1.4").unwrap())
+}
+
+/// [`renderer`] on `layout`, its first three speakers band-limited.
+fn renderer_for(mut layout: SpeakerLayout) -> SpatialRenderer {
     for (speaker, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
         speaker.freq_low = Some(cutoff);
     }
@@ -110,8 +114,18 @@ fn count_steady_state(
     blocks: usize,
     counted: usize,
 ) -> u64 {
-    let mut r = renderer();
+    let r = renderer();
     configure(&mut r.renderer_control().live.write());
+    count_steady_state_of(r, metered, blocks, counted)
+}
+
+/// [`count_steady_state`] on a renderer already configured.
+fn count_steady_state_of(
+    mut r: SpatialRenderer,
+    metered: bool,
+    blocks: usize,
+    counted: usize,
+) -> u64 {
     let speaker_gains =
         r.renderer_control().live.read().binaural.output_mode == OutputMode::SpeakerArray;
     let pcm: Vec<f32> = (0..BLOCK * CHANNELS)
@@ -168,6 +182,183 @@ fn a_warmed_up_render_does_not_allocate() {
                      in 200 warmed-up blocks"
                 );
             }
+        }
+    }
+}
+
+/// The gain models that compute live without allocating, each with the
+/// spread its objects pan with: VBAP and the volumetric model built on it pan
+/// a spread source as a cloud of directions, on more working memory than a
+/// point source. Not those two under `saf_vbap`: SAF allocates the gains it
+/// returns, and its layout is rebuilt on every call.
+const REALTIME_MODELS: &[(&str, f32)] = &[
+    ("barycenter", 0.0),
+    #[cfg(not(feature = "saf_vbap"))]
+    ("vbap", 0.0),
+    #[cfg(not(feature = "saf_vbap"))]
+    ("vbap", 0.3),
+    #[cfg(not(feature = "saf_vbap"))]
+    ("volumetric", 0.0),
+    #[cfg(not(feature = "saf_vbap"))]
+    ("volumetric", 0.3),
+];
+
+/// Gains computed live (`Realtime` evaluation) by a model that needs working
+/// memory besides the gains it writes: the barycenter solver's arrays, the
+/// gain row over VBAP's effective speakers (virtual ones included) with its
+/// out-of-hull fold and spread cloud, the volumetric model's central
+/// distribution, and the mirror image's gains of the distance-diffuse stage
+/// wrapped around each. All are sized for the layout when the stage's bands
+/// are built and handed back on every call, so the render thread allocates
+/// nothing for them.
+#[test]
+fn a_warmed_up_realtime_render_does_not_allocate() {
+    for &(backend, spread) in REALTIME_MODELS {
+        for crossover in [CrossoverType::Lr4, CrossoverType::Fir] {
+            for ramp_mode in [RampMode::Frame, RampMode::Sample, RampMode::Interp] {
+                let configure = |live: &mut LiveParams| {
+                    live.options.crossover_type = crossover;
+                    live.options.ramp_mode = ramp_mode;
+                    live.use_distance_diffuse = true;
+                    live.spread_min = spread;
+                    live.backend_id = backend.to_string();
+                    live.set_evaluation_mode(LiveEvaluationMode::Realtime);
+                };
+                let r = renderer();
+                configure(&mut r.renderer_control().live.write());
+                let control = r.renderer_control();
+                let topology = control
+                    .prepare_topology_rebuild()
+                    .expect("rebuild plan")
+                    .build_topology()
+                    .expect("realtime topology");
+                assert_eq!(topology.backend.backend_id(), backend);
+                control.publish_topology(topology);
+                let allocations = count_steady_state_of(r, false, 400, 200);
+                assert_eq!(
+                    allocations, 0,
+                    "{backend}, spread {spread}, {crossover:?}, {ramp_mode:?}: {allocations} \
+                     allocation(s) in 200 warmed-up blocks"
+                );
+            }
+        }
+    }
+}
+
+/// The same contract on the models themselves, without a renderer around
+/// them: `compute_gains` on the scratch the model made allocates nothing,
+/// whatever the out-of-hull mode folds or downmixes, on a layout closed by
+/// virtual poles as on one with height speakers, for a point source and for
+/// a spread one. The native panner's contract: under `saf_vbap` the gains
+/// come from SAF, which allocates them.
+#[cfg(not(feature = "saf_vbap"))]
+#[test]
+fn the_vbap_models_compute_gains_without_allocating() {
+    use renderer::backend_conformance::{ConformanceOptions, ZeroAllocReport, check_zero_alloc};
+    use renderer::render_backend::{
+        CentralDistribution, GainModel, VbapBackend, VbapSpreadParams, VolumetricBackend,
+        VolumetricParams,
+    };
+    use renderer::spatial_vbap::{OutOfHullMode, VbapPanner};
+
+    let modes = [
+        OutOfHullMode::Fade,
+        OutOfHullMode::default(),
+        OutOfHullMode::VirtualPoles,
+    ];
+    for preset in ["5.1", "7.1.4"] {
+        let layout = SpeakerLayout::preset(preset).unwrap();
+        let dirs = layout
+            .spatializable_positions_for_room([1.0; 3], 1.0, 1.0, 0.0)
+            .0;
+        let radii = layout.spatializable_radii_for_room([1.0; 3], 1.0, 1.0, 0.0);
+        for mode in modes {
+            for negative_z in [false, true] {
+                for spread_min in [0.0, 0.3] {
+                    let vbap = || {
+                        let panner = VbapPanner::new(&dirs, 1, 1, 0.0, mode)
+                            .expect("panner")
+                            .with_negative_z(negative_z);
+                        let spread = VbapSpreadParams {
+                            spread_min,
+                            ..Default::default()
+                        };
+                        VbapBackend::new(panner, spread)
+                    };
+                    let volumetric = |central| {
+                        let params = VolumetricParams {
+                            central,
+                            ..Default::default()
+                        };
+                        VolumetricBackend::new(vbap(), &dirs, &radii, params).expect("volumetric")
+                    };
+                    let models: [Box<dyn GainModel>; 3] = [
+                        Box::new(vbap()),
+                        Box::new(volumetric(CentralDistribution::Antipode)),
+                        Box::new(volumetric(CentralDistribution::Uniform)),
+                    ];
+                    for model in models {
+                        let report = check_zero_alloc(&*model, &ConformanceOptions::default());
+                        assert!(
+                            matches!(report, ZeroAllocReport::Ran { allocations: 0 }),
+                            "{} on {preset}, {mode:?}, negative z {negative_z}, spread \
+                             {spread_min}: compute_gains allocated",
+                            model.backend_id()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Nothing in a block is sized by a fixed speaker count: a dome of 128
+/// speakers, from tables and from gains computed live, metered or not, is as
+/// free of allocations once warmed up as a 7.1.4.
+#[test]
+fn a_warmed_up_render_on_128_speakers_does_not_allocate() {
+    let dome = || renderer_for(renderer::test_support::dome_layout(128));
+    for ramp_mode in [RampMode::Frame, RampMode::Sample, RampMode::Interp] {
+        for metered in [false, true] {
+            let r = dome();
+            let control = r.renderer_control();
+            {
+                let mut live = control.live.write();
+                live.options.crossover_type = CrossoverType::Fir;
+                live.options.ramp_mode = ramp_mode;
+            }
+            let allocations = count_steady_state_of(r, metered, 240, 120);
+            assert_eq!(
+                allocations, 0,
+                "tables, {ramp_mode:?}, metered {metered}: {allocations} allocation(s) in 120 \
+                 warmed-up blocks"
+            );
+        }
+
+        for &(backend, spread) in REALTIME_MODELS {
+            let r = dome();
+            let control = r.renderer_control();
+            {
+                let mut live = control.live.write();
+                live.options.crossover_type = CrossoverType::Lr4;
+                live.options.ramp_mode = ramp_mode;
+                live.spread_min = spread;
+                live.backend_id = backend.to_string();
+                live.set_evaluation_mode(LiveEvaluationMode::Realtime);
+            }
+            let topology = control
+                .prepare_topology_rebuild()
+                .expect("rebuild plan")
+                .build_topology()
+                .expect("realtime topology");
+            assert_eq!(topology.backend.backend_id(), backend);
+            control.publish_topology(topology);
+            let allocations = count_steady_state_of(r, false, 240, 120);
+            assert_eq!(
+                allocations, 0,
+                "realtime {backend}, spread {spread}, {ramp_mode:?}: {allocations} \
+                 allocation(s) in 120 warmed-up blocks"
+            );
         }
     }
 }

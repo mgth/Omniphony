@@ -407,6 +407,42 @@ pub fn emit_axes(
     }
 }
 
+/// The listener's sphere: what the room's surface is while the direct path
+/// reads positions on the sphere (#773). Three great circles of the unit
+/// sphere (ear level, the median plane, the frontal plane) in the listener
+/// cube's colour, and the ring 45° up, where the ceiling's edge is heard.
+pub fn emit_listener_sphere(frame: &mut FrameData) {
+    const SEGMENTS: usize = 64;
+    let edge = RoomStyle::LISTENER_CUBE.edge;
+    let colour = with_alpha(hex_linear(edge.0), edge.1);
+    let faint = with_alpha(hex_linear(edge.0), edge.1 * 0.5);
+    // Scene axes: x depth, y up, z right.
+    let rings: [(&dyn Fn(f32, f32) -> Vec3, [f32; 4]); 4] = [
+        (&|c, s| Vec3::new(c, 0.0, s), colour),
+        (&|c, s| Vec3::new(c, s, 0.0), colour),
+        (&|c, s| Vec3::new(0.0, c, s), colour),
+        (
+            &|c, s| {
+                let r = std::f32::consts::FRAC_1_SQRT_2;
+                Vec3::new(c * r, r, s * r)
+            },
+            faint,
+        ),
+    ];
+    for (ring, color) in rings {
+        for i in 0..SEGMENTS {
+            let a0 = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            let a1 = (i + 1) as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            for a in [a0, a1] {
+                frame.overlay_lines.push(LineVertex {
+                    pos: ring(a.cos(), a.sin()).to_array(),
+                    color,
+                });
+            }
+        }
+    }
+}
+
 /// The direct path's scale: one unit of the listener's cube in metres (the
 /// renderer's `unit_scale_m`), laid along the top front edge the way the
 /// room guides are, so the Distance scale slider has a reading in the scene.

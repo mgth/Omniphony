@@ -669,17 +669,22 @@ fn coplanar_face_groups(u_spkr: &[[f32; 3]], ls_groups: &[[usize; 3]]) -> Vec<Ve
 
 // ── getSpreadSrcDirs3D ────────────────────────────────────────────────────────
 
-/// Generate a ring of spread directions around a source (MDAP helper).
+/// Generate a ring of spread directions around a source (MDAP helper) into
+/// the caller's buffers, allocating nothing.
 ///
-/// Returns `num_rings * num_src + 1` Cartesian unit vectors.
-/// The last entry is the original source direction (central source).
-pub fn get_spread_src_dirs_3d(
+/// `spreadbase` is working memory, one entry per source of a ring (`num_src`,
+/// at least one). `out` takes the `num_rings * num_src + 1` Cartesian unit
+/// vectors; the last entry is the original source direction (central source).
+fn spread_src_dirs_3d_into(
     az_rad: f32,
     el_rad: f32,
     spread_deg: f32,
-    num_src: usize,
     num_rings: usize,
-) -> Vec<[f32; 3]> {
+    spreadbase: &mut [[f32; 3]],
+    out: &mut [[f32; 3]],
+) {
+    let num_src = spreadbase.len();
+    debug_assert_eq!(out.len(), num_rings * num_src + 1);
     let u = sph_to_cart(az_rad, el_rad);
 
     // Rodrigues rotation matrix R_θ around axis u, θ = 2π/num_src
@@ -715,7 +720,6 @@ pub fn get_spread_src_dirs_3d(
     };
 
     // Build ring by repeated rotation
-    let mut spreadbase = vec![[0.0f32; 3]; num_src];
     spreadbase[0] = first_base;
     for ns in 1..num_src {
         let prev = spreadbase[ns - 1];
@@ -729,9 +733,6 @@ pub fn get_spread_src_dirs_3d(
     // Squeeze ring to desired spread; build output
     let spread_rad = (spread_deg / 2.0) * std::f32::consts::PI / 180.0;
     let ring_rad = spread_rad / num_rings as f32;
-
-    let total = num_rings * num_src + 1;
-    let mut out = vec![[0.0f32; 3]; total];
 
     // Normalisation factor from first vector of first ring
     let tan_r = ring_rad.tan();
@@ -757,8 +758,6 @@ pub fn get_spread_src_dirs_3d(
 
     // Append central source direction
     out[num_rings * num_src] = u;
-
-    out
 }
 
 // ── Dummy-speaker redistribution ─────────────────────────────────────────────
@@ -946,38 +945,94 @@ fn downmix_dummy_rings(gains: &mut [f32], dummy_rings: &[DummyRing]) {
 
 // ── vbap3D ───────────────────────────────────────────────────────────────────
 
-/// Compute VBAP (or MDAP with spread) gains for a batch of source directions.
+/// Spread members on each ring of the MDAP cloud, and the rings around a
+/// source: the cloud `vbap3d` pans for a spread source.
+const N_SPREAD_SRCS: usize = 8;
+const N_RINGS: usize = 1;
+
+/// The working memory of [`vbap3d_into`], sized once for a triangulation so
+/// that panning a direction allocates nothing: one caller keeps one and hands
+/// it back on every call.
+pub struct Vbap3dScratch {
+    /// One gain per effective speaker (the virtual poles and centres
+    /// included), before the downmix and the normalise.
+    gains: Vec<f32>,
+    /// The out-of-hull fold's gains, as wide.
+    fold_acc: Vec<f32>,
+    /// The base vectors of the spread ring.
+    spread_base: Vec<[f32; 3]>,
+    /// The directions of the spread cloud's members, the source's last.
+    spread_dirs: Vec<[f32; 3]>,
+}
+
+impl Vbap3dScratch {
+    /// A scratch for a triangulation of `n_speakers` effective speakers (the
+    /// length of its `is_dummy`).
+    pub fn new(n_speakers: usize) -> Self {
+        Self {
+            gains: vec![0.0; n_speakers],
+            fold_acc: vec![0.0; n_speakers],
+            spread_base: vec![[0.0; 3]; N_SPREAD_SRCS],
+            spread_dirs: vec![[0.0; 3]; N_RINGS * N_SPREAD_SRCS + 1],
+        }
+    }
+
+    /// Resize for another triangulation. Never taken by a caller that keeps
+    /// one scratch per layout; a scratch made for another layout is fitted
+    /// here, once, rather than indexed out of bounds.
+    #[cold]
+    fn fit(&mut self, n_speakers: usize) {
+        self.gains.resize(n_speakers, 0.0);
+        self.fold_acc.resize(n_speakers, 0.0);
+    }
+}
+
+/// Compute VBAP (or MDAP with spread) gains for one source direction into
+/// `out`, on the caller's `scratch`: nothing is allocated.
 ///
-/// `src_dirs`: `[azimuth_deg, elevation_deg]` per source direction.
-/// `n_speakers`: total number of speakers (gains vector length).
+/// `src_dir`: `[azimuth_deg, elevation_deg]`.
 /// `ls_groups`: triangle indices into speakers.
 /// `spread_deg`: spread in degrees; 0 = pure VBAP, >0 = MDAP.
 /// `layout_inv_mtx`: per-triangle 3×3 inverse speaker matrices.
-/// `is_dummy`: per-speaker flag (length `n_speakers`); when set, the speaker is
-/// a virtual pole inserted to make the triangulation 3-D. In
-/// [`OutOfHullMode::Blend`] its gain is folded back into the real speakers of
-/// the matched triangle; in [`OutOfHullMode::VirtualPoles`] it is downmixed at
-/// `1/√n` over the pole's adjacent ring (`dummy_rings`, precomputed by
-/// [`compute_dummy_rings`] — pass `&[]` when `is_dummy` is all false). The
-/// virtual centres of coplanar faces ([`Triangulation`]) are not flagged
-/// here: their gain always goes through `dummy_rings`, in every mode.
+/// `is_dummy`: per-speaker flag, one per effective speaker of the
+/// triangulation; when set, the speaker is a virtual pole inserted to make
+/// the triangulation 3-D. In [`OutOfHullMode::Blend`] its gain is folded back
+/// into the real speakers of the matched triangle; in
+/// [`OutOfHullMode::VirtualPoles`] it is downmixed at `1/√n` over the pole's
+/// adjacent ring (`dummy_rings`, precomputed by [`compute_dummy_rings`] — pass
+/// `&[]` when `is_dummy` is all false). The virtual centres of coplanar faces
+/// ([`Triangulation`]) are not flagged here: their gain always goes through
+/// `dummy_rings`, in every mode.
 ///
-/// Returns a flat `[n_sources × n_speakers]` gain matrix.
+/// `out` takes one gain per effective speaker, in the triangulation's order.
+/// The virtual speakers come last: a caller that wants the real ones alone
+/// passes a buffer as wide as the real layout. Entries of `out` past the
+/// effective speakers are left untouched.
 #[allow(clippy::too_many_arguments)] // C-port style signature, matches the rest of the module
-pub fn vbap3d(
-    src_dirs: &[[f32; 2]],
-    n_speakers: usize,
+pub fn vbap3d_into(
+    src_dir: [f32; 2],
     ls_groups: &[[usize; 3]],
     spread_deg: f32,
     layout_inv_mtx: &[[f32; 9]],
     is_dummy: &[bool],
     mode: OutOfHullMode,
     dummy_rings: &[DummyRing],
-) -> Vec<f32> {
-    debug_assert_eq!(is_dummy.len(), n_speakers);
-    let n_src = src_dirs.len();
-    let _n_faces = ls_groups.len();
-    let mut gain_mtx = vec![0.0f32; n_src * n_speakers];
+    scratch: &mut Vbap3dScratch,
+    out: &mut [f32],
+) {
+    let n_speakers = is_dummy.len();
+    if scratch.gains.len() != n_speakers {
+        scratch.fit(n_speakers);
+    }
+    let Vbap3dScratch {
+        gains,
+        fold_acc,
+        spread_base,
+        spread_dirs,
+    } = scratch;
+    let width = out.len().min(n_speakers);
+    let out = &mut out[..width];
+    let [az_deg, el_deg] = src_dir;
 
     // In VirtualPoles the pole gain is redistributed ring-wide after the face
     // pass, so the per-triangle fold must not touch it first.
@@ -991,122 +1046,33 @@ pub fn vbap3d(
         OutOfHullMode::Blend { power } => power.max(1.0),
         _ => OutOfHullMode::DEFAULT_BLEND_POWER,
     };
-    // Scratch buffers reused across sources and spread members — the sweep
-    // allocates nothing per direction.
-    let mut gains = vec![0.0f32; n_speakers];
-    let mut fold_acc = vec![0.0f32; n_speakers];
 
     if spread_deg > 0.1 {
         // MDAP
-        const N_SPREAD_SRCS: usize = 8;
-        const N_RINGS: usize = 1;
+        let az_rad = az_deg * std::f32::consts::PI / 180.0;
+        let el_rad = el_deg * std::f32::consts::PI / 180.0;
 
-        for (ns, &[az_deg, el_deg]) in src_dirs.iter().enumerate() {
-            let az_rad = az_deg * std::f32::consts::PI / 180.0;
-            let el_rad = el_deg * std::f32::consts::PI / 180.0;
+        spread_src_dirs_3d_into(
+            az_rad,
+            el_rad,
+            spread_deg,
+            N_RINGS,
+            spread_base,
+            spread_dirs,
+        );
 
-            let u_spread =
-                get_spread_src_dirs_3d(az_rad, el_rad, spread_deg, N_SPREAD_SRCS, N_RINGS);
+        gains.fill(0.0);
 
-            gains.fill(0.0);
-
-            for u_vec in &u_spread {
-                let u = *u_vec;
-                let mut hit = false;
-
-                // Find the matching triangle and accumulate its gains. The
-                // first face that holds the member is the one, as on the pure
-                // path below: within the hit tolerance of a shared edge both
-                // neighbours hold it, and summing both counted the member
-                // twice — a step in the cloud's gains wherever a member
-                // crossed an edge.
-                for (fi, face) in ls_groups.iter().enumerate() {
-                    let inv = &layout_inv_mtx[fi];
-
-                    let g0 = inv[0] * u[0] + inv[1] * u[1] + inv[2] * u[2];
-                    let g1 = inv[3] * u[0] + inv[4] * u[1] + inv[5] * u[2];
-                    let g2 = inv[6] * u[0] + inv[7] * u[1] + inv[8] * u[2];
-
-                    let min_val = g0.min(g1).min(g2);
-                    if min_val > FACE_HIT_TOLERANCE {
-                        let rms = (g0 * g0 + g1 * g1 + g2 * g2).sqrt();
-                        if rms > 1e-30 {
-                            let raw = [g0 / rms, g1 / rms, g2 / rms];
-                            let gr = if per_triangle_fold {
-                                redistribute_dummy_in_triangle(raw, *face, is_dummy)
-                            } else {
-                                raw
-                            };
-                            gains[face[0]] += gr[0];
-                            gains[face[1]] += gr[1];
-                            gains[face[2]] += gr[2];
-                        }
-                        hit = true;
-                        break;
-                    }
-                }
-
-                // Out-of-hull spread source: fold onto the hull boundary so the
-                // spread cloud keeps its below/behind-hull energy, at full
-                // level like the non-spread path.
-                //
-                // Divergence worth recording: Pulkki's own spread path
-                // (`additive_vbap` in his Pd external, and rvbap.c) guards its
-                // accumulate with `if (gains_modified != 1)`, so an out-of-hull
-                // spread member contributes *nothing*. Folding it in at full
-                // weight is the opposite choice. It keeps a spread source's
-                // energy constant as it crosses the hull boundary, which is
-                // what the energy gate asserts, but it is not what Pulkki does.
-                if !hit {
-                    if legacy_fade {
-                        // Original behaviour: single argmax face, contribution
-                        // faded by the fold angle so far-outside members
-                        // contribute less to the mix.
-                        if let Some((fi, gr, fade)) =
-                            fold_out_of_hull_argmax(u, ls_groups, layout_inv_mtx, is_dummy)
-                        {
-                            let face = ls_groups[fi];
-                            gains[face[0]] += gr[0] * fade;
-                            gains[face[1]] += gr[1] * fade;
-                            gains[face[2]] += gr[2] * fade;
-                        }
-                    } else if fold_out_of_hull(
-                        u,
-                        ls_groups,
-                        layout_inv_mtx,
-                        is_dummy,
-                        fold_power,
-                        &mut fold_acc,
-                    ) {
-                        for (g, &add) in gains.iter_mut().zip(fold_acc.iter()) {
-                            *g += add;
-                        }
-                    }
-                }
-            }
-
-            downmix_dummy_rings(&mut gains, dummy_rings);
-
-            // Energy-normalise and clamp to ≥ 0
-            let gains_rms = gains.iter().map(|&g| g * g).sum::<f32>().sqrt();
-            let out = &mut gain_mtx[ns * n_speakers..(ns + 1) * n_speakers];
-            if gains_rms > 1e-30 {
-                for (o, &g) in out.iter_mut().zip(gains.iter()) {
-                    *o = (g / gains_rms).max(0.0);
-                }
-            }
-        }
-    } else {
-        // Pure VBAP
-        for (ns, &[az_deg, el_deg]) in src_dirs.iter().enumerate() {
-            let az_rad = az_deg * std::f32::consts::PI / 180.0;
-            let el_rad = el_deg * std::f32::consts::PI / 180.0;
-            let u = sph_to_cart(az_rad, el_rad);
-
-            gains.fill(0.0);
+        for &u in spread_dirs.iter() {
             let mut hit = false;
 
-            'faces: for (fi, face) in ls_groups.iter().enumerate() {
+            // Find the matching triangle and accumulate its gains. The
+            // first face that holds the member is the one, as on the pure
+            // path below: within the hit tolerance of a shared edge both
+            // neighbours hold it, and summing both counted the member
+            // twice — a step in the cloud's gains wherever a member
+            // crossed an edge.
+            for (fi, face) in ls_groups.iter().enumerate() {
                 let inv = &layout_inv_mtx[fi];
 
                 let g0 = inv[0] * u[0] + inv[1] * u[1] + inv[2] * u[2];
@@ -1123,31 +1089,38 @@ pub fn vbap3d(
                         } else {
                             raw
                         };
-                        gains[face[0]] = gr[0];
-                        gains[face[1]] = gr[1];
-                        gains[face[2]] = gr[2];
+                        gains[face[0]] += gr[0];
+                        gains[face[1]] += gr[1];
+                        gains[face[2]] += gr[2];
                     }
                     hit = true;
-                    break 'faces;
+                    break;
                 }
             }
 
-            // Out-of-hull: no face contains the direction; fold onto the hull
-            // boundary instead of leaving the source silent. In `Fade` the
-            // folded gains bypass the energy normalise below so the cos fade
-            // survives (the original behaviour); in `Blend` they take the
-            // same normalise as every other path.
-            let mut folded_faded = false;
+            // Out-of-hull spread source: fold onto the hull boundary so the
+            // spread cloud keeps its below/behind-hull energy, at full
+            // level like the non-spread path.
+            //
+            // Divergence worth recording: Pulkki's own spread path
+            // (`additive_vbap` in his Pd external, and rvbap.c) guards its
+            // accumulate with `if (gains_modified != 1)`, so an out-of-hull
+            // spread member contributes *nothing*. Folding it in at full
+            // weight is the opposite choice. It keeps a spread source's
+            // energy constant as it crosses the hull boundary, which is
+            // what the energy gate asserts, but it is not what Pulkki does.
             if !hit {
                 if legacy_fade {
+                    // Original behaviour: single argmax face, contribution
+                    // faded by the fold angle so far-outside members
+                    // contribute less to the mix.
                     if let Some((fi, gr, fade)) =
                         fold_out_of_hull_argmax(u, ls_groups, layout_inv_mtx, is_dummy)
                     {
                         let face = ls_groups[fi];
-                        gains[face[0]] = gr[0] * fade;
-                        gains[face[1]] = gr[1] * fade;
-                        gains[face[2]] = gr[2] * fade;
-                        folded_faded = true;
+                        gains[face[0]] += gr[0] * fade;
+                        gains[face[1]] += gr[1] * fade;
+                        gains[face[2]] += gr[2] * fade;
                     }
                 } else if fold_out_of_hull(
                     u,
@@ -1155,49 +1128,163 @@ pub fn vbap3d(
                     layout_inv_mtx,
                     is_dummy,
                     fold_power,
-                    &mut fold_acc,
+                    fold_acc,
                 ) {
-                    gains[..n_speakers].copy_from_slice(&fold_acc);
-                }
-            }
-
-            if folded_faded {
-                // The fade is the point here and the energy normalise below
-                // is skipped for it, so the centre downmix — which adds
-                // power to loudspeakers already playing — must not change
-                // the power the folded gains came with. Nothing changes
-                // when no centre has gain.
-                let before: f32 = gains.iter().map(|g| g * g).sum();
-                downmix_dummy_rings(&mut gains, dummy_rings);
-                let after: f32 = gains.iter().map(|g| g * g).sum();
-                if after > 1e-30 && (after - before).abs() > 1e-12 {
-                    let k = (before / after).sqrt();
-                    for g in gains.iter_mut() {
-                        *g *= k;
-                    }
-                }
-            } else {
-                downmix_dummy_rings(&mut gains, dummy_rings);
-            }
-
-            let out = &mut gain_mtx[ns * n_speakers..(ns + 1) * n_speakers];
-            if folded_faded {
-                // Preserve the fade: clamp only, no energy normalise.
-                for (o, &g) in out.iter_mut().zip(gains.iter()) {
-                    *o = g.max(0.0);
-                }
-            } else {
-                // Energy-normalise
-                let gains_rms = gains.iter().map(|&g| g * g).sum::<f32>().sqrt();
-                if gains_rms > 1e-30 {
-                    for (o, &g) in out.iter_mut().zip(gains.iter()) {
-                        *o = (g / gains_rms).max(0.0);
+                    for (g, &add) in gains.iter_mut().zip(fold_acc.iter()) {
+                        *g += add;
                     }
                 }
             }
         }
-    }
 
+        downmix_dummy_rings(gains, dummy_rings);
+
+        // Energy-normalise and clamp to ≥ 0
+        let gains_rms = gains.iter().map(|&g| g * g).sum::<f32>().sqrt();
+        if gains_rms > 1e-30 {
+            for (o, &g) in out.iter_mut().zip(gains.iter()) {
+                *o = (g / gains_rms).max(0.0);
+            }
+        } else {
+            out.fill(0.0);
+        }
+    } else {
+        // Pure VBAP
+        let az_rad = az_deg * std::f32::consts::PI / 180.0;
+        let el_rad = el_deg * std::f32::consts::PI / 180.0;
+        let u = sph_to_cart(az_rad, el_rad);
+
+        gains.fill(0.0);
+        let mut hit = false;
+
+        'faces: for (fi, face) in ls_groups.iter().enumerate() {
+            let inv = &layout_inv_mtx[fi];
+
+            let g0 = inv[0] * u[0] + inv[1] * u[1] + inv[2] * u[2];
+            let g1 = inv[3] * u[0] + inv[4] * u[1] + inv[5] * u[2];
+            let g2 = inv[6] * u[0] + inv[7] * u[1] + inv[8] * u[2];
+
+            let min_val = g0.min(g1).min(g2);
+            if min_val > FACE_HIT_TOLERANCE {
+                let rms = (g0 * g0 + g1 * g1 + g2 * g2).sqrt();
+                if rms > 1e-30 {
+                    let raw = [g0 / rms, g1 / rms, g2 / rms];
+                    let gr = if per_triangle_fold {
+                        redistribute_dummy_in_triangle(raw, *face, is_dummy)
+                    } else {
+                        raw
+                    };
+                    gains[face[0]] = gr[0];
+                    gains[face[1]] = gr[1];
+                    gains[face[2]] = gr[2];
+                }
+                hit = true;
+                break 'faces;
+            }
+        }
+
+        // Out-of-hull: no face contains the direction; fold onto the hull
+        // boundary instead of leaving the source silent. In `Fade` the
+        // folded gains bypass the energy normalise below so the cos fade
+        // survives (the original behaviour); in `Blend` they take the
+        // same normalise as every other path.
+        let mut folded_faded = false;
+        if !hit {
+            if legacy_fade {
+                if let Some((fi, gr, fade)) =
+                    fold_out_of_hull_argmax(u, ls_groups, layout_inv_mtx, is_dummy)
+                {
+                    let face = ls_groups[fi];
+                    gains[face[0]] = gr[0] * fade;
+                    gains[face[1]] = gr[1] * fade;
+                    gains[face[2]] = gr[2] * fade;
+                    folded_faded = true;
+                }
+            } else if fold_out_of_hull(u, ls_groups, layout_inv_mtx, is_dummy, fold_power, fold_acc)
+            {
+                gains.copy_from_slice(fold_acc);
+            }
+        }
+
+        if folded_faded {
+            // The fade is the point here and the energy normalise below
+            // is skipped for it, so the centre downmix — which adds
+            // power to loudspeakers already playing — must not change
+            // the power the folded gains came with. Nothing changes
+            // when no centre has gain.
+            let before: f32 = gains.iter().map(|g| g * g).sum();
+            downmix_dummy_rings(gains, dummy_rings);
+            let after: f32 = gains.iter().map(|g| g * g).sum();
+            if after > 1e-30 && (after - before).abs() > 1e-12 {
+                let k = (before / after).sqrt();
+                for g in gains.iter_mut() {
+                    *g *= k;
+                }
+            }
+        } else {
+            downmix_dummy_rings(gains, dummy_rings);
+        }
+
+        if folded_faded {
+            // Preserve the fade: clamp only, no energy normalise.
+            for (o, &g) in out.iter_mut().zip(gains.iter()) {
+                *o = g.max(0.0);
+            }
+        } else {
+            // Energy-normalise
+            let gains_rms = gains.iter().map(|&g| g * g).sum::<f32>().sqrt();
+            if gains_rms > 1e-30 {
+                for (o, &g) in out.iter_mut().zip(gains.iter()) {
+                    *o = (g / gains_rms).max(0.0);
+                }
+            } else {
+                out.fill(0.0);
+            }
+        }
+    }
+}
+
+/// Compute VBAP (or MDAP with spread) gains for a batch of source directions:
+/// [`vbap3d_into`] for each, on one working memory.
+///
+/// `src_dirs`: `[azimuth_deg, elevation_deg]` per source direction.
+/// `n_speakers`: total number of speakers (gains vector length), the length
+/// of `is_dummy`.
+/// The other arguments are [`vbap3d_into`]'s.
+///
+/// Returns a flat `[n_sources × n_speakers]` gain matrix.
+#[allow(clippy::too_many_arguments)] // C-port style signature, matches the rest of the module
+pub fn vbap3d(
+    src_dirs: &[[f32; 2]],
+    n_speakers: usize,
+    ls_groups: &[[usize; 3]],
+    spread_deg: f32,
+    layout_inv_mtx: &[[f32; 9]],
+    is_dummy: &[bool],
+    mode: OutOfHullMode,
+    dummy_rings: &[DummyRing],
+) -> Vec<f32> {
+    debug_assert_eq!(is_dummy.len(), n_speakers);
+    let mut gain_mtx = vec![0.0f32; src_dirs.len() * n_speakers];
+    if n_speakers == 0 {
+        return gain_mtx;
+    }
+    // One working memory for the whole sweep: nothing is allocated per
+    // direction.
+    let mut scratch = Vbap3dScratch::new(n_speakers);
+    for (&src_dir, out) in src_dirs.iter().zip(gain_mtx.chunks_exact_mut(n_speakers)) {
+        vbap3d_into(
+            src_dir,
+            ls_groups,
+            spread_deg,
+            layout_inv_mtx,
+            is_dummy,
+            mode,
+            dummy_rings,
+            &mut scratch,
+            out,
+        );
+    }
     gain_mtx
 }
 

@@ -6,7 +6,7 @@ pub struct OscConfig {
     pub host: String,
     pub osc_port: u16,
     pub osc_rx_port: u16,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub osc_metering_enabled: bool,
     /// Auto-launch a local standby renderer (with --osc-yield) when nothing
     /// answers on a loopback target. See the watchdog in osc_listener.
@@ -40,7 +40,7 @@ impl Default for OscConfig {
             // An environment that carved out its own runtime namespace pins the
             // port, so this Studio only ever meets the renderer belonging to it.
             osc_rx_port: super::runtime_env::default_osc_rx_port(),
-            osc_metering_enabled: false,
+            osc_metering_enabled: true,
             auto_start_renderer: true,
             keep_renderer_alive_on_quit: false,
             last_layout_import_dir: None,

@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 
 use renderer::live_params::RendererControl;
 use renderer::metering::MeterSnapshot;
-use renderer::spatial_vbap::Gains;
+use renderer::render_backend::BandGains;
 use rosc::{OscMessage, OscPacket, OscType};
 use runtime_control::HostControlHandler;
 use runtime_control::osc_contract;
@@ -135,14 +135,18 @@ pub struct MeterTimings {
 
 /// The renderer's per-object gain lists and the render path's meter snapshot,
 /// lent to a meter report and returned.
-pub(super) type MeterLists = (Vec<(usize, Gains)>, Vec<(usize, Vec<Gains>)>, MeterSnapshot);
+pub(super) type MeterLists = (
+    Vec<(usize, Vec<f32>)>,
+    Vec<(usize, BandGains)>,
+    MeterSnapshot,
+);
 
 /// One meter bundle, as the render path describes it.
 pub(super) struct MeterReport {
     pub(super) block: Block,
     pub(super) snapshot: MeterSnapshot,
-    pub(super) object_gains: Vec<(usize, Gains)>,
-    pub(super) object_band_gains: Vec<(usize, Vec<Gains>)>,
+    pub(super) object_gains: Vec<(usize, Vec<f32>)>,
+    pub(super) object_band_gains: Vec<(usize, BandGains)>,
     pub(super) object_test_position: Option<[f32; 3]>,
     pub(super) object_test_level: Option<(f32, f32)>,
     pub(super) timings: MeterTimings,
@@ -624,8 +628,17 @@ impl Worker {
             }
             Event::Heard { pos, rate } => self.out.heard(pos, rate),
             Event::Meter(report) => {
-                match super::state_emit::encode_meter_bundle(&report) {
-                    Ok(bytes) => self.out.send_metering(report.block, &bytes),
+                // Split to what a datagram carries: a stream client reads
+                // the same bundles one after the other.
+                match super::state_emit::encode_meter_bundles(
+                    &report,
+                    super::export::MAX_STATE_DATAGRAM,
+                ) {
+                    Ok(bundles) => {
+                        for bytes in &bundles {
+                            self.out.send_metering(report.block, bytes);
+                        }
+                    }
                     Err(e) => log::warn!("Failed to send meter OSC bundle: {e}"),
                 }
                 self.recycle_meter(report);

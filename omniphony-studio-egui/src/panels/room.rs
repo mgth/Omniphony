@@ -73,6 +73,7 @@ impl RoomDimensions {
             lower: (self.lower.max(0.01) / mpu).max(0.01),
             center_blend: self.center_blend.clamp(0.0, 1.0),
             scale_m: mpu,
+            sphere: false,
         }
     }
 }
@@ -380,6 +381,7 @@ mod tests {
             lower: 0.4,
             center_blend: 0.25,
             scale_m: 3.0,
+            sphere: false,
         };
         assert_eq!(RoomDimensions::from_ratio(&ratio).width, 6.0);
     }

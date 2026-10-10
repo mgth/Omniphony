@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::live_params::{LiveEvaluationMode, PreferredEvaluationMode, RendererControl};
 use crate::spatial_renderer::{RendererSpec, SpatialRenderer};
 use crate::spatial_vbap::{DistanceModel, VbapTableMode};
-use crate::speaker_layout::SpeakerLayout;
+use crate::speaker_layout::{Speaker, SpeakerLayout};
 
 /// The spec most tests render with: 48 kHz, a 21 × 21 × 9 (+ 9 below)
 /// cartesian table with position interpolation, linear distance model, the
@@ -62,6 +62,43 @@ pub fn spec(speaker_layout: SpeakerLayout) -> RendererSpec {
         cartesian_default_z_size: 9,
         cartesian_default_z_neg_size: 9,
     }
+}
+
+/// A dome of `speakers` loudspeakers named `S0`, `S1`, …: five rings, at ear
+/// level (two fifths of them), 25°, 50° and 75° up, and 25° below, every
+/// other ring turned by half a step. Any width from 15 up: a large
+/// installation's layout rather than a home one's, for the tests of what a
+/// wide layout costs and whether every loudspeaker of it is reached.
+pub fn dome_layout(speakers: usize) -> SpeakerLayout {
+    SpeakerLayout::from_speakers(
+        (0..speakers)
+            .map(|speaker| {
+                let (azimuth, elevation) = dome_direction(speaker, speakers);
+                Speaker::new(format!("S{speaker}"), azimuth, elevation)
+            })
+            .collect(),
+    )
+    .expect("dome layout")
+}
+
+/// Where loudspeaker `speaker` of [`dome_layout`]`(speakers)` is:
+/// `(azimuth, elevation)` in degrees.
+pub fn dome_direction(speaker: usize, speakers: usize) -> (f32, f32) {
+    /// Elevation of each ring and its share of the loudspeakers, in percent;
+    /// the ear-level ring also takes what the rounding leaves.
+    const RINGS: [(f32, usize); 5] = [(0.0, 40), (25.0, 25), (50.0, 15), (75.0, 6), (-25.0, 14)];
+    assert!(speakers >= 15, "a dome needs three loudspeakers per ring");
+    let mut counts = RINGS.map(|(_, share)| (speakers * share / 100).max(3));
+    counts[0] += speakers - counts.iter().sum::<usize>();
+    let mut first = 0;
+    for (ring, ((elevation, _), count)) in RINGS.into_iter().zip(counts).enumerate() {
+        if speaker < first + count {
+            let step = (speaker - first) as f32 + if ring % 2 == 1 { 0.5 } else { 0.0 };
+            return (-180.0 + 360.0 * step / count as f32, elevation);
+        }
+        first += count;
+    }
+    unreachable!("speaker {speaker} of a dome of {speakers}")
 }
 
 /// [`spec`] with a 5 × 5 × 3 (+ 3) table and a unit room, for tests about

@@ -44,22 +44,36 @@ pub fn control_object_mute(state: &SharedState, id: i32, muted: i32) {
 }
 
 pub fn control_speaker_mute(state: &SharedState, id: i32, muted: i32) {
-    state
-        .inner
-        .lock()
-        .unwrap()
-        .app
-        .speaker_mutes
-        .insert(id.to_string(), u8::from(muted != 0));
+    control_speaker_mutes(state, &[(id, muted != 0)]);
+}
+
+/// Mute or unmute several speakers at once: `(id, muted)` for each, in one
+/// message.
+///
+/// The renderer answers every speakers-config message with the whole live
+/// state. A solo sent a speaker at a time was answered once per other
+/// speaker: 127 snapshots of some 65 kB each on a 128-speaker layout, for one
+/// click.
+pub fn control_speaker_mutes(state: &SharedState, mutes: &[(i32, bool)]) {
+    if mutes.is_empty() {
+        return;
+    }
+    {
+        let mut live = state.inner.lock().unwrap();
+        for &(id, muted) in mutes {
+            live.app
+                .speaker_mutes
+                .insert(id.to_string(), u8::from(muted));
+        }
+    }
+    let edits: Vec<serde_json::Value> = mutes
+        .iter()
+        .map(|&(id, muted)| serde_json::json!({ "id": id.max(0), "muted": muted }))
+        .collect();
     send_json_control(
         &state.osc_tx,
         osc_contract::CONTROL_CONFIG_SPEAKERS,
-        serde_json::json!({
-            "speakerEdits": [{
-                "id": id.max(0),
-                "muted": muted != 0
-            }]
-        }),
+        serde_json::json!({ "speakerEdits": edits }),
     );
 }
 
@@ -240,4 +254,47 @@ pub fn control_speaker_test(state: &SharedState, id: i32, level: f32, isolation:
             ],
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::commands::tests::state_with_outbox;
+    use std::sync::Arc;
+
+    /// A solo on a wide layout is one message, not one per speaker: every
+    /// mute rides it, and the model has them all at once.
+    #[test]
+    fn several_speaker_mutes_are_one_message() {
+        let (state, rx) = state_with_outbox(Arc::new(|| {}));
+        let mutes: Vec<(i32, bool)> = (0..128).map(|id| (id, id != 5)).collect();
+        control_speaker_mutes(&state, &mutes);
+
+        let sent: Vec<crate::osc::Control> = rx.try_iter().collect();
+        assert_eq!(sent.len(), 1, "one message for 128 speakers");
+        let crate::osc::Control::Send { address, args } = &sent[0] else {
+            panic!("not a control message");
+        };
+        assert_eq!(address, osc_contract::CONTROL_CONFIG_SPEAKERS);
+        let [rosc::OscType::String(json)] = args.as_slice() else {
+            panic!("not a JSON document: {args:?}");
+        };
+        let document: serde_json::Value = serde_json::from_str(json).unwrap();
+        let edits = document["speakerEdits"].as_array().unwrap();
+        assert_eq!(edits.len(), 128);
+        assert_eq!(edits[5], serde_json::json!({ "id": 5, "muted": false }));
+        assert_eq!(edits[127], serde_json::json!({ "id": 127, "muted": true }));
+
+        let live = state.inner.lock().unwrap();
+        assert_eq!(live.app.speaker_mutes.len(), 128);
+        assert_eq!(live.app.speaker_mutes["5"], 0);
+        assert_eq!(live.app.speaker_mutes["127"], 1);
+    }
+
+    #[test]
+    fn no_mute_to_change_sends_nothing() {
+        let (state, rx) = state_with_outbox(Arc::new(|| {}));
+        control_speaker_mutes(&state, &[]);
+        assert_eq!(rx.try_iter().count(), 0);
+    }
 }
