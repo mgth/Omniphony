@@ -1529,13 +1529,13 @@ mod tests {
     /// not above the room corner the old table assumed.
     #[test]
     fn lift_sits_above_the_bed_pose_of_the_policy() {
-        use crate::virtual_bed::{PlacementPolicy, RoomRatios, resolve_bed_poses};
+        use crate::virtual_bed::{OutputWarp, PlacementPolicy, resolve_bed_poses};
         use renderer::live_params::SurroundPlacement;
         let mut poses = Vec::new();
         resolve_bed_poses(
             &LABELS_5_1,
             &PlacementPolicy::sphere(&[]),
-            RoomRatios::UNIT,
+            OutputWarp::NONE,
             SurroundPlacement::Side,
             &mut poses,
         );

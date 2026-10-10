@@ -86,7 +86,7 @@ than discarded.
 UDP loses datagrams and the engine answers nothing by default, so the session
 carries what a client needs to notice either. The contract crate's
 `CONTRACT_REVISION` (`osc-contract`) is the revision this section describes:
-**5**.
+**6**.
 
 - **Stream transport** (revision 2) — the engine also listens on TCP, on
   loopback, on the OSC/UDP control port's number. A connection carries the
@@ -177,6 +177,12 @@ carries what a client needs to notice either. The contract crate's
   `vbap_allow_negative_z` is a registry option, and
   `/state/vbap/allow_negative_z` is its live value (off by default; it said
   on before the renderer reported one).
+- **Sphere coordinates** (revision 6) — `/control/binaural/sphere_coordinates`
+  (option `binaural_sphere_coordinates`) reads room coordinates on the
+  listener's sphere on the direct headphone path
+  (`omniphony-renderer/BINAURAL.md`, "Sphere coordinates"). `/state/renderer`
+  carries `binaural.sphereCoordinates`. An older engine ignores the address
+  and publishes no such key, which a client reads as off.
 - **Contract revision** — `/state/capabilities` carries `contractRevision`.
   A client compares it with its own and says so when they differ; an engine
   that advertises none predates revisions and counts as 0. The revision moves
@@ -366,6 +372,7 @@ values are dropped.
 | `/control/binaural/reverb/{rt60_low_ratio,rt60_high_ratio}` | f `[0.25,4]` | Low / high band decay relative to `rt60`. Registry options `reverb_rt60_{low,high}_ratio`. |
 | `/control/binaural/diffuse_field_eq` | int bool | Diffuse-field equalisation of the HRIR set. Registry option `binaural_diffuse_field_eq`. |
 | `/control/binaural/air_absorption` | int bool | Distance-dependent air absorption. Registry option `binaural_air_absorption`. |
+| `/control/binaural/sphere_coordinates` | int bool | Read room coordinates on the listener's sphere rather than in the room cube (direct path only). Registry option `binaural_sphere_coordinates`. |
 | `/control/binaural/brir/head_tracking` | int bool, or `auto` | Which measured head orientations of a room response stay resident: all (`1`), front only (`0`), or `auto` (all when a head-tracking address is set). Registry option `brir_head_tracking` (`auto` \| `on` \| `off`; group `brir`). |
 | `/control/binaural/brir/max_length` | f `[0,10]` s | Truncate the room response (`0` = whole). Registry option `brir_max_length_s` (group `brir`). |
 | `/control/binaural/brir/tail_floor` | f `[20,120]` dB | Cut the tail this far below the response's energy. Registry option `brir_tail_floor_db` (group `brir`). |
@@ -476,6 +483,7 @@ dedicated address, under `/omniphony`):
 | `binaural_head_radius_m` | float [0.05, 0.15], step 0.001 | `0.0875` | — | — | `/control/binaural/head_radius` |
 | `binaural_air_absorption` | bool | `true` | — | — | `/control/binaural/air_absorption` |
 | `binaural_diffuse_field_eq` | bool | `false` | — | — | `/control/binaural/diffuse_field_eq` |
+| `binaural_sphere_coordinates` | bool | `false` | — | — | `/control/binaural/sphere_coordinates` |
 | `reflections_enabled` | bool | `false` | — | — | `/control/binaural/reflections/enabled` |
 | `reflections_level` | float [0, 1], step 0.01 | `0.5` | — | — | `/control/binaural/reflections/level` |
 | `reflections_wall_cutoff_hz` | float [1000, 20000], step 100 | `6000` | — | — | `/control/binaural/reflections/wall_cutoff` |
@@ -910,6 +918,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/control/binaural/reverb/rt60_high_ratio`
 - `/omniphony/control/binaural/reverb/rt60_low_ratio`
 - `/omniphony/control/binaural/reverb/size`
+- `/omniphony/control/binaural/sphere_coordinates`
 - `/omniphony/control/binaural/unit_scale`
 - `/omniphony/control/binaural_mode`
 - `/omniphony/control/config/audio`

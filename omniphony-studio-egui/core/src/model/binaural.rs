@@ -110,7 +110,7 @@ impl RenderPath {
     /// rendered: on every path through the speaker stage — the live room,
     /// or the measured room of a BRIR set's loudspeakers — and not on the
     /// direct one, which reads the direction straight off the position
-    /// (the renderer's `RoomRatios::for_output`). The scene places things
+    /// (the renderer's `OutputWarp::for_output`). The scene places things
     /// the same way, in the room `AppState::display_room` resolves.
     pub fn warps_with_room(self) -> bool {
         self != RenderPath::Direct
@@ -402,6 +402,38 @@ mod tests {
         assert_eq!(app.display_room().length, 2.0);
     }
 
+    /// The sphere reading is the direct path's (#773): the display frame
+    /// carries it there while the renderer has the option on, and nowhere
+    /// else, as the renderer applies it nowhere else. A renderer that
+    /// publishes no key reads the cube.
+    #[test]
+    fn the_display_frame_reads_the_sphere_on_the_direct_path_only() {
+        use crate::model::app_state::AppState;
+        let mut app = AppState::new(Vec::new());
+        let binaural = |output: &str, mode: &str, sphere: bool| {
+            json!({
+                "outputMode": output, "mode": mode, "modeEffective": mode,
+                "hrirSource": "saf", "unitScaleM": 2.0, "sphereCoordinates": sphere,
+            })
+        };
+        app.binaural = Some(binaural("binaural", "direct", true));
+        assert!(app.reads_on_sphere());
+        let frame = app.display_room();
+        assert!(frame.sphere);
+        assert_eq!((frame.length, frame.lower, frame.scale_m), (1.0, 1.0, 2.0));
+
+        app.binaural = Some(binaural("binaural", "direct", false));
+        assert!(!app.reads_on_sphere() && !app.display_room().sphere);
+        app.binaural = Some(binaural("binaural", "cascaded", true));
+        assert!(!app.reads_on_sphere() && !app.display_room().sphere);
+        app.binaural = Some(binaural("speaker", "direct", true));
+        assert!(!app.reads_on_sphere() && !app.display_room().sphere);
+        app.binaural = Some(json!({
+            "outputMode": "binaural", "mode": "direct", "modeEffective": "direct",
+        }));
+        assert!(!app.reads_on_sphere());
+    }
+
     /// The listening room is read while the reflections are on: the room in
     /// use when the renderer publishes it, the configured one from an older
     /// renderer, nothing with the reflections off or a malformed room.
@@ -489,6 +521,7 @@ mod tests {
             lower: 0.5,
             center_blend: 0.5,
             scale_m: 1.7,
+            sphere: false,
         };
         let loaded = json!({
             "emittersM": [[-1.0, 1.7, 0.0], [1.0, 1.7, 0.0], [0.0, -2.0, 0.6]],

@@ -296,6 +296,18 @@ pub fn control_binaural_diffuse_field_eq(state: &SharedState, enable: i32) {
     );
 }
 
+/// Read room coordinates on the listener's sphere on the direct headphone
+/// path, rather than in the room cube (#773).
+pub fn control_binaural_sphere_coordinates(state: &SharedState, enable: bool) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: osc_contract::CONTROL_BINAURAL_SPHERE_COORDINATES.to_string(),
+            value: i32::from(enable),
+        },
+    );
+}
+
 pub fn control_binaural_air_absorption(state: &SharedState, enable: i32) {
     send_control(
         &state.osc_tx,

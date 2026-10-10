@@ -463,6 +463,12 @@ pub struct Channel {
 pub fn polar_to_adm(room: &RoomRatio, azimuth: f64, elevation: f64, distance: f64) -> [f64; 3] {
     use omniphony_geometry::f64 as g;
     let (x, y, z) = g::from_spherical(azimuth, elevation, distance);
+    if room.sphere {
+        // The sphere reading hears every position through its own mapping:
+        // the pose is the room position it hears at this angle (the
+        // renderer's `OutputWarp::Sphere`).
+        return g::inverse_sphere_reading_direction([x, y, z]);
+    }
     g::inverse_room_scaled_direction(
         [x, y, z],
         [room.width, room.length, room.height],
@@ -476,6 +482,14 @@ pub fn polar_to_adm(room: &RoomRatio, azimuth: f64, elevation: f64, distance: f6
 /// room warp is re-applied, then the spherical form derived.
 pub fn adm_to_polar(room: &RoomRatio, adm: [f64; 3]) -> (f64, f64, f64) {
     use omniphony_geometry::f64 as g;
+    if room.sphere {
+        // Where the sphere reading hears the position, at its distance to
+        // the room's surface: the radius `polar_to_adm` takes back.
+        let read = g::sphere_reading(adm);
+        let (az, el, _) = g::to_spherical(read[0], read[1], read[2]);
+        let reach = adm[0].abs().max(adm[1].abs()).max(adm[2].abs());
+        return (az, el, reach.max(0.01));
+    }
     let scaled = g::room_scaled_position(
         adm,
         [room.width, room.length, room.height],
@@ -485,6 +499,22 @@ pub fn adm_to_polar(room: &RoomRatio, adm: [f64; 3]) -> (f64, f64, f64) {
     );
     let (az, el, dist) = g::to_spherical(scaled[0], scaled[1], scaled[2]);
     (az, el, dist.max(0.01))
+}
+
+/// The polar radius of `adm` in metres: what the polar table's metre field
+/// shows, and takes back as `metres / scale_m` for [`polar_to_adm`]. It is
+/// the radius [`adm_to_polar`] gives, at the frame's scale: the length of
+/// the room-warped position, or, under the sphere reading, the distance to
+/// the room's surface, which is the distance the binaural stage's cues
+/// measure. The length of [`adm_to_meters`] is the first only: under the
+/// sphere reading it is the room position's, and a field showing it read
+/// 0.71 m for the 0.50 m just typed into it.
+pub fn adm_polar_distance_m(room: &RoomRatio, adm: [f64; 3], scale_m: f64) -> f64 {
+    if room.sphere {
+        return adm_to_polar(room, adm).2 * scale_m;
+    }
+    let metres = adm_to_meters(room, adm, scale_m);
+    (metres[0] * metres[0] + metres[1] * metres[1] + metres[2] * metres[2]).sqrt()
 }
 
 /// Normalised ADM → Omniphony-axis metres, honouring the room geometry.
@@ -882,6 +912,7 @@ mod tests {
             lower: 0.5,
             center_blend: 0.5,
             scale_m: 1.5,
+            sphere: false,
         }
     }
 
@@ -931,6 +962,86 @@ mod tests {
         }
     }
 
+    /// While the renderer reads positions on the sphere (#773), a polar
+    /// entry is the room position heard at its angle, as the renderer stores
+    /// it: `L` at −30° is the room's front-left corner, and the top front
+    /// pair its upper front corners. The readout of a room position is the
+    /// angle it is heard at, at its distance to the room's surface.
+    #[test]
+    fn polar_entries_follow_the_sphere_reading() {
+        let sphere = RoomRatio {
+            sphere: true,
+            ..RoomRatio::unit(1.0)
+        };
+        let close = |a: [f64; 3], b: [f64; 3]| {
+            assert!(
+                (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-9),
+                "{a:?} is not {b:?}"
+            );
+        };
+        close(polar_to_adm(&sphere, -30.0, 0.0, 1.0), [-1.0, 1.0, 0.0]);
+        close(polar_to_adm(&sphere, 45.0, 45.0, 1.0), [1.0, 1.0, 1.0]);
+        close(polar_to_adm(&sphere, 135.0, 0.0, 0.5), [0.5, -0.5, 0.0]);
+        // Past the surface the entry is held on it, on its angle.
+        close(polar_to_adm(&sphere, -90.0, 0.0, 2.0), [-1.0, 0.0, 0.0]);
+        for (az, el, distance) in [(-30.0, 0.0, 1.0), (110.0, 30.0, 1.0), (-135.0, 45.0, 0.7)] {
+            let adm = polar_to_adm(&sphere, az, el, distance);
+            let (az_back, el_back, distance_back) = adm_to_polar(&sphere, adm);
+            assert!(
+                (az_back - az).abs() < 1e-6
+                    && (el_back - el).abs() < 1e-6
+                    && (distance_back - distance).abs() < 1e-9,
+                "{az}/{el}/{distance} read back {az_back}/{el_back}/{distance_back}"
+            );
+        }
+        // The cube reads the same corner at 45°.
+        let (az, ..) = adm_to_polar(&RoomRatio::unit(1.0), [-1.0, 1.0, 0.0]);
+        assert!((az + 45.0).abs() < 1e-9);
+    }
+
+    /// The polar table's metre field reads back the metres typed into it,
+    /// in every frame: the value is divided by the scale and taken as the
+    /// polar radius, so what is shown must be that radius at the scale.
+    /// Under the sphere reading the room position's own length is another
+    /// number: 0.50 m at −30° is the room point (−0.5, 0.5, 0), 0.71 long.
+    #[test]
+    fn the_polar_metre_distance_reads_back_what_was_entered() {
+        let frames = [
+            ("unit", RoomRatio::unit(1.0)),
+            ("live room", room()),
+            (
+                "sphere",
+                RoomRatio {
+                    sphere: true,
+                    ..RoomRatio::unit(1.0)
+                },
+            ),
+            (
+                "sphere at 2.5 m",
+                RoomRatio {
+                    sphere: true,
+                    ..RoomRatio::unit(2.5)
+                },
+            ),
+        ];
+        for (name, frame) in &frames {
+            let scale_m = frame.scale_m;
+            for (az, el, entered_m) in [(-30.0, 0.0, 0.5), (110.0, 20.0, 0.8), (45.0, 45.0, 0.3)] {
+                // The field's edit: metres over the scale, as the radius.
+                let adm = polar_to_adm(frame, az, el, entered_m / scale_m);
+                let shown = adm_polar_distance_m(frame, adm, scale_m);
+                assert!(
+                    (shown - entered_m).abs() < 1e-6,
+                    "{name}: {entered_m} m at {az}/{el} reads back {shown} m"
+                );
+            }
+        }
+        let sphere = &frames[2].1;
+        let adm = polar_to_adm(sphere, -30.0, 0.0, 0.5);
+        let room_length = (adm[0] * adm[0] + adm[1] * adm[1] + adm[2] * adm[2]).sqrt();
+        assert!((room_length - 0.5f64.sqrt()).abs() < 1e-9, "{adm:?}");
+    }
+
     /// A polar entry past a wall of a low room keeps its angle, as the
     /// renderer keeps it: the position is drawn back into the room, not
     /// clamped axis by axis (#803).
@@ -944,6 +1055,7 @@ mod tests {
             lower: 0.48,
             center_blend: 0.5,
             scale_m: 2.5,
+            sphere: false,
         };
         for (az, el) in [(-30.0, 30.0), (110.0, 30.0), (-45.0, 45.0), (-135.0, 0.0)] {
             let adm = polar_to_adm(&low, az, el, 1.0);

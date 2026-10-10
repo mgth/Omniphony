@@ -242,5 +242,6 @@ mod runtime;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+// Measures `NativeVbapLayout` directly, so it only exists where that backend does.
+#[cfg(all(test, not(feature = "saf_vbap")))]
 mod native_validation;
