@@ -213,7 +213,7 @@ Emissive (:866-881), applied after the colour pass:
 - `updateSpeakerLabelsFromSelection` (:315-324) is speaker-side (sets speaker label text = speaker id), listed here only because it lives in labels.js.
 - `createSmallLabelSprite` (:207-209): 128×64 canvas, scale `(0.25, 0.12)`, colour `#d9ecff`, font `700 28px` (small canvas branch) — used by gizmos/room dimension guides (specified elsewhere in this directory).
 
-### 6.5 Perceived-position marker, ring + line (toggle `effectiveRenderEnabled`)
+### 6.5 Perceived-position marker + line (toggle `effectiveRenderEnabled`)
 
 Shows where the object is *heard*, not a gain centroid. Native Studio
 (2026-10): the computation is `core/src/model/perceived.rs`, read by
@@ -245,11 +245,11 @@ gains capped at 1.
   band.
 - Marker: sphere at `direction × radius`, colour `#7ce7ff`, as the web's
   (scale `max(0.035, levelScale × 0.12) × 0.04`, opacity 0.34 / 0.68 selected,
-  order 12).
-- Ring: billboard ring (`billboard_ring`, overlay lines) centred on the
-  marker, radius `radius × sqrt(1 − focus²)` — the loudspeakers carrying the
-  image stand on it; omitted when smaller than the marker. Opacity 0.25 /
-  0.5 selected.
+  order 12), grown by `1 + (1 − focus)` and faded by `1 − 0.6 (1 − focus)`:
+  sharp and solid for one loudspeaker, larger and fainter as the image
+  spreads. A ring of the loudspeakers' angular spread
+  (`radius × sqrt(1 − focus²)`) was tried first and dropped: VBAP spreads
+  30–60° by nature, so it covered half the room and said nothing.
 - Line: object position → marker, opacity 0.22 / 0.44 selected, hidden when
   shorter than 0.01.
 - Hidden when the toggle is off, the object is metadata-silent, or nothing

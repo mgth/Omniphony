@@ -106,8 +106,6 @@ pub struct Perceived {
     pub pos: Vec3,
     /// `|rE|`: 1 for one loudspeaker, towards 0 as the image spreads.
     pub focus: f32,
-    /// Its distance from the listener, the ring's scale.
-    pub radius: f32,
 }
 
 /// `objectBadge(id).code`.
@@ -502,7 +500,6 @@ pub fn collect(
             image.map(|image| Perceived {
                 pos: Vec3::from_array(image.point()),
                 focus: image.focus,
-                radius: image.radius,
             })
         } else {
             None
@@ -590,12 +587,18 @@ pub fn emit(
 
     if let Some(image) = obj.perceived {
         let p = image.pos;
-        let marker_scale = (mesh_scale * 0.12).max(0.035);
+        // The focus shows in the marker itself: sharp and solid for one
+        // loudspeaker, larger and fainter as the image spreads over the
+        // array. (A ring of the loudspeakers' angular spread was tried and
+        // said nothing: VBAP spreads 30–60° by nature.)
+        let spread = 1.0 - image.focus.clamp(0.0, 1.0);
+        let marker_scale = (mesh_scale * 0.12).max(0.035) * (1.0 + spread);
         let (opacity, emissive) = if obj.selected {
             (0.68, EFFECTIVE_EMISSIVE_SELECTED)
         } else {
             (0.34, EFFECTIVE_EMISSIVE)
         };
+        let opacity = opacity * (1.0 - 0.6 * spread);
         let e = hex_linear(emissive);
         frame.meshes.push(MeshItem {
             kind: MeshKind::Sphere,
@@ -608,22 +611,6 @@ pub fn emit(
             depth_test: true,
             order: 12,
         });
-        // The image's width: the loudspeakers carrying it stand on a ring
-        // of half-angle acos(focus) around its direction, at its distance.
-        let spread = image.radius * (1.0 - image.focus * image.focus).max(0.0).sqrt();
-        if spread > 0.04 * marker_scale {
-            billboard_ring(
-                p,
-                spread,
-                right,
-                up,
-                with_alpha(
-                    hex_linear(EFFECTIVE_COLOR),
-                    if obj.selected { 0.5 } else { 0.25 },
-                ),
-                &mut frame.overlay_lines,
-            );
-        }
         if (p - obj.scene_pos).length() > 0.01 {
             let c = with_alpha(
                 hex_linear(EFFECTIVE_COLOR),
