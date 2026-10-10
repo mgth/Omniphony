@@ -172,7 +172,6 @@ fn resolve_orender_launch_spec(
     host: String,
     osc_rx_port: u16,
     osc_port: u16,
-    osc_metering_enabled: bool,
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<OrenderLaunchSpec, String> {
@@ -183,7 +182,6 @@ fn resolve_orender_launch_spec(
         host,
         osc_rx_port,
         osc_port,
-        osc_metering_enabled,
         log_level,
     ))
 }
@@ -196,14 +194,12 @@ fn orender_launch_spec(
     host: String,
     osc_rx_port: u16,
     osc_port: u16,
-    osc_metering_enabled: bool,
     log_level: Option<String>,
 ) -> OrenderLaunchSpec {
     let args = orender_render_args(
         &default_orender_input_path(),
         &host,
         osc_rx_port,
-        osc_metering_enabled,
         log_level.as_deref(),
     );
 
@@ -213,7 +209,6 @@ fn orender_launch_spec(
         cfg.host = host.trim().to_string();
         cfg.osc_rx_port = osc_rx_port;
         cfg.osc_port = osc_port;
-        cfg.osc_metering_enabled = osc_metering_enabled;
     }) {
         log::warn!("[osc] {error}");
     }
@@ -224,11 +219,15 @@ fn orender_launch_spec(
 /// The command line after `orender` for the renderer Studio launches and for
 /// the service it installs. Pure, so the unit file the packages ship can be
 /// checked against it (see the tests).
+///
+/// The metering switch is not part of it. `--osc-metering` subscribes the
+/// renderer's permanent default target, which no client can unsubscribe and
+/// which never times out: the renderer would meter with nobody watching.
+/// Studio asks for levels for itself when it registers.
 fn orender_render_args(
     input_path: &Path,
     host: &str,
     osc_rx_port: u16,
-    osc_metering_enabled: bool,
     log_level: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec![
@@ -247,10 +246,6 @@ fn orender_render_args(
         // mpv-embedded renderer must be able to take the OSC port over.
         "--osc-yield".to_string(),
     ];
-
-    if osc_metering_enabled {
-        args.push("--osc-metering".to_string());
-    }
 
     let level = log_level
         .map(str::trim)
@@ -310,7 +305,6 @@ pub fn restart_launched_renderer(
     host: String,
     osc_rx_port: u16,
     osc_port: u16,
-    osc_metering_enabled: bool,
 ) -> Result<serde_json::Value, String> {
     if !launched_renderer_running(state) {
         return Err("the running renderer was not launched by this Studio".to_string());
@@ -319,16 +313,7 @@ pub fn restart_launched_renderer(
     // re-arms it.
     state.watchdog.lock().unwrap().suppressed = true;
     quit_launched_renderer(state);
-    launch_orender(
-        app,
-        state,
-        host,
-        osc_rx_port,
-        osc_port,
-        osc_metering_enabled,
-        None,
-        None,
-    )
+    launch_orender(app, state, host, osc_rx_port, osc_port, None, None)
 }
 
 /// How long a renderer asked to quit gets to write its live-state handoff
@@ -736,7 +721,6 @@ pub fn install_orender_service(
     host: String,
     osc_rx_port: u16,
     osc_port: u16,
-    osc_metering_enabled: bool,
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -758,7 +742,6 @@ pub fn install_orender_service(
         host,
         osc_rx_port,
         osc_port,
-        osc_metering_enabled,
         log_level,
     );
 
@@ -1067,7 +1050,6 @@ pub fn autostart_orender(
         cfg.host.clone(),
         cfg.osc_rx_port,
         cfg.osc_port,
-        cfg.osc_metering_enabled,
         None,
         None,
     )?;
@@ -1080,7 +1062,6 @@ pub fn launch_orender(
     host: String,
     osc_rx_port: u16,
     osc_port: u16,
-    osc_metering_enabled: bool,
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -1090,7 +1071,6 @@ pub fn launch_orender(
         host,
         osc_rx_port,
         osc_port,
-        osc_metering_enabled,
         orender_path,
         log_level,
     )?;
@@ -1236,12 +1216,11 @@ mod tests {
         let defaults = crate::host::config::OscConfig::default();
         // Studio's defaults: `default_orender_input_path()` with neither
         // `$TMPDIR` nor `OMNIPHONY_INPUT_PIPE` set, the default OSC target,
-        // the default metering switch and the default log level.
+        // and the default log level.
         let args = orender_render_args(
             Path::new("/tmp/orender.pipe"),
             &defaults.host,
             crate::host::runtime_env::DEFAULT_OSC_RX_PORT,
-            defaults.osc_metering_enabled,
             None,
         );
         assert_eq!(
@@ -1253,27 +1232,29 @@ mod tests {
 
     #[test]
     fn the_render_args_carry_only_what_differs_from_the_defaults() {
-        let base = orender_render_args(Path::new("/p"), " 10.0.0.2 ", 9100, false, None);
+        let base = orender_render_args(Path::new("/p"), " 10.0.0.2 ", 9100, None);
         assert_eq!(
             base.join(" "),
             "render /p --continuous --enable-vbap --osc --osc-host 10.0.0.2 \
              --osc-port 9100 --osc-rx-port 9100 --osc-yield"
         );
         assert_eq!(
-            orender_render_args(Path::new("/p"), "h", 1, false, Some(" info ")),
-            orender_render_args(Path::new("/p"), "h", 1, false, None)
+            orender_render_args(Path::new("/p"), "h", 1, Some(" info ")),
+            orender_render_args(Path::new("/p"), "h", 1, None)
         );
         assert_eq!(
-            orender_render_args(Path::new("/p"), "h", 1, false, Some("nonsense")),
-            orender_render_args(Path::new("/p"), "h", 1, false, None)
+            orender_render_args(Path::new("/p"), "h", 1, Some("nonsense")),
+            orender_render_args(Path::new("/p"), "h", 1, None)
         );
-        let full = orender_render_args(Path::new("/p"), "h", 1, true, Some("debug"));
+        let full = orender_render_args(Path::new("/p"), "h", 1, Some("debug"));
         assert!(full.ends_with(&[
             "--osc-yield".to_string(),
-            "--osc-metering".to_string(),
             "--loglevel".to_string(),
             "debug".to_string(),
         ]));
+        // Levels are asked for by the client that wants them, never from the
+        // command line: that subscription could not be turned off.
+        assert!(!full.iter().any(|arg| arg == "--osc-metering"));
     }
 
     #[test]
