@@ -131,6 +131,7 @@ Declared options (`renderer::options::LIVE_OPTIONS`):
 | `binaural_head_radius_m` | float [0.05, 0.15], step 0.001 | `0.0875` | — | — | `/control/binaural/head_radius` |
 | `binaural_air_absorption` | bool | `true` | — | — | `/control/binaural/air_absorption` |
 | `binaural_diffuse_field_eq` | bool | `false` | — | — | `/control/binaural/diffuse_field_eq` |
+| `binaural_sphere_coordinates` | bool | `false` | — | — | `/control/binaural/sphere_coordinates` |
 | `reflections_enabled` | bool | `false` | — | — | `/control/binaural/reflections/enabled` |
 | `reflections_level` | float [0, 1], step 0.01 | `0.5` | — | — | `/control/binaural/reflections/level` |
 | `reflections_wall_cutoff_hz` | float [1000, 20000], step 100 | `6000` | — | — | `/control/binaural/reflections/wall_cutoff` |
