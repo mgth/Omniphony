@@ -358,13 +358,11 @@ impl ExperimentalDistanceBuildPlan {
 }
 
 impl BarycenterBuildPlan {
-    /// Fails, rather than build a model that would panic per request, when
-    /// the layout spatializes more speakers than the solver holds.
     pub fn build_gain_model(&self) -> Result<Box<dyn GainModel>> {
-        Ok(Box::new(crate::render_backend::BarycenterBackend::try_new(
+        Ok(Box::new(crate::render_backend::BarycenterBackend::new(
             self.speaker_positions.clone(),
             self.localize,
-        )?))
+        )))
     }
 }
 
@@ -454,10 +452,6 @@ impl TopologyBuildPlan {
         current: Option<&RenderTopology>,
         sample: bool,
     ) -> Result<RenderTopology> {
-        // A layout edited past the limit is refused here, before any backend
-        // sizes its gains by it: reported to the clients like a failed
-        // build, the running topology stays.
-        crate::spatial_vbap::check_speaker_count(self.layout.num_speakers())?;
         let effective_mode = match self.evaluation_mode {
             LiveEvaluationMode::Realtime => EffectiveEvaluationMode::Realtime,
             LiveEvaluationMode::PrecomputedPolar => EffectiveEvaluationMode::PrecomputedPolar,
@@ -1704,106 +1698,79 @@ mod tests {
         assert_eq!(short_cells, parts.z.len());
     }
 
-    /// A ring of `n` spatialized speakers, alternating ear level and 40° up.
-    fn ring_layout(n: usize) -> SpeakerLayout {
-        let ring = n.div_ceil(2) as f32;
-        SpeakerLayout::from_speakers(
-            (0..n)
-                .map(|i| {
-                    crate::speaker_layout::Speaker::new(
-                        format!("S{i}"),
-                        -180.0 + 360.0 * (i / 2) as f32 / ring,
-                        if i % 2 == 0 { 0.0 } else { 40.0 },
-                    )
-                })
-                .collect(),
-        )
-        .expect("ring layout")
+    /// No backend sizes anything by a fixed speaker count (#745): a layout
+    /// wider than the 24 speakers the gain sets used to hold — 40, 80 and
+    /// 128 here — builds with each of them, as the published topology (model
+    /// only) and as a band's (its table sampled), and answers one finite
+    /// gain per speaker.
+    #[test]
+    fn a_layout_wider_than_24_speakers_builds_with_every_backend() {
+        for speakers in [40, 80, 128] {
+            a_wide_layout_builds_with_every_backend(speakers);
+        }
     }
 
-    /// The barycenter solver holds `MAX_SPEAKERS` speakers in fixed arrays: a
-    /// larger layout is refused when the model is built — an error the
-    /// recompute reports to Studio — instead of the model panicking out of
-    /// bounds per request (on the render thread for a band rebuild).
-    #[test]
-    fn barycenter_refuses_a_layout_larger_than_its_solver() {
-        use crate::spatial_vbap::MAX_SPEAKERS;
-        let positions = |n: usize| collect_spatializable_positions(&ring_layout(n));
-        let plan = |n: usize| BarycenterBuildPlan {
-            speaker_positions: positions(n),
-            localize: 0.0,
+    fn a_wide_layout_builds_with_every_backend(speakers: usize) {
+        let layout = crate::test_support::dome_layout(speakers);
+        let positions = collect_spatializable_positions(&layout);
+        assert_eq!(positions.len(), speakers);
+        let barycenter = || BarycenterBuildPlan {
+            speaker_positions: positions.clone(),
+            localize: 0.5,
         };
-        assert!(plan(MAX_SPEAKERS).build_gain_model().is_ok());
-        let err = plan(MAX_SPEAKERS + 2)
-            .build_gain_model()
-            .err()
-            .expect("more speakers than the solver holds");
-        let msg = err.to_string();
-        assert!(
-            msg.contains(&format!("at most {MAX_SPEAKERS}"))
-                && msg.contains(&(MAX_SPEAKERS + 2).to_string()),
-            "got: {msg}"
-        );
-
-        // The whole topology build — the published one (model only) and a
-        // band's (precomputed, so its table would sample the model) — and a
-        // hybrid with a barycenter leg fail too, without a panic: refused by
-        // the layout-wide speaker check before the model is built.
-        let topology = |backend_build: BackendBuildPlan, backend_id: &str| TopologyBuildPlan {
-            layout: ring_layout(MAX_SPEAKERS + 2),
-            backend_id: backend_id.to_string(),
-            backend_build,
-            evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-            evaluation_build_config: build_config(),
-            geometry_generation: 0,
-            brir_layout: false,
-            room: RoomRatios::UNIT,
-            measured_room: None,
-            grid: None,
-            grid_generation: 0,
+        let distance = || ExperimentalDistanceBuildPlan {
+            speaker_positions: positions.clone(),
+            params: crate::live_params::ExperimentalDistanceLiveParams::default(),
         };
-        let built = std::panic::catch_unwind(|| {
-            topology(
-                BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2)),
-                "barycenter",
-            )
-            .build_topology()
-            .map(|_| ())
-        });
-        let err = built.expect("no panic").expect_err("refused");
-        assert!(
-            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
-            "got: {err}"
-        );
-        let built = std::panic::catch_unwind(|| {
-            topology(
-                BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2)),
-                "barycenter",
-            )
-            .build_band_topology_reusing(None)
-            .map(|_| ())
-        });
-        let err = built.expect("no panic").expect_err("refused");
-        assert!(
-            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
-            "got: {err}"
-        );
-
-        let hybrid = BackendBuildPlan::Hybrid(HybridBuildPlan {
-            external: Box::new(BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2))),
-            internal: Box::new(BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2))),
-            curve: vec![[0.0, 0.0], [1.0, 1.0]],
-            curve_smoothing: 0.0,
-            metric: DistanceMetric::default(),
-        });
-        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            topology(hybrid, "hybrid").build_topology().map(|_| ())
-        }));
-        let err = built.expect("no panic").expect_err("refused");
-        assert!(
-            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
-            "got: {err}"
-        );
+        let hybrid = || {
+            BackendBuildPlan::Hybrid(HybridBuildPlan {
+                external: Box::new(BackendBuildPlan::Barycenter(barycenter())),
+                internal: Box::new(BackendBuildPlan::ExperimentalDistance(distance())),
+                curve: vec![[0.0, 0.0], [1.0, 1.0]],
+                curve_smoothing: 0.0,
+                metric: DistanceMetric::default(),
+            })
+        };
+        let backends: [(&str, &dyn Fn() -> BackendBuildPlan); 3] = [
+            ("barycenter", &|| BackendBuildPlan::Barycenter(barycenter())),
+            ("experimental_distance", &|| {
+                BackendBuildPlan::ExperimentalDistance(distance())
+            }),
+            ("hybrid", &hybrid),
+        ];
+        for (backend_id, backend_build) in backends {
+            let plan = TopologyBuildPlan {
+                layout: layout.clone(),
+                backend_id: backend_id.to_string(),
+                backend_build: backend_build(),
+                evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+                evaluation_build_config: build_config(),
+                geometry_generation: 0,
+                brir_layout: false,
+                room: RoomRatios::UNIT,
+                measured_room: None,
+                grid: None,
+                grid_generation: 0,
+            };
+            let published = plan
+                .build_topology()
+                .unwrap_or_else(|e| panic!("{speakers} speakers, {backend_id}: {e:#}"));
+            let band = plan
+                .build_band_topology_reusing(None)
+                .unwrap_or_else(|e| panic!("{speakers} speakers, {backend_id}, band: {e:#}"));
+            for (what, topology) in [("published", &published), ("band", &band)] {
+                assert_eq!(topology.backend.speaker_count(), speakers, "{backend_id}");
+                let mut request = build_config().request_template;
+                request.adm_position = [0.3, -0.4, 0.2];
+                let gains = topology.backend.gains_at(&request);
+                assert_eq!(gains.len(), speakers, "{backend_id}, {what}");
+                assert!(
+                    gains.iter().all(|gain| gain.is_finite())
+                        && gains.iter().any(|gain| *gain > 0.0),
+                    "{backend_id}, {what}: {gains:?}"
+                );
+            }
+        }
     }
 
     /// A build context over the 7.1.4 preset in the unit room, with the

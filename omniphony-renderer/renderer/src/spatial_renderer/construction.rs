@@ -131,7 +131,6 @@ impl SpatialRenderer {
             cartesian_default_z_neg_size,
         } = spec;
         let num_speakers = speaker_layout.num_speakers();
-        crate::spatial_vbap::check_speaker_count(num_speakers)?;
         let spatializable_positions = speaker_layout
             .spatializable_positions_for_room(
                 room_ratio,
