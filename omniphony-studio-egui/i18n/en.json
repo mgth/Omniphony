@@ -873,6 +873,7 @@
   "log.stateLoadFailed": "Failed to load initial state: {error}",
   "outputMode.headphones": "Headphones",
   "outputMode.headphonesVirtual": "Headphones (virtual room)",
+  "outputMode.virtualRoom": "Virtual room",
   "outputMode.selectTitle": "Output mode",
   "rendererTabs.renderer": "Renderer",
   "rendererTabs.binaural": "Binaural",

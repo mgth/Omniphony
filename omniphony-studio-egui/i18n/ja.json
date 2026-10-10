@@ -873,6 +873,7 @@
   "log.stateLoadFailed": "初期状態の読み込みに失敗しました: {error}",
   "outputMode.headphones": "ヘッドホン",
   "outputMode.headphonesVirtual": "ヘッドホン（仮想ルーム）",
+  "outputMode.virtualRoom": "仮想ルーム",
   "outputMode.selectTitle": "出力モード",
   "rendererTabs.renderer": "レンダラー",
   "rendererTabs.binaural": "バイノーラル",

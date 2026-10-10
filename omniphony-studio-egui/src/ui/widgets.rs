@@ -822,86 +822,175 @@ fn decimals_for(step: f64) -> usize {
 
 #[cfg(test)]
 mod choice_card_tests {
-    use super::choice_cards;
-    use crate::ui::icons::{HEADPHONES, SECTION_SPEAKERS};
+    use super::{CardLayout, CardPlan, Choice, choice_cards, theme};
+    use crate::ui::icons::{HEADPHONES, Icon, SECTION_SPEAKERS};
 
-    /// One click anywhere on a card — its icon, its label, its padding —
-    /// picks it, the first time; a click on the card in force picks nothing.
-    /// The cards share the width equally and are all the same height,
-    /// whatever their labels take.
-    #[test]
-    fn a_click_anywhere_on_a_card_picks_it() {
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(440.0, 200.0));
-        let ctx = egui::Context::default();
-        let rects = std::cell::RefCell::new(Vec::new());
-        let frame = |events: Vec<egui::Event>| {
-            let mut picked = None;
+    const ONE: &[&Icon] = &[&SECTION_SPEAKERS];
+    const TWO: &[&Icon] = &[&HEADPHONES, &SECTION_SPEAKERS];
+
+    /// The output mode's cards, with the labels of a locale.
+    fn cards<'a>(labels: [&'a str; 3]) -> [Choice<'a, usize>; 3] {
+        [
+            Choice {
+                value: 0,
+                icons: ONE,
+                label: labels[0],
+                name: labels[0],
+            },
+            Choice {
+                value: 1,
+                icons: &[&HEADPHONES],
+                label: labels[1],
+                name: labels[1],
+            },
+            Choice {
+                value: 2,
+                icons: TWO,
+                label: labels[2],
+                name: "the full name",
+            },
+        ]
+    }
+
+    /// The cards' labels in the locales with the longest words, and one
+    /// without spaces to break at.
+    const LOCALES: [[&str; 3]; 4] = [
+        ["Speakers", "Headphones", "Virtual room"],
+        ["Lautsprecher", "Kopfhörer", "Virtueller Raum"],
+        ["Caixas", "Fones de ouvido", "Sala virtual"],
+        ["スピーカー", "ヘッドホン", "仮想ルーム"],
+    ];
+
+    /// The room the cards get in a side panel `panel` wide.
+    fn room(panel: f32) -> f32 {
+        panel - 2.0 * theme::PANEL_PADDING_X
+    }
+
+    fn with_ui<R>(width: f32, events: Vec<egui::Event>, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        thread_local! {
+            static CTX: egui::Context = {
+                let ctx = egui::Context::default();
+                theme::install(&ctx);
+                ctx
+            };
+        }
+        CTX.with(|ctx| {
+            let mut out = None;
+            let mut add = Some(add);
             let mut output = ctx.run_ui(
                 egui::RawInput {
-                    screen_rect: Some(screen),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 400.0),
+                    )),
                     events,
                     ..Default::default()
                 },
                 |ui| {
-                    let top = ui.cursor().top();
-                    let width = ui.available_width();
-                    picked = choice_cards(
-                        ui,
-                        &0,
-                        &[
-                            (0, &[&SECTION_SPEAKERS], "Speakers"),
-                            (1, &[&HEADPHONES], "Headphones"),
-                            (
-                                2,
-                                &[&HEADPHONES, &SECTION_SPEAKERS],
-                                "Headphones (a virtual room, with a long name)",
-                            ),
-                        ],
-                    );
-                    let height = ui.cursor().top() - top - ui.spacing().item_spacing.y;
-                    let share = (width - 2.0 * super::theme::GROUP_GAP) / 3.0;
-                    *rects.borrow_mut() = (0..3)
-                        .map(|i| {
-                            egui::Rect::from_min_size(
-                                egui::pos2(
-                                    ui.max_rect().left()
-                                        + (share.floor() + super::theme::GROUP_GAP) * i as f32,
-                                    top,
-                                ),
-                                egui::vec2(share.floor(), height),
-                            )
-                        })
-                        .collect();
+                    if let Some(add) = add.take() {
+                        out = Some(add(ui));
+                    }
                 },
             );
             output.textures_delta.clear();
-            picked
+            out.expect("the frame ran")
+        })
+    }
+
+    /// No label is ever cut or broken inside a word, from the narrowest
+    /// side panel to the default one: the cards share a row while every
+    /// label fits its share, and stack where one would not. At the minimum
+    /// width a share is some forty points, where "Headphones" broke into
+    /// "Headpho / nes" and the virtual room lost its name to an ellipsis.
+    #[test]
+    fn no_label_is_cut_from_the_narrowest_panel_up() {
+        for labels in LOCALES {
+            let options = cards(labels);
+            let mut panel = crate::ui::layout::MIN_WIDTH;
+            while panel <= 440.0 {
+                with_ui(room(panel), Vec::new(), |ui| {
+                    let plan = CardPlan::new(ui, room(panel), &options);
+                    for option in &options {
+                        let galley = plan.label(ui, option.label, egui::Color32::WHITE);
+                        assert!(
+                            !galley.elided,
+                            "{:?} is cut at {panel} ({:?})",
+                            option.label, plan.layout
+                        );
+                        if plan.layout == CardLayout::Row {
+                            // One row of the galley per word at most: no
+                            // word runs over two rows.
+                            assert!(
+                                galley.rows.len() <= option.label.split_whitespace().count(),
+                                "{:?} breaks inside a word at {panel}",
+                                option.label
+                            );
+                        }
+                    }
+                });
+                panel += 20.0;
+            }
+        }
+    }
+
+    /// The narrowest panel stacks the cards; the default one keeps the row.
+    #[test]
+    fn a_narrow_panel_stacks_the_cards() {
+        let options = cards(LOCALES[0]);
+        let layout = |panel: f32| {
+            with_ui(room(panel), Vec::new(), |ui| {
+                CardPlan::new(ui, room(panel), &options).layout
+            })
         };
-        assert_eq!(frame(Vec::new()), None);
-        let cards = rects.borrow().clone();
-        let click = |pos: egui::Pos2| {
-            let button = |pressed| egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: Default::default(),
+        assert_eq!(layout(crate::ui::layout::MIN_WIDTH), CardLayout::Stack);
+        assert_eq!(layout(440.0), CardLayout::Row);
+    }
+
+    /// One click anywhere on a card — its icons, its label, its padding —
+    /// picks it, the first time, in a row and in a stack; a click on the
+    /// card in force picks nothing.
+    #[test]
+    fn a_click_anywhere_on_a_card_picks_it() {
+        let options = cards(LOCALES[0]);
+        for panel in [440.0, crate::ui::layout::MIN_WIDTH] {
+            let width = room(panel);
+            let frame = |events: Vec<egui::Event>| {
+                with_ui(width, events, |ui| {
+                    let origin = ui.cursor().min;
+                    let plan = CardPlan::new(ui, ui.available_width(), &options);
+                    let picked = choice_cards(ui, &0, &options);
+                    let step = match plan.layout {
+                        CardLayout::Row => egui::vec2(plan.size.x + theme::GROUP_GAP, 0.0),
+                        CardLayout::Stack => egui::vec2(0.0, plan.size.y + theme::GROUP_GAP),
+                    };
+                    let rects: Vec<egui::Rect> = (0..options.len())
+                        .map(|i| egui::Rect::from_min_size(origin + step * i as f32, plan.size))
+                        .collect();
+                    (picked, rects)
+                })
             };
-            frame(vec![egui::Event::PointerMoved(pos)]);
-            frame(vec![button(true)]);
-            frame(vec![button(false)])
-        };
-        // The icon, the label and a corner of the padding.
-        assert_eq!(
-            click(cards[1].center_top() + egui::vec2(0.0, 20.0)),
-            Some(1)
-        );
-        assert_eq!(
-            click(cards[2].center_bottom() - egui::vec2(0.0, 16.0)),
-            Some(2)
-        );
-        assert_eq!(click(cards[2].left_top() + egui::vec2(3.0, 3.0)), Some(2));
-        // The one in force.
-        assert_eq!(click(cards[0].center()), None);
+            let cards = frame(Vec::new()).1;
+            let click = |pos: egui::Pos2| {
+                let button = |pressed| egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                };
+                frame(vec![egui::Event::PointerMoved(pos)]);
+                frame(vec![button(true)]);
+                frame(vec![button(false)]).0
+            };
+            // The middle, a corner of the padding, the far end.
+            assert_eq!(click(cards[1].center()), Some(1), "at {panel}");
+            assert_eq!(click(cards[2].left_top() + egui::vec2(3.0, 3.0)), Some(2));
+            assert_eq!(
+                click(cards[2].right_bottom() - egui::vec2(3.0, 3.0)),
+                Some(2)
+            );
+            // The one in force.
+            assert_eq!(click(cards[0].center()), None);
+        }
     }
 }
 
@@ -984,73 +1073,187 @@ pub fn tab_bar<T: PartialEq + Clone>(ui: &mut Ui, current: &T, options: &[(T, &s
     picked
 }
 
-/// A row of cards, one chosen: the few-way choice that decides what the rest
+/// One card of [`choice_cards`].
+pub struct Choice<'a, T> {
+    pub value: T,
+    /// One icon, or several side by side for a choice that combines others.
+    pub icons: &'a [&'a super::icons::Icon],
+    /// What the card says: short, since the cards share a side panel.
+    pub label: &'a str,
+    /// The choice's full name: what the card says on hover when its label
+    /// is a shorter form of it or had to be cut, and what a screen reader
+    /// is told.
+    pub name: &'a str,
+}
+
+/// How [`choice_cards`] lays its cards out at the width it is given.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CardLayout {
+    /// Side by side, each an equal share of the width, icons over the label.
+    Row,
+    /// One under the other at full width, icons before the label: what a
+    /// narrow panel gets, where a share of the width would break a label
+    /// inside a word or cut it.
+    Stack,
+}
+
+/// The geometry of one frame's cards.
+#[derive(Clone, Copy, Debug)]
+struct CardPlan {
+    layout: CardLayout,
+    /// A card's outer size.
+    size: egui::Vec2,
+    /// The room a label has.
+    text_width: f32,
+    /// The width kept for the icons of a stacked card: that of the card
+    /// with the most, so the labels line up.
+    icon_slot: f32,
+}
+
+impl CardPlan {
+    const ICON: f32 = 26.0;
+    const STACK_ICON: f32 = 20.0;
+    const ICON_SPACING: f32 = 8.0;
+    const STACK_ICON_SPACING: f32 = 6.0;
+    const PADDING: f32 = 8.0;
+    const STACK_PADDING_Y: f32 = 6.0;
+    const ICON_GAP: f32 = 5.0;
+    const ROW_LABEL_ROWS: usize = 2;
+
+    fn icons_width(count: usize, icon: f32, spacing: f32) -> f32 {
+        icon * count as f32 + spacing * count.saturating_sub(1) as f32
+    }
+
+    /// Side by side while every label fits its share of `width` without a
+    /// word broken or a line cut; stacked otherwise. Depends on the width
+    /// and the labels only, so it does not change while a card is clicked.
+    fn new<T>(ui: &Ui, width: f32, options: &[Choice<'_, T>]) -> Self {
+        let count = options.len().max(1) as f32;
+        let gap = theme::GROUP_GAP;
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let line = ui.fonts_mut(|f| f.row_height(&font));
+        let most_icons = options.iter().map(|o| o.icons.len()).max().unwrap_or(0);
+        let share = ((width - gap * (count - 1.0)) / count).floor().max(0.0);
+        let row = CardPlan {
+            layout: CardLayout::Row,
+            size: vec2(
+                share,
+                Self::PADDING
+                    + Self::ICON
+                    + Self::ICON_GAP
+                    + line * Self::ROW_LABEL_ROWS as f32
+                    + Self::PADDING,
+            ),
+            text_width: (share - 2.0 * Self::PADDING).max(0.0),
+            icon_slot: 0.0,
+        };
+        let fits = Self::icons_width(most_icons, Self::ICON, Self::ICON_SPACING) <= row.text_width
+            && options.iter().all(|option| {
+                let whole_words = option.label.split_whitespace().all(|word| {
+                    let wide = ui.fonts_mut(|f| {
+                        f.layout_no_wrap(word.to_owned(), font.clone(), Color32::WHITE)
+                    });
+                    wide.size().x <= row.text_width
+                });
+                whole_words && !row.label(ui, option.label, Color32::WHITE).elided
+            });
+        if fits {
+            return row;
+        }
+        let icon_slot = Self::icons_width(most_icons, Self::STACK_ICON, Self::STACK_ICON_SPACING);
+        CardPlan {
+            layout: CardLayout::Stack,
+            size: vec2(
+                width.max(0.0),
+                Self::STACK_ICON.max(line) + 2.0 * Self::STACK_PADDING_Y,
+            ),
+            text_width: (width - 2.0 * Self::PADDING - icon_slot - Self::ICON_SPACING).max(0.0),
+            icon_slot,
+        }
+    }
+
+    /// A label laid out for this plan: centred over two lines at most in a
+    /// row, one line from the left in a stack, cut with an ellipsis when it
+    /// still does not fit.
+    fn label(&self, ui: &Ui, text: &str, colour: Color32) -> std::sync::Arc<egui::Galley> {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, colour, self.text_width);
+        match self.layout {
+            CardLayout::Row => {
+                job.halign = egui::Align::Center;
+                job.wrap.max_rows = Self::ROW_LABEL_ROWS;
+            }
+            CardLayout::Stack => job.wrap.max_rows = 1,
+        }
+        ui.fonts_mut(|f| f.layout_job(job))
+    }
+}
+
+/// A set of cards, one chosen: the few-way choice that decides what the rest
 /// of a section is about (the output mode), where a select would hide the
-/// alternatives. Each card is an equal share of the width, its icons — one,
-/// or several side by side for a choice that combines others — over its
-/// label; the one in force carries the accent, the others stay quiet until
-/// hovered. The whole card is the click target. Returns the newly picked
-/// value.
+/// alternatives. Each card carries its icons and its label; the one in force
+/// carries the accent, the others stay quiet until hovered. The whole card
+/// is the click target. Returns the newly picked value.
 ///
-/// Every card is as high as an icon and two lines of label, whatever its own
-/// label takes, so a longer translation wraps without moving what follows.
+/// The cards sit side by side, an equal share of the width each, icons over
+/// label, and are all as high as an icon and two lines of label so that a
+/// longer translation wraps without moving what follows. Where a share of
+/// the width would break a label inside a word or cut it — a narrow panel —
+/// they are stacked instead, one line each, icons before the label. A label
+/// that is cut all the same, or that shortens the choice's name, shows the
+/// name on hover.
 pub fn choice_cards<T: PartialEq + Clone>(
     ui: &mut Ui,
     current: &T,
-    options: &[(T, &[&super::icons::Icon], &str)],
+    options: &[Choice<'_, T>],
 ) -> Option<T> {
-    const ICON: f32 = 26.0;
-    const ICON_SPACING: f32 = 8.0;
-    const PADDING: f32 = 8.0;
-    const ICON_GAP: f32 = 5.0;
-    const LABEL_ROWS: usize = 2;
-    let count = options.len().max(1) as f32;
-    let gap = theme::GROUP_GAP;
-    let width = ((ui.available_width() - gap * (count - 1.0)) / count)
-        .floor()
-        .max(0.0);
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let line = ui.fonts_mut(|f| f.row_height(&font));
-    let height = PADDING + ICON + ICON_GAP + line * LABEL_ROWS as f32 + PADDING;
+    let plan = CardPlan::new(ui, ui.available_width(), options);
     let enabled = ui.is_enabled();
+    let gap = theme::GROUP_GAP;
     let mut picked = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = gap;
-        for (value, icons, label) in options {
-            let active = value == current;
-            let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    let mut cards = |ui: &mut Ui| {
+        for option in options {
+            let active = option.value == *current;
+            let (rect, response) = ui.allocate_exact_size(plan.size, Sense::click());
             response.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::RadioButton, enabled, active, *label)
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::RadioButton,
+                    enabled,
+                    active,
+                    option.name,
+                )
             });
             if response.clicked() && !active {
-                picked = Some(value.clone());
+                picked = Some(option.value.clone());
             }
+            let hovered = response.hovered() && enabled;
+            let (fill, stroke, colour) = if active {
+                (
+                    theme::ACCENT.gamma_multiply(0.14),
+                    egui::Stroke::new(1.5, theme::ACCENT),
+                    theme::TEXT_STRONG,
+                )
+            } else if hovered {
+                (
+                    theme::FILL_HOVER,
+                    egui::Stroke::new(1.0, theme::CONTROL_BORDER),
+                    theme::TEXT,
+                )
+            } else {
+                (
+                    theme::FILL,
+                    egui::Stroke::new(1.0, theme::CONTROL_BORDER),
+                    theme::TEXT_MUTED,
+                )
+            };
+            let colour = if enabled {
+                colour
+            } else {
+                colour.gamma_multiply(0.5)
+            };
+            let galley = plan.label(ui, option.label, colour);
+            let cut = galley.elided;
             if ui.is_rect_visible(rect) {
-                let hovered = response.hovered() && enabled;
-                let (fill, stroke, colour) = if active {
-                    (
-                        theme::ACCENT.gamma_multiply(0.14),
-                        egui::Stroke::new(1.5, theme::ACCENT),
-                        theme::TEXT_STRONG,
-                    )
-                } else if hovered {
-                    (
-                        theme::FILL_HOVER,
-                        egui::Stroke::new(1.0, theme::CONTROL_BORDER),
-                        theme::TEXT,
-                    )
-                } else {
-                    (
-                        theme::FILL,
-                        egui::Stroke::new(1.0, theme::CONTROL_BORDER),
-                        theme::TEXT_MUTED,
-                    )
-                };
-                let colour = if enabled {
-                    colour
-                } else {
-                    colour.gamma_multiply(0.5)
-                };
                 let stroke = if response.has_focus() {
                     ui.visuals().selection.stroke
                 } else {
@@ -1064,46 +1267,87 @@ pub fn choice_cards<T: PartialEq + Clone>(
                     stroke,
                     egui::StrokeKind::Inside,
                 );
-                let icons_width =
-                    ICON * icons.len() as f32 + ICON_SPACING * icons.len().saturating_sub(1) as f32;
-                let icons_rect = egui::Rect::from_center_size(
-                    egui::pos2(rect.center().x, rect.top() + PADDING + ICON / 2.0),
-                    vec2(icons_width, ICON),
-                );
-                for (i, icon) in icons.iter().enumerate() {
-                    let left = icons_rect.left() + (ICON + ICON_SPACING) * i as f32;
-                    super::icons::paint(
-                        &painter,
-                        egui::Rect::from_min_size(
-                            egui::pos2(left, icons_rect.top()),
-                            vec2(ICON, ICON),
-                        ),
-                        icon,
-                        if active { theme::ACCENT } else { colour },
-                    );
+                let icon_colour = if active { theme::ACCENT } else { colour };
+                let paint_icons = |left: f32, centre_y: f32, size: f32, spacing: f32| {
+                    for (i, icon) in option.icons.iter().enumerate() {
+                        super::icons::paint(
+                            &painter,
+                            egui::Rect::from_min_size(
+                                egui::pos2(
+                                    left + (size + spacing) * i as f32,
+                                    centre_y - size / 2.0,
+                                ),
+                                vec2(size, size),
+                            ),
+                            icon,
+                            icon_colour,
+                        );
+                    }
+                };
+                match plan.layout {
+                    CardLayout::Row => {
+                        let icons_width = CardPlan::icons_width(
+                            option.icons.len(),
+                            CardPlan::ICON,
+                            CardPlan::ICON_SPACING,
+                        );
+                        let icons_centre = rect.top() + CardPlan::PADDING + CardPlan::ICON / 2.0;
+                        paint_icons(
+                            rect.center().x - icons_width / 2.0,
+                            icons_centre,
+                            CardPlan::ICON,
+                            CardPlan::ICON_SPACING,
+                        );
+                        // Centred in the two lines kept for it: a one-line
+                        // label sits level with the middle of a two-line one.
+                        let label_top = icons_centre + CardPlan::ICON / 2.0 + CardPlan::ICON_GAP;
+                        let room = rect.bottom() - CardPlan::PADDING - label_top;
+                        let slack = (room - galley.size().y).max(0.0);
+                        painter.galley(
+                            egui::pos2(rect.center().x, label_top + slack / 2.0),
+                            galley,
+                            colour,
+                        );
+                    }
+                    CardLayout::Stack => {
+                        let left = rect.left() + CardPlan::PADDING;
+                        paint_icons(
+                            left,
+                            rect.center().y,
+                            CardPlan::STACK_ICON,
+                            CardPlan::STACK_ICON_SPACING,
+                        );
+                        painter.galley(
+                            egui::pos2(
+                                left + plan.icon_slot + CardPlan::ICON_SPACING,
+                                rect.center().y - galley.size().y / 2.0,
+                            ),
+                            galley,
+                            colour,
+                        );
+                    }
                 }
-                let mut job = egui::text::LayoutJob::simple(
-                    (*label).to_owned(),
-                    font.clone(),
-                    colour,
-                    (width - 2.0 * PADDING).max(0.0),
-                );
-                job.halign = egui::Align::Center;
-                job.wrap.max_rows = LABEL_ROWS;
-                let galley = painter.layout_job(job);
-                // Centred in the two lines kept for it: a one-line label
-                // sits level with the middle of a two-line one.
-                let label_top = icons_rect.bottom() + ICON_GAP;
-                let slack = (line * LABEL_ROWS as f32 - galley.size().y).max(0.0);
-                painter.galley(
-                    egui::pos2(rect.center().x, label_top + slack / 2.0),
-                    galley,
-                    colour,
-                );
             }
-            response.on_hover_cursor(egui::CursorIcon::PointingHand);
+            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if cut || option.name != option.label {
+                response.on_hover_text(option.name);
+            }
         }
-    });
+    };
+    match plan.layout {
+        CardLayout::Row => {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                cards(ui);
+            });
+        }
+        CardLayout::Stack => {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = gap;
+                cards(ui);
+            });
+        }
+    }
     picked
 }
 

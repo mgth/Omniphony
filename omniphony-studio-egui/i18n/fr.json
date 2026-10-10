@@ -873,6 +873,7 @@
   "log.stateLoadFailed": "Échec du chargement de l'état initial : {error}",
   "outputMode.headphones": "Casque",
   "outputMode.headphonesVirtual": "Casque (pièce virtuelle)",
+  "outputMode.virtualRoom": "Pièce virtuelle",
   "outputMode.selectTitle": "Mode de sortie",
   "rendererTabs.renderer": "Renderer",
   "rendererTabs.binaural": "Binaural",

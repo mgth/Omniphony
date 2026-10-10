@@ -873,6 +873,7 @@
   "log.stateLoadFailed": "Impossibile caricare lo stato iniziale: {error}",
   "outputMode.headphones": "Cuffie",
   "outputMode.headphonesVirtual": "Cuffie (stanza virtuale)",
+  "outputMode.virtualRoom": "Stanza virtuale",
   "outputMode.selectTitle": "Modalità di uscita",
   "rendererTabs.renderer": "Renderer",
   "rendererTabs.binaural": "Binaurale",

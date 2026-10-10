@@ -873,6 +873,7 @@
   "log.stateLoadFailed": "加载初始状态失败：{error}",
   "outputMode.headphones": "耳机",
   "outputMode.headphonesVirtual": "耳机（虚拟房间）",
+  "outputMode.virtualRoom": "虚拟房间",
   "outputMode.selectTitle": "输出模式",
   "rendererTabs.renderer": "渲染器",
   "rendererTabs.binaural": "双耳",

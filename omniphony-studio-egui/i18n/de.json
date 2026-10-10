@@ -873,6 +873,7 @@
   "log.stateLoadFailed": "Anfangszustand konnte nicht geladen werden: {error}",
   "outputMode.headphones": "Kopfhörer",
   "outputMode.headphonesVirtual": "Kopfhörer (virtueller Raum)",
+  "outputMode.virtualRoom": "Virtueller Raum",
   "outputMode.selectTitle": "Ausgabemodus",
   "rendererTabs.renderer": "Renderer",
   "rendererTabs.binaural": "Binaural",

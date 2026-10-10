@@ -118,7 +118,7 @@ controls are placed from the right and never overflow the panel.
 | Note | `note` | One line of `FONT_SIZE_SMALL` in `TEXT_MUTED` under the rows it explains. |
 | Banner | `banner`, `banner_with` | Something the user has to act on: a missing bridge, an update. |
 | Tabs | `tab_bar` | Equal-width tabs, one active, above the groups they switch. |
-| Choice cards | `choice_cards` under a `help::label`, its `help::card` after them | The few-way choice that decides what the rest of the section shows (the output mode): equal cards, an icon (or several, for a choice that combines others) over a label, the one in force in the accent. Always two label lines high, so a long translation wraps without moving what follows. Not for a setting among others: that is a select. |
+| Choice cards | `choice_cards` under a `help::label`, its `help::card` after them | The few-way choice that decides what the rest of the section shows (the output mode): cards, each with an icon (or several, for a choice that combines others) and a short label, the one in force in the accent. Side by side at equal widths, icons over label and always two label lines high, while every label fits its share without a word broken; stacked one per line, icons before label, where it would not (a narrow panel). A card says the choice's full name on hover when its label shortens it or is cut. Not for a setting among others: that is a select. |
 
 Sizes and colours, so a title is read as a title:
 

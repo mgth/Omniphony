@@ -299,27 +299,34 @@ impl StudioSpike {
         // and so which groups the section shows, and the three are few
         // enough to stay in view. The title opens the help, under the cards.
         help::label(ui, t("outputMode.selectTitle"), "help.outputMode");
+        // Short labels, for a card is a third of a side panel: the two
+        // headphone modes are told apart by "virtual room" and by the
+        // icons, and the card says the mode's full name on hover.
+        let name = |mode: OutputMode| t(mode.i18n_key());
         let chosen = widgets::choice_cards(
             ui,
             &current,
             &[
-                (
-                    OutputMode::Speaker,
-                    &[&icons::SECTION_SPEAKERS],
-                    t(OutputMode::Speaker.i18n_key()),
-                ),
-                (
-                    OutputMode::BinauralDirect,
-                    &[&icons::HEADPHONES],
-                    t(OutputMode::BinauralDirect.i18n_key()),
-                ),
+                widgets::Choice {
+                    value: OutputMode::Speaker,
+                    icons: &[&icons::SECTION_SPEAKERS],
+                    label: name(OutputMode::Speaker),
+                    name: name(OutputMode::Speaker),
+                },
+                widgets::Choice {
+                    value: OutputMode::BinauralDirect,
+                    icons: &[&icons::HEADPHONES],
+                    label: name(OutputMode::BinauralDirect),
+                    name: name(OutputMode::BinauralDirect),
+                },
                 // The virtual room is both: loudspeakers, heard through
                 // the headphones.
-                (
-                    OutputMode::BinauralCascaded,
-                    &[&icons::HEADPHONES, &icons::SECTION_SPEAKERS],
-                    t(OutputMode::BinauralCascaded.i18n_key()),
-                ),
+                widgets::Choice {
+                    value: OutputMode::BinauralCascaded,
+                    icons: &[&icons::HEADPHONES, &icons::SECTION_SPEAKERS],
+                    label: t("outputMode.virtualRoom"),
+                    name: name(OutputMode::BinauralCascaded),
+                },
             ],
         );
         help::card(ui, "help.outputMode");
