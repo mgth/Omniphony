@@ -49,7 +49,7 @@ use crate::spatial_vbap::vbap_native::{
     FACE_HIT_TOLERANCE, compute_dummy_rings, invert_ls_mtx_3d, prepare_triangulation,
     unit_direction_deg,
 };
-use crate::spatial_vbap::{OutOfHullMode, adm_to_spherical};
+use crate::spatial_vbap::{OutOfHullMode, VbapScratch, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 use omniphony_geometry::f32::vec3::{cross, dot, length, sub, try_normalize};
 
@@ -392,6 +392,14 @@ fn coplanar_plane(points: &[[f32; 3]], scale_hint: f32) -> Option<([f32; 3], f32
     (offset > PLANE_EPS).then_some((normal, offset))
 }
 
+/// The working memory of one caller: the central distribution's gains while
+/// they are blended into the VBAP face's, and the panner's scratch, which
+/// pans the face and then the antipode.
+struct VolumetricScratch {
+    central: Vec<f32>,
+    vbap: VbapScratch,
+}
+
 /// VBAP on the loudspeaker surface, crossfaded towards a central distribution
 /// by the object's depth inside that surface. See the module docs.
 pub struct VolumetricBackend {
@@ -537,6 +545,7 @@ impl VolumetricBackend {
         req: &RenderRequest,
         position: [f32; 3],
         at_listener: bool,
+        vbap: &mut VbapScratch,
         central: &mut [f32],
     ) {
         match self.params.central {
@@ -552,23 +561,25 @@ impl VolumetricBackend {
                 let spread = self.vbap.effective_spread(req, position);
                 self.vbap
                     .panner()
-                    .gains_spread_into(azimuth, elevation, spread, central)
+                    .gains_spread_into(azimuth, elevation, spread, vbap, central)
             }
         }
     }
 
-    /// The working memory of one caller: the central distribution's gains
-    /// while they are blended into the VBAP face's.
+    /// The working memory of one caller: see [`VolumetricScratch`].
     pub fn new_scratch(&self) -> GainScratch {
-        GainScratch::new(vec![0.0f32; self.speaker_count()])
+        GainScratch::new(VolumetricScratch {
+            central: vec![0.0f32; self.speaker_count()],
+            vbap: self.vbap.panner().new_scratch(),
+        })
     }
 
     pub fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
-        let Some(central) = scratch.state::<Vec<f32>>() else {
+        let Some(VolumetricScratch { central, vbap }) = scratch.state() else {
             return foreign_scratch(out);
         };
         // The VBAP face's gains, then blended in place.
-        self.vbap.compute_gains(req, out);
+        self.vbap.compute_gains_on(req, vbap, out);
         let position = self.scaled_position(req);
         let depth = self.measure(position);
         if depth.curved <= 0.0 {
@@ -576,7 +587,7 @@ impl VolumetricBackend {
             return;
         }
         let weight = self.central_weight(depth);
-        self.central_gains(req, position, depth.reach.is_none(), central);
+        self.central_gains(req, position, depth.reach.is_none(), vbap, central);
 
         // Equal-power crossfade, then renormalised: the two sets share
         // loudspeakers, so their coherent sum is not at the level they blend

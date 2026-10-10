@@ -4,14 +4,14 @@
 
 use super::normalized_spread_to_degrees;
 use crate::spatial_vbap::vbap_native::{
-    DummyRing, OutOfHullMode, invert_ls_mtx_3d, prepare_triangulation, vbap3d,
+    DummyRing, OutOfHullMode, Vbap3dScratch, invert_ls_mtx_3d, prepare_triangulation, vbap3d_into,
 };
 
 /// Pure-Rust equivalent of `SpartaVbapLayout`.
 ///
 /// Owns the triangulation and inverse speaker matrices produced by
 /// `prepare_triangulation` + `invert_ls_mtx_3d`. Computes VBAP gains directly
-/// via [`Self::vbap_gains`]; the panner stores one instance and samples it.
+/// via [`Self::vbap_gains_into`]; the panner stores one instance and samples it.
 pub(crate) struct NativeVbapLayout {
     /// Number of *real* (non-dummy) speakers — the number of gains returned.
     pub(crate) n_speakers: usize,
@@ -27,7 +27,7 @@ pub(crate) struct NativeVbapLayout {
     ls_groups: Vec<[usize; 3]>,
     layout_inv_mtx: Vec<[f32; 9]>,
     /// Per-effective-speaker flag: `true` for the virtual ±90° pole(s) injected
-    /// for triangulation. `vbap3d` uses this to fold dummy gain back into real
+    /// for triangulation. `vbap3d_into` uses this to fold dummy gain back into real
     /// speakers of the matched triangle instead of letting it be silently dropped.
     is_dummy: Vec<bool>,
     /// Out-of-hull rendering mode, baked at construction (it shapes the
@@ -81,37 +81,66 @@ impl NativeVbapLayout {
         })
     }
 
-    /// Compute VBAP gains for a single source direction and spread.
-    /// Returns gains for real speakers only (dummy columns are stripped).
-    pub fn vbap_gains(
+    /// The working memory [`Self::vbap_gains_into`] computes on, sized for
+    /// this layout's effective speakers. One per caller, made off the render
+    /// thread.
+    pub fn new_scratch(&self) -> Vbap3dScratch {
+        Vbap3dScratch::new(self.n_eff)
+    }
+
+    /// Compute VBAP gains for a single source direction and spread into
+    /// `out`, on a scratch from [`Self::new_scratch`]: nothing is allocated.
+    /// Writes gains for real speakers only (dummy columns are stripped), as
+    /// many as fit in `out`.
+    pub fn vbap_gains_into(
         &self,
         azimuth_deg: f32,
         elevation_deg: f32,
         spread: f32,
-    ) -> Result<Vec<f32>, String> {
+        scratch: &mut Vbap3dScratch,
+        out: &mut [f32],
+    ) {
         let spread_deg = normalized_spread_to_degrees(spread);
-        let src_dirs = [[azimuth_deg, elevation_deg]];
-
-        let mut gain_vec = vbap3d(
-            &src_dirs,
-            self.n_eff,
+        // The real speakers come first: a buffer cut to their count strips
+        // the dummy speaker columns.
+        let real = out.len().min(self.n_speakers);
+        vbap3d_into(
+            [azimuth_deg, elevation_deg],
             &self.ls_groups,
             spread_deg,
             &self.layout_inv_mtx,
             &self.is_dummy,
             self.mode,
             &self.dummy_rings,
+            scratch,
+            &mut out[..real],
         );
+    }
 
-        // Strip dummy speaker columns — keep only the first n_speakers entries.
-        gain_vec.truncate(self.n_speakers);
-        Ok(gain_vec)
+    /// [`Self::vbap_gains_into`] in a vector of its own.
+    #[cfg(test)]
+    pub fn vbap_gains(
+        &self,
+        azimuth_deg: f32,
+        elevation_deg: f32,
+        spread: f32,
+    ) -> Result<Vec<f32>, String> {
+        let mut gains = vec![0.0; self.n_speakers];
+        self.vbap_gains_into(
+            azimuth_deg,
+            elevation_deg,
+            spread,
+            &mut self.new_scratch(),
+            &mut gains,
+        );
+        Ok(gains)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spatial_vbap::vbap_native::vbap3d;
 
     /// Standard horizontal layout (no top/bottom speakers) — exercises both
     /// dummy injections (±90°) so the redistribution path is hit at both poles.
@@ -781,5 +810,82 @@ mod tests {
         // Above the hull's horizon the direction is in a face: unit power.
         let inside = power(&layout.vbap_gains(-151.0, 4.0, 0.0).unwrap());
         assert!((inside - 1.0).abs() < 1e-3, "inside {inside}");
+    }
+
+    /// A sweep of the sphere, below the hull included, as bit patterns: for
+    /// comparing gains exactly.
+    fn sweep() -> Vec<[f32; 2]> {
+        let mut dirs = Vec::new();
+        for el in (-90..=90).step_by(15) {
+            for az in (-180..180).step_by(20) {
+                dirs.push([az as f32 + 3.5, el as f32]);
+            }
+        }
+        dirs
+    }
+
+    fn bits(gains: &[f32]) -> Vec<u32> {
+        gains.iter().map(|gain| gain.to_bits()).collect()
+    }
+
+    /// The scratch is working memory only: what one direction left in it
+    /// does not reach the next. A scratch kept across a sweep gives, bit for
+    /// bit, the gains of a fresh one per direction, and the gains the batch
+    /// `vbap3d` (the table path) computes for the same directions, in every
+    /// out-of-hull mode, with and without spread, on layouts with virtual
+    /// poles and virtual centres.
+    #[test]
+    fn a_kept_scratch_changes_no_gain() {
+        let layouts: [&[[f32; 2]]; 3] = [&horizontal_7_layout(), &layout_714(), &cube_4_4_layout()];
+        let sweep = sweep();
+        for dirs in layouts {
+            for mode in modes() {
+                let layout = NativeVbapLayout::from_speaker_dirs(dirs, mode).unwrap();
+                for spread in [0.0, 0.05, 0.4, 1.0] {
+                    let batch = vbap3d(
+                        &sweep,
+                        layout.n_eff,
+                        &layout.ls_groups,
+                        normalized_spread_to_degrees(spread),
+                        &layout.layout_inv_mtx,
+                        &layout.is_dummy,
+                        layout.mode,
+                        &layout.dummy_rings,
+                    );
+                    let mut kept = layout.new_scratch();
+                    let mut gains = vec![0.0; layout.n_speakers];
+                    for (&[az, el], row) in sweep.iter().zip(batch.chunks_exact(layout.n_eff)) {
+                        // Whatever the buffer held before must not survive.
+                        gains.fill(f32::NAN);
+                        layout.vbap_gains_into(az, el, spread, &mut kept, &mut gains);
+                        let fresh = layout.vbap_gains(az, el, spread).unwrap();
+                        let at = format!("{mode:?}, spread {spread}, az {az}, el {el}");
+                        assert_eq!(bits(&gains), bits(&fresh), "{at}");
+                        assert_eq!(bits(&gains), bits(&row[..layout.n_speakers]), "{at}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A scratch made for another layout is fitted to this one rather than
+    /// indexed out of bounds, and gives the same gains.
+    #[test]
+    fn a_scratch_of_another_layout_is_fitted() {
+        let small =
+            NativeVbapLayout::from_speaker_dirs(&horizontal_7_layout(), OutOfHullMode::Fade)
+                .unwrap();
+        let large =
+            NativeVbapLayout::from_speaker_dirs(&layout_714(), OutOfHullMode::Fade).unwrap();
+        assert_ne!(small.n_eff, large.n_eff);
+        for (made_for, used_on) in [(&small, &large), (&large, &small)] {
+            let mut scratch = made_for.new_scratch();
+            let mut gains = vec![0.0; used_on.n_speakers];
+            for spread in [0.0, 0.4] {
+                used_on.vbap_gains_into(-151.0, -30.0, spread, &mut scratch, &mut gains);
+                let own = used_on.vbap_gains(-151.0, -30.0, spread).unwrap();
+                assert_eq!(bits(&gains), bits(&own), "spread {spread}");
+            }
+        }
     }
 }
