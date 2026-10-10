@@ -20,6 +20,11 @@ The engine and the bridge must come from matching releases: the 0.6.0 engine
 loads only a 0.8.x bridge, and refuses older and newer ones. When a newer
 release is out, take the versions its release notes pair together.
 
+From the next release, the bridge zip holds one library per codec family
+instead of one for all: `libharletty_dolby_bridge.dylib`,
+`libharletty_dts_bridge.dylib` and `libharletty_iamf_bridge.dylib`. The engine
+of that release loads all of them. Step 2 says what changes when you upgrade.
+
 None of these is notarized by Apple yet, so macOS refuses to open them until
 you clear the download quarantine, as shown at each step. All commands below
 are for the Terminal.
@@ -85,6 +90,30 @@ EOF
 Only append this if the file has no `render:` section yet (Studio writes one when you press Save).
 Otherwise, put the `bridge_path:` line under the `render:` already there. The
 path must be absolute: `~` is not expanded.
+
+**From the next release**, the zip holds three libraries, one per codec
+family. Clear the quarantine of each, delete the old `libharletty_bridge.dylib`
+when you upgrade, and list them under `render.bridge_paths`, in the order the
+engine tries them:
+
+```bash
+cd ~/omniphony
+unzip ~/Downloads/harletty-bridge-<version>-macos-arm64.zip   # the three libharletty_*_bridge.dylib
+xattr -d com.apple.quarantine libharletty_*_bridge.dylib 2>/dev/null
+rm -f libharletty_bridge.dylib
+```
+
+```yaml
+render:
+  bridge_paths:
+    - /Users/you/omniphony/libharletty_dolby_bridge.dylib
+    - /Users/you/omniphony/libharletty_dts_bridge.dylib
+    - /Users/you/omniphony/libharletty_iamf_bridge.dylib
+```
+
+A `bridge_path` that still names `libharletty_bridge.dylib` keeps working for
+that release: the engine loads the family libraries found in the same folder in
+its place, and the next Save writes them as `render.bridge_paths`.
 
 The check for this step is the first playback, in step 4.
 
@@ -162,9 +191,11 @@ its own (*Auto-start local renderer*, in the connection settings), and that one
 holds the port the player needs. When you only use Studio with the player,
 switch that option off.
 
-Studio's own renderer reads the same `config.yaml`, so the `bridge_path` of
-step 2 serves it too. Without one there, it uses the bridge named in
-`~/.config/mpv/mpv.conf` (`ad-orender-bridge-path=`, with an absolute path).
+Studio's own renderer reads the same `config.yaml`, so the `bridge_path` (or,
+from the next release, `bridge_paths`) of step 2 serves it too. Without one
+there, it uses the bridges named in `~/.config/mpv/mpv.conf`
+(`ad-orender-bridge-path=`, with absolute paths; from the next release,
+several separated by `:`, all handed to the renderer).
 Without a bridge it still runs, and Studio shows an orange *No decoder* banner:
 films keep playing in the player.
 
@@ -197,8 +228,9 @@ just before it, starting with `orender_create failed:`:
 
 - `render.bridge_path '…' (from config) does not exist or is not a file`: the
   path in the config is wrong or not absolute (step 2).
-- `No bridge plugin found` with the folders searched: the config has no
-  `bridge_path`, or mpv did not read that config (step 2).
+- `No bridge plugin found` with the folders searched (from the next release,
+  `no decoder bridge found`): the config has no `bridge_path` (or
+  `bridge_paths`), or mpv did not read that config (step 2).
 - `Failed to load bridge plugin from …` with `not valid for use in process` or
   `not allowed`: the bridge is still quarantined. Run its `xattr` line (step 2).
 - `Failed to load bridge plugin from …` followed by a long

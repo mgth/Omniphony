@@ -18,6 +18,11 @@ The engine and the bridge must come from matching releases: the 0.6.0 engine
 loads only a 0.8.x bridge, and refuses older and newer ones. When a newer
 release is out, take the versions its release notes pair together.
 
+From the next release, the bridge zip holds one library per codec family
+instead of one for all: `harletty_dolby_bridge.dll`, `harletty_dts_bridge.dll`
+and `harletty_iamf_bridge.dll`. The engine of that release loads all of them.
+Step 2 says what changes when you upgrade.
+
 All commands below are for **PowerShell**.
 
 ## 1. The player
@@ -55,8 +60,8 @@ messages this page relies on. A double-clicked `mpv.exe` shows none of them.
 
 ## 2. The decoder bridge
 
-Extract it **into the same folder**. The engine looks for a `*_bridge.dll` next
-to the player, so no configuration is needed:
+Extract it **into the same folder**. The engine looks for `*_bridge.dll` files
+next to the player, so no configuration is needed:
 
 ```powershell
 Expand-Archive "$HOME\Downloads\harletty-bridge-v0.8.0-windows-x86_64.zip" C:\omniphony
@@ -67,6 +72,29 @@ That adds `harletty_bridge.dll` next to `mpv.exe`.
 If `C:\ProgramData\omniphony\config.yaml` already exists (Studio writes it when you press Save) and
 sets `render.bridge_path`, that path is used instead, and it must point at this
 file. Remove the line, or change it to `C:\omniphony\harletty_bridge.dll`.
+
+**From the next release**, the zip adds three libraries, one per codec family,
+and the engine loads every bridge it finds in that folder:
+`harletty_dolby_bridge.dll`, `harletty_dts_bridge.dll` and
+`harletty_iamf_bridge.dll`.
+
+- When you upgrade, delete the old `harletty_bridge.dll`. The new engine
+  refuses it, says so, and loads the others, but it has no use left.
+- A config that names bridges lists them under `render.bridge_paths`, in the
+  order the engine tries them:
+
+  ```yaml
+  render:
+    bridge_paths:
+      - C:\omniphony\harletty_dolby_bridge.dll
+      - C:\omniphony\harletty_dts_bridge.dll
+      - C:\omniphony\harletty_iamf_bridge.dll
+  ```
+
+  A `render.bridge_path` that still names `harletty_bridge.dll` keeps working
+  for that release: the engine loads the family libraries found in the same
+  folder in its place, and the next Save writes them as `render.bridge_paths`.
+  Removing the line, so that the engine finds them on its own, works too.
 
 The check for this step is the first playback, in step 4.
 
@@ -154,16 +182,30 @@ its own (*Auto-start local renderer*, in the connection settings), and that one
 holds the port the player needs. When you only use Studio with the player,
 switch that option off.
 
-Studio's own renderer uses the bridge `%APPDATA%\mpv\mpv.conf` names
-(`ad-orender-bridge-path=`, with an absolute path), else it looks next to its
-`orender.exe`, then in `%LOCALAPPDATA%\omniphony\lib\`. It does not know the player's folder: a
-bridge that only sits next to `mpv.exe`, with no `mpv.conf` line naming it, is
-not found (nor is a `portable_config` folder read). Without one it still runs,
-and Studio shows an orange *No decoder* banner: films keep playing in the
-player. To give it the bridge too, add
+Studio's own renderer uses the bridges `%APPDATA%\mpv\mpv.conf` names
+(`ad-orender-bridge-path=`, with absolute paths), else it looks next to its
+`orender.exe`, then in `%LOCALAPPDATA%\omniphony\lib\`. It does not know the
+player's folder: bridges that only sit next to `mpv.exe`, with no `mpv.conf`
+line naming them, are not found (nor is a `portable_config` folder read).
+Without one it still runs, and Studio shows an orange *No decoder* banner:
+films keep playing in the player. To give it the bridge too, add
 `ad-orender-bridge-path=C:\omniphony\harletty_bridge.dll` to
 `%APPDATA%\mpv\mpv.conf`, or copy `harletty_bridge.dll` into
 `%LOCALAPPDATA%\omniphony\lib\`, a folder the player also searches.
+
+From the next release, the line lists the three family libraries, separated by
+`;`, and Studio hands them all to its renderer (the player reads the same
+list):
+
+```text
+ad-orender-bridge-path=C:\omniphony\harletty_dolby_bridge.dll;C:\omniphony\harletty_dts_bridge.dll;C:\omniphony\harletty_iamf_bridge.dll
+```
+
+A line that still names `harletty_bridge.dll` keeps working for that release,
+even once the file is deleted: the engine loads the family libraries of the
+same folder in its place. Copying the three `harletty_*_bridge.dll` files into
+`%LOCALAPPDATA%\omniphony\lib\` (and deleting an old `harletty_bridge.dll`
+there) remains an alternative that needs no `mpv.conf` line.
 
 A renderer that Studio starts itself plays through ASIO when an ASIO driver is
 installed (your interface's own, or FlexASIO / ASIO4ALL). Without one, it falls
@@ -204,7 +246,8 @@ The engine is there but could not load the bridge. The reason is on the line
 just before it, starting with `orender_create failed:`:
 
 - `No bridge plugin found` with the folders searched: `harletty_bridge.dll` is
-  not next to `mpv.exe`. Extract it there (step 2).
+  not next to `mpv.exe`. Extract it there (step 2). From the next release:
+  `no decoder bridge found`, for the `harletty_*_bridge.dll` files.
 - `render.bridge_path '…' (from config) does not exist or is not a file`: the
   config names a path that is wrong. Fix it or remove it (step 2).
 - `Failed to load bridge plugin from …` and, further on, `The specified
@@ -231,7 +274,8 @@ No `engine ready` line, and no error:
 
 The builds are not code-signed yet. If SmartScreen stops `mpv.exe` or Studio,
 choose *More info → Run anyway*. If your antivirus quarantines `orender.dll` or
-`harletty_bridge.dll`, restore it and add the folder as an exception.
+a bridge (`harletty_bridge.dll`, or from the next release one of the
+`harletty_*_bridge.dll` files), restore it and add the folder as an exception.
 
 ### Headphones play only the front, or speakers only two channels
 

@@ -42,18 +42,25 @@ optional SAF-backed VBAP are in [QUICKSTART.md](QUICKSTART.md#2-build).
 
 ## Runtime Model
 
-`omniphony-renderer` does not hardcode a single container or codec frontend in the binary itself. Decoding is delegated to a bridge plugin loaded at runtime.
+`omniphony-renderer` does not hardcode a single container or codec frontend in the binary itself. Decoding is delegated to bridge plugins loaded at runtime: one or several, each stream routed to the one that decodes it.
 
 Bridge lookup order:
 
-1. `--bridge-path <FILE>`
-2. `render.bridge_path` in the config file
+1. `--bridge-path <FILE>`, repeatable (or the C config's `bridge_path`, a path
+   list in the platform's syntax: `:` on Unix, `;` on Windows)
+2. `render.bridge_paths` in the config file, else its single
+   `render.bridge_path` (a Save writes the latter when there is one bridge, so
+   older builds still read it)
 3. else auto-discovery:
-   1. `$ORENDER_BRIDGE_FILE`, when it names an existing file: that exact
-      bridge (Studio sets it to the bridge `mpv.conf` names for
-      mpv-omniphony). A value naming no file is logged and skipped;
-   2. else the first `*_bridge.so`, `*_bridge.dll` or `*_bridge.dylib`
-      (alphabetical within a folder) in, in this order (see [BRIDGE_API.md](BRIDGE_API.md#loading-model)):
+   1. `$ORENDER_BRIDGE_FILE`, a path list: the files it names that exist
+      (Studio sets it to the bridge `mpv.conf` names for mpv-omniphony).
+      Names of no file are logged and skipped; when none exists, the folders
+      are searched;
+   2. else every `*_bridge.so`, `*_bridge.dll` or `*_bridge.dylib` (in name
+      order) of the first of these folders that holds a usable one (one whose
+      header passes the version and layout check; the others are reported and
+      do not stop the search). Folders are not merged (see
+      [BRIDGE_API.md](BRIDGE_API.md#loading-model)):
       1. the folder of the host executable (`orender`, or the player that loads
          liborender, e.g. mpv-omniphony);
       2. `$ORENDER_BRIDGE_DIR`;
@@ -63,10 +70,18 @@ Bridge lookup order:
          `~/Library/Application Support/omniphony/lib` on macOS,
          `%LOCALAPPDATA%\omniphony\lib` on Windows;
       4. the system plugin folder, `/usr/lib/orender` on Unix (where the AUR's
-         `harletty-bridge` installs it; packagers override it with
-         `ORENDER_BRIDGE_DIR` at build time). None on Windows.
+         `harletty-bridge` installs its family libraries; packagers override
+         it with `ORENDER_BRIDGE_DIR` at build time). None on Windows.
 
 A path named in 1 or 2 must exist: it is never replaced by a discovered one.
+One that does not, or a bridge that does not load, is skipped and reported
+(`/omniphony/state/render/bridges`) while the others load; the host fails only
+when none does. One exception, for one release: a named
+`libharletty_bridge.so` / `harletty_bridge.dll` / `libharletty_bridge.dylib`,
+the combined library of `bridge_api` 0.5, stands for the `harletty_*_bridge`
+family libraries in the same folder (auto-discovery when there are none), and
+the next Save writes them instead.
+
 When nothing is named and nothing is found, `orender` still starts, without a
 decoder: PCM and channel input work, and the published
 `/omniphony/state/render/bridge_error` contains `no decoder bridge found`,

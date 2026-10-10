@@ -13,7 +13,7 @@ hand into places that the lookup chains happen to search
 | Piece | Asset | Released by |
 |---|---|---|
 | Player, with an engine inside | `mpv-omniphony-<tag>-<platform>.zip` (an AppImage on Linux from the next player release) | `mgth/mpv-omniphony`, published as `mpv-v*` on `mgth/Omniphony` |
-| Decoder bridge | `harletty-bridge-<ver>-<platform>.zip` | `harletty/harletty-bridge`, its own version line |
+| Decoder bridges | `harletty-bridge-<ver>-<platform>.zip`: one library per codec family (`harletty_dolby_bridge`, `harletty_dts_bridge`, `harletty_iamf_bridge`) from the release built for `bridge_api` 0.6, one combined `harletty_bridge` before | `harletty/harletty-bridge`, its own version line |
 | Studio, with `orender` and the engine | archive, or deb / AppImage / NSIS / MSI / dmg | `mgth/Omniphony` `v*` |
 
 The install pages' failure sections are mostly about what an installer
@@ -28,7 +28,7 @@ Parts already exist, each covering one piece:
 |---|---|
 | Studio installers (deb, AppImage, NSIS with `installer-mode = "both"`, MSI, dmg), each carrying `orender` and the engine library | `omniphony-studio-egui/Cargo.toml` `[package.metadata.packager]`, `omniphony-studio-egui/scripts/package.sh`, `.github/workflows/release.yml` (cargo-packager 0.11.8) |
 | Studio copies its engine to `<local data>/omniphony/lib/` on every start, when the bytes differ | `omniphony-studio-egui/core/src/host/engine_deploy.rs` |
-| Arch packages: `orender` (`/usr/bin/orender`, `/usr/lib/liborender.so.0`), the bridge in `/usr/lib/orender/`, Studio (`omniphony-studio`) | `packaging/arch/*/PKGBUILD`, `packaging/arch/README.md` |
+| Arch packages: `orender` (`/usr/bin/orender`, `/usr/lib/liborender.so.0`), the bridges in `/usr/lib/orender/`, Studio (`omniphony-studio`) | `packaging/arch/*/PKGBUILD`, `packaging/arch/README.md` |
 | Studio installs, starts, stops and removes the engine as a service: a systemd **user** unit on Linux, a Windows service through `New-Service` | `omniphony-studio-egui/core/src/host/commands/orender.rs:390-399`, `:516-626`; offered from `host/services/operations.rs:95-112` |
 | `orender` runs under the Windows Service Control Manager and reports readiness to systemd (`Type=notify`) | `omniphony-renderer/src/main.rs:73-100`, `sys/src/lib.rs:43-71` |
 | A machine-wide config on Windows, so a service and the user's processes read one file | `renderer/src/config.rs:1552-1600` |
@@ -76,10 +76,13 @@ ahead of the copies that ship next to each binary:
   ("studio install"), then next to mpv, then the system loader
   (`orender_dl.c:4-15`).
 - The engine's bridge discovery, for mpv and for Studio's `orender` alike:
-  `--bridge-path`, `render.bridge_path`, `$ORENDER_BRIDGE_FILE`, next to the
-  host executable, `$ORENDER_BRIDGE_DIR`, then this folder, then
-  `/usr/lib/orender` on Unix (`orender_engine/src/bridge_loader.rs:256-292`,
-  `:374-396`, `:463-475`).
+  `--bridge-path`, `render.bridge_paths` (or a single `render.bridge_path`),
+  `$ORENDER_BRIDGE_FILE`, then every bridge of the first folder that holds a
+  usable one: next to the host executable, `$ORENDER_BRIDGE_DIR`, this
+  folder, then `/usr/lib/orender` on Unix
+  (`orender_engine/src/bridge_loader.rs`, `resolve_bridges`,
+  `discover_bridges`, `auto_discovery_dirs`). Folders are not merged, so the
+  family libraries must sit together in one of them.
 - Studio's engine deploy writes the same file there (`engine_deploy.rs:7-14`),
   so a Studio of the same release finds identical bytes and copies nothing.
 
@@ -96,7 +99,7 @@ the Windows config.
 |---|---|
 | `%LOCALAPPDATA%\Programs\Omniphony\player\` | the player folder as the `mpv-v*` zip has it (`mpv.exe`, `mpv.com`, its DLLs) |
 | `%LOCALAPPDATA%\Programs\Omniphony\studio\` | the Studio archive's tree: `omniphony-studio-egui.exe`, `orender.exe`, `engine\`, `layouts\`, `assets\` (`core/src/host/bundle.rs` finds them next to the executable) |
-| `%LOCALAPPDATA%\omniphony\lib\` | `orender.dll` from the release's `liborender-v*` archive, and the bridge (see *Decoder bridge*) |
+| `%LOCALAPPDATA%\omniphony\lib\` | `orender.dll` from the release's `liborender-v*` archive, and the bridge libraries (see *Decoder bridge*) |
 | `%ProgramData%\omniphony\` | created empty, Users granted Modify; no `config.yaml` |
 | Start menu | Studio, and the player started with `--ad=orender` |
 
@@ -114,8 +117,8 @@ so a second account or a service can write the file the first one created.
 
 **Windows, per machine:** offered only to install the engine as a real
 Windows service (below). Same layout under `%ProgramFiles%\Omniphony\`; the
-engine goes next to `mpv.exe` and the bridge next to both `mpv.exe` and
-`orender.exe`, because a service's `%LOCALAPPDATA%` is the system profile's.
+engine goes next to `mpv.exe` and the bridge libraries next to both `mpv.exe`
+and `orender.exe`, because a service's `%LOCALAPPDATA%` is the system profile's.
 A stale per-user engine of the installing account is replaced as in per-user
 mode; other accounts' copies are not reachable, which is the residual case
 listed in *Open questions*.
@@ -127,7 +130,7 @@ listed in *Open questions*.
 | `~/.local/lib/omniphony/mpv-omniphony.AppImage` | the player (the AppImage, not the zip: the zip links Ubuntu 24.04's FFmpeg sonames, `docs/install/linux.md`) |
 | `~/.local/lib/omniphony/studio/` | the Studio archive's tree: `omniphony-studio-egui`, `orender`, `engine/`, `layouts/`, `assets/` |
 | `~/.local/bin/` | links `mpv-omniphony`, `orender`, `omniphony-studio-egui` (not `mpv`: a distribution's mpv stays what `mpv` runs) |
-| `$XDG_DATA_HOME/omniphony/lib/` (default `~/.local/share`) | `liborender.so.0` from the release, and the bridge |
+| `$XDG_DATA_HOME/omniphony/lib/` (default `~/.local/share`) | `liborender.so.0` from the release, and the bridge libraries |
 | `~/.local/share/applications/` | desktop entries for Studio and for the player with `--ad=orender` |
 | `~/.local/lib/omniphony/installed.txt` | every path written, for upgrade and uninstall |
 
@@ -139,7 +142,8 @@ a stable path a unit can name.
 A Linux bundle runs where all three prebuilts run: the Studio archive needs
 glibc 2.35 and PipeWire 0.3.65, the player AppImage glibc 2.38, the bridge
 prebuilt glibc 2.39 (`docs/install/linux.md`, table *Which distribution each
-prebuilt runs on*). The bridge sets the floor.
+prebuilt runs on*). The bridge sets the floor. Its IAMF library also links the
+system's `libopus.so.0` on Linux (Windows and macOS link Opus statically).
 
 **macOS:** out of scope (see *Open questions*). The per-user folder exists
 there too (`~/Library/Application Support/omniphony/lib`), so the same layout
@@ -155,6 +159,20 @@ bridge's own releases do not publish which series they were built against.
 `bridge_api` is 0.5.0 on `main` against 0.4.x at v0.6.0, so the next release
 already needs a bridge release of its own.
 
+From the harletty release built for `bridge_api` 0.6, the bridge is three
+libraries, one per codec family: `harletty_dolby_bridge`,
+`harletty_dts_bridge` and `harletty_iamf_bridge`, with the platform's prefix
+and suffix (`docs/multi-bridge.md`). Whatever the choice below, the installer
+treats them as one piece:
+- the three are written to the same folder (the engine loads every bridge of
+  the first folder holding a usable one and never merges folders), and listed
+  in `installed.txt` / the NSIS log;
+- an upgrade deletes a combined `libharletty_bridge.so` /
+  `harletty_bridge.dll` left in that folder by an earlier install or by the
+  user. The engine already refuses it by name and loads the others, so this
+  is cleanup, not a fix;
+- the pairing check of step 4 covers each library.
+
 Three ways to get it onto the machine. The choice is the maintainer's.
 
 **A. Bundle a pinned matching bridge.** The installer workflow takes the
@@ -167,7 +185,9 @@ next to the engine.
   form (a manifest asset on its releases, or a pin in this repository).
 - Update path: a bridge fix reaches installer users through a new installer
   build (a `vX.Y.Z.N` rebuild suffices).
-- Size: the bridge zip is about 1.2 MB, the Windows player zip about 74 MB.
+- Size: the bridge zip was about 1.2 MB with one library (to be measured with
+  three; the IAMF one carries Opus on Windows and macOS), the Windows player
+  zip about 74 MB.
 
 **B. Download the matching bridge at install time.** The installer carries
 the series and resolves the newest bridge release of it when it runs.
@@ -301,10 +321,13 @@ The installer writes **no `config.yaml`**.
   `~/.config/omniphony/` on its first write.
 - `mpv.conf` is not touched. The shortcuts pass `--ad=orender`; Studio's
   *Activate in mpv config* switch remains the way to make it the default.
-- If an existing `config.yaml` sets `render.bridge_path`, that path wins over
-  every discovered bridge (`bridge_loader.rs:241-290`). The installer reads
-  the file and warns when the path is not the bridge it installed; it does
-  not edit it.
+- If an existing `config.yaml` sets `render.bridge_paths` or
+  `render.bridge_path`, those paths win over every discovered bridge
+  (`bridge_loader.rs`, `resolve_bridges`). The installer reads the file and
+  warns when they are not the bridges it installed; it does not edit it. A
+  path naming the combined library of `bridge_api` 0.5 is not worth a
+  warning when the family libraries sit in its folder: the engine loads them
+  in its place for one release, and the next Save writes them.
 
 **MSVC runtime.** `orender.exe`, `orender.dll`, the Studio executable and the
 bridge are built with the MSVC toolchain and link its C runtime dynamically.
@@ -339,8 +362,8 @@ earlier version wrote.
 
 ### Uninstall
 
-Removes what it installed: the program folders, the engine and bridge in the
-per-user engine folder (and Studio's deployed copy of the engine, which has
+Removes what it installed: the program folders, the engine and the bridge
+libraries in the per-user engine folder (and Studio's deployed copy of the engine, which has
 the same name), the shortcuts and desktop entries, the unit or service or
 logon entry if it installed one (stopped and disabled first).
 
@@ -353,7 +376,8 @@ logs.
 
 - No change to any lookup order or default path: every location above is
   searched today. A user who sets `ORENDER_LIBRARY`, `--ad-orender-library`,
-  `--bridge-path` or `render.bridge_path` keeps that choice.
+  `--bridge-path`, `render.bridge_paths` or `render.bridge_path` keeps that
+  choice.
 - Manual installs keep working, and the install pages keep describing them.
 - The Studio-only installers, the plain archives and the AUR packages are
   unchanged, apart from the unit file added to the deb and to `orender`.
