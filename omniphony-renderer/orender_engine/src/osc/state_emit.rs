@@ -156,7 +156,58 @@ pub(super) fn encode_diag_bundle(
     rosc::encoder::encode(&bundle).ok()
 }
 
-pub(super) fn encode_meter_bundle(report: &MeterReport) -> Result<Vec<u8>> {
+/// The meter bundle of `report`, encoded for the wire: one OSC bundle when it
+/// fits `max` bytes, consecutive bundles that each do when it does not.
+///
+/// Its size grows with objects × speakers × bands (every object's gains, one
+/// float per speaker, for the layout and for each crossover band): 128
+/// objects on 128 speakers through four bands are 455 kB, where a UDP
+/// datagram carries 65. Sent whole, such a bundle was refused by the socket
+/// and took with it everything it carries — every meter, and the latency and
+/// timing readouts. Clients read a bundle as its messages in order, so
+/// several bundles in a row say the same thing as one.
+pub(super) fn encode_meter_bundles(report: &MeterReport, max: usize) -> Result<Vec<Vec<u8>>> {
+    pack_bundles(
+        OscTime {
+            seconds: 0,
+            fractional: 1,
+        },
+        &meter_messages(report),
+        max,
+    )
+}
+
+/// `messages` as OSC bundles of at most `max` bytes each, in order: a single
+/// bundle when they fit (the bytes `rosc` encodes for it), else the fewest
+/// that do. A message larger than `max` on its own travels alone. Each
+/// message is encoded once.
+fn pack_bundles(timetag: OscTime, messages: &[OscPacket], max: usize) -> Result<Vec<Vec<u8>>> {
+    // "#bundle\0" and an 8-byte timetag, then a 4-byte size in front of
+    // every element.
+    const HEADER: usize = 16;
+    let open = || {
+        let mut bundle = Vec::with_capacity(HEADER);
+        bundle.extend_from_slice(b"#bundle\0");
+        bundle.extend_from_slice(&timetag.seconds.to_be_bytes());
+        bundle.extend_from_slice(&timetag.fractional.to_be_bytes());
+        bundle
+    };
+    let mut bundles = Vec::new();
+    let mut bundle = open();
+    for message in messages {
+        let element = rosc::encoder::encode(message)?;
+        if bundle.len() > HEADER && bundle.len() + 4 + element.len() > max {
+            bundles.push(std::mem::replace(&mut bundle, open()));
+        }
+        bundle.extend_from_slice(&(element.len() as u32).to_be_bytes());
+        bundle.extend_from_slice(&element);
+    }
+    bundles.push(bundle);
+    Ok(bundles)
+}
+
+/// What the meter bundle of `report` says, a message per readout.
+fn meter_messages(report: &MeterReport) -> Vec<OscPacket> {
     let MeterReport {
         snapshot,
         object_gains,
@@ -392,16 +443,7 @@ pub(super) fn encode_meter_bundle(report: &MeterReport) -> Result<Vec<u8>> {
             OscType::Float(snapshot.master_rms),
         ],
     }));
-
-    let bundle = OscPacket::Bundle(OscBundle {
-        timetag: OscTime {
-            seconds: 0,
-            fractional: 1,
-        },
-        content: messages,
-    });
-
-    Ok(rosc::encoder::encode(&bundle)?)
+    messages
 }
 
 pub(super) fn encode_timing_update(
@@ -436,4 +478,122 @@ pub(super) fn encode_timing_update(
         content: messages,
     });
     rosc::encoder::encode(&packet).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::export::MAX_STATE_DATAGRAM;
+    use super::super::telemetry::Block;
+    use super::*;
+    use renderer::metering::MeterSnapshot;
+    use renderer::render_backend::BandGains;
+
+    /// The meter report of `objects` panned objects on `speakers` speakers
+    /// through `bands` crossover bands, every readout present.
+    fn report(objects: usize, speakers: usize, bands: usize) -> MeterReport {
+        let band_gains = || {
+            let mut gains = BandGains::new();
+            gains.shape(bands, speakers);
+            gains.as_mut_slice().fill(0.25);
+            gains
+        };
+        MeterReport {
+            block: Block::default(),
+            snapshot: MeterSnapshot {
+                object_levels: (0..objects as u32).map(|id| (id, -12.0, -20.0)).collect(),
+                object_band_levels: (0..objects as u32)
+                    .map(|id| (id, vec![-30.0; bands]))
+                    .collect(),
+                speaker_levels: vec![(-6.0, -18.0); speakers],
+                ear_levels: None,
+                master_peak: -3.0,
+                master_rms: -15.0,
+            },
+            object_gains: (0..objects).map(|id| (id, vec![0.5; speakers])).collect(),
+            object_band_gains: (0..objects).map(|id| (id, band_gains())).collect(),
+            object_test_position: None,
+            object_test_level: None,
+            timings: MeterTimings {
+                render_time_ms: Some(0.1),
+                latency_instant_ms: Some(40.0),
+                ..MeterTimings::default()
+            },
+        }
+    }
+
+    /// The messages of `bundles`, in order.
+    fn messages_of(bundles: &[Vec<u8>]) -> Vec<OscPacket> {
+        bundles
+            .iter()
+            .flat_map(|bytes| match rosc::decoder::decode_udp(bytes) {
+                Ok((_, OscPacket::Bundle(bundle))) => bundle.content,
+                other => panic!("not a bundle: {other:?}"),
+            })
+            .collect()
+    }
+
+    /// A home layout's meter bundle is the one bundle it always was, byte for
+    /// byte.
+    #[test]
+    fn a_meter_bundle_that_fits_is_one_bundle_as_rosc_encodes_it() {
+        let report = report(16, 12, 4);
+        let bundles = encode_meter_bundles(&report, MAX_STATE_DATAGRAM).unwrap();
+        let whole = rosc::encoder::encode(&OscPacket::Bundle(OscBundle {
+            timetag: OscTime {
+                seconds: 0,
+                fractional: 1,
+            },
+            content: meter_messages(&report),
+        }))
+        .unwrap();
+        assert_eq!(bundles, [whole]);
+    }
+
+    /// On a wide layout the bundle outgrows a datagram: it goes out as
+    /// several, each one a datagram can carry, saying the same messages in the
+    /// same order.
+    #[test]
+    fn a_wide_layouts_meter_bundle_is_split_to_what_a_datagram_carries() {
+        for (objects, speakers, bands) in [(32, 80, 4), (128, 80, 4), (20, 128, 4), (128, 128, 4)] {
+            let report = report(objects, speakers, bands);
+            let whole: usize = encode_meter_bundles(&report, usize::MAX).unwrap()[0].len();
+            assert!(
+                whole > 65_507,
+                "{objects} objects, {speakers} speakers: {whole} bytes fit a datagram"
+            );
+            let bundles = encode_meter_bundles(&report, MAX_STATE_DATAGRAM).unwrap();
+            assert!(bundles.len() > 1);
+            assert!(
+                bundles
+                    .iter()
+                    .all(|bytes| bytes.len() <= MAX_STATE_DATAGRAM),
+                "{objects} objects, {speakers} speakers: {:?}",
+                bundles.iter().map(Vec::len).collect::<Vec<_>>()
+            );
+            // Filled in order, so about as few as the size asks for.
+            assert!(
+                bundles.len() <= whole.div_ceil(MAX_STATE_DATAGRAM) + 1,
+                "{objects} objects, {speakers} speakers: {whole} bytes in {} bundles",
+                bundles.len()
+            );
+            assert_eq!(messages_of(&bundles), meter_messages(&report));
+        }
+    }
+
+    /// A message larger than a datagram on its own travels alone, and does
+    /// not take the messages around it down with it.
+    #[test]
+    fn an_oversized_message_travels_alone() {
+        let message = |floats: usize| {
+            OscPacket::Message(OscMessage {
+                addr: "/x".to_string(),
+                args: vec![OscType::Float(0.0); floats],
+            })
+        };
+        let messages = [message(2), message(200), message(2)];
+        let bundles = pack_bundles(OscTime::from((0, 1)), &messages, 100).unwrap();
+        assert_eq!(bundles.len(), 3);
+        assert!(bundles[0].len() <= 100 && bundles[2].len() <= 100);
+        assert_eq!(messages_of(&bundles), messages);
+    }
 }

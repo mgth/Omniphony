@@ -628,8 +628,17 @@ impl Worker {
             }
             Event::Heard { pos, rate } => self.out.heard(pos, rate),
             Event::Meter(report) => {
-                match super::state_emit::encode_meter_bundle(&report) {
-                    Ok(bytes) => self.out.send_metering(report.block, &bytes),
+                // Split to what a datagram carries: a stream client reads
+                // the same bundles one after the other.
+                match super::state_emit::encode_meter_bundles(
+                    &report,
+                    super::export::MAX_STATE_DATAGRAM,
+                ) {
+                    Ok(bundles) => {
+                        for bytes in &bundles {
+                            self.out.send_metering(report.block, bytes);
+                        }
+                    }
                     Err(e) => log::warn!("Failed to send meter OSC bundle: {e}"),
                 }
                 self.recycle_meter(report);
