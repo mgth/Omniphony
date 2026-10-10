@@ -42,12 +42,14 @@
 use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
-use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse, VbapBackend};
+use super::{
+    BackendCapabilities, GainModel, GainScratch, RenderRequest, VbapBackend, foreign_scratch,
+};
 use crate::spatial_vbap::vbap_native::{
     FACE_HIT_TOLERANCE, compute_dummy_rings, invert_ls_mtx_3d, prepare_triangulation,
     unit_direction_deg,
 };
-use crate::spatial_vbap::{Gains, OutOfHullMode, adm_to_spherical};
+use crate::spatial_vbap::{OutOfHullMode, VbapScratch, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 use omniphony_geometry::f32::vec3::{cross, dot, length, sub, try_normalize};
 
@@ -390,6 +392,14 @@ fn coplanar_plane(points: &[[f32; 3]], scale_hint: f32) -> Option<([f32; 3], f32
     (offset > PLANE_EPS).then_some((normal, offset))
 }
 
+/// The working memory of one caller: the central distribution's gains while
+/// they are blended into the VBAP face's, and the panner's scratch, which
+/// pans the face and then the antipode.
+struct VolumetricScratch {
+    central: Vec<f32>,
+    vbap: VbapScratch,
+}
+
 /// VBAP on the loudspeaker surface, crossfaded towards a central distribution
 /// by the object's depth inside that surface. See the module docs.
 pub struct VolumetricBackend {
@@ -523,22 +533,24 @@ impl VolumetricBackend {
         (share * fade_in * fade_in).clamp(0.0, 1.0)
     }
 
-    fn uniform_gains(&self) -> Gains {
-        let n = self.speaker_count();
-        let mut gains = Gains::zeroed(n);
-        let gain = 1.0 / (n.max(1) as f32).sqrt();
-        for index in 0..n {
-            gains.set(index, gain);
-        }
-        gains
+    fn uniform_gains(&self, central: &mut [f32]) {
+        central.fill(1.0 / (self.speaker_count().max(1) as f32).sqrt());
     }
 
-    /// The central distribution for the request's object at `position` (as
-    /// panned: room-scaled, clamped to the horizon when the panner does so).
-    fn central_gains(&self, req: &RenderRequest, position: [f32; 3], at_listener: bool) -> Gains {
+    /// Write into `central` the central distribution for the request's object
+    /// at `position` (as panned: room-scaled, clamped to the horizon when the
+    /// panner does so).
+    fn central_gains(
+        &self,
+        req: &RenderRequest,
+        position: [f32; 3],
+        at_listener: bool,
+        vbap: &mut VbapScratch,
+        central: &mut [f32],
+    ) {
         match self.params.central {
-            CentralDistribution::Uniform => self.uniform_gains(),
-            CentralDistribution::Antipode if at_listener => self.uniform_gains(),
+            CentralDistribution::Uniform => self.uniform_gains(central),
+            CentralDistribution::Antipode if at_listener => self.uniform_gains(central),
             CentralDistribution::Antipode => {
                 // The direction opposite the object, in the space `reach` was
                 // measured in, panned as a bare direction: the panner's clamp
@@ -549,21 +561,33 @@ impl VolumetricBackend {
                 let spread = self.vbap.effective_spread(req, position);
                 self.vbap
                     .panner()
-                    .get_gains_spread(azimuth, elevation, spread)
+                    .gains_spread_into(azimuth, elevation, spread, vbap, central)
             }
         }
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let face = self.vbap.compute_gains(req).gains;
+    /// The working memory of one caller: see [`VolumetricScratch`].
+    pub fn new_scratch(&self) -> GainScratch {
+        GainScratch::new(VolumetricScratch {
+            central: vec![0.0f32; self.speaker_count()],
+            vbap: self.vbap.panner().new_scratch(),
+        })
+    }
+
+    pub fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        let Some(VolumetricScratch { central, vbap }) = scratch.state() else {
+            return foreign_scratch(out);
+        };
+        // The VBAP face's gains, then blended in place.
+        self.vbap.compute_gains_on(req, vbap, out);
         let position = self.scaled_position(req);
         let depth = self.measure(position);
         if depth.curved <= 0.0 {
             // On the surface and beyond: VBAP, untouched.
-            return RenderResponse { gains: face };
+            return;
         }
         let weight = self.central_weight(depth);
-        let central = self.central_gains(req, position, depth.reach.is_none());
+        self.central_gains(req, position, depth.reach.is_none(), vbap, central);
 
         // Equal-power crossfade, then renormalised: the two sets share
         // loudspeakers, so their coherent sum is not at the level they blend
@@ -573,26 +597,28 @@ impl VolumetricBackend {
         // listener.
         let w_face = (1.0 - weight).sqrt();
         let w_central = weight.sqrt();
-        let n = face.len().min(central.len());
-        let mut gains = Gains::zeroed(self.speaker_count());
+        // One gain per speaker on both sides; a buffer of another width
+        // than the scratch leaves the speakers they do not share silent.
+        let n = out.len().min(central.len());
+        out[n..].fill(0.0);
         let mut energy = 0.0f32;
         let mut energy_face = 0.0f32;
         let mut energy_central = 0.0f32;
-        for index in 0..n {
-            let gain = w_face * face[index] + w_central * central[index];
-            gains.set(index, gain);
+        for (out, &central) in out.iter_mut().zip(central.iter()) {
+            let face = *out;
+            let gain = w_face * face + w_central * central;
+            *out = gain;
             energy += gain * gain;
-            energy_face += face[index] * face[index];
-            energy_central += central[index] * central[index];
+            energy_face += face * face;
+            energy_central += central * central;
         }
         let target = (1.0 - weight) * energy_face + weight * energy_central;
         if energy > 1e-12 {
             let scale = (target / energy).sqrt();
-            for gain in gains.iter_mut() {
+            for gain in out.iter_mut() {
                 *gain *= scale;
             }
         }
-        RenderResponse { gains }
     }
 
     pub fn save_to_file(
@@ -623,8 +649,12 @@ impl GainModel for VolumetricBackend {
         VolumetricBackend::speaker_count(self)
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        VolumetricBackend::compute_gains(self, req)
+    fn new_scratch(&self) -> GainScratch {
+        VolumetricBackend::new_scratch(self)
+    }
+
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        VolumetricBackend::compute_gains(self, req, scratch, out)
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -700,7 +730,7 @@ mod tests {
         volumetric_with(layout, params, OutOfHullMode::default(), true)
     }
 
-    fn l2_step(a: &Gains, b: &Gains) -> f32 {
+    fn l2_step(a: &[f32], b: &[f32]) -> f32 {
         a.iter()
             .zip(b.iter())
             .map(|(x, y)| (x - y) * (x - y))
@@ -750,7 +780,7 @@ mod tests {
         .expect("flat ring")
     }
 
-    fn rms(gains: &Gains) -> f32 {
+    fn rms(gains: &[f32]) -> f32 {
         gains.iter().map(|g| g * g).sum::<f32>().sqrt()
     }
 
@@ -784,8 +814,8 @@ mod tests {
                     0.0,
                     "{position:?} is on or beyond the surface"
                 );
-                let expected = plain.compute_gains(&req).gains;
-                let got = model.compute_gains(&req).gains;
+                let expected = plain.gains_at(&req);
+                let got = model.gains_at(&req);
                 assert_eq!(&got[..], &expected[..], "{position:?} with {central:?}");
             }
         }
@@ -836,11 +866,9 @@ mod tests {
                 [0.1, 0.1, 0.6],
                 [0.05, 0.0, 0.0],
             ] {
-                let gains = model.compute_gains(&request(position)).gains;
-                let mirrored = model
-                    .compute_gains(&request([-position[0], position[1], position[2]]))
-                    .gains;
-                for index in 0..gains.len() {
+                let gains = model.gains_at(&request(position));
+                let mirrored = model.gains_at(&request([-position[0], position[1], position[2]]));
+                for (index, &gain) in gains.iter().enumerate() {
                     let twin = if index == l {
                         r
                     } else if index == r {
@@ -849,9 +877,8 @@ mod tests {
                         index
                     };
                     assert!(
-                        (gains[index] - mirrored[twin]).abs() < 1e-5,
-                        "{position:?} with {central:?}: speaker {index} {} vs its mirror {}",
-                        gains[index],
+                        (gain - mirrored[twin]).abs() < 1e-5,
+                        "{position:?} with {central:?}: speaker {index} {gain} vs its mirror {}",
                         mirrored[twin]
                     );
                 }
@@ -872,7 +899,7 @@ mod tests {
             ] {
                 for step in 1..20 {
                     let s = step as f64 / 20.0;
-                    let gains = model.compute_gains(&request(wall.map(|v| v * s))).gains;
+                    let gains = model.gains_at(&request(wall.map(|v| v * s)));
                     let power = rms(&gains);
                     assert!(
                         (power - 1.0).abs() < 1e-4,
@@ -889,13 +916,11 @@ mod tests {
         let model = volumetric(&layout, with_central(CentralDistribution::Uniform));
         let n = model.speaker_count();
         let uniform = 1.0 / (n as f32).sqrt();
-        let at_listener = model.compute_gains(&request([0.0, 0.0, 0.0])).gains;
+        let at_listener = model.gains_at(&request([0.0, 0.0, 0.0]));
         for gain in at_listener.iter() {
             assert!((gain - uniform).abs() < 1e-6, "{gain} vs {uniform}");
         }
-        let nearly = model
-            .compute_gains(&request([-0.0006, 0.001, 0.0003]))
-            .gains;
+        let nearly = model.gains_at(&request([-0.0006, 0.001, 0.0003]));
         for gain in nearly.iter() {
             assert!((gain - uniform).abs() < 0.05, "{gain} vs {uniform}");
         }
@@ -909,7 +934,7 @@ mod tests {
 
         // Halfway to the front wall: three quarters of the power ahead, one
         // quarter behind, so the power centroid sits at 0.5.
-        let gains = model.compute_gains(&request([0.0, 0.5, 0.0])).gains;
+        let gains = model.gains_at(&request([0.0, 0.5, 0.0]));
         assert!(
             (gains[c] * gains[c] - 0.75).abs() < 1e-3,
             "front {}",
@@ -930,7 +955,7 @@ mod tests {
         }
 
         // At the listener the two walls meet at equal level.
-        let gains = model.compute_gains(&request([0.0, 1e-4, 0.0])).gains;
+        let gains = model.gains_at(&request([0.0, 1e-4, 0.0]));
         assert!(
             (gains[c] - gains[b]).abs() < 1e-3,
             "front {} vs back {}",
@@ -971,7 +996,7 @@ mod tests {
                     depth.is_finite() && depth > 0.0 && depth < 1.0,
                     "{position:?}: depth {depth}"
                 );
-                let gains = model.compute_gains(&req).gains;
+                let gains = model.gains_at(&req);
                 assert!(
                     gains.iter().all(|g| g.is_finite()),
                     "{position:?}: {:?}",
@@ -1047,7 +1072,7 @@ mod tests {
                     depth.is_finite() && depth > 0.0 && depth < 1.0,
                     "{position:?}: depth {depth}"
                 );
-                let gains = model.compute_gains(&req).gains;
+                let gains = model.gains_at(&req);
                 assert!(
                     (rms(&gains) - 1.0).abs() < 1e-4,
                     "{position:?}: rms {}",
@@ -1101,13 +1126,13 @@ mod tests {
             // VBAP underneath takes on its own, at the object and at its
             // antipode (its fold is what it is): the depth and the antipode
             // add none of their own.
-            let mut previous: Option<(Gains, Gains, Gains)> = None;
+            let mut previous: Option<(Vec<f32>, Vec<f32>, Vec<f32>)> = None;
             for step in 0..=40 {
                 let z = 0.01 - step as f64 * 0.0005;
                 let req = request([-0.3, 0.5, z]);
-                let gains = model.compute_gains(&req).gains;
-                let reference = plain.compute_gains(&req).gains;
-                let opposite = plain.compute_gains(&request([0.3, -0.5, -z])).gains;
+                let gains = model.gains_at(&req);
+                let reference = plain.gains_at(&req);
+                let opposite = plain.gains_at(&request([0.3, -0.5, -z]));
                 if let Some((previous, previous_reference, previous_opposite)) = &previous {
                     let jump = l2_step(&gains, previous);
                     let own = l2_step(&reference, previous_reference);
@@ -1139,7 +1164,7 @@ mod tests {
             OutOfHullMode::default(),
             false,
         );
-        let gains = model.compute_gains(&request([0.0, 0.0, 0.5])).gains;
+        let gains = model.gains_at(&request([0.0, 0.0, 0.5]));
         assert!(
             (gains[t] * gains[t] - 0.75).abs() < 1e-3,
             "top {}",
@@ -1172,13 +1197,13 @@ mod tests {
                 depth_curve: 0.25,
             },
         );
-        let inside = model.compute_gains(&request([0.0, 0.999989, 0.0])).gains;
-        let nearer = model.compute_gains(&request([0.0, 0.999991, 0.0])).gains;
+        let inside = model.gains_at(&request([0.0, 0.999989, 0.0]));
+        let nearer = model.gains_at(&request([0.0, 0.999991, 0.0]));
         let jump = l2_step(&inside, &nearer);
         assert!(jump < 0.02, "gains stepped by {jump} across two microns");
         // Past the fade-in band the curve lifts a small depth as it should:
         // a thousandth of the way in, the opposite wall is well audible.
-        let lifted = model.compute_gains(&request([0.0, 0.999, 0.0])).gains;
+        let lifted = model.gains_at(&request([0.0, 0.999, 0.0]));
         assert!(
             lifted[b] > 0.25,
             "a quarter-root curve lifts a small depth: back {}",
@@ -1200,8 +1225,8 @@ mod tests {
                 depth_curve: 0.25,
             },
         );
-        let before = model.compute_gains(&request([0.0, 0.99999896, 0.0])).gains;
-        let after = model.compute_gains(&request([0.0, 0.99999902, 0.0])).gains;
+        let before = model.gains_at(&request([0.0, 0.99999896, 0.0]));
+        let after = model.gains_at(&request([0.0, 0.99999902, 0.0]));
         let jump = l2_step(&before, &after);
         assert!(
             jump < 1e-3,
@@ -1209,11 +1234,11 @@ mod tests {
         );
 
         // Every quantum from the wall to past the band, and the law beyond.
-        let mut previous: Option<Gains> = None;
+        let mut previous: Option<Vec<f32>> = None;
         let mut largest = 0.0f32;
         for step in 0..=3000 {
             let y = 1.0 - step as f64 * 1e-7;
-            let gains = model.compute_gains(&request([0.0, y, 0.0])).gains;
+            let gains = model.gains_at(&request([0.0, y, 0.0]));
             if let Some(previous) = &previous {
                 largest = largest.max(l2_step(&gains, previous));
             }
@@ -1239,12 +1264,12 @@ mod tests {
             let model = volumetric_with(&layout, with_central(central), OutOfHullMode::Fade, true);
             // Outside, VBAP attenuates this direction; a step inside keeps
             // that level.
-            let outside = rms(&plain.compute_gains(&request(ray.map(|v| v * 1.45))).gains);
+            let outside = rms(&plain.gains_at(&request(ray.map(|v| v * 1.45))));
             assert!(
                 outside < 0.9,
                 "fade attenuates below the hull: rms {outside}"
             );
-            let inside = rms(&model.compute_gains(&request(ray.map(|v| v * 1.40))).gains);
+            let inside = rms(&model.gains_at(&request(ray.map(|v| v * 1.40))));
             assert!(
                 (inside - outside).abs() < 0.02,
                 "{central:?}: rms {inside} just inside vs {outside} just outside"
@@ -1253,7 +1278,7 @@ mod tests {
             let mut previous: Option<f32> = None;
             for step in 0..=310 {
                 let s = 1.6 - step as f64 * 0.005;
-                let level = rms(&model.compute_gains(&request(ray.map(|v| v * s))).gains);
+                let level = rms(&model.gains_at(&request(ray.map(|v| v * s))));
                 if let Some(previous) = previous {
                     assert!(
                         (level - previous).abs() < 0.01,

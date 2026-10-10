@@ -13,6 +13,14 @@
 //!   → (+ shoebox early reflections, see [`reflections`])
 //!   → sum into `[L, R]`.
 //!
+//! The position is the one the source is heard at. The stage reads it in the
+//! room cube: the direction straight off it, the distance against the cube's
+//! surface. The caller decides what that position is: the source's own, or
+//! the one the sphere reading returns for it
+//! ([`omniphony_geometry::f32::sphere_reading`], the `sphere_coordinates`
+//! option), which sits in the direction a layout's speaker standing there is
+//! heard at, at the same distance to the surface.
+//!
 //! Space scaling is a single **isotropic** `unit_scale_m` (metres per ADM unit);
 //! the anisotropic `room_ratio` is deliberately *not* reused here because it
 //! would distort directions and corrupt HRTF localisation.

@@ -48,8 +48,8 @@ fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
 /// down the realtime audio thread on its first frame.
 ///
 /// This is the build-time guard behind the [`GainModel`] hot-path contract: a
-/// contributor backend that panics, returns the wrong number of gains, or emits
-/// a non-finite gain turns into a plain `Err` from topology construction (which
+/// contributor backend that panics, leaves a gain unwritten, or emits a
+/// non-finite gain turns into a plain `Err` from topology construction (which
 /// the OSC recompute path already surfaces to Studio), never an uncaught panic
 /// in `SpatialRenderer::render_frame`.
 fn smoke_test_engine(
@@ -57,13 +57,17 @@ fn smoke_test_engine(
     config: &EvaluationBuildConfig,
     backend_id: &str,
 ) -> Result<()> {
-    let expected = engine.speaker_count();
+    let mut gains = vec![0.0f32; engine.speaker_count()];
+    let mut scratch = engine.new_scratch();
     for position in SMOKE_TEST_POSITIONS {
         let mut request = config.request_template;
         request.adm_position = position;
 
-        let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            engine.compute_gains(&request)
+        // A gain the backend does not write is still NaN afterwards, and is
+        // caught with the non-finite ones.
+        gains.fill(f32::NAN);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine.compute_gains(&request, &mut scratch, &mut gains)
         }))
         .map_err(|payload| {
             anyhow::anyhow!(
@@ -72,20 +76,11 @@ fn smoke_test_engine(
             )
         })?;
 
-        if response.gains.len() != expected {
-            return Err(anyhow::anyhow!(
-                "backend '{backend_id}' returned {} gains at position {position:?}, expected {expected}",
-                response.gains.len()
-            ));
-        }
-        if let Some((speaker, gain)) = response
-            .gains
-            .iter()
-            .enumerate()
-            .find(|(_, gain)| !gain.is_finite())
+        if let Some((speaker, gain)) = gains.iter().enumerate().find(|(_, gain)| !gain.is_finite())
         {
             return Err(anyhow::anyhow!(
-                "backend '{backend_id}' returned non-finite gain {gain} for speaker {speaker} at position {position:?}"
+                "backend '{backend_id}' left a non-finite gain ({gain}) for speaker {speaker} at \
+                 position {position:?}: every gain must be written, and finite"
             ));
         }
     }
@@ -363,13 +358,11 @@ impl ExperimentalDistanceBuildPlan {
 }
 
 impl BarycenterBuildPlan {
-    /// Fails, rather than build a model that would panic per request, when
-    /// the layout spatializes more speakers than the solver holds.
     pub fn build_gain_model(&self) -> Result<Box<dyn GainModel>> {
-        Ok(Box::new(crate::render_backend::BarycenterBackend::try_new(
+        Ok(Box::new(crate::render_backend::BarycenterBackend::new(
             self.speaker_positions.clone(),
             self.localize,
-        )?))
+        )))
     }
 }
 
@@ -459,10 +452,6 @@ impl TopologyBuildPlan {
         current: Option<&RenderTopology>,
         sample: bool,
     ) -> Result<RenderTopology> {
-        // A layout edited past the limit is refused here, before any backend
-        // sizes its gains by it: reported to the clients like a failed
-        // build, the running topology stays.
-        crate::spatial_vbap::check_speaker_count(self.layout.num_speakers())?;
         let effective_mode = match self.evaluation_mode {
             LiveEvaluationMode::Realtime => EffectiveEvaluationMode::Realtime,
             LiveEvaluationMode::PrecomputedPolar => EffectiveEvaluationMode::PrecomputedPolar,
@@ -1441,10 +1430,10 @@ pub fn prepare_topology_build_plan(
 mod tests {
     use super::*;
     use crate::render_backend::{
-        BackendCapabilities, CartesianEvaluationConfig, PolarEvaluationConfig, RenderRequest,
-        RenderResponse, build_prepared_render_engine,
+        BackendCapabilities, CartesianEvaluationConfig, GainScratch, PolarEvaluationConfig,
+        RenderRequest, build_prepared_render_engine,
     };
-    use crate::spatial_vbap::{DistanceMetric, DistanceModel, Gains, OutOfHullMode};
+    use crate::spatial_vbap::{DistanceMetric, DistanceModel, OutOfHullMode};
 
     #[test]
     fn out_of_hull_bag_values_resolve_with_schema_defaults() {
@@ -1560,7 +1549,7 @@ mod tests {
     }
 
     macro_rules! fake_backend {
-        ($name:ident, $id:literal, $compute:expr) => {
+        ($name:ident, $id:literal, |$gains:ident| $compute:expr) => {
             struct $name;
             impl GainModel for $name {
                 fn backend_id(&self) -> &'static str {
@@ -1575,7 +1564,12 @@ mod tests {
                 fn speaker_count(&self) -> usize {
                     TEST_SPEAKERS
                 }
-                fn compute_gains(&self, _req: &RenderRequest) -> RenderResponse {
+                fn compute_gains(
+                    &self,
+                    _req: &RenderRequest,
+                    _scratch: &mut GainScratch,
+                    $gains: &mut [f32],
+                ) {
                     $compute
                 }
                 fn save_to_file(
@@ -1589,30 +1583,18 @@ mod tests {
         };
     }
 
-    fake_backend!(
-        PanicBackend,
-        "panic_backend",
-        panic!("boom from contributor backend")
-    );
-    fake_backend!(NonFiniteBackend, "nan_backend", {
-        let mut gains = Gains::zeroed(TEST_SPEAKERS);
-        gains.set(0, f32::NAN);
-        RenderResponse { gains }
+    fake_backend!(PanicBackend, "panic_backend", |_gains| panic!(
+        "boom from contributor backend"
+    ));
+    fake_backend!(NonFiniteBackend, "nan_backend", |gains| {
+        gains.fill(0.0);
+        gains[0] = f32::NAN;
     });
-    fake_backend!(
-        WrongCountBackend,
-        "wrong_count_backend",
-        RenderResponse {
-            gains: Gains::zeroed(TEST_SPEAKERS + 1),
-        }
-    );
-    fake_backend!(
-        GoodBackend,
-        "good_backend",
-        RenderResponse {
-            gains: Gains::zeroed(TEST_SPEAKERS),
-        }
-    );
+    // Every gain but the last: that one stays as the caller had it.
+    fake_backend!(UnwrittenBackend, "unwritten_backend", |gains| gains
+        [..TEST_SPEAKERS - 1]
+        .fill(0.0));
+    fake_backend!(GoodBackend, "good_backend", |gains| gains.fill(0.0));
 
     #[test]
     fn smoke_test_rejects_panicking_backend() {
@@ -1630,42 +1612,33 @@ mod tests {
         assert!(err.to_string().contains("non-finite"), "got: {err}");
     }
 
+    /// The gains are the caller's buffer, which arrives holding its previous
+    /// contents: a gain the backend does not write would play whatever the
+    /// last object left there.
     #[test]
-    fn smoke_test_rejects_wrong_gain_count() {
-        let engine = realtime_engine(Box::new(WrongCountBackend));
-        let err = smoke_test_engine(&engine, &build_config(), "wrong_count_backend").unwrap_err();
-        assert!(err.to_string().contains("expected"), "got: {err}");
+    fn smoke_test_rejects_an_unwritten_gain() {
+        let engine = realtime_engine(Box::new(UnwrittenBackend));
+        let err = smoke_test_engine(&engine, &build_config(), "unwritten_backend").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unwritten_backend")
+                && msg.contains(&format!("speaker {}", TEST_SPEAKERS - 1))
+                && msg.contains("every gain must be written"),
+            "got: {msg}"
+        );
     }
 
-    /// A model answering with another gain count than its `speaker_count`
-    /// fails the precomputed table build. The smoke test cannot see it there:
-    /// it reads the sampled table back, at the declared count.
+    /// A model writes each cell of a precomputed table in place, one gain per
+    /// speaker: one that leaves a gain out at a single position leaves that
+    /// one gain silent, and cannot shift the cells after it onto the wrong
+    /// speakers (as a model returning a shorter gain vector once could).
     #[test]
-    fn a_wrong_gain_count_fails_the_precomputed_table_build() {
-        for mode in [
-            EffectiveEvaluationMode::PrecomputedCartesian,
-            EffectiveEvaluationMode::PrecomputedPolar,
-        ] {
-            let err =
-                build_prepared_render_engine(Box::new(WrongCountBackend), mode, &build_config())
-                    .err()
-                    .unwrap_or_else(|| panic!("{mode:?}: a table of shifted cells was built"));
-            let msg = err.to_string();
-            assert!(
-                msg.contains("wrong_count_backend")
-                    && msg.contains(&format!("returned {} gains", TEST_SPEAKERS + 1))
-                    && msg.contains(&format!("expected {TEST_SPEAKERS}")),
-                "{mode:?}: got: {msg}"
-            );
-        }
-    }
-
-    /// The count is checked on every cell, not only on the first: a model
-    /// that comes up short at a single position would otherwise shift every
-    /// later cell of the table onto the wrong speakers.
-    #[test]
-    fn a_gain_count_off_at_one_cell_fails_the_table_build() {
+    fn a_gain_left_unwritten_at_one_cell_stays_in_that_cell() {
         struct ShortInOneColumn;
+        /// One column of the 5×5 grid, off every smoke position.
+        fn in_short_column(position: [f64; 3]) -> bool {
+            (position[0] + 0.5).abs() < 1e-6 && (position[1] - 0.5).abs() < 1e-6
+        }
         impl GainModel for ShortInOneColumn {
             fn backend_id(&self) -> &'static str {
                 "short_in_one_column"
@@ -1679,13 +1652,17 @@ mod tests {
             fn speaker_count(&self) -> usize {
                 TEST_SPEAKERS
             }
-            fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-                // One column of the 5×5 grid, off every smoke position.
-                let short = (req.adm_position[0] + 0.5).abs() < 1e-6
-                    && (req.adm_position[1] - 0.5).abs() < 1e-6;
-                let mut gains = Gains::zeroed(TEST_SPEAKERS - usize::from(short));
-                gains.set(0, 1.0);
-                RenderResponse { gains }
+            fn compute_gains(
+                &self,
+                req: &RenderRequest,
+                _scratch: &mut GainScratch,
+                gains: &mut [f32],
+            ) {
+                // Speaker `i` gets `i + 1`, so a shifted cell would show.
+                let written = TEST_SPEAKERS - usize::from(in_short_column(req.adm_position));
+                for (index, gain) in gains[..written].iter_mut().enumerate() {
+                    *gain = index as f32 + 1.0;
+                }
             }
             fn save_to_file(&self, _path: &std::path::Path, _layout: &SpeakerLayout) -> Result<()> {
                 Ok(())
@@ -1695,120 +1672,105 @@ mod tests {
         let engine = realtime_engine(Box::new(ShortInOneColumn));
         smoke_test_engine(&engine, &build_config(), "short_in_one_column")
             .expect("the smoke positions do not reach the short column");
-        let err = build_prepared_render_engine(
+
+        let config = build_config();
+        let table = build_prepared_render_engine(
             Box::new(ShortInOneColumn),
             EffectiveEvaluationMode::PrecomputedCartesian,
-            &build_config(),
+            &config,
         )
-        .err()
-        .expect("the short cell fails the build");
-        assert!(
-            err.to_string()
-                .contains(&format!("returned {} gains", TEST_SPEAKERS - 1)),
-            "got: {err}"
-        );
+        .expect("the table builds");
+        let parts = table.cartesian_parts().expect("a cartesian table");
+        let mut short_cells = 0;
+        for (cell, gains) in parts.gains.chunks(parts.speaker_count).enumerate() {
+            let last = gains[TEST_SPEAKERS - 1];
+            let short = last == 0.0;
+            short_cells += usize::from(short);
+            assert!(
+                short || last == TEST_SPEAKERS as f32,
+                "cell {cell}: last gain {last}"
+            );
+            for (index, gain) in gains[..TEST_SPEAKERS - 1].iter().enumerate() {
+                assert_eq!(*gain, index as f32 + 1.0, "cell {cell}, speaker {index}");
+            }
+        }
+        // The column, at every height of the grid, and nothing else.
+        assert_eq!(short_cells, parts.z.len());
     }
 
-    /// A ring of `n` spatialized speakers, alternating ear level and 40° up.
-    fn ring_layout(n: usize) -> SpeakerLayout {
-        let ring = n.div_ceil(2) as f32;
-        SpeakerLayout::from_speakers(
-            (0..n)
-                .map(|i| {
-                    crate::speaker_layout::Speaker::new(
-                        format!("S{i}"),
-                        -180.0 + 360.0 * (i / 2) as f32 / ring,
-                        if i % 2 == 0 { 0.0 } else { 40.0 },
-                    )
-                })
-                .collect(),
-        )
-        .expect("ring layout")
-    }
-
-    /// The barycenter solver holds `MAX_SPEAKERS` speakers in fixed arrays: a
-    /// larger layout is refused when the model is built — an error the
-    /// recompute reports to Studio — instead of the model panicking out of
-    /// bounds per request (on the render thread for a band rebuild).
+    /// No backend sizes anything by a fixed speaker count (#745): a layout
+    /// wider than the 24 speakers the gain sets used to hold — 40, 80 and
+    /// 128 here — builds with each of them, as the published topology (model
+    /// only) and as a band's (its table sampled), and answers one finite
+    /// gain per speaker.
     #[test]
-    fn barycenter_refuses_a_layout_larger_than_its_solver() {
-        use crate::spatial_vbap::MAX_SPEAKERS;
-        let positions = |n: usize| collect_spatializable_positions(&ring_layout(n));
-        let plan = |n: usize| BarycenterBuildPlan {
-            speaker_positions: positions(n),
-            localize: 0.0,
-        };
-        assert!(plan(MAX_SPEAKERS).build_gain_model().is_ok());
-        let err = plan(MAX_SPEAKERS + 2)
-            .build_gain_model()
-            .err()
-            .expect("more speakers than the solver holds");
-        let msg = err.to_string();
-        assert!(
-            msg.contains(&format!("at most {MAX_SPEAKERS}"))
-                && msg.contains(&(MAX_SPEAKERS + 2).to_string()),
-            "got: {msg}"
-        );
+    fn a_layout_wider_than_24_speakers_builds_with_every_backend() {
+        for speakers in [40, 80, 128] {
+            a_wide_layout_builds_with_every_backend(speakers);
+        }
+    }
 
-        // The whole topology build — the published one (model only) and a
-        // band's (precomputed, so its table would sample the model) — and a
-        // hybrid with a barycenter leg fail too, without a panic: refused by
-        // the layout-wide speaker check before the model is built.
-        let topology = |backend_build: BackendBuildPlan, backend_id: &str| TopologyBuildPlan {
-            layout: ring_layout(MAX_SPEAKERS + 2),
-            backend_id: backend_id.to_string(),
-            backend_build,
-            evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
-            evaluation_build_config: build_config(),
-            geometry_generation: 0,
-            brir_layout: false,
-            room: RoomRatios::UNIT,
-            measured_room: None,
-            grid: None,
-            grid_generation: 0,
+    fn a_wide_layout_builds_with_every_backend(speakers: usize) {
+        let layout = crate::test_support::dome_layout(speakers);
+        let positions = collect_spatializable_positions(&layout);
+        assert_eq!(positions.len(), speakers);
+        let barycenter = || BarycenterBuildPlan {
+            speaker_positions: positions.clone(),
+            localize: 0.5,
         };
-        let built = std::panic::catch_unwind(|| {
-            topology(
-                BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2)),
-                "barycenter",
-            )
-            .build_topology()
-            .map(|_| ())
-        });
-        let err = built.expect("no panic").expect_err("refused");
-        assert!(
-            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
-            "got: {err}"
-        );
-        let built = std::panic::catch_unwind(|| {
-            topology(
-                BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2)),
-                "barycenter",
-            )
-            .build_band_topology_reusing(None)
-            .map(|_| ())
-        });
-        let err = built.expect("no panic").expect_err("refused");
-        assert!(
-            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
-            "got: {err}"
-        );
-
-        let hybrid = BackendBuildPlan::Hybrid(HybridBuildPlan {
-            external: Box::new(BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2))),
-            internal: Box::new(BackendBuildPlan::Barycenter(plan(MAX_SPEAKERS + 2))),
-            curve: vec![[0.0, 0.0], [1.0, 1.0]],
-            curve_smoothing: 0.0,
-            metric: DistanceMetric::default(),
-        });
-        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            topology(hybrid, "hybrid").build_topology().map(|_| ())
-        }));
-        let err = built.expect("no panic").expect_err("refused");
-        assert!(
-            err.to_string().contains(&format!("at most {MAX_SPEAKERS}")),
-            "got: {err}"
-        );
+        let distance = || ExperimentalDistanceBuildPlan {
+            speaker_positions: positions.clone(),
+            params: crate::live_params::ExperimentalDistanceLiveParams::default(),
+        };
+        let hybrid = || {
+            BackendBuildPlan::Hybrid(HybridBuildPlan {
+                external: Box::new(BackendBuildPlan::Barycenter(barycenter())),
+                internal: Box::new(BackendBuildPlan::ExperimentalDistance(distance())),
+                curve: vec![[0.0, 0.0], [1.0, 1.0]],
+                curve_smoothing: 0.0,
+                metric: DistanceMetric::default(),
+            })
+        };
+        let backends: [(&str, &dyn Fn() -> BackendBuildPlan); 3] = [
+            ("barycenter", &|| BackendBuildPlan::Barycenter(barycenter())),
+            ("experimental_distance", &|| {
+                BackendBuildPlan::ExperimentalDistance(distance())
+            }),
+            ("hybrid", &hybrid),
+        ];
+        for (backend_id, backend_build) in backends {
+            let plan = TopologyBuildPlan {
+                layout: layout.clone(),
+                backend_id: backend_id.to_string(),
+                backend_build: backend_build(),
+                evaluation_mode: LiveEvaluationMode::PrecomputedCartesian,
+                evaluation_build_config: build_config(),
+                geometry_generation: 0,
+                brir_layout: false,
+                room: RoomRatios::UNIT,
+                measured_room: None,
+                grid: None,
+                grid_generation: 0,
+            };
+            let published = plan
+                .build_topology()
+                .unwrap_or_else(|e| panic!("{speakers} speakers, {backend_id}: {e:#}"));
+            let band = plan
+                .build_band_topology_reusing(None)
+                .unwrap_or_else(|e| panic!("{speakers} speakers, {backend_id}, band: {e:#}"));
+            for (what, topology) in [("published", &published), ("band", &band)] {
+                assert_eq!(topology.backend.speaker_count(), speakers, "{backend_id}");
+                let mut request = build_config().request_template;
+                request.adm_position = [0.3, -0.4, 0.2];
+                let gains = topology.backend.gains_at(&request);
+                assert_eq!(gains.len(), speakers, "{backend_id}, {what}");
+                assert!(
+                    gains.iter().all(|gain| gain.is_finite())
+                        && gains.iter().any(|gain| *gain > 0.0),
+                    "{backend_id}, {what}: {gains:?}"
+                );
+            }
+        }
     }
 
     /// A build context over the 7.1.4 preset in the unit room, with the

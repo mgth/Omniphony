@@ -4,9 +4,9 @@ use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
 use super::{
-    BackendCapabilities, GainModel, HintSlot, NeighbourHint, RenderRequest, RenderResponse,
+    BackendCapabilities, GainModel, GainScratch, HintSlot, NeighbourHint, RenderRequest,
+    foreign_scratch,
 };
-use crate::spatial_vbap::{Gains, MAX_SPEAKERS};
 use crate::speaker_layout::SpeakerLayout;
 use omniphony_geometry::f32::vec3::distance_sq;
 
@@ -56,36 +56,9 @@ const RIDGE: f64 = 1e-6;
 const ENTRY_TOLERANCE: f64 = 1e-9;
 
 impl BarycenterBackend {
-    /// The barycenter model for `speaker_positions`, or an error when there
-    /// are more than [`MAX_SPEAKERS`] of them. The solver works on fixed
-    /// `MAX_SPEAKERS`-wide arrays on purpose (no allocation per request), so a
-    /// larger layout is refused here, at configuration time, where the error
-    /// reaches the caller (a recompute reports it to Studio), instead of
-    /// panicking out of bounds in `compute_gains` on the render thread.
-    pub fn try_new(speaker_positions: Vec<[f32; 3]>, localize: f32) -> Result<Self> {
-        if speaker_positions.len() > MAX_SPEAKERS {
-            anyhow::bail!(
-                "the barycenter backend handles at most {MAX_SPEAKERS} spatialized speakers; \
-                 this layout has {}. Pick another backend or spatialize fewer speakers.",
-                speaker_positions.len()
-            );
-        }
-        Ok(Self::new(speaker_positions, localize))
-    }
-
-    /// The barycenter model for `speaker_positions`.
-    ///
-    /// # Panics
-    ///
-    /// With more than [`MAX_SPEAKERS`] positions; [`Self::try_new`] returns an
-    /// error instead.
+    /// The barycenter model for `speaker_positions`, however many they are:
+    /// the solver works on a scratch sized for the layout.
     pub fn new(speaker_positions: Vec<[f32; 3]>, localize: f32) -> Self {
-        assert!(
-            speaker_positions.len() <= MAX_SPEAKERS,
-            "barycenter backend speaker count {} exceeds MAX_SPEAKERS {}",
-            speaker_positions.len(),
-            MAX_SPEAKERS
-        );
         // Start from the identity room so the memo always holds a valid entry.
         let room = RoomParams {
             ratio: [1.0, 1.0, 1.0],
@@ -93,7 +66,9 @@ impl BarycenterBackend {
             lower: 1.0,
             center_blend: 0.0,
         };
-        let room_memo = RoomMemo::new(&room, &RoomGeometry::new(&speaker_positions, &room));
+        let mut speakers = vec![[0.0f32; 3]; speaker_positions.len()];
+        room.transform(&speaker_positions, &mut speakers);
+        let room_memo = RoomMemo::new(&room, &speakers);
         Self {
             speaker_positions,
             localize: localize.max(0.0),
@@ -105,21 +80,38 @@ impl BarycenterBackend {
         self.speaker_positions.len()
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        self.solve(req, None)
+    /// The working memory of one caller: the solver's arrays, one entry per
+    /// speaker (see [`Solver`]).
+    pub fn new_scratch(&self) -> GainScratch {
+        GainScratch::new(Solver::new(self.speaker_positions.len()))
+    }
+
+    pub fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        self.solve(req, None, scratch, out)
     }
 
     /// Solve for `req`. With a `neighbour` slot, the solve starts from the
     /// weights the previous cell of a table row left there, and leaves its own
     /// for the next cell. The gains are the same either way; a start next to
     /// the answer only saves pivots.
-    fn solve(&self, req: &RenderRequest, mut neighbour: Option<&mut HintSlot>) -> RenderResponse {
-        debug_assert!(
-            self.speaker_positions.len() <= MAX_SPEAKERS,
-            "barycenter backend speaker count {} exceeds MAX_SPEAKERS {}",
-            self.speaker_positions.len(),
-            MAX_SPEAKERS
-        );
+    fn solve(
+        &self,
+        req: &RenderRequest,
+        mut neighbour: Option<&mut HintSlot>,
+        scratch: &mut GainScratch,
+        gains: &mut [f32],
+    ) {
+        let speaker_count = self.speaker_positions.len();
+        let Some(solver) = scratch
+            .state::<Solver>()
+            .filter(|solver| solver.speaker_count() == speaker_count)
+        else {
+            return foreign_scratch(gains);
+        };
+        debug_assert_eq!(gains.len(), speaker_count, "one gain per speaker");
+        if gains.len() != speaker_count {
+            return gains.fill(0.0);
+        }
 
         let target = room_scaled_position(
             req.adm_position.map(|value| value as f32),
@@ -129,51 +121,52 @@ impl BarycenterBackend {
             req.room_ratio_center_blend,
         );
 
-        let speaker_count = self.speaker_positions.len();
-        let mut gains = Gains::zeroed(speaker_count);
+        gains.fill(0.0);
         if speaker_count == 0 {
-            return RenderResponse { gains };
+            return;
         }
 
         // A table build asks for every cell with the same room parameters, and a
         // realtime render for every object: the transformed speakers are shared
         // by all those requests.
         let room_params = RoomParams::of(req);
-        let room = self
-            .room_memo
-            .get_or_compute(&room_params, speaker_count, || {
-                RoomGeometry::new(&self.speaker_positions, &room_params)
+        self.room_memo
+            .get_or_compute(&room_params, &mut solver.room, |speakers| {
+                room_params.transform(&self.speaker_positions, speakers)
             });
 
         // A source on a speaker belongs to that speaker alone.
-        for index in 0..speaker_count {
-            if distance_sq(room.speakers[index], target) <= f32::EPSILON {
+        for (index, speaker) in solver.room.iter().enumerate() {
+            if distance_sq(*speaker, target) <= f32::EPSILON {
                 // Nothing was solved here: the next cell starts from scratch.
                 if let Some(slot) = neighbour.as_deref_mut() {
                     slot.clear();
                 }
-                gains.set(index, 1.0);
-                return RenderResponse { gains };
+                gains[index] = 1.0;
+                return;
             }
         }
 
-        let problem = Problem::new(&room.speakers[..speaker_count], target, self.localize);
-        let start = neighbour
+        solver.problem.load(&solver.room, target, self.localize);
+        let started = neighbour
             .as_deref()
             .and_then(|slot| slot.values(speaker_count))
-            .and_then(|weights| problem.start_from(weights))
-            .unwrap_or_else(|| problem.cold_start());
-        let solution = minimise(&problem, &start);
-        let mut weights = [0.0f32; MAX_SPEAKERS];
-        for index in 0..speaker_count {
-            weights[index] = solution.weights[index].max(0.0) as f32;
-            gains.set(index, solution.weights[index].max(0.0).sqrt() as f32);
+            .is_some_and(|weights| solver.problem.start_from(weights, &mut solver.work.weights));
+        if !started {
+            solver.problem.cold_start(&mut solver.work.weights);
+        }
+        minimise(&solver.problem, &mut solver.work);
+        for ((gain, kept), &weight) in gains
+            .iter_mut()
+            .zip(solver.kept.iter_mut())
+            .zip(&solver.work.weights)
+        {
+            *kept = weight.max(0.0) as f32;
+            *gain = weight.max(0.0).sqrt() as f32;
         }
         if let Some(slot) = neighbour {
-            slot.store(&weights[..speaker_count]);
+            slot.store(&solver.kept);
         }
-
-        RenderResponse { gains }
     }
 
     pub fn save_to_file(
@@ -215,16 +208,22 @@ impl GainModel for BarycenterBackend {
         BarycenterBackend::speaker_count(self)
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        BarycenterBackend::compute_gains(self, req)
+    fn new_scratch(&self) -> GainScratch {
+        BarycenterBackend::new_scratch(self)
+    }
+
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        BarycenterBackend::compute_gains(self, req, scratch, out)
     }
 
     fn compute_gains_with_hint(
         &self,
         req: &RenderRequest,
         hint: &mut NeighbourHint,
-    ) -> RenderResponse {
-        self.solve(req, hint.slot())
+        scratch: &mut GainScratch,
+        out: &mut [f32],
+    ) {
+        self.solve(req, hint.slot(), scratch, out)
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -254,6 +253,20 @@ impl RoomParams {
         }
     }
 
+    /// What the solver needs from the room parameters alone: the speakers in
+    /// room-scaled space, written into `speakers`.
+    fn transform(&self, speaker_positions: &[[f32; 3]], speakers: &mut [[f32; 3]]) {
+        for (transformed, speaker) in speakers.iter_mut().zip(speaker_positions) {
+            *transformed = room_scaled_position(
+                *speaker,
+                self.ratio,
+                self.rear,
+                self.lower,
+                self.center_blend,
+            );
+        }
+    }
+
     /// Bit patterns, so that two rooms are the same only when the transform
     /// cannot tell them apart (`0.0` and `-0.0` differ, a NaN equals itself).
     fn to_bits(self) -> [u32; Self::WORDS] {
@@ -268,67 +281,45 @@ impl RoomParams {
     }
 }
 
-/// What the solver needs from the room parameters alone: the speakers in
-/// room-scaled space.
-#[derive(Clone, Copy)]
-struct RoomGeometry {
-    speakers: [[f32; 3]; MAX_SPEAKERS],
-}
-
-impl RoomGeometry {
-    fn new(speaker_positions: &[[f32; 3]], room: &RoomParams) -> Self {
-        let mut speakers = [[0.0f32; 3]; MAX_SPEAKERS];
-        for (transformed, speaker) in speakers.iter_mut().zip(speaker_positions) {
-            *transformed = room_scaled_position(
-                *speaker,
-                room.ratio,
-                room.rear,
-                room.lower,
-                room.center_blend,
-            );
-        }
-        Self { speakers }
-    }
-}
-
-/// Single-entry memo of the [`RoomGeometry`] of the latest room parameters.
+/// Single-entry memo of the room-scaled speakers of the latest room parameters.
 ///
 /// `compute_gains` runs concurrently on the workers of a table build and on the
 /// render thread, and must neither block nor allocate there. The memo is a
 /// sequence lock over plain atomics: a reader copies the entry and keeps the
 /// copy only if no writer was active meanwhile, a writer publishes only if it
-/// wins the entry outright, and whoever loses computes the geometry on its own
-/// stack and moves on. Nobody waits for anybody.
+/// wins the entry outright, and whoever loses computes the geometry in its own
+/// scratch and moves on. Nobody waits for anybody.
 struct RoomMemo {
     /// Even while the entry is stable, odd while a writer is replacing it.
     sequence: AtomicUsize,
     room: [AtomicU32; RoomParams::WORDS],
-    speakers: [[AtomicU32; 3]; MAX_SPEAKERS],
+    /// One entry per speaker of the layout.
+    speakers: Box<[[AtomicU32; 3]]>,
 }
 
 impl RoomMemo {
-    fn new(room: &RoomParams, geometry: &RoomGeometry) -> Self {
+    fn new(room: &RoomParams, speakers: &[[f32; 3]]) -> Self {
         let room = room.to_bits();
         Self {
             sequence: AtomicUsize::new(0),
             room: std::array::from_fn(|word| AtomicU32::new(room[word])),
-            speakers: std::array::from_fn(|index| {
-                geometry.speakers[index].map(|coordinate| AtomicU32::new(coordinate.to_bits()))
-            }),
+            speakers: speakers
+                .iter()
+                .map(|speaker| speaker.map(|coordinate| AtomicU32::new(coordinate.to_bits())))
+                .collect(),
         }
     }
 
-    /// The geometry for `room`: the memoised one when the entry is for `room`,
-    /// else `compute()`, which then replaces the entry unless another thread is
-    /// writing it.
+    /// Fill `speakers` with the geometry for `room`: the memoised one when the
+    /// entry is for `room`, else what `compute` writes there, which then
+    /// replaces the entry unless another thread is writing it.
     fn get_or_compute(
         &self,
         room: &RoomParams,
-        speaker_count: usize,
-        compute: impl FnOnce() -> RoomGeometry,
-    ) -> RoomGeometry {
+        speakers: &mut [[f32; 3]],
+        compute: impl FnOnce(&mut [[f32; 3]]),
+    ) {
         let room = room.to_bits();
-        let speaker_count = speaker_count.min(MAX_SPEAKERS);
 
         let sequence = self.sequence.load(Ordering::Acquire);
         let stable = sequence & 1 == 0;
@@ -339,13 +330,7 @@ impl RoomMemo {
                 .zip(&room)
                 .all(|(held, wanted)| held.load(Ordering::Relaxed) == *wanted)
         {
-            let mut geometry = RoomGeometry {
-                speakers: [[0.0; 3]; MAX_SPEAKERS],
-            };
-            for (speaker, held) in geometry.speakers[..speaker_count]
-                .iter_mut()
-                .zip(&self.speakers)
-            {
+            for (speaker, held) in speakers.iter_mut().zip(&self.speakers) {
                 *speaker = held
                     .each_ref()
                     .map(|coordinate| f32::from_bits(coordinate.load(Ordering::Relaxed)));
@@ -355,11 +340,11 @@ impl RoomMemo {
             // relaxed loads above; it pairs with the writer's release stores.
             fence(Ordering::Acquire);
             if self.sequence.load(Ordering::Relaxed) == sequence {
-                return geometry;
+                return;
             }
         }
 
-        let geometry = compute();
+        compute(speakers);
         if stable
             && self
                 .sequence
@@ -374,10 +359,7 @@ impl RoomMemo {
             for (held, word) in self.room.iter().zip(room) {
                 held.store(word, Ordering::Release);
             }
-            for (held, speaker) in self.speakers[..speaker_count]
-                .iter()
-                .zip(&geometry.speakers)
-            {
+            for (held, speaker) in self.speakers.iter().zip(speakers.iter()) {
                 for (held, coordinate) in held.iter().zip(speaker) {
                     held.store(coordinate.to_bits(), Ordering::Release);
                 }
@@ -385,13 +367,40 @@ impl RoomMemo {
             self.sequence
                 .store(sequence.wrapping_add(2), Ordering::Release);
         }
-        geometry
+    }
+}
+
+/// What a caller of [`BarycenterBackend`] holds between requests: every array
+/// of a solve, one entry per speaker, sized for the layout when the scratch is
+/// made so that a solve allocates nothing.
+struct Solver {
+    /// The speakers in the room of the request.
+    room: Vec<[f32; 3]>,
+    problem: Problem,
+    work: Workspace,
+    /// The solution's weights in single precision: what a table build hands
+    /// to the next cell.
+    kept: Vec<f32>,
+}
+
+impl Solver {
+    fn new(speaker_count: usize) -> Self {
+        Self {
+            room: vec![[0.0; 3]; speaker_count],
+            problem: Problem::new(speaker_count),
+            work: Workspace::new(speaker_count),
+            kept: vec![0.0; speaker_count],
+        }
+    }
+
+    fn speaker_count(&self) -> usize {
+        self.room.len()
     }
 }
 
 /// One request, as the solver sees it: in double precision.
 struct Problem {
-    speakers: [[f64; 3]; MAX_SPEAKERS],
+    speakers: Vec<[f64; 3]>,
     target: [f64; 3],
     localize: f64,
     speaker_count: usize,
@@ -399,55 +408,68 @@ struct Problem {
 }
 
 impl Problem {
-    fn new(speakers: &[[f32; 3]], target: [f32; 3], localize: f32) -> Self {
-        let speaker_count = speakers.len().min(MAX_SPEAKERS);
-        let target = target.map(f64::from);
-        let mut problem = Self {
-            speakers: [[0.0; 3]; MAX_SPEAKERS],
-            target,
-            localize: f64::from(localize),
+    /// Room for a request on `speaker_count` speakers: [`Self::load`] one.
+    fn new(speaker_count: usize) -> Self {
+        Self {
+            speakers: vec![[0.0; 3]; speaker_count],
+            target: [0.0; 3],
+            localize: 0.0,
             speaker_count,
             nearest: 0,
-        };
+        }
+    }
+
+    /// Take a request on `speakers`, as many as this problem was made for.
+    fn load(&mut self, speakers: &[[f32; 3]], target: [f32; 3], localize: f32) {
+        let target = target.map(f64::from);
+        self.target = target;
+        self.localize = f64::from(localize);
+        self.speaker_count = speakers.len().min(self.speakers.len());
+        self.nearest = 0;
         let mut nearest_distance_sq = f64::INFINITY;
-        for (index, speaker) in speakers.iter().take(speaker_count).enumerate() {
+        for (index, (held, speaker)) in self.speakers.iter_mut().zip(speakers).enumerate() {
             let speaker = speaker.map(f64::from);
             let distance_sq = (speaker[0] - target[0]) * (speaker[0] - target[0])
                 + (speaker[1] - target[1]) * (speaker[1] - target[1])
                 + (speaker[2] - target[2]) * (speaker[2] - target[2]);
-            problem.speakers[index] = speaker;
+            *held = speaker;
             if distance_sq < nearest_distance_sq {
                 nearest_distance_sq = distance_sq;
-                problem.nearest = index;
+                self.nearest = index;
             }
         }
-        problem
     }
 
-    /// Where a solve starts when nothing better is known. The minimiser does
-    /// not depend on it, only the number of pivots does: with a localisation
-    /// term the weight ends up on a few speakers around the source, so start
-    /// from the nearest one; without, it spreads, so start from all of them.
-    fn cold_start(&self) -> [f64; MAX_SPEAKERS] {
-        let mut weights = [0.0; MAX_SPEAKERS];
+    /// Where a solve starts when nothing better is known, written into
+    /// `weights`. The minimiser does not depend on it, only the number of
+    /// pivots does: with a localisation term the weight ends up on a few
+    /// speakers around the source, so start from the nearest one; without, it
+    /// spreads, so start from all of them.
+    fn cold_start(&self, weights: &mut [f64]) {
         if self.localize > 0.0 {
+            weights.fill(0.0);
             weights[self.nearest] = 1.0;
         } else {
-            weights[..self.speaker_count].fill(1.0 / self.speaker_count as f64);
+            weights.fill(1.0 / self.speaker_count as f64);
         }
-        weights
     }
 
-    /// A start on the weights of a neighbouring solve, or `None` if they carry
-    /// no weight at all.
-    fn start_from(&self, neighbour: &[f32]) -> Option<[f64; MAX_SPEAKERS]> {
-        let mut weights = [0.0; MAX_SPEAKERS];
+    /// A start on the weights of a neighbouring solve, written into `weights`.
+    /// False if they carry no weight at all: `weights` is then to be started
+    /// some other way.
+    fn start_from(&self, neighbour: &[f32], weights: &mut [f64]) -> bool {
         let mut sum = 0.0;
-        for (weight, neighbour) in weights[..self.speaker_count].iter_mut().zip(neighbour) {
+        for (weight, neighbour) in weights.iter_mut().zip(neighbour) {
             *weight = f64::from(neighbour.max(0.0));
             sum += *weight;
         }
-        (sum > 0.0 && sum.is_finite()).then(|| weights.map(|weight| weight / sum))
+        if !(sum > 0.0 && sum.is_finite()) {
+            return false;
+        }
+        for weight in weights.iter_mut() {
+            *weight /= sum;
+        }
+        true
     }
 
     /// The pivot budget of [`minimise`]: several times what any layout needs,
@@ -457,8 +479,28 @@ impl Problem {
     }
 }
 
-struct Solution {
-    weights: [f64; MAX_SPEAKERS],
+/// The arrays [`minimise`] works on, one entry per speaker.
+struct Workspace {
+    /// The start on the way in, the solution on the way out.
+    weights: Vec<f64>,
+    candidate: Vec<f64>,
+    in_support: Vec<bool>,
+    barred: Vec<bool>,
+}
+
+impl Workspace {
+    fn new(speaker_count: usize) -> Self {
+        Self {
+            weights: vec![0.0; speaker_count],
+            candidate: vec![0.0; speaker_count],
+            in_support: vec![false; speaker_count],
+            barred: vec![false; speaker_count],
+        }
+    }
+}
+
+/// How a [`minimise`] ended; the solution itself is in the workspace.
+struct Outcome {
     /// False when the pivot budget ran out first. The weights are then a valid
     /// set (non-negative, summing to one) but not the minimiser; the backend
     /// plays them as they are rather than fail on the render thread.
@@ -480,25 +522,42 @@ struct Solution {
 /// ends at the minimiser: a few pivots, where a gradient iteration needs
 /// hundreds of steps to settle.
 ///
-/// `start` is any feasible set of weights. The result is the minimiser on the
-/// final support, computed from scratch, so the start does not leak into it.
-fn minimise(problem: &Problem, start: &[f64; MAX_SPEAKERS]) -> Solution {
+/// `work.weights` holds the start, any feasible set of weights, and is left
+/// holding the result: the minimiser on the final support, computed from
+/// scratch, so the start does not leak into it.
+fn minimise(problem: &Problem, work: &mut Workspace) -> Outcome {
     let speaker_count = problem.speaker_count;
-    let mut weights = *start;
-    let mut in_support = [false; MAX_SPEAKERS];
+    let Workspace {
+        weights,
+        candidate,
+        in_support,
+        barred,
+    } = work;
+    // One length for the four of them and the problem, so the loops below
+    // index them without a bounds check each.
+    let (Some(weights), Some(candidate), Some(in_support), Some(barred)) = (
+        weights.get_mut(..speaker_count),
+        candidate.get_mut(..speaker_count),
+        in_support.get_mut(..speaker_count),
+        barred.get_mut(..speaker_count),
+    ) else {
+        return Outcome {
+            converged: false,
+            pivots: 0,
+        };
+    };
     for index in 0..speaker_count {
         in_support[index] = weights[index] > 0.0;
     }
     // A speaker that is pushed out by the very pivot that follows its entry
     // would take a weight below rounding: leave it out for good, or the two
     // pivots could repeat forever.
-    let mut barred = [false; MAX_SPEAKERS];
+    barred.fill(false);
     let mut entered = usize::MAX;
-    let mut candidate = [0.0f64; MAX_SPEAKERS];
 
     let max_pivots = problem.max_pivots();
     for pivot in 0..max_pivots {
-        minimiser_on(problem, &in_support, &mut candidate);
+        minimiser_on(problem, in_support, candidate);
 
         // How far the weights can move towards the candidate before one of
         // them reaches zero.
@@ -537,8 +596,7 @@ fn minimise(problem: &Problem, start: &[f64; MAX_SPEAKERS]) -> Solution {
             }
         }
         if entering == usize::MAX {
-            return Solution {
-                weights,
+            return Outcome {
                 converged: true,
                 pivots: pivot + 1,
             };
@@ -547,8 +605,7 @@ fn minimise(problem: &Problem, start: &[f64; MAX_SPEAKERS]) -> Solution {
         entered = entering;
     }
 
-    Solution {
-        weights,
+    Outcome {
         converged: false,
         pivots: max_pivots,
     }
@@ -574,13 +631,16 @@ fn minimise(problem: &Problem, start: &[f64; MAX_SPEAKERS]) -> Solution {
 /// over it. Measuring the localisation term from the centroid rather than from
 /// the source keeps the `1 / RIDGE` terms, which cancel in the weights, as
 /// small as the support is tight. The cost is linear in the speaker count.
-fn minimiser_on(
-    problem: &Problem,
-    in_support: &[bool; MAX_SPEAKERS],
-    candidate: &mut [f64; MAX_SPEAKERS],
-) {
+fn minimiser_on(problem: &Problem, in_support: &[bool], candidate: &mut [f64]) {
     let speaker_count = problem.speaker_count;
-    let speakers = &problem.speakers;
+    // The three arrays at one length: see `minimise`.
+    let (Some(speakers), Some(in_support), Some(candidate)) = (
+        problem.speakers.get(..speaker_count),
+        in_support.get(..speaker_count),
+        candidate.get_mut(..speaker_count),
+    ) else {
+        return;
+    };
 
     let mut size = 0.0f64;
     let mut centroid = [0.0f64; 3];
@@ -769,10 +829,17 @@ mod tests {
         }
     }
 
+    /// The widest of [`layouts`].
+    const WIDE: usize = 128;
+
     fn layouts() -> Vec<Vec<[f32; 3]>> {
         let home = home_layout();
         let mut rng = Lcg(7);
-        let full: Vec<[f32; 3]> = (0..MAX_SPEAKERS)
+        let full: Vec<[f32; 3]> = (0..24)
+            .map(|_| [rng.next(), rng.next(), rng.next()])
+            .collect();
+        // Past any standard layout: the solver has no width of its own.
+        let wide: Vec<[f32; 3]> = (0..WIDE)
             .map(|_| [rng.next(), rng.next(), rng.next()])
             .collect();
         vec![
@@ -794,6 +861,7 @@ mod tests {
             vec![[-1.0, 0.5, 0.0], [1.0, 0.5, 0.0]],
             vec![[0.3, -0.2, 0.9]],
             full,
+            wide,
         ]
     }
 
@@ -831,11 +899,39 @@ mod tests {
             )
         };
         let speakers: Vec<[f32; 3]> = positions.iter().map(|speaker| scale(*speaker)).collect();
-        Problem::new(
+        let mut problem = Problem::new(speakers.len());
+        problem.load(
             &speakers,
             scale(req.adm_position.map(|value| value as f32)),
             localize,
-        )
+        );
+        problem
+    }
+
+    /// A solve and what it left in its workspace.
+    struct Solution {
+        weights: Vec<f64>,
+        converged: bool,
+        pivots: usize,
+    }
+
+    /// [`minimise`] from `start`, on a workspace of its own.
+    fn solve_from(problem: &Problem, start: &[f64]) -> Solution {
+        let mut work = Workspace::new(problem.speaker_count);
+        work.weights.copy_from_slice(start);
+        let Outcome { converged, pivots } = minimise(problem, &mut work);
+        Solution {
+            weights: work.weights,
+            converged,
+            pivots,
+        }
+    }
+
+    /// [`minimise`] from the problem's cold start.
+    fn solve(problem: &Problem) -> Solution {
+        let mut start = vec![0.0; problem.speaker_count];
+        problem.cold_start(&mut start);
+        solve_from(problem, &start)
     }
 
     fn distance_sq_to_target(problem: &Problem, index: usize) -> f64 {
@@ -846,16 +942,15 @@ mod tests {
 
     /// The objective, straight from its definition.
     fn objective(problem: &Problem, weights: &[f64]) -> f64 {
-        let count = problem.speaker_count;
         let mut error = problem.target.map(|coordinate| -coordinate);
         let mut linear = 0.0;
         let mut ridge = 0.0;
-        for index in 0..count {
-            for axis in 0..3 {
-                error[axis] += problem.speakers[index][axis] * weights[index];
+        for (index, (speaker, &weight)) in problem.speakers.iter().zip(weights).enumerate() {
+            for (error, coordinate) in error.iter_mut().zip(speaker) {
+                *error += coordinate * weight;
             }
-            linear += problem.localize * distance_sq_to_target(problem, index) * weights[index];
-            ridge += RIDGE * weights[index] * weights[index];
+            linear += problem.localize * distance_sq_to_target(problem, index) * weight;
+            ridge += RIDGE * weight * weight;
         }
         error.iter().map(|e| e * e).sum::<f64>() + linear + ridge
     }
@@ -864,22 +959,20 @@ mod tests {
     /// gap `∇f(w) · (w − v)` maximised over the simplex, which bounds
     /// `f(w) − min f` for a convex `f`.
     fn optimality_gap(problem: &Problem, weights: &[f64]) -> f64 {
-        let count = problem.speaker_count;
         let mut error = problem.target.map(|coordinate| -coordinate);
-        for index in 0..count {
-            for axis in 0..3 {
-                error[axis] += problem.speakers[index][axis] * weights[index];
+        for (speaker, &weight) in problem.speakers.iter().zip(weights) {
+            for (error, coordinate) in error.iter_mut().zip(speaker) {
+                *error += coordinate * weight;
             }
         }
         let mut mean = 0.0;
         let mut least = f64::INFINITY;
-        for index in 0..count {
-            let speaker = problem.speakers[index];
+        for (index, (speaker, &weight)) in problem.speakers.iter().zip(weights).enumerate() {
             let gradient = 2.0
                 * (speaker[0] * error[0] + speaker[1] * error[1] + speaker[2] * error[2])
                 + problem.localize * distance_sq_to_target(problem, index)
-                + 2.0 * RIDGE * weights[index];
-            mean += weights[index] * gradient;
+                + 2.0 * RIDGE * weight;
+            mean += weight * gradient;
             least = least.min(gradient);
         }
         mean - least
@@ -888,9 +981,9 @@ mod tests {
     /// The minimiser found the slow way: for every support, solve the
     /// stationarity equations as one dense linear system, and keep the best of
     /// the supports whose solution has no negative weight.
-    fn minimise_by_enumeration(problem: &Problem) -> ([f64; MAX_SPEAKERS], f64) {
+    fn minimise_by_enumeration(problem: &Problem) -> (Vec<f64>, f64) {
         let count = problem.speaker_count;
-        let mut best = ([0.0; MAX_SPEAKERS], f64::INFINITY);
+        let mut best = (vec![0.0; count], f64::INFINITY);
         for mask in 1u32..(1 << count) {
             let support: Vec<usize> = (0..count).filter(|index| mask >> index & 1 == 1).collect();
             let size = support.len();
@@ -933,7 +1026,7 @@ mod tests {
             }
             // The system is as ill-conditioned as the ridge is small, so a
             // weight of the true minimiser may come out a hair below zero.
-            let mut weights = [0.0f64; MAX_SPEAKERS];
+            let mut weights = vec![0.0f64; count];
             let mut feasible = true;
             let mut sum = 0.0;
             for (row, &i) in support.iter().enumerate() {
@@ -968,7 +1061,7 @@ mod tests {
                 for (call, target) in targets(4, 4, 3, 24).into_iter().enumerate() {
                     let req = request_in(ROOMS[call % ROOMS.len()], target);
                     let problem = problem(positions, localize, &req);
-                    let solution = minimise(&problem, &problem.cold_start());
+                    let solution = solve(&problem);
                     let (expected, expected_value) = minimise_by_enumeration(&problem);
                     assert!(solution.converged);
                     let value = objective(&problem, &solution.weights);
@@ -976,9 +1069,11 @@ mod tests {
                         (value - expected_value).abs() <= 1e-8 * (1.0 + expected_value.abs()),
                         "objective {value:e} vs {expected_value:e} at {target:?}"
                     );
-                    for index in 0..positions.len() {
-                        let gain = solution.weights[index].sqrt();
-                        let expected_gain = expected[index].sqrt();
+                    for (index, (weight, expected)) in
+                        solution.weights.iter().zip(&expected).enumerate()
+                    {
+                        let gain = weight.sqrt();
+                        let expected_gain = expected.sqrt();
                         worst = worst.max((gain - expected_gain).abs());
                         assert!(
                             (gain - expected_gain).abs() <= 1e-4,
@@ -1002,7 +1097,7 @@ mod tests {
                 for (call, target) in targets(11, 11, 7, 300).into_iter().enumerate() {
                     let req = request_in(ROOMS[call % ROOMS.len()], target);
                     let problem = problem(&positions, localize, &req);
-                    let solution = minimise(&problem, &problem.cold_start());
+                    let solution = solve(&problem);
                     let context =
                         || format!("layout {layout}, localize {localize}, target {target:?}");
                     assert!(solution.converged, "out of pivots: {}", context());
@@ -1021,7 +1116,7 @@ mod tests {
         }
         println!("most pivots {most_pivots}, largest optimality gap {worst_gap:e}");
         // The budget is 4 n + 8: nothing should come near it.
-        assert!(most_pivots <= 2 * MAX_SPEAKERS + 8, "{most_pivots} pivots");
+        assert!(most_pivots <= 2 * WIDE + 8, "{most_pivots} pivots");
     }
 
     #[test]
@@ -1034,16 +1129,15 @@ mod tests {
                 for (call, target) in targets(7, 7, 5, 100).into_iter().enumerate() {
                     let req = request_in(ROOMS[call % ROOMS.len()], target);
                     let problem = problem(&positions, localize, &req);
-                    let reference = minimise(&problem, &problem.cold_start());
+                    let reference = solve(&problem);
 
-                    let mut uniform = [0.0; MAX_SPEAKERS];
-                    uniform[..count].fill(1.0 / count as f64);
-                    let mut vertex = [0.0; MAX_SPEAKERS];
+                    let uniform = vec![1.0 / count as f64; count];
+                    let mut vertex = vec![0.0; count];
                     vertex[call % count] = 1.0;
                     // A random subset with random weights.
-                    let mut scattered = [0.0; MAX_SPEAKERS];
+                    let mut scattered = vec![0.0; count];
                     let mut sum = 0.0;
-                    for weight in &mut scattered[..count] {
+                    for weight in &mut scattered {
                         *weight = f64::from(rng.next().max(0.0));
                         sum += *weight;
                     }
@@ -1051,12 +1145,12 @@ mod tests {
                         scattered[0] = 1.0;
                         sum = 1.0;
                     }
-                    for weight in &mut scattered[..count] {
+                    for weight in &mut scattered {
                         *weight /= sum;
                     }
 
                     for start in [uniform, vertex, scattered] {
-                        let solution = minimise(&problem, &start);
+                        let solution = solve_from(&problem, &start);
                         assert!(solution.converged);
                         for index in 0..count {
                             let difference = (solution.weights[index].sqrt()
@@ -1088,11 +1182,9 @@ mod tests {
             let backend = BarycenterBackend::new(positions.clone(), localize);
             for room in [ROOMS[0], ROOMS[1]] {
                 for target in targets(21, 21, 11, 500) {
-                    let gains = backend.compute_gains(&request_in(room, target)).gains;
+                    let gains = backend.gains_at(&request_in(room, target));
                     let mirrored_target = [-target[0], target[1], target[2]];
-                    let mirrored = backend
-                        .compute_gains(&request_in(room, mirrored_target))
-                        .gains;
+                    let mirrored = backend.gains_at(&request_in(room, mirrored_target));
                     for index in 0..positions.len() {
                         let difference = (gains[index] - mirrored[mirror[index]]).abs();
                         worst = worst.max(difference);
@@ -1121,7 +1213,7 @@ mod tests {
         ];
         for localize in [0.0, 0.5] {
             let backend = BarycenterBackend::new(positions.clone(), localize);
-            let gains = backend.compute_gains(&request([0.0, 0.0, 0.0])).gains;
+            let gains = backend.gains_at(&request([0.0, 0.0, 0.0]));
             for gain in gains.iter() {
                 assert!(
                     (gain - 0.5).abs() < 1e-4,
@@ -1155,14 +1247,22 @@ mod tests {
         for positions in [layout_714(), layouts().swap_remove(0)] {
             for localize in [0.0, 0.5] {
                 let backend = BarycenterBackend::new(positions.clone(), localize);
+                let mut scratch = GainModel::new_scratch(&backend);
+                let mut warm = vec![0.0f32; positions.len()];
                 let mut hint = NeighbourHint::new();
                 // Neighbouring targets, as along a table row, then unrelated ones.
                 let row = (0..40).map(|step| [-1.0 + 0.05 * step as f64, 0.3, 0.2]);
                 for target in row.chain(targets(3, 3, 3, 40)) {
                     let req = request_in(ROOMS[1], target);
                     hint.begin_cell();
-                    let warm = GainModel::compute_gains_with_hint(&backend, &req, &mut hint).gains;
-                    let cold = backend.compute_gains(&req).gains;
+                    GainModel::compute_gains_with_hint(
+                        &backend,
+                        &req,
+                        &mut hint,
+                        &mut scratch,
+                        &mut warm,
+                    );
+                    let cold = backend.gains_at(&req);
                     assert!(
                         warm.iter()
                             .zip(cold.iter())
@@ -1182,11 +1282,8 @@ mod tests {
         let backend = BarycenterBackend::new(positions.clone(), localize);
         let targets = targets(9, 9, 7, 200);
         // A backend used once has only ever seen the room of that request.
-        let fresh = |req: &RenderRequest| {
-            BarycenterBackend::new(positions.clone(), localize)
-                .compute_gains(req)
-                .gains
-        };
+        let fresh =
+            |req: &RenderRequest| BarycenterBackend::new(positions.clone(), localize).gains_at(req);
         std::thread::scope(|scope| {
             for thread in 0..8usize {
                 let (backend, targets, fresh) = (&backend, &targets, &fresh);
@@ -1202,7 +1299,7 @@ mod tests {
                                 (call / (thread - 3) + round) % ROOMS.len()
                             };
                             let req = request_in(ROOMS[room], *target);
-                            let gains = backend.compute_gains(&req).gains;
+                            let gains = backend.gains_at(&req);
                             let expected = fresh(&req);
                             assert!(
                                 gains
@@ -1230,7 +1327,7 @@ mod tests {
             0.0,
         );
 
-        let gains = backend.compute_gains(&request([0.2, 0.4, 0.1])).gains;
+        let gains = backend.gains_at(&request([0.2, 0.4, 0.1]));
         let energy: f32 = gains.iter().map(|gain| gain * gain).sum();
         assert!((energy - 1.0).abs() < 1e-4, "energy={energy}");
     }
@@ -1248,7 +1345,7 @@ mod tests {
         );
 
         let target = [0.2, 0.3, 0.1];
-        let gains = backend.compute_gains(&request(target)).gains;
+        let gains = backend.gains_at(&request(target));
 
         let mut effective = [0.0f32; 3];
         for (index, gain) in gains.iter().copied().enumerate() {
@@ -1270,7 +1367,7 @@ mod tests {
             0.0,
         );
 
-        let gains = backend.compute_gains(&request([1.0, 0.0, 0.0])).gains;
+        let gains = backend.gains_at(&request([1.0, 0.0, 0.0]));
         assert!(gains[1] > 0.999);
         assert!(gains[0] < 1e-6);
         assert!(gains[2] < 1e-6);
@@ -1288,10 +1385,8 @@ mod tests {
         let base_backend = BarycenterBackend::new(positions.clone(), 0.0);
         let localized_backend = BarycenterBackend::new(positions, 2.0);
 
-        let base = base_backend.compute_gains(&request([0.2, 0.0, 0.0])).gains;
-        let localized = localized_backend
-            .compute_gains(&request([0.2, 0.0, 0.0]))
-            .gains;
+        let base = base_backend.gains_at(&request([0.2, 0.0, 0.0]));
+        let localized = localized_backend.gains_at(&request([0.2, 0.0, 0.0]));
 
         assert!(
             localized[1] > base[1],

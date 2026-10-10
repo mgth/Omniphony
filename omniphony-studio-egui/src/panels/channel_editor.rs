@@ -17,8 +17,9 @@ use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
 use crate::host::channels::{
-    Channel, CoordMode, PlacementMode, adm_to_meters, adm_to_polar, build_layout_payload,
-    effective_channels_for, family_label, family_placement, meters_to_adm, polar_to_adm,
+    Channel, CoordMode, PlacementMode, adm_polar_distance_m, adm_to_meters, adm_to_polar,
+    build_layout_payload, effective_channels_for, family_label, family_placement, meters_to_adm,
+    polar_to_adm,
 };
 use crate::host::commands::engine;
 use crate::i18n::t;
@@ -312,8 +313,8 @@ impl StudioSpike {
     ) {
         let adm = position.unwrap_or([0.0; 3]);
         let (az, el, dist) = adm_to_polar(room, adm);
-        let meters = adm_to_meters(room, adm, scale_m);
-        let dist_m = (meters[0] * meters[0] + meters[1] * meters[1] + meters[2] * meters[2]).sqrt();
+        // The radius at the frame's scale: the metres the field takes back.
+        let dist_m = adm_polar_distance_m(room, adm, scale_m);
         let cell = |value: f64, speed: f64, decimals: usize| {
             if position.is_some() {
                 CoordCell::field(value as f32, speed, decimals)
