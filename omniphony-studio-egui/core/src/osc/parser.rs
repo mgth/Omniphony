@@ -1370,14 +1370,16 @@ fn parse_meter(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
     if after.len() >= 6 && after[1] == "object" && after[3] == "band" && after[5] == "gains" {
         let id = after[2].to_string();
         let band: usize = after[4].parse().ok()?;
-        let gains: Vec<f64> = args.iter().map(|&v| clamp(v, 0.0, 1.0)).collect();
+        let gains: Vec<f64> = args.iter().map(|&v| v.max(0.0)).collect();
         return Some(OscEvent::MeterObjectBandGains { id, band, gains });
     }
 
-    // gains sub-message: meter / object / {id} / gains
+    // gains sub-message: meter / object / {id} / gains. The stage sums its
+    // bands' gains here, so a loudspeaker carrying every band reads above 1;
+    // the readers that need a fraction take their own.
     if after.len() >= 4 && after[1] == "object" && after[3] == "gains" {
         let id = after[2].to_string();
-        let gains: Vec<f64> = args.iter().map(|&v| clamp(v, 0.0, 1.0)).collect();
+        let gains: Vec<f64> = args.iter().map(|&v| v.max(0.0)).collect();
         return Some(OscEvent::MeterObjectGains { id, gains });
     }
 

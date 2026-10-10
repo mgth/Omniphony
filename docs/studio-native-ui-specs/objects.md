@@ -213,13 +213,47 @@ Emissive (:866-881), applied after the colour pass:
 - `updateSpeakerLabelsFromSelection` (:315-324) is speaker-side (sets speaker label text = speaker id), listed here only because it lives in labels.js.
 - `createSmallLabelSprite` (:207-209): 128×64 canvas, scale `(0.25, 0.12)`, colour `#d9ecff`, font `700 28px` (small canvas branch) — used by gizmos/room dimension guides (specified elsewhere in this directory).
 
-### 6.5 Effective-render marker + line (toggle `effectiveRenderEnabled`)
+### 6.5 Perceived-position marker, ring + line (toggle `effectiveRenderEnabled`)
 
-Shows where the object is *actually* rendered (gain²-weighted speaker centroid).
-- Position (`computeEffectiveRenderPosition` :394-427): `gains = sourceBandGains[id][heatmapBandIndex]` if present and non-empty, else `sourceGains[id]`; `P = Σ gain_i² · speakerMesh_i.position / Σ gain_i²` over `gain_i > 0` with an existing speaker mesh; null if no gains or `Σ ≤ 1e-9`. Uses **scene** positions of speakers. Note it always uses `heatmapBandIndex` (ignores `heatmapAllBands`).
-- Marker (`createEffectiveRenderMarker` :319-331): `SphereGeometry(0.04, 18, 18)`, `MeshStandardMaterial{color #7ce7ff, emissive #0a2834, transparent, opacity 0.34, depthWrite false}`, `renderOrder 12`. Scale (uniform) = `max(0.035, mesh.scale.x × 0.12)` (:454) → effective radius `0.04 × that` (≈ 0.005 at unit scale — very small; this is what the code does). Selected object: opacity 0.68, emissive `#10566c`; else 0.34 / `#0a2834` (:458-459).
-- Line (`createEffectiveRenderLine` :333-344): 2-point `Line` from mesh position to `P`, `LineBasicMaterial{color #7ce7ff, transparent, opacity 0.22, depthWrite false}`, `renderOrder 11`; opacity 0.44 when selected (:470); hidden if `|P − mesh| ≤ 0.01` (:463).
-- Both hidden when toggle off, metadata-silent, or no centroid (:437-450). Updated on: every `updateSourceDecorations` (position/level events), `updateSourceGains`, `updateSourceBandGains`, selection changes (:906), toggle.
+Shows where the object is *heard*, not a gain centroid. Native Studio
+(2026-10): the computation is `core/src/model/perceived.rs`, read by
+`scene/view/objects.rs::collect`; the web's `computeEffectiveRenderPosition`
+(a gain²-weighted centroid of speaker scene positions) is superseded — it
+landed on the object itself under the volumetric backend, whose power
+centroid sits on the object by design, and it read the stage's band-summed
+gains capped at 1.
+
+- Inputs: the loudspeakers as drawn (`SpeakerRef.scene_pos`, the frame the
+  objects are warped into), the head as drawn (`head_rotation`: front = scene
+  +X, right = scene +Z; identity on the loudspeaker path), the bands the
+  layout splits into (`model::layouts::crossover_bands`), the per-band gains
+  (`/meter/object/{id}/band/{b}/gains`) and per-band levels
+  (`/meter/object/{id}`'s band RMS).
+- One band's image (`perceived::band_image`): summing localisation on a set
+  calibrated at the listening position — the lateral cue is the duplex blend
+  of the velocity vector's (`rV = Σ g·u / Σ g`, ITD, below 1.5 kHz) and the
+  energy vector's (`rE = Σ g²·u / Σ g²`, ILD, above) components along the
+  head's right axis, blended by the band's log-frequency share below 1.5 kHz;
+  the image is the point of that cone nearest `rE` (front/back and height);
+  focus = `|rE|`; radius = power-weighted mean loudspeaker distance.
+- Band selected (`heatmapAllBands == false`): that band's image. All bands:
+  `perceived::object_image` mixes the bands' images weighted by the band's
+  energy (`10^(rms/10)`, 1 when unreported) times its log-frequency share
+  above 120 Hz (a band under it, bass-managed, carries no image; a rumble
+  alone falls back to energy weights); directions that disagree scale the
+  focus down. Without band gains the stage's summed gains are one full-range
+  band.
+- Marker: sphere at `direction × radius`, colour `#7ce7ff`, as the web's
+  (scale `max(0.035, levelScale × 0.12) × 0.04`, opacity 0.34 / 0.68 selected,
+  order 12).
+- Ring: billboard ring (`billboard_ring`, overlay lines) centred on the
+  marker, radius `radius × sqrt(1 − focus²)` — the loudspeakers carrying the
+  image stand on it; omitted when smaller than the marker. Opacity 0.25 /
+  0.5 selected.
+- Line: object position → marker, opacity 0.22 / 0.44 selected, hidden when
+  shorter than 0.01.
+- Hidden when the toggle is off, the object is metadata-silent, or nothing
+  carries it.
 
 ### 6.6 Trail
 
