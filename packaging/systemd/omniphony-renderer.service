@@ -3,7 +3,7 @@
 #   systemctl --user enable --now omniphony-renderer
 # It is the unit Studio's "Install service" writes to ~/.config/systemd/user/
 # (which then takes precedence over this file), with Studio's default settings:
-# OSC on 127.0.0.1:9000, no metering, log level info, input pipe
+# OSC on 127.0.0.1:9000, metering on, log level info, input pipe
 # /tmp/orender.pipe. For other settings, install the service from Studio, or
 #   systemctl --user edit --full omniphony-renderer
 # Kept equal to linux_service_unit() by a test in
@@ -16,7 +16,7 @@ Wants=graphical-session.target
 
 [Service]
 Type=notify
-ExecStart=/usr/bin/orender render /tmp/orender.pipe --continuous --enable-vbap --osc --osc-host 127.0.0.1 --osc-port 9000 --osc-rx-port 9000 --osc-yield
+ExecStart=/usr/bin/orender render /tmp/orender.pipe --continuous --enable-vbap --osc --osc-host 127.0.0.1 --osc-port 9000 --osc-rx-port 9000 --osc-yield --osc-metering
 Restart=on-failure
 RestartSec=2
 KillSignal=SIGINT

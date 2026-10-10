@@ -1236,12 +1236,12 @@ mod tests {
         let defaults = crate::host::config::OscConfig::default();
         // Studio's defaults: `default_orender_input_path()` with neither
         // `$TMPDIR` nor `OMNIPHONY_INPUT_PIPE` set, the default OSC target,
-        // metering off and the default log level.
+        // the default metering switch and the default log level.
         let args = orender_render_args(
             Path::new("/tmp/orender.pipe"),
             &defaults.host,
             crate::host::runtime_env::DEFAULT_OSC_RX_PORT,
-            false,
+            defaults.osc_metering_enabled,
             None,
         );
         assert_eq!(

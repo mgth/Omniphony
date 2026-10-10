@@ -208,7 +208,7 @@ Its messages: `journalctl --user -u omniphony-renderer`.
   show it as installed and running, *Restart service* and *Uninstall service*
   act on it (uninstalling disables it; the packaged file stays), and Studio
   starts no renderer of its own while it runs.
-- **It uses Studio's default settings**: OSC on `127.0.0.1:9000`, no metering,
+- **It uses Studio's default settings**: OSC on `127.0.0.1:9000`, metering on,
   log level `info`. For other ones, press *Install service* in Studio: it
   writes the same unit with your settings to `~/.config/systemd/user/`, which
   takes precedence over the packaged one. Studio started from the portable
