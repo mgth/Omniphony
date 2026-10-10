@@ -50,7 +50,7 @@ pub struct Meter {
     pub rms_dbfs: f64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct RoomRatio {
     pub width: f64,
     pub length: f64,
@@ -63,6 +63,15 @@ pub struct RoomRatio {
     // renderer in the room domain so Studio restores the m/u reliably.
     #[serde(rename = "scaleM", default = "default_room_scale_m")]
     pub scale_m: f64,
+    /// Whether positions are read on the listener's sphere rather than in
+    /// this room: the direct headphone path with the renderer's
+    /// `sphere_coordinates` on (#773). Not a ratio, and never on the wire.
+    /// It is carried here because this value is what the scene and the
+    /// editors convert a position through (`AppState::display_room`), and
+    /// the reading is part of that conversion: the conversions that place a
+    /// source read it, the room's own geometry does not.
+    #[serde(skip)]
+    pub sphere: bool,
 }
 
 fn default_room_scale_m() -> f64 {
@@ -79,6 +88,139 @@ impl Default for RoomRatio {
             lower: 0.5,
             center_blend: 0.5,
             scale_m: 1.0,
+            sphere: false,
+        }
+    }
+}
+
+/// The measured room the render pans in while a BRIR set's loudspeakers
+/// render, as the renderer publishes it in `binaural.brir.room` (#803): the
+/// stage's ratios of it in the user's room's shape, with the metres to one
+/// unit (`scaleM`, the half-width the ratios are written against), its box
+/// in metres, and whether that box is an estimate around the loudspeakers
+/// rather than the file's room.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrirRoom {
+    pub ratio: RoomRatio,
+    /// `[min, max]` corners, renderer frame.
+    pub box_m: [[f64; 3]; 2],
+    pub estimated: bool,
+}
+
+/// A `[x, y, z]` of finite numbers.
+fn point3(v: &serde_json::Value) -> Option<[f64; 3]> {
+    let a = v.as_array()?;
+    if a.len() != 3 {
+        return None;
+    }
+    let mut p = [0.0; 3];
+    for (axis, value) in p.iter_mut().zip(a) {
+        *axis = value.as_f64().filter(|v| v.is_finite())?;
+    }
+    Some(p)
+}
+
+/// The geometry of a resident BRIR set, as the renderer publishes it in
+/// `binaural.brir.loaded`: the loudspeakers in metres around the listener
+/// (renderer frame: x right, y front, z up; the set's order, which is the
+/// order of `brir.layout`), and the room they stand in when the file
+/// describes it. What the scene draws as the measured room.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrirGeometry {
+    pub emitters_m: Vec<[f64; 3]>,
+    /// The room's two opposite corners, when the file states them.
+    pub room_corners_m: Option<[[f64; 3]; 2]>,
+    /// The file's `RoomType`, when it states one.
+    pub room_type: Option<String>,
+    /// The room the render pans in, as the renderer publishes it
+    /// (`brir.room`); `None` from a renderer that publishes none.
+    pub room: Option<BrirRoom>,
+}
+
+impl BrirGeometry {
+    /// Metres kept beyond the farthest loudspeaker on each side when the
+    /// file states no room.
+    pub const BOX_MARGIN_M: f64 = 0.3;
+    /// The floor at least this far below the listener's ears, and this
+    /// much headroom above, when the file states no room.
+    pub const FLOOR_M: f64 = 1.2;
+    pub const HEADROOM_M: f64 = 1.0;
+
+    /// The box the loudspeakers stand in, `[min, max]` in the renderer's
+    /// frame: the one the renderer pans in when it publishes it; else the
+    /// file's corners, else the loudspeakers' bounding box with a margin,
+    /// a floor and some headroom — an indication of the room, not its
+    /// measurement.
+    pub fn room_box_m(&self) -> [[f64; 3]; 2] {
+        if let Some(room) = &self.room {
+            return room.box_m;
+        }
+        if let Some([a, b]) = self.room_corners_m {
+            let mut lo = [0.0; 3];
+            let mut hi = [0.0; 3];
+            for axis in 0..3 {
+                lo[axis] = a[axis].min(b[axis]);
+                hi[axis] = a[axis].max(b[axis]);
+            }
+            return [lo, hi];
+        }
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for e in &self.emitters_m {
+            for axis in 0..3 {
+                lo[axis] = lo[axis].min(e[axis]);
+                hi[axis] = hi[axis].max(e[axis]);
+            }
+        }
+        if self.emitters_m.is_empty() {
+            lo = [0.0; 3];
+            hi = [0.0; 3];
+        }
+        for axis in 0..3 {
+            lo[axis] -= Self::BOX_MARGIN_M;
+            hi[axis] += Self::BOX_MARGIN_M;
+        }
+        lo[2] = lo[2].min(-Self::FLOOR_M);
+        hi[2] = hi[2].max(Self::HEADROOM_M);
+        [lo, hi]
+    }
+
+    /// Metres to one scene unit. The room's scale when the renderer
+    /// publishes it — the half-width its ratios are written against, so the
+    /// loudspeakers drawn in metres and the objects warped by those ratios
+    /// (`AppState::display_room`) share one frame — else the box's reach.
+    pub fn metres_per_unit(&self) -> f64 {
+        self.room
+            .as_ref()
+            .map_or_else(|| self.reach_m(), |room| room.ratio.scale_m.max(0.01))
+    }
+
+    /// Metres to one scene unit from a renderer that publishes no room: the
+    /// box's farthest extent from the listener lands at one unit, so the
+    /// set fills the frame the cube does.
+    pub fn reach_m(&self) -> f64 {
+        let [lo, hi] = self.room_box_m();
+        lo.iter()
+            .chain(hi.iter())
+            .fold(0.0f64, |m, v| m.max(v.abs()))
+            .max(0.01)
+    }
+}
+
+impl RoomRatio {
+    /// The unit cube: no warp at all, every half-axis one unit, `scale_m`
+    /// metres to the unit. What the direct binaural path renders in (the
+    /// renderer's `RoomRatios::UNIT`, scaled by its `unit_scale_m`).
+    pub fn unit(scale_m: f64) -> Self {
+        Self {
+            width: 1.0,
+            length: 1.0,
+            height: 1.0,
+            rear: 1.0,
+            lower: 1.0,
+            center_blend: 0.0,
+            scale_m,
+            sphere: false,
         }
     }
 }
@@ -850,6 +992,168 @@ pub enum ConfigRefusal {
 impl AppState {
     /// Whether the speakers shown cannot be edited: the backend froze them,
     /// or they are a BRIR set's own loudspeakers.
+    /// The path the render takes to the output, from the binaural document
+    /// and the loudspeakers in use (`model::binaural::RenderPath`).
+    pub fn render_path(&self) -> super::binaural::RenderPath {
+        super::binaural::RenderPath::of(self.binaural.as_ref(), self.brir_speakers.is_some())
+    }
+
+    /// The frame the scene draws in and the editors convert through: the
+    /// room the stage pans in — the live room on the speakers and in the
+    /// virtual room, the measured room on a BRIR set's loudspeakers
+    /// (`brir_room`, #803) — and the unit room on the direct binaural path,
+    /// which reads a direction straight off a position
+    /// (`RenderPath::warps_with_room`), or on the listener's sphere when the
+    /// renderer reads it there (`reads_on_sphere`, `RoomRatio::sphere`). One
+    /// resolution for the forward projection, the gizmos' inverse, the
+    /// channel editor's polar conversions and the heatmap volumes, so a
+    /// drag lands where the pointer is and a volume sits on its sources
+    /// whatever the path.
+    pub fn display_room(&self) -> RoomRatio {
+        use super::binaural::RenderPath;
+        match self.render_path() {
+            RenderPath::Direct => RoomRatio {
+                sphere: self.reads_on_sphere(),
+                ..RoomRatio::unit(self.binaural_unit_scale_m())
+            },
+            // A renderer that publishes no measured room pans in the live
+            // one.
+            RenderPath::MeasuredRoom => self
+                .brir_room()
+                .map_or_else(|| self.room_ratio.clone(), |room| room.ratio),
+            RenderPath::Speakers | RenderPath::VirtualRoom => self.room_ratio.clone(),
+        }
+    }
+
+    /// The measured room the render pans in, while the headphones render
+    /// on a BRIR set's loudspeakers and the renderer publishes it
+    /// (`binaural.brir.room`). `None` on another path, or from a renderer
+    /// that pans a set's loudspeakers in the user's room.
+    pub fn brir_room(&self) -> Option<BrirRoom> {
+        self.brir_speakers.as_ref()?;
+        let room = self.binaural.as_ref()?.get("brir")?.get("room")?;
+        let ratio: RoomRatio = serde_json::from_value(room.get("ratio")?.clone()).ok()?;
+        if !(ratio.scale_m.is_finite() && ratio.scale_m > 0.0) {
+            return None;
+        }
+        let box_m = room
+            .get("boxM")
+            .and_then(|v| v.as_array())
+            .filter(|a| a.len() == 2)
+            .and_then(|a| Some([point3(&a[0])?, point3(&a[1])?]))?;
+        let estimated = room
+            .get("estimated")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        Some(BrirRoom {
+            ratio,
+            box_m,
+            estimated,
+        })
+    }
+
+    /// The resident BRIR set's geometry, while the headphones render on its
+    /// loudspeakers (`brir_speakers`, the published `brir.layout`): the
+    /// loudspeakers in metres and the room, from `binaural.brir.loaded`.
+    /// `None` on another path, or from a renderer that publishes no metres.
+    pub fn brir_geometry(&self) -> Option<BrirGeometry> {
+        self.brir_speakers.as_ref()?;
+        let loaded = self.binaural.as_ref()?.get("brir")?.get("loaded")?;
+        let point = point3;
+        let emitters_m = loaded
+            .get("emittersM")?
+            .as_array()?
+            .iter()
+            .map(point)
+            .collect::<Option<Vec<_>>>()?;
+        if emitters_m.is_empty() {
+            return None;
+        }
+        let room_corners_m = loaded
+            .get("roomCornersM")
+            .and_then(|v| v.as_array())
+            .filter(|a| a.len() == 2)
+            .and_then(|a| Some([point(&a[0])?, point(&a[1])?]));
+        let room_type = loaded
+            .get("roomType")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        Some(BrirGeometry {
+            emitters_m,
+            room_corners_m,
+            room_type,
+            room: self.brir_room(),
+        })
+    }
+
+    /// The listening room the early reflections mirror sources in, full
+    /// extents in metres in the renderer's frame (width, depth, height):
+    /// `reflections.roomEffectiveM`, the configured room grown to hold the
+    /// scene, or `roomM` from a renderer that publishes only that. `None`
+    /// while the reflections are off.
+    pub fn binaural_reflection_room_m(&self) -> Option<[f64; 3]> {
+        let reflections = self.binaural.as_ref()?.get("reflections")?;
+        if reflections
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            return None;
+        }
+        let room = reflections
+            .get("roomEffectiveM")
+            .or_else(|| reflections.get("roomM"))?
+            .as_array()?;
+        if room.len() != 3 {
+            return None;
+        }
+        let mut out = [0.0; 3];
+        for (axis, value) in out.iter_mut().zip(room) {
+            *axis = value.as_f64().filter(|v| v.is_finite() && *v > 0.0)?;
+        }
+        Some(out)
+    }
+
+    /// The frame a loudspeaker stands in: the display frame without the
+    /// sphere reading. The reading is how the binaural stage hears a source's
+    /// position; a speaker's position is where it stands, drawn and edited
+    /// as it is, including the reference layout shown on the direct path.
+    /// One definition for the scene's projection and the speaker gizmo's
+    /// inverse, so a speaker lands where it is drawn.
+    pub fn speaker_frame(&self) -> RoomRatio {
+        RoomRatio {
+            sphere: false,
+            ..self.display_room()
+        }
+    }
+
+    /// Whether the renderer reads positions on the listener's sphere
+    /// (`binaural.sphereCoordinates`, #773): the option, on the direct
+    /// headphone path, the one that reads a direction off a position (the
+    /// renderer's `BinauralLiveParams::reads_on_sphere`). A renderer that
+    /// publishes no such key reads the cube.
+    pub fn reads_on_sphere(&self) -> bool {
+        self.render_path() == super::binaural::RenderPath::Direct
+            && self
+                .binaural
+                .as_ref()
+                .and_then(|b| b.get("sphereCoordinates"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    }
+
+    /// Metres to one unit of the direct binaural path's cube
+    /// (`binaural.unitScaleM`, the renderer's distance scale).
+    pub fn binaural_unit_scale_m(&self) -> f64 {
+        self.binaural
+            .as_ref()
+            .and_then(|b| b.get("unitScaleM"))
+            .and_then(serde_json::Value::as_f64)
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .unwrap_or(1.0)
+    }
+
     pub fn speakers_read_only(&self) -> bool {
         self.render_backend_state.frozen_speakers || self.brir_speakers.is_some()
     }
@@ -916,6 +1220,7 @@ impl AppState {
                 lower: 0.5,
                 center_blend: 0.5,
                 scale_m: 1.0,
+                sphere: false,
             },
             ..Default::default()
         }

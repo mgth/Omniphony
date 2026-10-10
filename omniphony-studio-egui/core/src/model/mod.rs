@@ -3,4 +3,5 @@
 //! host until the two hosts share one crate.
 
 pub mod app_state;
+pub mod binaural;
 pub mod layouts;

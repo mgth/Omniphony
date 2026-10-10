@@ -193,10 +193,20 @@ impl VolumeInput {
         settings: &VolumeSettings,
         selected_speaker: Option<usize>,
     ) {
-        self.room.clone_from(&live.app.room_ratio);
+        // The frame the sources are drawn in (`AppState::display_room`): the
+        // field stays on them when the path changes the room.
+        self.room = live.app.display_room();
         self.objects.clear();
         if settings.object_field_enabled {
             self.objects.extend(active_objects(live, settings));
+            if self.room.sphere {
+                // The field sits where the sources are drawn: where the
+                // sphere reading hears them.
+                for object in &mut self.objects {
+                    [object.x, object.y, object.z] =
+                        super::sphere_heard_point([object.x, object.y, object.z]);
+                }
+            }
         }
         self.global = settings
             .global_enabled

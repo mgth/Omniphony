@@ -874,6 +874,20 @@ fn head_tracking_cfg_mut(render: &mut RenderConfig) -> &mut crate::config::HeadT
         .get_or_insert_with(Default::default)
 }
 
+/// Keep the file a `sofa:` / `brir:` source names, for a later bare
+/// selector and for the config (`last_sofa_path`, `last_brir_path`).
+pub fn remember_hrir_file(
+    bin: &mut crate::live_params::BinauralLiveParams,
+    source: &crate::binaural::HrirSource,
+) {
+    use crate::binaural::HrirSource;
+    match source {
+        HrirSource::Sofa(p) if !p.is_empty() => bin.last_sofa_path.clone_from(p),
+        HrirSource::Brir(p) if !p.is_empty() => bin.last_brir_path.clone_from(p),
+        _ => {}
+    }
+}
+
 /// The selector string of an HRIR source, which `HrirSource::from_str` reads
 /// back to the same source: `saf`, `sofa:<path>`, `pinna:<preset>:<d>:<depth>`, …
 fn hrir_selector(source: &crate::binaural::HrirSource) -> String {
@@ -2106,46 +2120,69 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         help_i18n_key: Some("help.binaural.hrtf"),
         legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_HRIR_SOURCE),
         set: |live, raw, _env| {
+            use crate::binaural::HrirSource;
             let raw = raw_str(raw)?.trim();
             if raw.is_empty() {
                 return None;
             }
-            let source = crate::binaural::HrirSource::from_str(raw)?;
+            // A bare `sofa` / `brir` reopens the file last named for it (a
+            // selector, or the config); without one it stays bare, and the
+            // embedded KEMAR set plays while the status says why.
+            let source = match HrirSource::from_str(raw)? {
+                HrirSource::Sofa(p) if p.is_empty() => {
+                    HrirSource::Sofa(live.binaural.last_sofa_path.clone())
+                }
+                HrirSource::Brir(p) if p.is_empty() => {
+                    HrirSource::Brir(live.binaural.last_brir_path.clone())
+                }
+                other => other,
+            };
+            remember_hrir_file(&mut live.binaural, &source);
             let canonical = hrir_selector(&source);
             live.binaural.hrir_source = source;
             Some(canonical)
         },
         get_json: |live| hrir_selector(&live.binaural.hrir_source).into(),
-        // The selector, with a SOFA or BRIR file in its own key.
+        // The selector, with the SOFA and BRIR files in their own keys: the
+        // file in use, else the one last named, so a save while another
+        // source renders keeps the file for the next time it is chosen.
         config_store: |render, live, _env| {
             use crate::binaural::HrirSource;
             let (selector, sofa, brir) = match &live.binaural.hrir_source {
-                HrirSource::Sofa(p) if !p.is_empty() => {
-                    ("sofa".to_string(), Some(std::path::PathBuf::from(p)), None)
-                }
-                HrirSource::Brir(p) if !p.is_empty() => {
-                    ("brir".to_string(), None, Some(std::path::PathBuf::from(p)))
-                }
+                HrirSource::Sofa(p) if !p.is_empty() => ("sofa".to_string(), Some(p), None),
+                HrirSource::Brir(p) if !p.is_empty() => ("brir".to_string(), None, Some(p)),
                 other => (hrir_selector(other), None, None),
+            };
+            let file = |active: Option<&String>, last: &String| {
+                active
+                    .or_else(|| (!last.is_empty()).then_some(last))
+                    .map(std::path::PathBuf::from)
             };
             let bin = binaural_cfg_mut(render);
             bin.hrir_source = Some(selector);
-            bin.hrtf_sofa_path = sofa;
-            bin.brir_sofa_path = brir;
+            bin.hrtf_sofa_path = file(sofa, &live.binaural.last_sofa_path);
+            bin.brir_sofa_path = file(brir, &live.binaural.last_brir_path);
         },
-        // A bare "sofa" / "brir" takes its file from its own key, and falls
-        // back to the embedded KEMAR set without one.
+        // The two file keys are remembered whatever the selector says; a
+        // bare "sofa" / "brir" then takes its file from its own key, and
+        // falls back to the embedded KEMAR set without one.
         config_seed: |live, render, _env| {
             use crate::binaural::HrirSource;
             let Some(bin) = binaural_cfg(render) else {
                 return;
             };
+            let file =
+                |path: Option<&std::path::PathBuf>| path.map(|p| p.to_string_lossy().into_owned());
+            if let Some(path) = file(bin.hrtf_sofa_path.as_ref()) {
+                live.binaural.last_sofa_path = path;
+            }
+            if let Some(path) = file(bin.brir_sofa_path.as_ref()) {
+                live.binaural.last_brir_path = path;
+            }
             let Some(source) = bin.hrir_source.as_deref().and_then(HrirSource::from_str) else {
                 return;
             };
-            let file =
-                |path: Option<&std::path::PathBuf>| path.map(|p| p.to_string_lossy().into_owned());
-            live.binaural.hrir_source =
+            let source =
                 match source {
                     HrirSource::Sofa(p) if p.is_empty() => file(bin.hrtf_sofa_path.as_ref())
                         .map_or(HrirSource::SafKemar, HrirSource::Sofa),
@@ -2153,6 +2190,8 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
                         .map_or(HrirSource::SafKemar, HrirSource::Brir),
                     other => other,
                 };
+            remember_hrir_file(&mut live.binaural, &source);
+            live.binaural.hrir_source = source;
         },
     },
     OptionSpec {
@@ -2342,6 +2381,30 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         config_seed: |live, render, _env| {
             if let Some(v) = binaural_cfg(render).and_then(|b| b.diffuse_field_eq) {
                 live.binaural.diffuse_field_eq = v;
+            }
+        },
+    },
+    OptionSpec {
+        key: "binaural_sphere_coordinates",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(false),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.sphereCoordinates",
+        help_i18n_key: Some("help.binaural.sphereCoordinates"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_SPHERE_COORDINATES),
+        set: |live, raw, _env| {
+            let enabled = raw_bool(raw)?;
+            live.binaural.sphere_coordinates = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.binaural.sphere_coordinates.into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).sphere_coordinates = Some(live.binaural.sphere_coordinates);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = binaural_cfg(render).and_then(|b| b.sphere_coordinates) {
+                live.binaural.sphere_coordinates = v;
             }
         },
     },
@@ -3766,5 +3829,93 @@ mod tests {
                 None => assert!(entry.get("group").is_none(), "{}", spec.key),
             }
         }
+    }
+
+    /// A bare `sofa` / `brir` reopens the file last named for it, and the
+    /// config keeps both files whatever the selector in force: a room
+    /// response left for KEMAR, saved, and chosen again plays the same file.
+    #[test]
+    fn the_file_sources_keep_their_last_file() {
+        use crate::binaural::HrirSource;
+        let env = OptionEnv::detached();
+        let spec = find("hrir_source").expect("hrir_source is declared");
+        let set = |live: &mut LiveParams, value: &str| {
+            (spec.set)(live, &RawOptionValue::Str(value), &env)
+        };
+        let mut live = LiveParams::default();
+        assert_eq!(
+            set(&mut live, "brir:/rooms/g.sofa").as_deref(),
+            Some("brir:/rooms/g.sofa")
+        );
+        assert_eq!(
+            set(&mut live, "sofa:/hrtf/pp12.sofa").as_deref(),
+            Some("sofa:/hrtf/pp12.sofa")
+        );
+        assert_eq!(set(&mut live, "saf").as_deref(), Some("saf"));
+
+        // Saved under KEMAR, both files stay in the config.
+        let mut render = RenderConfig::default();
+        (spec.config_store)(&mut render, &live, &env);
+        let bin = render.binaural.as_ref().expect("binaural block");
+        assert_eq!(bin.hrir_source.as_deref(), Some("saf"));
+        assert_eq!(
+            bin.hrtf_sofa_path.as_deref(),
+            Some(std::path::Path::new("/hrtf/pp12.sofa"))
+        );
+        assert_eq!(
+            bin.brir_sofa_path.as_deref(),
+            Some(std::path::Path::new("/rooms/g.sofa"))
+        );
+
+        // Bare selectors reopen them.
+        assert_eq!(
+            set(&mut live, "brir").as_deref(),
+            Some("brir:/rooms/g.sofa")
+        );
+        assert!(matches!(&live.binaural.hrir_source, HrirSource::Brir(p) if p == "/rooms/g.sofa"));
+        assert_eq!(
+            set(&mut live, "sofa").as_deref(),
+            Some("sofa:/hrtf/pp12.sofa")
+        );
+        // The file in use wins over the one last named when they differ.
+        live.binaural.hrir_source = HrirSource::Brir("/rooms/h.sofa".to_owned());
+        let mut render = RenderConfig::default();
+        (spec.config_store)(&mut render, &live, &env);
+        assert_eq!(
+            render
+                .binaural
+                .as_ref()
+                .and_then(|b| b.brir_sofa_path.as_deref()),
+            Some(std::path::Path::new("/rooms/h.sofa"))
+        );
+
+        // Seeded from a config naming files under another selector, a bare
+        // selector finds them too.
+        let mut render = RenderConfig::default();
+        let bin = binaural_cfg_mut(&mut render);
+        bin.hrir_source = Some("saf".to_owned());
+        bin.hrtf_sofa_path = Some("/hrtf/pp12.sofa".into());
+        bin.brir_sofa_path = Some("/rooms/g.sofa".into());
+        let mut seeded = LiveParams::default();
+        (spec.config_seed)(&mut seeded, &render, &env);
+        assert!(matches!(seeded.binaural.hrir_source, HrirSource::SafKemar));
+        assert_eq!(
+            set(&mut seeded, "brir").as_deref(),
+            Some("brir:/rooms/g.sofa")
+        );
+        assert_eq!(
+            set(&mut seeded, "sofa").as_deref(),
+            Some("sofa:/hrtf/pp12.sofa")
+        );
+
+        // Nothing ever named: a bare selector stays bare, and the config
+        // carries no file.
+        let mut bare = LiveParams::default();
+        assert_eq!(set(&mut bare, "brir").as_deref(), Some("brir"));
+        let mut render = RenderConfig::default();
+        (spec.config_store)(&mut render, &bare, &env);
+        let bin = render.binaural.as_ref().expect("binaural block");
+        assert_eq!(bin.hrir_source.as_deref(), Some("brir"));
+        assert!(bin.hrtf_sofa_path.is_none() && bin.brir_sofa_path.is_none());
     }
 }

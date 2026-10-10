@@ -11,6 +11,7 @@ use crate::app::StudioSpike;
 use crate::host::commands::SharedState;
 use crate::host::commands::{binaural, engine, render};
 use crate::i18n::{t, tf};
+use crate::model::binaural::OutputMode;
 use crate::ui::group::Group;
 use crate::ui::help::{self, Help};
 use crate::ui::section::Section;
@@ -91,53 +92,6 @@ pub enum RendererTab {
     #[default]
     Renderer,
     Binaural,
-}
-
-/// Output-mode select: the pair `(outputMode, mode)` of the binaural state
-/// flattened into one choice, as `binaural.js` does.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum OutputMode {
-    Speaker,
-    BinauralDirect,
-    BinauralCascaded,
-}
-
-impl OutputMode {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            OutputMode::Speaker => t("outputMode.speakers"),
-            OutputMode::BinauralDirect => t("outputMode.headphones"),
-            OutputMode::BinauralCascaded => t("outputMode.headphonesVirtual"),
-        }
-    }
-
-    /// `applyBinauralState`: read the flattened value out of the binaural
-    /// document. The mode shown is the one that renders (`modeEffective`): a
-    /// measured room forces the virtual-speaker path whatever was chosen.
-    pub(crate) fn from_state(binaural: Option<&serde_json::Value>) -> Self {
-        let output = binaural
-            .and_then(|b| b.get("outputMode"))
-            .and_then(|v| v.as_str());
-        if output != Some("binaural") {
-            return OutputMode::Speaker;
-        }
-        let mode = binaural
-            .and_then(|b| b.get("modeEffective").or_else(|| b.get("mode")))
-            .and_then(|v| v.as_str());
-        match mode {
-            Some("cascaded") => OutputMode::BinauralCascaded,
-            _ => OutputMode::BinauralDirect,
-        }
-    }
-
-    /// Whether the HRTF source is a measured room, which leaves only the
-    /// virtual-speaker path to choose.
-    fn room_forces_virtual(binaural: Option<&serde_json::Value>) -> bool {
-        binaural
-            .and_then(|b| b.get("hrirSource"))
-            .and_then(|v| v.as_str())
-            == Some("brir")
-    }
 }
 
 /// Evaluation modes, in the select's order.
@@ -283,57 +237,30 @@ impl StudioSpike {
     }
 
     pub(crate) fn output_mode_row(&mut self, ui: &mut Ui) {
-        let (current, room) = {
+        let current = {
             let live = self.host.read();
-            let binaural = live.app.binaural.as_ref();
-            (
-                OutputMode::from_state(binaural),
-                OutputMode::room_forces_virtual(binaural),
-            )
+            OutputMode::from_state(live.app.binaural.as_ref())
         };
         let mut chosen = current;
         widgets::label_row_help(ui, t("outputMode.selectTitle"), "help.outputMode", |ui| {
             widgets::bounded_combo(ui, 160.0, |ui, w| {
-                let combo = egui::ComboBox::from_id_salt("output-mode")
-                    .selected_text(current.label())
+                egui::ComboBox::from_id_salt("output-mode")
+                    .selected_text(t(current.i18n_key()))
                     .width(w)
                     .truncate()
                     .show_ui(ui, |ui| {
-                        for mode in [
-                            OutputMode::Speaker,
-                            OutputMode::BinauralDirect,
-                            OutputMode::BinauralCascaded,
-                        ] {
-                            // A measured room renders through the virtual
-                            // room only: offering Direct would just snap back.
-                            if room && mode == OutputMode::BinauralDirect {
-                                continue;
-                            }
-                            ui.selectable_value(&mut chosen, mode, mode.label());
+                        for mode in OutputMode::ALL {
+                            ui.selectable_value(&mut chosen, mode, t(mode.i18n_key()));
                         }
                     });
-                if room {
-                    combo
-                        .response
-                        .on_hover_text(t("outputMode.brirForcesVirtual"));
-                }
             });
         });
-        if chosen == current {
-            return;
-        }
-        // Not optimistic: the renderer's echo is what moves the select, so a
-        // rejected change does not leave the UI lying.
-        match chosen {
-            OutputMode::Speaker => binaural::control_output_mode(&self.host, "speaker".into()),
-            OutputMode::BinauralDirect => {
-                binaural::control_output_mode(&self.host, "binaural".into());
-                binaural::control_binaural_mode(&self.host, "direct".into());
-            }
-            OutputMode::BinauralCascaded => {
-                binaural::control_output_mode(&self.host, "binaural".into());
-                binaural::control_binaural_mode(&self.host, "cascaded".into());
-            }
+        if chosen != current {
+            // The mode drives the source (a measured room is left for KEMAR
+            // on the direct path), in one command. Not optimistic: the
+            // renderer's echo is what moves the select, so a rejected change
+            // does not leave the UI lying.
+            binaural::select_output_mode(&self.host, chosen);
         }
     }
 

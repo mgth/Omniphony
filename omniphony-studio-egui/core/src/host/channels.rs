@@ -456,12 +456,20 @@ pub struct Channel {
 }
 
 /// Polar → ADM normalised cartesian, exactly like the speaker editor: the room
-/// warp is inverted and the result clamped. "Norm" is the ADM position, not a
-/// raw axis swizzle.
+/// warp is inverted, a position past a wall first drawn back along its own
+/// line so that the angle survives (the renderer's `angles_to_normalized`;
+/// a measured room can be lower than the entry's radius). "Norm" is the ADM
+/// position, not a raw axis swizzle.
 pub fn polar_to_adm(room: &RoomRatio, azimuth: f64, elevation: f64, distance: f64) -> [f64; 3] {
     use omniphony_geometry::f64 as g;
     let (x, y, z) = g::from_spherical(azimuth, elevation, distance);
-    g::inverse_room_scaled_position(
+    if room.sphere {
+        // The sphere reading hears every position through its own mapping:
+        // the pose is the room position it hears at this angle (the
+        // renderer's `OutputWarp::Sphere`).
+        return g::inverse_sphere_reading_direction([x, y, z]);
+    }
+    g::inverse_room_scaled_direction(
         [x, y, z],
         [room.width, room.length, room.height],
         room.rear,
@@ -474,6 +482,14 @@ pub fn polar_to_adm(room: &RoomRatio, azimuth: f64, elevation: f64, distance: f6
 /// room warp is re-applied, then the spherical form derived.
 pub fn adm_to_polar(room: &RoomRatio, adm: [f64; 3]) -> (f64, f64, f64) {
     use omniphony_geometry::f64 as g;
+    if room.sphere {
+        // Where the sphere reading hears the position, at its distance to
+        // the room's surface: the radius `polar_to_adm` takes back.
+        let read = g::sphere_reading(adm);
+        let (az, el, _) = g::to_spherical(read[0], read[1], read[2]);
+        let reach = adm[0].abs().max(adm[1].abs()).max(adm[2].abs());
+        return (az, el, reach.max(0.01));
+    }
     let scaled = g::room_scaled_position(
         adm,
         [room.width, room.length, room.height],
@@ -483,6 +499,22 @@ pub fn adm_to_polar(room: &RoomRatio, adm: [f64; 3]) -> (f64, f64, f64) {
     );
     let (az, el, dist) = g::to_spherical(scaled[0], scaled[1], scaled[2]);
     (az, el, dist.max(0.01))
+}
+
+/// The polar radius of `adm` in metres: what the polar table's metre field
+/// shows, and takes back as `metres / scale_m` for [`polar_to_adm`]. It is
+/// the radius [`adm_to_polar`] gives, at the frame's scale: the length of
+/// the room-warped position, or, under the sphere reading, the distance to
+/// the room's surface, which is the distance the binaural stage's cues
+/// measure. The length of [`adm_to_meters`] is the first only: under the
+/// sphere reading it is the room position's, and a field showing it read
+/// 0.71 m for the 0.50 m just typed into it.
+pub fn adm_polar_distance_m(room: &RoomRatio, adm: [f64; 3], scale_m: f64) -> f64 {
+    if room.sphere {
+        return adm_to_polar(room, adm).2 * scale_m;
+    }
+    let metres = adm_to_meters(room, adm, scale_m);
+    (metres[0] * metres[0] + metres[1] * metres[1] + metres[2] * metres[2]).sqrt()
 }
 
 /// Normalised ADM → Omniphony-axis metres, honouring the room geometry.
@@ -645,7 +677,12 @@ pub fn effective_channels_for(
     app: &AppState,
     family: Family,
 ) -> Vec<Channel> {
-    let room = &app.room_ratio;
+    // The room a pose is read in: the one the output renders in and the
+    // scene draws in (`AppState::display_room`), so a polar entry on the
+    // direct headphone path lands on its angle rather than being
+    // pre-compensated for a warp that path does not apply (#783's rule).
+    let room = app.display_room();
+    let room = &room;
     let mode = family_placement(app, family).effective_mode;
     let mut bases = catalog.bases.clone();
     let add_base = |name: &str, source: Option<&serde_json::Value>, bases: &mut Vec<Base>| {
@@ -875,6 +912,7 @@ mod tests {
             lower: 0.5,
             center_blend: 0.5,
             scale_m: 1.5,
+            sphere: false,
         }
     }
 
@@ -921,6 +959,115 @@ mod tests {
             for i in 0..3 {
                 assert!((back[i] - adm[i]).abs() < 1e-6, "{adm:?} -> {back:?}");
             }
+        }
+    }
+
+    /// While the renderer reads positions on the sphere (#773), a polar
+    /// entry is the room position heard at its angle, as the renderer stores
+    /// it: `L` at −30° is the room's front-left corner, and the top front
+    /// pair its upper front corners. The readout of a room position is the
+    /// angle it is heard at, at its distance to the room's surface.
+    #[test]
+    fn polar_entries_follow_the_sphere_reading() {
+        let sphere = RoomRatio {
+            sphere: true,
+            ..RoomRatio::unit(1.0)
+        };
+        let close = |a: [f64; 3], b: [f64; 3]| {
+            assert!(
+                (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-9),
+                "{a:?} is not {b:?}"
+            );
+        };
+        close(polar_to_adm(&sphere, -30.0, 0.0, 1.0), [-1.0, 1.0, 0.0]);
+        close(polar_to_adm(&sphere, 45.0, 45.0, 1.0), [1.0, 1.0, 1.0]);
+        close(polar_to_adm(&sphere, 135.0, 0.0, 0.5), [0.5, -0.5, 0.0]);
+        // Past the surface the entry is held on it, on its angle.
+        close(polar_to_adm(&sphere, -90.0, 0.0, 2.0), [-1.0, 0.0, 0.0]);
+        for (az, el, distance) in [(-30.0, 0.0, 1.0), (110.0, 30.0, 1.0), (-135.0, 45.0, 0.7)] {
+            let adm = polar_to_adm(&sphere, az, el, distance);
+            let (az_back, el_back, distance_back) = adm_to_polar(&sphere, adm);
+            assert!(
+                (az_back - az).abs() < 1e-6
+                    && (el_back - el).abs() < 1e-6
+                    && (distance_back - distance).abs() < 1e-9,
+                "{az}/{el}/{distance} read back {az_back}/{el_back}/{distance_back}"
+            );
+        }
+        // The cube reads the same corner at 45°.
+        let (az, ..) = adm_to_polar(&RoomRatio::unit(1.0), [-1.0, 1.0, 0.0]);
+        assert!((az + 45.0).abs() < 1e-9);
+    }
+
+    /// The polar table's metre field reads back the metres typed into it,
+    /// in every frame: the value is divided by the scale and taken as the
+    /// polar radius, so what is shown must be that radius at the scale.
+    /// Under the sphere reading the room position's own length is another
+    /// number: 0.50 m at −30° is the room point (−0.5, 0.5, 0), 0.71 long.
+    #[test]
+    fn the_polar_metre_distance_reads_back_what_was_entered() {
+        let frames = [
+            ("unit", RoomRatio::unit(1.0)),
+            ("live room", room()),
+            (
+                "sphere",
+                RoomRatio {
+                    sphere: true,
+                    ..RoomRatio::unit(1.0)
+                },
+            ),
+            (
+                "sphere at 2.5 m",
+                RoomRatio {
+                    sphere: true,
+                    ..RoomRatio::unit(2.5)
+                },
+            ),
+        ];
+        for (name, frame) in &frames {
+            let scale_m = frame.scale_m;
+            for (az, el, entered_m) in [(-30.0, 0.0, 0.5), (110.0, 20.0, 0.8), (45.0, 45.0, 0.3)] {
+                // The field's edit: metres over the scale, as the radius.
+                let adm = polar_to_adm(frame, az, el, entered_m / scale_m);
+                let shown = adm_polar_distance_m(frame, adm, scale_m);
+                assert!(
+                    (shown - entered_m).abs() < 1e-6,
+                    "{name}: {entered_m} m at {az}/{el} reads back {shown} m"
+                );
+            }
+        }
+        let sphere = &frames[2].1;
+        let adm = polar_to_adm(sphere, -30.0, 0.0, 0.5);
+        let room_length = (adm[0] * adm[0] + adm[1] * adm[1] + adm[2] * adm[2]).sqrt();
+        assert!((room_length - 0.5f64.sqrt()).abs() < 1e-9, "{adm:?}");
+    }
+
+    /// A polar entry past a wall of a low room keeps its angle, as the
+    /// renderer keeps it: the position is drawn back into the room, not
+    /// clamped axis by axis (#803).
+    #[test]
+    fn a_polar_entry_keeps_its_angle_in_a_low_room() {
+        let low = RoomRatio {
+            width: 1.0,
+            length: 1.2,
+            height: 0.4,
+            rear: 0.8,
+            lower: 0.48,
+            center_blend: 0.5,
+            scale_m: 2.5,
+            sphere: false,
+        };
+        for (az, el) in [(-30.0, 30.0), (110.0, 30.0), (-45.0, 45.0), (-135.0, 0.0)] {
+            let adm = polar_to_adm(&low, az, el, 1.0);
+            assert!(
+                adm.iter().all(|c| c.abs() <= 1.0 + 1e-9),
+                "{az}/{el}: {adm:?}"
+            );
+            let (got_az, got_el, _) = adm_to_polar(&low, adm);
+            assert!(
+                (got_az - az).abs() < 1e-6 && (got_el - el).abs() < 1e-6,
+                "{az}/{el} came back as {got_az}/{got_el}"
+            );
         }
     }
 
@@ -1145,6 +1292,78 @@ mod tests {
             family_placement(&app, Family::named("dolby")).layout_source,
             LayoutSource::Generic
         );
+    }
+
+    /// The direct headphone path reads a pose straight off the position,
+    /// so a manual polar entry is read back on its angle there: through the
+    /// payload and the model, not only the coordinate helpers. The cascaded
+    /// path keeps the live room's reading.
+    #[test]
+    fn a_manual_polar_entry_reads_back_on_its_angle_on_the_direct_path() {
+        let entries = serde_json::json!({ "speakers": [
+            { "name": "L", "coord_mode": "polar", "azimuth": -30.0, "elevation": 0.0, "distance": 1.0 }
+        ] });
+        let placement = serde_json::json!({
+            "generic": { "layout": entries },
+            "dolby": { "mode": "manual" }
+        });
+        let mut app = app_with_placement(placement.clone());
+        app.room_ratio = room();
+        app.binaural = Some(serde_json::json!({
+            "outputMode": "binaural", "mode": "direct", "modeEffective": "direct",
+            "hrirSource": "saf", "unitScaleM": 1.0,
+        }));
+        let mut catalog = ChannelCatalog::default();
+        catalog.refresh(&app);
+        let read = |app: &AppState| {
+            let channels = effective_channels_for(&catalog, app, Family::named("dolby"));
+            channels.into_iter().find(|c| c.name == "L").expect("L")
+        };
+        let l = read(&app);
+        assert_eq!((l.azimuth, l.elevation, l.distance), (-30.0, 0.0, 1.0));
+        assert!(
+            (l.x + 0.5).abs() < 1e-6 && (l.y - 0.866).abs() < 1e-3,
+            "{} {}",
+            l.x,
+            l.y
+        );
+        let (azimuth, _, distance) = adm_to_polar(&app.display_room(), [l.x, l.y, l.z]);
+        assert!((azimuth + 30.0).abs() < 1e-6 && (distance - 1.0).abs() < 1e-6);
+
+        // Serialised and read again, the same entry comes back the same.
+        let channels = effective_channels_for(&catalog, &app, Family::named("dolby"));
+        let payload = build_layout_payload(&app, &channels);
+        let stored = payload["speakers"]
+            .as_array()
+            .and_then(|s| s.iter().find(|e| e["name"] == "L"))
+            .expect("L stored");
+        assert_eq!(
+            (stored["azimuth"].as_f64(), stored["distance"].as_f64()),
+            (Some(-30.0), Some(1.0))
+        );
+        app.live_options.placement = Some(serde_json::json!({
+            "generic": { "layout": payload },
+            "dolby": { "mode": "manual" }
+        }));
+        let again = read(&app);
+        assert_eq!((again.azimuth, again.distance), (-30.0, 1.0));
+        assert!((again.x - l.x).abs() < 1e-9 && (again.y - l.y).abs() < 1e-9);
+
+        // Through the virtual room the live room's reading applies: the
+        // position is pre-compensated for the warp the speaker stage undoes.
+        app.binaural = Some(serde_json::json!({
+            "outputMode": "binaural", "mode": "cascaded", "modeEffective": "cascaded",
+            "hrirSource": "saf",
+        }));
+        let warped = read(&app);
+        assert_eq!((warped.azimuth, warped.distance), (-30.0, 1.0));
+        assert!(
+            (warped.y - l.y).abs() > 0.1,
+            "the live room moves it: {}",
+            warped.y
+        );
+        let (azimuth, _, _) = adm_to_polar(&app.room_ratio, [warped.x, warped.y, warped.z]);
+        assert!((azimuth + 30.0).abs() < 1e-6);
     }
 
     #[test]

@@ -98,27 +98,6 @@ mod saf_ffi {
     }
 }
 
-/// Maximum number of speakers supported without heap allocation.
-/// Covers all standard immersive audio layouts (up to 22.2).
-///
-/// It bounds the whole layout, LFE and non-spatialized speakers included:
-/// [`Gains`] carries one gain per speaker of the layout. Lifting it means
-/// gain buffers sized per layout instead (mgth/Omniphony#745).
-pub const MAX_SPEAKERS: usize = 24;
-
-/// Refuse a layout [`Gains`] cannot hold, with a reason a user can act on.
-/// Every backend and the speaker stage size their gains by it, so a larger
-/// layout would panic out of bounds in them (on the table-building workers,
-/// or on the render thread for a band rebuild) rather than fail.
-pub fn check_speaker_count(speakers: usize) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        speakers <= MAX_SPEAKERS,
-        "the layout has {speakers} speakers (LFE included); this renderer handles at most \
-         {MAX_SPEAKERS}"
-    );
-    Ok(())
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VbapTableMode {
     Polar,
@@ -132,86 +111,6 @@ pub enum VbapTableMode {
     },
 }
 
-/// Stack-allocated gain vector, replacing `Vec<f32>` in the VBAP hot path.
-///
-/// Eliminates ~8-10 heap allocations per object per sample in the rendering loop.
-/// Implements `Deref<Target=[f32]>` so callers can use `.iter()`, `.enumerate()`,
-/// indexing, etc. transparently.
-#[derive(Clone)]
-pub struct Gains {
-    data: [f32; MAX_SPEAKERS],
-    len: usize,
-}
-
-impl Gains {
-    /// Create a new zeroed Gains with the given length.
-    #[inline]
-    fn new(len: usize) -> Self {
-        debug_assert!(
-            len <= MAX_SPEAKERS,
-            "speaker count {} exceeds MAX_SPEAKERS {}",
-            len,
-            MAX_SPEAKERS
-        );
-        Gains {
-            data: [0.0; MAX_SPEAKERS],
-            len,
-        }
-    }
-
-    /// Public constructor: zeroed Gains with the given length.
-    #[inline]
-    pub fn zeroed(len: usize) -> Self {
-        Self::new(len)
-    }
-
-    /// Write a single gain value by index (no bounds-check in release builds).
-    #[inline]
-    pub fn set(&mut self, i: usize, v: f32) {
-        debug_assert!(i < self.len);
-        self.data[i] = v;
-    }
-
-    /// Scale to unit energy given `energy`, the set's `Σ g²` (callers usually
-    /// accumulate it while filling the gains): every gain is divided by
-    /// `√energy`. A set whose energy is at most `1e-12` is left untouched, so
-    /// silence stays silence instead of blowing up.
-    #[inline]
-    pub fn normalize_to_unit_energy(&mut self, energy: f32) {
-        if energy > 1e-12 {
-            let norm = energy.sqrt();
-            for gain in self.iter_mut() {
-                *gain /= norm;
-            }
-        }
-    }
-
-    /// Create Gains by copying from a slice.
-    #[inline]
-    fn from_slice(src: &[f32]) -> Self {
-        debug_assert!(src.len() <= MAX_SPEAKERS);
-        let mut g = Gains::new(src.len());
-        g.data[..src.len()].copy_from_slice(src);
-        g
-    }
-}
-
-impl std::ops::Deref for Gains {
-    type Target = [f32];
-
-    #[inline]
-    fn deref(&self) -> &[f32] {
-        &self.data[..self.len]
-    }
-}
-
-impl std::ops::DerefMut for Gains {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut [f32] {
-        &mut self.data[..self.len]
-    }
-}
-
 /// VBAP panner — geometry only.
 ///
 /// Holds the triangulated speaker layout and computes panning gains directly for
@@ -222,6 +121,10 @@ impl std::ops::DerefMut for Gains {
 pub struct VbapPanner {
     /// Number of speaker triangles in the triangulation.
     n_triangles: usize,
+
+    /// Number of virtual loudspeakers at the centre of coplanar hull faces
+    /// (`vbap_native::Triangulation`); 0 under `saf_vbap`.
+    n_virtual_centres: usize,
 
     /// Number of speakers in the layout.
     n_speakers: usize,
@@ -238,6 +141,20 @@ pub struct VbapPanner {
     source: native_backend::NativeVbapLayout,
     #[cfg(feature = "saf_vbap")]
     speaker_dirs_deg: Vec<[f32; 2]>,
+}
+
+/// The working memory one caller keeps for one [`VbapPanner`], made by
+/// [`VbapPanner::new_scratch`]: what panning a source needs besides the gains
+/// it writes (a gain per effective speaker, virtual ones included, the
+/// out-of-hull fold, the directions of a spread cloud). The panner is shared
+/// (`&self`, `Sync`) and those are sized by the layout, so each caller keeps
+/// its own and hands it back on every call; nothing is allocated while gains
+/// are computed.
+///
+/// Under `saf_vbap` it holds nothing: SAF allocates the gains it returns.
+pub struct VbapScratch {
+    #[cfg(not(feature = "saf_vbap"))]
+    native: super::vbap_native::Vbap3dScratch,
 }
 
 /// Maximum spread in degrees the VBAP spreading accepts (SAF's `vbap3D` and
@@ -261,5 +178,6 @@ mod runtime;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+// Measures `NativeVbapLayout` directly, so it only exists where that backend does.
+#[cfg(all(test, not(feature = "saf_vbap")))]
 mod native_validation;

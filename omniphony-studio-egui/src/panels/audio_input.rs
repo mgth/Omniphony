@@ -252,8 +252,10 @@ impl StudioSpike {
     /// The decoder bridges, in load order: each with its families or why it
     /// failed, moved, removed, or added with the file picker (a renderer on
     /// this machine) or by its path (one on another). With none asked for,
-    /// what auto-discovery loaded, read-only. An edit is unsaved: Apply
-    /// restarts on it, Save keeps it (docs/persistence-policy.md).
+    /// what auto-discovery loaded, read-only. The bridge decoding the
+    /// stream is outlined and tagged (`bridges::decoding_bridge`). An edit is
+    /// unsaved: Apply restarts on it, Save keeps it
+    /// (docs/persistence-policy.md).
     fn bridge_list_group(&mut self, ui: &mut Ui, list: &bridges::BridgeList, local: bool) {
         let mut action = None;
         let mut browse = false;
@@ -283,39 +285,48 @@ impl StudioSpike {
                 let last = list.requested.len().saturating_sub(1);
                 for row in &list.rows {
                     let (detail, colour) = row_detail(row, list.is_auto());
-                    widgets::list_entry(ui, row.file_name(), &row.path, &detail, colour, |ui| {
-                        let Some(index) = row.position else {
-                            return;
-                        };
-                        // Right to left: remove, then down, then up.
-                        if ui
-                            .button("✕")
-                            .on_hover_text(t("input.bridges.remove"))
-                            .clicked()
-                        {
-                            action = Some(Action::Remove(index));
-                        }
-                        if ui
-                            .add_enabled(index < last, egui::Button::new("⏷"))
-                            .on_hover_text(t("input.bridges.down"))
-                            .clicked()
-                        {
-                            action = Some(Action::Move {
-                                from: index,
-                                to: index + 1,
-                            });
-                        }
-                        if ui
-                            .add_enabled(index > 0, egui::Button::new("⏶"))
-                            .on_hover_text(t("input.bridges.up"))
-                            .clicked()
-                        {
-                            action = Some(Action::Move {
-                                from: index,
-                                to: index - 1,
-                            });
-                        }
-                    });
+                    let mark = row.decoding.then(|| t("input.bridges.decoding"));
+                    widgets::list_entry(
+                        ui,
+                        row.file_name(),
+                        &row.path,
+                        &detail,
+                        colour,
+                        mark,
+                        |ui| {
+                            let Some(index) = row.position else {
+                                return;
+                            };
+                            // Right to left: remove, then down, then up.
+                            if ui
+                                .button("✕")
+                                .on_hover_text(t("input.bridges.remove"))
+                                .clicked()
+                            {
+                                action = Some(Action::Remove(index));
+                            }
+                            if ui
+                                .add_enabled(index < last, egui::Button::new("⏷"))
+                                .on_hover_text(t("input.bridges.down"))
+                                .clicked()
+                            {
+                                action = Some(Action::Move {
+                                    from: index,
+                                    to: index + 1,
+                                });
+                            }
+                            if ui
+                                .add_enabled(index > 0, egui::Button::new("⏶"))
+                                .on_hover_text(t("input.bridges.up"))
+                                .clicked()
+                            {
+                                action = Some(Action::Move {
+                                    from: index,
+                                    to: index - 1,
+                                });
+                            }
+                        },
+                    );
                 }
                 // A typed path: the picker's file is the Studio machine's,
                 // which is not the renderer's when it runs elsewhere.

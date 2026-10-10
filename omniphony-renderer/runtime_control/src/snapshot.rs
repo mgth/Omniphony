@@ -306,12 +306,7 @@ pub fn build_renderer_state_json(
             })).collect::<Vec<_>>(),
             "unitScaleM": live.binaural.unit_scale_m,
             "headRadiusM": live.binaural.head_radius_m,
-            "reflections": {
-                "enabled": live.binaural.reflections.enabled,
-                "roomM": live.binaural.reflections.room_size_m,
-                "level": live.binaural.reflections.level,
-                "wallCutoffHz": live.binaural.reflections.wall_cutoff_hz,
-            },
+            "reflections": reflections_json(&live.binaural),
             "reverb": {
                 "enabled": live.binaural.reverb.enabled,
                 "level": live.binaural.reverb.level,
@@ -323,6 +318,7 @@ pub fn build_renderer_state_json(
             },
             "airAbsorption": live.binaural.air_absorption,
             "diffuseFieldEq": live.binaural.diffuse_field_eq,
+            "sphereCoordinates": live.binaural.sphere_coordinates,
             "hrirSource": live.binaural.hrir_source.as_str(),
             // The parametric sources' settings, which travel inside the
             // source string: echoed so a client shows what is rendered (and
@@ -341,6 +337,11 @@ pub fn build_renderer_state_json(
                 renderer::binaural::HrirSource::Brir(p) => p.as_str(),
                 _ => "",
             },
+            // The files last named for the two file sources, kept while
+            // another source renders: what a bare `sofa` / `brir` reopens,
+            // and what the config keeps.
+            "hrtfSofaPathLast": live.binaural.last_sofa_path,
+            "brirSofaPathLast": live.binaural.last_brir_path,
             // A room response (`brir` source): its load options, and what
             // the renderer holds of it — or why it holds nothing, in which
             // case the virtual room is binauralised by the HRTF stage.
@@ -352,14 +353,7 @@ pub fn build_renderer_state_json(
                 "maxLengthS": live.binaural.brir.max_length_s,
                 "tailFloorDb": live.binaural.brir.tail_floor_db,
                 "path": brir_status.path,
-                "loaded": brir_status.loaded.as_ref().map(|s| json!({
-                    "conventions": s.conventions,
-                    "emitters": s.emitters,
-                    "orientations": s.orientations,
-                    "maxTaps": s.max_taps,
-                    "sampleRate": s.sample_rate,
-                    "bytes": s.bytes,
-                })),
+                "loaded": brir_status.loaded.as_ref().map(brir_loaded_json),
                 "error": brir_status.error,
                 // The set's own loudspeakers, once the topology renders on
                 // them (`RenderTopology::brir_layout`): what the listener is
@@ -370,6 +364,16 @@ pub fn build_renderer_state_json(
                         .unwrap_or(serde_json::Value::Null)
                 }),
                 "layoutError": brir_layout_error,
+                // The measured room those loudspeakers stand in, which the
+                // render pans in instead of the user's room (#803): its box
+                // in metres, whether that box is an estimate around the
+                // loudspeakers rather than the file's, and the stage's
+                // ratios of it in the shape of `roomRatio` (its scale is
+                // the metres to one unit). `null` with `layout`.
+                "room": active_topology
+                    .measured_room
+                    .as_ref()
+                    .map(|measured| brir_room_json(measured, active_topology.room)),
             },
             "headPose": {
                 "w": live.binaural.head_pose.w,
@@ -406,6 +410,65 @@ pub fn build_renderer_state_json(
 /// tagged `variant: "embedded"` / `host: "mpv"` for the connection label.
 /// The parametric HRIR sources' settings (`hrirParams`), `null` for the
 /// others.
+/// A resident BRIR set: its shape, and its geometry for a client to draw —
+/// the loudspeakers in metres around the listener (renderer frame, the
+/// set's order, the order of `brir.layout`), and the room they stand in
+/// when the file describes it (`RoomType`, the two corners of a shoebox).
+fn brir_loaded_json(set: &renderer::binaural::BrirSummary) -> serde_json::Value {
+    json!({
+        "conventions": set.conventions,
+        "emitters": set.emitters,
+        "orientations": set.orientations,
+        "maxTaps": set.max_taps,
+        "sampleRate": set.sample_rate,
+        "bytes": set.bytes,
+        "emittersM": set.emitter_positions,
+        "roomType": set.room_type,
+        "roomCornersM": set.room_corners_m,
+    })
+}
+
+/// The measured room a BRIR set's loudspeakers stand in, as the stage pans
+/// in it ([`renderer::binaural::brir::MeasuredRoom`]): the box, whether it
+/// is an estimate, and the ratios in the `roomRatio` shape so that a client
+/// reads it as it reads the user's room.
+fn brir_room_json(
+    measured: &renderer::binaural::brir::MeasuredRoom,
+    room: renderer::live_params::RoomRatios,
+) -> serde_json::Value {
+    json!({
+        "boxM": measured.box_m,
+        "estimated": measured.estimated,
+        "ratio": {
+            "width": room.ratio[0],
+            "length": room.ratio[1],
+            "height": room.ratio[2],
+            "rear": room.rear,
+            "lower": room.lower,
+            "centerBlend": room.center_blend,
+            "scaleM": measured.radius_m(),
+        },
+    })
+}
+
+/// The early-reflection settings, with the room the stage mirrors sources
+/// in: the configured extents grown to contain the scene
+/// (`reflections::room_containing_scene`), so a client draws the room the
+/// listener is in rather than the minimum that was asked for.
+fn reflections_json(binaural: &renderer::live_params::BinauralLiveParams) -> serde_json::Value {
+    let reflections = &binaural.reflections;
+    json!({
+        "enabled": reflections.enabled,
+        "roomM": reflections.room_size_m,
+        "roomEffectiveM": renderer::binaural::reflections::room_containing_scene(
+            reflections.room_size_m,
+            binaural.unit_scale_m,
+        ),
+        "level": reflections.level,
+        "wallCutoffHz": reflections.wall_cutoff_hz,
+    })
+}
+
 fn hrir_params_json(source: &renderer::binaural::HrirSource) -> serde_json::Value {
     match source {
         renderer::binaural::HrirSource::Pinna {
@@ -968,6 +1031,108 @@ fn placement_families_json(state: &renderer::placement::PlacementState) -> serde
         .chain(std::iter::once(name(SourceFamily::PCM)))
         .collect();
     json!(names)
+}
+
+#[cfg(test)]
+mod brir_loaded_tests {
+    use super::{brir_loaded_json, brir_room_json};
+    use renderer::binaural::BrirSummary;
+    use renderer::binaural::brir::MeasuredRoom;
+
+    /// The room the render pans in travels in the user's room's shape, with
+    /// its box and whether the box is an estimate.
+    #[test]
+    fn a_measured_room_publishes_its_box_and_ratios() {
+        let measured = MeasuredRoom {
+            box_m: [[-2.0, -1.0, -1.2], [3.0, 4.5, 1.8]],
+            estimated: true,
+        };
+        let json = brir_room_json(&measured, measured.ratios(0.5));
+        assert_eq!(json["boxM"][1][1], 4.5);
+        assert_eq!(json["estimated"], true);
+        assert_eq!(json["ratio"]["width"], 1.0);
+        assert_eq!(json["ratio"]["length"], 1.5);
+        assert_eq!(json["ratio"]["scaleM"], 3.0);
+        assert_eq!(json["ratio"]["centerBlend"], 0.5);
+    }
+
+    /// The set's geometry travels with its shape: the loudspeakers in
+    /// metres in the set's order, the room's corners when the file has
+    /// them, null otherwise.
+    #[test]
+    fn a_resident_set_publishes_its_loudspeakers_and_room() {
+        let summary = BrirSummary {
+            conventions: "MultiSpeakerBRIR".into(),
+            emitters: 2,
+            emitter_positions: vec![[-1.0, 1.7, 0.0], [1.0, 1.7, 0.0]],
+            orientations: 1,
+            max_taps: 100,
+            sample_rate: 48_000,
+            bytes: 800,
+            room_type: Some("shoebox".into()),
+            room_corners_m: Some([[-2.0, -3.0, -1.2], [2.0, 3.0, 1.3]]),
+        };
+        let json = brir_loaded_json(&summary);
+        assert_eq!(json["emitters"], 2);
+        assert_eq!(json["emittersM"][1][0], 1.0);
+        assert_eq!(
+            json["emittersM"][1][1]
+                .as_f64()
+                .map(|v| (v - 1.7).abs() < 1e-6),
+            Some(true)
+        );
+        assert_eq!(json["roomType"], "shoebox");
+        assert_eq!(json["roomCornersM"][0][1], -3.0);
+        let bare = BrirSummary {
+            room_type: None,
+            room_corners_m: None,
+            ..summary
+        };
+        let json = brir_loaded_json(&bare);
+        assert!(json["roomType"].is_null() && json["roomCornersM"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod reflections_tests {
+    use super::reflections_json;
+    use renderer::live_params::BinauralLiveParams;
+
+    /// The room published as in use is the configured one grown to hold
+    /// the scene: at a distance scale of 3 every axis is 6.7 m; a room
+    /// already larger than the scene is published as it is.
+    #[test]
+    fn the_room_in_use_is_the_configured_one_grown_to_hold_the_scene() {
+        let mut binaural = BinauralLiveParams::default();
+        binaural.reflections.room_size_m = [4.0, 5.0, 2.7];
+        binaural.unit_scale_m = 3.0;
+        // The extents travel as `f32`, so they are read back as numbers
+        // rather than compared as JSON.
+        let axes = |value: &serde_json::Value| -> Vec<f64> {
+            value
+                .as_array()
+                .expect("an array")
+                .iter()
+                .map(|v| v.as_f64().expect("a number"))
+                .collect()
+        };
+        let near = |got: &[f64], want: [f64; 3]| {
+            got.len() == 3 && got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-4)
+        };
+        let json = reflections_json(&binaural);
+        assert!(near(&axes(&json["roomM"]), [4.0, 5.0, 2.7]), "{json}");
+        assert!(
+            near(&axes(&json["roomEffectiveM"]), [6.7, 6.7, 6.7]),
+            "{json}"
+        );
+        binaural.unit_scale_m = 1.0;
+        binaural.reflections.room_size_m = [8.0, 9.0, 10.0];
+        let json = reflections_json(&binaural);
+        assert!(
+            near(&axes(&json["roomEffectiveM"]), [8.0, 9.0, 10.0]),
+            "{json}"
+        );
+    }
 }
 
 #[cfg(test)]

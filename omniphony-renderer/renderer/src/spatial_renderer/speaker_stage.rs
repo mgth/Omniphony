@@ -26,8 +26,7 @@ use crate::live_params::{
     RenderTopology, RendererControl,
 };
 use crate::ramp_strategy::{RampContext, RampStrategy};
-use crate::render_backend::{CornerCache, MultiBandTable};
-use crate::spatial_vbap::Gains;
+use crate::render_backend::{BandGains, CornerCache, MultiBandTable};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -35,7 +34,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::ChannelRoute;
-use super::components::{BandRenderer, ChannelState};
+use super::components::{BandRenderer, BandScratch, ChannelState};
 use super::{GAIN_SLEW_SECS, SpatialRenderer};
 use crate::ramp_strategy::RampProgress;
 
@@ -77,6 +76,9 @@ pub(super) struct BandSet {
     key: BandSetKey,
     topology: Arc<RenderTopology>,
     render_bands: Vec<BandRenderer>,
+    /// The working memory `render_bands` are read with, one per band: made
+    /// with the set, so the first block mixed on it allocates none.
+    band_scratches: Vec<BandScratch>,
     crossover_filter_bank: Option<CrossoverBank>,
     /// The facts about that bank, published on the control when the set is
     /// installed: a set that is dropped instead must not be advertised.
@@ -108,8 +110,11 @@ pub(super) struct SpeakerRenderStage {
     /// band when no crossover is configured). Before the first build (see
     /// [`Self::unbuilt`]) it is empty, or holds the bands of the stage this
     /// one replaces ([`Self::unbuilt_replacing`]) for that build to take
-    /// over; nothing is mixed before it. Each returns full-size `Gains`.
+    /// over; nothing is mixed before it. Each writes full-size gains.
     pub(super) render_bands: Vec<BandRenderer>,
+    /// The working memory of each installed band engine, in band order.
+    /// Empty until the first build, like the bands it serves.
+    band_scratches: Vec<BandScratch>,
     /// What the installed band engines were built for; `None` until the
     /// first build, which [`Self::refresh_for_topology`] then always runs.
     built: Option<BandSetKey>,
@@ -183,9 +188,9 @@ pub(super) struct SpeakerRenderStage {
     /// `ChannelState::interp_prev_gains` plays for a real object; the test has
     /// no `ChannelState` of its own, so it keeps its own copy. Empty when no
     /// test is running, which is also how a fresh start is detected.
-    pub(super) object_test_prev_gains: Vec<Gains>,
+    pub(super) object_test_prev_gains: BandGains,
     /// Destination gains for this block, per band.
-    pub(super) object_test_end_gains: Vec<Gains>,
+    pub(super) object_test_end_gains: BandGains,
     /// Band samples of the source being mixed: one block per band, refilled
     /// for every object (and for the object test). The band meters read the
     /// last object's block back from here.
@@ -211,12 +216,12 @@ pub(super) struct SpeakerRenderStage {
     pub(super) mix_pass: u64,
     /// `RampMode::Sample`: pooled gains at the end of the interpolation
     /// segment being mixed.
-    pub(super) segment_end_scratch: Vec<Gains>,
+    pub(super) segment_end_scratch: BandGains,
     /// Reusable per-object band-gain buffer (taken via `mem::take` per object).
-    pub(super) band_gains_scratch: Vec<Gains>,
+    pub(super) band_gains_scratch: BandGains,
     /// `RampMode::Interp` only: pooled destination band gains for the object
     /// currently being rendered.
-    pub(super) interp_end_scratch: Vec<Gains>,
+    pub(super) interp_end_scratch: BandGains,
     /// Per-speaker gain scratch — pre-allocated once, reused every frame.
     pub(super) speaker_gains_buf: Vec<f32>,
     /// Per-speaker delay lines — fixed 100 ms capacity, render-thread owned.
@@ -233,8 +238,8 @@ pub(super) struct SpeakerRenderStage {
 /// [`SpeakerStageDiagnostics`] for what each holds).
 #[derive(Default)]
 pub(super) struct MeterBuffers {
-    pub(super) object_gains: Vec<(usize, Gains)>,
-    pub(super) object_band_gains: Vec<(usize, Vec<Gains>)>,
+    pub(super) object_gains: Vec<(usize, Vec<f32>)>,
+    pub(super) object_band_gains: Vec<(usize, BandGains)>,
     pub(super) object_band_sq: Vec<(usize, Vec<f64>)>,
 }
 
@@ -254,23 +259,22 @@ impl MeterBuffers {
     }
 }
 
-/// The next entry of a pooled per-channel metering list, keyed to `channel`
-/// and emptied: the inner buffer an earlier frame left in that slot is reused,
-/// so a list refilled with as many channels as before allocates nothing.
-/// `filled` counts the entries written this frame; the caller truncates the
-/// list to it once the frame is mixed.
-fn pooled_entry<'a, T>(
-    list: &'a mut Vec<(usize, Vec<T>)>,
+/// The next entry of a pooled per-channel metering list, keyed to `channel`:
+/// the inner buffer an earlier frame left in that slot, for the caller to
+/// refill, so a list refilled with as many channels as before allocates
+/// nothing. `filled` counts the entries written this frame; the caller
+/// truncates the list to it once the frame is mixed.
+fn pooled_entry<'a, E: Default>(
+    list: &'a mut Vec<(usize, E)>,
     filled: &mut usize,
     channel: usize,
-) -> &'a mut Vec<T> {
+) -> &'a mut E {
     if *filled == list.len() {
-        list.push((channel, Vec::new()));
+        list.push((channel, E::default()));
     }
     let entry = &mut list[*filled];
     *filled += 1;
     entry.0 = channel;
-    entry.1.clear();
     &mut entry.1
 }
 
@@ -299,8 +303,8 @@ pub(super) struct SpeakerStageFrame<'a> {
 
 /// Monitoring outputs of one mix pass (the OSC meter bundle feeds).
 pub(super) struct SpeakerStageDiagnostics {
-    pub(super) object_gains: Vec<(usize, Gains)>,
-    pub(super) object_band_gains: Vec<(usize, Vec<Gains>)>,
+    pub(super) object_gains: Vec<(usize, Vec<f32>)>,
+    pub(super) object_band_gains: Vec<(usize, BandGains)>,
     pub(super) object_band_sq: Vec<(usize, Vec<f64>)>,
     pub(super) crossover_elapsed: std::time::Duration,
 }
@@ -320,8 +324,8 @@ pub(super) struct SpeakerStageDiagnostics {
 /// a sum that started at `+0.0` leaves its bits alone for any finite `x`.
 ///
 /// Every method takes the source's band samples as one block per band
-/// (`bands[b][sample]`) and its gains as one `Gains` per band; a band present
-/// on one side only contributes nothing.
+/// (`bands[b][sample]`) and its gains as one set per band ([`BandGains`]); a
+/// band present on one side only contributes nothing.
 struct MixBus<'a> {
     planar: &'a mut [f32],
     interleaved: &'a mut [f32],
@@ -412,11 +416,11 @@ impl<'a> MixBus<'a> {
 
     /// Add `range` of the source with gains that hold across it.
     #[inline(always)]
-    fn add_constant(&mut self, bands: &[Vec<f32>], gains: &[Gains], range: Range<usize>) {
+    fn add_constant(&mut self, bands: &[Vec<f32>], gains: &BandGains, range: Range<usize>) {
         if range.is_empty() {
             return;
         }
-        for (band, gains) in bands.iter().zip(gains) {
+        for (band, gains) in bands.iter().zip(gains.bands()) {
             let Some(band) = band.get(range.clone()) else {
                 continue;
             };
@@ -444,12 +448,12 @@ impl<'a> MixBus<'a> {
     fn add_lerp(
         &mut self,
         bands: &[Vec<f32>],
-        start: &[Gains],
-        end: &[Gains],
+        start: &BandGains,
+        end: &BandGains,
         fractions: &[f32],
         range: Range<usize>,
     ) {
-        for ((band, start), end) in bands.iter().zip(start).zip(end) {
+        for ((band, start), end) in bands.iter().zip(start.bands()).zip(end.bands()) {
             let Some(band) = band.get(range.clone()) else {
                 continue;
             };
@@ -486,7 +490,7 @@ fn block_fractions(fractions: &mut Vec<f32>, len: usize) {
 /// gains do not step at the block boundary.
 #[derive(Default)]
 pub(super) struct GainCarry {
-    gains: Vec<Gains>,
+    gains: BandGains,
     /// The mix pass that left the gains. They are good for the pass right
     /// after it and for no other: a block mixed in between — settled, in
     /// another ramp mode, or not through the stage at all — ends on other gains.
@@ -621,24 +625,18 @@ fn mix_sample_ramp<S: RampStrategy + ?Sized>(
     stride: usize,
     carry: &mut GainCarry,
     pass: u64,
-    band_gains: &mut Vec<Gains>,
-    segment_end: &mut Vec<Gains>,
-    mut lookup: impl FnMut([f64; 3], [f32; 3], &mut Vec<Gains>),
+    band_gains: &mut BandGains,
+    segment_end: &mut BandGains,
+    mut lookup: impl FnMut([f64; 3], [f32; 3], &mut BandGains),
 ) {
     let stride = stride.clamp(1, MAX_SAMPLE_RAMP_STRIDE);
 
     // `band_gains` holds the gains of the sample before `run_start` once
     // `have_gains` is set: the previous block's last sample to begin with, if
     // that block left them.
-    let mut have_gains = carry.pass.wrapping_add(1) == pass
-        && carry.gains.len() == band_gains.len()
-        && carry
-            .gains
-            .iter()
-            .zip(band_gains.iter())
-            .all(|(kept, slot)| kept.len() == slot.len());
+    let mut have_gains = carry.pass.wrapping_add(1) == pass && carry.gains.same_shape(band_gains);
     if have_gains {
-        band_gains.clone_from_slice(&carry.gains);
+        band_gains.copy_from(&carry.gains);
     }
     let mut last_pos = [f64::NAN; 3];
     let mut last_size = [f32::NAN; 3];
@@ -656,7 +654,7 @@ fn mix_sample_ramp<S: RampStrategy + ?Sized>(
     // A segment of one sample is mixed with `end`, where the interpolation
     // ends.
     let mix_segment =
-        |bus: &mut MixBus<'_>, band_gains: &[Gains], end: &[Gains], range: Range<usize>| {
+        |bus: &mut MixBus<'_>, band_gains: &BandGains, end: &BandGains, range: Range<usize>| {
             let len = range.len();
             if len <= 1 {
                 bus.add_constant(bands, end, range);
@@ -721,14 +719,13 @@ fn mix_sample_ramp<S: RampStrategy + ?Sized>(
     // The block ended mid-movement: its last gains are where the next block's
     // first segment starts from.
     if moving_until.wrapping_add(1) == sample_length {
-        carry.gains.clear();
-        carry.gains.extend_from_slice(band_gains);
+        carry.gains.copy_from(band_gains);
         carry.pass = pass;
     }
 }
 
 impl SpeakerRenderStage {
-    /// Fill `out` with one full-size `Gains` per render band at `position`. Uses
+    /// Fill `out` with one full-size gain set per render band at `position`. Uses
     /// the unified multi-band table (one cell localisation for all bands) when
     /// available, else falls back to a per-band lookup. Free-standing (borrows
     /// only the fields it needs) so it composes with the other per-channel
@@ -737,14 +734,17 @@ impl SpeakerRenderStage {
     /// `cache` is the calling channel's cell cache for the unified table; a
     /// source with no channel of its own passes `None` and reads the table
     /// directly. The gains are the same either way.
+    ///
+    /// `bands` are the band engines and the working memory of each, in band
+    /// order; a band without its scratch is silent.
     fn fill_band_gains(
         unified: &Option<MultiBandTable>,
         cache: Option<&mut CornerCache>,
-        render_bands: &[BandRenderer],
+        bands: (&[BandRenderer], &mut [BandScratch]),
         render_params: crate::ramp_strategy::RampRenderParams,
         position: [f64; 3],
         size: [f32; 3],
-        out: &mut Vec<Gains>,
+        out: &mut BandGains,
     ) {
         if let Some(table) = unified {
             let position = position.map(|v| v as f32);
@@ -753,12 +753,20 @@ impl SpeakerRenderStage {
                 None => table.sample_into(position, out),
             }
         } else {
-            out.clear();
-            out.extend(
-                render_bands
-                    .iter()
-                    .map(|b| b.compute_gains(render_params, position, size)),
-            );
+            let (render_bands, band_scratches) = bands;
+            // The bands overwrite every gain: a buffer that already has the
+            // shape, the steady state, is left alone.
+            let num_speakers = render_bands.first().map_or(0, |band| band.num_speakers);
+            out.shape(render_bands.len(), num_speakers);
+            let mut band_scratches = band_scratches.iter_mut();
+            for (band, gains) in render_bands.iter().zip(out.bands_mut()) {
+                match band_scratches.next() {
+                    Some(scratch) => {
+                        band.compute_gains(render_params, position, size, scratch, gains)
+                    }
+                    None => gains.fill(0.0),
+                }
+            }
         }
     }
 
@@ -801,7 +809,7 @@ impl SpeakerRenderStage {
         } else {
             MeterBuffers::default()
         };
-        meters.object_gains.clear();
+        let mut gains_filled = 0;
         let mut band_gains_filled = 0;
         let mut band_sq_filled = 0;
         let mut crossover_elapsed = std::time::Duration::ZERO;
@@ -944,9 +952,14 @@ impl SpeakerRenderStage {
                 }
 
                 if measure_breakdown {
-                    let mut gains = Gains::zeroed(self.num_speakers);
-                    gains.set(speaker_idx, 1.0);
-                    meters.object_gains.push((input_channel_idx, gains));
+                    let gains = pooled_entry(
+                        &mut meters.object_gains,
+                        &mut gains_filled,
+                        input_channel_idx,
+                    );
+                    gains.clear();
+                    gains.resize(self.num_speakers, 0.0);
+                    gains[speaker_idx] = 1.0;
                 }
 
                 if is_first {
@@ -986,7 +999,7 @@ impl SpeakerRenderStage {
 
                 // ── Unified band rendering path ─────────────────────────────────────────
                 // Always iterate over `render_bands` (1 band = no crossover, N bands =
-                // the active crossover engine). Each band returns full-size Gains
+                // the active crossover engine). Each band writes full-size gains
                 // (zeroed for out-of-band speakers), which is what tells the mix
                 // which speakers a band feeds.
 
@@ -1056,11 +1069,12 @@ impl SpeakerRenderStage {
 
                 // Reuse the per-object band-gain buffer (pooled in the renderer) so
                 // the hot render path does not allocate a fresh Vec per object per
-                // frame. Each arm leaves the gains of the block's last sample in
-                // `band_gains` when the meters ask for them; it is put back at the
-                // end.
+                // frame. It comes holding the previous object's gains, and keeps
+                // its shape from one object to the next: each arm writes all of
+                // it before reading any, and leaves the gains of the block's last
+                // sample there when the meters ask for them. It is put back at
+                // the end.
                 let mut band_gains = std::mem::take(&mut self.band_gains_scratch);
-                band_gains.clear();
                 match ramp_mode {
                     RampMode::Off => {
                         state.ramp.remaining_ramp_units = None;
@@ -1075,7 +1089,7 @@ impl SpeakerRenderStage {
                         Self::fill_band_gains(
                             &self.unified_table,
                             Some(&mut self.table_caches[input_channel_idx]),
-                            &self.render_bands,
+                            (&self.render_bands, &mut self.band_scratches),
                             render_params,
                             position,
                             size,
@@ -1094,7 +1108,7 @@ impl SpeakerRenderStage {
                         Self::fill_band_gains(
                             &self.unified_table,
                             Some(&mut self.table_caches[input_channel_idx]),
-                            &self.render_bands,
+                            (&self.render_bands, &mut self.band_scratches),
                             render_params,
                             position,
                             size,
@@ -1105,10 +1119,9 @@ impl SpeakerRenderStage {
                         state.ramp.advance_ramp(sample_length as u64);
                     }
                     RampMode::Sample => {
-                        // One Gains slot per band, reused across the block (and
+                        // One gain set per band, reused across the block (and
                         // across objects/frames via the pooled buffer).
-                        band_gains
-                            .resize(self.render_bands.len(), Gains::zeroed(self.num_speakers));
+                        band_gains.shape(self.render_bands.len(), self.num_speakers);
                         if self.gain_carries.len() <= input_channel_idx {
                             self.gain_carries
                                 .resize_with(input_channel_idx + 1, GainCarry::default);
@@ -1116,11 +1129,12 @@ impl SpeakerRenderStage {
                         let unified_table = &self.unified_table;
                         let table_cache = &mut self.table_caches[input_channel_idx];
                         let render_bands = &self.render_bands;
-                        let lookup = |position, size, out: &mut Vec<Gains>| {
+                        let band_scratches = &mut self.band_scratches;
+                        let lookup = |position, size, out: &mut BandGains| {
                             Self::fill_band_gains(
                                 unified_table,
                                 Some(&mut *table_cache),
-                                render_bands,
+                                (render_bands, &mut *band_scratches),
                                 render_params,
                                 position,
                                 size,
@@ -1177,20 +1191,16 @@ impl SpeakerRenderStage {
                         Self::fill_band_gains(
                             &self.unified_table,
                             Some(&mut self.table_caches[input_channel_idx]),
-                            &self.render_bands,
+                            (&self.render_bands, &mut self.band_scratches),
                             render_params,
                             position,
                             size,
                             &mut self.interp_end_scratch,
                         );
-                        let n_bands = self.interp_end_scratch.len();
 
                         // First block for this channel → start == end (no jump in).
-                        if state.interp_prev_gains.len() != n_bands {
-                            state.interp_prev_gains.clear();
-                            state
-                                .interp_prev_gains
-                                .extend_from_slice(&self.interp_end_scratch);
+                        if !state.interp_prev_gains.same_shape(&self.interp_end_scratch) {
+                            state.interp_prev_gains.copy_from(&self.interp_end_scratch);
                         }
 
                         block_fractions(&mut self.block_fractions, sample_length);
@@ -1205,27 +1215,26 @@ impl SpeakerRenderStage {
                         // The meters read the gains of the last sample: the
                         // interpolation evaluated there, as the mix did.
                         if measure_breakdown {
-                            band_gains.resize(n_bands, Gains::zeroed(self.num_speakers));
-                            if let Some(&f) = self.block_fractions.last() {
-                                for ((slot, start), end) in band_gains
-                                    .iter_mut()
-                                    .zip(&state.interp_prev_gains)
-                                    .zip(&self.interp_end_scratch)
-                                {
-                                    for ((gain, &g0), &g1) in
-                                        slot.iter_mut().zip(start.iter()).zip(end.iter())
+                            let end = &self.interp_end_scratch;
+                            band_gains.shape(end.n_bands(), end.num_speakers());
+                            match self.block_fractions.last() {
+                                Some(&f) => {
+                                    for ((gain, &g0), &g1) in band_gains
+                                        .as_mut_slice()
+                                        .iter_mut()
+                                        .zip(state.interp_prev_gains.as_slice())
+                                        .zip(end.as_slice())
                                     {
                                         *gain = g0 * (1.0 - f) + g1 * f;
                                     }
                                 }
+                                // A block of no sample has no last sample.
+                                None => band_gains.as_mut_slice().fill(0.0),
                             }
                         }
 
                         // Cache this block's destination as the next block's start.
-                        state.interp_prev_gains.clear();
-                        state
-                            .interp_prev_gains
-                            .extend_from_slice(&self.interp_end_scratch);
+                        state.interp_prev_gains.copy_from(&self.interp_end_scratch);
                     }
                 };
 
@@ -1233,10 +1242,16 @@ impl SpeakerRenderStage {
                 // `band_gains` is already full-size — sum across bands for the
                 // per-object gains, and copy the band gains out.
                 if measure_breakdown {
-                    let mut summed = Gains::zeroed(self.num_speakers);
-                    for gains in &band_gains {
-                        for (i, &g) in gains.iter().enumerate() {
-                            summed[i] += g;
+                    let summed = pooled_entry(
+                        &mut meters.object_gains,
+                        &mut gains_filled,
+                        input_channel_idx,
+                    );
+                    summed.clear();
+                    summed.resize(self.num_speakers, 0.0);
+                    for gains in band_gains.bands() {
+                        for (sum, &g) in summed.iter_mut().zip(gains) {
+                            *sum += g;
                         }
                     }
                     pooled_entry(
@@ -1244,8 +1259,7 @@ impl SpeakerRenderStage {
                         &mut band_gains_filled,
                         input_channel_idx,
                     )
-                    .extend_from_slice(&band_gains);
-                    meters.object_gains.push((input_channel_idx, summed));
+                    .copy_from(&band_gains);
                     // Per-band energy for the meters, from this object's block
                     // of band samples.
                     if profile_crossover {
@@ -1254,12 +1268,13 @@ impl SpeakerRenderStage {
                         } else {
                             &self.crossover_band_scratch
                         };
-                        pooled_entry(
+                        let band_sq = pooled_entry(
                             &mut meters.object_band_sq,
                             &mut band_sq_filled,
                             input_channel_idx,
-                        )
-                        .extend((0..band_gains.len()).map(|b| {
+                        );
+                        band_sq.clear();
+                        band_sq.extend((0..band_gains.n_bands()).map(|b| {
                             crossover_band_scratch
                                 .get(b)
                                 .and_then(|band| band.get(..sample_length))
@@ -1278,6 +1293,7 @@ impl SpeakerRenderStage {
 
         bus.finish();
 
+        meters.object_gains.truncate(gains_filled);
         meters.object_band_gains.truncate(band_gains_filled);
         meters.object_band_sq.truncate(band_sq_filled);
         SpeakerStageDiagnostics {
@@ -1307,6 +1323,7 @@ impl SpeakerRenderStage {
             num_speakers,
             sample_rate,
             render_bands: Vec::new(),
+            band_scratches: Vec::new(),
             built: None,
             built_topology: None,
             requested: None,
@@ -1329,8 +1346,8 @@ impl SpeakerRenderStage {
             test_elapsed_samples: 0,
             test_identity: None,
             object_test_filter_states: None,
-            object_test_prev_gains: Vec::new(),
-            object_test_end_gains: Vec::new(),
+            object_test_prev_gains: BandGains::new(),
+            object_test_end_gains: BandGains::new(),
             crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
             slew_scratch: Vec::new(),
             lanes: LaneScratch::default(),
@@ -1338,9 +1355,9 @@ impl SpeakerRenderStage {
             block_fractions: Vec::new(),
             gain_carries: Vec::new(),
             mix_pass: 0,
-            segment_end_scratch: Vec::new(),
-            band_gains_scratch: Vec::new(),
-            interp_end_scratch: Vec::new(),
+            segment_end_scratch: BandGains::new(),
+            band_gains_scratch: BandGains::new(),
+            interp_end_scratch: BandGains::new(),
             speaker_gains_buf: vec![0.0f32; num_speakers],
             meter_buffers: MeterBuffers::default(),
             delay_lines: {
@@ -1536,6 +1553,7 @@ impl SpeakerRenderStage {
             key,
             topology,
             render_bands,
+            band_scratches,
             crossover_filter_bank,
             crossover_info,
             crossover_filter_states,
@@ -1554,6 +1572,7 @@ impl SpeakerRenderStage {
         let replaced = (
             self.built_topology.replace(topology),
             std::mem::replace(&mut self.render_bands, render_bands),
+            std::mem::replace(&mut self.band_scratches, band_scratches),
             std::mem::replace(&mut self.crossover_filter_bank, crossover_filter_bank),
             std::mem::replace(&mut self.crossover_filter_states, crossover_filter_states),
             std::mem::replace(&mut self.unified_table, unified_table),
@@ -1651,6 +1670,7 @@ impl SpeakerRenderStage {
         let (render_bands, crossover_filter_bank, crossover_info) = Self::build_crossover(
             control,
             layout,
+            topology.room,
             topology.geometry_generation,
             num_speakers,
             sample_rate,
@@ -1670,6 +1690,7 @@ impl SpeakerRenderStage {
             None => Vec::new(),
         };
         let unified_table = Self::build_unified_table(&render_bands, num_speakers);
+        let band_scratches = render_bands.iter().map(BandRenderer::new_scratch).collect();
         let speaker_freq_ranges = layout
             .speakers
             .iter()
@@ -1679,6 +1700,7 @@ impl SpeakerRenderStage {
             key,
             topology,
             render_bands,
+            band_scratches,
             crossover_filter_bank,
             crossover_info,
             crossover_filter_states,
@@ -1955,7 +1977,7 @@ impl SpeakerRenderStage {
             // The test has no input channel, hence no cell cache: one lookup
             // per block reads the table directly.
             None,
-            &self.render_bands,
+            (&self.render_bands, &mut self.band_scratches),
             render_params,
             // The orbit position, not the placed one: the source is wherever
             // this block puts it.
@@ -1964,22 +1986,18 @@ impl SpeakerRenderStage {
             &mut end,
         );
         self.object_test_end_gains = end;
-        let n_bands = self.object_test_end_gains.len();
-        if n_bands == 0 {
+        if self.object_test_end_gains.is_empty() {
             return false;
         }
 
         // First block of this test (or a layout width change) → start == end, so
         // it begins at its position instead of sweeping in from silence.
-        if self.object_test_prev_gains.len() != n_bands
-            || self
-                .object_test_prev_gains
-                .first()
-                .is_some_and(|g| g.len() != self.num_speakers)
+        if !self
+            .object_test_prev_gains
+            .same_shape(&self.object_test_end_gains)
         {
-            self.object_test_prev_gains.clear();
             self.object_test_prev_gains
-                .extend_from_slice(&self.object_test_end_gains);
+                .copy_from(&self.object_test_end_gains);
         }
 
         // The test's band samples for the block, as for a real object.
@@ -2015,9 +2033,8 @@ impl SpeakerRenderStage {
         bus.finish();
 
         // This block's destination is the next block's start.
-        self.object_test_prev_gains.clear();
         self.object_test_prev_gains
-            .extend_from_slice(&self.object_test_end_gains);
+            .copy_from(&self.object_test_end_gains);
         true
     }
 
@@ -2126,14 +2143,16 @@ impl SpeakerRenderStage {
     /// `render_bands` always has at least one entry. The filter engine and
     /// FIR transition ratio are the ones the set is built for
     /// ([`BandSetKey`]); `info` describes the result, for the control once
-    /// the set is installed. `geometry_generation` is the one of the topology
-    /// `layout` comes from, which the band gain models are built for.
-    /// `prev_bands_same_topology` says `prev_bands` were built for that very
-    /// topology: they are then taken over, table and all.
+    /// the set is installed. `geometry_generation` and `room` are the ones
+    /// of the topology `layout` comes from, which the band gain models are
+    /// built for and in. `prev_bands_same_topology` says `prev_bands` were
+    /// built for that very topology: they are then taken over, table and
+    /// all.
     #[allow(clippy::too_many_arguments)]
     fn build_crossover(
         control: &Arc<RendererControl>,
         layout: &SpeakerLayout,
+        room: crate::live_params::RoomRatios,
         geometry_generation: u64,
         num_speakers: usize,
         sample_rate: u32,
@@ -2154,6 +2173,7 @@ impl SpeakerRenderStage {
                 _ => BandRenderer::from_band(
                     b,
                     layout,
+                    room,
                     geometry_generation,
                     num_speakers,
                     control,

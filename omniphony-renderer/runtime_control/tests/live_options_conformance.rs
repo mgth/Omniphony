@@ -369,6 +369,7 @@ mod registry {
             ("binaural_head_radius_m", RawOptionValue::Number(0.09)),
             ("binaural_air_absorption", RawOptionValue::Bool(false)),
             ("binaural_diffuse_field_eq", RawOptionValue::Bool(true)),
+            ("binaural_sphere_coordinates", RawOptionValue::Bool(true)),
             ("reflections_enabled", RawOptionValue::Bool(true)),
             ("reflections_level", RawOptionValue::Number(0.7)),
             ("reflections_wall_cutoff_hz", RawOptionValue::Number(8000.0)),

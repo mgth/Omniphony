@@ -30,7 +30,19 @@ in force. The speaker stage warps the room, and the cascaded binaural mode
 pans through that stage, so on those outputs the pose is pre-compensated for
 the room ratio. The direct binaural path reads a direction straight off the
 position, with no warp, so there the pose is the plain direction on the unit
-sphere. Switching between the two replans the channel on the next frame.
+sphere. With the sphere reading of that path on (`sphere_coordinates`,
+[BINAURAL.md](../omniphony-renderer/BINAURAL.md), "Sphere coordinates"),
+every position is heard through it, so the pose is the room position the
+reading hears at that angle. Switching between any two of these replans the
+channel on the next frame.
+
+The sphere reading also brings Room and Sphere together on headphones: a
+room corner is then heard at the nominal angle of the speaker standing in
+it, the angle Sphere places that channel at. Three groups keep a
+difference, because the room model itself puts them off their nominal
+direction: the surround pair of a source without a back pair (on the side
+wall, 90° against 110°), the wide-rear pair (112.5° against 120°) and the
+height tier, whose corners were set to read 30° in a cube.
 
 In **every** mode the family's entries still decide two things per channel:
 `spatialize` (virtualised, or routed direct to the speaker of the same

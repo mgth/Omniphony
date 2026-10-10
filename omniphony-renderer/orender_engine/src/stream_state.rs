@@ -31,7 +31,7 @@ use crate::events::Configuration;
 use crate::object_gen::{PrepareCtx, layout_has_height};
 use crate::osc::{ObjectMeta, OscSender};
 use crate::virtual_bed::{
-    BedChannelPlanner, BedPlanKind, FixedChannelPlanner, OwnedPlacement, RoomRatios,
+    BedChannelPlanner, BedPlanKind, FixedChannelPlanner, OutputWarp, OwnedPlacement,
     build_fixed_channel_objects, build_virtual_bed_objects,
 };
 
@@ -585,20 +585,20 @@ impl StreamState {
         &self,
         control: &RendererControl,
         labels: &[RChannelLabel],
-        output_layout: &SpeakerLayout,
+        topology: &renderer::live_params::RenderTopology,
     ) -> Vec<ObjectMeta> {
         let (placement, room, surround_placement) = {
             let live = control.live.read();
             (
                 OwnedPlacement::from_live(&live, self.declaration.family),
-                RoomRatios::for_output(&live),
+                OutputWarp::for_output(&live, topology),
                 live.options.surround_placement,
             )
         };
         let mut objects = build_virtual_bed_objects(
             labels,
             &placement.policy(&self.declaration.poses),
-            Some(output_layout),
+            Some(&topology.speaker_layout),
             room,
             surround_placement,
         )

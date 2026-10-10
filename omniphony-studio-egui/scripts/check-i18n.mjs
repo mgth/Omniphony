@@ -6,9 +6,11 @@
 //   - orphaned:   a key present in the locale but absent from en.json
 //   - leftover:   a translatable value left byte-identical to English
 //
-// Warn-only by default (exit 0) so it never blocks CI; pass --strict to make
-// any problem exit non-zero for local enforcement. In GitHub Actions it also
-// emits ::warning:: annotations so problems surface on the PR.
+// This report defaults to exit 0; pass --strict to make any finding exit
+// non-zero. In GitHub Actions it also emits ::warning:: annotations.
+// Missing/orphaned keys and placeholder mismatches are hard CI failures in
+// the core's every_catalogue_matches_english_structure Rust test. This script
+// adds the advisory English-leftover heuristic; it does not check placeholders.
 //
 //   node omniphony-studio-egui/scripts/check-i18n.mjs            # report, exit 0
 //   node omniphony-studio-egui/scripts/check-i18n.mjs --strict   # report, exit 1 if any problem
@@ -118,7 +120,7 @@ for (const locale of localeFiles) {
 
   if (inActions && count) {
     console.log(
-      `::warning title=i18n ${locale}::${missing.length} missing, ${orphaned.length} orphaned, ${leftover.length} untranslated keys (run \`node omniphony-studio-egui/scripts/check-i18n.mjs\`)`
+      `::warning title=i18n ${locale}::${missing.length} missing, ${orphaned.length} orphaned, ${leftover.length} English leftovers. Missing/orphaned keys also fail the core's every_catalogue_matches_english_structure Rust test; leftovers are advisory (run \`node omniphony-studio-egui/scripts/check-i18n.mjs\`).`
     );
   }
 }

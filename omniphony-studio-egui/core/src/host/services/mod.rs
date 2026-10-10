@@ -152,6 +152,8 @@ pub fn spawn(
         *clock.thread.lock().unwrap() = None;
     })?;
     let watchdog = Worker::spawn("studio-watchdog", move |stop| {
+        // A renderer's goodbye wakes it: its grace is shorter than a pass.
+        state.stats.goodbye.wake(Some(std::thread::current()));
         let mut watchdog = watchdog::Watchdog::default();
         while !stop.cancelled() {
             let tick = watchdog.tick(&state, Instant::now(), &stop);
@@ -163,6 +165,7 @@ pub fn spawn(
                     .map(|at| at.saturating_duration_since(Instant::now())),
             );
         }
+        state.stats.goodbye.wake(None);
     })?;
     Ok(ServiceRuntime { clock, watchdog })
 }

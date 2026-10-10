@@ -21,7 +21,7 @@
 //! -- REQUIRED: one gain per speaker for a position.
 //! function gains(pos, speakers, state, params)
 //!   -- pos      = { x=, y=, z= }            (raw ADM position)
-//!   -- speakers = { {x=,y=,z=}, ... }       (unit speaker directions)
+//!   -- speakers = { {x=,y=,z=}, ... }       (unit speaker directions, in the room-relative space `room_scale(pos)` maps a position into)
 //!   -- state    = value returned by setup(), or nil
 //!   -- params   = { key = number, ... }     (resolved from the schema below)
 //!   -- return an array of #speakers finite numbers, in speaker order.
@@ -118,9 +118,9 @@ use renderer::backend_registry::{
 };
 use renderer::plugin::PluginFactory;
 use renderer::render_backend::{
-    BackendCapabilities, GainModel, RenderRequest, RenderResponse, room_scaled_position,
+    BackendCapabilities, GainModel, GainScratch, RenderRequest, room_scaled_position,
 };
-use renderer::spatial_vbap::{Gains, VbapPanner, adm_to_spherical, spherical_to_adm};
+use renderer::spatial_vbap::{VbapPanner, adm_to_spherical, spherical_to_adm};
 use renderer::speaker_layout::SpeakerLayout;
 
 /// Per-VM heap cap: generous for honest scripts, low enough that a runaway
@@ -241,13 +241,13 @@ impl GainModel for ScriptBackend {
         self.speakers.len()
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, out: &mut [f32]) {
         let pos = [
             req.adm_position[0] as f32,
             req.adm_position[1] as f32,
             req.adm_position[2] as f32,
         ];
-        let result = VM_CACHE.with(|cell| -> Result<Gains> {
+        let result = VM_CACHE.with(|cell| -> Result<()> {
             let mut slot = cell.borrow_mut();
             if slot.as_ref().map(|c| c.generation) != Some(self.generation) {
                 *slot = Some(CachedVm {
@@ -257,25 +257,21 @@ impl GainModel for ScriptBackend {
             }
             let vm = &slot.as_ref().expect("vm just inserted").vm;
             let values = vm.eval_gains(pos, RoomParams::from_request(req))?;
-            let mut gains = Gains::zeroed(self.speakers.len());
-            for (i, g) in values.into_iter().enumerate() {
-                gains.set(i, g);
+            // One gain per speaker on both sides (`eval_gains` checks the
+            // script's count); a speaker the script did not answer for is
+            // silent rather than left on what the buffer held.
+            out.fill(0.0);
+            for (gain, value) in out.iter_mut().zip(values) {
+                *gain = value;
             }
-            Ok(gains)
+            Ok(())
         });
 
-        match result {
-            Ok(gains) => RenderResponse { gains },
-            Err(_) => {
-                // A sampling-time error: emit non-finite gains so the host's
-                // build-time smoke test rejects this backend (the eager probe in
-                // `new` already caught the common cases with a precise message).
-                let mut gains = Gains::zeroed(self.speakers.len());
-                for i in 0..self.speakers.len() {
-                    gains.set(i, f32::NAN);
-                }
-                RenderResponse { gains }
-            }
+        if result.is_err() {
+            // A sampling-time error: emit non-finite gains so the host's
+            // build-time smoke test rejects this backend (the eager probe in
+            // `new` already caught the common cases with a precise message).
+            out.fill(f32::NAN);
         }
     }
 
@@ -765,8 +761,18 @@ impl BackendFactory for ScriptFactory {
     }
 
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
-        // Unit speaker directions from the layout (captured on the build thread).
-        let (azimuth_elevation, _) = ctx.layout.spatializable_positions();
+        // Unit speaker directions from the layout (captured on the build
+        // thread), in the room the topology pans in: a cartesian speaker is
+        // a fraction of it (a BRIR set's loudspeakers are, of their measured
+        // room), and the `vbap(pos)` helper warps the object with the same
+        // room, so the two must share it (#803).
+        let room = ctx.room;
+        let (azimuth_elevation, _) = ctx.layout.spatializable_positions_for_room(
+            room.ratio,
+            room.rear,
+            room.lower,
+            room.center_blend,
+        );
         let speakers: Vec<[f32; 3]> = azimuth_elevation
             .iter()
             .map(|[az, el]| {
@@ -955,7 +961,7 @@ mod tests {
     #[test]
     fn nearest_script_selects_closest() {
         let model = backend(NEAREST).expect("valid script");
-        let gains = model.compute_gains(&request([0.9, 0.0, 0.0])).gains;
+        let gains = model.gains_at(&request([0.9, 0.0, 0.0]));
         assert_eq!(gains.len(), 4);
         assert_eq!(gains[1], 1.0);
         assert!(gains.iter().all(|g| g.is_finite()));
@@ -973,7 +979,7 @@ mod tests {
         "#;
         let model = ScriptBackend::new(src, speakers(), vec![("level".into(), 0.25)], None)
             .expect("valid script");
-        let gains = model.compute_gains(&request([0.0, 0.0, 0.0])).gains;
+        let gains = model.gains_at(&request([0.0, 0.0, 0.0]));
         assert!(gains.iter().all(|g| (*g - 4.25).abs() < 1e-6));
     }
 
@@ -989,7 +995,7 @@ mod tests {
             end
         "#;
         let model = ScriptBackend::new(src, dirs, Vec::new(), panner).expect("valid script");
-        let gains = model.compute_gains(&request([0.3, 0.6, 0.2])).gains;
+        let gains = model.gains_at(&request([0.3, 0.6, 0.2]));
         assert_eq!(gains.len(), 5);
         assert!(gains.iter().all(|g| g.is_finite()));
         let energy: f32 = gains.iter().map(|g| g * g).sum();
@@ -1023,9 +1029,7 @@ mod tests {
         // The full-layout panner is irrelevant here — the script builds its own.
         let model =
             ScriptBackend::new(src, dirs, Vec::new(), panner_for(&az_el)).expect("valid script");
-        let gains = model
-            .compute_gains(&request([x as f64, y as f64, z as f64]))
-            .gains;
+        let gains = model.gains_at(&request([x as f64, y as f64, z as f64]));
         assert_eq!(gains.len(), 5);
         assert!(gains.iter().all(|g| g.is_finite()));
         // Speakers outside the chosen subset {1,2,5} are never touched.
@@ -1060,7 +1064,7 @@ mod tests {
             end
         "#;
         let model = backend(src).expect("valid script");
-        let gains = model.compute_gains(&request([0.0, 0.0, 0.0])).gains;
+        let gains = model.gains_at(&request([0.0, 0.0, 0.0]));
         assert_eq!(gains.len(), 4);
         // Every marker is a near-zero error term.
         for (i, g) in gains.iter().enumerate() {
@@ -1084,7 +1088,7 @@ mod tests {
         let model = backend(src).expect("valid script");
         let mut req = request([0.0, 0.0, 0.0]);
         req.room_ratio = [2.0, 1.0, 1.0];
-        let gains = model.compute_gains(&req).gains;
+        let gains = model.gains_at(&req);
         assert!(
             (gains[0] - 1.0).abs() < 1e-4,
             "room_scaled x = {}",
@@ -1117,7 +1121,7 @@ mod tests {
             end
         "#;
         let model = backend(src).expect("valid script");
-        let gains = model.compute_gains(&request([0.0, 0.0, 0.0])).gains;
+        let gains = model.gains_at(&request([0.0, 0.0, 0.0]));
         let energy: f32 = gains.iter().map(|g| g * g).sum();
         assert!((energy - 1.0).abs() < 1e-4, "equal-power energy={energy}");
         let first = gains[0];
@@ -1194,7 +1198,7 @@ mod tests {
             end
         "#;
         let model = backend(src).expect("eager probe at origin passes");
-        let bad = model.compute_gains(&request([-1.0, 0.0, 0.0])).gains;
+        let bad = model.gains_at(&request([-1.0, 0.0, 0.0]));
         assert!(bad.iter().any(|g| !g.is_finite()));
     }
 
@@ -1235,7 +1239,7 @@ mod tests {
         let source = std::fs::read_to_string(path).expect("example script readable");
         let model = ScriptBackend::new(source.clone(), speakers(), Vec::new(), None)
             .expect("example is valid");
-        let gains = model.compute_gains(&request([0.7, -0.3, 0.2])).gains;
+        let gains = model.gains_at(&request([0.7, -0.3, 0.2]));
         let energy: f32 = gains.iter().map(|g| g * g).sum();
         assert!(
             (energy - 1.0).abs() < 1e-4,
@@ -1260,12 +1264,200 @@ mod tests {
         let params = vec![("spread".to_string(), 0.2)];
         let model = ScriptBackend::new(source, dirs, params, panner_for(&az_el))
             .expect("vbap_blend is valid");
-        let gains = model.compute_gains(&request([0.4, 0.5, 0.3])).gains;
+        let gains = model.gains_at(&request([0.4, 0.5, 0.3]));
         assert_eq!(gains.len(), 5);
         let energy: f32 = gains.iter().map(|g| g * g).sum();
         assert!(
             (energy - 1.0).abs() < 1e-4,
             "constant-power, energy={energy}"
+        );
+    }
+
+    /// The factory reads its speaker directions in the room the topology
+    /// pans in, as the `vbap` helper warps the object with it (#803): on a
+    /// BRIR set's loudspeakers, which are fractions of their measured room,
+    /// the shipped VBAP script agrees with the native panner — all of the
+    /// gain on a loudspeaker at its own place, an even split halfway in
+    /// angle between two. Read as cube directions, the fractions of an
+    /// elongated room sent 11 % of the power of an object on FL to C.
+    #[test]
+    fn speaker_directions_are_read_in_the_topologys_room() {
+        use renderer::backend_registry::{BackendBuildCtx, BackendRegistry};
+        use renderer::binaural::brir::MeasuredRoom;
+        use std::collections::HashMap;
+
+        // Fronts far, sides near, backs in between, four heights.
+        let emitters: [[f32; 3]; 11] = [
+            [0.0, 3.0, 0.0],
+            [-1.5, 3.0, 0.0],
+            [1.5, 3.0, 0.0],
+            [-2.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [-1.5, -2.0, 0.0],
+            [1.5, -2.0, 0.0],
+            [-1.5, 3.0, 1.5],
+            [1.5, 3.0, 1.5],
+            [-1.5, -2.0, 1.5],
+            [1.5, -2.0, 1.5],
+        ];
+        let measured = MeasuredRoom::of(&emitters, None);
+        let room = measured.ratios(0.5);
+        let layout =
+            SpeakerLayout::from_brir_emitters(&emitters, &room, measured.radius_m()).unwrap();
+        assert_eq!(layout.speakers[1].name, "FL");
+
+        // The native panner on that layout in that room: the reference, and
+        // the request template of a topology built there.
+        let control = renderer::test_support::fixture_control();
+        let native_plan = control
+            .prepare_topology_rebuild_for_layout(layout.clone(), room)
+            .expect("a native plan");
+        let native = native_plan
+            .backend_build
+            .build_gain_model()
+            .expect("the native model");
+        let template = native_plan.evaluation_build_config.request_template;
+        assert_eq!(template.room_ratio, room.ratio);
+
+        // The shipped VBAP script, built through the factory on the same
+        // layout and room, with no spread.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../script-backends/vbap_blend.lua"
+        );
+        let mut params: HashMap<String, HashMap<String, ParamValue>> = HashMap::new();
+        params.insert(
+            "script".to_string(),
+            HashMap::from([
+                ("path".to_string(), ParamValue::Text(path.to_string())),
+                ("spread".to_string(), ParamValue::Float(0.0)),
+            ]),
+        );
+        let registry = BackendRegistry::builtin();
+        let live = control.live.read();
+        let ctx = BackendBuildCtx {
+            layout: &layout,
+            live: &live,
+            room,
+            backend_rebuild_params: None,
+            registry: &registry,
+            backend_params: &params,
+        };
+        let script = ScriptFactory
+            .build_plan(&ctx)
+            .expect("a script plan")
+            .build_gain_model()
+            .expect("the script model");
+
+        let both = |position: [f32; 3]| {
+            let mut req = template;
+            req.adm_position = [position[0] as f64, position[1] as f64, position[2] as f64];
+            (
+                native.gains_at(&req).to_vec(),
+                script.gains_at(&req).to_vec(),
+            )
+        };
+        let unit = |p: [f32; 3]| {
+            let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            [p[0] / n, p[1] / n, p[2] / n]
+        };
+        // An object on FL, and one halfway in angle between C and FR, in
+        // the room's own metric.
+        let fl = &layout.speakers[1];
+        let bisector = {
+            let (a, b) = (unit(emitters[0]), unit(emitters[2]));
+            let d = unit([a[0] + b[0], a[1] + b[1], a[2] + b[2]]);
+            let r = measured.radius_m();
+            room.inverse([d[0] / r, d[1] / r, d[2] / r])
+        };
+        for (what, position) in [("on FL", [fl.x, fl.y, fl.z]), ("C–FR bisector", bisector)] {
+            let (native, script) = both(position);
+            assert_eq!(native.len(), script.len(), "{what}");
+            for (i, (n, s)) in native.iter().zip(&script).enumerate() {
+                assert!(
+                    (n - s).abs() < 1e-3,
+                    "{what}: speaker {i} native {n} vs script {s}\n{native:?}\n{script:?}"
+                );
+            }
+        }
+        let (_, on_fl) = both([fl.x, fl.y, fl.z]);
+        assert!(
+            on_fl[1] > 0.999 && on_fl[0].abs() < 1e-3,
+            "all on FL: {on_fl:?}"
+        );
+        let (_, split) = both(bisector);
+        assert!(
+            (split[0] - split[2]).abs() < 1e-3 && split[0] > 0.5,
+            "even split: {split:?}"
+        );
+    }
+
+    /// The shipped distance script warps the position into the speakers'
+    /// room-relative space (`room_scale`): built through the factory on
+    /// cartesian speakers in a non-unit room, an object on a speaker's
+    /// place favours that speaker. Comparing the raw position with the
+    /// warped speakers favoured B for an object on A (#803 review).
+    #[test]
+    fn shipped_distance_example_pans_in_the_room() {
+        use renderer::backend_registry::{BackendBuildCtx, BackendRegistry};
+        use renderer::live_params::RoomRatios;
+        use renderer::speaker_layout::Speaker;
+        use std::collections::HashMap;
+
+        let layout = SpeakerLayout::from_speakers(vec![
+            Speaker::from_cartesian("A", 1.0, 1.0, 0.0, true, 0.0),
+            Speaker::from_cartesian("B", 1.0, 0.5, 0.0, true, 0.0),
+            Speaker::from_cartesian("C", -1.0, -1.0, 0.0, true, 0.0),
+        ])
+        .expect("three speakers");
+        let room = RoomRatios {
+            ratio: [1.0, 2.0, 1.0],
+            rear: 2.0,
+            lower: 1.0,
+            center_blend: 0.5,
+        };
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../script-backends/nearest_inverse_distance.lua"
+        );
+        let mut params: HashMap<String, HashMap<String, ParamValue>> = HashMap::new();
+        params.insert(
+            "script".to_string(),
+            HashMap::from([("path".to_string(), ParamValue::Text(path.to_string()))]),
+        );
+        let control = renderer::test_support::fixture_control();
+        let registry = BackendRegistry::builtin();
+        let live = control.live.read();
+        let ctx = BackendBuildCtx {
+            layout: &layout,
+            live: &live,
+            room,
+            backend_rebuild_params: None,
+            registry: &registry,
+            backend_params: &params,
+        };
+        let model = ScriptFactory
+            .build_plan(&ctx)
+            .expect("a plan")
+            .build_gain_model()
+            .expect("the model");
+        let gains_at = |p: [f64; 3]| {
+            let mut req = request(p);
+            req.room_ratio = room.ratio;
+            req.room_ratio_rear = room.rear;
+            req.room_ratio_lower = room.lower;
+            req.room_ratio_center_blend = room.center_blend;
+            model.gains_at(&req).to_vec()
+        };
+        let on_a = gains_at([1.0, 1.0, 0.0]);
+        assert!(
+            on_a[0] > on_a[1] && on_a[0] > on_a[2],
+            "on A, A is favoured: {on_a:?}"
+        );
+        let on_c = gains_at([-1.0, -1.0, 0.0]);
+        assert!(
+            on_c[2] > on_c[0] && on_c[2] > on_c[1],
+            "on C, C is favoured: {on_c:?}"
         );
     }
 
@@ -1280,7 +1472,7 @@ mod tests {
         // floor_only = 0 → ground ring + the overhead speaker (triangulable).
         let params = vec![("floor_only".to_string(), 0.0)];
         let model = ScriptBackend::new(source, dirs, params, None).expect("vbap_subset is valid");
-        let gains = model.compute_gains(&request([0.4, 0.5, 0.3])).gains;
+        let gains = model.gains_at(&request([0.4, 0.5, 0.3]));
         assert_eq!(gains.len(), 5);
         assert!(gains.iter().all(|g| g.is_finite()));
     }

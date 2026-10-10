@@ -401,8 +401,7 @@ pub(crate) mod hold {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use renderer::spatial_vbap::MAX_SPEAKERS;
-    use renderer::speaker_layout::{Speaker, SpeakerLayout};
+    use renderer::speaker_layout::SpeakerLayout;
     use renderer::test_support::fixture_control;
     use rosc::{OscPacket, OscType};
     use std::net::UdpSocket;
@@ -626,36 +625,38 @@ mod tests {
         drop(listener.renderer);
     }
 
-    /// Studio grows the layout past what the renderer's gains hold
-    /// (`MAX_SPEAKERS`, LFE included), whichever backend is selected: the
-    /// recompute fails with a reason on the recompute-error broadcast — not a
-    /// caught out-of-bounds panic — and the engine keeps rendering the
-    /// previous topology.
-    #[test]
-    fn an_oversized_layout_reports_a_recompute_error_with_every_backend() {
-        for backend in ["vbap", "barycenter", "experimental_distance", "hybrid"] {
-            oversized_layout_reports_a_recompute_error(backend);
+    /// A backend that cannot be built for the edited layout.
+    struct RefusingFactory;
+
+    impl renderer::plugin::PluginFactory for RefusingFactory {
+        fn id(&self) -> &'static str {
+            "refusing"
         }
     }
 
-    fn oversized_layout_reports_a_recompute_error(backend: &str) {
+    impl renderer::backend_registry::BackendFactory for RefusingFactory {
+        fn build_plan(
+            &self,
+            _ctx: &renderer::backend_registry::BackendBuildCtx<'_>,
+        ) -> Option<renderer::backend_registry::BackendBuildPlan> {
+            Some(renderer::backend_registry::BackendBuildPlan::Dynamic(
+                renderer::backend_registry::DynamicBackendPlan::new("refusing", || {
+                    Err(anyhow::anyhow!("no hull for this layout"))
+                }),
+            ))
+        }
+    }
+
+    /// A layout edit the selected backend cannot be built for: the recompute
+    /// fails with the backend's reason on the recompute-error broadcast, and
+    /// the engine keeps rendering the previous topology.
+    #[test]
+    fn a_failed_layout_recompute_reports_its_reason_and_keeps_the_topology() {
         let control = fixture_control();
+        control.register_backend(Box::new(RefusingFactory));
         let before = control.active_topology();
-        control.live.write().backend_id = backend.to_string();
-        let n = MAX_SPEAKERS + 2;
-        let layout = SpeakerLayout::from_speakers(
-            (0..n)
-                .map(|i| {
-                    Speaker::new(
-                        format!("S{i}"),
-                        -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
-                        if i % 2 == 0 { 0.0 } else { 40.0 },
-                    )
-                })
-                .collect(),
-        )
-        .expect("ring layout");
-        control.with_editable_layout(|l| *l = layout);
+        control.live.write().backend_id = "refusing".to_string();
+        control.with_editable_layout(|layout| layout.speakers[0].name = "Edited".to_string());
         control.bump_geometry_generation();
 
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
@@ -674,19 +675,70 @@ mod tests {
         );
 
         let error = next_non_empty_string(&client, osc_contract::STATE_SPEAKERS_RECOMPUTE_ERROR)
-            .unwrap_or_else(|| panic!("{backend}: a recompute error is broadcast"));
+            .expect("a recompute error is broadcast");
         assert!(
-            error.contains(&format!("at most {MAX_SPEAKERS}")) && !error.contains("panicked"),
-            "{backend}: {error}"
+            error.contains("no hull for this layout") && !error.contains("panicked"),
+            "{error}"
         );
         let deadline = Instant::now() + Duration::from_secs(10);
         while control.recomputing.load(Ordering::Relaxed) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(!control.recomputing.load(Ordering::Relaxed), "{backend}");
+        assert!(!control.recomputing.load(Ordering::Relaxed));
         assert!(
             Arc::ptr_eq(&before, &control.active_topology()),
-            "{backend}: the previous topology stays active"
+            "the previous topology stays active"
         );
+    }
+
+    /// Studio grows the layout past the 24 speakers the renderer's gain sets
+    /// used to hold (#745) — to 40, 80 and 128 — whichever backend is
+    /// selected: the recompute builds the wider topology and publishes it.
+    #[test]
+    fn a_layout_wider_than_24_speakers_recomputes_with_every_backend() {
+        for n in [40, 80, 128] {
+            for backend in [
+                "vbap",
+                "volumetric",
+                "barycenter",
+                "experimental_distance",
+                "hybrid",
+            ] {
+                a_wider_layout_recomputes(backend, n);
+            }
+        }
+    }
+
+    fn a_wider_layout_recomputes(backend: &str, n: usize) {
+        let control = fixture_control();
+        let before = control.active_topology();
+        control.live.write().backend_id = backend.to_string();
+        let layout = renderer::test_support::dome_layout(n);
+        control.with_editable_layout(|l| *l = layout);
+        control.bump_geometry_generation();
+
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
+        trigger_layout_recompute(
+            &control,
+            &socket,
+            &clients,
+            &Arc::new(GaintableCache::new()),
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Arc::ptr_eq(&before, &control.active_topology())
+            || control.recomputing.load(Ordering::Relaxed)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "{backend}, {n} speakers: the wider topology was never published"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let topology = control.active_topology();
+        assert_eq!(topology.num_speakers, n, "{backend}");
+        assert_eq!(topology.backend.backend_id(), backend);
+        assert_eq!(topology.backend.speaker_count(), n, "{backend}");
     }
 }

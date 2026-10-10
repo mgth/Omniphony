@@ -209,11 +209,19 @@ pub struct WatchdogControl {
     pub attempts: u8,
     pub cooldown_until: Option<std::time::Instant>,
     pub last_spawn_at: Option<std::time::Instant>,
-    pub check_requested_at: Option<std::time::Instant>,
     pub suppressed: bool,
     /// Why the last automatic start failed (spawn error or fast exit), for
     /// the "engine not running" banner. Cleared on re-arm and on a connection.
     pub last_failure: Option<String>,
+    /// When the watchdog will start a renderer, if every rule lets it and
+    /// only a wait is left: what the "Start the audio engine" button fills
+    /// towards. Written by the watchdog's tick, read by
+    /// [`EngineStartProgress`](crate::host::services::watchdog::EngineStartProgress).
+    pub countdown: Option<crate::host::services::watchdog::Countdown>,
+    /// A renderer was spawned and has not been seen connected since. Set at
+    /// the spawn, cleared by the watchdog on a connection or when it reaps
+    /// the child.
+    pub awaiting_answer: bool,
 }
 
 impl WatchdogControl {

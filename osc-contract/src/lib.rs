@@ -59,7 +59,7 @@ pub mod stream;
 /// a change to arguments only is for the author to remember.
 ///
 /// An engine that predates this advertises none, which a client reads as 0.
-pub const CONTRACT_REVISION: u32 = 5;
+pub const CONTRACT_REVISION: u32 = 6;
 
 /// The port the engine's stream transport listens on is the OSC/UDP control
 /// port's number, on loopback (TCP and UDP ports are separate spaces). A
@@ -163,6 +163,8 @@ pub const CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO: &str =
     "/omniphony/control/binaural/reverb/rt60_low_ratio";
 pub const CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO: &str =
     "/omniphony/control/binaural/reverb/rt60_high_ratio";
+pub const CONTROL_BINAURAL_SPHERE_COORDINATES: &str =
+    "/omniphony/control/binaural/sphere_coordinates";
 pub const CONTROL_BINAURAL_UNIT_SCALE: &str = "/omniphony/control/binaural/unit_scale";
 pub const CONTROL_CONFIG_AUDIO: &str = "/omniphony/control/config/audio";
 pub const CONTROL_CONFIG_AUDIO_APPLY: &str = "/omniphony/control/config/audio/apply";
@@ -880,6 +882,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO,
     CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO,
     CONTROL_BINAURAL_REVERB_SIZE,
+    CONTROL_BINAURAL_SPHERE_COORDINATES,
     CONTROL_BINAURAL_UNIT_SCALE,
     CONTROL_HEAD_ORIENTATION,
     CONTROL_HEAD_QUAT,
@@ -1184,7 +1187,7 @@ mod tests {
     /// `(revision, fingerprint)`. Change both together, and only together with
     /// a bump: a new fingerprint under the old revision tells clients nothing
     /// changed when it did.
-    const PINNED_ADDRESS_SET: (u32, u64) = (5, 0xd47b_da03_4f3d_745d);
+    const PINNED_ADDRESS_SET: (u32, u64) = (6, 0xeacf_2e42_91fa_6c74);
 
     /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
     /// and not the order the lists happen to be written in.

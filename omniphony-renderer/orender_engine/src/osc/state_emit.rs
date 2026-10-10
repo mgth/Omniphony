@@ -188,8 +188,7 @@ pub(super) fn encode_meter_bundle(report: &MeterReport) -> Result<Vec<u8>> {
     let object_test_position = *object_test_position;
     let object_test_level = *object_test_level;
     let max_gain_id = object_gains.iter().map(|(idx, _)| *idx).max().unwrap_or(0);
-    let mut gains_by_id: Vec<Option<&renderer::spatial_vbap::Gains>> =
-        vec![None; max_gain_id.saturating_add(1)];
+    let mut gains_by_id: Vec<Option<&Vec<f32>>> = vec![None; max_gain_id.saturating_add(1)];
     for (idx, g) in object_gains {
         if *idx < gains_by_id.len() {
             gains_by_id[*idx] = Some(g);
@@ -201,7 +200,7 @@ pub(super) fn encode_meter_bundle(report: &MeterReport) -> Result<Vec<u8>> {
         .map(|(idx, _)| *idx)
         .max()
         .unwrap_or(0);
-    let mut band_gains_by_id: Vec<Option<&Vec<renderer::spatial_vbap::Gains>>> =
+    let mut band_gains_by_id: Vec<Option<&renderer::render_backend::BandGains>> =
         vec![None; max_band_id.saturating_add(1)];
     for (idx, bg) in object_band_gains {
         if *idx < band_gains_by_id.len() {
@@ -346,7 +345,7 @@ pub(super) fn encode_meter_bundle(report: &MeterReport) -> Result<Vec<u8>> {
             }));
         }
         if let Some(bands) = band_gains_by_id.get(id as usize).and_then(|entry| *entry) {
-            for (b, bg) in bands.iter().enumerate() {
+            for (b, bg) in bands.bands().enumerate() {
                 messages.push(OscPacket::Message(OscMessage {
                     addr: format!("/omniphony/meter/object/{}/band/{}/gains", id, b),
                     args: bg.iter().map(|&g| OscType::Float(g)).collect(),

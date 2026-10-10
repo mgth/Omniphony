@@ -319,6 +319,179 @@ macro_rules! geometry_for {
                 ]
             }
 
+            /// Inverse of [`room_scaled_position`] for a position that states
+            /// a direction: one that reaches past a wall is drawn back along
+            /// its own line until it fits the room, then inverted, so the
+            /// direction it renders at survives. The plain inverse clamps each
+            /// axis on its own, which bends such a position towards the wall:
+            /// a 30° height in a room whose height ratio is 0.4 came back at
+            /// 24.8°. A position inside the room is inverted as it is.
+            #[inline]
+            pub fn inverse_room_scaled_direction(
+                position: [$f; 3],
+                room_ratio: [$f; 3],
+                rear_ratio: $f,
+                lower_ratio: $f,
+                center_blend: $f,
+            ) -> [$f; 3] {
+                let half = |value: $f, positive: $f, negative: $f| {
+                    (if value >= 0.0 { positive } else { negative }).max(MIN_ROOM_RATIO)
+                };
+                let extents = [
+                    room_ratio[0].max(MIN_ROOM_RATIO),
+                    half(position[1], room_ratio[1], rear_ratio),
+                    half(position[2], room_ratio[2], lower_ratio),
+                ];
+                let mut overshoot: $f = 1.0;
+                for axis in 0..3 {
+                    overshoot = overshoot.max(position[axis].abs() / extents[axis]);
+                }
+                let fitted = [
+                    position[0] / overshoot,
+                    position[1] / overshoot,
+                    position[2] / overshoot,
+                ];
+                inverse_room_scaled_position(
+                    fitted,
+                    room_ratio,
+                    rear_ratio,
+                    lower_ratio,
+                    center_blend,
+                )
+            }
+
+            // ---------------------------------------------------------------
+            // Sphere reading of room coordinates
+            // ---------------------------------------------------------------
+
+            /// Azimuth of the room's front corners at ear level under the
+            /// sphere reading, in degrees: where `L`/`R` stand.
+            pub const SPHERE_FRONT_CORNER_DEG: $f = 30.0;
+            /// Azimuth of the room's front corners at the ceiling: where the
+            /// top front pair stands.
+            pub const SPHERE_TOP_FRONT_CORNER_DEG: $f = 45.0;
+            /// Azimuth of the room's rear corners, at every height: where the
+            /// back pair and the top back pair stand.
+            pub const SPHERE_REAR_CORNER_DEG: $f = 135.0;
+
+            /// The front corners' azimuth at a given height fraction: `0` at
+            /// ear level, `1` from the ceiling edge up (and from the floor
+            /// edge down).
+            #[inline]
+            fn sphere_front_corner_deg(height: $f) -> $f {
+                SPHERE_FRONT_CORNER_DEG
+                    + (SPHERE_TOP_FRONT_CORNER_DEG - SPHERE_FRONT_CORNER_DEG) * height
+            }
+
+            /// Read a normalized room position on the listener's sphere: the
+            /// room position that lies in the direction the sphere reading
+            /// hears `position` at, at the same distance relative to the
+            /// room's surface.
+            ///
+            /// A room position is a point of the unit cube, and the direction
+            /// straight off it is a cube's: a front corner at 45°, a top
+            /// corner 35° up. Speakers do not stand there. The sphere reading
+            /// maps the cube onto the sphere so that the places a layout's
+            /// speakers take in the room are heard at their nominal angles:
+            ///
+            /// - **Azimuth.** The horizontal outline of the room, a square,
+            ///   is walked as a circle: linear in the position along each
+            ///   half-wall, between the front centre (0°), the front corner
+            ///   ([`SPHERE_FRONT_CORNER_DEG`] at ear level, widening to
+            ///   [`SPHERE_TOP_FRONT_CORNER_DEG`] at the ceiling), the side
+            ///   wall's centre (90°), the rear corner
+            ///   ([`SPHERE_REAR_CORNER_DEG`]) and the rear centre (180°).
+            /// - **Elevation.** The height over the horizontal reach
+            ///   `max(|x|, |y|)`, not over the horizontal radius: the whole
+            ///   ceiling edge is 45° up, corners included, and the ceiling's
+            ///   centre is overhead.
+            ///
+            /// The direction depends on the direction of `position` only, so
+            /// a source moving along a line through the listener keeps its
+            /// bearing. The returned point has the same `max(|x|, |y|, |z|)`
+            /// as `position`: a point of the room's surface stays on it, in
+            /// the heard direction. Straight up, straight down and the origin
+            /// are returned as they are.
+            ///
+            /// One `sin_cos` per call; no allocation.
+            #[inline]
+            pub fn sphere_reading(position: [$f; 3]) -> [$f; 3] {
+                let [x, y, z] = position;
+                let reach = x.abs().max(y.abs());
+                if reach <= 0.0 {
+                    return position;
+                }
+                let (ux, uy) = (x.abs() / reach, y / reach);
+                let front = sphere_front_corner_deg((z.abs() / reach).min(1.0));
+                let azimuth = if uy >= ux {
+                    // Front wall.
+                    front * ux
+                } else if uy <= -ux {
+                    // Rear wall.
+                    180.0 - (180.0 - SPHERE_REAR_CORNER_DEG) * ux
+                } else if uy >= 0.0 {
+                    // Side wall, front half.
+                    90.0 - (90.0 - front) * uy
+                } else {
+                    // Side wall, rear half.
+                    90.0 - (SPHERE_REAR_CORNER_DEG - 90.0) * uy
+                };
+                let (sin, cos) = azimuth.to_radians().sin_cos();
+                let heard = [reach * sin.copysign(x), reach * cos, z];
+                // Back onto the room's surface at the distance `position`
+                // had: the largest component carries it.
+                let scale =
+                    reach.max(z.abs()) / heard[0].abs().max(heard[1].abs()).max(heard[2].abs());
+                [heard[0] * scale, heard[1] * scale, heard[2] * scale]
+            }
+
+            /// The room position [`sphere_reading`] hears in the direction of
+            /// `position`: its inverse, for a pose stated as an angle that
+            /// must land on that angle under the sphere reading. The length
+            /// of `position` (its radius on the listener's sphere) becomes
+            /// the distance relative to the room's surface, so a direction at
+            /// radius 1 comes back on the surface of the unit cube.
+            #[inline]
+            pub fn inverse_sphere_reading(position: [$f; 3]) -> [$f; 3] {
+                let [x, y, z] = position;
+                let horizontal = (x * x + y * y).sqrt();
+                if horizontal < 1e-6 {
+                    // Straight up or down (or the origin): its own image.
+                    return [0.0, 0.0, z];
+                }
+                let radius = (horizontal * horizontal + z * z).sqrt();
+                let front = sphere_front_corner_deg((z.abs() / horizontal).min(1.0));
+                let azimuth = x.atan2(y).to_degrees().abs();
+                let (ux, uy) = if azimuth <= front {
+                    (azimuth / front, 1.0)
+                } else if azimuth <= 90.0 {
+                    (1.0, (90.0 - azimuth) / (90.0 - front))
+                } else if azimuth <= SPHERE_REAR_CORNER_DEG {
+                    (1.0, (90.0 - azimuth) / (SPHERE_REAR_CORNER_DEG - 90.0))
+                } else {
+                    ((180.0 - azimuth) / (180.0 - SPHERE_REAR_CORNER_DEG), -1.0)
+                };
+                // Up to 45° the point is on a wall, above it on the ceiling.
+                let (reach, height) = if z.abs() <= horizontal {
+                    (radius, radius * z / horizontal)
+                } else {
+                    (radius * horizontal / z.abs(), radius.copysign(z))
+                };
+                [reach * ux.copysign(x), reach * uy, height]
+            }
+
+            /// [`inverse_sphere_reading`] for a pose stated as an angle, kept
+            /// inside the room: a radius past 1 would land beyond the unit
+            /// cube's surface, so the pose is drawn back to it along its own
+            /// direction, the way [`inverse_room_scaled_direction`] fits one
+            /// into a room.
+            #[inline]
+            pub fn inverse_sphere_reading_direction(position: [$f; 3]) -> [$f; 3] {
+                let [x, y, z] = position;
+                let overshoot = (x * x + y * y + z * z).sqrt().max(1.0);
+                inverse_sphere_reading([x / overshoot, y / overshoot, z / overshoot])
+            }
+
             // ---------------------------------------------------------------
             // Sampling grids
             // ---------------------------------------------------------------
@@ -794,10 +967,267 @@ mod tests {
         }
     }
 
+    /// A direction past a wall keeps its angle through the direction
+    /// inverse, where the plain inverse bends it: the position is drawn back
+    /// along its line into the room, and warping the result renders the
+    /// same angle. Inside the room the two inverses agree.
+    #[test]
+    fn the_direction_inverse_keeps_the_angle_of_a_position_past_a_wall() {
+        // A low room, deeper to the front than to the rear.
+        let ratio = [1.0, 1.2, 0.4];
+        let (rear, lower, blend) = (0.8, 0.48, 0.5);
+        let angles = |p: [f64; 3]| {
+            (
+                p[0].atan2(p[1]).to_degrees(),
+                p[2].atan2((p[0] * p[0] + p[1] * p[1]).sqrt()).to_degrees(),
+            )
+        };
+        for (az, el) in [
+            (-30.0f64, 30.0f64),
+            (110.0, 30.0),
+            (0.0, 45.0),
+            (-135.0, 0.0),
+            (180.0, -20.0),
+        ] {
+            let (x, y, z) = from_spherical(az, el, 1.0);
+            let kept = inverse_room_scaled_direction([x, y, z], ratio, rear, lower, blend);
+            assert!(
+                kept.iter().all(|c| c.abs() <= 1.0 + 1e-9),
+                "{az}/{el}: inside the cube"
+            );
+            let (got_az, got_el) = angles(room_scaled_position(kept, ratio, rear, lower, blend));
+            close(got_az, az);
+            close(got_el, el);
+        }
+        // The plain inverse does bend a height past the ceiling (the reason
+        // this function exists).
+        let (x, y, z) = from_spherical(-30.0, 30.0, 1.0);
+        let bent = inverse_room_scaled_position([x, y, z], ratio, rear, lower, blend);
+        let (_, el) = angles(room_scaled_position(bent, ratio, rear, lower, blend));
+        assert!(el < 26.0, "the plain inverse bends it to {el}°");
+        // Inside the room both agree.
+        let inside = [0.2, -0.3, 0.1];
+        let a = inverse_room_scaled_direction(inside, ratio, rear, lower, blend);
+        let b = inverse_room_scaled_position(inside, ratio, rear, lower, blend);
+        for axis in 0..3 {
+            close(a[axis], b[axis]);
+        }
+    }
+
     #[test]
     fn degenerate_ratios_do_not_divide_by_zero() {
         let back = inverse_room_scaled_position([0.5, 0.5, -0.5], [0.0, 0.0, 0.0], 0.0, 0.0, 0.5);
         assert!(back.iter().all(|v| v.is_finite()));
+    }
+
+    // ── Sphere reading ──────────────────────────────────────────────────────
+
+    /// Azimuth and elevation the sphere reading hears a room position at.
+    fn heard(x: f64, y: f64, z: f64) -> (f64, f64) {
+        let [hx, hy, hz] = sphere_reading([x, y, z]);
+        let (az, el, _) = to_spherical(hx, hy, hz);
+        (az, el)
+    }
+
+    fn reach(position: [f64; 3]) -> f64 {
+        position[0]
+            .abs()
+            .max(position[1].abs())
+            .max(position[2].abs())
+    }
+
+    /// The places a layout's speakers take in the room are heard at their
+    /// nominal angles: what the reading is for.
+    #[test]
+    fn the_rooms_speaker_places_are_heard_at_their_nominal_angles() {
+        // (room position, azimuth, elevation)
+        let places = [
+            ((0.0, 1.0, 0.0), 0.0, 0.0),       // C
+            ((-1.0, 1.0, 0.0), -30.0, 0.0),    // L
+            ((1.0, 1.0, 0.0), 30.0, 0.0),      // R
+            ((-0.5, 1.0, 0.0), -15.0, 0.0),    // Lsc
+            ((1.0, 0.5, 0.0), 60.0, 0.0),      // Rw
+            ((-1.0, 0.0, 0.0), -90.0, 0.0),    // Ls
+            ((1.0, 0.0, 0.0), 90.0, 0.0),      // Rs
+            ((-1.0, -1.0, 0.0), -135.0, 0.0),  // Lb
+            ((1.0, -1.0, 0.0), 135.0, 0.0),    // Rb
+            ((-1.0, 1.0, 1.0), -45.0, 45.0),   // Tfl
+            ((1.0, 1.0, 1.0), 45.0, 45.0),     // Tfr
+            ((0.0, 1.0, 1.0), 0.0, 45.0),      // Tfc
+            ((-1.0, 0.0, 1.0), -90.0, 45.0),   // Tsl
+            ((-1.0, -1.0, 1.0), -135.0, 45.0), // Tbl
+            ((1.0, -1.0, 1.0), 135.0, 45.0),   // Tbr
+            ((1.0, -1.0, -1.0), 135.0, -45.0), // a floor corner mirrors the top
+        ];
+        for ((x, y, z), azimuth, elevation) in places {
+            let (az, el) = heard(x, y, z);
+            close(az, azimuth);
+            close(el, elevation);
+        }
+        // The rear centre is behind, whichever sign the azimuth takes.
+        let (az, el) = heard(0.0, -1.0, 0.0);
+        close(az.abs(), 180.0);
+        close(el, 0.0);
+    }
+
+    /// A cube reads a front corner at 45° and a top corner 35° up; the
+    /// reading moves both, which is the whole difference.
+    #[test]
+    fn the_sphere_reading_differs_from_the_cubes_own_directions() {
+        let (az, el, _) = to_spherical(-1.0, 1.0, 1.0);
+        close(az, -45.0);
+        assert!((el - 35.264).abs() < 1e-3, "cube top corner at {el}");
+        let (_, el) = heard(-1.0, 1.0, 1.0);
+        close(el, 45.0);
+        let (az, _, _) = to_spherical(-1.0, 1.0, 0.0);
+        close(az, -45.0);
+        let (az, _) = heard(-1.0, 1.0, 0.0);
+        close(az, -30.0);
+    }
+
+    #[test]
+    fn the_vertical_axis_and_the_origin_read_as_themselves() {
+        assert_eq!(sphere_reading([0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]);
+        assert_eq!(sphere_reading([0.0, 0.0, -0.4]), [0.0, 0.0, -0.4]);
+        assert_eq!(sphere_reading([0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]);
+        assert_eq!(inverse_sphere_reading([0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]);
+        assert_eq!(inverse_sphere_reading([0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]);
+        // The ceiling's centre is overhead, and its approach is continuous.
+        let (_, el) = heard(0.001, 0.001, 1.0);
+        assert!(el > 89.9, "near the zenith reads {el}");
+    }
+
+    /// A position grid covering every wall, the ceiling, the floor and the
+    /// inside of the room, the axis left out.
+    fn sample_positions() -> Vec<[f64; 3]> {
+        let steps = [-1.0, -0.75, -0.5, -0.2, 0.0, 0.3, 0.5, 0.8, 1.0];
+        let mut out = Vec::new();
+        for &x in &steps {
+            for &y in &steps {
+                for &z in &steps {
+                    if x != 0.0 || y != 0.0 {
+                        out.push([x, y, z]);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The distance relative to the room's surface is the reading's to keep:
+    /// the distance cues are measured against it.
+    #[test]
+    fn the_sphere_reading_keeps_the_distance_to_the_rooms_surface() {
+        for position in sample_positions() {
+            close(reach(sphere_reading(position)), reach(position));
+        }
+    }
+
+    #[test]
+    fn the_inverse_sphere_reading_undoes_the_reading() {
+        for position in sample_positions() {
+            // The reading lands on the room's surface scaled to the reach;
+            // the inverse takes a direction and a radius.
+            let read = sphere_reading(position);
+            let radius = reach(position);
+            let length = vec3::length(read);
+            let direction = [
+                read[0] / length * radius,
+                read[1] / length * radius,
+                read[2] / length * radius,
+            ];
+            let back = inverse_sphere_reading(direction);
+            for axis in 0..3 {
+                assert!(
+                    (back[axis] - position[axis]).abs() < 1e-9,
+                    "{position:?} came back as {back:?}"
+                );
+            }
+        }
+    }
+
+    /// A pose stated as an angle is stored as the inverse, and must be heard
+    /// at that angle, at the distance its radius states.
+    #[test]
+    fn an_angle_survives_the_inverse_then_the_reading() {
+        for &azimuth in &[
+            -170.0, -135.0, -110.0, -30.0, 0.0, 22.5, 45.0, 90.0, 120.0, 180.0,
+        ] {
+            for &elevation in &[-60.0, -30.0, 0.0, 15.0, 30.0, 45.0, 55.0, 80.0] {
+                for &radius in &[0.5, 1.0, 1.6] {
+                    let (x, y, z) = from_spherical(azimuth, elevation, radius);
+                    let stored = inverse_sphere_reading([x, y, z]);
+                    close(reach(stored), radius);
+                    let (az, el) = heard(stored[0], stored[1], stored[2]);
+                    assert!(
+                        wrapped_distance_deg(az, azimuth) < 1e-6,
+                        "azimuth {azimuth} at elevation {elevation} read {az}"
+                    );
+                    close(el, elevation);
+                }
+            }
+        }
+    }
+
+    /// A pose keeps to the room: past radius 1 it comes back on the surface,
+    /// on its direction; inside, it is the plain inverse.
+    #[test]
+    fn a_pose_past_the_surface_is_drawn_back_onto_it() {
+        let (x, y, z) = from_spherical(-110.0, 20.0, 1.8);
+        let stored = inverse_sphere_reading_direction([x, y, z]);
+        close(reach(stored), 1.0);
+        let (az, el) = heard(stored[0], stored[1], stored[2]);
+        close(az, -110.0);
+        close(el, 20.0);
+        let (x, y, z) = from_spherical(40.0, -10.0, 0.6);
+        assert_eq!(
+            inverse_sphere_reading_direction([x, y, z]),
+            inverse_sphere_reading([x, y, z])
+        );
+    }
+
+    /// A source moving along a line through the listener keeps its bearing.
+    #[test]
+    fn the_heard_direction_does_not_depend_on_the_distance() {
+        for position in sample_positions() {
+            let near = [position[0] * 0.25, position[1] * 0.25, position[2] * 0.25];
+            let (az, el) = heard(position[0], position[1], position[2]);
+            let (az_near, el_near) = heard(near[0], near[1], near[2]);
+            assert!(wrapped_distance_deg(az, az_near) < 1e-9);
+            close(el, el_near);
+        }
+    }
+
+    /// The reading is continuous along a wall and across its corners: an
+    /// object panned round the room never jumps.
+    #[test]
+    fn the_heard_direction_is_continuous_round_the_room() {
+        for &z in &[0.0, 0.4, 1.0] {
+            // Walk the square outline clockwise from the front centre.
+            let outline = |t: f64| -> (f64, f64) {
+                let t = t.rem_euclid(8.0);
+                match t {
+                    t if t < 1.0 => (t, 1.0),
+                    t if t < 3.0 => (1.0, 2.0 - t),
+                    t if t < 5.0 => (4.0 - t, -1.0),
+                    t if t < 7.0 => (-1.0, t - 6.0),
+                    t => (t - 8.0, 1.0),
+                }
+            };
+            let steps = 1600;
+            let mut previous = heard(0.0, 1.0, z).0;
+            let mut travelled = 0.0;
+            for i in 1..=steps {
+                let (x, y) = outline(i as f64 * 8.0 / steps as f64);
+                let az = heard(x, y, z).0;
+                let step = wrapped_distance_deg(az, previous);
+                assert!(step < 0.6, "jump of {step}° near ({x}, {y}, {z})");
+                travelled += step;
+                previous = az;
+            }
+            // Once round, never turning back.
+            close(travelled, 360.0);
+        }
     }
 
     // ── Hydration ───────────────────────────────────────────────────────────

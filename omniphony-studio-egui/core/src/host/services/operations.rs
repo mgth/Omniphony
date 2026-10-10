@@ -32,6 +32,8 @@ struct Completion {
 #[derive(Default)]
 pub struct Operations {
     pending: Option<Receiver<Completion>>,
+    /// The pending operation launches a renderer.
+    launching: bool,
     pub status: Option<Result<orender::OrenderServiceStatus, String>>,
     pub error: Option<String>,
 }
@@ -41,11 +43,18 @@ impl Operations {
         self.pending.is_some()
     }
 
+    /// Whether the operation under way launches a renderer: what the "Start
+    /// the audio engine" button shows as starting before the child exists.
+    pub fn launching(&self) -> bool {
+        self.pending() && self.launching
+    }
+
     pub fn request(&mut self, state: &Arc<SharedState>, action: Action) -> bool {
         if self.pending() {
             return false;
         }
         self.error = None;
+        self.launching = matches!(action, Action::Launch | Action::Restart);
         let host = state.clone();
         self.pending = Some(super::jobs::run(state, move || {
             let refresh = !matches!(&action, Action::Connect { .. });

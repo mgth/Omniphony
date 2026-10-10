@@ -6,7 +6,36 @@
 
 use super::OscControlMsg;
 use super::{SharedState, send_control};
+use crate::model::binaural::{BRIR, OutputMode, hrir_source};
 use crate::osc_contract;
+
+/// The output-mode select's choice as one command: the output, the binaural
+/// mode, and the source the choice implies. The direct path has no use for
+/// a measured room, so choosing it over a `brir` source brings the source
+/// back to the embedded KEMAR set first — the renderer would otherwise keep
+/// forcing the virtual room, and the select would snap back. The source
+/// goes before the mode, so the path that renders changes once. Not
+/// optimistic: the renderer's echo moves the select.
+pub fn select_output_mode(state: &SharedState, mode: OutputMode) {
+    let leaves_room = mode == OutputMode::BinauralDirect && {
+        let live = state.read();
+        hrir_source(live.app.binaural.as_ref()) == Some(BRIR)
+    };
+    match mode {
+        OutputMode::Speaker => control_output_mode(state, "speaker".into()),
+        OutputMode::BinauralDirect => {
+            if leaves_room {
+                control_hrir_source(state, "saf".into());
+            }
+            control_output_mode(state, "binaural".into());
+            control_binaural_mode(state, "direct".into());
+        }
+        OutputMode::BinauralCascaded => {
+            control_output_mode(state, "binaural".into());
+            control_binaural_mode(state, "cascaded".into());
+        }
+    }
+}
 
 pub fn control_output_mode(state: &SharedState, value: String) {
     let normalized = value.trim().to_ascii_lowercase();
@@ -267,6 +296,18 @@ pub fn control_binaural_diffuse_field_eq(state: &SharedState, enable: i32) {
     );
 }
 
+/// Read room coordinates on the listener's sphere on the direct headphone
+/// path, rather than in the room cube (#773).
+pub fn control_binaural_sphere_coordinates(state: &SharedState, enable: bool) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: osc_contract::CONTROL_BINAURAL_SPHERE_COORDINATES.to_string(),
+            value: i32::from(enable),
+        },
+    );
+}
+
 pub fn control_binaural_air_absorption(state: &SharedState, enable: i32) {
     send_control(
         &state.osc_tx,
@@ -340,4 +381,106 @@ pub fn control_head_tracking_invert(state: &SharedState, enable: i32) {
             value: if enable != 0 { 1 } else { 0 },
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::osc::Control;
+    use rosc::OscType;
+
+    fn state_with(
+        binaural: serde_json::Value,
+    ) -> (SharedState, std::sync::mpsc::Receiver<Control>) {
+        let (state, rx) =
+            crate::host::commands::tests::state_with_outbox(std::sync::Arc::new(|| {}));
+        state.inner.lock().unwrap().app.binaural = Some(binaural);
+        (state, rx)
+    }
+
+    fn sent(rx: &std::sync::mpsc::Receiver<Control>) -> Vec<(String, String)> {
+        rx.try_iter()
+            .map(|control| match control {
+                Control::Send { address, args } => {
+                    let [OscType::String(value)] = args.as_slice() else {
+                        panic!("one string expected on {address}: {args:?}");
+                    };
+                    (address, value.clone())
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    /// Choosing the direct path over a measured room brings the source back
+    /// to KEMAR before the mode changes; over an HRTF, the source is left
+    /// alone, and so is it when the virtual room or the speakers are chosen.
+    #[test]
+    fn the_direct_path_leaves_a_measured_room_for_kemar() {
+        let room = serde_json::json!({
+            "outputMode": "binaural", "mode": "cascaded",
+            "modeEffective": "cascaded", "hrirSource": "brir",
+        });
+        let (state, rx) = state_with(room.clone());
+        select_output_mode(&state, OutputMode::BinauralDirect);
+        assert_eq!(
+            sent(&rx),
+            vec![
+                (
+                    osc_contract::CONTROL_BINAURAL_HRIR_SOURCE.to_owned(),
+                    "saf".to_owned()
+                ),
+                (
+                    osc_contract::CONTROL_OUTPUT_MODE.to_owned(),
+                    "binaural".to_owned()
+                ),
+                (
+                    osc_contract::CONTROL_BINAURAL_MODE.to_owned(),
+                    "direct".to_owned()
+                ),
+            ]
+        );
+        select_output_mode(&state, OutputMode::BinauralCascaded);
+        assert_eq!(
+            sent(&rx),
+            vec![
+                (
+                    osc_contract::CONTROL_OUTPUT_MODE.to_owned(),
+                    "binaural".to_owned()
+                ),
+                (
+                    osc_contract::CONTROL_BINAURAL_MODE.to_owned(),
+                    "cascaded".to_owned()
+                ),
+            ]
+        );
+        select_output_mode(&state, OutputMode::Speaker);
+        assert_eq!(
+            sent(&rx),
+            vec![(
+                osc_contract::CONTROL_OUTPUT_MODE.to_owned(),
+                "speaker".to_owned()
+            )]
+        );
+
+        let hrtf = serde_json::json!({
+            "outputMode": "binaural", "mode": "cascaded",
+            "modeEffective": "cascaded", "hrirSource": "sofa",
+        });
+        let (state, rx) = state_with(hrtf);
+        select_output_mode(&state, OutputMode::BinauralDirect);
+        assert_eq!(
+            sent(&rx),
+            vec![
+                (
+                    osc_contract::CONTROL_OUTPUT_MODE.to_owned(),
+                    "binaural".to_owned()
+                ),
+                (
+                    osc_contract::CONTROL_BINAURAL_MODE.to_owned(),
+                    "direct".to_owned()
+                ),
+            ]
+        );
+    }
 }

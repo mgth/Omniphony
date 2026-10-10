@@ -222,15 +222,12 @@ impl crate::render_backend::GainModel for CountingModel {
     fn compute_gains(
         &self,
         _req: &crate::render_backend::RenderRequest,
-    ) -> crate::render_backend::RenderResponse {
+        _scratch: &mut crate::render_backend::GainScratch,
+        gains: &mut [f32],
+    ) {
         self.calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut gains = crate::spatial_vbap::Gains::zeroed(self.speakers);
-        let g = 1.0 / (self.speakers as f32).sqrt();
-        for index in 0..self.speakers {
-            gains.set(index, g);
-        }
-        crate::render_backend::RenderResponse { gains }
+        gains.fill(1.0 / (self.speakers as f32).sqrt());
     }
     fn save_to_file(&self, _path: &std::path::Path, _layout: &SpeakerLayout) -> Result<()> {
         Ok(())
@@ -1226,6 +1223,99 @@ fn binaural_object_ramp_advances_and_lateralizes() {
         e_r > 1.5 * e_l,
         "hard-right object not lateralized: E_L={e_l} E_R={e_r}"
     );
+}
+
+/// Renders one object at `position` on headphones for a few blocks, after
+/// `configure` set the binaural live params up, and returns every sample.
+fn render_binaural_object(
+    position: [f64; 3],
+    configure: impl FnOnce(&mut crate::live_params::BinauralLiveParams),
+) -> Vec<f32> {
+    let layout = SpeakerLayout::preset("7.1.4").unwrap();
+    let mut r = SpatialRenderer::new(test_support::spec(layout)).unwrap();
+    {
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        configure(&mut live.binaural);
+    }
+    let mut lcg: u32 = 0x2468_ace1;
+    let mut noise_block = move || -> Vec<f32> {
+        (0..64)
+            .map(|_| {
+                lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                (lcg >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            })
+            .collect()
+    };
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(0),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some(position),
+        sample_pos: Some(0),
+    }];
+    let mut out = Vec::new();
+    for i in 0..6 {
+        let events: &[SpatialChannelEvent] = if i == 0 { &event } else { &[] };
+        let pcm = noise_block();
+        out.extend(
+            r.render_frame(&pcm, 1, events, Vec::new(), false)
+                .unwrap()
+                .samples,
+        );
+    }
+    out
+}
+
+/// With the sphere reading on (#773), the direct path hears an object where
+/// the reading puts it: the room's front-left corner sounds exactly like an
+/// object the cube reading has at −30° on the front wall, and no longer like
+/// the cube's own corner at −45°. The distance cues are part of "exactly":
+/// reflections and reverb are on, and the reading keeps the distance to the
+/// room's surface.
+#[test]
+fn binaural_sphere_reading_hears_a_room_corner_where_its_speaker_stands() {
+    let with_cues = |sphere: bool| {
+        move |binaural: &mut crate::live_params::BinauralLiveParams| {
+            binaural.sphere_coordinates = sphere;
+            binaural.reflections.enabled = true;
+            binaural.reverb.enabled = true;
+            binaural.unit_scale_m = 4.0;
+        }
+    };
+    let corner = [-1.0, 1.0, 0.0];
+    let read = omniphony_geometry::f64::sphere_reading(corner);
+    let (azimuth, elevation, _) = omniphony_geometry::f64::to_spherical(read[0], read[1], read[2]);
+    assert!((azimuth + 30.0).abs() < 1e-9 && elevation.abs() < 1e-9);
+
+    let sphere = render_binaural_object(corner, with_cues(true));
+    let cube_at_the_angle = render_binaural_object(read, with_cues(false));
+    let cube = render_binaural_object(corner, with_cues(false));
+    assert!(sphere.iter().any(|x| x.abs() > 1e-6), "silent render");
+    assert_eq!(
+        sphere, cube_at_the_angle,
+        "the reading is the cube reading of the position it returns"
+    );
+    assert_ne!(sphere, cube, "the option changed nothing");
+}
+
+/// The sphere reading is the direct path's alone: the virtual room pans
+/// through the speaker stage and keeps the room model.
+#[test]
+fn binaural_sphere_reading_leaves_the_virtual_room_alone() {
+    let cascaded = |sphere: bool| {
+        move |binaural: &mut crate::live_params::BinauralLiveParams| {
+            binaural.mode = crate::live_params::BinauralMode::Cascaded;
+            binaural.sphere_coordinates = sphere;
+        }
+    };
+    let corner = [-1.0, 1.0, 1.0];
+    let off = render_binaural_object(corner, cascaded(false));
+    let on = render_binaural_object(corner, cascaded(true));
+    assert!(off.iter().any(|x| x.abs() > 1e-6), "silent render");
+    assert_eq!(on, off);
 }
 
 /// Regression: the master gain must scale the binaural output exactly like
@@ -2238,38 +2328,195 @@ fn try_renderer_for_layout(layout: SpeakerLayout) -> Result<SpatialRenderer> {
     })
 }
 
-/// A layout larger than the renderer's gains hold (`MAX_SPEAKERS`, LFE
-/// included) is refused with a reason when the renderer is built: every
-/// backend sized its gains by it and panicked out of bounds on the
-/// table-building workers. One more speaker than the limit is enough.
+/// A layout wider than the 24 speakers the renderer's gain sets used to hold
+/// (#745) builds and renders like any other: domes of 25 to 256 speakers, 80
+/// and 128 among them, from gain tables (cartesian, polar) and from gains
+/// computed live, in every ramp mode, with and without a crossover. An object
+/// taken to each speaker in turn reaches every speaker of the layout, and
+/// what each speaker plays is the object's signal at the gain the renderer
+/// reports for it.
 #[test]
-fn a_layout_past_the_speaker_limit_is_refused_with_a_reason() {
-    use crate::spatial_vbap::MAX_SPEAKERS;
-    use crate::speaker_layout::Speaker;
-    let ring = |n: usize| {
-        SpeakerLayout::from_speakers(
-            (0..n)
-                .map(|i| {
-                    Speaker::new(
-                        format!("S{i}"),
-                        -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
-                        if i % 2 == 0 { 0.0 } else { 40.0 },
-                    )
-                })
-                .collect(),
-        )
-        .unwrap()
-    };
-    assert!(try_renderer_for_layout(ring(MAX_SPEAKERS)).is_ok());
-    let error = try_renderer_for_layout(ring(MAX_SPEAKERS + 1))
-        .err()
-        .expect("refused");
-    let error = format!("{error:#}");
-    assert!(
-        error.contains(&format!("{} speakers", MAX_SPEAKERS + 1))
-            && error.contains(&format!("at most {MAX_SPEAKERS}")),
-        "{error}"
-    );
+fn a_layout_wider_than_24_speakers_renders() {
+    use crate::test_support::{dome_direction, dome_layout};
+    const BLOCK: usize = 64;
+    let cartesian = LiveEvaluationMode::PrecomputedCartesian;
+    let polar = LiveEvaluationMode::PrecomputedPolar;
+    let realtime = LiveEvaluationMode::Realtime;
+    for (n, crossover, ramp_mode, evaluation) in [
+        (25, false, RampMode::Frame, cartesian),
+        (32, false, RampMode::Sample, realtime),
+        (64, true, RampMode::Interp, cartesian),
+        (80, false, RampMode::Frame, polar),
+        (80, true, RampMode::Sample, cartesian),
+        (128, false, RampMode::Interp, realtime),
+        (128, true, RampMode::Frame, polar),
+        (128, true, RampMode::Sample, cartesian),
+        (256, true, RampMode::Sample, cartesian),
+    ] {
+        let context = |step: usize| {
+            format!(
+                "{n} speakers, crossover {crossover}, {ramp_mode:?}, {evaluation:?}, step {step}"
+            )
+        };
+        let mut layout = dome_layout(n);
+        if crossover {
+            // Band-limited speakers: the objects go through the crossover
+            // and the unified table. Everything above ear level, as in a
+            // room whose height speakers are the small ones.
+            for speaker in &mut layout.speakers {
+                speaker.freq_low = match speaker.elevation {
+                    e if e > 40.0 => Some(200.0),
+                    e if e > 10.0 => Some(80.0),
+                    _ => None,
+                };
+            }
+        }
+        let polar_table = evaluation == polar;
+        let base = test_support::spec(layout);
+        let mut r = SpatialRenderer::new(RendererSpec {
+            // The dome has a ring below the floor.
+            allow_negative_z: true,
+            // A unit room: an object in the direction of a speaker is at
+            // that speaker, not where the room ratios would take it.
+            room_ratio: [1.0, 1.0, 1.0],
+            room_ratio_rear: 1.0,
+            room_ratio_lower: 1.0,
+            table_mode: if polar_table {
+                VbapTableMode::Polar
+            } else {
+                base.table_mode
+            },
+            // A 2° polar grid: at 1° a single band of 128 speakers is past
+            // the table budget (`MAX_EVALUATION_TABLE_BYTES`), which is
+            // about the grid, not about the width of the layout.
+            az_res_deg: 2,
+            el_res_deg: 2,
+            preferred_evaluation_mode: if polar_table {
+                PreferredEvaluationMode::PrecomputedPolar
+            } else {
+                PreferredEvaluationMode::PrecomputedCartesian
+            },
+            initial_evaluation_mode: evaluation,
+            ..base
+        })
+        .unwrap_or_else(|e| panic!("{}: {e:#}", context(0)));
+        r.set_synchronous_stage_builds(true);
+        let control = r.renderer_control();
+        control.live.write().options.ramp_mode = ramp_mode;
+        if evaluation == realtime {
+            // As a host does when its config asks for it: the mode, then the
+            // topology rebuilt for it.
+            control.live.write().set_evaluation_mode(realtime);
+            let topology = control
+                .prepare_topology_rebuild()
+                .expect("rebuild plan")
+                .build_topology()
+                .unwrap_or_else(|e| panic!("{}: {e:#}", context(0)));
+            control.publish_topology(topology);
+        }
+        let pcm = noise_block(1, BLOCK, n);
+        // The object, in the direction of loudspeaker `speaker`.
+        let at = |speaker: usize| {
+            let (azimuth, elevation) = dome_direction(speaker, n);
+            let (x, y, z) = crate::spatial_vbap::spherical_to_adm(azimuth, elevation, 1.0);
+            [SpatialChannelEvent {
+                channel_idx: 0,
+                is_bed: false,
+                gain_db: Some(0.0),
+                ramp_length: Some(0),
+                size: Some([0.0; 3]),
+                position: Some([x as f64, y as f64, z as f64]),
+                sample_pos: Some(0),
+            }]
+        };
+        // Let the object's gain slew settle at unity before anything is
+        // measured: a quarter of a second.
+        let mut samples = Vec::new();
+        for block in 0..48_000 / 4 / BLOCK {
+            let events = at(0);
+            let events: &[SpatialChannelEvent] = if block == 0 { &events } else { &[] };
+            samples = r
+                .render_frame(&pcm, 1, events, samples, false)
+                .expect("render")
+                .samples;
+        }
+        assert_eq!(
+            control.active_topology().backend.evaluation_mode().as_str(),
+            evaluation.as_str(),
+            "{}",
+            context(0)
+        );
+        let mut heard = vec![false; n];
+        for step in 0..n {
+            let events = at(step);
+            let mut frame = r
+                .render_frame(&pcm, 1, &events, samples, true)
+                .expect("render");
+            // Two more blocks on that position: the gains hold across the
+            // last one in every ramp mode.
+            for _ in 0..2 {
+                frame = r
+                    .render_frame(&pcm, 1, &[], frame.samples, true)
+                    .expect("render");
+            }
+            assert_eq!(frame.n_channels, n, "{}", context(step));
+            assert_eq!(frame.samples.len(), BLOCK * n, "{}", context(step));
+            let (_, gains) = frame
+                .object_gains
+                .iter()
+                .find(|(channel, _)| *channel == 0)
+                .unwrap_or_else(|| panic!("{}: no metered gains", context(step)));
+            assert_eq!(gains.len(), n, "{}", context(step));
+            assert!(
+                gains.iter().all(|gain| gain.is_finite() && *gain >= 0.0),
+                "{}: {gains:?}",
+                context(step)
+            );
+            // The object is on that speaker: it plays there.
+            assert!(
+                gains[step] > 0.0,
+                "{}: no gain on the speaker the object is at: {gains:?}",
+                context(step)
+            );
+            for (speaker, heard) in heard.iter_mut().enumerate() {
+                let peak = frame
+                    .samples
+                    .chunks_exact(n)
+                    .map(|sample| sample[speaker].abs())
+                    .fold(0.0f32, f32::max);
+                assert!(peak.is_finite(), "{}", context(step));
+                // A speaker plays if and only if the object has gain on it.
+                assert_eq!(
+                    peak > 0.0,
+                    gains[speaker] > 0.0,
+                    "{}: speaker {speaker} peaks at {peak} with gain {}",
+                    context(step),
+                    gains[speaker]
+                );
+                *heard |= peak > 0.0;
+                if !crossover {
+                    // One band, no delay, unit master gain: the speaker's
+                    // signal is the object's, times its gain.
+                    for (sample, input) in frame.samples.chunks_exact(n).zip(&pcm) {
+                        assert!(
+                            (sample[speaker] - input * gains[speaker]).abs() <= 1e-5,
+                            "{}: speaker {speaker} plays {} for {input} at gain {}",
+                            context(step),
+                            sample[speaker],
+                            gains[speaker]
+                        );
+                    }
+                }
+            }
+            samples = frame.samples;
+        }
+        let silent: Vec<usize> = (0..n).filter(|speaker| !heard[*speaker]).collect();
+        assert!(
+            silent.is_empty(),
+            "{}: speakers {silent:?} never played",
+            context(n)
+        );
+    }
 }
 
 /// Render one object between two speakers on the plain 7.1.4 layout, after
@@ -3109,6 +3356,285 @@ fn brir_layout_test_renderer(synchronous: bool) -> SpatialRenderer {
     r
 }
 
+/// A renderer like [`brir_layout_test_renderer`] whose resident set's
+/// loudspeakers stand at `emitters` (metres, renderer frame: `x` right, `y`
+/// front, `z` up): a measured room with a geometry of its own, which the
+/// user's room (the fixture's `1 × 2 × 0.5`, rear 2) does not describe.
+fn brir_room_test_renderer(emitters: &[[f32; 3]]) -> SpatialRenderer {
+    use crate::binaural::brir_stage::test_support::synth_set_at;
+
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+    r.set_synchronous_stage_builds(true);
+    let path = "synthetic-room.sofa";
+    let opts = {
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        live.binaural.hrir_source = crate::binaural::HrirSource::Brir(path.into());
+        cascade::brir_load_options(&live.binaural)
+    };
+    // SOFA frame: `x` front, `y` left.
+    let sofa: Vec<[f32; 3]> = emitters.iter().map(|&[x, y, z]| [y, -x, z]).collect();
+    let set = synth_set_at(&sofa, &[0.0], 400);
+    r.brir.install_set_as(path, opts, set, 12);
+    r
+}
+
+/// A measured room the listener is not centred in: fronts far, sides near,
+/// backs in between, four heights over the fronts and the backs. Eleven
+/// loudspeakers, the stage's width less the LFE.
+const ELONGATED_ROOM_EMITTERS: [[f32; 3]; 11] = [
+    [0.0, 3.0, 0.0],
+    [-1.5, 3.0, 0.0],
+    [1.5, 3.0, 0.0],
+    [-2.0, 0.0, 0.0],
+    [2.0, 0.0, 0.0],
+    [-1.5, -2.0, 0.0],
+    [1.5, -2.0, 0.0],
+    [-1.5, 3.0, 1.5],
+    [1.5, 3.0, 1.5],
+    [-1.5, -2.0, 1.5],
+    [1.5, -2.0, 1.5],
+];
+
+/// The gains the set's topology pans a normalized position with, in layout
+/// speaker order (the LFE's entry stays 0), read off the published
+/// topology's model in the room it pans in.
+fn brir_layout_gains(
+    topology: &crate::live_params::RenderTopology,
+    position: [f32; 3],
+) -> Vec<f32> {
+    let room = topology.room;
+    let gains = topology
+        .backend
+        .gains_at(&crate::render_backend::RenderRequest {
+            adm_position: [position[0] as f64, position[1] as f64, position[2] as f64],
+            event_size: [0.0; 3],
+            room_ratio: room.ratio,
+            room_ratio_rear: room.rear,
+            room_ratio_lower: room.lower,
+            room_ratio_center_blend: room.center_blend,
+            use_distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
+            distance_model: crate::spatial_vbap::DistanceModel::None,
+        });
+    (0..topology.num_speakers)
+        .map(|speaker| {
+            topology
+                .backend_speaker_index_for_layout_speaker(speaker)
+                .map_or(0.0, |i| gains[i])
+        })
+        .collect()
+}
+
+/// #803: a BRIR set's loudspeakers are panned onto in their measured room's
+/// own geometry. The topology's room is derived from the set (the
+/// loudspeakers' box, an estimate without corners in the file), its
+/// speakers are placed in it as fractions, and the objects pan in it: an
+/// object at a loudspeaker's place lands on it alone, one halfway in angle
+/// between two neighbours splits evenly between them, and the user's room
+/// ratio changes none of it.
+#[test]
+fn a_measured_room_pans_in_its_own_geometry_whatever_the_users_room() {
+    let topology_in = |user_room: Option<([f32; 3], f32, f32)>| {
+        let mut r = brir_room_test_renderer(&ELONGATED_ROOM_EMITTERS);
+        if let Some((ratio, rear, lower)) = user_room {
+            let mut live = r.control.live.write();
+            live.room_ratio = ratio;
+            live.room_ratio_rear = rear;
+            live.room_ratio_lower = lower;
+        }
+        render_noise_object(&mut r, 2);
+        let topology = r.control.active_topology();
+        assert!(topology.brir_layout, "the topology is the set's");
+        topology
+    };
+    let topology = topology_in(None);
+    let measured = topology.measured_room.as_ref().expect("the measured room");
+    assert!(measured.estimated, "no corners in a synthetic file");
+    // With the user's front/rear blend: a panning policy, not a room.
+    let blend = test_support::spec(SpeakerLayout::preset("7.1.4").unwrap()).room_ratio_center_blend;
+    assert_eq!(
+        topology.room,
+        measured.ratios(blend),
+        "the stage pans in the measured room"
+    );
+    assert_ne!(topology.room.ratio, [1.0, 2.0, 0.5], "not in the user's");
+    let radius = measured.radius_m();
+    let layout = &topology.speaker_layout;
+
+    // 1. A loudspeaker's own place: all of the gain on it.
+    for (i, speaker) in layout.speakers.iter().enumerate().take(11) {
+        let gains = brir_layout_gains(&topology, [speaker.x, speaker.y, speaker.z]);
+        let peak = gains.iter().cloned().fold(0.0f32, f32::max);
+        assert!(peak > 0.0);
+        for (j, g) in gains.iter().enumerate() {
+            if j == i {
+                assert!(
+                    (g - peak).abs() < 1e-6,
+                    "{}: its own gain is the peak",
+                    speaker.name
+                );
+            } else {
+                assert!(
+                    g.abs() < 1e-3 * peak,
+                    "{}: {} gets {g}",
+                    speaker.name,
+                    layout.speakers[j].name
+                );
+            }
+        }
+    }
+
+    // 2. Halfway in angle between two neighbours, in the room's metric: an
+    //    even split. The direction bisects the loudspeakers' directions in
+    //    metres; the cube reading of a point along it is the inverse warp.
+    let bisector = |a: usize, b: usize| {
+        let unit = |p: [f32; 3]| {
+            let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            [p[0] / n, p[1] / n, p[2] / n]
+        };
+        let (ua, ub) = (
+            unit(ELONGATED_ROOM_EMITTERS[a]),
+            unit(ELONGATED_ROOM_EMITTERS[b]),
+        );
+        let d = unit([ua[0] + ub[0], ua[1] + ub[1], ua[2] + ub[2]]);
+        // One metre out, well inside the room.
+        topology
+            .room
+            .inverse([d[0] / radius, d[1] / radius, d[2] / radius])
+    };
+    for (a, b) in [(0usize, 2usize), (4, 6), (1, 3)] {
+        let gains = brir_layout_gains(&topology, bisector(a, b));
+        let (ga, gb) = (gains[a], gains[b]);
+        assert!(ga > 0.0 && gb > 0.0, "{a}/{b}: both play: {gains:?}");
+        assert!(
+            (ga - gb).abs() < 1e-3 * ga.max(gb),
+            "{}/{}: an even split, got {ga} / {gb}",
+            layout.speakers[a].name,
+            layout.speakers[b].name
+        );
+        for (j, g) in gains.iter().enumerate() {
+            if j != a && j != b {
+                assert!(
+                    g.abs() < 1e-3 * ga,
+                    "{}: {g} on a bisector of others",
+                    layout.speakers[j].name
+                );
+            }
+        }
+    }
+
+    // 3. The user's room no longer plays: a cube gives the same answers.
+    let cube = topology_in(Some(([1.0, 1.0, 1.0], 1.0, 1.0)));
+    assert_eq!(cube.room, topology.room);
+    for position in [
+        [
+            layout.speakers[1].x,
+            layout.speakers[1].y,
+            layout.speakers[1].z,
+        ],
+        bisector(0, 2),
+        [0.3, -0.6, 0.4],
+    ] {
+        let (a, b) = (
+            brir_layout_gains(&topology, position),
+            brir_layout_gains(&cube, position),
+        );
+        for (ga, gb) in a.iter().zip(&b) {
+            assert!((ga - gb).abs() < 1e-6, "{position:?}: {a:?} vs {b:?}");
+        }
+    }
+}
+
+/// The per-frame render reads the room off the topology too: with the
+/// user's room stretched to an absurd depth, an object at a loudspeaker's
+/// place still feeds that loudspeaker's bus alone.
+#[test]
+fn a_measured_rooms_buses_ignore_the_users_room_per_frame() {
+    let mut r = brir_room_test_renderer(&ELONGATED_ROOM_EMITTERS);
+    {
+        let mut live = r.control.live.write();
+        live.room_ratio = [1.0, 5.0, 1.0];
+        live.room_ratio_rear = 5.0;
+    }
+    render_noise_object(&mut r, 2);
+    let topology = r.control.active_topology();
+    assert!(topology.brir_layout);
+    // The front-left loudspeaker's place in the cube.
+    let fl = &topology.speaker_layout.speakers[1];
+    assert_eq!(fl.name, "FL");
+    let position = [fl.x as f64, fl.y as f64, fl.z as f64];
+    drop(topology);
+
+    let mut lcg: u32 = 0x1234_5678;
+    let mut noise_block = move || -> Vec<f32> {
+        (0..40)
+            .map(|_| {
+                lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                (lcg >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            })
+            .collect()
+    };
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(40),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some(position),
+        sample_pos: Some(0),
+    }];
+    let mut energy = vec![0.0f32; 12];
+    for i in 0..40 {
+        let pcm = noise_block();
+        let events: &[SpatialChannelEvent] = if i == 0 { &event } else { &[] };
+        r.render_frame(&pcm, 1, events, Vec::new(), false).unwrap();
+        if i >= 20 {
+            let (bus, buses) = r.virtual_bus().expect("a cascaded frame");
+            for frame in bus.chunks(buses) {
+                for (e, s) in energy.iter_mut().zip(frame) {
+                    *e += s * s;
+                }
+            }
+        }
+    }
+    let total: f32 = energy.iter().sum();
+    assert!(total > 0.0);
+    // The bands read a precomputed cartesian table, interpolated between
+    // its cells: a sliver reaches the neighbours. In the user's room the
+    // depth would be stretched fivefold and the fronts would take most.
+    assert!(energy[1] > 0.99 * total, "FL alone: {energy:?}");
+
+    // The cascade's virtual speakers stand where the stage pans onto them:
+    // the room fractions warped with the measured room point at the
+    // emitters (a cube reading of a fraction would not: the heights of an
+    // elongated room read 15° too high), so the BRIR stage maps each bus
+    // to its own emitter and the HRTF stage, on another set, would convolve
+    // the right direction.
+    let cascade = r.cascade.as_ref().expect("the cascade");
+    for (i, e) in ELONGATED_ROOM_EMITTERS.iter().enumerate() {
+        let p = cascade.bin_pos[i];
+        let az = |x: f64, y: f64| x.atan2(y).to_degrees();
+        let el = |x: f64, y: f64, z: f64| z.atan2((x * x + y * y).sqrt()).to_degrees();
+        let (want_az, want_el) = (
+            az(e[0] as f64, e[1] as f64),
+            el(e[0] as f64, e[1] as f64, e[2] as f64),
+        );
+        let (got_az, got_el) = (az(p[0], p[1]), el(p[0], p[1], p[2]));
+        assert!(
+            (got_az - want_az).abs() < 0.05 && (got_el - want_el).abs() < 0.05,
+            "bus {i}: virtual speaker at {got_az:.1}/{got_el:.1}, emitter at {want_az:.1}/{want_el:.1}"
+        );
+    }
+    assert_eq!(
+        &r.brir.bus_emitters()[..11],
+        &(0..11).map(Some).collect::<Vec<_>>()[..],
+        "each bus on its own emitter"
+    );
+}
+
 /// A hard-right noise object for the BRIR layout tests: `frames` blocks of
 /// 40 samples, the stereo energy of the last half returned as `(L, R)`.
 fn render_noise_object(r: &mut SpatialRenderer, frames: usize) -> (f32, f32) {
@@ -3593,6 +4119,110 @@ fn cell_caches_do_not_change_the_render() {
             assert!(
                 kept[span].iter().any(|&bits| f32::from_bits(bits) != 0.0),
                 "{mode:?} (cartesian={cartesian}): the scene rendered silence"
+            );
+        }
+    }
+}
+
+/// The gains the published topology's model pans a normalized position with,
+/// in layout speaker order (the LFE's entry stays 0), in the fixture's room.
+fn topology_gains(topology: &crate::live_params::RenderTopology, position: [f32; 3]) -> Vec<f32> {
+    let gains = topology
+        .backend
+        .gains_at(&crate::render_backend::RenderRequest {
+            adm_position: [position[0] as f64, position[1] as f64, position[2] as f64],
+            event_size: [0.0; 3],
+            room_ratio: [1.0, 2.0, 0.5],
+            room_ratio_rear: 2.0,
+            room_ratio_lower: 0.5,
+            room_ratio_center_blend: 0.0,
+            use_distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
+            distance_model: crate::spatial_vbap::DistanceModel::None,
+        });
+    (0..topology.num_speakers)
+        .map(|speaker| {
+            topology
+                .backend_speaker_index_for_layout_speaker(speaker)
+                .map_or(0.0, |i| gains[i])
+        })
+        .collect()
+}
+
+/// The convex hull split every planar face of a layout — the rear quad, the
+/// ceiling — along a diagonal picked by its tie-breaking jitter, so an object
+/// dead centre at the rear of a 9.1.6 played 0.81 / 0.30 on the two backs
+/// and a position's mirror image did not get the mirrored gains. Each such
+/// face is now fanned around a virtual centre
+/// (`spatial_vbap::vbap_native::Triangulation`): a position and its mirror
+/// across the median plane pan alike, and a position on that plane plays
+/// each left/right pair alike.
+#[test]
+fn a_position_and_its_mirror_pan_alike_across_planar_faces() {
+    let probes: [[f32; 3]; 12] = [
+        [0.4, -0.9, 0.0],
+        [0.4, -0.9, 0.5],
+        [0.0, -0.9, 0.5],
+        [0.3, 0.2, 0.95],
+        [0.0, -0.3, 0.9],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.3, 0.9],
+        [0.9, 0.0, 0.7],
+        [0.4, 0.95, 0.6],
+        [0.6, -0.6, 0.8],
+        [0.2, -1.0, 0.3],
+        [0.5, -0.5, -0.4],
+    ];
+    let mirror = |name: &str| -> String {
+        if let Some(stem) = name.strip_suffix('L') {
+            format!("{stem}R")
+        } else if let Some(stem) = name.strip_suffix('R') {
+            format!("{stem}L")
+        } else {
+            name.to_string()
+        }
+    };
+    for preset in ["7.1.4", "9.1.6"] {
+        let layout = SpeakerLayout::preset(preset).unwrap();
+        let r = SpatialRenderer::new(test_support::spec(layout)).unwrap();
+        let control = r.renderer_control();
+        let topology = control.active_topology();
+        let names: Vec<&str> = topology
+            .speaker_layout
+            .speakers
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        let index_of = |name: &str| {
+            names
+                .iter()
+                .position(|n| *n == name)
+                .unwrap_or_else(|| panic!("{preset} has no {name}"))
+        };
+        for p in probes {
+            let g = topology_gains(&topology, p);
+            let m = topology_gains(&topology, [-p[0], p[1], p[2]]);
+            for (i, name) in names.iter().enumerate() {
+                let j = index_of(&mirror(name));
+                assert!(
+                    (g[i] - m[j]).abs() < 1e-4,
+                    "{preset} {p:?}: {name} {} vs {} {} on the mirror",
+                    g[i],
+                    names[j],
+                    m[j]
+                );
+            }
+        }
+        // Dead centre at the rear, half way up: the rear face's four
+        // loudspeakers, each left/right pair alike.
+        let g = topology_gains(&topology, [0.0, -0.9, 0.5]);
+        for (left, right) in [("BL", "BR"), ("TBL", "TBR")] {
+            let (l, r) = (g[index_of(left)], g[index_of(right)]);
+            assert!(
+                (l - r).abs() < 1e-4 && l > 0.1,
+                "{preset}: {left} {l} vs {right} {r}"
             );
         }
     }

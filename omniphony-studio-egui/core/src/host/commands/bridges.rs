@@ -9,6 +9,13 @@
 //! asked for (until the restart that drops it), or, with nothing asked for,
 //! what auto-discovery loaded.
 //!
+//! The bridge decoding the stream now is derived here, not published: the
+//! playing stream's source family (`fixedChannelProcessing`, what the
+//! placement readouts use) is matched against the families each loaded bridge
+//! declares, and the first one in load order that lists it wins — the rule the
+//! engine routes by when two bridges cover one family (an override is listed
+//! first). Display only: nothing is written or saved.
+//!
 //! An edit is unsaved engine state: the engine marks its config dirty and
 //! the list reaches `config.yaml` only through Save
 //! (docs/persistence-policy.md). It takes effect at the next restart, which
@@ -18,6 +25,7 @@ use rosc::OscType;
 
 use super::OscControlMsg;
 use super::{SharedState, send_control};
+use crate::host::channels::{Family, playing_family};
 use crate::model::app_state::RenderBridges;
 use crate::osc_contract;
 
@@ -45,11 +53,13 @@ impl Snapshot {
             .is_some_and(|target| target.ip().is_loopback());
         let live = state.read();
         Self {
-            list: live
-                .app
-                .render_bridges
-                .as_ref()
-                .map(|bridges| BridgeList::of(bridges, live.app.render_bridges_edited)),
+            list: live.app.render_bridges.as_ref().map(|bridges| {
+                BridgeList::of(
+                    bridges,
+                    live.app.render_bridges_edited,
+                    playing_family(&live.app),
+                )
+            }),
             single_path: live.app.render_bridge_path.clone().unwrap_or_default(),
             local,
         }
@@ -78,6 +88,9 @@ pub struct Row {
     /// that stays loaded until the restart.
     pub position: Option<usize>,
     pub status: RowStatus,
+    /// The bridge decoding the playing stream (see the module doc): at most
+    /// one row, and only a loaded one.
+    pub decoding: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,7 +119,9 @@ impl BridgeList {
     /// list was changed from this Studio since the last restart, which is
     /// the only sign of a pending change when the list was emptied (the
     /// bridges reported are then indistinguishable from discovered ones).
-    pub fn of(bridges: &RenderBridges, edited: bool) -> Self {
+    /// `playing`: the family of the stream playing, `None` while idle; it
+    /// marks the row of the bridge that decodes it.
+    pub fn of(bridges: &RenderBridges, edited: bool, playing: Option<Family>) -> Self {
         let mut rows: Vec<Row> = bridges
             .requested
             .iter()
@@ -120,6 +135,7 @@ impl BridgeList {
                     .find(|bridge| &bridge.path == path)
                     .map(status_of)
                     .unwrap_or(RowStatus::NotLoaded),
+                decoding: false,
             })
             .collect();
         for bridge in &bridges.bridges {
@@ -128,8 +144,16 @@ impl BridgeList {
                     path: bridge.path.clone(),
                     position: None,
                     status: status_of(bridge),
+                    decoding: false,
                 });
             }
+        }
+        if let Some(path) = playing.and_then(|family| decoding_bridge(bridges, family))
+            && let Some(row) = rows
+                .iter_mut()
+                .find(|row| row.path == path && matches!(row.status, RowStatus::Loaded { .. }))
+        {
+            row.decoding = true;
         }
         let explicit = !bridges.requested.is_empty();
         let mismatch = explicit
@@ -149,6 +173,34 @@ impl BridgeList {
     pub fn is_auto(&self) -> bool {
         self.requested.is_empty()
     }
+}
+
+/// The path of the bridge that decodes a stream of `family`: the first loaded
+/// bridge, in load order, that declares it (compared as the renderer's family
+/// table does, trimmed and case-insensitive). `None` for the generic family —
+/// a stream that names none, or one no bridge declared, which no bridge can
+/// be told apart by — and when no loaded bridge declares it (e.g. live PCM).
+///
+/// Exact while the loaded bridges declare disjoint families, as harletty's
+/// family plugins do. With two declaring one family, the first is the one
+/// the engine picks when both claim a stream (load order breaks the tie,
+/// docs/multi-bridge.md); a stream only the later one claims, or one a
+/// forced `input_codec` sends to it, is shown on the first.
+pub fn decoding_bridge(bridges: &RenderBridges, family: Family) -> Option<&str> {
+    if family.is_generic() {
+        return None;
+    }
+    bridges
+        .bridges
+        .iter()
+        .filter(|bridge| bridge.error.is_none())
+        .find(|bridge| {
+            bridge
+                .families
+                .iter()
+                .any(|declared| declared.trim().eq_ignore_ascii_case(family.as_str()))
+        })
+        .map(|bridge| bridge.path.as_str())
 }
 
 fn status_of(bridge: &crate::model::app_state::RenderBridge) -> RowStatus {
@@ -349,6 +401,7 @@ mod tests {
                 ],
             ),
             false,
+            None,
         );
         assert_eq!(
             list.rows,
@@ -359,6 +412,7 @@ mod tests {
                     status: RowStatus::Loaded {
                         families: strings(&["dts"])
                     },
+                    decoding: false,
                 },
                 Row {
                     path: "/b/dolby.so".into(),
@@ -366,6 +420,7 @@ mod tests {
                     status: RowStatus::Loaded {
                         families: strings(&["truehd", "eac3"])
                     },
+                    decoding: false,
                 },
                 Row {
                     path: "/b/gone.so".into(),
@@ -373,6 +428,7 @@ mod tests {
                     status: RowStatus::Failed {
                         error: "does not exist".into()
                     },
+                    decoding: false,
                 },
             ]
         );
@@ -393,6 +449,7 @@ mod tests {
                 ],
             ),
             false,
+            None,
         );
         assert!(list.is_auto());
         assert!(list.rows.iter().all(|row| row.position.is_none()));
@@ -407,6 +464,7 @@ mod tests {
         let added = BridgeList::of(
             &bridges(&["/a.so", "/new.so"], vec![loaded("/a.so", &["dts"])]),
             false,
+            None,
         );
         assert_eq!(added.rows[1].status, RowStatus::NotLoaded);
         assert!(added.restart_pending);
@@ -417,6 +475,7 @@ mod tests {
                 vec![loaded("/a.so", &["dts"]), loaded("/old.so", &["iamf"])],
             ),
             false,
+            None,
         );
         assert_eq!(removed.rows[1].position, None);
         assert!(removed.restart_pending);
@@ -424,8 +483,151 @@ mod tests {
         // Emptied: what is loaded cannot be told from discovery's, so only
         // the edit says so.
         let emptied = bridges(&[], vec![loaded("/a.so", &["dts"])]);
-        assert!(!BridgeList::of(&emptied, false).restart_pending);
-        assert!(BridgeList::of(&emptied, true).restart_pending);
+        assert!(!BridgeList::of(&emptied, false, None).restart_pending);
+        assert!(BridgeList::of(&emptied, true, None).restart_pending);
+    }
+
+    /// The rows marked decoding, by path.
+    fn decoding(list: &BridgeList) -> Vec<&str> {
+        list.rows
+            .iter()
+            .filter(|row| row.decoding)
+            .map(|row| row.path.as_str())
+            .collect()
+    }
+
+    fn family(name: &str) -> Option<Family> {
+        Some(Family::named(name))
+    }
+
+    /// One family per bridge, as harletty's plugins: the stream's family
+    /// names its bridge; idle, nothing is marked.
+    #[test]
+    fn the_playing_family_marks_the_bridge_that_declares_it() {
+        let status = bridges(
+            &["/b/dolby.so", "/b/dts.so"],
+            vec![
+                loaded("/b/dolby.so", &["dolby"]),
+                loaded("/b/dts.so", &["dts", "auro"]),
+            ],
+        );
+        assert!(decoding(&BridgeList::of(&status, false, None)).is_empty());
+        assert_eq!(
+            decoding(&BridgeList::of(&status, false, family("dolby"))),
+            ["/b/dolby.so"]
+        );
+        // Compared as the renderer's family table does.
+        let shouted = bridges(&[], vec![loaded("/b/dts.so", &[" DTS "])]);
+        assert_eq!(
+            decoding(&BridgeList::of(&shouted, false, family("dts"))),
+            ["/b/dts.so"]
+        );
+        assert_eq!(
+            decoding(&BridgeList::of(&status, false, family("auro"))),
+            ["/b/dts.so"]
+        );
+        // A family no bridge declares (the reference bridge's `pcm`), and
+        // the generic family, mark nothing.
+        assert!(decoding(&BridgeList::of(&status, false, family("pcm"))).is_empty());
+        assert!(decoding(&BridgeList::of(&status, false, Some(Family::GENERIC))).is_empty());
+    }
+
+    /// Two bridges declaring one family: the first in load order, the one
+    /// the engine picks when both claim a stream — whatever order the list
+    /// asked for, which only takes effect at the restart.
+    #[test]
+    fn with_one_family_twice_the_first_loaded_bridge_decodes() {
+        let status = bridges(
+            &["/override.so", "/b/dolby.so"],
+            vec![
+                loaded("/override.so", &["dolby"]),
+                loaded("/b/dolby.so", &["dolby"]),
+            ],
+        );
+        assert_eq!(
+            decoding(&BridgeList::of(&status, false, family("dolby"))),
+            ["/override.so"]
+        );
+        // Reordered, not restarted yet: the engine still has the override
+        // first.
+        let reordered = bridges(&["/b/dolby.so", "/override.so"], status.bridges.clone());
+        assert_eq!(
+            decoding(&BridgeList::of(&reordered, true, family("dolby"))),
+            ["/override.so"]
+        );
+    }
+
+    /// Discovered bridges are marked like requested ones; a bridge that
+    /// failed to load never is, even when another entry of the same path
+    /// lists the family.
+    #[test]
+    fn discovered_rows_are_marked_and_failed_ones_never() {
+        let discovered = bridges(
+            &[],
+            vec![
+                loaded("/usr/lib/harletty_dolby_bridge.so", &["dolby"]),
+                loaded("/usr/lib/harletty_iamf_bridge.so", &["iamf"]),
+            ],
+        );
+        let list = BridgeList::of(&discovered, false, family("iamf"));
+        assert_eq!(decoding(&list), ["/usr/lib/harletty_iamf_bridge.so"]);
+        assert!(list.rows.iter().all(|row| row.position.is_none()));
+
+        // Removed from the list, still loaded until the restart: it decodes.
+        let removed = bridges(
+            &["/a.so"],
+            vec![loaded("/a.so", &["dts"]), loaded("/old.so", &["iamf"])],
+        );
+        assert_eq!(
+            decoding(&BridgeList::of(&removed, false, family("iamf"))),
+            ["/old.so"]
+        );
+
+        let mut failing = failed("/b/dolby.so", "bridge_api 0.5");
+        failing.families = strings(&["dolby"]);
+        let refused = bridges(&["/b/dolby.so"], vec![failing]);
+        assert!(decoding(&BridgeList::of(&refused, false, family("dolby"))).is_empty());
+        // Asked for, not loaded yet: nothing decodes on it.
+        let pending = bridges(&["/b/new.so"], Vec::new());
+        assert!(decoding(&BridgeList::of(&pending, true, family("dolby"))).is_empty());
+    }
+
+    /// The snapshot the panel reads follows the stream: a family played, the
+    /// stream gone idle, and the bridge list replaced.
+    #[test]
+    fn the_snapshot_follows_the_stream_and_the_list() {
+        let (state, _rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        let set_stream = |stream: &str, family: &str| {
+            state
+                .inner
+                .lock()
+                .unwrap()
+                .app
+                .live_options
+                .fixed_channel_processing =
+                Some(serde_json::json!({ "stream": stream, "family": family }));
+        };
+        state.inner.lock().unwrap().app.render_bridges = Some(bridges(
+            &[],
+            vec![loaded("/d.so", &["dolby"]), loaded("/i.so", &["iamf"])],
+        ));
+        let marked = |state: &SharedState| {
+            Snapshot::read(state)
+                .list
+                .map(|list| decoding(&list).into_iter().map(str::to_owned).collect())
+                .unwrap_or_else(Vec::<String>::new)
+        };
+        assert!(marked(&state).is_empty());
+        set_stream("objects", "dolby");
+        assert_eq!(marked(&state), ["/d.so"]);
+        set_stream("fixed", "iamf");
+        assert_eq!(marked(&state), ["/i.so"]);
+        set_stream("idle", "iamf");
+        assert!(marked(&state).is_empty());
+        set_stream("fixed", "iamf");
+        state.inner.lock().unwrap().app.render_bridges =
+            Some(bridges(&[], vec![loaded("/d.so", &["dolby"])]));
+        assert!(marked(&state).is_empty());
     }
 
     #[test]
@@ -434,6 +636,7 @@ mod tests {
             path: path.into(),
             position: None,
             status: RowStatus::NotLoaded,
+            decoding: false,
         };
         assert_eq!(row("/usr/lib/liba_bridge.so").file_name(), "liba_bridge.so");
         assert_eq!(

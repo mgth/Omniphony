@@ -1500,6 +1500,36 @@ mod panel_event_tests {
         assert_eq!(l.app.render_bridges, None);
     }
 
+    /// The Input panel marks the bridge decoding the stream from the
+    /// playing family and the bridge list: a change of either repaints.
+    #[test]
+    fn the_decoding_bridge_inputs_repaint() {
+        let mut l = live();
+        let renderer = |stream: &str, family: &str| OscEvent::StateRenderer {
+            value: serde_json::json!({
+                "fixedChannelProcessing": { "stream": stream, "family": family }
+            })
+            .to_string(),
+        };
+        assert_eq!(
+            apply_event(&mut l, renderer("fixed", "dts")),
+            Change::Snapshot
+        );
+        assert_eq!(
+            crate::host::channels::playing_family(&l.app),
+            Some(crate::host::channels::Family::named("dts"))
+        );
+        assert_eq!(
+            apply_event(&mut l, renderer("idle", "dts")),
+            Change::Snapshot
+        );
+        assert_eq!(crate::host::channels::playing_family(&l.app), None);
+        let bridges = OscEvent::StateRenderBridges {
+            value: r#"{"requested":[],"bridges":[{"path":"/a.so","families":["dts"]}]}"#.to_owned(),
+        };
+        assert_eq!(apply_event(&mut l, bridges), Change::Snapshot);
+    }
+
     #[test]
     fn evaluation_sizes_treat_zero_as_unset_except_the_negative_z_one() {
         let mut l = live();
