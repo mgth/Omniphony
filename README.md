@@ -94,6 +94,7 @@ row as `omniphony-<release>-manifest.json`.
 <!-- compat-table:start -->
 | Release (Studio, orender, liborender) | liborender ABI | Player | Decoder bridge built against `bridge_api` |
 | --- | --- | --- | --- |
+| [v0.7.0](https://github.com/mgth/Omniphony/releases/tag/v0.7.0) | 0.12 | [mpv-v0.7.0](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.7.0) | 0.6.x |
 | [v0.6.0](https://github.com/mgth/Omniphony/releases/tag/v0.6.0) | 0.8 | [mpv-v0.6.0](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.6.0) | 0.4.x |
 | [v0.5.2](https://github.com/mgth/Omniphony/releases/tag/v0.5.2) | 0.7 | [mpv-v0.5.2](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.5.2) | 0.3.x |
 | [v0.5.1](https://github.com/mgth/Omniphony/releases/tag/v0.5.1) | 0.6 | [mpv-v0.5.0](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.5.0) | 0.3.x |
