@@ -915,7 +915,6 @@
   "binaural.brirMeasuredNote": "La mesure fournit les indices de distance, les réflexions et la queue : les réglages de HRTF, Distance et Pièce d'écoute ne s'appliquent pas à une salle.",
   "binaural.brirUnderVirtualRoom": "Une salle mesurée (BRIR) se choisit sous Casque (pièce virtuelle).",
   "binaural.lastFile": "Dernier fichier : {name}",
-  "binaural.speakerOutputNote": "La sortie va aux enceintes : ces réglages prennent effet une fois le mode de sortie sur casque.",
   "binaural.sofaBrowseTitle": "Parcourir la base de données HRTF de sofacoustics.org",
   "binaural.hrtfFallback": "{effective} en service : la HRTF choisie n'a pas pu être chargée (survolez pour la raison).",
   "binaural.headRadius": "Rayon de tête (cm)",

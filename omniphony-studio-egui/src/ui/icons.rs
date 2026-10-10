@@ -402,6 +402,15 @@ icon!(
         }),
     ]
 );
+// The output-mode cards' headphones: lucide `headphones`.
+icon!(
+    HEADPHONES,
+    24.0,
+    1.8,
+    [stroke(Path(
+        "M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"
+    ))]
+);
 // Renderer: lucide `cpu`.
 icon!(
     SECTION_RENDERER,
@@ -1122,6 +1131,7 @@ mod tests {
             &SETTINGS,
             &SECTION_MASTER,
             &SECTION_SPEAKERS,
+            &HEADPHONES,
             &SECTION_RENDERER,
             &SECTION_LATENCY,
             &SECTION_DIAGNOSTICS,

@@ -1,9 +1,12 @@
 //! The renderer panel (`#rendererSection`, `ui/renderer-panel.js`): the
-//! output mode, the Renderer/Binaural tab pair, and the groups of each tab —
-//! backend, evaluation, distance model, distance diffuse and ramp on the
-//! Renderer tab, the four binaural groups on the other, the crossover on
-//! both. Laid out as `PANELS.md` says: one group per concern, its key control
-//! in the bar, its rows in the inset.
+//! output mode, then the groups of the stages that mode renders through —
+//! backend, evaluation, distance model, distance diffuse, ramp and crossover
+//! for the speaker stage, the four binaural groups for the headphones. A
+//! virtual or measured room runs both stages and gets them as the
+//! Renderer/Binaural tab pair; the speakers and the direct headphone path run
+//! one, and show it without tabs (`RendererTab::on_path`). Laid out as
+//! `PANELS.md` says: one group per concern, its key control in the bar, its
+//! rows in the inset.
 
 use egui::{RichText, Ui};
 
@@ -11,11 +14,11 @@ use crate::app::StudioSpike;
 use crate::host::commands::SharedState;
 use crate::host::commands::{binaural, engine, render};
 use crate::i18n::{t, tf};
-use crate::model::binaural::OutputMode;
+use crate::model::binaural::{OutputMode, RenderPath};
 use crate::ui::group::Group;
 use crate::ui::help::{self, Help};
 use crate::ui::section::Section;
-use crate::ui::{theme, widgets};
+use crate::ui::{icons, theme, widgets};
 
 use super::renderer_perf;
 
@@ -85,13 +88,31 @@ impl BackendPathDrafts {
 }
 
 /// Which half of the panel is showing (`body.studio-tab-binaural`). View
-/// state, kept in the preferences; Renderer first.
+/// state, kept in the preferences; Renderer first. A choice only where the
+/// render path runs both stages (`RendererTab::on_path`).
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RendererTab {
     #[default]
     Renderer,
     Binaural,
+}
+
+impl RendererTab {
+    /// The tab drawn on `path` when `self` is the one chosen, and whether
+    /// there is a choice to offer. A tab holds the settings of one stage:
+    /// the speaker stage (backend, evaluation, distance, ramp), which the
+    /// direct headphone path bypasses, and the headphone stage, which the
+    /// speakers never reach. Only a room rendered into the ears runs both;
+    /// elsewhere the one stage in use is shown and the tab bar is left out.
+    /// The chosen tab is not rewritten, so it comes back with the room.
+    pub(crate) fn on_path(self, path: RenderPath) -> (RendererTab, bool) {
+        match (path.speakers_render(), path.is_binaural()) {
+            (true, true) => (self, true),
+            (false, _) => (RendererTab::Binaural, false),
+            (true, false) => (RendererTab::Renderer, false),
+        }
+    }
 }
 
 /// Evaluation modes, in the select's order.
@@ -135,8 +156,9 @@ const METRICS: &[(&str, &str)] = &[
 
 impl StudioSpike {
     pub(crate) fn renderer_section(&mut self, ui: &mut Ui) {
-        let (summary, embedded, decode_thread) = {
+        let (summary, embedded, decode_thread, path) = {
             let live = self.host.read();
+            let path = live.app.render_path();
             let mode = live
                 .app
                 .render_evaluation_mode_state
@@ -164,16 +186,24 @@ impl StudioSpike {
                 .and_then(|c| c.get("variant"))
                 .and_then(|v| v.as_str())
                 == Some("embedded");
-            (
+            // No backend evaluates anything on the direct path: the folded
+            // section names the path instead.
+            let summary = if path.speakers_render() {
                 format!(
                     "{backend} / {}",
                     tf("renderer.summary", &[("mode", evaluation_label(&mode))])
-                ),
+                )
+            } else {
+                t(OutputMode::BinauralDirect.i18n_key()).to_owned()
+            };
+            (
+                summary,
                 embedded,
                 // A standalone renderer older than the shared option does
                 // not declare it and refuses the write: no switch then.
                 (embedded || live.declares_option("decode_thread"))
                     .then(|| live.option_bool("decode_thread").unwrap_or(false)),
+                path,
             )
         };
         // The gauge's bar sits in the header, as `#rendererPerfWrap` does, so
@@ -213,21 +243,27 @@ impl StudioSpike {
                 widgets::note(ui, t("renderer.decodeThreadStandaloneNote"));
             }
             ui.add_space(2.0);
-            if let Some(tab) = widgets::tab_bar(
-                ui,
-                &self.renderer_tab,
-                &[
-                    (RendererTab::Renderer, t("rendererTabs.renderer")),
-                    (RendererTab::Binaural, t("rendererTabs.binaural")),
-                ],
-            ) {
+            // The tab bar sits under the output mode that decides it, and
+            // only where both stages render.
+            let (tab, choice) = self.renderer_tab.on_path(path);
+            if choice
+                && let Some(tab) = widgets::tab_bar(
+                    ui,
+                    &self.renderer_tab,
+                    &[
+                        (RendererTab::Renderer, t("rendererTabs.renderer")),
+                        (RendererTab::Binaural, t("rendererTabs.binaural")),
+                    ],
+                )
+            {
                 self.renderer_tab = tab;
             }
             // Groups in the order their choices constrain one another: the
             // backend first, since it says which evaluation modes exist; the
             // two distance treatments it applies; how gains move between
-            // frames; and last the crossover, which both tabs share.
-            match self.renderer_tab {
+            // frames; and last the crossover, which belongs to the speaker
+            // stage and so follows both tabs of a room.
+            match tab {
                 RendererTab::Renderer => {
                     self.backend_group(ui);
                     self.evaluation_group(ui);
@@ -237,7 +273,9 @@ impl StudioSpike {
                 }
                 RendererTab::Binaural => self.binaural_tab(ui),
             }
-            self.crossover_group(ui);
+            if path.speakers_render() {
+                self.crossover_group(ui);
+            }
         });
     }
 
@@ -246,24 +284,38 @@ impl StudioSpike {
             let live = self.host.read();
             OutputMode::from_state(live.app.binaural.as_ref())
         };
-        let mut chosen = current;
-        widgets::label_row_help(ui, t("outputMode.selectTitle"), "help.outputMode", |ui| {
-            widgets::bounded_combo(ui, 160.0, |ui, w| {
-                egui::ComboBox::from_id_salt("output-mode")
-                    .selected_text(t(current.i18n_key()))
-                    .width(w)
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        for mode in OutputMode::ALL {
-                            ui.selectable_value(&mut chosen, mode, t(mode.i18n_key()));
-                        }
-                    });
-            });
-        });
-        if chosen != current {
+        // Cards rather than a select: the mode decides which stages render
+        // and so which groups the section shows, and the three are few
+        // enough to stay in view. The title opens the help, under the cards.
+        help::label(ui, t("outputMode.selectTitle"), "help.outputMode");
+        let chosen = widgets::choice_cards(
+            ui,
+            &current,
+            &[
+                (
+                    OutputMode::Speaker,
+                    &[&icons::SECTION_SPEAKERS],
+                    t(OutputMode::Speaker.i18n_key()),
+                ),
+                (
+                    OutputMode::BinauralDirect,
+                    &[&icons::HEADPHONES],
+                    t(OutputMode::BinauralDirect.i18n_key()),
+                ),
+                // The virtual room is both: loudspeakers, heard through
+                // the headphones.
+                (
+                    OutputMode::BinauralCascaded,
+                    &[&icons::HEADPHONES, &icons::SECTION_SPEAKERS],
+                    t(OutputMode::BinauralCascaded.i18n_key()),
+                ),
+            ],
+        );
+        help::card(ui, "help.outputMode");
+        if let Some(chosen) = chosen {
             // The mode drives the source (a measured room is left for KEMAR
             // on the direct path), in one command. Not optimistic: the
-            // renderer's echo is what moves the select, so a rejected change
+            // renderer's echo is what moves the cards, so a rejected change
             // does not leave the UI lying.
             binaural::select_output_mode(&self.host, chosen);
         }
@@ -1313,7 +1365,8 @@ impl StudioSpike {
         }
     }
 
-    /// Shown on both tabs. Bar: the filter. Inset: the FIR's transition
+    /// Shown wherever the speaker stage renders, on both tabs of a room.
+    /// Bar: the filter. Inset: the FIR's transition
     /// width while that is the filter, and what the renderer actually built.
     fn crossover_group(&mut self, ui: &mut Ui) {
         let (crossover, kind, transition) = {
@@ -1621,6 +1674,30 @@ fn vbap_status(
         (None, Some(true), _) => Some((t("vbap.status.computing").to_owned(), theme::WARN)),
         (None, Some(false), _) => Some((t("vbap.status.ready").to_owned(), theme::OK)),
         (None, None, _) => None,
+    }
+}
+
+#[cfg(test)]
+mod tab_tests {
+    use super::*;
+
+    /// A tab is offered only for a stage the path renders through: one stage
+    /// leaves no choice and shows its own groups whatever tab was kept, a
+    /// room into the ears offers both and honours the one chosen.
+    #[test]
+    fn a_tab_is_drawn_only_for_a_stage_that_renders() {
+        for chosen in [RendererTab::Renderer, RendererTab::Binaural] {
+            assert_eq!(
+                chosen.on_path(RenderPath::Speakers),
+                (RendererTab::Renderer, false)
+            );
+            assert_eq!(
+                chosen.on_path(RenderPath::Direct),
+                (RendererTab::Binaural, false)
+            );
+            assert_eq!(chosen.on_path(RenderPath::VirtualRoom), (chosen, true));
+            assert_eq!(chosen.on_path(RenderPath::MeasuredRoom), (chosen, true));
+        }
     }
 }
 

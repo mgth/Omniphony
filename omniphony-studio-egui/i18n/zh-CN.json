@@ -915,7 +915,6 @@
   "binaural.brirMeasuredNote": "测量数据提供距离线索、反射和混响尾部：HRTF 调整以及“距离”和“试听室”设置不适用于实测房间。",
   "binaural.brirUnderVirtualRoom": "实测房间（BRIR）在耳机（虚拟房间）下提供。",
   "binaural.lastFile": "上次的文件：{name}",
-  "binaural.speakerOutputNote": "当前输出到扬声器：将输出模式设为耳机后，这些设置才会生效。",
   "binaural.sofaBrowseTitle": "浏览 sofacoustics.org 的 HRTF 数据库",
   "binaural.hrtfFallback": "正在使用 {effective}：所选 HRTF 无法加载（悬停查看原因）。",
   "binaural.headRadius": "头部半径（cm）",

@@ -915,7 +915,6 @@
   "binaural.brirMeasuredNote": "La misurazione fornisce gli indizi di distanza, le riflessioni e la coda: le regolazioni HRTF e le impostazioni Distanza e Stanza d'ascolto non si applicano a una stanza misurata.",
   "binaural.brirUnderVirtualRoom": "Una stanza misurata (BRIR) è disponibile sotto Cuffie (stanza virtuale).",
   "binaural.lastFile": "Ultimo file: {name}",
-  "binaural.speakerOutputNote": "L'uscita va agli altoparlanti: queste impostazioni hanno effetto quando la Modalità di uscita è impostata su cuffie.",
   "binaural.sofaBrowseTitle": "Sfoglia il database HRTF di sofacoustics.org",
   "binaural.hrtfFallback": "{effective} in uso: la HRTF selezionata non è stata caricata (passa il mouse per il motivo).",
   "binaural.headRadius": "Raggio della testa (cm)",

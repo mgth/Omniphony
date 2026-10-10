@@ -821,6 +821,91 @@ fn decimals_for(step: f64) -> usize {
 }
 
 #[cfg(test)]
+mod choice_card_tests {
+    use super::choice_cards;
+    use crate::ui::icons::{HEADPHONES, SECTION_SPEAKERS};
+
+    /// One click anywhere on a card — its icon, its label, its padding —
+    /// picks it, the first time; a click on the card in force picks nothing.
+    /// The cards share the width equally and are all the same height,
+    /// whatever their labels take.
+    #[test]
+    fn a_click_anywhere_on_a_card_picks_it() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(440.0, 200.0));
+        let ctx = egui::Context::default();
+        let rects = std::cell::RefCell::new(Vec::new());
+        let frame = |events: Vec<egui::Event>| {
+            let mut picked = None;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let top = ui.cursor().top();
+                    let width = ui.available_width();
+                    picked = choice_cards(
+                        ui,
+                        &0,
+                        &[
+                            (0, &[&SECTION_SPEAKERS], "Speakers"),
+                            (1, &[&HEADPHONES], "Headphones"),
+                            (
+                                2,
+                                &[&HEADPHONES, &SECTION_SPEAKERS],
+                                "Headphones (a virtual room, with a long name)",
+                            ),
+                        ],
+                    );
+                    let height = ui.cursor().top() - top - ui.spacing().item_spacing.y;
+                    let share = (width - 2.0 * super::theme::GROUP_GAP) / 3.0;
+                    *rects.borrow_mut() = (0..3)
+                        .map(|i| {
+                            egui::Rect::from_min_size(
+                                egui::pos2(
+                                    ui.max_rect().left()
+                                        + (share.floor() + super::theme::GROUP_GAP) * i as f32,
+                                    top,
+                                ),
+                                egui::vec2(share.floor(), height),
+                            )
+                        })
+                        .collect();
+                },
+            );
+            output.textures_delta.clear();
+            picked
+        };
+        assert_eq!(frame(Vec::new()), None);
+        let cards = rects.borrow().clone();
+        let click = |pos: egui::Pos2| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            frame(vec![egui::Event::PointerMoved(pos)]);
+            frame(vec![button(true)]);
+            frame(vec![button(false)])
+        };
+        // The icon, the label and a corner of the padding.
+        assert_eq!(
+            click(cards[1].center_top() + egui::vec2(0.0, 20.0)),
+            Some(1)
+        );
+        assert_eq!(
+            click(cards[2].center_bottom() - egui::vec2(0.0, 16.0)),
+            Some(2)
+        );
+        assert_eq!(click(cards[2].left_top() + egui::vec2(3.0, 3.0)), Some(2));
+        // The one in force.
+        assert_eq!(click(cards[0].center()), None);
+    }
+}
+
+#[cfg(test)]
 mod row_tests {
     use super::{Sense, switch_row_help_leading};
 
@@ -894,6 +979,129 @@ pub fn tab_bar<T: PartialEq + Clone>(ui: &mut Ui, current: &T, options: &[(T, &s
             {
                 picked = Some(value.clone());
             }
+        }
+    });
+    picked
+}
+
+/// A row of cards, one chosen: the few-way choice that decides what the rest
+/// of a section is about (the output mode), where a select would hide the
+/// alternatives. Each card is an equal share of the width, its icons — one,
+/// or several side by side for a choice that combines others — over its
+/// label; the one in force carries the accent, the others stay quiet until
+/// hovered. The whole card is the click target. Returns the newly picked
+/// value.
+///
+/// Every card is as high as an icon and two lines of label, whatever its own
+/// label takes, so a longer translation wraps without moving what follows.
+pub fn choice_cards<T: PartialEq + Clone>(
+    ui: &mut Ui,
+    current: &T,
+    options: &[(T, &[&super::icons::Icon], &str)],
+) -> Option<T> {
+    const ICON: f32 = 26.0;
+    const ICON_SPACING: f32 = 8.0;
+    const PADDING: f32 = 8.0;
+    const ICON_GAP: f32 = 5.0;
+    const LABEL_ROWS: usize = 2;
+    let count = options.len().max(1) as f32;
+    let gap = theme::GROUP_GAP;
+    let width = ((ui.available_width() - gap * (count - 1.0)) / count)
+        .floor()
+        .max(0.0);
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let line = ui.fonts_mut(|f| f.row_height(&font));
+    let height = PADDING + ICON + ICON_GAP + line * LABEL_ROWS as f32 + PADDING;
+    let enabled = ui.is_enabled();
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        for (value, icons, label) in options {
+            let active = value == current;
+            let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::RadioButton, enabled, active, *label)
+            });
+            if response.clicked() && !active {
+                picked = Some(value.clone());
+            }
+            if ui.is_rect_visible(rect) {
+                let hovered = response.hovered() && enabled;
+                let (fill, stroke, colour) = if active {
+                    (
+                        theme::ACCENT.gamma_multiply(0.14),
+                        egui::Stroke::new(1.5, theme::ACCENT),
+                        theme::TEXT_STRONG,
+                    )
+                } else if hovered {
+                    (
+                        theme::FILL_HOVER,
+                        egui::Stroke::new(1.0, theme::CONTROL_BORDER),
+                        theme::TEXT,
+                    )
+                } else {
+                    (
+                        theme::FILL,
+                        egui::Stroke::new(1.0, theme::CONTROL_BORDER),
+                        theme::TEXT_MUTED,
+                    )
+                };
+                let colour = if enabled {
+                    colour
+                } else {
+                    colour.gamma_multiply(0.5)
+                };
+                let stroke = if response.has_focus() {
+                    ui.visuals().selection.stroke
+                } else {
+                    stroke
+                };
+                let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                painter.rect(
+                    rect,
+                    theme::GROUP_RADIUS,
+                    fill,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+                let icons_width =
+                    ICON * icons.len() as f32 + ICON_SPACING * icons.len().saturating_sub(1) as f32;
+                let icons_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.center().x, rect.top() + PADDING + ICON / 2.0),
+                    vec2(icons_width, ICON),
+                );
+                for (i, icon) in icons.iter().enumerate() {
+                    let left = icons_rect.left() + (ICON + ICON_SPACING) * i as f32;
+                    super::icons::paint(
+                        &painter,
+                        egui::Rect::from_min_size(
+                            egui::pos2(left, icons_rect.top()),
+                            vec2(ICON, ICON),
+                        ),
+                        icon,
+                        if active { theme::ACCENT } else { colour },
+                    );
+                }
+                let mut job = egui::text::LayoutJob::simple(
+                    (*label).to_owned(),
+                    font.clone(),
+                    colour,
+                    (width - 2.0 * PADDING).max(0.0),
+                );
+                job.halign = egui::Align::Center;
+                job.wrap.max_rows = LABEL_ROWS;
+                let galley = painter.layout_job(job);
+                // Centred in the two lines kept for it: a one-line label
+                // sits level with the middle of a two-line one.
+                let label_top = icons_rect.bottom() + ICON_GAP;
+                let slack = (line * LABEL_ROWS as f32 - galley.size().y).max(0.0);
+                painter.galley(
+                    egui::pos2(rect.center().x, label_top + slack / 2.0),
+                    galley,
+                    colour,
+                );
+            }
+            response.on_hover_cursor(egui::CursorIcon::PointingHand);
         }
     });
     picked

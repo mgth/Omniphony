@@ -111,6 +111,7 @@ controls are placed from the right and never overflow the panel.
 | Note | `note` | One line of `FONT_SIZE_SMALL` in `TEXT_MUTED` under the rows it explains. |
 | Banner | `banner`, `banner_with` | Something the user has to act on: a missing bridge, an update. |
 | Tabs | `tab_bar` | Equal-width tabs, one active, above the groups they switch. |
+| Choice cards | `choice_cards` under a `help::label`, its `help::card` after them | The few-way choice that decides what the rest of the section shows (the output mode): equal cards, an icon (or several, for a choice that combines others) over a label, the one in force in the accent. Always two label lines high, so a long translation wraps without moving what follows. Not for a setting among others: that is a select. |
 
 Sizes and colours, so a title is read as a title:
 
@@ -216,8 +217,8 @@ if chosen != current {
 
 | Section | Groups | Status |
 |---|---|---|
-| Renderer (`renderer.rs`) | Output mode and decode thread (always offered; a note says it takes effect in the embedded engine only) above the tabs; Backend, Evaluation, Distance model, Distance diffuse, Ramp; Crossover on both tabs | follows this document |
-| Renderer › Binaural tab (`binaural.rs`) | HRTF, Distance, Listening room, Head tracking | follows |
+| Renderer (`renderer.rs`) | Output mode (`choice_cards`: speakers, headphones, headphones on a virtual room) and decode thread (always offered; a note says it takes effect in the embedded engine only) above the tabs; Backend, Evaluation, Distance model, Distance diffuse, Ramp; Crossover on both tabs. The tab bar is drawn only where the render runs both stages (a virtual or measured room on headphones): on the speakers the Renderer groups stand alone, on the direct headphone path the Binaural groups do, without the crossover (`RendererTab::on_path`) | follows this document |
+| Renderer › Binaural tab (`binaural.rs`) | HRTF, Distance, Listening room, Head tracking; not drawn while the output is the speakers | follows |
 | Latency (`latency.rs`) | Global far actions, Local resampling controller (its switch in the bar, pause and the wizard in the inset), Stabilization phases | follows |
 | Master (`audio.rs`) | Auto-gain (switch and clip dot in the bar, ceiling in the inset) | follows |
 | DRC / Loudness (`drc.rs`) | DRC (mode; weight), Loudness (switch; readouts) | follows |
