@@ -420,6 +420,20 @@ impl Live {
     }
 
     #[allow(dead_code)] // used by the bool options of panels not ported yet
+    /// Whether the connected renderer declares `key` in its options schema,
+    /// so a write to it is taken. `false` before the schema arrives and for
+    /// an option the renderer does not know.
+    pub fn declares_option(&self, key: &str) -> bool {
+        self.options_schema
+            .as_ref()
+            .and_then(|s| s.as_array())
+            .is_some_and(|specs| {
+                specs
+                    .iter()
+                    .any(|spec| spec.get("key").and_then(|k| k.as_str()) == Some(key))
+            })
+    }
+
     pub fn option_bool(&self, key: &str) -> Option<bool> {
         self.option(key).and_then(|v| v.as_bool())
     }
@@ -1430,6 +1444,24 @@ mod panel_event_tests {
 
     fn live() -> Live {
         Live::new(AppState::new(Vec::new()))
+    }
+
+    /// A renderer that does not declare an option refuses a write to it, so
+    /// the schema decides whether its control is offered: a value in the
+    /// snapshot is not enough (an older standalone renderer publishes
+    /// `decode_thread` there and still refuses it).
+    #[test]
+    fn an_option_is_declared_by_the_schema_not_by_the_snapshot() {
+        let mut live = live();
+        live.app.options = Some(serde_json::json!({"decode_thread": false}));
+        assert!(!live.declares_option("decode_thread"));
+        live.options_schema = Some(serde_json::json!([{"key": "auto_gain"}]));
+        assert!(!live.declares_option("decode_thread"));
+        live.options_schema = Some(serde_json::json!([
+            {"key": "auto_gain"},
+            {"key": "decode_thread", "flags": ["embedded_only"]}
+        ]));
+        assert!(live.declares_option("decode_thread"));
     }
 
     /// The renderer refuses to write a file it could not parse or a newer

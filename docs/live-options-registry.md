@@ -188,7 +188,7 @@ What the implementation settled on, where it differs from the proposal below:
   `LegacyAddr::Prefixed { prefix, tail }` for the contract's prefix families
   (`distance_diffuse/…`, `hybrid/…`, `render_evaluation/{cartesian,polar}/…`).
 - **Flags**: `REPLAN` (bump `RendererControl::options_epoch` on a real
-  change), `EMBEDDED_ONLY` (offered by the embedded engine only) and
+  change), `EMBEDDED_ONLY` (takes effect in the embedded engine only) and
   `BRIDGE_GRID` (a value of the evaluation grid a bridge hints: while
   `evaluation_grid` is `bridge`, a client write and a command-line flag are
   refused with "the grid follows the bridge", and a save does not write it;
@@ -369,11 +369,14 @@ input state apart. The audio output is declared `Live` with the
 requested and running values on every poll and restarts the output as soon
 as they differ; staging it would change what its addresses do.
 
-Scoping by host: a row flagged `EMBEDDED_ONLY` (`decode_thread`) exists only
-on a host without audio I/O of its own — the embedded engine, the `embedded`
-variant of `/state/capabilities`. The standalone renderer leaves it out of
-its schema, refuses a write to it and, on Save, keeps what the file says
-(both hosts share the config).
+Effect by host: a row flagged `EMBEDDED_ONLY` (`decode_thread`) takes effect
+only on a host without audio I/O of its own — the embedded engine, the
+`embedded` variant of `/state/capabilities`. The standalone renderer
+publishes it, takes a write to it and saves it like any other row (both hosts
+share the config, so this is where a user sets it for the player's next
+start) and leaves it inert; it has no command-line flag for it. The schema
+carries the flag (`embedded_only`), which is how a client knows to say the
+option changes nothing in a standalone renderer.
 
 Kept out of the registry, as structured data: the hybrid curve (a point
 list; the grouped setter's arity-based parser cannot delimit it) and the
