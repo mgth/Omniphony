@@ -361,6 +361,51 @@ mod tests {
         }
     }
 
+    /// The whole live state of a wide layout reaches a datagram client: the
+    /// layout and the speakers' state each travel as one message that cannot
+    /// be split, and on 80, 128 and 256 speakers (full names, gains, delays
+    /// and band edges set) every datagram of the snapshot is one a socket
+    /// carries.
+    #[test]
+    fn a_wide_layouts_snapshot_fits_its_datagrams() {
+        for speakers in [80, 128, 256] {
+            let control = renderer::test_support::fixture_control();
+            let mut layout = renderer::test_support::dome_layout(speakers);
+            for (index, speaker) in layout.speakers.iter_mut().enumerate() {
+                speaker.name = format!("Loudspeaker ring position {index}");
+                speaker.freq_low = Some(80.0);
+                speaker.freq_high = Some(18_000.0);
+                speaker.delay_ms = 12.345;
+            }
+            control.with_editable_layout(|editable| *editable = layout);
+            {
+                let mut live = control.live.write();
+                for index in 0..speakers {
+                    let params = live.speakers.entry(index).or_default();
+                    params.gain = 0.123_456;
+                    params.muted = index % 2 == 0;
+                }
+            }
+            let messages = live_state_messages(&control, None);
+            let largest = messages
+                .iter()
+                .map(|message| rosc::encoder::encode(message).unwrap().len())
+                .max()
+                .unwrap();
+            let datagrams = encode_snapshot(messages, 7, MAX_STATE_DATAGRAM);
+            let sizes: Vec<usize> = datagrams.iter().map(Vec::len).collect();
+            println!(
+                "{speakers} speakers: snapshot in {} datagram(s) {sizes:?}, largest message \
+                 {largest} bytes",
+                datagrams.len()
+            );
+            assert!(
+                sizes.iter().all(|size| *size <= MAX_STATE_DATAGRAM),
+                "{speakers} speakers: {sizes:?} (largest message {largest} bytes)"
+            );
+        }
+    }
+
     #[test]
     fn a_snapshot_that_fits_is_one_bundle() {
         let datagrams = encode_state_datagrams(vec![msg("/a", 10), msg("/b", 10)], 1000);
