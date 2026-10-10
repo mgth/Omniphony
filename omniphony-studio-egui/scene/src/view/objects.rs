@@ -4,7 +4,7 @@
 
 use glam::Vec3;
 
-use crate::model::app_state::RoomRatio;
+use crate::model::app_state::{ChannelTag, RoomRatio};
 use crate::osc::dispatch::Live;
 use glam::{Mat4, Quat};
 
@@ -166,6 +166,33 @@ pub fn display_name(id: &str, name: Option<&str>) -> String {
         s = &s[4..];
     }
     s.to_owned()
+}
+
+/// What a channel tag is called: the stream's own name for the channels,
+/// else the kind's (a kind this Studio does not know stays as it is sent),
+/// with the language when the stream states one — `Dialogue`, `Dialogue VF
+/// (fr)`.
+pub fn tag_name(tag: &ChannelTag) -> String {
+    let name = match (tag.label.trim(), tag.kind.as_str()) {
+        ("", ChannelTag::DIALOGUE) => crate::i18n::t("input.dialogue"),
+        ("", kind) => kind,
+        (label, _) => label,
+    };
+    if tag.language.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name} ({})", tag.language)
+    }
+}
+
+/// A source's badge code, led by its channel tag's name when the stream tags
+/// the channel: a dialogue element coded apart from the bed has an `L`, an
+/// `R` and a `C` of its own, which nothing else tells from the bed's.
+pub fn tagged_code(tag: Option<&ChannelTag>, code: String) -> String {
+    match tag {
+        Some(tag) => format!("{} · {code}", tag_name(tag)),
+        None => code,
+    }
 }
 
 /// `inferSourceTagFromId` + stored tag → `Some('A' | 'B')`.
@@ -466,7 +493,10 @@ pub fn collect(
         };
 
         out.push(ObjectVisual {
-            label: badge_code(id, src.name.as_deref()),
+            label: tagged_code(
+                live.app.channel_tag_of(id),
+                badge_code(id, src.name.as_deref()),
+            ),
             id: id.clone(),
             scene_pos,
             selected,
@@ -578,5 +608,35 @@ pub fn emit(
                 color: c,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tagged channel is named after its tag: the stream's own name for
+    /// it and its language, else the kind's name.
+    #[test]
+    fn a_tagged_channel_is_led_by_its_tags_name() {
+        let mut tag = ChannelTag {
+            kind: ChannelTag::DIALOGUE.to_owned(),
+            ..ChannelTag::default()
+        };
+        assert_eq!(tag_name(&tag), crate::i18n::t("input.dialogue"));
+        tag.label = "Dialogue VF".to_owned();
+        tag.language = "fr".to_owned();
+        assert_eq!(tag_name(&tag), "Dialogue VF (fr)");
+        assert_eq!(
+            tagged_code(Some(&tag), "L".to_owned()),
+            "Dialogue VF (fr) · L"
+        );
+        assert_eq!(tagged_code(None, "L".to_owned()), "L");
+        // A kind this Studio does not know is shown as the stream sends it.
+        let unknown = ChannelTag {
+            kind: "commentary".to_owned(),
+            ..ChannelTag::default()
+        };
+        assert_eq!(tag_name(&unknown), "commentary");
     }
 }

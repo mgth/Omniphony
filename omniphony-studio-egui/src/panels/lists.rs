@@ -518,8 +518,10 @@ impl StudioSpike {
                     // The web carries no "bed" marker in the meter line: a
                     // channel routed straight out is said by the position
                     // thumbnail, which is drawn at the destination speaker
-                    // and framed in black.
-                    detail: None,
+                    // and framed in black. What the line does say is the
+                    // stream's tag on the channel: a dialogue element coded
+                    // apart has an L, an R and a C beside the bed's.
+                    detail: live.app.channel_tag_of(id).map(view::objects::tag_name),
                     position: Some(direct.map_or([src.x, src.y, src.z], |s| [s.x, s.y, s.z])),
                     spatialize: direct.is_none(),
                     speaker: false,
@@ -1179,6 +1181,9 @@ fn row_body(
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         }
         strip.on_hover_text("Drag to reorder");
+    } else if let Some(tag) = row.detail.as_deref().filter(|_| !row.speaker) {
+        // A tagged channel says whose it is, icon or not.
+        strip.on_hover_text(format!("{tag} · {}", row.label));
     } else if row.strip_icon.is_some() {
         // The name hides behind the icon, so it shows on hover.
         strip.on_hover_text(&row.label);

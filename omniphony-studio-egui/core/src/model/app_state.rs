@@ -1208,6 +1208,17 @@ impl AppState {
             .find(|tag| tag.kind == ChannelTag::DIALOGUE)
     }
 
+    /// The tag the stream puts on the channel a source carries, if any. A
+    /// stream's own channels are its first sources, numbered as the stream
+    /// numbers them, so a tag's channel indices are source ids; a generated
+    /// or injected source comes after them and carries none.
+    pub fn channel_tag_of(&self, source_id: &str) -> Option<&ChannelTag> {
+        let channel = source_id.parse::<u32>().ok()?;
+        self.channel_tags
+            .iter()
+            .find(|tag| tag.channels.contains(&channel))
+    }
+
     pub fn new(layouts: Vec<Layout>) -> Self {
         Self {
             layouts,
@@ -1773,6 +1784,28 @@ mod bridge_problem_tests {
             problem.report,
             format!("{BRIDGE_ERROR_NONE_FOUND}: none requested")
         );
+    }
+}
+
+#[cfg(test)]
+mod channel_tag_tests {
+    use super::*;
+
+    /// A tag's channel indices are the ids of the stream's own sources; a
+    /// source that is not one of the stream's channels has no tag.
+    #[test]
+    fn a_source_carries_the_tag_of_its_channel() {
+        let mut state = AppState::new(Vec::new());
+        state.channel_tags = vec![ChannelTag {
+            kind: ChannelTag::DIALOGUE.to_owned(),
+            channels: vec![12, 13, 14],
+            ..ChannelTag::default()
+        }];
+        assert!(state.channel_tag_of("12").is_some());
+        assert!(state.channel_tag_of("14").is_some());
+        assert!(state.channel_tag_of("0").is_none());
+        assert!(state.channel_tag_of("15").is_none());
+        assert!(state.channel_tag_of("object-test").is_none());
     }
 }
 
