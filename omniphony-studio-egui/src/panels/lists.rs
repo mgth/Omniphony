@@ -800,23 +800,32 @@ impl StudioSpike {
             .collect();
         let solo_target = (unmuted.len() == 1).then(|| unmuted[0].clone());
 
-        if solo_target.as_deref() == Some(id) {
-            // Already soloed: lift the mutes.
-            for other in &ids {
-                if other != id {
-                    self.set_muted(other, false, speaker);
-                }
+        // What changes, as `(id, muted)`: already soloed, the mutes are
+        // lifted; else everything else is muted and this entry is not.
+        let unsolo = solo_target.as_deref() == Some(id);
+        let changes: Vec<(&String, bool)> = ids
+            .iter()
+            .zip(&muted_now)
+            .filter_map(|(other, &muted)| {
+                let wanted = !unsolo && other != id;
+                (wanted != muted).then_some((other, wanted))
+            })
+            .collect();
+        if speaker {
+            // One message for the lot: the renderer answers each speakers
+            // message with the whole state.
+            let mutes: Vec<(i32, bool)> = changes
+                .iter()
+                .filter_map(|(other, muted)| Some((other.parse().ok()?, *muted)))
+                .collect();
+            gain::control_speaker_mutes(&self.host, &mutes);
+        } else {
+            for (other, muted) in changes {
+                self.set_muted(other, muted, speaker);
             }
-            return;
         }
-        for (other, muted) in ids.iter().zip(&muted_now) {
-            if other == id {
-                if *muted {
-                    self.set_muted(other, false, speaker);
-                }
-            } else if !*muted {
-                self.set_muted(other, true, speaker);
-            }
+        if unsolo {
+            return;
         }
         if !speaker {
             self.selection = Selection {
