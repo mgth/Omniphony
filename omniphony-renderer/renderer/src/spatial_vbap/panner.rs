@@ -143,6 +143,20 @@ pub struct VbapPanner {
     speaker_dirs_deg: Vec<[f32; 2]>,
 }
 
+/// The working memory one caller keeps for one [`VbapPanner`], made by
+/// [`VbapPanner::new_scratch`]: what panning a source needs besides the gains
+/// it writes (a gain per effective speaker, virtual ones included, the
+/// out-of-hull fold, the directions of a spread cloud). The panner is shared
+/// (`&self`, `Sync`) and those are sized by the layout, so each caller keeps
+/// its own and hands it back on every call; nothing is allocated while gains
+/// are computed.
+///
+/// Under `saf_vbap` it holds nothing: SAF allocates the gains it returns.
+pub struct VbapScratch {
+    #[cfg(not(feature = "saf_vbap"))]
+    native: super::vbap_native::Vbap3dScratch,
+}
+
 /// Maximum spread in degrees the VBAP spreading accepts (SAF's `vbap3D` and
 /// its native port alike). The public API is normalised to `[0, 1]`; this
 /// maps 1.0 → 180°.
@@ -164,5 +178,6 @@ mod runtime;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+// Measures `NativeVbapLayout` directly, so it only exists where that backend does.
+#[cfg(all(test, not(feature = "saf_vbap")))]
 mod native_validation;

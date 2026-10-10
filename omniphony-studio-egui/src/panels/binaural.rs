@@ -114,7 +114,7 @@ impl StudioSpike {
         }
         self.hrtf_block(ui, doc, path, true);
         if path != BinauralPath::Brir {
-            self.distance_block(ui, doc);
+            self.distance_block(ui, doc, path);
             self.room_block(ui, doc);
         }
         self.tracking_block(ui, doc);
@@ -625,11 +625,24 @@ impl StudioSpike {
         cmd::control_hrir_source(&self.host, value);
     }
 
-    fn distance_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
-        Group::new(t("binaural.distanceTitle")).show(ui, |ui| self.distance_rows(ui, doc));
+    fn distance_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>, path: BinauralPath) {
+        Group::new(t("binaural.distanceTitle")).show(ui, |ui| self.distance_rows(ui, doc, path));
     }
 
-    fn distance_rows(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
+    fn distance_rows(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>, path: BinauralPath) {
+        // How a position is read is the direct path's question: the virtual
+        // room pans through the speaker stage and keeps the room model.
+        if path == BinauralPath::Direct {
+            let mut sphere = flag(doc, &["sphereCoordinates"], false);
+            if widgets::switch_row_help(
+                ui,
+                t("binaural.sphereCoordinates"),
+                "help.binaural.sphereCoordinates",
+                &mut sphere,
+            ) {
+                cmd::control_binaural_sphere_coordinates(&self.host, sphere);
+            }
+        }
         let mut scale = number(doc, &["unitScaleM"], 1.0) as f32;
         if widgets::value_slider_help(
             ui,

@@ -2385,6 +2385,30 @@ const HAND_WIRED_ROWS: &[OptionSpec] = &[
         },
     },
     OptionSpec {
+        key: "binaural_sphere_coordinates",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(false),
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n_key: "binaural.sphereCoordinates",
+        help_i18n_key: Some("help.binaural.sphereCoordinates"),
+        legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_BINAURAL_SPHERE_COORDINATES),
+        set: |live, raw, _env| {
+            let enabled = raw_bool(raw)?;
+            live.binaural.sphere_coordinates = enabled;
+            Some(bool_canonical(enabled))
+        },
+        get_json: |live| live.binaural.sphere_coordinates.into(),
+        config_store: |render, live, _env| {
+            binaural_cfg_mut(render).sphere_coordinates = Some(live.binaural.sphere_coordinates);
+        },
+        config_seed: |live, render, _env| {
+            if let Some(v) = binaural_cfg(render).and_then(|b| b.sphere_coordinates) {
+                live.binaural.sphere_coordinates = v;
+            }
+        },
+    },
+    OptionSpec {
         key: "reflections_enabled",
         kind: OptionKind::Bool,
         default: OptionDefault::Bool(false),

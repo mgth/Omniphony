@@ -254,8 +254,29 @@ pub struct FrameOutput {
     pub pick_speakers: Vec<(usize, Vec3, f32)>,
 }
 
-/// Normalised ADM position → room-warped three.js scene position
-/// (`coordinates.js normalizedOmniphonyToScenePosition`).
+/// Where a normalised ADM position is shown while the renderer reads
+/// positions on the listener's sphere (`RoomRatio::sphere`), in the ADM
+/// frame: in the direction it is heard at
+/// (`omniphony_geometry::sphere_reading`), at its distance to the room's
+/// surface. The room's surface is drawn as the unit sphere it is heard as,
+/// so a source sits where it sounds.
+pub fn sphere_heard_point(adm: [f64; 3]) -> [f64; 3] {
+    use omniphony_geometry::f64 as geometry;
+    let read = geometry::sphere_reading(adm);
+    let length = geometry::vec3::length(read);
+    if length <= 0.0 {
+        return adm;
+    }
+    let reach = adm[0].abs().max(adm[1].abs()).max(adm[2].abs());
+    let scale = reach / length;
+    [read[0] * scale, read[1] * scale, read[2] * scale]
+}
+
+/// Normalised ADM position → three.js scene position in the frame `room`
+/// describes (`AppState::display_room`): warped by the room
+/// (`coordinates.js normalizedOmniphonyToScenePosition`), or, on the direct
+/// headphone path reading the sphere, where it is heard
+/// ([`sphere_heard_point`]).
 pub fn scene_position(adm: [f64; 3], room: &RoomRatio) -> Vec3 {
     use omniphony_geometry::f64 as geometry;
     let clamped = [
@@ -263,6 +284,9 @@ pub fn scene_position(adm: [f64; 3], room: &RoomRatio) -> Vec3 {
         adm[1].clamp(-1.0, 1.0),
         adm[2].clamp(-1.0, 1.0),
     ];
+    if room.sphere {
+        return scene_point(sphere_heard_point(clamped));
+    }
     let scaled = geometry::room_scaled_position(
         clamped,
         [room.width, room.length, room.height],
@@ -367,12 +391,18 @@ pub fn build_frame(
             );
         }
     } else {
-        room::emit_room(
-            &bounds,
-            cam_pos,
-            &room::RoomStyle::LISTENER_CUBE,
-            &mut frame,
-        );
+        if room.sphere {
+            // Positions are read on the sphere: the room's surface is the
+            // unit sphere round the listener, and that is what is drawn.
+            room::emit_listener_sphere(&mut frame);
+        } else {
+            room::emit_room(
+                &bounds,
+                cam_pos,
+                &room::RoomStyle::LISTENER_CUBE,
+                &mut frame,
+            );
+        }
         room::emit_unit_guide(
             &bounds,
             room.scale_m as f32,
@@ -452,11 +482,14 @@ pub fn build_frame(
         });
     }
 
-    // Speakers.
+    // Speakers. A speaker's position is where it stands, not a position
+    // the binaural stage reads: the sphere reading is the sources' alone
+    // (`AppState::speaker_frame`, which the speaker gizmo inverts through).
+    let speaker_room = live.app.speaker_frame();
     let speaker_visuals = speakers::collect(
         live,
         settings,
-        &room,
+        &speaker_room,
         selection.object.as_deref(),
         selection.speaker,
     );
@@ -611,7 +644,8 @@ pub fn build_frame(
                 .and_then(|id| objects.iter().find(|o| o.id == id))
                 .map(|o| o.scene_pos)
         });
-    if let Some(p) = shadow_pos {
+    // The shadows fall on the walls of a box: the sphere has none.
+    if let Some(p) = shadow_pos.filter(|_| !room.sphere) {
         room::emit_face_shadows(p, &bounds, &mut frame);
     }
 
@@ -705,6 +739,52 @@ mod tests {
                 assert!((back[axis] - adm[axis]).abs() < 1e-5, "{adm:?} → {back:?}");
             }
         }
+    }
+
+    /// While the renderer reads positions on the sphere, a source is drawn
+    /// where it is heard: the room's front-left corner at −30° on the unit
+    /// sphere, a top corner 45° up, a point halfway in at half the radius.
+    /// The gizmos' inverse comes back to the room position, and a pointer
+    /// beyond the sphere is held on it.
+    #[test]
+    fn the_sphere_reading_draws_a_source_where_it_is_heard() {
+        let sphere = RoomRatio {
+            sphere: true,
+            ..RoomRatio::unit(1.0)
+        };
+        let drawn = |adm: [f64; 3]| {
+            let s = scene_position(adm, &sphere);
+            let adm = omniphony_geometry::f64::scene_to_adm([s.x as f64, s.y as f64, s.z as f64]);
+            omniphony_geometry::f64::to_spherical(adm[0], adm[1], adm[2])
+        };
+        let near = |(az, el, r): (f64, f64, f64), want: (f64, f64, f64)| {
+            assert!(
+                (az - want.0).abs() < 1e-4
+                    && (el - want.1).abs() < 1e-4
+                    && (r - want.2).abs() < 1e-5,
+                "drawn at {az:.3}/{el:.3}, radius {r:.4}; expected {want:?}"
+            );
+        };
+        near(drawn([-1.0, 1.0, 0.0]), (-30.0, 0.0, 1.0));
+        near(drawn([1.0, 1.0, 1.0]), (45.0, 45.0, 1.0));
+        near(drawn([1.0, -1.0, 0.0]), (135.0, 0.0, 1.0));
+        near(drawn([-0.5, 0.5, 0.0]), (-30.0, 0.0, 0.5));
+
+        for adm in [
+            [-1.0, 1.0, 0.0],
+            [0.2, 0.8, 0.0],
+            [-0.7, -0.3, 0.5],
+            [0.4, 0.1, -1.0],
+        ] {
+            let back = gizmos::scene_to_normalized(scene_position(adm, &sphere), &sphere);
+            for axis in 0..3 {
+                assert!((back[axis] - adm[axis]).abs() < 1e-5, "{adm:?} → {back:?}");
+            }
+        }
+        // Twice the radius, towards the front left at ear level.
+        let beyond = Vec3::new(3.0f32.sqrt(), 0.0, -1.0);
+        let held = scene_position(gizmos::scene_to_normalized(beyond, &sphere), &sphere);
+        assert!((held - beyond * 0.5).length() < 1e-5, "held at {held:?}");
     }
 
     /// The listening room is placed around the listener in the renderer's

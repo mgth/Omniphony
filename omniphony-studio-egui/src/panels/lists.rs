@@ -484,6 +484,9 @@ impl StudioSpike {
         // each object row says what that object puts through it.
         let selected_speaker = self.selection.speaker;
         let show_details = self.settings.show_object_details;
+        // While the renderer reads positions on the sphere, the polar
+        // readout is where the object is heard, as the scene draws it.
+        let sphere = live.app.reads_on_sphere().then(|| live.app.display_room());
         // One band's gains, or the full band's while every band is shown.
         let band = (!self.volume_settings.all_bands).then_some(self.settings.heatmap_band_index);
         let mut rows: Vec<Row> = live
@@ -565,13 +568,22 @@ impl StudioSpike {
                             None => (
                                 coordinates(
                                     [src.x, src.y, src.z],
-                                    src.azimuth_deg.map(|az| {
-                                        [
-                                            az,
-                                            src.elevation_deg.unwrap_or(0.0),
-                                            src.distance_m.unwrap_or(0.0),
-                                        ]
-                                    }),
+                                    match &sphere {
+                                        Some(frame) => {
+                                            let (az, el, r) = crate::host::channels::adm_to_polar(
+                                                frame,
+                                                [src.x, src.y, src.z],
+                                            );
+                                            Some([az, el, r])
+                                        }
+                                        None => src.azimuth_deg.map(|az| {
+                                            [
+                                                az,
+                                                src.elevation_deg.unwrap_or(0.0),
+                                                src.distance_m.unwrap_or(0.0),
+                                            ]
+                                        }),
+                                    },
                                 ),
                                 dominant_speaker(
                                     live.app
