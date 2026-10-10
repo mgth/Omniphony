@@ -1,6 +1,7 @@
 //! DRC and loudness (`#drcSection`, `controls/drc.js`): the compression mode
-//! and its weight, the loudness switch, and the gain gauge the renderer
-//! reports while metering is on.
+//! and its weight, the loudness switch, the dialogue level of streams that
+//! carry their dialogue apart, and the gain gauge the renderer reports while
+//! metering is on.
 
 use egui::{Color32, RichText, Ui};
 
@@ -26,6 +27,13 @@ fn gauge_colour(db: f64) -> Color32 {
 
 impl StudioSpike {
     pub(crate) fn drc_section(&mut self, ui: &mut Ui) {
+        let (dialogue_db, dialogue) = {
+            let live = self.host.read();
+            (
+                live.option_f64("dialogue_gain_db").unwrap_or(0.0) as f32,
+                live.app.dialogue_tag().map(dialogue_note),
+            )
+        };
         let (mode, modes, weight, loudness, metering, gain, source) = {
             let live = self.host.read();
             (
@@ -117,7 +125,57 @@ impl StudioSpike {
             if on != loudness {
                 gain::control_loudness(&self.host, i32::from(on));
             }
+
+            // Dialogue level: always laid out, so the section keeps its
+            // height when a stream with separate dialogue starts or ends;
+            // usable only while one plays.
+            let mut db = dialogue_db;
+            let db_changed = Group::new(t("input.dialogue"))
+                .help("help.drc.dialogueGain")
+                .show(ui, |ui| {
+                    let changed = ui
+                        .add_enabled_ui(dialogue.is_some(), |ui| {
+                            widgets::value_slider_help(
+                                ui,
+                                t("input.dialogue_gain"),
+                                "help.drc.dialogueGain",
+                                &mut db,
+                                -12.0..=12.0,
+                                0.5,
+                                format_db,
+                            )
+                        })
+                        .inner;
+                    widgets::note(
+                        ui,
+                        dialogue
+                            .as_deref()
+                            .unwrap_or("No separate dialogue in this stream"),
+                    );
+                    changed
+                });
+            if db_changed {
+                self.set_option("dialogue_gain_db", serde_json::json!(db));
+            }
         });
+    }
+}
+
+/// What the note under the dialogue level says about the stream's dialogue:
+/// its name, its language and how many channels carry it.
+fn dialogue_note(tag: &crate::model::app_state::ChannelTag) -> String {
+    let name = crate::view::objects::tag_name(tag);
+    let channels = tag.channels.len();
+    let plural = if channels == 1 { "" } else { "s" };
+    format!("{name}: {channels} channel{plural}")
+}
+
+/// A level in dB, signed: `+3.0 dB`, `0.0 dB`, `-4.5 dB`.
+fn format_db(db: f32) -> String {
+    if db > 0.0 {
+        format!("+{db:.1} dB")
+    } else {
+        format!("{db:.1} dB")
     }
 }
 
@@ -188,7 +246,25 @@ fn drc_gauge(ui: &mut Ui, gain: Option<f64>) {
 
 #[cfg(test)]
 mod tests {
-    use super::reading_db;
+    use super::{dialogue_note, format_db, reading_db};
+    use crate::model::app_state::ChannelTag;
+
+    #[test]
+    fn the_dialogue_note_names_the_tag() {
+        let mut tag = ChannelTag {
+            kind: "dialogue".to_owned(),
+            channels: vec![12, 13, 14],
+            ..ChannelTag::default()
+        };
+        assert_eq!(dialogue_note(&tag), "Dialogue: 3 channels");
+        tag.label = "Dialogue VF".to_owned();
+        tag.language = "fr".to_owned();
+        tag.channels.truncate(1);
+        assert_eq!(dialogue_note(&tag), "Dialogue VF (fr): 1 channel");
+        assert_eq!(format_db(3.0), "+3.0 dB");
+        assert_eq!(format_db(0.0), "0.0 dB");
+        assert_eq!(format_db(-4.5), "-4.5 dB");
+    }
 
     /// `linearToDb`: unity is 0 dB, half is -6 dB, silence and nonsense are
     /// the -100 dB floor, and a gauge nothing was reported to has no reading.

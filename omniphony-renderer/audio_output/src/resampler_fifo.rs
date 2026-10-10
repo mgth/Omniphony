@@ -11,11 +11,39 @@
 //! at 0.30 vs 0.52 us per callback for a 2048-sample push and a 1024-sample
 //! drain; revisit if the FIFO ever grows by an order of magnitude.
 
-use anyhow::Result;
-use crossbeam::queue::ArrayQueue;
+use crate::ring_buffer_io::RingReader;
 use rubato::Resampler;
 
 pub const RESAMPLER_CHUNK_SIZE: usize = 1024;
+
+/// Sinc design of the local output resampler, the same for every backend
+/// (PipeWire, cpal): 256 taps, 256× oversampled with linear interpolation
+/// between the oversampled points, Blackman-Harris² window, cutoff at 95 %
+/// of the lower Nyquist.
+pub fn output_resampler_params() -> rubato::SincInterpolationParameters {
+    rubato::SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        interpolation: rubato::SincInterpolationType::Linear,
+        oversampling_factor: 256,
+        window: rubato::WindowFunction::BlackmanHarris2,
+    }
+}
+
+/// The local output resampler of every backend, at `ratio` (output/input),
+/// free to move within [`crate::LOCAL_RESAMPLER_MAX_RELATIVE_RATIO`] of it.
+pub fn new_output_resampler(
+    ratio: f64,
+    channels: usize,
+) -> Result<rubato::SincFixedIn<f32>, rubato::ResamplerConstructionError> {
+    rubato::SincFixedIn::new(
+        ratio,
+        crate::LOCAL_RESAMPLER_MAX_RELATIVE_RATIO,
+        output_resampler_params(),
+        RESAMPLER_CHUNK_SIZE,
+        channels,
+    )
+}
 
 pub struct ResamplerFifoEngine {
     channel_count: usize,
@@ -57,33 +85,39 @@ impl ResamplerFifoEngine {
         }
     }
 
+    /// Resample from `input_buffer` until the FIFO holds `needed_samples`, or
+    /// the input runs out. The error is rubato's own, which is plain data:
+    /// wrapping it (an `anyhow::Error` is a heap allocation, and a backtrace
+    /// when those are enabled) would cost the realtime thread exactly when the
+    /// resampler is already failing.
     pub fn ensure_output_samples<R: Resampler<f32>>(
         &mut self,
-        input_buffer: &ArrayQueue<f32>,
+        input_buffer: &mut RingReader,
         resampler: &mut R,
         needed_samples: usize,
-    ) -> Result<()> {
+    ) -> Result<(), rubato::ResampleError> {
         while self.output_fifo.len() < needed_samples {
-            while self.input_frames_collected < RESAMPLER_CHUNK_SIZE {
-                let mut frame_complete = true;
-                if input_buffer.len() >= self.channel_count {
-                    for ch in 0..self.channel_count {
-                        if let Some(sample_f32) = input_buffer.pop() {
-                            self.resampler_input[ch][self.input_frames_collected] = sample_f32;
-                        } else {
-                            frame_complete = false;
-                            break;
+            // The whole frames the ring holds, up to what the chunk still
+            // lacks, deinterleaved in one pass over one block of the ring (two
+            // where it wraps around its end, and a frame may straddle them).
+            let channels = self.channel_count;
+            let frames = (RESAMPLER_CHUNK_SIZE - self.input_frames_collected)
+                .min(input_buffer.available().checked_div(channels).unwrap_or(0));
+            if frames > 0 {
+                let planar = &mut self.resampler_input;
+                let mut frame = self.input_frames_collected;
+                let mut channel = 0;
+                input_buffer.pop_with(frames * channels, |block| {
+                    for &sample in block {
+                        planar[channel][frame] = sample;
+                        channel += 1;
+                        if channel == channels {
+                            channel = 0;
+                            frame += 1;
                         }
                     }
-                } else {
-                    frame_complete = false;
-                }
-
-                if frame_complete {
-                    self.input_frames_collected += 1;
-                } else {
-                    break;
-                }
+                });
+                self.input_frames_collected += frames;
             }
 
             if self.input_frames_collected == RESAMPLER_CHUNK_SIZE {
@@ -101,9 +135,11 @@ impl ResamplerFifoEngine {
                     }
                 }
 
-                let (_, output_frames) = resampler
-                    .process_into_buffer(&self.resampler_input, &mut self.resampler_output, None)
-                    .map_err(anyhow::Error::from)?;
+                let (_, output_frames) = resampler.process_into_buffer(
+                    &self.resampler_input,
+                    &mut self.resampler_output,
+                    None,
+                )?;
                 for i in 0..output_frames {
                     for ch in 0..self.channel_count {
                         self.output_fifo.push(self.resampler_output[ch][i]);
@@ -132,6 +168,36 @@ impl ResamplerFifoEngine {
         discard_count
     }
 
+    /// Move whole frames of `channels` interleaved samples into `dest`, whose
+    /// frames are `dest_channels` wide (`>= channels`; the extra device
+    /// channels are zeroed). Moves as many frames as both hold and returns
+    /// that count. Allocation-free, for the realtime callback.
+    pub fn drain_frames_into(
+        &mut self,
+        dest: &mut [f32],
+        channels: usize,
+        dest_channels: usize,
+    ) -> usize {
+        debug_assert!(channels > 0 && dest_channels >= channels);
+        let frames = (dest.len() / dest_channels).min(self.output_fifo.len() / channels);
+        if dest_channels == channels {
+            // Same layout: one copy, not one per frame.
+            let samples = frames * channels;
+            dest[..samples].copy_from_slice(&self.output_fifo[..samples]);
+        } else {
+            for (dst, src) in dest
+                .chunks_exact_mut(dest_channels)
+                .zip(self.output_fifo.chunks_exact(channels))
+                .take(frames)
+            {
+                dst[..channels].copy_from_slice(src);
+                dst[channels..].fill(0.0);
+            }
+        }
+        self.output_fifo.drain(0..frames * channels);
+        frames
+    }
+
     pub fn drain_to_vec(&mut self, sample_count: usize) -> Vec<f32> {
         let count = sample_count.min(self.output_fifo.len());
         self.output_fifo.drain(0..count).collect()
@@ -141,9 +207,30 @@ impl ResamplerFifoEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ring_buffer_io::{RingWriter, sample_ring};
     use rubato::{SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
     const CHANNELS: usize = 2;
+
+    /// Whole frames land on the device's wider layout, extra channels zeroed,
+    /// and a partial frame is never split.
+    #[test]
+    fn drain_frames_into_maps_onto_a_wider_device_layout() {
+        let mut engine = ResamplerFifoEngine::new(2);
+        engine
+            .output_fifo
+            .extend_from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut dest = [9.0f32; 9];
+        let frames = engine.drain_frames_into(&mut dest, 2, 3);
+        assert_eq!(frames, 2);
+        assert_eq!(dest[..6], [1.0, 2.0, 0.0, 3.0, 4.0, 0.0]);
+        assert_eq!(
+            dest[6..],
+            [9.0, 9.0, 9.0],
+            "untouched past the moved frames"
+        );
+        assert_eq!(engine.output_len(), 1, "the half frame stays queued");
+    }
 
     fn resampler(ratio: f64) -> SincFixedIn<f32> {
         SincFixedIn::<f32>::new(
@@ -162,25 +249,27 @@ mod tests {
         .expect("resampler")
     }
 
-    /// Feed one full chunk per channel, interleaved, as the callback does.
-    fn feed_one_chunk(queue: &ArrayQueue<f32>) {
+    /// Feed one full chunk per channel, interleaved, as the renderer does.
+    fn feed_one_chunk(ring: &mut RingWriter) {
+        let mut chunk = Vec::with_capacity(RESAMPLER_CHUNK_SIZE * CHANNELS);
         for frame in 0..RESAMPLER_CHUNK_SIZE {
             for ch in 0..CHANNELS {
                 // Distinct per channel so a channel swap would show up.
-                let _ = queue.push(frame as f32 + ch as f32 * 1000.0);
+                chunk.push(frame as f32 + ch as f32 * 1000.0);
             }
         }
+        assert_eq!(ring.push_slice(&chunk), chunk.len(), "ring has room");
     }
 
     #[test]
     fn resamples_a_chunk_into_the_fifo() {
         let mut engine = ResamplerFifoEngine::new(CHANNELS);
         let mut rs = resampler(1.0);
-        let queue = ArrayQueue::new(RESAMPLER_CHUNK_SIZE * CHANNELS * 2);
-        feed_one_chunk(&queue);
+        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2, 1);
+        feed_one_chunk(&mut writer);
 
         engine
-            .ensure_output_samples(&queue, &mut rs, RESAMPLER_CHUNK_SIZE)
+            .ensure_output_samples(&mut reader, &mut rs, RESAMPLER_CHUNK_SIZE)
             .expect("resample");
 
         assert!(engine.output_len() > 0, "a full chunk must produce output");
@@ -190,6 +279,68 @@ mod tests {
             "the FIFO holds whole interleaved frames"
         );
         assert_eq!(engine.pending_input_samples(), 0, "the chunk was consumed");
+    }
+
+    /// The ring hands its samples over in blocks, two where they wrap around
+    /// its end, and nothing aligns that end with a frame: the frame cut in
+    /// two there still lands whole, each sample on its own channel.
+    #[test]
+    fn a_frame_cut_by_the_end_of_the_ring_is_deinterleaved_whole() {
+        let mut engine = ResamplerFifoEngine::new(CHANNELS);
+        let mut rs = resampler(1.0);
+        // An odd capacity, and a read position three samples short of the
+        // end: one frame, then the first half of the next.
+        let capacity = RESAMPLER_CHUNK_SIZE * CHANNELS * 2 + 1;
+        let (mut writer, mut reader) = sample_ring(capacity, 1);
+        writer.push_silence(capacity - 3);
+        reader.discard(capacity - 3);
+        feed_one_chunk(&mut writer);
+
+        engine
+            .ensure_output_samples(&mut reader, &mut rs, RESAMPLER_CHUNK_SIZE)
+            .expect("resample");
+
+        assert_eq!(engine.pending_input_samples(), 0, "the chunk was consumed");
+        for frame in 0..RESAMPLER_CHUNK_SIZE {
+            for ch in 0..CHANNELS {
+                assert_eq!(
+                    engine.resampler_input[ch][frame],
+                    frame as f32 + ch as f32 * 1000.0,
+                    "frame {frame}, channel {ch}"
+                );
+            }
+        }
+    }
+
+    /// Less than a chunk in the ring: the whole frames are collected and kept
+    /// for the next call, a trailing half frame stays in the ring, and
+    /// nothing is resampled yet.
+    #[test]
+    fn a_partial_chunk_waits_for_the_rest() {
+        let mut engine = ResamplerFifoEngine::new(CHANNELS);
+        let mut rs = resampler(1.0);
+        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2, 1);
+        writer.push_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+
+        engine
+            .ensure_output_samples(&mut reader, &mut rs, RESAMPLER_CHUNK_SIZE)
+            .expect("resample");
+        assert_eq!(engine.output_len(), 0);
+        assert_eq!(engine.pending_input_samples(), 4, "two whole frames");
+        assert_eq!(reader.available(), 1, "the half frame stays in the ring");
+        assert_eq!(engine.resampler_input[0][..2], [1.0, 3.0]);
+        assert_eq!(engine.resampler_input[1][..2], [2.0, 4.0]);
+
+        // The rest of the chunk arrives: it is completed where it stopped.
+        let rest = vec![9.0; (RESAMPLER_CHUNK_SIZE - 2) * CHANNELS - 1];
+        writer.push_slice(&rest);
+        engine
+            .ensure_output_samples(&mut reader, &mut rs, RESAMPLER_CHUNK_SIZE)
+            .expect("resample");
+        assert!(engine.output_len() > 0, "the completed chunk was resampled");
+        assert_eq!(engine.pending_input_samples(), 0);
+        assert_eq!(engine.resampler_input[0][..3], [1.0, 3.0, 5.0]);
+        assert_eq!(reader.available(), 0);
     }
 
     /// The output buffer is grown once and reused: a second chunk goes through
@@ -202,19 +353,19 @@ mod tests {
     fn a_second_chunk_reuses_the_output_buffer() {
         let mut engine = ResamplerFifoEngine::new(CHANNELS);
         let mut rs = resampler(1.0);
-        let queue = ArrayQueue::new(RESAMPLER_CHUNK_SIZE * CHANNELS * 4);
+        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 4, 1);
 
-        feed_one_chunk(&queue);
+        feed_one_chunk(&mut writer);
         engine
-            .ensure_output_samples(&queue, &mut rs, RESAMPLER_CHUNK_SIZE)
+            .ensure_output_samples(&mut reader, &mut rs, RESAMPLER_CHUNK_SIZE)
             .expect("resample");
         let first = engine.output_len();
         assert!(first > 0);
         engine.discard_samples(first);
 
-        feed_one_chunk(&queue);
+        feed_one_chunk(&mut writer);
         engine
-            .ensure_output_samples(&queue, &mut rs, RESAMPLER_CHUNK_SIZE)
+            .ensure_output_samples(&mut reader, &mut rs, RESAMPLER_CHUNK_SIZE)
             .expect("resample");
         let second = engine.output_len();
         assert_eq!(
@@ -234,20 +385,20 @@ mod tests {
     fn draining_takes_the_oldest_samples_in_order() {
         let mut engine = ResamplerFifoEngine::new(CHANNELS);
         let mut rs = resampler(1.0);
-        let queue = ArrayQueue::new(RESAMPLER_CHUNK_SIZE * CHANNELS * 2);
-        feed_one_chunk(&queue);
+        let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2, 1);
+        feed_one_chunk(&mut writer);
         engine
-            .ensure_output_samples(&queue, &mut rs, RESAMPLER_CHUNK_SIZE)
+            .ensure_output_samples(&mut reader, &mut rs, RESAMPLER_CHUNK_SIZE)
             .expect("resample");
 
         let total = engine.output_len();
         let all = {
             let mut engine = ResamplerFifoEngine::new(CHANNELS);
             let mut rs = resampler(1.0);
-            let queue = ArrayQueue::new(RESAMPLER_CHUNK_SIZE * CHANNELS * 2);
-            feed_one_chunk(&queue);
+            let (mut writer, mut reader) = sample_ring(RESAMPLER_CHUNK_SIZE * CHANNELS * 2, 1);
+            feed_one_chunk(&mut writer);
             engine
-                .ensure_output_samples(&queue, &mut rs, RESAMPLER_CHUNK_SIZE)
+                .ensure_output_samples(&mut reader, &mut rs, RESAMPLER_CHUNK_SIZE)
                 .expect("resample");
             engine.drain_to_vec(total)
         };

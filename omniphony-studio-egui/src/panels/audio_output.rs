@@ -62,19 +62,31 @@ impl StudioSpike {
                     "status.audioFormat",
                     &[("rate", &rate), ("format", &format)],
                 );
+                if let Some(host) = &audio.audio_output_host {
+                    line.push_str(" • ");
+                    line.push_str(&tf("status.outputHost", &[("host", host)]));
+                }
                 if let Some(error) = &audio.audio_error {
                     line.push_str(&format!(" • Error: {error}"));
                 }
                 widgets::note(ui, &line);
+                // The Essentials view keeps the destination: the device, or
+                // the file rows while a file is what is being written, with
+                // the backend select that leads back to a device.
+                let advanced = self.advanced;
                 ui.add_enabled_ui(ready, |ui| {
-                    self.output_backend_row(ui, file_backend);
+                    if advanced || file_backend {
+                        self.output_backend_row(ui, file_backend);
+                    }
                     if file_backend {
                         self.file_rows(ui, &audio);
                     } else {
                         self.device_row(ui, &audio, &devices, ready);
                     }
-                    self.channel_mapping_row(ui, &mapping, &unroutable);
-                    self.sample_rate_row(ui, audio.audio_sample_rate.unwrap_or(0));
+                    if advanced {
+                        self.channel_mapping_row(ui, &mapping, &unroutable);
+                        self.sample_rate_row(ui, audio.audio_sample_rate.unwrap_or(0));
+                    }
                 });
             });
     }
@@ -379,6 +391,11 @@ fn summary(
         "audio.summary",
         &[("device", &device), ("rate", &rate), ("format", &format)],
     );
+    // The host, so a WASAPI fallback shows without opening the section.
+    if let Some(host) = &audio.audio_output_host {
+        summary.push_str(" • ");
+        summary.push_str(host);
+    }
     if let Some(error) = &audio.audio_error {
         summary.push_str(&format!(" • Error: {error}"));
     }

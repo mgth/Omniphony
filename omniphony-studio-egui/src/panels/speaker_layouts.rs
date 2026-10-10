@@ -24,7 +24,7 @@ impl StudioSpike {
     pub(crate) fn layout_actions(&mut self, ui: &mut Ui) {
         let frozen = {
             let live = self.host.read();
-            live.app.render_backend_state.frozen_speakers
+            live.app.speakers_read_only()
         };
         // Four buttons need ~350 points on one line, more than the panel's
         // minimum width. Laid out on a plain row they overflowed it, and the
@@ -44,11 +44,14 @@ impl StudioSpike {
                 if ui.button(t("config.import")).clicked() {
                     self.layout_transfer.import(&self.host, false);
                 }
-                if ui.button(t("config.export")).clicked() {
-                    self.layout_transfer.export(&self.host);
-                }
-                if ui.button(format!("+ {}", t("speaker.add"))).clicked() {
-                    self.add_speaker();
+                // Choosing a layout is essential; editing one is not.
+                if self.advanced {
+                    if ui.button(t("config.export")).clicked() {
+                        self.layout_transfer.export(&self.host);
+                    }
+                    if ui.button(format!("+ {}", t("speaker.add"))).clicked() {
+                        self.add_speaker();
+                    }
                 }
             });
         });

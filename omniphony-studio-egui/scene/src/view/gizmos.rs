@@ -63,9 +63,19 @@ pub enum GizmoTarget {
 }
 
 /// A scene position back to the normalised ADM triple the layout is written
-/// in: the room warp inverted, the axes swizzled, the result clamped.
+/// in: the room warp inverted, the axes swizzled, the result clamped. On the
+/// direct headphone path reading the sphere (`RoomRatio::sphere`), the room
+/// position heard at that point, kept within the unit sphere: the inverse of
+/// what [`super::scene_position`] draws there.
 pub fn scene_to_normalized(scene: Vec3, room: &RoomRatio) -> [f64; 3] {
     use omniphony_geometry::f64 as g;
+    if room.sphere {
+        return g::inverse_sphere_reading_direction(g::scene_to_adm([
+            scene.x as f64,
+            scene.y as f64,
+            scene.z as f64,
+        ]));
+    }
     g::inverse_room_scaled_position(
         g::scene_to_adm([scene.x as f64, scene.y as f64, scene.z as f64]),
         [room.width, room.length, room.height],
@@ -395,7 +405,7 @@ mod tests {
         let mut catalog = ChannelCatalog::default();
         catalog.refresh(&app);
         assert_eq!(
-            virtual_channel_of(&catalog, &app, Family::Generic, "L"),
+            virtual_channel_of(&catalog, &app, Family::GENERIC, "L"),
             None,
             "room mode: the model places the channel"
         );
@@ -409,26 +419,26 @@ mod tests {
         );
         app.sources
             .insert("obj-42".to_owned(), SourcePosition::default());
-        let editor_says = effective_channels_for(&catalog, &app, Family::Generic)
+        let editor_says = effective_channels_for(&catalog, &app, Family::GENERIC)
             .into_iter()
             .find(|c| c.name == "L")
             .map(|c| c.spatialize);
         assert!(editor_says.is_some(), "the fallback bed has no L");
         assert_eq!(
-            virtual_channel_of(&catalog, &app, Family::Generic, "L"),
+            virtual_channel_of(&catalog, &app, Family::GENERIC, "L"),
             editor_says.filter(|v| *v).map(|_| "L".to_owned())
         );
         // Another family inherits the generic mode, so it drags too.
         assert_eq!(
-            virtual_channel_of(&catalog, &app, Family::Dts, "L"),
+            virtual_channel_of(&catalog, &app, Family::named("dts"), "L"),
             Some("L".to_owned())
         );
         assert_eq!(
-            virtual_channel_of(&catalog, &app, Family::Generic, "obj-42"),
+            virtual_channel_of(&catalog, &app, Family::GENERIC, "obj-42"),
             None
         );
         assert_eq!(
-            virtual_channel_of(&catalog, &app, Family::Generic, "nope"),
+            virtual_channel_of(&catalog, &app, Family::GENERIC, "nope"),
             None
         );
     }

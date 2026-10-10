@@ -1,15 +1,18 @@
 [package]
 name = "script_backend"
-version = "0.1.0"
-edition = "2024"
-license = "GPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "User-scriptable render backend (GainModel): a per-position gain function written in Lua, sampled at table-build time"
 
 [lib]
 name = "script_backend"
 
 [dependencies]
-renderer = { path = "../renderer" }
-anyhow = "1"
-parking_lot = "0.12"
+renderer.workspace = true
+anyhow.workspace = true
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
+
+[dev-dependencies]
+renderer = { workspace = true, features = ["test-support"] }

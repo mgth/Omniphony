@@ -1,5 +1,8 @@
 # Building omniphony-renderer with SAF-backed VBAP on Windows
 
+This page is only for the optional `saf_vbap` feature. The default Windows build
+needs none of it: see [QUICKSTART.md](QUICKSTART.md#windows).
+
 This guide documents how to build `omniphony-renderer` with the `saf_vbap` feature on Windows,
 enabling runtime VBAP gain table generation via the `generate-vbap` command.
 
@@ -15,7 +18,7 @@ Important naming note:
 ## Prerequisites
 
 - **Visual Studio 2022** (Community or higher) with C++ desktop workload
-- **Rust 1.87.0+** with the `x86_64-pc-windows-msvc` target
+- **Rust 1.89+** (the workspace's `rust-version`) with the `x86_64-pc-windows-msvc` target
 - **LLVM/Clang** installed (for `bindgen`) — download from https://github.com/llvm/llvm-project/releases
 - **Git** (Git for Windows)
 
@@ -25,7 +28,10 @@ The `saf_vbap` feature depends on two C libraries:
 1. **SAF** (Spatial Audio Framework) — provides VBAP spatial audio algorithms
 2. **OpenBLAS** (with LAPACK + LAPACKE) — linear algebra backend for SAF
 
-Both must be built as **static libraries** with **MSVC**.
+Both must be built as **static libraries** with **MSVC**, against the static C
+runtime (`/MT`, as below): the workspace links it statically on Windows
+(`.cargo/config.toml`), and a library built with `/MD` would pull the
+Visual C++ Redistributable back in, or fail to link.
 
 Licensing note:
 
@@ -65,7 +71,7 @@ C:\dev\vcpkg\downloads\tools\cmake-3.31.10-windows\cmake-3.31.10-windows-x86_64\
   -B C:\dev\openblas-build ^
   -G "NMake Makefiles" ^
   -DCMAKE_BUILD_TYPE=Release ^
-  -DCMAKE_C_FLAGS_RELEASE="/MD /Od /DNDEBUG" ^
+  -DCMAKE_C_FLAGS_RELEASE="/MT /Od /DNDEBUG" ^
   -DBUILD_WITHOUT_LAPACK=OFF ^
   -DNOFORTRAN=ON ^
   -DC_LAPACK=ON ^
@@ -116,7 +122,7 @@ C:\dev\vcpkg\downloads\tools\cmake-3.31.10-windows\cmake-3.31.10-windows-x86_64\
   -S . -B build-win ^
   -G "NMake Makefiles" ^
   -DCMAKE_BUILD_TYPE=Release ^
-  -DCMAKE_C_FLAGS_RELEASE="/MD /O1 /DNDEBUG /DWIN32" ^
+  -DCMAKE_C_FLAGS_RELEASE="/MT /O1 /DNDEBUG /DWIN32" ^
   -DSAF_PERFORMANCE_LIB=SAF_USE_OPEN_BLAS_AND_LAPACKE ^
   -DSAF_BUILD_EXAMPLES=OFF ^
   -DSAF_BUILD_TESTS=OFF ^
@@ -183,7 +189,7 @@ kept ASIO out of free audio software for twenty years.
 | Features | Commands available |
 |---|---|
 | `saf_vbap` | default render flow, `generate-vbap` |
-| `asio` | default render flow, `list-asio-devices` (`--output-backend asio`) |
+| `asio` | default render flow, `list-asio-devices` (`--output-backend asio`; falls back to WASAPI shared mode at run time when no ASIO driver is installed) |
 | `saf_vbap,asio` | All of the above |
 
 ### Building from a different directory

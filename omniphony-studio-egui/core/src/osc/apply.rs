@@ -3,11 +3,10 @@
 //! Tauri host (`src-tauri/src/osc_listener.rs`). These are pure functions over
 //! `AppState` and the OSC socket; keep them in sync with the host.
 
-use std::net::UdpSocket;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use rosc::{OscPacket, OscType};
+use rosc::OscType;
 
 use crate::model::app_state::*;
 use crate::model::layouts::{Layout, Speaker};
@@ -20,6 +19,7 @@ struct AudioDomainState {
     output_devices: Option<Vec<OutputDeviceOption>>,
     output_device: Option<String>,
     output_device_effective: Option<String>,
+    output_host: Option<String>,
     output_backend: Option<String>,
     output_file: Option<String>,
     output_file_format: Option<String>,
@@ -67,6 +67,7 @@ struct InputDomainState {
     drc_mode: Option<String>,
     drc_weight: Option<f32>,
     supported_drc_modes: Option<Vec<String>>,
+    channel_tags: Option<Vec<crate::model::app_state::ChannelTag>>,
     requested: Option<RequestedInputDomainState>,
     applied: Option<AppliedInputDomainState>,
 }
@@ -104,6 +105,10 @@ struct RendererDomainState {
     render_backend_effective: Option<String>,
     render_evaluation_mode: Option<String>,
     render_evaluation_mode_effective: Option<String>,
+    /// `bridge` or `custom`; absent from a renderer before the setting.
+    evaluation_grid: Option<String>,
+    /// The active bridge's grid, `null` until the renderer knows it.
+    evaluation_grid_bridge: Option<crate::model::app_state::BridgeGrid>,
     object_size_intervals: Option<u32>,
     binaural: Option<serde_json::Value>,
     master_gain: Option<f64>,
@@ -209,7 +214,7 @@ fn clamp_layout_value(value: f64, min: f64, max: f64) -> f64 {
     value.max(min).min(max)
 }
 
-// Conversions come from `omniphony-geometry`, shared with the renderer. The
+// Conversions come from `omniphony_geometry`, shared with the renderer. The
 // copies that lived here read the ADM coordinates the renderer publishes as if
 // they were Three.js scene coordinates — the same missing axis swizzle as
 // `layouts.rs`, but on the LIVE layout rather than a file.
@@ -412,6 +417,9 @@ pub fn apply_audio_domain_state(s: &mut AppState, value: &str) -> bool {
     if let Some(output_device_effective) = parsed.output_device_effective {
         s.set_audio_effective_output_device(&output_device_effective);
     }
+    if let Some(output_host) = parsed.output_host {
+        s.set_audio_output_host(&output_host);
+    }
     if let Some(output_backend) = parsed.output_backend {
         s.set_audio_output_backend(Some(output_backend));
     }
@@ -537,6 +545,9 @@ pub fn apply_input_domain_state(s: &mut AppState, value: &str) -> bool {
     if let Some(supported_drc_modes) = parsed.supported_drc_modes {
         s.supported_drc_modes = supported_drc_modes;
     }
+    if let Some(channel_tags) = parsed.channel_tags {
+        s.channel_tags = channel_tags;
+    }
     if let Some(requested) = parsed.requested {
         s.live_input.backend = requested.backend;
         s.live_input.node = requested.node;
@@ -560,6 +571,20 @@ pub fn apply_input_domain_state(s: &mut AppState, value: &str) -> bool {
     true
 }
 
+/// The speakers of `binaural.brir.layout`: the BRIR set's loudspeakers the
+/// render pans onto, in the layout state's shape. `None` while the editable
+/// layout renders (the key absent or null).
+fn brir_layout_speakers(binaural: &serde_json::Value) -> Option<Vec<Speaker>> {
+    let layout = binaural.get("brir")?.get("layout")?;
+    let parsed = <LayoutDomainState as serde::Deserialize>::deserialize(layout).ok()?;
+    let speakers: Vec<Speaker> = parsed
+        .speakers
+        .into_iter()
+        .map(normalized_layout_domain_speaker)
+        .collect();
+    (!speakers.is_empty()).then_some(speakers)
+}
+
 pub fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<RendererDomainState>(value) else {
         return false;
@@ -579,7 +604,14 @@ pub fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
     if let Some(object_size_intervals) = parsed.object_size_intervals {
         s.object_size_intervals = object_size_intervals;
     }
+    // Together: a renderer that says where the grid comes from also says
+    // what the bridge's grid is, `null` included.
+    if let Some(source) = parsed.evaluation_grid {
+        s.evaluation_grid = Some(source);
+        s.evaluation_grid_bridge = parsed.evaluation_grid_bridge;
+    }
     if let Some(binaural) = parsed.binaural {
+        s.brir_speakers = brir_layout_speakers(&binaural);
         s.binaural = Some(binaural);
     }
     if let Some(master_gain) = parsed.master_gain {
@@ -679,6 +711,8 @@ pub fn apply_monitoring_domain_state(s: &mut AppState, value: &str) -> bool {
 /// One in-flight chunked transfer.
 struct GainTableAsm {
     chunk_count: usize,
+    /// Bytes received so far, bounded by [`GAINTABLE_MAX_BYTES`].
+    received: usize,
     chunks: std::collections::BTreeMap<u32, Vec<u8>>,
     /// Last time a chunk (or the meta) arrived; drives the stall → NACK timer.
     last_activity: Option<Instant>,
@@ -703,6 +737,16 @@ static GAINTABLE: Mutex<std::collections::BTreeMap<u32, GainTableAsm>> =
 /// client that keeps missing chunks.
 const GAINTABLE_MAX_INFLIGHT: usize = 6;
 
+/// Largest gain-table artifact accepted, compressed as received and inflated
+/// as decoded: the engine's own evaluation-table budget. The transfer arrives
+/// on a port open to the network, so its sizes — the meta's chunk count, the
+/// chunks themselves, the inflated payload, the dimensions in its metadata —
+/// are all bounded before anything is allocated from them.
+const GAINTABLE_MAX_BYTES: usize = 256 << 20;
+/// Most chunks a transfer may announce: the budget in the engine's 1 KiB
+/// chunks. A larger count would have the NACK list every index up to it.
+const GAINTABLE_MAX_CHUNKS: usize = GAINTABLE_MAX_BYTES / 1024;
+
 // Reliability for the chunked UDP transfer: if the burst stalls (lost datagrams),
 // re-request just the missing chunk indices. The receive buffer already absorbs the
 // burst itself; this recovers real network loss for the remote (Studio ≠ renderer
@@ -715,10 +759,14 @@ const GAINTABLE_NACK_MAX_INDICES: usize = 256;
 pub fn gaintable_on_meta(json: &str) {
     let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
     let version = v.get("version").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
-    let chunk_count = v.get("chunk_count").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
-    if chunk_count == 0 {
+    let chunk_count = v.get("chunk_count").and_then(|x| x.as_u64()).unwrap_or(0);
+    if chunk_count == 0 || chunk_count > GAINTABLE_MAX_CHUNKS as u64 {
+        if chunk_count != 0 {
+            log::warn!("[osc] gaintable: refusing a transfer of {chunk_count} chunks");
+        }
         return;
     }
+    let chunk_count = chunk_count as usize;
     let now = Instant::now();
     if let Ok(mut map) = GAINTABLE.lock() {
         // A repeated meta for a version already in flight restarts *that*
@@ -727,6 +775,7 @@ pub fn gaintable_on_meta(json: &str) {
             version,
             GainTableAsm {
                 chunk_count,
+                received: 0,
                 chunks: std::collections::BTreeMap::new(),
                 last_activity: Some(now),
                 nack_rounds: 0,
@@ -793,26 +842,19 @@ pub fn gaintable_check_nack(now: Instant) -> Vec<(u32, Vec<u32>)> {
     out
 }
 
-pub fn send_gaintable_nack(
-    socket: &UdpSocket,
-    host: &str,
-    rx_port: u16,
-    version: u32,
-    missing: &[u32],
-) {
-    use rosc::{OscMessage, encoder};
-    for group in missing.chunks(GAINTABLE_NACK_MAX_INDICES) {
-        let mut args = Vec::with_capacity(group.len() + 1);
-        args.push(OscType::Int(version as i32));
-        args.extend(group.iter().map(|&i| OscType::Int(i as i32)));
-        let msg = OscPacket::Message(OscMessage {
-            addr: "/omniphony/control/debug/speaker_gaintable/nack".to_string(),
-            args,
-        });
-        if let Ok(bytes) = encoder::encode(&msg) {
-            let _ = socket.send_to(&bytes, format!("{host}:{rx_port}"));
-        }
-    }
+/// The NACK messages asking the renderer again for gain-table `version`'s
+/// `missing` chunks, a bounded number of indices each. The listener sends
+/// them on its link to the renderer.
+pub fn gaintable_nack_messages(version: u32, missing: &[u32]) -> Vec<Vec<OscType>> {
+    missing
+        .chunks(GAINTABLE_NACK_MAX_INDICES)
+        .map(|group| {
+            let mut args = Vec::with_capacity(group.len() + 1);
+            args.push(OscType::Int(version as i32));
+            args.extend(group.iter().map(|&i| OscType::Int(i as i32)));
+            args
+        })
+        .collect()
 }
 
 /// Copied from the host's `commands/input.rs`.
@@ -899,7 +941,19 @@ pub fn gaintable_on_chunk(bytes: &[u8]) -> Option<GainTable> {
         // Route the chunk to ITS transfer: another one being in flight is no
         // longer a reason to drop it.
         let asm = map.get_mut(&version)?;
-        asm.chunks.insert(index, bytes[8..].to_vec());
+        // An index the meta did not announce is not part of the transfer.
+        if index as usize >= asm.chunk_count {
+            return None;
+        }
+        let payload = &bytes[8..];
+        let previous = asm.chunks.get(&index).map_or(0, Vec::len);
+        asm.received = asm.received - previous + payload.len();
+        if asm.received > GAINTABLE_MAX_BYTES {
+            log::warn!("[osc] gaintable transfer {version} exceeds its budget; dropped");
+            map.remove(&version);
+            return None;
+        }
+        asm.chunks.insert(index, payload.to_vec());
         asm.last_activity = Some(Instant::now());
         if asm.chunks.len() != asm.chunk_count {
             return None;
@@ -915,12 +969,19 @@ pub fn gaintable_on_chunk(bytes: &[u8]) -> Option<GainTable> {
 }
 
 fn inflate(bytes: &[u8]) -> Option<Vec<u8>> {
+    inflate_at_most(bytes, GAINTABLE_MAX_BYTES)
+}
+
+/// Inflate `bytes`, refusing a payload that inflates past `limit`: a few
+/// kilobytes of zlib can stand for gigabytes.
+fn inflate_at_most(bytes: &[u8], limit: usize) -> Option<Vec<u8>> {
     use std::io::Read as _;
     let mut raw = Vec::new();
     flate2::read::ZlibDecoder::new(bytes)
+        .take(limit as u64 + 1)
         .read_to_end(&mut raw)
         .ok()?;
-    Some(raw)
+    (raw.len() <= limit).then_some(raw)
 }
 
 fn f32_le(raw: &[u8]) -> Vec<f32> {
@@ -934,21 +995,24 @@ fn decode_band_gaintable(bytes: &[u8], version: u32) -> Option<GainTable> {
     if bytes.len() < 16 || &bytes[0..4] != b"OBGT" {
         return None;
     }
-    let meta_len = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
-    let payload_len = u32::from_le_bytes(bytes[12..16].try_into().ok()?) as usize;
-    let meta_end = 16 + meta_len;
-    let payload_end = meta_end + payload_len;
-    if bytes.len() < payload_end {
-        return None;
-    }
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes[16..meta_end]).ok()?;
-    let raw = inflate(&bytes[meta_end..payload_end])?;
+    let (metadata, raw) = artifact_parts(bytes)?;
 
     let dim = |k: &str| metadata.get(k).and_then(|x| x.as_u64()).map(|x| x as usize);
     let x_count = dim("x_count")?;
     let y_count = dim("y_count")?;
     let z_count = dim("z_count")?;
     let band_count = dim("band_count")?;
+    // The grid positions, then one gain per cell and band: the dimensions
+    // come from the network, so the payload must hold what they announce,
+    // with no product overflowing on the way.
+    if [x_count, y_count, z_count, band_count].contains(&0) {
+        return None;
+    }
+    let positions = x_count.checked_add(y_count)?.checked_add(z_count)?;
+    let floats = cells(&[x_count, y_count, z_count, band_count])?.checked_add(positions)?;
+    if raw.len() / 4 < floats {
+        return None;
+    }
     // Signed: -1 (GLOBAL_ENERGY_INDEX) marks the all-speaker energy field, and
     // an unsigned read would silently fold it onto speaker 0.
     let speaker_index = metadata
@@ -980,6 +1044,25 @@ fn decode_band_gaintable(bytes: &[u8], version: u32) -> Option<GainTable> {
     })
 }
 
+/// An artifact's JSON metadata and inflated payload, from its 16-byte header
+/// (magic, version, metadata length, payload length). The lengths come from
+/// the network: checked, not trusted.
+fn artifact_parts(bytes: &[u8]) -> Option<(serde_json::Value, Vec<u8>)> {
+    let len_at = |at: usize| -> Option<usize> {
+        Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?) as usize)
+    };
+    let meta_end = 16usize.checked_add(len_at(8)?)?;
+    let payload_end = meta_end.checked_add(len_at(12)?)?;
+    let metadata = serde_json::from_slice(bytes.get(16..meta_end)?).ok()?;
+    let raw = inflate(bytes.get(meta_end..payload_end)?)?;
+    Some((metadata, raw))
+}
+
+/// The product of a table's dimensions, `None` when it overflows.
+fn cells(dims: &[usize]) -> Option<usize> {
+    dims.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d))
+}
+
 fn decode_evaluation_artifact(bytes: &[u8], version: u32) -> Option<GainTable> {
     if bytes.len() < 16 {
         return None;
@@ -990,22 +1073,14 @@ fn decode_evaluation_artifact(bytes: &[u8], version: u32) -> Option<GainTable> {
     if &bytes[0..4] != b"OEVL" {
         return None;
     }
-    let metadata_len = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
-    let payload_len = u32::from_le_bytes(bytes[12..16].try_into().ok()?) as usize;
-    let meta_end = 16 + metadata_len;
-    let payload_end = meta_end + payload_len;
-    if bytes.len() < payload_end {
-        return None;
-    }
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes[16..meta_end]).ok()?;
-    let raw = inflate(&bytes[meta_end..payload_end])?;
+    let (metadata, raw) = artifact_parts(bytes)?;
 
     let domain = metadata.get("domain")?;
     let kind = domain.get("kind")?.as_str()?;
     let dim = |k: &str| domain.get(k).and_then(|x| x.as_u64()).map(|x| x as usize);
     let mut off = 0usize;
     let mut read_f32 = |count: usize| -> Option<Vec<f32>> {
-        let end = off + count * 4;
+        let end = count.checked_mul(4).and_then(|n| n.checked_add(off))?;
         if end > raw.len() {
             return None;
         }
@@ -1025,7 +1100,7 @@ fn decode_evaluation_artifact(bytes: &[u8], version: u32) -> Option<GainTable> {
             let x_positions = read_f32(xc)?;
             let y_positions = read_f32(yc)?;
             let z_positions = read_f32(zc)?;
-            let gains = read_f32(xc * yc * zc * sc)?;
+            let gains = read_f32(cells(&[xc, yc, zc, sc])?)?;
             Some(GainTable::Cartesian {
                 version,
                 speaker_count: sc,
@@ -1045,7 +1120,7 @@ fn decode_evaluation_artifact(bytes: &[u8], version: u32) -> Option<GainTable> {
             let azimuth_positions = read_f32(ac)?;
             let elevation_positions = read_f32(ec)?;
             let distance_positions = read_f32(dc)?;
-            let gains = read_f32(ac * ec * dc * sc)?;
+            let gains = read_f32(cells(&[ac, ec, dc, sc])?)?;
             Some(GainTable::Polar {
                 version,
                 speaker_count: sc,
@@ -1056,5 +1131,416 @@ fn decode_evaluation_artifact(bytes: &[u8], version: u32) -> Option<GainTable> {
             })
         }
         _ => None,
+    }
+}
+
+/// The gain-table transfer arrives on a port open to the network: whatever it
+/// says, it is decoded within bounds or refused — never a panic, never an
+/// allocation sized by a number it carries.
+#[cfg(test)]
+mod gaintable_untrusted_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    fn zlib(raw: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        e.write_all(raw).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// An artifact: magic, version, metadata length, payload length, then
+    /// the metadata JSON and the zlib payload.
+    fn artifact(magic: &[u8; 4], metadata: &serde_json::Value, raw: &[u8]) -> Vec<u8> {
+        let meta = serde_json::to_vec(metadata).unwrap();
+        let payload = zlib(raw);
+        let mut out = magic.to_vec();
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&meta);
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    fn floats(values: &[f32]) -> Vec<u8> {
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    fn cartesian(x: u64, y: u64, z: u64, speakers: u64) -> serde_json::Value {
+        serde_json::json!({ "domain": {
+            "kind": "cartesian", "x_count": x, "y_count": y, "z_count": z,
+            "speaker_count": speakers
+        }})
+    }
+
+    #[test]
+    fn a_well_formed_cartesian_table_decodes() {
+        // 2 x 1 x 1 cells, 2 speakers: 2 + 1 + 1 positions, 4 gains.
+        let raw = floats(&[-1.0, 1.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.4]);
+        let table = decode_evaluation_artifact(&artifact(b"OEVL", &cartesian(2, 1, 1, 2), &raw), 9)
+            .expect("decodes");
+        match table {
+            GainTable::Cartesian {
+                version,
+                speaker_count,
+                x_positions,
+                gains,
+                ..
+            } => {
+                assert_eq!((version, speaker_count), (9, 2));
+                assert_eq!(x_positions, vec![-1.0, 1.0]);
+                assert_eq!(gains, vec![0.1, 0.2, 0.3, 0.4]);
+            }
+            other => panic!("expected a cartesian table, got {other:?}"),
+        }
+    }
+
+    fn bands(x: u64, y: u64, z: u64, bands: u64) -> serde_json::Value {
+        serde_json::json!({
+            "x_count": x, "y_count": y, "z_count": z, "band_count": bands,
+            "speaker_index": 3
+        })
+    }
+
+    /// The band-aware table's dimensions are checked against its payload,
+    /// like the evaluation table's: its consumer slices by them.
+    #[test]
+    fn a_band_table_holds_what_its_dimensions_announce() {
+        // 2 x 1 x 1 cells, 2 bands: 2 + 1 + 1 positions, 4 gains.
+        let raw = floats(&[-1.0, 1.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.4]);
+        match decode_evaluation_artifact(&artifact(b"OBGT", &bands(2, 1, 1, 2), &raw), 4) {
+            Some(GainTable::CartesianBands {
+                speaker_index,
+                band_count,
+                data,
+                ..
+            }) => {
+                assert_eq!((speaker_index, band_count), (3, 2));
+                assert_eq!(data.len(), 8);
+            }
+            other => panic!("expected a band table, got {other:?}"),
+        }
+
+        let huge = u64::MAX / 2;
+        let four = floats(&[0.0; 4]);
+        for (metadata, raw) in [
+            // One cell, four floats: an absurd band count overflows its
+            // product with the cells (the review's probe).
+            (bands(1, 1, 1, u64::MAX), &four),
+            (bands(1, 1, 1, huge), &four),
+            (bands(huge, huge, huge, 1), &four),
+            (bands(1 << 40, 1 << 40, 1, 1), &four),
+            // Sound arithmetic, a payload too short for it.
+            (bands(2, 1, 1, 3), &raw),
+            (bands(0, 1, 1, 1), &raw),
+            (bands(1, 1, 1, 0), &raw),
+        ] {
+            assert!(
+                decode_evaluation_artifact(&artifact(b"OBGT", &metadata, raw), 1).is_none(),
+                "{metadata}"
+            );
+        }
+    }
+
+    #[test]
+    fn dimensions_lengths_and_magic_from_the_network_are_checked() {
+        let raw = floats(&[0.0; 8]);
+        let huge = u64::MAX / 2;
+        for metadata in [
+            cartesian(huge, huge, huge, huge),
+            cartesian(1 << 40, 1 << 40, 1, 1),
+            cartesian(1_000_000, 1, 1, 1),
+            // Small axes, so the positions read; the gain count overflows.
+            cartesian(2, 1, 1, huge),
+            cartesian(2, 2, 2, u64::MAX / 4),
+            serde_json::json!({ "domain": { "kind": "polar", "azimuth_count": huge,
+                "elevation_count": huge, "distance_count": 2, "speaker_count": 2 } }),
+            serde_json::json!({ "domain": { "kind": "hexagonal" } }),
+            serde_json::json!({}),
+        ] {
+            assert!(
+                decode_evaluation_artifact(&artifact(b"OEVL", &metadata, &raw), 1).is_none(),
+                "{metadata}"
+            );
+        }
+        let good = artifact(b"OEVL", &cartesian(2, 1, 1, 2), &raw);
+        assert!(
+            decode_evaluation_artifact(&good[..good.len() - 3], 1).is_none(),
+            "truncated"
+        );
+        let mut lying = good.clone();
+        lying[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(
+            decode_evaluation_artifact(&lying, 1).is_none(),
+            "metadata length past the end"
+        );
+        lying[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(
+            decode_evaluation_artifact(&lying, 1).is_none(),
+            "both lengths at u32::MAX"
+        );
+        let mut bad_magic = good.clone();
+        bad_magic[0..4].copy_from_slice(b"NOPE");
+        assert!(decode_evaluation_artifact(&bad_magic, 1).is_none());
+        assert!(decode_evaluation_artifact(&[0u8; 3], 1).is_none());
+        let mut not_zlib = good;
+        let at = not_zlib.len() - 4;
+        not_zlib[at..].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        assert!(
+            decode_evaluation_artifact(&not_zlib, 1).is_none(),
+            "corrupt payload"
+        );
+    }
+
+    /// A payload that inflates past the limit is refused, however small it
+    /// arrives: 2 MiB of zeros compresses to a few kilobytes.
+    #[test]
+    fn a_decompression_bomb_is_refused() {
+        let bomb = zlib(&vec![0u8; 2 << 20]);
+        assert!(bomb.len() < 16 << 10, "the bomb is small: {}", bomb.len());
+        assert!(inflate_at_most(&bomb, 1 << 20).is_none());
+        assert_eq!(
+            inflate_at_most(&bomb, 2 << 20).map(|r| r.len()),
+            Some(2 << 20)
+        );
+        assert!(GAINTABLE_MAX_BYTES <= 256 << 20, "the decoder's limit");
+    }
+
+    /// The transfers in flight are process-global: these tests take turns.
+    static TRANSFERS: Mutex<()> = Mutex::new(());
+
+    fn meta(version: u32, chunk_count: u64) -> String {
+        serde_json::json!({ "version": version, "chunk_count": chunk_count }).to_string()
+    }
+
+    fn chunk(version: u32, index: u32, payload: &[u8]) -> Vec<u8> {
+        let mut out = version.to_le_bytes().to_vec();
+        out.extend_from_slice(&index.to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn a_transfer_announcing_billions_of_chunks_is_refused() {
+        let _turn = TRANSFERS.lock().unwrap_or_else(|e| e.into_inner());
+        let version = 0x5eed_0001;
+        gaintable_on_meta(&meta(version, 4_000_000_000));
+        assert!(gaintable_on_chunk(&chunk(version, 0, &[1, 2, 3])).is_none());
+        // Nothing was registered: no NACK lists billions of indices.
+        let later = Instant::now() + Duration::from_secs(5);
+        assert!(
+            gaintable_check_nack(later)
+                .iter()
+                .all(|(v, _)| *v != version)
+        );
+    }
+
+    #[test]
+    fn a_chunk_the_meta_did_not_announce_is_ignored() {
+        let _turn = TRANSFERS.lock().unwrap_or_else(|e| e.into_inner());
+        let version = 0x5eed_0002;
+        let whole = artifact(b"OEVL", &cartesian(2, 1, 1, 2), &floats(&[0.5; 8]));
+        let (first, second) = whole.split_at(whole.len() / 2);
+        gaintable_on_meta(&meta(version, 2));
+        assert!(gaintable_on_chunk(&chunk(version, 0, first)).is_none());
+        // Out of range: neither stored nor counted towards completion.
+        assert!(gaintable_on_chunk(&chunk(version, 7, b"junk")).is_none());
+        assert!(gaintable_on_chunk(&chunk(version, u32::MAX, b"junk")).is_none());
+        let table = gaintable_on_chunk(&chunk(version, 1, second)).expect("completes");
+        assert_eq!(table.version(), version);
+    }
+}
+
+#[cfg(test)]
+mod domain_state_tests {
+    use super::*;
+
+    /// The live layout the renderer publishes is in the ADM frame, same as a
+    /// layout file. (Ported from the Tauri host, whose copy of this path is
+    /// going away with it.)
+    #[test]
+    fn derives_live_speaker_angles_in_the_adm_frame() {
+        let speaker = normalized_layout_domain_speaker(LayoutDomainSpeakerState {
+            name: Some(serde_json::json!("FR")),
+            x: Some(1.0),
+            y: Some(1.0),
+            z: Some(0.0),
+            ..LayoutDomainSpeakerState::default()
+        });
+        assert!(
+            (speaker.azimuth_deg - 45.0).abs() < 1e-6,
+            "{}",
+            speaker.azimuth_deg
+        );
+        assert!(
+            speaker.elevation_deg.abs() < 1e-6,
+            "{}",
+            speaker.elevation_deg
+        );
+    }
+
+    /// Polar to cartesian on the same path: hard right is +X.
+    #[test]
+    fn derives_live_speaker_cartesian_in_the_adm_frame() {
+        let speaker = normalized_layout_domain_speaker(LayoutDomainSpeakerState {
+            name: Some(serde_json::json!("R")),
+            azimuth: Some(90.0),
+            elevation: Some(0.0),
+            distance: Some(1.0),
+            ..LayoutDomainSpeakerState::default()
+        });
+        assert!((speaker.x - 1.0).abs() < 1e-6, "x {}", speaker.x);
+        assert!(speaker.y.abs() < 1e-6 && speaker.z.abs() < 1e-6);
+    }
+
+    /// The domain states arrive from the network as JSON: anything that is not
+    /// the shape a domain expects is refused (`false`) or applied field by
+    /// field, never a panic.
+    #[test]
+    fn malformed_domain_states_never_panic() {
+        let appliers: [(&str, fn(&mut AppState, &str) -> bool); 8] = [
+            ("layout", apply_layout_domain_state),
+            ("speakers", apply_speakers_domain_state),
+            ("audio", apply_audio_domain_state),
+            ("input", apply_input_domain_state),
+            ("renderer", apply_renderer_domain_state),
+            ("loudness", apply_loudness_domain_state),
+            ("profiles", apply_profiles_domain_state),
+            ("monitoring", apply_monitoring_domain_state),
+        ];
+        let inputs = [
+            "",
+            "not json",
+            "null",
+            "42",
+            "[]",
+            "{}",
+            r#"{"speakers": "x"}"#,
+            r#"{"speakers": [{"id": -1, "gain": 1e308, "delay_ms": -5}]}"#,
+            r#"{"speakers": [{"id": 4294967295, "delay_ms": 10}]}"#,
+            r#"{"speakers": [{"x": 1e308, "y": -1e308, "z": 0, "distance": -3}]}"#,
+            r#"{"speakers": [{"azimuth": 1e308, "elevation": -1e308}], "radius_m": -1}"#,
+            r#"{"outputDevices": 7, "latencyTargetMs": "soon"}"#,
+            r#"{"active": {"nested": [1, 2, {"deep": null}]}}"#,
+        ];
+        for (domain, apply) in appliers {
+            for input in inputs {
+                let mut state = AppState::default();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    apply(&mut state, input)
+                }));
+                assert!(outcome.is_ok(), "{domain} panicked on {input:?}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod audio_domain_tests {
+    use super::*;
+
+    /// The output host the engine names reaches the model, and an empty
+    /// string (no stream open, or a backend without a host) clears it.
+    #[test]
+    fn the_output_host_is_kept_and_cleared() {
+        let mut state = AppState::default();
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"outputHost": "WASAPI (fallback: no ASIO driver)"}"#
+        ));
+        assert_eq!(
+            state.audio.audio_output_host.as_deref(),
+            Some("WASAPI (fallback: no ASIO driver)")
+        );
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"outputHost": ""}"#
+        ));
+        assert_eq!(state.audio.audio_output_host, None);
+        // An engine that predates the field leaves the model alone.
+        state.set_audio_output_host("ASIO");
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"sampleRate": 48000}"#
+        ));
+        assert_eq!(state.audio.audio_output_host.as_deref(), Some("ASIO"));
+    }
+}
+
+#[cfg(test)]
+mod brir_layout_tests {
+    use super::*;
+
+    /// A renderer state carrying a BRIR set's loudspeakers puts them in the
+    /// model, read-only; one without (or with `null`) takes them away, and the
+    /// editable layout is what the speakers are again.
+    #[test]
+    fn a_brir_layout_in_the_renderer_state_replaces_the_speakers_read_only() {
+        let mut state = AppState::default();
+        assert!(!state.speakers_read_only());
+        let with_layout = r#"{"binaural": {"brir": {"layout": {"radius_m": 1.0, "speakers": [
+            {"name": "C", "coord_mode": "cartesian", "x": 0.0, "y": 1.0, "z": 0.0,
+             "azimuth": 0.0, "elevation": 0.0, "distance": 1.0, "spatialize": true},
+            {"name": "FL", "coord_mode": "cartesian", "x": -0.57735, "y": 1.0, "z": 0.0,
+             "azimuth": -30.0, "elevation": 0.0, "distance": 1.1547, "spatialize": true},
+            {"name": "LFE", "coord_mode": "polar", "x": 0.0, "y": 0.866, "z": -0.5,
+             "azimuth": 0.0, "elevation": -30.0, "distance": 1.0, "spatialize": false}
+        ]}}}}"#;
+        assert!(apply_renderer_domain_state(&mut state, with_layout));
+        let speakers = state
+            .brir_speakers
+            .as_ref()
+            .expect("the set's loudspeakers");
+        let names: Vec<&str> = speakers.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(names, ["C", "FL", "LFE"]);
+        assert_eq!(speakers[2].spatialize, 0);
+        assert!(state.speakers_read_only());
+
+        assert!(apply_renderer_domain_state(
+            &mut state,
+            r#"{"binaural": {"brir": {"layout": null}}}"#
+        ));
+        assert!(state.brir_speakers.is_none());
+        assert!(!state.speakers_read_only());
+    }
+}
+
+#[cfg(test)]
+mod evaluation_grid_tests {
+    use super::*;
+
+    /// Where the grid comes from and the bridge's grid are read together;
+    /// a renderer that predates them leaves them unknown.
+    #[test]
+    fn the_evaluation_grid_and_the_bridges_grid_are_read_from_the_renderer_state() {
+        let mut state = AppState::default();
+        assert!(apply_renderer_domain_state(
+            &mut state,
+            r#"{"renderEvaluationMode": "precomputed_cartesian"}"#
+        ));
+        assert_eq!(state.evaluation_grid, None);
+
+        assert!(apply_renderer_domain_state(
+            &mut state,
+            r#"{"evaluationGrid": "bridge", "evaluationGridBridge": {"mode": "precomputed_cartesian",
+                "xSize": 62, "ySize": 62, "zSize": 15, "zNegSize": 0, "allowNegativeZ": false,
+                "bridgeIndex": 1}}"#
+        ));
+        assert_eq!(state.evaluation_grid.as_deref(), Some("bridge"));
+        let grid = state
+            .evaluation_grid_bridge
+            .clone()
+            .expect("the bridge's grid");
+        assert_eq!(
+            (grid.x_size, grid.z_size, grid.bridge_index),
+            (62, 15, Some(1))
+        );
+
+        assert!(apply_renderer_domain_state(
+            &mut state,
+            r#"{"evaluationGrid": "custom", "evaluationGridBridge": null}"#
+        ));
+        assert_eq!(state.evaluation_grid.as_deref(), Some("custom"));
+        assert!(state.evaluation_grid_bridge.is_none());
     }
 }

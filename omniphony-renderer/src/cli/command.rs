@@ -5,7 +5,7 @@ use clap::{
     parser::ValueSource,
 };
 
-use renderer::live_params::{ChannelRenderMode, RampMode, SurroundPlacement};
+use renderer::live_params::ChannelRenderMode;
 
 pub const VERSION_INFO: &str = concat!(
     env!("VERGEN_GIT_DESCRIBE"),
@@ -20,7 +20,7 @@ pub const VERSION_INFO: &str = concat!(
     author     = env!("CARGO_PKG_AUTHORS"),
     about      = env!("CARGO_PKG_DESCRIPTION"),
     long_about = None,
-    after_help = "If no command is given, orender runs the default render flow.",
+    after_help = "If no command is given, `render` is assumed: `orender <INPUT>` is `orender render <INPUT>`.",
 )]
 pub struct Cli {
     /// Path to config file (default: ~/.config/omniphony/config.yaml on Linux,
@@ -57,7 +57,11 @@ impl ParsedCli {
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        let matches = Cli::command().try_get_matches_from(args)?;
+        let matches = Cli::command()
+            .mut_subcommand("render", |render| {
+                render.args(crate::cli::options::option_args())
+            })
+            .try_get_matches_from(args)?;
         let cli = Cli::from_arg_matches(&matches)?;
         Ok(Self { cli, matches })
     }
@@ -80,6 +84,14 @@ pub struct RenderArgSources<'a> {
 }
 
 impl RenderArgSources<'_> {
+    /// The registered options given on the command line (the generated
+    /// flags, `crate::cli::options`).
+    pub fn option_values(&self) -> Vec<(&'static str, crate::cli::options::CliValue)> {
+        self.matches
+            .map(crate::cli::options::given_values)
+            .unwrap_or_default()
+    }
+
     pub fn is_explicit(&self, id: &str) -> bool {
         self.matches
             .and_then(|matches| matches.value_source(id))
@@ -102,7 +114,13 @@ pub enum Commands {
     /// Generate VBAP gain table from speaker layout configuration
     GenerateVbap(GenerateVbapArgs),
 
-    /// List available ASIO output devices (Windows only)
+    /// Play a pipe through the new sync output (resampling rework, experimental).
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    SyncPlay(crate::cli::sync_host::SyncPlayArgs),
+
+    /// List the realtime output devices (Windows only): the ASIO ones, or the
+    /// WASAPI ones when no ASIO driver is installed
     #[cfg(target_os = "windows")]
     ListAsioDevices,
 
@@ -116,20 +134,15 @@ pub struct RenderArgs {
     /// Input audio bitstream (use "-" for stdin)
     #[arg(value_name = "INPUT")]
     pub input: Option<PathBuf>,
-
-    /// Realtime audio output backend.
-    /// Defaults to PipeWire on Linux and ASIO on Windows when available.
-    /// Pass `file` to write rendered audio to stdout / a file / a FIFO instead.
-    #[arg(long = "output-backend", value_enum)]
+    /// Realtime audio output backend: option `output_backend`, resolved from
+    /// the config (a `--output-backend` flag is folded in first).
+    #[arg(skip)]
     pub output_backend: Option<OutputBackend>,
-
-    /// Destination for `--output-backend file`: `-` (stdout, default), or a
-    /// path to a regular file or a named pipe (FIFO).
-    #[arg(long = "output-file", value_name = "PATH", default_value = "-")]
+    /// Destination of the `file` backend (`-` = stdout): option `output_file`.
+    #[arg(skip = String::from("-"))]
     pub output_file: String,
-
-    /// Container/format for `--output-backend file`.
-    #[arg(long = "output-file-format", value_enum, default_value_t = OutputFileFormatArg::RawF32)]
+    /// Format of the `file` backend: option `output_file_format`.
+    #[arg(skip = OutputFileFormatArg::RawF32)]
     pub output_file_format: OutputFileFormatArg,
 
     /// Presentation or substream selector passed to the bridge plugin.
@@ -138,9 +151,10 @@ pub struct RenderArgs {
     #[arg(long, value_name = "VALUE", default_value = renderer::config_fields::presentation::DEFAULT)]
     pub presentation: String,
 
-    /// Path to the format bridge plugin library.
-    #[arg(long, value_name = "FILE")]
-    pub bridge_path: Option<PathBuf>,
+    /// Path to a format bridge plugin library; repeat it to load several, in
+    /// load order (each stream goes to the bridge that decodes it).
+    #[arg(long = "bridge-path", value_name = "FILE")]
+    pub bridge_paths: Vec<PathBuf>,
 
     /// Enable bed conformance for spatial audio content
     #[arg(long, conflicts_with = "no_bed_conform")]
@@ -186,25 +200,13 @@ pub struct RenderArgs {
     /// can take over (and hand back) seamlessly.
     #[arg(long)]
     pub osc_yield: bool,
-
-    /// Output device or target name.
-    /// PipeWire: node target name (e.g. "omniphony_router")
-    /// ASIO: device name as listed by `orender list-asio-devices`
+    /// Output device or target name: option `output_device`.
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-    #[arg(
-        long,
-        value_name = "NAME",
-        visible_alias = "sink",
-        alias = "asio-device-name"
-    )]
+    #[arg(skip)]
     pub output_device: Option<String>,
-
-    /// Target buffer latency in milliseconds.
-    /// Playback starts once the ring buffer has reached this level, and the PI
-    /// controller (--enable-adaptive-resampling) maintains it at this level.
-    /// Default: 500 (Linux/PipeWire), 220 (Windows/ASIO).
+    /// Target buffer latency in milliseconds: option `latency_target`.
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-    #[arg(long, value_name = "MS")]
+    #[arg(skip)]
     pub latency_target_ms: Option<u32>,
 
     /// [LINUX ONLY] PipeWire processing quantum in frames (~21ms at 48kHz for 1024 frames).
@@ -239,93 +241,10 @@ pub struct RenderArgs {
     #[arg(long, value_name = "FILE")]
     pub vbap_table: Option<PathBuf>,
 
-    /// Number of azimuth cells across full range [-180°, +180°]
-    #[arg(
-        long = "evaluation-polar-azimuth-resolution",
-        value_name = "DEG",
-        default_value_t = renderer::config_fields::vbap_azimuth_resolution::DEFAULT
-    )]
-    pub evaluation_polar_azimuth_resolution: i32,
-
-    /// Number of elevation cells across full range:
-    /// [-90°, +90°] when negative Z is enabled, otherwise [0°, +90°]
-    #[arg(
-        long = "evaluation-polar-elevation-resolution",
-        value_name = "DEG",
-        default_value_t = renderer::config_fields::vbap_elevation_resolution::DEFAULT
-    )]
-    pub evaluation_polar_elevation_resolution: i32,
-
     /// VBAP spreading coefficient (0.0 = point source, 1.0 = maximum spread)
     /// Deprecated: Use --vbap-distance-res instead for dynamic per-object spread
     #[arg(long, value_name = "SPREAD", default_value_t = renderer::config_fields::vbap_spread::DEFAULT)]
     pub vbap_spread: f32,
-
-    /// Number of distance cells across full range [0, vbap-distance-max]
-    /// Higher values = denser precompute but higher memory
-    #[arg(
-        long = "evaluation-polar-distance-res",
-        value_name = "RESOLUTION",
-        default_value_t = renderer::config_fields::vbap_distance_res::DEFAULT
-    )]
-    pub evaluation_polar_distance_res: i32,
-
-    /// Maximum distance covered by polar VBAP precomputed table
-    #[arg(
-        long = "evaluation-polar-distance-max",
-        value_name = "DISTANCE",
-        default_value_t = renderer::config_fields::vbap_distance_max::DEFAULT
-    )]
-    pub evaluation_polar_distance_max: f32,
-
-    /// Interpolate between neighbouring VBAP table positions during lookup.
-    /// Disable this to use nearest-cell lookup for lower CPU cost.
-    #[arg(
-        long = "render-evaluation-position-interpolation",
-        conflicts_with = "no_render_evaluation_position_interpolation"
-    )]
-    pub render_evaluation_position_interpolation: bool,
-
-    /// Disable interpolation between neighbouring VBAP table positions.
-    #[arg(
-        long = "no-render-evaluation-position-interpolation",
-        conflicts_with = "render_evaluation_position_interpolation"
-    )]
-    pub no_render_evaluation_position_interpolation: bool,
-
-    /// VBAP pre-computed table mode.
-    /// - `polar`: pre-compute gains over azimuth/elevation (current behavior)
-    /// - `cartesian`: pre-compute gains over x/y/z ADM grid
-    #[arg(long = "render-evaluation-mode", value_enum, default_value_t = EvaluationModeArg::Polar)]
-    pub render_evaluation_mode: EvaluationModeArg,
-
-    /// Cartesian VBAP cell count on X axis (used only when --vbap-table-mode cartesian)
-    #[arg(long = "evaluation-cartesian-x-size", value_name = "SIZE")]
-    pub evaluation_cartesian_x_size: Option<usize>,
-
-    /// Cartesian VBAP cell count on Y axis (used only when --vbap-table-mode cartesian)
-    #[arg(long = "evaluation-cartesian-y-size", value_name = "SIZE")]
-    pub evaluation_cartesian_y_size: Option<usize>,
-
-    /// Cartesian VBAP cell count on Z axis (used only when --vbap-table-mode cartesian)
-    #[arg(long = "evaluation-cartesian-z-size", value_name = "SIZE")]
-    pub evaluation_cartesian_z_size: Option<usize>,
-
-    /// Cartesian VBAP cell count on negative Z axis (used only when --vbap-table-mode cartesian)
-    #[arg(long = "evaluation-cartesian-z-neg-size", value_name = "SIZE")]
-    pub evaluation_cartesian_z_neg_size: Option<usize>,
-
-    /// Allow negative Z values for VBAP tables (floor below listener).
-    #[arg(long, conflicts_with = "no_vbap_allow_negative_z")]
-    pub vbap_allow_negative_z: bool,
-
-    /// Disable negative Z values for VBAP tables.
-    #[arg(long, conflicts_with = "vbap_allow_negative_z")]
-    pub no_vbap_allow_negative_z: bool,
-
-    /// Distance attenuation model (none, linear, quadratic, inverse-square)
-    #[arg(long, value_name = "MODEL", default_value = renderer::config_fields::vbap_distance_model::DEFAULT)]
-    pub vbap_distance_model: String,
 
     /// Calculate spread from distance (1.0 at distance=0, 0.0 at distance>=1.0)
     /// When enabled, overrides object spread metadata for spread calculation
@@ -361,27 +280,6 @@ pub struct RenderArgs {
     #[arg(long)]
     pub log_object_positions: bool,
 
-    /// Room ratio for spatial rendering: width,length,height (default: 1.0,2.0,1.0)
-    /// Scales ADM coordinates before VBAP processing to match room proportions.
-    /// Example: --room-ratio 1.0,2.0,1.0 for a room twice as long as wide
-    #[arg(long, value_name = "W,L,H", default_value = "1.0,2.0,1.0")]
-    pub room_ratio: String,
-
-    /// Rear depth ratio used by the non-linear depth warp (`depth < 0`).
-    /// If omitted, defaults to room-ratio length (same front/rear behaviour).
-    #[arg(long, value_name = "RATIO")]
-    pub room_ratio_rear: Option<f32>,
-
-    /// Lower height ratio used for negative Z coordinates.
-    /// If omitted, defaults to 0.5.
-    #[arg(long, value_name = "RATIO")]
-    pub room_ratio_lower: Option<f32>,
-
-    /// Center blend for non-linear depth warp: 0.0 = rear-biased, 1.0 = front-biased.
-    /// 0.5 keeps the center ratio at the midpoint between front and rear ratios.
-    #[arg(long, value_name = "BLEND")]
-    pub room_ratio_center_blend: Option<f32>,
-
     /// Master gain in dB applied to VBAP output (default: 0.0 = unity gain)
     /// Use negative values to reduce output level (e.g., -6.0 for -6dB headroom)
     #[arg(
@@ -392,55 +290,6 @@ pub struct RenderArgs {
     )]
     pub master_gain: f32,
 
-    /// Enable automatic gain reduction to prevent clipping
-    /// When enabled, gain is automatically reduced if output exceeds 0dBFS
-    #[arg(long, conflicts_with = "no_auto_gain")]
-    pub auto_gain: bool,
-
-    /// Override config file 'auto_gain' setting to false.
-    #[arg(long, conflicts_with = "auto_gain")]
-    pub no_auto_gain: bool,
-
-    /// Target ceiling in dBFS that auto-gain corrects peaks down to (default: -1.0).
-    /// Clipping is still detected at 0 dBFS; this only sets how much headroom the
-    /// correction leaves, so corrections fire less often.
-    #[arg(long, value_name = "DB", allow_hyphen_values = true)]
-    pub auto_gain_ceiling: Option<f32>,
-
-    /// Enable loudness metadata correction to a -31 dBFS target
-    /// Adjusts gain based on the stream's dialogue_level metadata
-    /// (e.g., dialogue_level=-27 dBFS -> applies -4 dB correction toward -31 dBFS)
-    #[arg(long, conflicts_with = "no_loudness")]
-    pub use_loudness: bool,
-
-    /// Override config file 'use_loudness' (loudness metadata correction) to false.
-    #[arg(long, conflicts_with = "use_loudness")]
-    pub no_loudness: bool,
-
-    /// Enable distance-based antipodal diffuse blending.
-    /// Objects near the origin are blended with their antipodal mirror (same
-    /// elevation, opposite horizontal direction), fading to fully directional
-    /// as ADM distance approaches --distance-diffuse-threshold.
-    #[arg(long)]
-    pub distance_diffuse: bool,
-
-    /// ADM distance at which distance-diffuse blend reaches 100% direct.
-    /// (pre-room_ratio, 1.0 = surface of the ADM unit sphere)
-    #[arg(long, value_name = "DISTANCE", default_value_t = renderer::config_fields::distance_diffuse_threshold::DEFAULT)]
-    pub distance_diffuse_threshold: f32,
-
-    /// Curve exponent for distance-diffuse blend weight.
-    /// 1.0 = linear, 2.0 = slow-near (stays diffuse longer), 0.5 = fast-near.
-    #[arg(long, value_name = "EXPONENT", default_value_t = renderer::config_fields::distance_diffuse_curve::DEFAULT)]
-    pub distance_diffuse_curve: f32,
-
-    /// Ramp processing mode for object transitions.
-    /// - `sample`: smooth on every rendered sample (current behaviour)
-    /// - `frame`: update once per decoded audio frame
-    /// - `off`: jump immediately to the new value
-    #[arg(long, value_enum, default_value_t = RampModeArg::Frame)]
-    pub ramp_mode: RampModeArg,
-
     /// How to render channel-based (non-object) content: `host` (let the sink
     /// handle the channels, no spatialization), `direct` (route each channel to
     /// its matching speaker), or `virtual` (virtualize each channel as an object
@@ -448,66 +297,28 @@ pub struct RenderArgs {
     #[arg(long, value_enum, default_value_t = ChannelRenderModeArg::Spatial)]
     pub channel_render_mode: ChannelRenderModeArg,
 
-    /// Where to place the surround pair (`Ls`/`Rs`) of a 4.x/5.x source rendered
-    /// through the virtual bed: `side` (the default) or `back`. Sources that
-    /// already carry back channels (7.x) ignore this.
-    #[arg(long, value_enum, default_value_t = SurroundPlacementArg::Side)]
-    pub surround_placement: SurroundPlacementArg,
-
     /// Disable automatic draining of buffered data from named pipes at startup
     /// (By default, orender drains FIFOs to minimize latency for real-time streams)
     #[arg(long)]
     pub no_drain_pipe: bool,
 
-    /// Output sample rate in Hz (48000, 96000, 192000, etc.)
-    /// If not specified, uses the stream's native sample rate (48000 Hz).
-    /// Higher rates require upsampling and may improve audio quality.
-    #[arg(long, value_name = "HZ")]
+    /// Output sample rate in Hz: option `output_sample_rate` (unset = the
+    /// stream's).
+    #[arg(skip)]
     pub output_sample_rate: Option<u32>,
 
-    /// Enable adaptive resampling to maintain buffer stability
-    /// Uses a PI controller to dynamically adjust the playback rate
-    /// based on buffer fill level. Disabled by default.
-    /// Works with both ASIO (Windows) and PipeWire (Linux) outputs.
-    #[arg(long, conflicts_with = "disable_adaptive_resampling")]
+    /// Adaptive resampling (PI on the buffer fill): option
+    /// `enable_adaptive_resampling`.
+    #[arg(skip)]
     pub enable_adaptive_resampling: bool,
 
-    /// Override config file 'enable_adaptive_resampling' setting to false.
-    #[arg(long, conflicts_with = "enable_adaptive_resampling")]
-    pub disable_adaptive_resampling: bool,
-
-    /// Recompute adaptive resampling every N audio callbacks.
-    /// Lower values react faster but can make the control loop more nervous.
-    #[arg(long, value_name = "CALLBACKS")]
-    pub adaptive_resampling_update_interval_callbacks: Option<u32>,
-
-    // ── Render backend selection (Partie 1) ──
-    // Override-only: when omitted the value is kept from the config file /
-    // engine default. Consumed via `apply_render_cfg_overrides`.
-    /// Spatial render backend. Defaults to the config value, else VBAP.
-    #[arg(long = "render-backend", value_enum)]
-    pub render_backend: Option<RenderBackendArg>,
-
+    // ── Backend parameters: not registry options (the per-backend param
+    // bag). Override-only: when omitted the value is kept from the config
+    // file / engine default. Consumed via `apply_render_cfg_overrides`.
     /// Barycenter backend: localization sharpness (0.0 = diffuse).
     /// Only meaningful with `--render-backend barycenter`.
     #[arg(long = "barycenter-localize", value_name = "AMOUNT")]
     pub barycenter_localize: Option<f32>,
-
-    /// Hybrid backend: inner backend mixed in at ratio = 1 (cube surface).
-    #[arg(long = "hybrid-external-backend", value_enum)]
-    pub hybrid_external_backend: Option<HybridInnerBackendArg>,
-
-    /// Hybrid backend: inner backend mixed in at ratio = 0 (centre).
-    #[arg(long = "hybrid-internal-backend", value_enum)]
-    pub hybrid_internal_backend: Option<HybridInnerBackendArg>,
-
-    /// Hybrid backend: blend curve smoothing in [0, 1].
-    #[arg(long = "hybrid-curve-smoothing", value_name = "AMOUNT")]
-    pub hybrid_curve_smoothing: Option<f32>,
-
-    /// Hybrid backend: blend distance metric.
-    #[arg(long = "hybrid-metric", value_enum)]
-    pub hybrid_metric: Option<DistanceMetricArg>,
 
     // ── Experimental distance backend params (Partie 1) ──
     /// Experimental distance backend: minimum distance floor.
@@ -549,140 +360,13 @@ pub struct RenderArgs {
     )]
     pub experimental_distance_position_error_span_scale: Option<f32>,
 
-    // ── Distance metrics & size-to-spread (Partie 2) ──
-    /// Distance metric for the distance-model stage.
-    #[arg(long = "distance-model-metric", value_enum)]
-    pub distance_model_metric: Option<DistanceMetricArg>,
-
-    /// Distance metric for the distance-diffuse stage.
-    #[arg(long = "distance-diffuse-metric", value_enum)]
-    pub distance_diffuse_metric: Option<DistanceMetricArg>,
-
-    /// ADM axes negated to build the diffuse mirror image: any combination of
-    /// x, y and z (`xy` — the default half-turn about the vertical axis — `y`
-    /// for a front/back reflection, `xyz` for a point inversion), or `none`.
-    #[arg(long = "distance-diffuse-mirror-axes", value_name = "AXES")]
-    pub distance_diffuse_mirror_axes: Option<String>,
-
     /// Policy reducing an object's (w, d, h) size to a scalar spread.
     #[arg(long = "size-to-spread-mode", value_enum)]
     pub size_to_spread_mode: Option<SizeToSpreadModeArg>,
-
-    // ── Adaptive resampling PI tuning (Partie 3) ──
-    // Override-only; standalone (host-audio) only — mpv owns the audio chain so
-    // these have no effect there. `integral_discharge_ratio` is intentionally
-    // NOT exposed (non-operative on the current controller).
-    /// PI proportional gain in the near band.
-    #[arg(long = "adaptive-resampling-kp-near", value_name = "GAIN")]
-    pub adaptive_resampling_kp_near: Option<f32>,
-
-    /// PI integral gain.
-    #[arg(long = "adaptive-resampling-ki", value_name = "GAIN")]
-    pub adaptive_resampling_ki: Option<f32>,
-
-    /// Maximum playback-rate adjustment (fraction, e.g. 0.10).
-    #[arg(long = "adaptive-resampling-max-adjust", value_name = "FRACTION")]
-    pub adaptive_resampling_max_adjust: Option<f32>,
-
-    /// Enable far-mode (aggressive recovery far from target).
-    #[arg(long = "adaptive-resampling-enable-far-mode", value_name = "BOOL")]
-    pub adaptive_resampling_enable_far_mode: Option<bool>,
-
-    /// Force silence while in far-mode.
-    #[arg(
-        long = "adaptive-resampling-force-silence-in-far-mode",
-        value_name = "BOOL"
-    )]
-    pub adaptive_resampling_force_silence_in_far_mode: Option<bool>,
-
-    /// Hard-recover on the high side while in far-mode.
-    #[arg(
-        long = "adaptive-resampling-hard-recover-high-in-far-mode",
-        value_name = "BOOL"
-    )]
-    pub adaptive_resampling_hard_recover_high_in_far_mode: Option<bool>,
-
-    /// Hard-recover on the low side while in far-mode.
-    #[arg(
-        long = "adaptive-resampling-hard-recover-low-in-far-mode",
-        value_name = "BOOL"
-    )]
-    pub adaptive_resampling_hard_recover_low_in_far_mode: Option<bool>,
-
-    /// Fade-in duration (ms) when returning from far-mode.
-    #[arg(
-        long = "adaptive-resampling-far-mode-return-fade-in-ms",
-        value_name = "MS"
-    )]
-    pub adaptive_resampling_far_mode_return_fade_in_ms: Option<u32>,
-
-    /// High-recover entry margin (ms).
-    #[arg(
-        long = "adaptive-resampling-high-recover-entry-margin-ms",
-        value_name = "MS"
-    )]
-    pub adaptive_resampling_high_recover_entry_margin_ms: Option<u32>,
-
-    /// Low-recover settle-stable duration (ms).
-    #[arg(
-        long = "adaptive-resampling-low-recover-settle-stable-ms",
-        value_name = "MS"
-    )]
-    pub adaptive_resampling_low_recover_settle_stable_ms: Option<f32>,
-
-    /// Low-recover entry margin (ms).
-    #[arg(
-        long = "adaptive-resampling-low-recover-entry-margin-ms",
-        value_name = "MS"
-    )]
-    pub adaptive_resampling_low_recover_entry_margin_ms: Option<f32>,
-
-    /// Low-recover exit margin (ms).
-    #[arg(
-        long = "adaptive-resampling-low-recover-exit-margin-ms",
-        value_name = "MS"
-    )]
-    pub adaptive_resampling_low_recover_exit_margin_ms: Option<f32>,
-
-    /// Low-recover settle margin (ms).
-    #[arg(
-        long = "adaptive-resampling-low-recover-settle-margin-ms",
-        value_name = "MS"
-    )]
-    pub adaptive_resampling_low_recover_settle_margin_ms: Option<f32>,
-
-    /// Low-recover refill delta-alpha.
-    #[arg(
-        long = "adaptive-resampling-low-recover-refill-delta-alpha",
-        value_name = "ALPHA"
-    )]
-    pub adaptive_resampling_low_recover_refill_delta_alpha: Option<f32>,
-
-    /// Control-output smoothing cutoff (Hz).
-    #[arg(
-        long = "adaptive-resampling-control-smoothing-cutoff-hz",
-        value_name = "HZ"
-    )]
-    pub adaptive_resampling_control_smoothing_cutoff_hz: Option<f32>,
-
-    /// Control-output smoothing filter order.
-    #[arg(
-        long = "adaptive-resampling-control-smoothing-order",
-        value_name = "ORDER"
-    )]
-    pub adaptive_resampling_control_smoothing_order: Option<u32>,
-
-    /// Use the pre-bridge clock as the timing reference.
-    #[arg(long = "adaptive-resampling-use-pre-bridge-clock", value_name = "BOOL")]
-    pub adaptive_resampling_use_pre_bridge_clock: Option<bool>,
-
-    /// Use output pacing for the control loop.
-    #[arg(long = "adaptive-resampling-use-output-pacing", value_name = "BOOL")]
-    pub adaptive_resampling_use_output_pacing: Option<bool>,
-
-    /// Disable backpressure on the decode queue.
-    #[arg(long = "adaptive-resampling-disable-backpressure", value_name = "BOOL")]
-    pub adaptive_resampling_disable_backpressure: Option<bool>,
+    // The registered options (the core's live options and this host's audio
+    // output and input) are not declared here: their flags are generated
+    // from the registries (`crate::cli::options`) and folded into the config
+    // before the fields above are resolved from it.
 }
 
 #[derive(Debug, Clone, Args)]
@@ -889,7 +573,7 @@ pub enum OutputBackend {
     /// PipeWire audio output (streaming, Linux only).
     #[cfg(target_os = "linux")]
     Pipewire,
-    /// ASIO audio output (Windows only, requires 'asio' feature).
+    /// ASIO audio output (Windows only; always compiled into Windows builds).
     #[cfg(target_os = "windows")]
     Asio,
     /// CoreAudio audio output (macOS only).
@@ -918,8 +602,6 @@ pub enum OutputFileFormatArg {
 pub enum InputBackend {
     #[cfg(target_os = "linux")]
     Pipewire,
-    #[cfg(target_os = "windows")]
-    Asio,
     #[value(skip)]
     Unsupported,
 }
@@ -972,31 +654,6 @@ impl OutputBackend {
     }
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum EvaluationModeArg {
-    Polar,
-    Cartesian,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum RampModeArg {
-    Off,
-    Frame,
-    Sample,
-    Interp,
-}
-
-impl From<RampModeArg> for RampMode {
-    fn from(value: RampModeArg) -> Self {
-        match value {
-            RampModeArg::Off => RampMode::Off,
-            RampModeArg::Frame => RampMode::Frame,
-            RampModeArg::Sample => RampMode::Sample,
-            RampModeArg::Interp => RampMode::Interp,
-        }
-    }
-}
-
 /// How channel-based (non-object) content is rendered. See
 /// [`ChannelRenderMode`]. The legacy `direct`/`virtual` values are accepted as
 /// aliases of `spatial` (placement is now per-channel in the virtual bed).
@@ -1021,89 +678,6 @@ impl From<ChannelRenderMode> for ChannelRenderModeArg {
         match value {
             ChannelRenderMode::Host => ChannelRenderModeArg::Host,
             ChannelRenderMode::Spatial => ChannelRenderModeArg::Spatial,
-        }
-    }
-}
-
-/// Where the 4.x/5.x surround pair is placed. See [`SurroundPlacement`].
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum SurroundPlacementArg {
-    #[value(alias = "sides")]
-    Side,
-    #[value(alias = "rear")]
-    Back,
-}
-
-impl From<SurroundPlacementArg> for SurroundPlacement {
-    fn from(value: SurroundPlacementArg) -> Self {
-        match value {
-            SurroundPlacementArg::Side => SurroundPlacement::Side,
-            SurroundPlacementArg::Back => SurroundPlacement::Back,
-        }
-    }
-}
-
-impl From<SurroundPlacement> for SurroundPlacementArg {
-    fn from(value: SurroundPlacement) -> Self {
-        match value {
-            SurroundPlacement::Side => SurroundPlacementArg::Side,
-            SurroundPlacement::Back => SurroundPlacementArg::Back,
-        }
-    }
-}
-
-/// Spatial render backend selector. The string forms match the canonical
-/// backend ids in `renderer::render_backend` (`canonical_builtin_backend_id`).
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum RenderBackendArg {
-    Vbap,
-    Barycenter,
-    ExperimentalDistance,
-    Hybrid,
-}
-
-impl RenderBackendArg {
-    /// Canonical config id (`render.render_backend`).
-    pub fn as_config_str(self) -> &'static str {
-        match self {
-            Self::Vbap => "vbap",
-            Self::Barycenter => "barycenter",
-            Self::ExperimentalDistance => "experimental_distance",
-            Self::Hybrid => "hybrid",
-        }
-    }
-}
-
-/// Inner backend accepted by the hybrid backend (no nested hybrid).
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum HybridInnerBackendArg {
-    Vbap,
-    Barycenter,
-    ExperimentalDistance,
-}
-
-impl HybridInnerBackendArg {
-    pub fn as_config_str(self) -> &'static str {
-        match self {
-            Self::Vbap => "vbap",
-            Self::Barycenter => "barycenter",
-            Self::ExperimentalDistance => "experimental_distance",
-        }
-    }
-}
-
-/// Distance metric selector (`spherical` / `chebyshev`).
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum DistanceMetricArg {
-    Spherical,
-    Chebyshev,
-}
-
-impl DistanceMetricArg {
-    pub fn as_config_str(self) -> &'static str {
-        match self {
-            Self::Spherical => "spherical",
-            Self::Chebyshev => "chebyshev",
         }
     }
 }
@@ -1157,8 +731,6 @@ impl std::str::FromStr for InputBackend {
         match s.to_lowercase().as_str() {
             #[cfg(target_os = "linux")]
             "pipewire" => Ok(Self::Pipewire),
-            #[cfg(target_os = "windows")]
-            "asio" => Ok(Self::Asio),
             _ => Err(format!("Unknown input backend: {s}")),
         }
     }

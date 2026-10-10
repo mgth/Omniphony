@@ -1,12 +1,16 @@
 pub mod adaptive_runtime;
+pub mod callback_core;
+pub mod callback_log;
 pub mod callback_state;
 pub mod control;
 pub mod file_sink;
+pub mod host_choice;
 pub mod iir;
 pub mod output_telemetry;
 pub mod pacer;
 pub mod resampler_fifo;
 pub mod ring_buffer_io;
+pub mod sync_output;
 
 pub use control::{
     AppliedAudioOutputState, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig,
@@ -14,7 +18,7 @@ pub use control::{
 pub use file_sink::{CafChannelDesc, FileAudioWriter, FileSinkFormat};
 pub use pacer::PacerHandle;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AdaptiveResamplingConfig {
     pub enable_far_mode: bool,
     pub force_silence_in_far_mode: bool,
@@ -254,6 +258,8 @@ pub fn compute_adaptive_step(
 pub mod cpal_output;
 #[cfg(target_os = "linux")]
 pub mod pipewire;
+#[cfg(target_os = "linux")]
+pub mod pipewire_registry;
 
 #[cfg(target_os = "linux")]
 pub use pipewire::{PipewireBufferConfig, PipewireWriter, list_pipewire_output_devices};
@@ -261,11 +267,15 @@ pub use pipewire::{PipewireBufferConfig, PipewireWriter, list_pipewire_output_de
 #[cfg(target_os = "linux")]
 pub type PipewireAdaptiveResamplingConfig = AdaptiveResamplingConfig;
 
-// On Windows the cpal writer is the ASIO backend; on macOS it is CoreAudio.
-// Both share `cpal_output::CpalWriter`; expose them under platform-specific
-// aliases so the CLI keeps stable, descriptive names.
+// On Windows the cpal writer is the ASIO backend (falling back to WASAPI
+// shared mode when ASIO has no device, see `host_choice`); on macOS it is
+// CoreAudio. Both share `cpal_output::CpalWriter`; expose them under
+// platform-specific aliases so the CLI keeps stable, descriptive names.
 #[cfg(target_os = "windows")]
 pub use cpal_output::{CpalWriter as AsioWriter, list_output_devices as list_asio_devices};
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use cpal_output::list_output_host_devices;
 
 #[cfg(target_os = "macos")]
 pub use cpal_output::{

@@ -16,7 +16,8 @@
 //!
 //! The human-readable companion — direction, argument types and semantics for
 //! every address — lives in `docs/osc-control-contract.md`. Keep the two in
-//! sync when adding or changing an address.
+//! sync when adding or changing an address; a test fails when a catalogued
+//! address is missing from that document's index.
 //!
 //! ## Address families with a dynamic or prefixed tail
 //!
@@ -36,6 +37,37 @@
 //!   resolution,elevation_resolution,distance_res,distance_max}`.
 //!
 //! See `docs/osc-control-contract.md` for the full list of those.
+//!
+//! ## Framing
+//!
+//! What both ends accept besides addresses is here too: how deep a datagram may
+//! nest, and the check a listener runs before decoding one ([`nesting`]); and
+//! the arguments each state address carries ([`shapes`]).
+
+pub mod nesting;
+pub mod shapes;
+pub mod stream;
+
+/// Revision of this contract. The engine advertises it as `contractRevision`
+/// in `/state/capabilities`, and a client compares it with its own, so a
+/// mismatch can be shown instead of discovered through a control that does
+/// nothing.
+///
+/// Bump it with any change to the wire surface: an address added, removed or
+/// renamed, or a change to the arguments an address carries. The address set
+/// is fingerprinted by a test, so adding or removing one without a bump fails;
+/// a change to arguments only is for the author to remember.
+///
+/// An engine that predates this advertises none, which a client reads as 0.
+pub const CONTRACT_REVISION: u32 = 6;
+
+/// The port the engine's stream transport listens on is the OSC/UDP control
+/// port's number, on loopback (TCP and UDP ports are separate spaces). A
+/// connection carries the same packets as the datagrams, each preceded by its
+/// size as a big-endian int32 (OSC 1.0 stream framing); a connected client is
+/// registered with [`REGISTER`] like a datagram client and needs no heartbeat:
+/// the connection is the session. Revision 2 onwards; `docs/control-transport.md`.
+pub const STREAM_FRAME_SIZE_BYTES: usize = 4;
 
 // ── Control: client → engine ────────────────────────────────────────────────
 
@@ -95,6 +127,10 @@ pub const CONTROL_BACKEND_FILE_LIST: &str = "/omniphony/control/backend/file/lis
 pub const CONTROL_BACKEND_FILE_PUT: &str = "/omniphony/control/backend/file/put";
 pub const CONTROL_BACKEND_PARAM: &str = "/omniphony/control/backend/param";
 pub const CONTROL_BINAURAL_AIR_ABSORPTION: &str = "/omniphony/control/binaural/air_absorption";
+pub const CONTROL_BINAURAL_BRIR_HEAD_TRACKING: &str =
+    "/omniphony/control/binaural/brir/head_tracking";
+pub const CONTROL_BINAURAL_BRIR_MAX_LENGTH: &str = "/omniphony/control/binaural/brir/max_length";
+pub const CONTROL_BINAURAL_BRIR_TAIL_FLOOR: &str = "/omniphony/control/binaural/brir/tail_floor";
 pub const CONTROL_BINAURAL_DIFFUSE_FIELD_EQ: &str = "/omniphony/control/binaural/diffuse_field_eq";
 pub const CONTROL_BINAURAL_EAR_GAIN: &str = "/omniphony/control/binaural/ear_gain";
 pub const CONTROL_BINAURAL_EAR_MUTE: &str = "/omniphony/control/binaural/ear_mute";
@@ -127,6 +163,8 @@ pub const CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO: &str =
     "/omniphony/control/binaural/reverb/rt60_low_ratio";
 pub const CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO: &str =
     "/omniphony/control/binaural/reverb/rt60_high_ratio";
+pub const CONTROL_BINAURAL_SPHERE_COORDINATES: &str =
+    "/omniphony/control/binaural/sphere_coordinates";
 pub const CONTROL_BINAURAL_UNIT_SCALE: &str = "/omniphony/control/binaural/unit_scale";
 pub const CONTROL_CONFIG_AUDIO: &str = "/omniphony/control/config/audio";
 pub const CONTROL_CONFIG_AUDIO_APPLY: &str = "/omniphony/control/config/audio/apply";
@@ -217,6 +255,10 @@ pub const CONTROL_CROSSOVER_TYPE: &str = "/omniphony/control/crossover_type";
 /// taps/latency. Persisted to config.
 pub const CONTROL_CROSSOVER_FIR_TRANSITION_RATIO: &str =
     "/omniphony/control/crossover_fir_transition_ratio";
+/// Decode on a thread of its own in the liborender engine (int 0/1), when
+/// its host lets the option decide; the standalone renderer always does.
+/// Persisted to config.
+pub const CONTROL_DECODE_THREAD: &str = "/omniphony/control/decode_thread";
 pub const CONTROL_UNKNOWN: &str = "/omniphony/control/unknown";
 /// Legacy: the `generic` family's entries (see [`CONTROL_PLACEMENT_LAYOUT`]).
 /// Argument is a YAML `SpeakerLayout`; an empty string clears them.
@@ -241,10 +283,25 @@ pub const CONTROL_PLACEMENT_LAYOUT: &str = "/omniphony/control/placement/layout"
 pub const CONTROL_BINAURAL_HRIR_UPDATE_LATTICE: &str =
     "/omniphony/control/binaural/hrir_update_lattice";
 /// Generic setter for any declared live option (`renderer::options`):
-/// args `[key (string), value]`. The per-option addresses listed above
-/// (`synthetic_objects`, `object_generator`, `phantom_extract`,
-/// `surround_placement`, `output_channel_mapping`) are legacy aliases of this.
+/// args `[key (string), value]` — `value` is as many arguments as the
+/// option's kind takes (three numbers for `room_ratio`). The per-option
+/// addresses listed above (`synthetic_objects`, `object_generator`,
+/// `phantom_extract`, `surround_placement`, `output_channel_mapping`, the
+/// `room_ratio*` family, …) are legacy aliases of this.
 pub const CONTROL_OPTION: &str = "/omniphony/control/option";
+/// Grouped setter: args `[key, value, key, value, …]`, each value as many
+/// arguments as its option's kind takes. Every valid pair is applied at once:
+/// one rebuild at most and one notification for the whole message, however
+/// many keys it carries. An unknown key or a truncated value drops the whole
+/// message; an invalid value drops only its pair.
+pub const CONTROL_OPTIONS: &str = "/omniphony/control/options";
+/// Apply a group of declared options: args `[group (string)]`. A `Staged`
+/// group (the standalone renderer's live input) applies every value staged
+/// since its last apply; a `Live` group has nothing waiting and is only
+/// acknowledged. The per-domain apply addresses (`/control/input/apply`,
+/// `/control/config/input/apply`, `/control/config/audio/apply`) are
+/// aliases of this for their group.
+pub const CONTROL_OPTIONS_APPLY: &str = "/omniphony/control/options/apply";
 /// Named config profiles (docs/config-profiles.md). `switch`/`create`/`delete`
 /// take `[name (string)]`; `rename` takes `[old (string), new (string)]`.
 /// Every mutation saves the config and re-broadcasts [`STATE_PROFILES`].
@@ -252,10 +309,6 @@ pub const CONTROL_PROFILE_SWITCH: &str = "/omniphony/control/profile/switch";
 pub const CONTROL_PROFILE_CREATE: &str = "/omniphony/control/profile/create";
 pub const CONTROL_PROFILE_DELETE: &str = "/omniphony/control/profile/delete";
 pub const CONTROL_PROFILE_RENAME: &str = "/omniphony/control/profile/rename";
-/// Overlay display preferences as JSON, republished whenever they change —
-/// including when an mpv keybind flips one through the FFI toggles. The overlay
-/// is a process-global singleton with two writers, so a client must read this
-/// rather than trust its own mirror.
 /// What the object test's clip is, after a [`CONTROL_OBJECT_TEST_CLIP`] request.
 ///
 /// Args: `[json: String]` — `{"name","path","seconds","sourceRate","channels",
@@ -263,6 +316,10 @@ pub const CONTROL_PROFILE_RENAME: &str = "/omniphony/control/profile/rename";
 /// and `{}` when it was cleared.
 pub const STATE_OBJECT_TEST_CLIP: &str = "/omniphony/state/object_test/clip";
 
+/// Overlay display preferences as JSON, republished whenever they change —
+/// including when an mpv keybind flips one through the FFI toggles. The overlay
+/// is a process-global singleton with two writers, so a client must read this
+/// rather than trust its own mirror.
 pub const STATE_OVERLAY: &str = "/omniphony/state/overlay";
 pub const CONTROL_OVERLAY_LABELS: &str = "/omniphony/control/overlay/labels";
 pub const CONTROL_OVERLAY_OBJECTS: &str = "/omniphony/control/overlay/objects";
@@ -273,6 +330,10 @@ pub const CONTROL_RAMP_MODE: &str = "/omniphony/control/ramp_mode";
 pub const CONTROL_REALTIME_MASTER_GAIN: &str = "/omniphony/control/realtime/master_gain";
 pub const CONTROL_REALTIME_SPEAKER_GAIN: &str = "/omniphony/control/realtime/speaker_gain";
 pub const CONTROL_RELOAD_CONFIG: &str = "/omniphony/control/reload_config";
+/// Restart the render pipeline, keeping the unsaved live state (it comes back
+/// unsaved). For a change only a restart applies, such as a new bridge.
+/// Honoured by a restartable (CLI) instance only.
+pub const CONTROL_RESTART: &str = "/omniphony/control/restart";
 /// Start or stop the per-speaker test signal (band-limited pink noise).
 ///
 /// Args: `[speaker_idx: Int, level: Float, isolation: String]`. A negative
@@ -370,7 +431,13 @@ pub const CONTROL_OBJECT_TEST_CLIP: &str = "/omniphony/control/object_test/clip"
 pub const CONTROL_SPEAKER_TEST_IDLE_FEED: &str = "/omniphony/control/speaker_test/idle_feed";
 pub const CONTROL_RENDER_BACKEND: &str = "/omniphony/control/render_backend";
 pub const CONTROL_RENDER_BACKEND_RESTORE: &str = "/omniphony/control/render_backend/restore";
+/// One decoder bridge (a string; empty for auto-discovery): the same as
+/// [`CONTROL_RENDER_BRIDGE_PATHS`] with one path.
 pub const CONTROL_RENDER_BRIDGE_PATH: &str = "/omniphony/control/render/bridge_path";
+/// The decoder bridges to load, in load order: one string argument per path,
+/// none for auto-discovery. Saved as `render.bridge_path(s)`; it takes effect
+/// when the engine restarts or reloads its config.
+pub const CONTROL_RENDER_BRIDGE_PATHS: &str = "/omniphony/control/render/bridge_paths";
 pub const CONTROL_RENDER_EVALUATION_MODE: &str = "/omniphony/control/render_evaluation_mode";
 pub const CONTROL_RENDER_EVALUATION_MODE_FROM_FILE: &str =
     "/omniphony/control/render_evaluation_mode/from_file";
@@ -389,6 +456,11 @@ pub const CONTROL_SPREAD_MAX: &str = "/omniphony/control/spread/max";
 pub const CONTROL_SPREAD_MIN: &str = "/omniphony/control/spread/min";
 pub const CONTROL_SPREAD_SIZE_TO_SPREAD_MODE: &str =
     "/omniphony/control/spread/size_to_spread_mode";
+/// Ask for the live-state snapshot again: args `[reply_port (int)]`, the port
+/// optional as on [`REGISTER`]. Sent by a client whose [`STATE_GENERATION`]
+/// fell behind the engine's. Unlike a re-registration it resends nothing else
+/// (no log backlog, no metering state), and leaves the registration as it is.
+pub const CONTROL_STATE_REFRESH: &str = "/omniphony/control/state/refresh";
 pub const CONTROL_YIELD_PORT: &str = "/omniphony/control/yield_port";
 /// Sent to a standing-by instance (on the dynamic resume port it advertised in
 /// reply to a yield) to ask it to re-acquire the OSC port + audio and resume.
@@ -414,6 +486,30 @@ pub const CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX: &str =
 pub const CONTROL_RENDER_EVALUATION_POLAR_PREFIX: &str =
     "/omniphony/control/render_evaluation/polar/";
 
+// ── Control error codes ─────────────────────────────────────────────────────
+//
+// The `code` argument of [`STATE_CONTROL_ERROR`]: stable strings a client can
+// match on, where the message beside them is only for a person.
+
+/// No handler knows the address: not in this contract, or not in the one the
+/// engine was built with.
+pub const CONTROL_ERROR_UNKNOWN_ADDRESS: &str = "unknown_address";
+/// The handler for the address refused its arguments: a wrong type, a missing
+/// one, a value out of range or not one it accepts.
+pub const CONTROL_ERROR_INVALID_ARGUMENTS: &str = "invalid_arguments";
+/// The address is in the contract, but nothing on this engine applied it: its
+/// handler refused the arguments without saying which, or this host does not
+/// implement it (an audio-output control sent to an engine embedded in mpv).
+pub const CONTROL_ERROR_NOT_APPLIED: &str = "not_applied";
+/// The datagram is not OSC the engine can decode, or nests deeper than
+/// [`nesting::MAX_NESTING`]. Its address is unknown, so the reply's is empty.
+pub const CONTROL_ERROR_UNDECODABLE: &str = "undecodable";
+/// Revision 3: a process-lifecycle control (`quit`, `yield_port`, `resume`)
+/// from another machine. The OSC/UDP socket listens on the network (head
+/// tracking from a phone, a remote Studio), but only a client on this
+/// machine may stop the engine or take its port.
+pub const CONTROL_ERROR_NOT_ALLOWED: &str = "not_allowed";
+
 // ── State: engine → clients ─────────────────────────────────────────────────
 
 pub const STATE_ADAPTIVE_RESAMPLING_BAND: &str = "/omniphony/state/adaptive_resampling/band";
@@ -426,6 +522,14 @@ pub const STATE_CAPABILITIES: &str = "/omniphony/state/capabilities";
 pub const STATE_CLIP: &str = "/omniphony/state/clip";
 pub const STATE_CONFIG_SAVED: &str = "/omniphony/state/config/saved";
 pub const STATE_CONFIG_SAVE_ERROR: &str = "/omniphony/state/config/save_error";
+/// A control the engine did not apply, sent back to its sender only: args
+/// `[address (string), code (string), message (string)]`. `code` is one of the
+/// `CONTROL_ERROR_*` values; `message` is for a person. `address` is empty when
+/// the datagram could not be decoded at all.
+///
+/// Silence still does not mean success: a handler that takes the message and
+/// then finds nothing to change sends nothing either.
+pub const STATE_CONTROL_ERROR: &str = "/omniphony/state/control_error";
 pub const STATE_CROSSOVER_TIME_MS: &str = "/omniphony/state/crossover_time_ms";
 pub const STATE_DEBUG_SPEAKER_GAINTABLE_CHUNK: &str =
     "/omniphony/state/debug/speaker_gaintable/chunk";
@@ -439,6 +543,23 @@ pub const STATE_DECODE_TIME_MS: &str = "/omniphony/state/decode_time_ms";
 pub const STATE_DIAG_SCHEMA: &str = "/omniphony/state/diag_schema";
 pub const STATE_DIAG_VALUES: &str = "/omniphony/state/diag_values";
 pub const STATE_FRAME_DURATION_MS: &str = "/omniphony/state/frame_duration_ms";
+/// Where the control-plane state a client holds stands: args
+/// `[generation (int), full (int), part (int), parts (int)]`.
+///
+/// The engine counts every state publication that is not telemetry (the
+/// snapshot, and the values controls and the engine publish) and sends the
+/// count with the state it versions. With `full = 0` it follows an update, as
+/// part 0 of 1, and a client that holds generation `g` expects `g + 1`: any
+/// other value means one went missing. With `full = 1` it opens each datagram
+/// of a snapshot, with that datagram's index and the snapshot's datagram count:
+/// a client that has every part of it holds that generation whatever it held
+/// before, and one that misses a part does not. The [`HEARTBEAT_ACK`] carries
+/// the current count too, so the last update of a burst is not lost unnoticed
+/// either. A client that falls behind sends [`CONTROL_STATE_REFRESH`].
+///
+/// The count is taken with the state, under one lock in the engine, so a later
+/// count never carries an older state. It wraps; compare for equality only.
+pub const STATE_GENERATION: &str = "/omniphony/state/generation";
 pub const STATE_HEAD_POSE: &str = "/omniphony/state/head_pose";
 pub const STATE_INPUT: &str = "/omniphony/state/input";
 pub const STATE_INPUT_PIPE: &str = "/omniphony/state/input_pipe";
@@ -460,6 +581,12 @@ pub const STATE_OBJECT_TEST_POSITION: &str = "/omniphony/state/object_test/posit
 /// Schema of the declared live options (`renderer::options` registry rows),
 /// as a JSON string. Same pattern as `/state/object_generators` / `/state/phantom`.
 pub const STATE_OPTIONS_SCHEMA: &str = "/omniphony/state/options_schema";
+/// The options a host declares (the standalone renderer's audio output and
+/// live input), as JSON: `{"options": {key: requested value}, "applied":
+/// {key: value in force}, "pending": {group: bool}}`. Sent with every
+/// live-state bundle by a host that declares any; the core options stay in
+/// the `/state/renderer` `options` block.
+pub const STATE_HOST_OPTIONS: &str = "/omniphony/state/host_options";
 pub const STATE_PHANTOM: &str = "/omniphony/state/phantom";
 /// Named config profiles view as JSON: `{"active": "...", "names": ["..."]}`.
 /// Broadcast in the state snapshot and after every profile mutation.
@@ -469,8 +596,26 @@ pub const STATE_OSC_METERING: &str = "/omniphony/state/osc/metering";
 pub const STATE_REALTIME_MASTER_GAIN: &str = "/omniphony/state/realtime/master_gain";
 pub const STATE_REALTIME_SPEAKER_GAIN: &str = "/omniphony/state/realtime/speaker_gain";
 pub const STATE_RENDER_ABI: &str = "/omniphony/state/render/abi";
+/// The `bridge_api` version this engine was built against (`"0.6.0"`): a
+/// decoder bridge loads only if it was built against the same minor.
+pub const STATE_RENDER_BRIDGE_API: &str = "/omniphony/state/render/bridge_api";
 pub const STATE_RENDER_BRIDGE_ERROR: &str = "/omniphony/state/render/bridge_error";
+/// The text [`STATE_RENDER_BRIDGE_ERROR`] contains when no bridge was asked
+/// for and auto-discovery found none: the engine runs without a decoder, which
+/// is normal for a standby renderer (PCM and channel input still work). Any
+/// other non-empty error is a bridge that was asked for or found and failed to
+/// load. A client matches it with `contains`, as a host may prefix its own
+/// context; an engine predating it never sends it, so its errors all read as
+/// failures.
+pub const BRIDGE_ERROR_NONE_FOUND: &str = "no decoder bridge found";
+/// The first decoder bridge asked for (empty for auto-discovery), for
+/// clients that only know one; [`STATE_RENDER_BRIDGES`] has them all.
 pub const STATE_RENDER_BRIDGE_PATH: &str = "/omniphony/state/render/bridge_path";
+/// The decoder bridges, as JSON: `requested`, the paths asked for (empty for
+/// auto-discovery), and `bridges`, each one the engine loaded (`path`,
+/// `families`, the source families it declares) then each one asked for or
+/// found that did not load (`path`, `error`).
+pub const STATE_RENDER_BRIDGES: &str = "/omniphony/state/render/bridges";
 pub const STATE_RENDER_CONFIG_PATH: &str = "/omniphony/state/render/config_path";
 pub const STATE_RENDER_CONFIG_STATUS: &str = "/omniphony/state/render/config_status";
 pub const STATE_RENDERER: &str = "/omniphony/state/renderer";
@@ -514,12 +659,28 @@ pub const STATE_WRITE_TIME_MS: &str = "/omniphony/state/write_time_ms";
 
 pub const BED_CONFIG: &str = "/omniphony/bed/config";
 pub const HEARTBEAT: &str = "/omniphony/heartbeat";
+/// Reply to a registered client's [`HEARTBEAT`]: args `[instance_epoch (int),
+/// state_generation (int)]`. The epoch is random per engine instance, so a
+/// change means another engine answers on the port. The generation is the
+/// current [`STATE_GENERATION`] count; an engine older than contract revision
+/// 1 sends the epoch alone.
 pub const HEARTBEAT_ACK: &str = "/omniphony/heartbeat/ack";
 pub const HEARTBEAT_UNKNOWN: &str = "/omniphony/heartbeat/unknown";
 pub const LOG: &str = "/omniphony/log";
 pub const METER_DRC_GAIN: &str = "/omniphony/meter/drc_gain";
 pub const METER_MASTER: &str = "/omniphony/meter/master";
 pub const REGISTER: &str = "/omniphony/register";
+/// Barrier, revision 2: the engine answers [`SYNC_ACK`] with the same
+/// arguments once every packet the client sent before it has been dispatched.
+/// On a stream connection, whose packets are handled in order, the ack means
+/// each earlier control was applied (the state it changed published before
+/// the ack), refused (its [`STATE_CONTROL_ERROR`] before the ack), or started
+/// asynchronous work, which may end before the ack or after it: a rebuild
+/// reports itself on [`STATE_SPEAKERS_RECOMPUTING`] and
+/// [`STATE_SPEAKERS_RECOMPUTE_ERROR`] as before (see the contract document).
+/// Over UDP the ack only says the engine heard the sync.
+pub const SYNC: &str = "/omniphony/sync";
+pub const SYNC_ACK: &str = "/omniphony/sync/ack";
 pub const SPATIAL_FRAME: &str = "/omniphony/spatial/frame";
 /// Suffix for the per-object lifecycle message: `/omniphony/object/{id}/remove`.
 ///
@@ -530,10 +691,42 @@ pub const SPATIAL_FRAME: &str = "/omniphony/spatial/frame";
 ///
 /// The zeroed triple is still sent for clients that predate this.
 pub const OBJECT_REMOVE_SUFFIX: &str = "remove";
+/// The per-object stream family, `/omniphony/object/{id}/…`. A prefix, matched
+/// with `starts_with`, so not catalogued.
+pub const OBJECT_STREAM_PREFIX: &str = "/omniphony/object/";
+/// The meter family, `/omniphony/meter/…` (objects, speakers, ears, master,
+/// DRC gain). A prefix, like [`OBJECT_STREAM_PREFIX`].
+pub const METER_PREFIX: &str = "/omniphony/meter/";
+/// `h pos`: the stream messages that follow — object frames, timestamps, meter
+/// bundles — describe the block of audio starting at sample `pos`. Sent only
+/// while the engine also publishes [`PLAYOUT_HEARD`], and only ahead of the
+/// first such message of a new block, so it costs nothing when nobody waits.
+pub const PLAYOUT_BLOCK: &str = "/omniphony/playout/block";
+/// `h pos i rate`: the listener is hearing sample `pos` of the same timeline as
+/// [`PLAYOUT_BLOCK`], which advances by `rate` per second while it plays. With
+/// both, a client can show each block when it is heard instead of when it was
+/// rendered, which is up to the whole output buffer (seconds, behind a host
+/// such as Kodi) earlier.
+pub const PLAYOUT_HEARD: &str = "/omniphony/playout/heard";
 pub const TIMESTAMP: &str = "/omniphony/timestamp";
 pub const YIELD_RESUME_PORT: &str = "/omniphony/yield/resume_port";
 
 // ── Address catalogues (handy for clients / tests) ──────────────────────────
+
+/// Whether `address` is a control this contract defines: catalogued (the test
+/// sentinel [`CONTROL_UNKNOWN`] aside), or under one of the families matched by
+/// prefix. A linear search, for the error path.
+pub fn is_known_control(address: &str) -> bool {
+    const FAMILIES: &[&str] = &[
+        CONTROL_OBJECT_PREFIX,
+        CONTROL_DISTANCE_DIFFUSE_PREFIX,
+        CONTROL_HYBRID_PREFIX,
+        CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX,
+        CONTROL_RENDER_EVALUATION_POLAR_PREFIX,
+    ];
+    (address != CONTROL_UNKNOWN && ALL_CONTROL.contains(&address))
+        || FAMILIES.iter().any(|family| address.starts_with(family))
+}
 
 pub const ALL_CONTROL: &[&str] = &[
     CONTROL_ADAPTIVE_RESAMPLING,
@@ -569,6 +762,8 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_OBJECT_GENERATOR,
     CONTROL_OBJECT_GENERATOR_PARAM,
     CONTROL_OPTION,
+    CONTROL_OPTIONS,
+    CONTROL_OPTIONS_APPLY,
     CONTROL_PROFILE_SWITCH,
     CONTROL_PROFILE_CREATE,
     CONTROL_PROFILE_DELETE,
@@ -579,6 +774,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_OUTPUT_CHANNEL_MAPPING,
     CONTROL_CROSSOVER_TYPE,
     CONTROL_CROSSOVER_FIR_TRANSITION_RATIO,
+    CONTROL_DECODE_THREAD,
     CONTROL_VIRTUAL_BED,
     CONTROL_PLACEMENT_MODE,
     CONTROL_PLACEMENT_LAYOUT,
@@ -632,11 +828,13 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_REALTIME_MASTER_GAIN,
     CONTROL_REALTIME_SPEAKER_GAIN,
     CONTROL_RELOAD_CONFIG,
+    CONTROL_RESTART,
     CONTROL_SPEAKER_TEST,
     CONTROL_SPEAKER_TEST_IDLE_FEED,
     CONTROL_RENDER_BACKEND,
     CONTROL_RENDER_BACKEND_RESTORE,
     CONTROL_RENDER_BRIDGE_PATH,
+    CONTROL_RENDER_BRIDGE_PATHS,
     CONTROL_OBJECT_TEST,
     CONTROL_OBJECT_TEST_CLIP,
     CONTROL_OBJECT_TEST_ROTATION,
@@ -656,8 +854,12 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_SPREAD_MAX,
     CONTROL_SPREAD_MIN,
     CONTROL_SPREAD_SIZE_TO_SPREAD_MODE,
+    CONTROL_STATE_REFRESH,
     CONTROL_YIELD_PORT,
     CONTROL_BINAURAL_AIR_ABSORPTION,
+    CONTROL_BINAURAL_BRIR_HEAD_TRACKING,
+    CONTROL_BINAURAL_BRIR_MAX_LENGTH,
+    CONTROL_BINAURAL_BRIR_TAIL_FLOOR,
     CONTROL_BINAURAL_DIFFUSE_FIELD_EQ,
     CONTROL_BINAURAL_EAR_GAIN,
     CONTROL_BINAURAL_EAR_MUTE,
@@ -680,6 +882,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO,
     CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO,
     CONTROL_BINAURAL_REVERB_SIZE,
+    CONTROL_BINAURAL_SPHERE_COORDINATES,
     CONTROL_BINAURAL_UNIT_SCALE,
     CONTROL_HEAD_ORIENTATION,
     CONTROL_HEAD_QUAT,
@@ -704,6 +907,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_BACKEND_FILE_LIST,
     STATE_CAPABILITIES,
     STATE_CLIP,
+    STATE_CONTROL_ERROR,
     STATE_OBJECT_TEST_CLIP,
     STATE_OVERLAY,
     STATE_CONFIG_SAVED,
@@ -717,6 +921,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_DIAG_SCHEMA,
     STATE_DIAG_VALUES,
     STATE_FRAME_DURATION_MS,
+    STATE_GENERATION,
     STATE_INPUT,
     STATE_INPUT_PIPE,
     STATE_LATENCY,
@@ -732,14 +937,17 @@ pub const ALL_STATE: &[&str] = &[
     STATE_LOUDNESS,
     STATE_MONITORING,
     STATE_OPTIONS_SCHEMA,
+    STATE_HOST_OPTIONS,
     STATE_PROFILES,
     STATE_OSC_DIAG,
     STATE_OSC_METERING,
     STATE_REALTIME_MASTER_GAIN,
     STATE_REALTIME_SPEAKER_GAIN,
     STATE_RENDER_ABI,
+    STATE_RENDER_BRIDGE_API,
     STATE_RENDER_BRIDGE_ERROR,
     STATE_RENDER_BRIDGE_PATH,
+    STATE_RENDER_BRIDGES,
     STATE_RENDER_CONFIG_PATH,
     STATE_RENDER_CONFIG_STATUS,
     STATE_RENDERER,
@@ -785,8 +993,12 @@ pub const ALL_SESSION: &[&str] = &[
     LOG,
     METER_DRC_GAIN,
     METER_MASTER,
+    PLAYOUT_BLOCK,
+    PLAYOUT_HEARD,
     REGISTER,
     SPATIAL_FRAME,
+    SYNC,
+    SYNC_ACK,
     TIMESTAMP,
     YIELD_RESUME_PORT,
 ];
@@ -862,6 +1074,7 @@ mod tests {
         const SOURCES: &[&str] = &[
             "../omniphony-renderer/runtime_control/src/osc.rs",
             "../omniphony-renderer/runtime_control/src/command.rs",
+            "../omniphony-renderer/runtime_control/src/live_control.rs",
             "../omniphony-renderer/host_audio/src/lib.rs",
             "../omniphony-renderer/orender_engine/src/osc.rs",
             "../omniphony-renderer/orender_engine/src/osc/dispatch.rs",
@@ -871,6 +1084,11 @@ mod tests {
             "../omniphony-renderer/orender_engine/src/osc/state_emit.rs",
             "../omniphony-renderer/orender_engine/src/osc/metadata_emit.rs",
             "../omniphony-renderer/orender_engine/src/osc/profiles.rs",
+            // The core's handlers and snapshot producer, and the options
+            // registry's legacy aliases: whole directories, so a module added
+            // there is covered without anyone remembering to list it.
+            "../omniphony-renderer/runtime_control/src/",
+            "../omniphony-renderer/renderer/src/",
             // The client's send path. A directory, so a command module added
             // tomorrow is covered without anyone remembering to list it.
             "../omniphony-studio-egui/core/src/host/commands/",
@@ -896,34 +1114,40 @@ mod tests {
             out
         }
 
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("crate root");
+        let root = root.as_path();
+        // A file can be reached through its own entry and its directory's:
+        // scan each once.
+        let files: std::collections::BTreeSet<std::path::PathBuf> = SOURCES
+            .iter()
+            .flat_map(|rel| sources(&root.join(rel)))
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .collect();
         let mut offenders = Vec::new();
-        for rel in SOURCES {
-            for path in sources(&root.join(rel)) {
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .into_owned();
-                let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                    panic!("guard is stale: cannot read {}: {e}", path.display())
-                });
-                for (n, line) in src.lines().enumerate() {
-                    if line.trim_start().starts_with("//") {
-                        continue;
+        for path in files {
+            // Shown relative to the repository root.
+            let rel = path
+                .strip_prefix(root.parent().unwrap_or(root))
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("guard is stale: cannot read {}: {e}", path.display()));
+            for (n, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let mut rest = line;
+                while let Some(i) = rest.find("\"/omniphony/") {
+                    let after = &rest[i + 1..];
+                    let Some(end) = after.find('"') else { break };
+                    let addr = &after[..end];
+                    // A prefix is matched with `starts_with`; a template is
+                    // filled in by `format!`. Neither is a whole address.
+                    if !addr.ends_with('/') && !addr.contains('{') {
+                        offenders.push(format!("{}:{}: {addr}", rel, n + 1));
                     }
-                    let mut rest = line;
-                    while let Some(i) = rest.find("\"/omniphony/") {
-                        let after = &rest[i + 1..];
-                        let Some(end) = after.find('"') else { break };
-                        let addr = &after[..end];
-                        // A prefix is matched with `starts_with`; a template is
-                        // filled in by `format!`. Neither is a whole address.
-                        if !addr.ends_with('/') && !addr.contains('{') {
-                            offenders.push(format!("{}:{}: {addr}", rel, n + 1));
-                        }
-                        rest = &after[end..];
-                    }
+                    rest = &after[end..];
                 }
             }
         }
@@ -933,6 +1157,77 @@ mod tests {
              (add a constant here and use it):\n  {}",
             offenders.join("\n  ")
         );
+    }
+
+    /// `docs/osc-control-contract.md` indexes every catalogued address, so an
+    /// address added here without documentation fails instead of drifting.
+    #[test]
+    fn every_catalogued_address_is_indexed_in_the_contract_doc() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../docs/osc-control-contract.md"
+        );
+        let doc = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("guard is stale: cannot read {path}: {e}"));
+        let missing: Vec<&str> = ALL_CONTROL
+            .iter()
+            .chain(ALL_STATE)
+            .chain(ALL_SESSION)
+            .copied()
+            .filter(|a| !doc.contains(&format!("`{a}`")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "addresses missing from the docs/osc-control-contract.md index:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+
+    /// The address set [`CONTRACT_REVISION`] was last bumped for, as
+    /// `(revision, fingerprint)`. Change both together, and only together with
+    /// a bump: a new fingerprint under the old revision tells clients nothing
+    /// changed when it did.
+    const PINNED_ADDRESS_SET: (u32, u64) = (6, 0xeacf_2e42_91fa_6c74);
+
+    /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
+    /// and not the order the lists happen to be written in.
+    fn address_set_fingerprint() -> u64 {
+        let mut addresses: Vec<&str> = ALL_CONTROL
+            .iter()
+            .chain(ALL_STATE)
+            .chain(ALL_SESSION)
+            .copied()
+            .collect();
+        addresses.sort_unstable();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for address in addresses {
+            for byte in address.bytes().chain(std::iter::once(b'\n')) {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    #[test]
+    fn the_contract_revision_moves_with_the_address_set() {
+        let fingerprint = address_set_fingerprint();
+        assert!(
+            PINNED_ADDRESS_SET == (CONTRACT_REVISION, fingerprint),
+            "the catalogued address set or CONTRACT_REVISION changed: bump \
+             CONTRACT_REVISION for any change to the wire surface, then pin \
+             PINNED_ADDRESS_SET = ({}, {fingerprint:#018x})",
+            CONTRACT_REVISION.max(PINNED_ADDRESS_SET.0 + 1),
+        );
+    }
+
+    #[test]
+    fn known_controls_are_the_catalogue_and_the_families() {
+        assert!(is_known_control(CONTROL_GAIN));
+        assert!(is_known_control("/omniphony/control/object/3/mute"));
+        assert!(is_known_control("/omniphony/control/hybrid/metric"));
+        assert!(!is_known_control(CONTROL_UNKNOWN));
+        assert!(!is_known_control("/omniphony/control/gainn"));
     }
 
     #[test]

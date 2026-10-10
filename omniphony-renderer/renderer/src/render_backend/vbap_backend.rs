@@ -2,10 +2,10 @@ use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
 use super::{
-    BackendCapabilities, GainModel, RenderRequest, RenderResponse, SizeToSpreadMode,
+    BackendCapabilities, GainModel, GainScratch, RenderRequest, SizeToSpreadMode, foreign_scratch,
     reduce_size_to_spread,
 };
-use crate::spatial_vbap::{VbapPanner, adm_to_spherical};
+use crate::spatial_vbap::{VbapPanner, VbapScratch, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 
 /// VBAP spread tuning, baked into the backend at build time (read from the
@@ -52,27 +52,25 @@ impl VbapBackend {
         self.panner.num_speakers()
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let [scaled_x, scaled_y, scaled_z] = room_scaled_position(
-            req.adm_position.map(|v| v as f32),
-            req.room_ratio,
-            req.room_ratio_rear,
-            req.room_ratio_lower,
-            req.room_ratio_center_blend,
-        );
+    /// The panner, for a model built on this one (the volumetric backend
+    /// reads its triangulation).
+    pub(crate) fn panner(&self) -> &VbapPanner {
+        &self.panner
+    }
 
+    /// The spread the request's object pans with, at its room-scaled
+    /// position `scaled`: the per-event size through the baked policy, or
+    /// the distance ramp.
+    pub(crate) fn effective_spread(&self, req: &RenderRequest, scaled: [f32; 3]) -> f32 {
         // Per-event 3-D size → scalar policy. `[0; 3]` yields 0, preserving the
         // legacy behaviour for streams that don't carry size metadata.
         // `event_size` is the only per-request spread input; the policy and the
         // output range are baked tuning (see `VbapSpreadParams`).
-        let intrinsic = reduce_size_to_spread(
-            req.event_size,
-            [scaled_x, scaled_y, scaled_z],
-            self.spread.size_to_spread_mode,
-        );
+        let intrinsic =
+            reduce_size_to_spread(req.event_size, scaled, self.spread.size_to_spread_mode);
 
-        let effective_spread = if self.spread.spread_from_distance {
-            let (_, _, dist) = adm_to_spherical(scaled_x, scaled_y, scaled_z);
+        if self.spread.spread_from_distance {
+            let (_, _, dist) = adm_to_spherical(scaled[0], scaled[1], scaled[2]);
             let t = (1.0 - dist / self.spread.spread_distance_range)
                 .clamp(0.0, 1.0)
                 .powf(self.spread.spread_distance_curve);
@@ -86,15 +84,49 @@ impl VbapBackend {
             // compatibility), while `intrinsic = 1.0` reaches `spread_max`.
             (self.spread.spread_min + intrinsic * (self.spread.spread_max - self.spread.spread_min))
                 .clamp(0.0, 1.0)
+        }
+    }
+
+    /// The working memory of one caller: the panner's, sized for the layout
+    /// (virtual speakers included), so that panning allocates nothing.
+    pub fn new_scratch(&self) -> GainScratch {
+        GainScratch::new(self.panner.new_scratch())
+    }
+
+    pub fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        let Some(scratch) = scratch.state::<VbapScratch>() else {
+            return foreign_scratch(out);
         };
+        self.compute_gains_on(req, scratch, out)
+    }
+
+    /// [`Self::compute_gains`] on the panner's own scratch, for a model built
+    /// on this one that keeps it inside its own.
+    pub(crate) fn compute_gains_on(
+        &self,
+        req: &RenderRequest,
+        scratch: &mut VbapScratch,
+        out: &mut [f32],
+    ) {
+        let scaled = room_scaled_position(
+            req.adm_position.map(|v| v as f32),
+            req.room_ratio,
+            req.room_ratio_rear,
+            req.room_ratio_lower,
+            req.room_ratio_center_blend,
+        );
+        let effective_spread = self.effective_spread(req, scaled);
 
         // Distance diffuse blending is applied by the shared DistanceDiffuseModel
         // decorator; VBAP returns pure panning gains.
-        let gains = self
-            .panner
-            .get_gains_cartesian(scaled_x, scaled_y, scaled_z, effective_spread);
-
-        RenderResponse { gains }
+        self.panner.gains_cartesian_into(
+            scaled[0],
+            scaled[1],
+            scaled[2],
+            effective_spread,
+            scratch,
+            out,
+        );
     }
 
     pub fn save_to_file(
@@ -140,8 +172,12 @@ impl GainModel for VbapBackend {
         VbapBackend::speaker_count(self)
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        VbapBackend::compute_gains(self, req)
+    fn new_scratch(&self) -> GainScratch {
+        VbapBackend::new_scratch(self)
+    }
+
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        VbapBackend::compute_gains(self, req, scratch, out)
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {

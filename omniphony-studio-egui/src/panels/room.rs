@@ -10,6 +10,7 @@ use crate::app::StudioSpike;
 use crate::host::commands::speakers;
 use crate::i18n::t;
 use crate::model::app_state::RoomRatio;
+use crate::model::binaural::RenderPath;
 use crate::ui::section::Section;
 use crate::ui::{help, theme, widgets};
 
@@ -40,6 +41,22 @@ impl RoomDimensions {
         }
     }
 
+    /// The dimensions of a measured room from its box (`[min, max]` corners
+    /// in metres, renderer frame): the listener need not be centred across
+    /// it, so the width is the box's own, not twice the ratios' scale —
+    /// which is the farther side wall and is shown apart as the m/u.
+    pub fn from_box(box_m: [[f64; 3]; 2], center_blend: f64) -> Self {
+        let [lo, hi] = box_m;
+        Self {
+            width: (hi[0] - lo[0]).max(0.0),
+            front: hi[1].max(0.0),
+            rear: (-lo[1]).max(0.0),
+            height: hi[2].max(0.0),
+            lower: (-lo[2]).max(0.0),
+            center_blend,
+        }
+    }
+
     /// Metres per scene unit: the half-width.
     pub fn meters_per_unit(&self) -> f64 {
         (self.width / 2.0).max(0.01)
@@ -56,17 +73,25 @@ impl RoomDimensions {
             lower: (self.lower.max(0.01) / mpu).max(0.01),
             center_blend: self.center_blend.clamp(0.0, 1.0),
             scale_m: mpu,
+            sphere: false,
         }
     }
 }
 
 impl StudioSpike {
     pub(crate) fn room_geometry_section(&mut self, ui: &mut Ui) {
-        let (ratio, frozen) = {
+        let (ratio, frozen, measured) = {
             let live = self.host.read();
+            // The measured room a BRIR set's loudspeakers stand in, while
+            // the headphones render on them: the room in force, not the
+            // user's (#803).
+            let measured = (live.app.render_path() == RenderPath::MeasuredRoom)
+                .then(|| live.app.brir_room())
+                .flatten();
             (
                 live.app.room_ratio.clone(),
                 live.app.render_backend_state.frozen_room_ratio,
+                measured,
             )
         };
         let current = RoomDimensions::from_ratio(&ratio);
@@ -75,10 +100,22 @@ impl StudioSpike {
         if self.room_edit != Some(current) && !self.room_editing {
             self.room_edit = Some(current);
         }
-        let mut edit = self.room_edit.unwrap_or(current);
+        // A measured room shows its own dimensions, read-only, as a backend
+        // that freezes the room does; the user's room keeps its edit and
+        // comes back with it. Its dimensions are the published box's (the
+        // listener may stand off-centre) and its scale the ratios' own.
+        let frozen = frozen || measured.is_some();
+        let mut edit = match &measured {
+            Some(room) => RoomDimensions::from_box(room.box_m, room.ratio.center_blend),
+            None => self.room_edit.unwrap_or(current),
+        };
+        let meters_per_unit = match &measured {
+            Some(room) => room.ratio.scale_m.max(0.01),
+            None => edit.meters_per_unit(),
+        };
         let summary = format!(
             "m/u {:.2} • X {:.2}m • Y {:.2}m • Z {:.2}m",
-            edit.meters_per_unit(),
+            meters_per_unit,
             edit.width,
             edit.front + edit.rear,
             edit.height + edit.lower
@@ -90,6 +127,16 @@ impl StudioSpike {
             .info("room")
             .summary(summary)
             .show(ui, |ui| {
+                if let Some(room) = &measured {
+                    widgets::note(
+                        ui,
+                        t(if room.estimated {
+                            "room.measuredEstimated"
+                        } else {
+                            "room.measuredFile"
+                        }),
+                    );
+                }
                 ui.add_enabled_ui(!frozen, |ui| {
                     let mut step = Step::default();
                     // `#roomGeometryForm`: three columns, one per axis — the
@@ -110,7 +157,7 @@ impl StudioSpike {
                             egui::Layout::right_to_left(egui::Align::Min),
                             |ui| {
                                 ui.label(
-                                    RichText::new(format!("{:.2}", edit.meters_per_unit()))
+                                    RichText::new(format!("{meters_per_unit:.2}"))
                                         .size(11.0)
                                         .color(theme::TEXT),
                                 );
@@ -160,6 +207,11 @@ impl StudioSpike {
                         step |= center_blend_row(ui, &mut edit.center_blend);
                     }
 
+                    if measured.is_some() {
+                        // Nothing to keep or send: the fields are disabled
+                        // and show the set's room, not the user's.
+                        return;
+                    }
                     self.room_edit = Some(edit);
                     if step.commit {
                         self.apply_room_geometry(edit);
@@ -302,6 +354,37 @@ fn center_blend_row(ui: &mut Ui, blend: &mut f64) -> Step {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A measured room's dimensions come from its box: a listener 2 m from
+    /// one side wall and 3 m from the other stands in a 5 m wide room, not
+    /// the 6 m that twice the ratios' scale (the farther wall) would say.
+    #[test]
+    fn a_measured_rooms_dimensions_are_its_box() {
+        let dims = RoomDimensions::from_box([[-2.0, -1.0, -1.2], [3.0, 4.5, 1.8]], 0.25);
+        assert_eq!(
+            dims,
+            RoomDimensions {
+                width: 5.0,
+                front: 4.5,
+                rear: 1.0,
+                height: 1.8,
+                lower: 1.2,
+                center_blend: 0.25,
+            }
+        );
+        // What the ratios reconstruct, off-centre: the farther wall twice.
+        let ratio = RoomRatio {
+            width: 1.0,
+            length: 1.5,
+            height: 0.6,
+            rear: 1.0 / 3.0,
+            lower: 0.4,
+            center_blend: 0.25,
+            scale_m: 3.0,
+            sphere: false,
+        };
+        assert_eq!(RoomDimensions::from_ratio(&ratio).width, 6.0);
+    }
 
     /// The renderer keeps the blend as an `f32` and echoes it back, so the
     /// `59 %` the slider sent returns as `58.999996 %`. A stepped slider that

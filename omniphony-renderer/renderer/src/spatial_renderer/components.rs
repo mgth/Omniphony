@@ -3,14 +3,14 @@
 //! `pub(super)` (or `pub` for the renderer's public API types) so the
 //! `SpatialRenderer` impl in the parent module can use them.
 
-use crate::crossover::{CrossoverBank, CrossoverStates, FreqBand};
+use crate::crossover::FreqBand;
 use crate::live_params::{RenderTopology, RendererControl};
 use crate::ramp_strategy::ChannelRampState;
 use crate::render_backend::{
-    CartesianEvaluationConfig, EvaluationBuildConfig, PolarEvaluationConfig, PreparedRenderEngine,
-    RenderRequest,
+    BandGains, CartesianEvaluationConfig, EvaluationBuildConfig, GainScratch,
+    PolarEvaluationConfig, PreparedRenderEngine, RenderRequest,
 };
-use crate::spatial_vbap::{Gains, VbapTableMode};
+use crate::spatial_vbap::VbapTableMode;
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -29,15 +29,21 @@ pub struct RenderedFrame {
     /// `n_frames * 12` floats out of a buffer holding a sixth of that — heap
     /// read past the end, played as PCM.
     pub n_channels: usize,
-    /// VBAP gains at the final sample for each rendered object channel.
-    /// `(channel_idx, gains)` — `gains[speaker_idx]` is the gain applied to that speaker.
-    /// Ordered by `channel_idx`. Empty if no objects were spatialized this frame.
-    pub object_gains: Vec<(usize, Gains)>,
+    /// VBAP gains at the final sample for each rendered channel: summed over
+    /// the bands for an object, one-hot on its speaker for a direct (bed)
+    /// channel. `(channel_idx, gains)` — `gains[speaker_idx]` is the gain
+    /// applied to that speaker. Ordered by `channel_idx`. Only filled on a
+    /// metered frame (`measure_breakdown`), empty otherwise.
+    ///
+    /// This list and the two below are lent by the renderer: hand the frame
+    /// back with [`SpatialRenderer::recycle_frame`](super::SpatialRenderer::recycle_frame)
+    /// and the next metered frame refills them instead of allocating.
+    pub object_gains: Vec<(usize, Vec<f32>)>,
     /// Per-band VBAP gains for crossover objects.
-    /// `(channel_idx, [band0_gains, band1_gains, ...])` — each `Gains` is full-size
-    /// (`num_speakers`), indexed by global speaker index.
+    /// `(channel_idx, band gains)` — one full-size set per band
+    /// (`num_speakers` gains, indexed by global speaker index).
     /// Empty for non-crossover objects or when no crossover is active.
-    pub object_band_gains: Vec<(usize, Vec<Gains>)>,
+    pub object_band_gains: Vec<(usize, BandGains)>,
     /// Per-band sum of squared band samples over this frame for crossover
     /// objects: `(channel_idx, [band0_sum_sq, ...])`, band order matching
     /// [`Self::object_band_gains`]. Measured post object-gain — the energy the
@@ -127,6 +133,12 @@ pub(super) fn evaluation_build_config(
     }
 }
 
+/// Channels an event may address. Far above any stream format (the largest
+/// carry 128); it bounds the per-channel state an event from a broken or
+/// hostile bridge can make the render thread allocate — an index of a billion
+/// would otherwise grow it to hundreds of gigabytes.
+pub const MAX_EVENT_CHANNELS: usize = 1024;
+
 /// Event/channel gain floor: at or below this the channel is −inf dB (silent).
 ///
 /// Inherited from the decoder side's `i8` convention where −128 is the mute
@@ -140,7 +152,7 @@ pub fn gain_db_to_linear(gain_db: f32) -> f32 {
     if gain_db <= GAIN_DB_NEG_INF {
         0.0
     } else {
-        10.0_f32.powf(gain_db / 20.0)
+        crate::dsp::db::db_to_linear(gain_db)
     }
 }
 
@@ -203,7 +215,7 @@ pub(super) struct ChannelState {
     /// `RampMode::Interp` only: this channel's destination band gains from the
     /// previous block, reused as the start of the next block's interpolation.
     /// Empty until the first block for this channel.
-    pub(super) interp_prev_gains: Vec<Gains>,
+    pub(super) interp_prev_gains: BandGains,
 }
 
 impl ChannelState {
@@ -240,22 +252,36 @@ impl Default for ChannelState {
             gain_db: GAIN_DB_NEG_INF, // -inf dB (muted)
             slewed_gain: 0.0,
             ramp: ChannelRampState::default(),
-            interp_prev_gains: Vec::new(),
+            interp_prev_gains: BandGains::new(),
         }
     }
+}
+
+/// What the speaker stage holds to read gains from one [`BandRenderer`]: the
+/// scratch of its engine, and room for the band's own gains before they are
+/// scattered to the layout's speakers. Made with the band, off the render
+/// thread ([`BandRenderer::new_scratch`]).
+pub(super) struct BandScratch {
+    engine: GainScratch,
+    /// One gain per speaker of the band; empty when the band covers the
+    /// layout in order, whose gains are written in place.
+    local: Vec<f32>,
 }
 
 /// VBAP engine for one frequency band.
 ///
 /// Built with the same parameters as the main renderer (`table_mode`, `allow_negative_z`,
-/// `position_interpolation`).  `compute_gains` always returns full-size `Gains`
+/// `position_interpolation`).  `compute_gains` always writes full-size gains
 /// (`num_speakers` entries) with zeros for speakers outside this band, enabling
 /// uniform SIMD-friendly accumulation in the render loop.
+/// Cloning is cheap: the engine is shared, so a clone is a handle the band
+/// worker keeps to reuse the gain model.
+#[derive(Clone)]
 pub(super) struct BandRenderer {
     /// Global speaker indices for the speakers in this band.
     pub(super) speaker_indices: Vec<usize>,
-    /// Full speaker count — size of the returned `Gains`.
-    num_speakers: usize,
+    /// Full speaker count — the number of gains written.
+    pub(super) num_speakers: usize,
     /// Band-restricted render topology (its `backend` is the prepared engine).
     /// Stored (rather than just the engine) so a geometry-unchanged refresh can
     /// reuse its gain model via `build_topology_reusing`. Always `Some` for a band
@@ -271,9 +297,16 @@ pub(super) struct BandRenderer {
 }
 
 impl BandRenderer {
+    /// The engine for `band` of `layout`. `geometry_generation` is the one of
+    /// the published topology `layout` comes from: the band's gain model is
+    /// recorded as built for that geometry, not for whatever generation the
+    /// control has reached by the time this runs. `room` is that topology's
+    /// too: the band's speakers are placed in the room its objects pan in.
     pub(super) fn from_band(
         band: &FreqBand,
         layout: &crate::speaker_layout::SpeakerLayout,
+        room: crate::live_params::RoomRatios,
+        geometry_generation: u64,
         num_speakers: usize,
         control: &Arc<RendererControl>,
         prev: Option<&BandRenderer>,
@@ -317,16 +350,22 @@ impl BandRenderer {
                     .map(|&idx| layout.speakers[idx].clone())
                     .collect(),
             };
-            let plan = control
-                .prepare_topology_rebuild_for_layout(band_layout)
+            let mut plan = control
+                .prepare_topology_rebuild_for_layout(band_layout, room)
                 .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology rebuild"))?;
+            // The plan carries the control's generation as of now, which an
+            // edit made since `layout` was published has already moved on:
+            // a model of this layout recorded under it would be reused, at
+            // the same generation, for the layout of that edit. Bands are
+            // built on the stage's worker, so "since" can be a whole build.
+            plan.geometry_generation = geometry_generation;
             // Reuse the previous band's geometry when it covers the same speakers
             // and the geometry generation is unchanged: `build_topology_reusing`
             // then re-wraps the model (no re-triangulation).
             let prev_topology = prev
                 .filter(|p| p.speaker_indices == speaker_indices)
                 .and_then(|p| p.topology.as_deref());
-            Some(Arc::new(plan.build_topology_reusing(prev_topology)?))
+            Some(Arc::new(plan.build_band_topology_reusing(prev_topology)?))
         } else {
             None
         };
@@ -347,52 +386,54 @@ impl BandRenderer {
         self.topology.as_ref().map(|t| &t.backend)
     }
 
+    /// The working memory the stage needs to read this band's gains, sized
+    /// for it. Allocates: called where the band is built, never in a block.
+    pub(super) fn new_scratch(&self) -> BandScratch {
+        BandScratch {
+            engine: match self.engine() {
+                Some(engine) => engine.new_scratch(),
+                None => GainScratch::none(),
+            },
+            local: if self.is_identity {
+                Vec::new()
+            } else {
+                vec![0.0; self.speaker_indices.len()]
+            },
+        }
+    }
+
     /// Compute VBAP gains for this band at `position`.
     ///
-    /// Returns full-size `Gains` (length = `num_speakers`): band speakers get their
-    /// VBAP gain, all other speakers get 0.
+    /// Writes full-size gains into `out` (length = `num_speakers`): band
+    /// speakers get their VBAP gain, all other speakers get 0. `scratch` is
+    /// one this band made.
     pub(super) fn compute_gains(
         &self,
         render_params: crate::ramp_strategy::RampRenderParams,
         position: [f64; 3],
         event_size: [f32; 3],
-    ) -> crate::spatial_vbap::Gains {
-        let req = render_params.render_request_for_event(position, event_size);
-        let n = self.speaker_indices.len();
-        let band_gains = match self.engine() {
-            Some(engine) => engine.compute_gains(&req).gains,
-            // Only an empty (coverage-gap) band has no engine; it renders silence.
-            // Bands with 1–2 (or degenerate ≥3) speakers carry a
-            // `DegenerateVbapBackend` engine.
-            None => crate::spatial_vbap::Gains::zeroed(n),
+        scratch: &mut BandScratch,
+        out: &mut [f32],
+    ) {
+        // Only an empty (coverage-gap) band has no engine; it renders silence.
+        // Bands with 1–2 (or degenerate ≥3) speakers carry a
+        // `DegenerateVbapBackend` engine.
+        let Some(engine) = self.engine() else {
+            return out.fill(0.0);
         };
+        let req = render_params.render_request_for_event(position, event_size);
         // No crossover: band gains are already full-size and in speaker order, so
-        // return them directly instead of zeroing + scattering into a fresh Gains.
+        // the engine writes them in place instead of through a scatter.
         if self.is_identity {
-            return band_gains;
+            return engine.compute_gains(&req, &mut scratch.engine, out);
         }
-        // Scatter band-local gains into a full-size vector.
-        let mut full = crate::spatial_vbap::Gains::zeroed(self.num_speakers);
-        for (gi, &g) in band_gains.iter().enumerate() {
-            full.set(self.speaker_indices[gi], g);
+        // Scatter band-local gains into the full-size vector.
+        engine.compute_gains(&req, &mut scratch.engine, &mut scratch.local);
+        out.fill(0.0);
+        for (&speaker, &gain) in self.speaker_indices.iter().zip(&scratch.local) {
+            if let Some(out) = out.get_mut(speaker) {
+                *out = gain;
+            }
         }
-        full
-    }
-}
-
-/// Split one sample into frequency bands.
-///
-/// When a crossover filter bank is active, runs the sample through the active
-/// engine (LR4 or linear-phase FIR).
-/// Otherwise returns a 1-band passthrough so the caller's band loop is identical.
-#[inline]
-pub(super) fn split_bands(
-    raw: f32,
-    filter_bank: &Option<CrossoverBank>,
-    states: Option<&mut CrossoverStates>,
-) -> crate::crossover::SmallBands {
-    match (filter_bank.as_ref(), states) {
-        (Some(fb), Some(s)) => fb.process_sample(raw, s),
-        _ => crate::crossover::SmallBands::single(raw),
     }
 }

@@ -1,8 +1,13 @@
 # Viewport parity spec: object trails + ray-marched energy volumes
 
-Source tree: `omniphony-studio/src/` (all JS paths below are relative to it unless prefixed). Rust paths are relative to ``. three.js version is `0.165.0` (`package.json:26`), `ColorManagement.enabled = true` (three default), `renderer.outputColorSpace` left at its default (`SRGBColorSpace`); no `setPixelRatio` call anywhere, so 1 canvas pixel = 1 CSS pixel.
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
 
-Files covered: `trails.js`, `scene/energy-volume-core.js`, `scene/global-energy-volume.js`, `scene/object-energy-volume.js`, `scene/object-energy-shared.js`, `scene/gradient-editor.js`, `controls/scene-effects-bar.js`, `listeners/trails-and-display-listeners.js` (there is no `controls/trails-and-display-listeners.js`). Supporting reads: `sources.js`, `coordinates.js`, `state.js`, `app.js`, `controls/room-geometry.js`, `scene/speaker-gaintable.js`, `scene/speaker-solo-volume.js`, `scene/discontinuity-volume.js`, `mpvOverlay.js`, `index.html`, `i18n/en.json`, `src-tauri/src/osc_parser.rs`, `src-tauri/src/osc_listener.rs`, `src-tauri/src/commands/diag.rs`, `src-tauri/src/commands/mpv_overlay.rs`, `omniphony-renderer/renderer/src/band_gaintable.rs`, `omniphony-renderer/renderer/src/live_params.rs`, `omniphony-renderer/runtime_control/src/osc.rs`, `omniphony-renderer/omniphony-geometry/src/lib.rs`.
+Source tree: [`omniphony-studio/src/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src) (all JS paths below are relative to it unless prefixed). Rust paths are relative to ``. three.js version is `0.165.0` (`package.json:26`), `ColorManagement.enabled = true` (three default), `renderer.outputColorSpace` left at its default (`SRGBColorSpace`); no `setPixelRatio` call anywhere, so 1 canvas pixel = 1 CSS pixel.
+
+Files covered: `trails.js`, `scene/energy-volume-core.js`, `scene/global-energy-volume.js`, `scene/object-energy-volume.js`, `scene/object-energy-shared.js`, `scene/gradient-editor.js`, `controls/scene-effects-bar.js`, `listeners/trails-and-display-listeners.js` (there is no `controls/trails-and-display-listeners.js`). Supporting reads: `sources.js`, `coordinates.js`, `state.js`, `app.js`, `controls/room-geometry.js`, `scene/speaker-gaintable.js`, `scene/speaker-solo-volume.js`, `scene/discontinuity-volume.js`, `mpvOverlay.js`, `index.html`, `i18n/en.json`, `src-tauri/src/osc_parser.rs`, `src-tauri/src/osc_listener.rs`, `src-tauri/src/commands/diag.rs`, `src-tauri/src/commands/mpv_overlay.rs`, `omniphony-renderer/renderer/src/band_gaintable.rs`, `omniphony-renderer/renderer/src/live_params.rs`, `omniphony-renderer/runtime_control/src/osc.rs`, `omniphony-renderer/omniphony_geometry/src/lib.rs`.
 
 ---
 
@@ -636,7 +641,7 @@ band 0: values[nx*ny*nz]   band 1: values[…]  …  band nb-1
 ```
 Cell index (`live_params.rs:2210-2214`): `cell = xi + nx*(yi + ny*zi)` (xi fastest). Value per (band, cell): speaker slice `gains[cell*speaker_count + speaker]`; energy field `sqrt(Σ_s g_s²)` (`band_gaintable.rs:93-102`); discontinuity fields per module docs.
 
-Axes (`live_params.rs:2166-2190`, `omniphony-geometry/src/lib.rs:322-354`): `x_positions = evenly_spaced_axis(x_size.max(2), −1, 1)`, `y_positions = evenly_spaced_axis(y_size.max(2), −1, 1)` (node counts; the live parameter is an interval count converted as `x_size.max(1)+1`, `live_params.rs:1410`); `z_positions = cartesian_z_axis(z_size.max(2), z_neg_size)` = `z_neg_size` nodes at `−1 + i/z_neg_size` (i = 0..z_neg_size, covering [−1,0)) followed by `evenly_spaced_axis(z_size, 0, 1)` — **not** symmetric, hence the client must use the shipped `zPositions` (nearest-node lookup) rather than recompute.
+Axes (`live_params.rs:2166-2190`, `omniphony_geometry/src/lib.rs:322-354`): `x_positions = evenly_spaced_axis(x_size.max(2), −1, 1)`, `y_positions = evenly_spaced_axis(y_size.max(2), −1, 1)` (node counts; the live parameter is an interval count converted as `x_size.max(1)+1`, `live_params.rs:1410`); `z_positions = cartesian_z_axis(z_size.max(2), z_neg_size)` = `z_neg_size` nodes at `−1 + i/z_neg_size` (i = 0..z_neg_size, covering [−1,0)) followed by `evenly_spaced_axis(z_size, 0, 1)` — **not** symmetric, hence the client must use the shipped `zPositions` (nearest-node lookup) rather than recompute.
 
 ### 5.2 Chunking over OSC (`omniphony-renderer/runtime_control/src/osc.rs:172-235`, addresses in `runtime_control/src/osc_contract.rs:395-400`)
 
@@ -715,7 +720,7 @@ Everything in §1.11, §2.6, §3, §4 plus (outside this spec's viewport scope):
 
 ## 10. Uncertainties / things the code does not settle
 
-- The sign convention of Omniphony x (which side is +width) is not stated in the files read; the port should take it from `omniphony-geometry` (`adm_to_scene`).
+- The sign convention of Omniphony x (which side is +width) is not stated in the files read; the port should take it from `omniphony_geometry` (`adm_to_scene`).
 - Three's `Data3DTexture` default `wrapR/S/T = ClampToEdge`; not set explicitly in the JS, assumed default.
 - `gl_PointSize` max is implementation-defined in WebGL; the clamp to 44 px is assumed to always be honoured.
 - In §5.5 the fallback `zi` formula (when `zPositions` is absent) can never be hit with the current decoder (positions are always shipped); listed for completeness.

@@ -1,10 +1,13 @@
 use anyhow::Result;
-use bridge_api::{FormatBridgeBox, RChannelLabel, RChannelPose, RInputTransport};
+use bridge_api::RInputTransport;
+use orender_engine::bridge_set::BridgeSet;
+use orender_engine::decode_step::{
+    DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
+};
 use spdif::SpdifParser;
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, RwLock, mpsc};
 use std::thread;
 use std::time::Instant;
 use sys::InputReader;
@@ -37,33 +40,28 @@ pub enum DecodedSource {
 pub struct DecodedAudioData {
     pub source: DecodedSource,
     pub frame: bridge_api::RDecodedFrame,
-    /// The bridge's declaration, sent with the first frame whose labels
-    /// differ from the previous frame's (the bridge lives on the decoder
-    /// thread; the handler keeps the last value it received).
-    pub declaration: Option<StreamDeclaration>,
+    /// The bridge's declaration, sent with the frame a
+    /// [`DeclarationTracker`] says needs it (the bridge lives on the decoding
+    /// thread, this one or the PipeWire sink's; the handler keeps the last
+    /// value it received). Never set on the sink's plain PCM: the handler
+    /// declares that itself when the input switches to it
+    /// (`SpatialState::take_declaration`).
+    pub declaration: Option<Declaration>,
     pub decode_time_ms: f32,
     pub sent_at: Instant,
 }
 
-/// What a bridge declares about a presentation beyond its labels: the
-/// source family (`FormatBridge::source_family`) and the poses the format
-/// states for its channels (`FormatBridge::fixed_channel_poses`).
-pub struct StreamDeclaration {
-    pub family: String,
-    pub poses: Vec<RChannelPose>,
-}
+pub use orender_engine::decode_step::Declaration;
 
 pub enum DecoderMessage {
     /// A fully decoded audio frame (PCM + metadata + dialogue level).
     AudioData(DecodedAudioData),
-    /// Request to flush audio buffers (after seek/decoder reset).
-    FlushRequest(DecodedSource),
+    /// The bridge reset itself (sync loss, seek) before the frames that
+    /// follow: the spatial state starts over, as in the embedded engine. Not
+    /// a flush — the audio buffers are left alone.
+    BridgeReset(DecodedSource),
     /// Stream ended — reset handler state (for continuous mode).
     StreamEnd(DecodedSource),
-}
-
-pub enum DecoderCommand {
-    SetDrcMode(String),
 }
 
 #[derive(Clone)]
@@ -79,21 +77,29 @@ pub struct DecoderThreadConfig {
     pub continuous: bool,
     pub drain_pipe: bool,
     pub tx: mpsc::SyncSender<Result<DecoderMessage>>,
-    pub cmd_rx: mpsc::Receiver<DecoderCommand>,
-    /// Post-rendering output pacer drain clock (pure pipe-bridge mode only).
-    /// Each decoded packet posts its emitted source duration (microseconds)
-    /// here, before the (potentially blocking) frame send. An independent
-    /// drain thread converts that to output frames and drains the pacer FIFO
-    /// into the ring — keeping the drain off this thread avoids the
-    /// backpressure deadlock (send blocks → FIFO never drains → send stays
-    /// blocked). `None` when output pacing is unused.
+    /// The DRC mode the handler asks for, shared with the PipeWire sink's
+    /// bridge decoder. Seeded with the configured mode before the thread
+    /// starts, so the bridge decodes the first packet in that mode; a later
+    /// change reaches it before the next input chunk.
+    pub requested_drc_mode: Arc<RwLock<String>>,
+    /// Post-rendering output pacer drain clock (the token clock), for the
+    /// frames this thread decodes, in pure pipe mode and beside a PipeWire
+    /// capture alike; it stands down while a capture stream delivers. Each
+    /// decoded packet posts its emitted source duration (microseconds) here,
+    /// before the (potentially blocking) frame send. An independent drain
+    /// thread converts that to output frames and drains the pacer FIFO into
+    /// the ring — keeping the drain off this thread avoids the backpressure
+    /// deadlock (send blocks → FIFO never drains → send stays blocked).
+    /// `None` when output pacing is unused.
     pub drain_tx: Option<mpsc::Sender<u64>>,
     /// Optional diag handles for the named-pipe / stdin input path. Published
     /// from the decoder thread so we can correlate upstream delivery cadence
     /// with downstream latency sawtooths.
     pub pipe_input_diag: Option<PipeInputDiag>,
     /// The bridge owns the complete decode pipeline.
-    pub bridge: FormatBridgeBox,
+    pub bridge: BridgeSet,
+    /// The log level `bridge` was opened with (`LoadedBridge::log_level`).
+    pub log_level: LogLevelSync,
     /// Platform-agnostic shutdown signal for interrupt-aware I/O.
     pub shutdown_signal: sys::ShutdownSignal,
 }
@@ -105,16 +111,19 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             continuous,
             drain_pipe,
             tx,
-            cmd_rx,
+            requested_drc_mode,
             drain_tx,
             pipe_input_diag,
             mut bridge,
+            mut log_level,
             shutdown_signal,
         } = config;
 
         let mut frame_count: u64 = 0;
-        // Labels the bridge's declared poses were last read for.
-        let mut declared_labels: Vec<RChannelLabel> = Vec::new();
+        let mut drc_mode = DrcModeSync::new();
+        // When a frame carries the bridge's declaration: the same rule as the
+        // embedded engine and the PipeWire sink's bridge decoder.
+        let mut declarations = DeclarationTracker::new();
         loop {
             // Check for shutdown — do not restart after SIGTERM/SIGINT.
             if sys::ShutdownHandle::is_requested() {
@@ -125,14 +134,6 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             if sys::ShutdownHandle::is_restart_from_config_requested() {
                 log::info!("Restart from config requested, stopping decoder loop");
                 break;
-            }
-
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                match cmd {
-                    DecoderCommand::SetDrcMode(mode) => {
-                        bridge.set_drc_mode(mode.as_str().into());
-                    }
-                }
             }
 
             // Check for SIGHUP reload — clear the flag and notify systemd
@@ -184,13 +185,14 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     return Ok(false);
                 }
 
-                while let Ok(cmd) = cmd_rx.try_recv() {
-                    match cmd {
-                        DecoderCommand::SetDrcMode(mode) => {
-                            bridge.set_drc_mode(mode.as_str().into());
-                        }
-                    }
+                // Before any packet of this chunk: the first time, the mode
+                // the thread was spawned with; then on changes only.
+                {
+                    let requested = requested_drc_mode.read().unwrap_or_else(|e| e.into_inner());
+                    drc_mode.apply(&requested, &mut bridge);
                 }
+                // The bridge's diagnostics follow `log_level` changes made over OSC.
+                log_level.apply(live_log::current_runtime_level(), &mut bridge);
 
                 let now = Instant::now();
                 let chunk_gap_ms = last_chunk_at
@@ -202,10 +204,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     last_chunk_at = Some(now);
                 }
 
-                let chunk_contains_spdif_sync = chunk.windows(4).any(|w| {
-                    u16::from_le_bytes([w[0], w[1]]) == 0xF872
-                        && u16::from_le_bytes([w[2], w[3]]) == 0x4E1F
-                });
+                let chunk_contains_spdif_sync = spdif::contains_sync(chunk);
 
                 // Detect transport format on the first chunk. Do not require the
                 // syncword to be at offset 0: named pipes can reconnect or resume
@@ -239,29 +238,30 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                 };
 
                 let mut frames_emitted = 0usize;
-                // Accumulate (samples, sample_rate) per frame so that emitted_duration_ms
-                // uses the input sample rate rather than a hardcoded 48 kHz constant.
-                // Different frames within a chunk should share the same rate, but we
-                // compute the sum correctly even if they don't.
+                // Audio emitted by this chunk, each frame at its own rate
+                // (`DecodedPacket::duration_secs`).
                 let mut emitted_duration_ms = 0.0f64;
                 let packet_count = packets.len();
                 for (transport, data_type, payload) in packets {
-                    let decode_started_at = Instant::now();
-                    let result =
-                        bridge.push_packet(payload.as_slice().into(), transport, data_type);
-                    let decode_time_ms = decode_started_at.elapsed().as_secs_f32() * 1000.0;
+                    let packet = decode_packet(
+                        &mut bridge,
+                        &payload,
+                        transport,
+                        data_type,
+                        &mut declarations,
+                    );
+                    let per_frame_decode_time_ms = packet.decode_ms_per_frame();
+                    let packet_emitted_ms = packet.duration_secs() * 1000.0;
+                    let DecodedPacket {
+                        result,
+                        mut declaration,
+                        declaration_frame,
+                        ..
+                    } = packet;
                     let payload_len = payload.len();
                     let emitted_frames = result.frames.len();
                     let emitted_samples: u32 =
                         result.frames.iter().map(|frame| frame.sample_count).sum();
-                    let packet_emitted_ms: f64 = result
-                        .frames
-                        .iter()
-                        .map(|frame| {
-                            let rate = frame.sampling_frequency.max(1) as f64;
-                            frame.sample_count as f64 / rate * 1000.0
-                        })
-                        .sum();
                     emitted_duration_ms += packet_emitted_ms;
                     let metadata_frames = result
                         .frames
@@ -312,7 +312,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                                 })
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            sys::live_log::emit_external_record(
+                            live_log::emit_external_record(
                                 log::Level::Warn,
                                 "orender::bridge",
                                 &format!(
@@ -339,11 +339,16 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                         // abort or flush. Flushing would turn a recoverable bridge reset
                         // into an audible dropout much longer than the actual decode
                         // hiccup; in live rendering we never want a premature stop.
+                        // Only the spatial state starts over (stale objects, ramps).
                         log::debug!("Bridge reset; keeping audio buffers intact");
+                        if tx
+                            .send(Ok(DecoderMessage::BridgeReset(DecodedSource::Bridge)))
+                            .is_err()
+                        {
+                            return Ok(false);
+                        }
                     }
 
-                    let frame_count_in_packet = result.frames.len().max(1) as f32;
-                    let per_frame_decode_time_ms = decode_time_ms / frame_count_in_packet;
                     let frames_in_packet = result.frames.len();
                     frames_emitted += frames_in_packet;
                     // Drive the output-pacer drain at the source clock: post this
@@ -355,19 +360,13 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                             let _ = drain_tx.send((packet_emitted_ms * 1000.0).round() as u64);
                         }
                     }
-                    for frame in result.frames {
+                    for (i, frame) in result.frames.into_iter().enumerate() {
                         frame_count += 1;
-                        let declaration =
-                            if frame.channel_labels.as_slice() != declared_labels.as_slice() {
-                                declared_labels.clear();
-                                declared_labels.extend_from_slice(frame.channel_labels.as_slice());
-                                Some(StreamDeclaration {
-                                    family: bridge.source_family().to_string(),
-                                    poses: bridge.fixed_channel_poses().into_iter().collect(),
-                                })
-                            } else {
-                                None
-                            };
+                        let declaration = if i == declaration_frame {
+                            declaration.take()
+                        } else {
+                            None
+                        };
                         let sent_at = Instant::now();
                         if tx
                             .send(Ok(DecoderMessage::AudioData(DecodedAudioData {
@@ -382,7 +381,11 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                             return Ok(false);
                         }
                         let send_block_ms = sent_at.elapsed().as_secs_f64() * 1000.0;
-                        if send_block_ms > 5.0 {
+                        // A stall on a pipe means the handler fell behind a
+                        // live source. A regular file is read as fast as the
+                        // handler takes frames, so blocking here is the
+                        // expected pacing, not a fault: keep it out of the log.
+                        if send_block_ms > 5.0 && is_pipe_input {
                             log::warn!(
                                 "Decoder channel backpressure: send_block_ms={:.3} frames_in_packet={} payload_bytes={} transport={:?}",
                                 send_block_ms,
@@ -422,7 +425,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     let sustained_input_deficit =
                         session_elapsed_secs >= 5.0 && session_rate < 0.98;
                     if pathological_gap && sustained_input_deficit {
-                        sys::live_log::emit_external_record(
+                        live_log::emit_external_record(
                             log::Level::Warn,
                             "orender::cli::decode::decoder_thread",
                             &format!(
@@ -467,7 +470,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     } else {
                         log::Level::Trace
                     };
-                    sys::live_log::emit_external_record(
+                    live_log::emit_external_record(
                         throughput_level,
                         "orender::cli::decode::decoder_thread",
                         &format!(
@@ -526,11 +529,116 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             // Reset bridge for next stream.
             log::info!("Continuous mode: resetting bridge and waiting for new data...");
             bridge.reset();
-            declared_labels.clear();
+            declarations.forget();
 
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
         Ok(())
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use abi_stable::sabi_trait::prelude::TD_Opaque;
+    use abi_stable::std_types::{RSlice, RStr, RString, RVec};
+    use bridge_api::*;
+    use std::sync::Mutex;
+
+    /// Records the DRC mode it is in at each `push_packet`; starts in "Off",
+    /// like the real bridges.
+    struct DrcRecordingBridge {
+        mode: String,
+        modes_at_push: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl FormatBridge for DrcRecordingBridge {
+        fn push_packet(&mut self, _: RSlice<'_, u8>, _: RInputTransport, _: u8) -> RPushResult {
+            self.modes_at_push.lock().unwrap().push(self.mode.clone());
+            RPushResult {
+                frames: RVec::new(),
+                error_message: RString::new(),
+                did_reset: false,
+            }
+        }
+        fn reset(&mut self) {}
+        fn is_ready(&self) -> bool {
+            true
+        }
+        fn has_objects(&self) -> bool {
+            false
+        }
+        fn configure(&mut self, _: RStr<'_>, _: RStr<'_>) -> bool {
+            true
+        }
+        fn coordinate_format(&self) -> RCoordinateFormat {
+            RCoordinateFormat::Cartesian
+        }
+        fn vbap_cartesian_defaults(&self) -> RVbapCartesianDefaults {
+            RVbapCartesianDefaults {
+                x_size: 3,
+                y_size: 3,
+                z_size: 3,
+                z_neg_size: 0,
+                allow_negative_z: false,
+            }
+        }
+        fn preferred_vbap_table_mode(&self) -> RVbapTableMode {
+            RVbapTableMode::Cartesian
+        }
+        fn supported_drc_modes(&self) -> RVec<RString> {
+            RVec::new()
+        }
+        fn set_drc_mode(&mut self, mode: RStr<'_>) -> bool {
+            self.mode = mode.as_str().to_owned();
+            true
+        }
+        fn fixed_channel_poses(&self) -> RVec<RChannelPose> {
+            RVec::new()
+        }
+    }
+
+    /// The configured DRC mode is the bridge's from the very first packet,
+    /// with nothing sent after the spawn. It used to be a command the handler
+    /// sent once the renderer was built, which reached the bridge after however
+    /// many packets the thread had decoded by then: with `drc_mode: standard`,
+    /// the same file rendered differently from run to run.
+    #[test]
+    fn the_first_packet_is_decoded_in_the_configured_drc_mode() {
+        let input =
+            std::env::temp_dir().join(format!("orender-decoder-drc-{}.raw", std::process::id()));
+        std::fs::write(&input, [0u8; 16]).unwrap();
+        let mut fds = [0i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let modes_at_push = Arc::default();
+        let (tx, _rx) = mpsc::sync_channel(16);
+        let result = spawn_decoder_thread(DecoderThreadConfig {
+            input_path: input.clone(),
+            continuous: false,
+            drain_pipe: false,
+            tx,
+            requested_drc_mode: Arc::new(RwLock::new("Standard".to_owned())),
+            drain_tx: None,
+            pipe_input_diag: None,
+            bridge: BridgeSet::single(FormatBridge_TO::from_value(
+                DrcRecordingBridge {
+                    mode: "Off".to_owned(),
+                    modes_at_push: Arc::clone(&modes_at_push),
+                },
+                TD_Opaque,
+            )),
+            log_level: LogLevelSync::new(),
+            shutdown_signal: sys::ShutdownSignal { fd: fds[0] },
+        })
+        .join()
+        .unwrap();
+        let _ = std::fs::remove_file(&input);
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+        result.unwrap();
+        assert_eq!(*modes_at_push.lock().unwrap(), ["Standard"]);
+    }
 }

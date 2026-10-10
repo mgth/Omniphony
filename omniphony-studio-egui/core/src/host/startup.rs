@@ -47,7 +47,7 @@ impl Startup {
     }
 }
 
-/// Use the same default config namespace as the Tauri host. An environment
+/// Use the same default config namespace as the Tauri host did. An environment
 /// override intentionally selects a separate workflow namespace.
 pub fn config_dir() -> Result<PathBuf, String> {
     if let Some(root) = super::runtime_env::config_dir() {

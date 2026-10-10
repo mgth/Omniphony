@@ -216,33 +216,6 @@ render_field! {
     eq = |a: &f32, b: &f32| (a - b).abs() <= 0.01
 }
 
-render_field! {
-    /// Automatic gain reduction to avoid clipping (`render.auto_gain`).
-    /// Persisted by both the CLI writer and the live path (it is a live param,
-    /// tunable at runtime via `/omniphony/control/auto_gain`).
-    pub auto_gain: bool = false,
-    field = auto_gain,
-    eq = bool::eq
-}
-
-render_field! {
-    /// Target ceiling, in dBFS, that auto-gain corrects peaks down to
-    /// (`render.auto_gain_ceiling_db`). Clipping is still *detected* at 0 dBFS;
-    /// this is only the level peaks are brought back to, providing headroom so
-    /// the correction fires less often. Live param, tunable via
-    /// `/omniphony/control/auto_gain_ceiling`. Default −1 dBFS.
-    pub auto_gain_ceiling_db: f32 = -1.0,
-    field = auto_gain_ceiling_db,
-    eq = |a: &f32, b: &f32| (a - b).abs() <= 0.01
-}
-
-render_field! {
-    /// Loudness metadata correction toward -31 dBFS (`render.use_loudness`).
-    pub use_loudness: bool = false,
-    field = use_loudness,
-    eq = bool::eq
-}
-
 // ── Lot 4: OSC ──
 
 render_field! {
@@ -323,56 +296,6 @@ render_field! {
 }
 
 render_field! {
-    /// Where the 4.x/5.x surround pair (`Ls`/`Rs`) is placed: side vs back
-    /// (`render.surround_placement`). Default `Side`.
-    pub surround_placement: crate::live_params::SurroundPlacement =
-        crate::live_params::SurroundPlacement::Side,
-    field = surround_placement,
-    eq = crate::live_params::SurroundPlacement::eq
-}
-
-render_field! {
-    /// How output channels map to device ports: by_index vs by_name
-    /// (`render.output_channel_mapping`). Default `ByIndex`.
-    pub output_channel_mapping: crate::live_params::OutputChannelMapping =
-        crate::live_params::OutputChannelMapping::ByIndex,
-    field = output_channel_mapping,
-    eq = crate::live_params::OutputChannelMapping::eq
-}
-
-render_field! {
-    /// Crossover filter implementation: lr4 (IIR, zero latency) vs fir
-    /// (linear-phase, constant latency) (`render.crossover_type`). Default `Lr4`.
-    pub crossover_type: crate::live_params::CrossoverType =
-        crate::live_params::CrossoverType::Lr4,
-    field = crossover_type,
-    eq = crate::live_params::CrossoverType::eq
-}
-
-render_field! {
-    /// FIR crossover transition width as a fraction of the lowest cutoff
-    /// (`render.crossover_fir_transition_ratio`). Default 0.5.
-    pub crossover_fir_transition_ratio: f32 = 0.5,
-    field = crossover_fir_transition_ratio,
-    eq = |a: &f32, b: &f32| a == b
-}
-
-render_field_str! {
-    /// Bed→height object generator id for channel content
-    /// (`render.object_generator_id`). Empty / absent = off.
-    pub object_generator_id = "",
-    field = object_generator_id
-}
-
-render_field! {
-    /// Phantom extraction algorithm (`render.phantom_extract_mode`).
-    pub phantom_extract_mode: crate::live_params::PhantomExtractMode =
-        crate::live_params::PhantomExtractMode::Off,
-    field = phantom_extract_mode,
-    eq = crate::live_params::PhantomExtractMode::eq
-}
-
-render_field! {
     /// Derive spread from object distance (`render.spread_from_distance`).
     pub spread_from_distance: bool = false,
     field = spread_from_distance,
@@ -387,15 +310,6 @@ render_field! {
 }
 
 // ── Lot 5c: special-cased options (custom descriptors) ──
-
-render_field_str! {
-    /// Object-transition ramp mode (`render.ramp_mode`): "off" | "frame" |
-    /// "sample". Default "frame". Note: this fixes a CLI/live disagreement —
-    /// the old CLI writer treated `Sample` as the default (persisted `Frame`!),
-    /// while the live writer (correctly) treats `Frame` as the default.
-    pub ramp_mode = "frame",
-    field = ramp_mode
-}
 
 /// Presentation / substream selector (`render.presentation`). Special-cased:
 /// the CLI works in strings ("best" or a number) while the config stores a
@@ -449,6 +363,141 @@ pub mod hrir_update_lattice {
         cfg.binaural
             .get_or_insert_with(Default::default)
             .hrir_update_lattice = stored;
+    }
+}
+
+/// Room proportions (`render.room_*`). Bespoke: the file stores metres
+/// (`room_width_m` … `room_lower_m`, with width as the reference and the
+/// layout radius as the scale) while the renderer works in ratios, and the
+/// legacy ratio keys (`room_ratio` as a `"w,l,h"` string, `room_ratio_rear`,
+/// `room_ratio_lower`) are still read. `room_ratio_center_blend` is stored as
+/// is.
+///
+/// `Room::resolve` is the one reading of a render section into ratios: the
+/// renderer construction, the live seed and the profile switch all go through
+/// it, so they cannot disagree on a default (rear falls back to the length,
+/// lower and the centre blend to one half).
+pub mod room {
+    use super::RenderConfig;
+
+    /// `width,length,height` when the config sets no room.
+    pub const DEFAULT_RATIO: &str = "1.0,2.0,1.0";
+    /// Lower extent when the config sets none.
+    pub const DEFAULT_LOWER: f32 = 0.5;
+    /// Front/rear depth-scale blend at the listener when the config sets none.
+    pub const DEFAULT_CENTER_BLEND: f32 = 0.5;
+    /// Floor of the rear and lower ratios as read from a config.
+    pub const MIN_RATIO: f32 = omniphony_geometry::f32::MIN_ROOM_RATIO;
+
+    /// A room as the renderer consumes it.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Room {
+        /// `[width, length (front), height]`.
+        pub ratio: [f32; 3],
+        pub rear: f32,
+        pub lower: f32,
+        pub center_blend: f32,
+    }
+
+    /// Read a room from its ratio representation: a `"w,l,h"` string and the
+    /// optional rear / lower / centre-blend values. An absent rear follows the
+    /// length. `Err` names the malformed part of the string.
+    pub fn parse(
+        ratio: &str,
+        rear: Option<f32>,
+        lower: Option<f32>,
+        center_blend: Option<f32>,
+    ) -> Result<Room, String> {
+        let parts: Vec<&str> = ratio.split(',').collect();
+        if parts.len() != 3 {
+            return Err(format!(
+                "Invalid room-ratio format '{ratio}'. Expected 'width,length,height' (e.g., '1.0,2.0,0.5')"
+            ));
+        }
+        let axis = |index: usize, name: &str| {
+            parts[index]
+                .trim()
+                .parse::<f32>()
+                .map_err(|_| format!("Invalid room-ratio {name}: '{}'", parts[index]))
+        };
+        let ratio = [axis(0, "width")?, axis(1, "length")?, axis(2, "height")?];
+        Ok(Room {
+            ratio,
+            rear: rear.unwrap_or(ratio[1]).max(MIN_RATIO),
+            lower: lower.unwrap_or(DEFAULT_LOWER).max(MIN_RATIO),
+            center_blend: center_blend.unwrap_or(DEFAULT_CENTER_BLEND).clamp(0.0, 1.0),
+        })
+    }
+
+    /// The room a render section describes. `Config::load` derives the ratio
+    /// keys from the metres, and a host's explicit ratio overrides land on
+    /// those keys, so they win; the metres are read directly only for a
+    /// section that never went through a load (a save being read back in
+    /// memory).
+    pub fn resolve(cfg: &RenderConfig) -> Result<Room, String> {
+        if cfg.room_ratio.is_none()
+            && let Some(derived) = cfg.room_ratios_from_meters()
+        {
+            return parse(
+                &derived.ratio,
+                Some(derived.rear),
+                Some(derived.lower),
+                cfg.room_ratio_center_blend,
+            );
+        }
+        parse(
+            cfg.room_ratio.as_deref().unwrap_or(DEFAULT_RATIO),
+            cfg.room_ratio_rear,
+            cfg.room_ratio_lower,
+            cfg.room_ratio_center_blend,
+        )
+    }
+
+    /// The room scale the metres are written against: the radius of the
+    /// layout stored in the same section (stored before the room, see
+    /// `runtime_control::persist`), 1 without one.
+    fn radius(cfg: &RenderConfig) -> f32 {
+        cfg.current_layout
+            .as_ref()
+            .map(|layout| layout.radius_m)
+            .unwrap_or(1.0)
+    }
+
+    #[inline]
+    fn round6(v: f32) -> f32 {
+        (v * 1_000_000.0).round() / 1_000_000.0
+    }
+
+    // Stored in metres: width is the reference and the room scale is
+    // Width/2 = the layout radius, so metres = ratio × radius (× 2 for the
+    // width). Each store drops its legacy ratio key; `Config::load` re-derives
+    // the ratios from the metres.
+
+    /// Store `[width, length, height]` as `room_width_m` / `room_front_m` /
+    /// `room_height_m`.
+    pub fn store_ratio(cfg: &mut RenderConfig, [w, l, h]: [f32; 3]) {
+        let radius = radius(cfg);
+        cfg.room_width_m = Some(round6(w * radius * 2.0));
+        cfg.room_front_m = Some(round6(l * radius));
+        cfg.room_height_m = Some(round6(h * radius));
+        cfg.room_ratio = None;
+    }
+
+    /// Store the rear ratio as `room_rear_m`.
+    pub fn store_rear(cfg: &mut RenderConfig, rear: f32) {
+        cfg.room_rear_m = Some(round6(rear * radius(cfg)));
+        cfg.room_ratio_rear = None;
+    }
+
+    /// Store the lower ratio as `room_lower_m`.
+    pub fn store_lower(cfg: &mut RenderConfig, lower: f32) {
+        cfg.room_lower_m = Some(round6(lower * radius(cfg)));
+        cfg.room_ratio_lower = None;
+    }
+
+    /// Store the centre blend (always written, the default included).
+    pub fn store_center_blend(cfg: &mut RenderConfig, center_blend: f32) {
+        cfg.room_ratio_center_blend = Some(round6(center_blend));
     }
 }
 

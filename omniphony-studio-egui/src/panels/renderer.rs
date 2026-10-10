@@ -11,6 +11,7 @@ use crate::app::StudioSpike;
 use crate::host::commands::SharedState;
 use crate::host::commands::{binaural, engine, render};
 use crate::i18n::{t, tf};
+use crate::model::binaural::OutputMode;
 use crate::ui::group::Group;
 use crate::ui::help::{self, Help};
 use crate::ui::section::Section;
@@ -83,50 +84,14 @@ impl BackendPathDrafts {
     }
 }
 
-/// Which half of the panel is showing (`body.studio-tab-binaural`). UI state,
-/// not persisted, Renderer first.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+/// Which half of the panel is showing (`body.studio-tab-binaural`). View
+/// state, kept in the preferences; Renderer first.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RendererTab {
     #[default]
     Renderer,
     Binaural,
-}
-
-/// Output-mode select: the pair `(outputMode, mode)` of the binaural state
-/// flattened into one choice, as `binaural.js` does.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum OutputMode {
-    Speaker,
-    BinauralDirect,
-    BinauralCascaded,
-}
-
-impl OutputMode {
-    fn label(self) -> &'static str {
-        match self {
-            OutputMode::Speaker => t("outputMode.speakers"),
-            OutputMode::BinauralDirect => t("outputMode.headphones"),
-            OutputMode::BinauralCascaded => t("outputMode.headphonesVirtual"),
-        }
-    }
-
-    /// `applyBinauralState`: read the flattened value out of the binaural
-    /// document.
-    pub(crate) fn from_state(binaural: Option<&serde_json::Value>) -> Self {
-        let output = binaural
-            .and_then(|b| b.get("outputMode"))
-            .and_then(|v| v.as_str());
-        if output != Some("binaural") {
-            return OutputMode::Speaker;
-        }
-        match binaural
-            .and_then(|b| b.get("mode"))
-            .and_then(|v| v.as_str())
-        {
-            Some("cascaded") => OutputMode::BinauralCascaded,
-            _ => OutputMode::BinauralDirect,
-        }
-    }
 }
 
 /// Evaluation modes, in the select's order.
@@ -170,7 +135,7 @@ const METRICS: &[(&str, &str)] = &[
 
 impl StudioSpike {
     pub(crate) fn renderer_section(&mut self, ui: &mut Ui) {
-        let (summary, embedded) = {
+        let (summary, embedded, decode_thread) = {
             let live = self.host.read();
             let mode = live
                 .app
@@ -205,6 +170,10 @@ impl StudioSpike {
                     tf("renderer.summary", &[("mode", evaluation_label(&mode))])
                 ),
                 embedded,
+                // A standalone renderer older than the shared option does
+                // not declare it and refuses the write: no switch then.
+                (embedded || live.declares_option("decode_thread"))
+                    .then(|| live.option_bool("decode_thread").unwrap_or(false)),
             )
         };
         // The gauge's bar sits in the header, as `#rendererPerfWrap` does, so
@@ -224,6 +193,24 @@ impl StudioSpike {
             // The embedded host applies the output mode at player start.
             if embedded {
                 widgets::note(ui, t("outputMode.mpvNote"));
+            }
+            // Where decoding runs: a choice that takes effect in a player's
+            // embedded engine only. It is offered on the standalone renderer
+            // too, which shares the player's config and always decodes on a
+            // thread of its own: the note says the switch changes nothing
+            // there.
+            if let Some(mut on) = decode_thread {
+                if widgets::switch_row_help(
+                    ui,
+                    t("renderer.decodeThreadLabel"),
+                    "help.decodeThread",
+                    &mut on,
+                ) {
+                    self.set_option("decode_thread", serde_json::json!(on));
+                }
+            }
+            if !embedded {
+                widgets::note(ui, t("renderer.decodeThreadStandaloneNote"));
             }
             ui.add_space(2.0);
             if let Some(tab) = widgets::tab_bar(
@@ -254,7 +241,7 @@ impl StudioSpike {
         });
     }
 
-    fn output_mode_row(&mut self, ui: &mut Ui) {
+    pub(crate) fn output_mode_row(&mut self, ui: &mut Ui) {
         let current = {
             let live = self.host.read();
             OutputMode::from_state(live.app.binaural.as_ref())
@@ -263,35 +250,22 @@ impl StudioSpike {
         widgets::label_row_help(ui, t("outputMode.selectTitle"), "help.outputMode", |ui| {
             widgets::bounded_combo(ui, 160.0, |ui, w| {
                 egui::ComboBox::from_id_salt("output-mode")
-                    .selected_text(current.label())
+                    .selected_text(t(current.i18n_key()))
                     .width(w)
                     .truncate()
                     .show_ui(ui, |ui| {
-                        for mode in [
-                            OutputMode::Speaker,
-                            OutputMode::BinauralDirect,
-                            OutputMode::BinauralCascaded,
-                        ] {
-                            ui.selectable_value(&mut chosen, mode, mode.label());
+                        for mode in OutputMode::ALL {
+                            ui.selectable_value(&mut chosen, mode, t(mode.i18n_key()));
                         }
-                    })
+                    });
             });
         });
-        if chosen == current {
-            return;
-        }
-        // Not optimistic: the renderer's echo is what moves the select, so a
-        // rejected change does not leave the UI lying.
-        match chosen {
-            OutputMode::Speaker => binaural::control_output_mode(&self.host, "speaker".into()),
-            OutputMode::BinauralDirect => {
-                binaural::control_output_mode(&self.host, "binaural".into());
-                binaural::control_binaural_mode(&self.host, "direct".into());
-            }
-            OutputMode::BinauralCascaded => {
-                binaural::control_output_mode(&self.host, "binaural".into());
-                binaural::control_binaural_mode(&self.host, "cascaded".into());
-            }
+        if chosen != current {
+            // The mode drives the source (a measured room is left for KEMAR
+            // on the direct path), in one command. Not optimistic: the
+            // renderer's echo is what moves the select, so a rejected change
+            // does not leave the UI lying.
+            binaural::select_output_mode(&self.host, chosen);
         }
     }
 
@@ -406,198 +380,275 @@ impl StudioSpike {
         else {
             return;
         };
+        self.plugin_params_form(
+            ui,
+            ParamTarget::Backend(backend),
+            params,
+            values.get(backend),
+            |_| None,
+        );
+    }
+
+    /// One control per declared parameter of a plugin — a backend, an object
+    /// generator or the phantom stage, which all publish the same
+    /// `ParamSpec` schema — seeded from `values` (the plugin's stored
+    /// `{ key: value }`) or the declared default. `gate` reads a parameter's
+    /// `requires` and returns the i18n key of the note shown, dimmed, while
+    /// that requirement is not met; the control stays editable, the
+    /// configuration being kept for when it is.
+    pub(crate) fn plugin_params_form(
+        &mut self,
+        ui: &mut Ui,
+        target: ParamTarget<'_>,
+        params: &[serde_json::Value],
+        values: Option<&serde_json::Value>,
+        gate: impl Fn(&str) -> Option<&'static str>,
+    ) {
         let context_current = self.backend_path_edits.sync_context(&self.host);
-        let stored = values.get(backend);
+        let salt = target.salt();
         for spec in params {
             let Some(key) = spec.get("key").and_then(|v| v.as_str()) else {
                 continue;
             };
-            let value = stored
+            let value = values
                 .and_then(|v| v.get(key))
                 .cloned()
                 .or_else(|| spec.get("default").cloned())
                 .unwrap_or(serde_json::Value::Null);
-            let label = param_label(key, spec);
-            // The backend's own description, or the Studio's translation of
-            // it; opened from the parameter's name, not always on show.
-            let help_text = param_help(key, spec);
-            let help = Help::text(
-                ("backend-param", backend, key),
-                help_text.as_deref().unwrap_or(""),
-            );
-            let kind = spec.get("kind");
-            let kind_type = kind
-                .and_then(|k| k.get("type"))
+            let gated = spec
+                .get("requires")
                 .and_then(|v| v.as_str())
-                .unwrap_or("float");
-            let sent = match kind_type {
-                "bool" => {
-                    let mut on = value.as_bool().unwrap_or(false);
-                    widgets::switch_row_help(ui, &label, help, &mut on)
-                        .then(|| serde_json::json!(on))
+                .and_then(&gate);
+            let row = ui.scope(|ui| {
+                if gated.is_some() {
+                    ui.multiply_opacity(0.7);
                 }
-                "enum" => {
-                    let current = value.as_str().unwrap_or("").to_owned();
-                    let options: Vec<(String, String)> = kind
-                        .and_then(|k| k.get("options"))
-                        .and_then(|o| o.as_array())
-                        .map(|list| {
-                            list.iter()
-                                .map(|o| {
-                                    let v = o
-                                        .get("value")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_owned();
-                                    let l = option_label(key, &v, o);
-                                    (v, l)
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let mut chosen = current.clone();
-                    widgets::label_row_help(ui, &label, help, |ui| {
-                        widgets::bounded_combo(ui, 150.0, |ui, w| {
-                            egui::ComboBox::from_id_salt(("backend-param", key))
-                                .selected_text(
-                                    options
-                                        .iter()
-                                        .find(|(v, _)| *v == current)
-                                        .map(|(_, l)| l.clone())
-                                        .unwrap_or_else(|| current.clone()),
-                                )
-                                .width(w)
-                                .truncate()
-                                .show_ui(ui, |ui| {
-                                    for (v, l) in &options {
-                                        ui.selectable_value(&mut chosen, v.clone(), l);
-                                    }
-                                })
-                        });
-                    });
-                    (chosen != current).then(|| serde_json::json!(chosen))
-                }
-                "path" | "file" => {
-                    let source = value.as_str().unwrap_or("");
-                    let mut committed = None;
-                    let extensions: Vec<String> = kind
-                        .and_then(|k| k.get("extensions"))
-                        .and_then(|v| v.as_array())
-                        .map(|list| {
-                            list.iter()
-                                .filter_map(|e| e.as_str().map(str::to_owned))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let editable = kind
-                        .and_then(|k| k.get("editable"))
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false);
-                    let language = kind
-                        .and_then(|k| k.get("language"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned);
-                    // A path only means something to the renderer when it is
-                    // the renderer's own filesystem, so Browse is offered only
-                    // then; the editor works either way, because it moves the
-                    // bytes rather than the path.
-                    let local = crate::host::commands::app::renderer_is_local(&self.host);
-                    let mut browse = false;
-                    let mut edit = false;
-                    let epoch = self
-                        .osc_stats
-                        .connection_epoch
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    ui.add_enabled_ui(context_current, |ui| {
-                        widgets::label_row_help(ui, &label, help, |ui| {
-                            if editable {
-                                edit = ui.button(t("backend.file.edit")).clicked();
-                            }
-                            if local {
-                                browse = ui.button(t("backend.file.browse")).clicked();
-                            }
-                            let draft = self.backend_path_edits.field(
-                                ui.make_persistent_id(("backend-file", backend, key, epoch)),
-                                epoch,
-                                ui.ctx().cumulative_frame_nr(),
-                            );
-                            if edit || browse {
-                                draft.discard();
-                            }
-                            let hint = match extensions.first() {
-                                Some(ext) => format!("name.{ext}"),
-                                None if kind_type == "path" => "/path/to/backend.lua".to_owned(),
-                                None => "name.ext".to_owned(),
-                            };
-                            committed = draft.show(
-                                ui,
-                                ("backend-file", backend, key, epoch),
-                                source,
-                                &hint,
-                                120.0,
-                                true,
-                            );
-                        });
-                    });
-                    if edit {
-                        self.open_script_editor(backend, key, language, extensions.clone());
-                    }
-                    if browse {
-                        self.pick_files(
-                            ui.ctx(),
-                            crate::ui::file_dialogs::Purpose::Backend {
-                                backend: backend.to_owned(),
-                                key: key.to_owned(),
-                            },
-                            &extensions,
-                        );
-                    }
-                    committed.map(serde_json::Value::String)
-                }
-                _ => {
-                    let is_int = kind_type == "int";
-                    let min = kind
-                        .and_then(|k| k.get("min"))
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0) as f32;
-                    let max = kind
-                        .and_then(|k| k.get("max"))
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(1.0) as f32;
-                    let step = if is_int {
-                        1.0
-                    } else {
-                        kind.and_then(|k| k.get("step"))
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.01)
-                    };
-                    let mut number = value.as_f64().unwrap_or(min as f64) as f32;
-                    widgets::value_slider_help(
-                        ui,
-                        &label,
-                        help,
-                        &mut number,
-                        min..=max,
-                        step,
-                        move |v| {
-                            if is_int {
-                                format!("{}", v.round() as i64)
-                            } else {
-                                format!("{v:.3}")
-                            }
-                        },
-                    )
-                    .then(|| {
-                        if is_int {
-                            serde_json::json!(number.round() as i64)
-                        } else {
-                            serde_json::json!(number as f64)
-                        }
+                self.param_control(ui, &target, salt, key, spec, &value, context_current)
+            });
+            if let Some(note) = gated {
+                row.response.on_hover_text(t(note));
+            }
+            if let Some(sent) = row.inner {
+                self.send_plugin_param(&target, key, spec, sent);
+            }
+        }
+    }
+
+    /// The control of one declared parameter; `Some(value)` when it was
+    /// edited this frame.
+    #[allow(clippy::too_many_arguments)]
+    fn param_control(
+        &mut self,
+        ui: &mut Ui,
+        target: &ParamTarget<'_>,
+        salt: (&'static str, &str),
+        key: &str,
+        spec: &serde_json::Value,
+        value: &serde_json::Value,
+        context_current: bool,
+    ) -> Option<serde_json::Value> {
+        let label = param_label(key, spec);
+        // The plugin's own description, or the Studio's translation of it;
+        // opened from the parameter's name, not always on show.
+        let help_text = param_help(key, spec);
+        let help = Help::text(
+            ("plugin-param", salt, key),
+            help_text.as_deref().unwrap_or(""),
+        );
+        let kind = spec.get("kind");
+        let kind_type = kind
+            .and_then(|k| k.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("float");
+        match kind_type {
+            "bool" => {
+                let mut on = value.as_bool().unwrap_or(false);
+                widgets::switch_row_help(ui, &label, help, &mut on).then(|| serde_json::json!(on))
+            }
+            "enum" => {
+                let current = value.as_str().unwrap_or("").to_owned();
+                let options: Vec<(String, String)> = kind
+                    .and_then(|k| k.get("options"))
+                    .and_then(|o| o.as_array())
+                    .map(|list| {
+                        list.iter()
+                            .map(|o| {
+                                let v = o
+                                    .get("value")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_owned();
+                                let l = option_label(key, &v, o);
+                                (v, l)
+                            })
+                            .collect()
                     })
+                    .unwrap_or_default();
+                let mut chosen = current.clone();
+                widgets::label_row_help(ui, &label, help, |ui| {
+                    widgets::bounded_combo(ui, 150.0, |ui, w| {
+                        egui::ComboBox::from_id_salt(("plugin-param", salt, key))
+                            .selected_text(
+                                options
+                                    .iter()
+                                    .find(|(v, _)| *v == current)
+                                    .map(|(_, l)| l.clone())
+                                    .unwrap_or_else(|| current.clone()),
+                            )
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for (v, l) in &options {
+                                    ui.selectable_value(&mut chosen, v.clone(), l);
+                                }
+                            })
+                    });
+                });
+                (chosen != current).then(|| serde_json::json!(chosen))
+            }
+            // A file lives on the renderer and moves over the backend file
+            // controls, so only a backend can declare one.
+            "path" | "file" => {
+                let ParamTarget::Backend(backend) = *target else {
+                    return None;
+                };
+                let source = value.as_str().unwrap_or("");
+                let mut committed = None;
+                let extensions: Vec<String> = kind
+                    .and_then(|k| k.get("extensions"))
+                    .and_then(|v| v.as_array())
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|e| e.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let editable = kind
+                    .and_then(|k| k.get("editable"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let language = kind
+                    .and_then(|k| k.get("language"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                // A path only means something to the renderer when it is
+                // the renderer's own filesystem, so Browse is offered only
+                // then; the editor works either way, because it moves the
+                // bytes rather than the path.
+                let local = crate::host::commands::app::renderer_is_local(&self.host);
+                let mut browse = false;
+                let mut edit = false;
+                let epoch = self
+                    .osc_stats
+                    .connection_epoch
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                ui.add_enabled_ui(context_current, |ui| {
+                    widgets::label_row_help(ui, &label, help, |ui| {
+                        if editable {
+                            edit = ui.button(t("backend.file.edit")).clicked();
+                        }
+                        if local {
+                            browse = ui.button(t("backend.file.browse")).clicked();
+                        }
+                        let draft = self.backend_path_edits.field(
+                            ui.make_persistent_id(("backend-file", backend, key, epoch)),
+                            epoch,
+                            ui.ctx().cumulative_frame_nr(),
+                        );
+                        if edit || browse {
+                            draft.discard();
+                        }
+                        let hint = match extensions.first() {
+                            Some(ext) => format!("name.{ext}"),
+                            None if kind_type == "path" => "/path/to/backend.lua".to_owned(),
+                            None => "name.ext".to_owned(),
+                        };
+                        committed = draft.show(
+                            ui,
+                            ("backend-file", backend, key, epoch),
+                            source,
+                            &hint,
+                            120.0,
+                            true,
+                        );
+                    });
+                });
+                if edit {
+                    self.open_script_editor(backend, key, language, extensions.clone());
                 }
-            };
-            if let Some(value) = sent {
-                if matches!(kind_type, "path" | "file") {
+                if browse {
+                    self.pick_files(
+                        ui.ctx(),
+                        crate::ui::file_dialogs::Purpose::Backend {
+                            backend: backend.to_owned(),
+                            key: key.to_owned(),
+                        },
+                        &extensions,
+                    );
+                }
+                committed.map(serde_json::Value::String)
+            }
+            _ => {
+                let is_int = kind_type == "int";
+                let min = kind
+                    .and_then(|k| k.get("min"))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32;
+                let max = kind
+                    .and_then(|k| k.get("max"))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0) as f32;
+                let step = if is_int {
+                    1.0
+                } else {
+                    kind.and_then(|k| k.get("step"))
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.01)
+                };
+                let unit = spec
+                    .get("unit")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let mut number = value.as_f64().unwrap_or(min as f64) as f32;
+                widgets::value_slider_help(
+                    ui,
+                    &label,
+                    help,
+                    &mut number,
+                    min..=max,
+                    step,
+                    move |v| format_param_value(v, step, &unit),
+                )
+                .then(|| {
+                    if is_int {
+                        serde_json::json!(number.round() as i64)
+                    } else {
+                        serde_json::json!(number as f64)
+                    }
+                })
+            }
+        }
+    }
+
+    /// Send an edited value to its plugin: a backend's through
+    /// `/backend/param` (the renderer echoes it), a generator's or the
+    /// phantom stage's kept at once as well, so the slider does not snap
+    /// back until the echo arrives.
+    fn send_plugin_param(
+        &self,
+        target: &ParamTarget<'_>,
+        key: &str,
+        spec: &serde_json::Value,
+        value: serde_json::Value,
+    ) {
+        match *target {
+            ParamTarget::Backend(backend) => {
+                let kind_type = spec
+                    .get("kind")
+                    .and_then(|k| k.get("type"))
+                    .and_then(|v| v.as_str());
+                if matches!(kind_type, Some("path" | "file")) {
                     if let Some(context) = &self.backend_path_edits.context {
                         context.with_current(&self.host, || {
                             self.send_backend_param(backend, key, value)
@@ -607,6 +658,10 @@ impl StudioSpike {
                     self.send_backend_param(backend, key, value);
                 }
             }
+            ParamTarget::Generator(generator) => {
+                engine::set_object_generator_param(&self.host, generator, key, value)
+            }
+            ParamTarget::Phantom => engine::set_phantom_extract_param(&self.host, key, value),
         }
     }
 
@@ -618,9 +673,12 @@ impl StudioSpike {
     // ── evaluation ───────────────────────────────────────────────────────
 
     /// Bar: the mode select and, while the choice is `auto`, the mode it
-    /// resolved to. Inset: the grid of the precomputed mode in force, then
-    /// the interpolation switch and the size intervals — nothing at all in
-    /// realtime with a backend that cannot size events.
+    /// resolved to (while the grid follows the bridge, the bridge it comes
+    /// from). Inset: the "Follow the bridge" switch, the grid of the
+    /// precomputed mode in force — the bridge's, read-only, while it follows
+    /// it —, rendering below the floor, then the interpolation switch and the
+    /// size intervals — nothing at all in realtime with a backend that cannot
+    /// size events.
     fn evaluation_group(&mut self, ui: &mut Ui) {
         let (
             selection,
@@ -633,6 +691,9 @@ impl StudioSpike {
             interpolation,
             intervals,
             meters_per_unit,
+            grid_source,
+            bridge_grid,
+            bridge_name,
         ) = {
             let live = self.host.read();
             let s = &live.app.render_evaluation_mode_state;
@@ -660,14 +721,55 @@ impl StudioSpike {
                 live.app.object_size_intervals,
                 // Room scale: metres per scene unit, from the renderer's room domain.
                 live.app.room_ratio.scale_m.max(0.001),
+                live.app.evaluation_grid.clone(),
+                live.app.evaluation_grid_bridge.clone(),
+                // The file the hinting bridge was loaded from.
+                live.app
+                    .evaluation_grid_bridge
+                    .as_ref()
+                    .and_then(|grid| grid.bridge_index)
+                    .and_then(|index| live.app.render_bridges.as_ref()?.bridges.get(index))
+                    .map(|bridge| {
+                        std::path::Path::new(&bridge.path).file_name().map_or_else(
+                            || bridge.path.clone(),
+                            |name| name.to_string_lossy().into_owned(),
+                        )
+                    }),
             )
         };
+        // `None` from a renderer before the setting: no switch, as before.
+        let follows = grid_source.as_deref() == Some("bridge");
+        let forced = grid_source.as_deref() == Some("custom");
+        // While the grid follows the bridge, what is shown is the bridge's.
+        let (selection, cartesian, allow_neg_z) = match (&bridge_grid, follows) {
+            (Some(grid), true) => (
+                grid.mode.clone(),
+                crate::model::app_state::VbapCartesian {
+                    x_size: Some(grid.x_size),
+                    y_size: Some(grid.y_size),
+                    z_size: Some(grid.z_size),
+                    z_neg_size: Some(grid.z_neg_size),
+                },
+                Some(grid.allow_negative_z),
+            ),
+            _ => (selection, cartesian, allow_neg_z),
+        };
+        // A forced grid has a concrete mode.
+        let allowed: Vec<String> = allowed
+            .into_iter()
+            .filter(|mode| !(forced && mode == "auto"))
+            .collect();
         // What the engine resolved the choice to, when that says more than
-        // the choice itself.
-        let resolved = effective
-            .as_ref()
-            .filter(|mode| **mode != selection)
-            .map(|mode| evaluation_label(mode));
+        // the choice itself; the bridge the grid comes from while it follows
+        // it.
+        let resolved = if follows {
+            bridge_name.map(|name| tf("evaluation.grid.fromBridge", &[("bridge", &name)]))
+        } else {
+            effective
+                .as_ref()
+                .filter(|mode| **mode != selection)
+                .map(|mode| evaluation_label(mode).to_owned())
+        };
         // Which grid block applies: `auto` follows the effective mode.
         let visible_mode = if selection == "auto" {
             effective.clone().unwrap_or_else(|| "auto".to_owned())
@@ -694,28 +796,59 @@ impl StudioSpike {
                             .color(theme::TEXT_MUTED),
                     );
                 }
-                widgets::bounded_combo(ui, 150.0, |ui, w| {
-                    egui::ComboBox::from_id_salt("evaluation-mode")
-                        .selected_text(evaluation_label(&selection))
-                        .width(w)
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            for mode in &allowed {
-                                ui.selectable_value(
-                                    &mut chosen,
-                                    mode.clone(),
-                                    evaluation_label(mode),
-                                );
-                            }
-                        })
+                // The bridge's mode while the grid follows it: shown, not
+                // editable.
+                ui.add_enabled_ui(!follows, |ui| {
+                    widgets::bounded_combo(ui, 150.0, |ui, w| {
+                        egui::ComboBox::from_id_salt("evaluation-mode")
+                            .selected_text(evaluation_label(&selection))
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for mode in &allowed {
+                                    ui.selectable_value(
+                                        &mut chosen,
+                                        mode.clone(),
+                                        evaluation_label(mode),
+                                    );
+                                }
+                            })
+                    })
                 });
             })
             .show(ui, |ui| {
+                if grid_source.is_some() {
+                    let mut follow = follows;
+                    if widgets::switch_row_help(
+                        ui,
+                        t("evaluation.grid.followBridge"),
+                        "help.eval.gridSource",
+                        &mut follow,
+                    ) {
+                        render::set_evaluation_grid_follows_bridge(&self.host, follow);
+                    }
+                }
                 if show_cartesian {
-                    self.cartesian_grid(ui, &cartesian, allow_neg_z, meters_per_unit);
+                    self.cartesian_grid(ui, &cartesian, allow_neg_z, meters_per_unit, !follows);
                 }
                 if show_polar {
                     self.polar_grid(ui, &polar, allow_neg_z);
+                }
+                if grid_source.is_some() {
+                    let mut below = allow_neg_z.unwrap_or(false);
+                    let toggled = ui
+                        .add_enabled_ui(!follows, |ui| {
+                            widgets::switch_row_help(
+                                ui,
+                                t("evaluation.allowNegativeZ"),
+                                "help.eval.allowNegativeZ",
+                                &mut below,
+                            )
+                        })
+                        .inner;
+                    if toggled {
+                        render::set_vbap_allow_negative_z(&self.host, below);
+                    }
                 }
                 if show_cartesian || show_polar {
                     let mut on = interpolation;
@@ -756,13 +889,15 @@ impl StudioSpike {
         }
     }
 
-    /// The cartesian grid's four counts and the step each makes.
+    /// The cartesian grid's four counts and the step each makes; read-only
+    /// unless `editable` (the grid follows the bridge).
     fn cartesian_grid(
         &mut self,
         ui: &mut Ui,
         cartesian: &crate::model::app_state::VbapCartesian,
         allow_neg_z: Option<bool>,
         meters_per_unit: f64,
+        editable: bool,
     ) {
         help::label(
             ui,
@@ -780,6 +915,7 @@ impl StudioSpike {
                 "X",
                 cartesian.x_size,
                 1,
+                editable,
                 render::control_render_evaluation_cartesian_x_size,
             );
             self.grid_field(
@@ -787,6 +923,7 @@ impl StudioSpike {
                 "Y",
                 cartesian.y_size,
                 1,
+                editable,
                 render::control_render_evaluation_cartesian_y_size,
             );
             self.grid_field(
@@ -794,6 +931,7 @@ impl StudioSpike {
                 "Z+",
                 cartesian.z_size,
                 1,
+                editable,
                 render::control_render_evaluation_cartesian_z_size,
             );
             self.grid_field(
@@ -801,6 +939,7 @@ impl StudioSpike {
                 "Z-",
                 cartesian.z_neg_size,
                 0,
+                editable,
                 render::control_render_evaluation_cartesian_z_neg_size,
             );
         });
@@ -856,6 +995,7 @@ impl StudioSpike {
                 "az",
                 polar.azimuth_resolution,
                 1,
+                true,
                 render::control_render_evaluation_polar_azimuth_resolution,
             );
             self.grid_field(
@@ -863,6 +1003,7 @@ impl StudioSpike {
                 "el",
                 polar.elevation_resolution,
                 1,
+                true,
                 render::control_render_evaluation_polar_elevation_resolution,
             );
             self.grid_field(
@@ -870,6 +1011,7 @@ impl StudioSpike {
                 "d",
                 polar.distance_res,
                 1,
+                true,
                 render::control_render_evaluation_polar_distance_res,
             );
         });
@@ -914,13 +1056,15 @@ impl StudioSpike {
     }
 
     /// One integer field of an evaluation grid. `floor` is the smallest value
-    /// the renderer accepts (1 everywhere but the negative-Z count).
+    /// the renderer accepts (1 everywhere but the negative-Z count); shown,
+    /// not editable, unless `editable`.
     fn grid_field(
         &mut self,
         ui: &mut Ui,
         placeholder: &str,
         current: Option<u32>,
         floor: u32,
+        editable: bool,
         send: fn(&SharedState, i32),
     ) {
         let mut value = current.unwrap_or(floor);
@@ -930,13 +1074,16 @@ impl StudioSpike {
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_MUTED),
             );
-            if ui
-                .add_sized(
-                    egui::vec2(48.0, ui.spacing().interact_size.y),
-                    egui::DragValue::new(&mut value).range(floor..=u32::MAX),
-                )
-                .changed()
-            {
+            let changed = ui
+                .add_enabled_ui(editable, |ui| {
+                    ui.add_sized(
+                        egui::vec2(48.0, ui.spacing().interact_size.y),
+                        egui::DragValue::new(&mut value).range(floor..=u32::MAX),
+                    )
+                    .changed()
+                })
+                .inner;
+            if changed && editable {
                 send(&self.host, value.max(floor) as i32);
             }
         });
@@ -1103,15 +1250,19 @@ impl StudioSpike {
         }
     }
 
-    /// A group that is its select: how gains move between frames.
+    /// Bar: how gains move between frames. Inset, per sample only: how many
+    /// samples apart a moving object's gains are looked up.
     fn ramp_group(&mut self, ui: &mut Ui) {
-        let current = {
+        let (current, stride) = {
             let live = self.host.read();
-            live.app
-                .audio
-                .ramp_mode
-                .clone()
-                .unwrap_or_else(|| "frame".into())
+            (
+                live.app
+                    .audio
+                    .ramp_mode
+                    .clone()
+                    .unwrap_or_else(|| "frame".into()),
+                live.option_f64("sample_ramp_stride").unwrap_or(8.0),
+            )
         };
         let current = if RAMP_MODES.iter().any(|(id, _)| *id == current) {
             current
@@ -1119,7 +1270,8 @@ impl StudioSpike {
             "frame".to_owned()
         };
         let mut chosen = current.clone();
-        Group::new(t("renderer.rampTitle"))
+        let mut stride = stride as f32;
+        let stride_changed = Group::new(t("renderer.rampTitle"))
             .info("rampMode")
             .actions(|ui| {
                 widgets::bounded_combo(ui, 140.0, |ui, w| {
@@ -1138,9 +1290,26 @@ impl StudioSpike {
                         })
                 });
             })
-            .bar(ui);
+            .show(ui, |ui| {
+                current == "sample"
+                    && widgets::value_slider_help(
+                        ui,
+                        t("audio.sampleRampStride"),
+                        "help.audio.sampleRampStride",
+                        &mut stride,
+                        1.0..=32.0,
+                        1.0,
+                        |v| format!("{v:.0}"),
+                    )
+            });
         if chosen != current {
             engine::control_ramp_mode(&self.host, chosen);
+        }
+        if stride_changed {
+            self.set_option(
+                "sample_ramp_stride",
+                serde_json::json!(stride.round() as i64),
+            );
         }
     }
 
@@ -1347,16 +1516,56 @@ fn backend_label(id: &str) -> String {
     .to_owned()
 }
 
-/// A translated parameter label wins over the schema's own.
-fn param_label(key: &str, spec: &serde_json::Value) -> String {
-    let translated = t(&format!("backendParam.{key}"));
-    if translated != format!("backendParam.{key}") {
-        return translated.to_owned();
+/// Which plugin a generated parameter form edits, and so where an edit goes.
+#[derive(Clone, Copy)]
+pub(crate) enum ParamTarget<'a> {
+    Backend(&'a str),
+    Generator(&'a str),
+    Phantom,
+}
+
+impl<'a> ParamTarget<'a> {
+    /// Keeps the controls of two plugins apart in egui's id space.
+    fn salt(&self) -> (&'static str, &'a str) {
+        match *self {
+            ParamTarget::Backend(id) => ("backend", id),
+            ParamTarget::Generator(id) => ("generator", id),
+            ParamTarget::Phantom => ("phantom", ""),
+        }
     }
-    spec.get("label")
+}
+
+/// The label of a declared parameter: the translation of the `i18nKey` it
+/// declares, else the Studio's own `backendParam.<key>`, else the English
+/// label the schema carries.
+fn param_label(key: &str, spec: &serde_json::Value) -> String {
+    spec.get("i18nKey")
         .and_then(|v| v.as_str())
-        .unwrap_or(key)
-        .to_owned()
+        .and_then(crate::i18n::lookup)
+        .or_else(|| crate::i18n::lookup(&format!("backendParam.{key}")))
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            spec.get("label")
+                .and_then(|v| v.as_str())
+                .unwrap_or(key)
+                .to_owned()
+        })
+}
+
+/// A numeric parameter's readout: as many decimals as its step means
+/// (`0.01` → 2, `0.5` → 1, `10` → 0, at most 3), then its unit.
+fn format_param_value(value: f32, step: f64, unit: &str) -> String {
+    let decimals = if step > 0.0 {
+        (-step.log10().floor()).clamp(0.0, 3.0) as usize
+    } else {
+        2
+    };
+    let text = format!("{value:.decimals$}");
+    if unit.is_empty() {
+        text
+    } else {
+        format!("{text} {unit}")
+    }
 }
 
 /// `setBackendInfoModalOpen`: the generic intro, then a paragraph on the

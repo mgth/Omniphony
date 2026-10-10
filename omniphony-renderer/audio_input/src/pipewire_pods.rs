@@ -21,7 +21,10 @@ pub const IEC958_DTS_CHANNELS: u16 = 2;
 /// burst at all.
 pub const IEC958_DTSHD_RATE_HZ: u32 = 192_000;
 pub const IEC958_DTSHD_CHANNELS: u16 = 8;
-const IEC958_AUDIO_POSITION_PROP_8CH: &str = "[ FL FR C LFE SL SR RL RR ]";
+/// PipeWire position names, the same order as [`raw_audio_positions`]. The
+/// centre is `FC`: PipeWire has no `C` position, and a name it cannot parse
+/// leaves that channel unpositioned.
+const IEC958_AUDIO_POSITION_PROP_8CH: &str = "[ FL FR FC LFE SL SR RL RR ]";
 const IEC958_AUDIO_POSITION_PROP_2CH: &str = "[ FL FR ]";
 const SPA_PARAM_BUFFERS_META_TYPE_RAW: u32 = 7;
 /// PipeWire's default `clock.quantum-limit`: the largest number of frames a
@@ -54,12 +57,20 @@ fn iec958_codec_for_channels(channels: u16) -> u32 {
 ///
 /// Callbacks receive pods that only live for the duration of the call, so a pod
 /// that must outlive the callback has to be cloned out first.
-pub fn clone_spa_pod_bytes(param: *const spa::sys::spa_pod) -> Option<Vec<u8>> {
+///
+/// # Safety
+///
+/// `param` must be null or point to a valid SPA pod whose header and
+/// `size`-byte body are readable for the duration of the call, as PipeWire
+/// guarantees for the pods it hands to a callback.
+pub unsafe fn clone_spa_pod_bytes(param: *const spa::sys::spa_pod) -> Option<Vec<u8>> {
     if param.is_null() {
         return None;
     }
+    // SAFETY: non-null, and valid per this function's contract.
     let pod = unsafe { &*param };
     let total_size = std::mem::size_of::<spa::sys::spa_pod>() + pod.size as usize;
+    // SAFETY: the contract covers the header plus `pod.size` body bytes.
     Some(unsafe { std::slice::from_raw_parts(param.cast::<u8>(), total_size) }.to_vec())
 }
 
@@ -104,60 +115,43 @@ pub fn build_pipewire_bridge_stream_properties(
     props
 }
 
-pub fn build_pipewire_bridge_adapter_properties(
-    node_name: &str,
-    node_description: &str,
-    channels: u16,
-    requested_latency: &str,
-) -> pw::properties::PropertiesBox {
-    let mut props = pw::properties::PropertiesBox::new();
-    props.insert("factory.name", "support.null-audio-sink");
-    props.insert(*pw::keys::MEDIA_TYPE, "Audio");
-    props.insert(*pw::keys::MEDIA_CATEGORY, "Playback");
-    props.insert(*pw::keys::MEDIA_ROLE, "Movie");
-    props.insert("media.class", "Audio/Sink");
-    props.insert("object.linger", "false");
-    props.insert("node.virtual", "true");
-    props.insert("node.name", node_name.to_owned());
-    props.insert("node.description", node_description.to_owned());
-    props.insert("media.name", node_description.to_owned());
-    props.insert("audio.channels", channels.to_string());
-    props.insert("audio.position", iec958_audio_position(channels));
-    props.insert("iec958.codecs", IEC958_CODECS_PROP);
-    props.insert("resample.disable", "true");
-    props.insert("node.latency", requested_latency);
-    props
-}
-
-pub fn build_pipewire_bridge_capture_stream_properties(
-    node_name: &str,
-    node_description: &str,
-    channels: u16,
-    target_object: &str,
-) -> pw::properties::PropertiesBox {
-    let mut props = pw::properties::PropertiesBox::new();
-    props.insert(*pw::keys::MEDIA_TYPE, "Audio");
-    props.insert(*pw::keys::MEDIA_CATEGORY, "Capture");
-    props.insert(*pw::keys::MEDIA_ROLE, "Movie");
-    props.insert("target.object", target_object);
-    props.insert("node.target", target_object);
-    props.insert(*pw::keys::STREAM_CAPTURE_SINK, "true");
-    props.insert(*pw::keys::STREAM_MONITOR, "true");
-    props.insert("node.name", format!("{node_name}.monitor.capture"));
-    props.insert(
-        "node.description",
-        format!("{node_description} Monitor Capture"),
-    );
-    props.insert("media.name", format!("{node_description} Monitor Capture"));
-    props.insert("audio.channels", channels.to_string());
-    props.insert("audio.position", iec958_audio_position(channels));
-    props.insert("iec958.codecs", IEC958_CODECS_PROP);
-    props.insert("resample.disable", "true");
-    props
-}
-
 pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> Result<Vec<u8>> {
     build_buffers_pod(channels, sample_rate_hz, std::mem::size_of::<u16>(), 0)
+}
+
+/// One Buffers param for every IEC 61937 format a driver-following sink
+/// offers, sized for the largest graph cycle of the widest carrier.
+///
+/// A sink that follows a driver (the sync host's `own` mode) gets one cycle's
+/// worth per process call, so a buffer must hold a whole quantum. And it must
+/// be *one* param with ranges: a fixed-stride param per format lets PipeWire
+/// pair a format with another format's stride and size, and the player is
+/// then asked for half a quantum per cycle (measured: mpv queued 2048 of a
+/// 4096-frame cycle, i.e. half real time). Ranges as in spike S1.
+pub fn build_pipewire_bridge_iec958_quantum_buffers_pod() -> Result<Vec<u8>> {
+    let range = |default: i32, min: i32, max: i32| {
+        pw::spa::pod::Value::Choice(pw::spa::pod::ChoiceValue::Int(pw::spa::utils::Choice(
+            pw::spa::utils::ChoiceFlags::empty(),
+            pw::spa::utils::ChoiceEnum::Range { default, min, max },
+        )))
+    };
+    let max_size = (PW_QUANTUM_LIMIT_FRAMES as i32) * 16;
+    let obj = object! {
+        spa::utils::SpaTypes::ObjectParamBuffers,
+        spa::param::ParamType::Buffers,
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_buffers), range(4, 2, 16)),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_blocks), Int, 1i32),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_size), range(max_size, 4096, max_size)),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_stride), range(4, 1, 16)),
+    };
+    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(obj),
+    )
+    .map_err(|e| anyhow!("Failed to serialize the IEC 958 buffers pod: {e:?}"))?
+    .0
+    .into_inner();
+    Ok(values)
 }
 
 /// Buffer pod matching the linear-PCM alternative, whose samples are four bytes
@@ -592,5 +586,33 @@ mod tests {
     fn raw_positions_match_the_fixed_input_map() {
         assert_eq!(raw_audio_positions(8).len(), 8);
         assert_eq!(raw_audio_positions(2).len(), 2);
+    }
+
+    /// `audio.position` and the format pod's positions describe the same
+    /// channels: every name must be one PipeWire parses, in the pod's order.
+    #[test]
+    fn audio_position_property_names_the_pod_positions() {
+        let spa_name = |id: u32| match id {
+            spa::sys::SPA_AUDIO_CHANNEL_FL => "FL",
+            spa::sys::SPA_AUDIO_CHANNEL_FR => "FR",
+            spa::sys::SPA_AUDIO_CHANNEL_FC => "FC",
+            spa::sys::SPA_AUDIO_CHANNEL_LFE => "LFE",
+            spa::sys::SPA_AUDIO_CHANNEL_SL => "SL",
+            spa::sys::SPA_AUDIO_CHANNEL_SR => "SR",
+            spa::sys::SPA_AUDIO_CHANNEL_RL => "RL",
+            spa::sys::SPA_AUDIO_CHANNEL_RR => "RR",
+            other => panic!("unexpected channel id {other}"),
+        };
+        for channels in [2u16, 8] {
+            let expected: Vec<&str> = raw_audio_positions(channels)
+                .iter()
+                .map(|id| spa_name(id.0))
+                .collect();
+            let published: Vec<&str> = iec958_audio_position(channels)
+                .trim_matches(|c| c == '[' || c == ']' || c == ' ')
+                .split_whitespace()
+                .collect();
+            assert_eq!(published, expected, "{channels} channels");
+        }
     }
 }

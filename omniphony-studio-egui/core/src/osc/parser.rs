@@ -42,7 +42,7 @@ fn clamp(v: f64, min: f64, max: f64) -> f64 {
     v.max(min).min(max)
 }
 
-// Polar -> cartesian comes from `omniphony-geometry`, shared with the renderer.
+// Polar -> cartesian comes from `omniphony_geometry`, shared with the renderer.
 // The copy that lived here read the angles in the Three.js scene frame while
 // labelling the result as ADM, so an object sent at azimuth 90° (hard right)
 // was stored at ADM (0, 0, dist) — directly overhead. Objects arriving in polar
@@ -364,6 +364,23 @@ pub enum OscEvent {
     },
     #[serde(rename = "state:snapshot_complete")]
     StateSnapshotComplete,
+    /// `/state/generation`: where the state the engine sent stands; `full`
+    /// in each datagram of a snapshot, with that datagram's index and the
+    /// snapshot's count (osc-contract `STATE_GENERATION`).
+    #[serde(rename = "state:generation")]
+    StateGeneration {
+        generation: i32,
+        full: bool,
+        part: u32,
+        parts: u32,
+    },
+    /// `/state/control_error`: a control this client sent was not applied.
+    #[serde(rename = "state:control_error")]
+    StateControlError {
+        address: String,
+        code: String,
+        message: String,
+    },
     #[serde(rename = "state:realtime:master_gain")]
     StateRealtimeMasterGain {
         value: f64,
@@ -435,6 +452,10 @@ pub enum OscEvent {
     StateOptionsSchema {
         value: String,
     },
+    #[serde(rename = "state:host_options")]
+    StateHostOptions {
+        value: String,
+    },
     #[serde(rename = "state:decode_time_ms")]
     StateDecodeTimeMs {
         value: f64,
@@ -492,8 +513,17 @@ pub enum OscEvent {
     StateRenderAbi {
         value: String,
     },
+    #[serde(rename = "state:render:bridge_api")]
+    StateRenderBridgeApi {
+        value: String,
+    },
     #[serde(rename = "state:render:bridge_error")]
     StateRenderBridgeError {
+        value: String,
+    },
+    /// JSON: the bridges asked for, then each one loaded or failed.
+    #[serde(rename = "state:render:bridges")]
+    StateRenderBridges {
         value: String,
     },
     #[serde(rename = "state:input_pipe")]
@@ -510,6 +540,14 @@ pub enum OscEvent {
     #[serde(rename = "state:osc:metering")]
     StateOscMetering {
         enabled: bool,
+    },
+    #[serde(rename = "state:osc:diag")]
+    StateOscDiag {
+        enabled: bool,
+    },
+    #[serde(rename = "state:render_evaluation:object_size_intervals")]
+    StateRenderEvaluationObjectSizeIntervals {
+        value: u32,
     },
     #[serde(rename = "state:log_level")]
     StateLogLevel {
@@ -678,9 +716,9 @@ fn parse_omniphony_object_position(
     }
 
     let id = find_id_in_address(parts)?;
-    let x = to_number(args[0])?;
-    let y = to_number(args[1])?;
-    let z = to_number(args[2])?;
+    let x = to_number(*args.first()?)?;
+    let y = to_number(*args.get(1)?)?;
+    let z = to_number(*args.get(2)?)?;
 
     let direct_speaker_index = args
         .get(3)
@@ -839,13 +877,13 @@ fn parse_omniphony_spatial_frame(parts: &[&str], args: &[f64]) -> Option<OscEven
     if parts.len() != 3 || parts[0] != "omniphony" || parts[1] != "spatial" || parts[2] != "frame" {
         return None;
     }
-    let sample_pos = to_number(args[0])? as i64;
+    let sample_pos = to_number(*args.first()?)? as i64;
     let (generation, count_index, format_index) = if args.len() >= 4 {
         (to_number(args[1])? as u64, 2usize, 3usize)
     } else {
         (0u64, 1usize, 2usize)
     };
-    let object_count_raw = to_number(args[count_index])?;
+    let object_count_raw = to_number(*args.get(count_index)?)?;
     let object_count = object_count_raw.max(0.0) as u32;
     let coordinate_format = match args
         .get(format_index)
@@ -893,34 +931,34 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
 
     match (parts.len(), parts[2]) {
         (3, "latency") => Some(OscEvent::StateLatency {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "latency_instant") => Some(OscEvent::StateLatencyInstant {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "latency_control") => Some(OscEvent::StateLatencyControl {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "latency_smoothed") => Some(OscEvent::StateLatencySmoothed {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "latency_downstream") => Some(OscEvent::StateLatencyDownstream {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "latency_target") => Some(OscEvent::StateLatencyTarget {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "latency_target_requested") => Some(OscEvent::StateLatencyTargetRequested {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "latency_avail_input") => Some(OscEvent::StateLatencyAvailInput {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "latency_output_fifo") => Some(OscEvent::StateLatencyOutputFifo {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "latency_resampler_pending") => Some(OscEvent::StateLatencyResamplerPending {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "diag_schema") => Some(OscEvent::StateDiagSchema {
             value: raw_args.first().and_then(unwrap_string)?,
@@ -934,26 +972,29 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (3, "options_schema") => Some(OscEvent::StateOptionsSchema {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
+        (3, "host_options") => Some(OscEvent::StateHostOptions {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
         (3, "diag_values") => Some(OscEvent::StateDiagValues {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (3, "decode_time_ms") => Some(OscEvent::StateDecodeTimeMs {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "render_time_ms") => Some(OscEvent::StateRenderTimeMs {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "crossover_time_ms") => Some(OscEvent::StateCrossoverTimeMs {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "write_time_ms") => Some(OscEvent::StateWriteTimeMs {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "frame_duration_ms") => Some(OscEvent::StateFrameDurationMs {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "resample_ratio") => Some(OscEvent::StateResampleRatio {
-            value: to_number(args[0])?,
+            value: to_number(*args.first()?)?,
         }),
         (3, "log_level") => Some(OscEvent::StateLogLevel {
             value: raw_args.first().and_then(unwrap_string)?,
@@ -967,7 +1008,7 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         // Lightweight ~30 Hz head-pose channel (w, x, y, z) for the 3D head;
         // the full renderer state stays at 10 Hz.
         (3, "head_pose") if args.len() >= 4 => Some(OscEvent::StateHeadPose {
-            w: to_number(args[0])? as f32,
+            w: to_number(*args.first()?)? as f32,
             x: to_number(args[1])? as f32,
             y: to_number(args[2])? as f32,
             z: to_number(args[3])? as f32,
@@ -1000,6 +1041,32 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (3, "snapshot_complete") => Some(OscEvent::StateSnapshotComplete),
+        (3, "generation") => Some(OscEvent::StateGeneration {
+            // The engine's count, compared for equality only: kept as the
+            // int it travels as, never through a float.
+            generation: match raw_args.first() {
+                Some(OscType::Int(generation)) => *generation,
+                _ => return None,
+            },
+            full: args.get(1).copied().and_then(to_number).unwrap_or(0.0) != 0.0,
+            part: args
+                .get(2)
+                .copied()
+                .and_then(to_number)
+                .unwrap_or(0.0)
+                .max(0.0) as u32,
+            parts: args
+                .get(3)
+                .copied()
+                .and_then(to_number)
+                .unwrap_or(1.0)
+                .max(1.0) as u32,
+        }),
+        (3, "control_error") => Some(OscEvent::StateControlError {
+            address: raw_args.first().and_then(unwrap_string)?,
+            code: raw_args.get(1).and_then(unwrap_string)?,
+            message: raw_args.get(2).and_then(unwrap_string).unwrap_or_default(),
+        }),
         (3, "loudness") => Some(OscEvent::StateLoudness {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
@@ -1048,7 +1115,7 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             _ => None,
         },
         (5, "render_evaluation") if parts[3] == "cartesian" => {
-            let value = to_number(args[0])?.max(0.0) as u32;
+            let value = to_number(*args.first()?)?.max(0.0) as u32;
             match parts[4] {
                 "x_size" => Some(OscEvent::StateRenderEvaluationCartesianXSize { value }),
                 "y_size" => Some(OscEvent::StateRenderEvaluationCartesianYSize { value }),
@@ -1057,33 +1124,38 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 _ => None,
             }
         }
+        (4, "render_evaluation") if parts[3] == "object_size_intervals" => {
+            Some(OscEvent::StateRenderEvaluationObjectSizeIntervals {
+                value: to_number(*args.first()?)?.max(0.0) as u32,
+            })
+        }
         (4, "render_evaluation") if parts[3] == "position_interpolation" => {
             Some(OscEvent::StateRenderEvaluationPositionInterpolation {
-                enabled: to_number(args[0])? != 0.0,
+                enabled: to_number(*args.first()?)? != 0.0,
             })
         }
         (5, "render_evaluation") if parts[3] == "polar" => match parts[4] {
             "azimuth_resolution" => {
-                let value = to_number(args[0])?.max(0.0) as u32;
+                let value = to_number(*args.first()?)?.max(0.0) as u32;
                 Some(OscEvent::StateRenderEvaluationPolarAzimuthResolution { value })
             }
             "elevation_resolution" => {
-                let value = to_number(args[0])?.max(0.0) as u32;
+                let value = to_number(*args.first()?)?.max(0.0) as u32;
                 Some(OscEvent::StateRenderEvaluationPolarElevationResolution { value })
             }
             "distance_res" => Some(OscEvent::StateRenderEvaluationPolarDistanceRes {
-                value: to_number(args[0])?.max(0.0) as u32,
+                value: to_number(*args.first()?)?.max(0.0) as u32,
             }),
             "distance_max" => Some(OscEvent::StateRenderEvaluationPolarDistanceMax {
-                value: to_number(args[0])?.max(0.0),
+                value: to_number(*args.first()?)?.max(0.0),
             }),
             _ => None,
         },
         (4, "vbap") if parts[3] == "allow_negative_z" => Some(OscEvent::StateVbapAllowNegativeZ {
-            enabled: to_number(args[0])? != 0.0,
+            enabled: to_number(*args.first()?)? != 0.0,
         }),
         (4, "speakers") if parts[3] == "recomputing" => Some(OscEvent::StateSpeakersRecomputing {
-            enabled: to_number(args[0])? != 0.0,
+            enabled: to_number(*args.first()?)? != 0.0,
         }),
         (4, "speakers") if parts[3] == "recompute_error" => {
             Some(OscEvent::StateSpeakersRecomputeError {
@@ -1117,54 +1189,54 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             _ => None,
         },
         (3, "adaptive_resampling") => Some(OscEvent::StateAdaptiveResampling {
-            enabled: to_number(args[0])? != 0.0,
+            enabled: to_number(*args.first()?)? != 0.0,
         }),
         (4, "adaptive_resampling") => match parts[3] {
             "enable_far_mode" => Some(OscEvent::StateAdaptiveResamplingEnableFarMode {
-                enabled: to_number(args[0])? != 0.0,
+                enabled: to_number(*args.first()?)? != 0.0,
             }),
             "force_silence_in_far_mode" => {
                 Some(OscEvent::StateAdaptiveResamplingForceSilenceInFarMode {
-                    enabled: to_number(args[0])? != 0.0,
+                    enabled: to_number(*args.first()?)? != 0.0,
                 })
             }
             "hard_recover_in_far_mode" | "hard_recover_high_in_far_mode" => {
                 Some(OscEvent::StateAdaptiveResamplingHardRecoverHighInFarMode {
-                    enabled: to_number(args[0])? != 0.0,
+                    enabled: to_number(*args.first()?)? != 0.0,
                 })
             }
             "hard_recover_low_in_far_mode" => {
                 Some(OscEvent::StateAdaptiveResamplingHardRecoverLowInFarMode {
-                    enabled: to_number(args[0])? != 0.0,
+                    enabled: to_number(*args.first()?)? != 0.0,
                 })
             }
             "far_mode_return_fade_in_ms" => {
                 Some(OscEvent::StateAdaptiveResamplingFarModeReturnFadeInMs {
-                    value: to_number(args[0])?,
+                    value: to_number(*args.first()?)?,
                 })
             }
             "kp_near" => Some(OscEvent::StateAdaptiveResamplingKpNear {
-                value: to_number(args[0])?,
+                value: to_number(*args.first()?)?,
             }),
             "ki" => Some(OscEvent::StateAdaptiveResamplingKi {
-                value: to_number(args[0])?,
+                value: to_number(*args.first()?)?,
             }),
             "integral_discharge_ratio" => {
                 Some(OscEvent::StateAdaptiveResamplingIntegralDischargeRatio {
-                    value: to_number(args[0])?,
+                    value: to_number(*args.first()?)?,
                 })
             }
             "max_adjust" => Some(OscEvent::StateAdaptiveResamplingMaxAdjust {
-                value: to_number(args[0])?,
+                value: to_number(*args.first()?)?,
             }),
             "update_interval_callbacks" => {
                 Some(OscEvent::StateAdaptiveResamplingUpdateIntervalCallbacks {
-                    value: to_number(args[0])?,
+                    value: to_number(*args.first()?)?,
                 })
             }
             "high_recover_entry_margin_ms" => {
                 Some(OscEvent::StateAdaptiveResamplingHighRecoverEntryMarginMs {
-                    value: to_number(args[0])?,
+                    value: to_number(*args.first()?)?,
                 })
             }
             "band" => Some(OscEvent::StateAdaptiveResamplingBand {
@@ -1174,12 +1246,12 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 value: unwrap_string(raw_args.first()?)?,
             }),
             "pause" => Some(OscEvent::StateAdaptiveResamplingPaused {
-                enabled: to_number(args[0])? != 0.0,
+                enabled: to_number(*args.first()?)? != 0.0,
             }),
             _ => None,
         },
         (4, "config") if parts[3] == "saved" => Some(OscEvent::StateConfigSaved {
-            saved: to_number(args[0])? != 0.0,
+            saved: to_number(*args.first()?)? != 0.0,
         }),
         (4, "render") if parts[3] == "bridge_path" => Some(OscEvent::StateRenderBridgePath {
             value: raw_args.first().and_then(unwrap_string)?,
@@ -1204,7 +1276,15 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (4, "render") if parts[3] == "abi" => Some(OscEvent::StateRenderAbi {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
+        // The bridge_api version the engine was built against: a decoder
+        // bridge loads only if it was built against the same minor.
+        (4, "render") if parts[3] == "bridge_api" => Some(OscEvent::StateRenderBridgeApi {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
         (4, "render") if parts[3] == "bridge_error" => Some(OscEvent::StateRenderBridgeError {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
+        (4, "render") if parts[3] == "bridges" => Some(OscEvent::StateRenderBridges {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (4, "object_test") if parts[3] == "clip" => Some(OscEvent::StateObjectTestClip {
@@ -1215,17 +1295,20 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             Some(OscEvent::StateInputPipe { value })
         }
         (4, "osc") if parts[3] == "metering" => Some(OscEvent::StateOscMetering {
-            enabled: to_number(args[0])? != 0.0,
+            enabled: to_number(*args.first()?)? != 0.0,
+        }),
+        (4, "osc") if parts[3] == "diag" => Some(OscEvent::StateOscDiag {
+            enabled: to_number(*args.first()?)? != 0.0,
         }),
         (5, kind) if kind == "object" || kind == "speaker" => match parts[4] {
             "gain" if kind == "speaker" => {
                 let id = parts[3].parse::<u32>().ok()?.to_string();
-                let gain = clamp(to_number(args[0])?, 0.0, 2.0);
+                let gain = clamp(to_number(*args.first()?)?, 0.0, 2.0);
                 Some(OscEvent::StateSpeakerGain { id, gain })
             }
             "delay" if kind == "speaker" => {
                 let id = parts[3].parse::<u32>().ok()?.to_string();
-                let delay_ms = clamp(to_number(args[0])?, 0.0, 10_000.0);
+                let delay_ms = clamp(to_number(*args.first()?)?, 0.0, 10_000.0);
                 Some(OscEvent::StateSpeakerDelay { id, delay_ms })
             }
             "mute" => {
@@ -1234,7 +1317,7 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 } else {
                     parts[3].to_string()
                 };
-                let muted = to_number(args[0])? != 0.0;
+                let muted = to_number(*args.first()?)? != 0.0;
                 if kind == "speaker" {
                     Some(OscEvent::StateSpeakerMute { id, muted })
                 } else {
@@ -1247,7 +1330,7 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             }),
             "spatialize" if kind == "speaker" => {
                 let id = parts[3].parse::<u32>().ok()?.to_string();
-                let spatialize = to_number(args[0])? != 0.0;
+                let spatialize = to_number(*args.first()?)? != 0.0;
                 Some(OscEvent::StateSpeakerSpatialize { id, spatialize })
             }
             "name" if kind == "speaker" => {
@@ -1257,14 +1340,20 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             }
             "freq_low" if kind == "speaker" => {
                 let id = parts[3].parse::<u32>().ok()?.to_string();
-                let freq_low =
-                    to_number(args[0]).and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
+                let freq_low = args
+                    .first()
+                    .copied()
+                    .and_then(to_number)
+                    .and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
                 Some(OscEvent::StateSpeakerFreqLow { id, freq_low })
             }
             "freq_high" if kind == "speaker" => {
                 let id = parts[3].parse::<u32>().ok()?.to_string();
-                let freq_high =
-                    to_number(args[0]).and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
+                let freq_high = args
+                    .first()
+                    .copied()
+                    .and_then(to_number)
+                    .and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
                 Some(OscEvent::StateSpeakerFreqHigh { id, freq_high })
             }
             _ => None,
@@ -1281,14 +1370,16 @@ fn parse_meter(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
     if after.len() >= 6 && after[1] == "object" && after[3] == "band" && after[5] == "gains" {
         let id = after[2].to_string();
         let band: usize = after[4].parse().ok()?;
-        let gains: Vec<f64> = args.iter().map(|&v| clamp(v, 0.0, 1.0)).collect();
+        let gains: Vec<f64> = args.iter().map(|&v| v.max(0.0)).collect();
         return Some(OscEvent::MeterObjectBandGains { id, band, gains });
     }
 
-    // gains sub-message: meter / object / {id} / gains
+    // gains sub-message: meter / object / {id} / gains. The stage sums its
+    // bands' gains here, so a loudspeaker carrying every band reads above 1;
+    // the readers that need a fraction take their own.
     if after.len() >= 4 && after[1] == "object" && after[3] == "gains" {
         let id = after[2].to_string();
-        let gains: Vec<f64> = args.iter().map(|&v| clamp(v, 0.0, 1.0)).collect();
+        let gains: Vec<f64> = args.iter().map(|&v| v.max(0.0)).collect();
         return Some(OscEvent::MeterObjectGains { id, gains });
     }
 
@@ -1298,12 +1389,22 @@ fn parse_meter(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
         // Peak ceiling is left high (+24 dBFS) so true over-0 dBFS peaks
         // (clipping) reach the UI instead of being flattened to 0; the RMS that
         // drives the bar stays bounded for a clean fill.
-        let peak = clamp(to_number(args[0]).unwrap_or(-100.0), -100.0, 24.0);
-        let rms = clamp(to_number(args[1]).unwrap_or(-100.0), -100.0, 0.0);
+        let peak = clamp(
+            args.first().copied().and_then(to_number).unwrap_or(-100.0),
+            -100.0,
+            24.0,
+        );
+        let rms = clamp(
+            args.get(1).copied().and_then(to_number).unwrap_or(-100.0),
+            -100.0,
+            0.0,
+        );
         match kind {
             "object" => {
                 // Any args past (peak, rms) are per-crossover-band RMS values.
-                let band_rms_dbfs = args[2..]
+                let band_rms_dbfs = args
+                    .get(2..)
+                    .unwrap_or_default()
                     .iter()
                     .map(|&v| clamp(to_number(v).unwrap_or(-100.0), -100.0, 0.0))
                     .collect();
@@ -1427,6 +1528,29 @@ mod tests {
                 ..
             }) if id == "3" && label == "LFE"
         ));
+    }
+
+    /// The playout markers are the native Studio's queue's business
+    /// (`osc::playout` takes them before the parser). A host that parses
+    /// every message it gets with this same function (as the Tauri Studio
+    /// did) must see nothing.
+    #[test]
+    fn playout_markers_are_not_events() {
+        for (addr, args) in [
+            (
+                crate::osc_contract::PLAYOUT_BLOCK,
+                vec![OscType::Long(48_000)],
+            ),
+            (
+                crate::osc_contract::PLAYOUT_HEARD,
+                vec![OscType::Long(0), OscType::Int(48_000)],
+            ),
+        ] {
+            assert!(
+                parse_osc_message(addr, &args, CoordinateFormat::Cartesian).is_none(),
+                "{addr} must be ignored by a client that does not follow the sound"
+            );
+        }
     }
 
     #[test]
@@ -1680,6 +1804,168 @@ mod request_id_tests {
                 panic!("file reply");
             };
             assert_eq!(request_id.as_deref(), tag);
+        }
+    }
+}
+
+/// Datagrams are untrusted: whatever arrives, the parser answers `Some` or
+/// `None` and never panics, which would end the listener thread for good.
+#[cfg(test)]
+mod untrusted_input_tests {
+    use super::{CoordinateFormat, parse_osc_message};
+    use crate::osc_contract::{ALL_CONTROL, ALL_SESSION, ALL_STATE};
+    use rosc::OscType;
+
+    /// Addresses with an id or a field in them, which the contract lists only
+    /// as prefixes: one instance of each shape the parser matches.
+    const TEMPLATED: &[&str] = &[
+        "/omniphony/object/1/xyz",
+        "/omniphony/object/1/aed",
+        "/omniphony/object/1/size",
+        "/omniphony/object/1/meta",
+        "/omniphony/spatial/frame",
+        "/omniphony/log",
+        "/omniphony/state/object/1/mute",
+        "/omniphony/state/object/1/source_tag",
+        "/omniphony/state/speaker/1/gain",
+        "/omniphony/state/speaker/1/delay",
+        "/omniphony/state/speaker/1/mute",
+        "/omniphony/state/speaker/1/spatialize",
+        "/omniphony/state/speaker/1/name",
+        "/omniphony/state/speaker/1/freq_low",
+        "/omniphony/state/speaker/1/freq_high",
+        "/omniphony/meter/object/1",
+        "/omniphony/meter/object/1/gains",
+        "/omniphony/meter/object/1/band/0/gains",
+        "/omniphony/meter/speaker/1",
+        "/omniphony/meter/ear/left",
+        "/omniphony/meter/master",
+    ];
+
+    /// Argument lists a sender may get wrong: none at all, too few, the wrong
+    /// type, a non-finite number, and many.
+    fn argument_lists() -> Vec<Vec<OscType>> {
+        vec![
+            vec![],
+            vec![OscType::Int(1)],
+            vec![OscType::Float(1.0), OscType::Float(2.0)],
+            vec![OscType::String("x".into())],
+            vec![OscType::Float(f32::NAN)],
+            vec![OscType::Nil],
+            (0..32).map(OscType::Int).collect(),
+            (0..32).map(|i| OscType::String(i.to_string())).collect(),
+        ]
+    }
+
+    #[test]
+    fn no_address_panics_on_missing_or_malformed_arguments() {
+        let addresses = ALL_CONTROL
+            .iter()
+            .chain(ALL_STATE)
+            .chain(ALL_SESSION)
+            .chain(TEMPLATED)
+            .copied();
+        let mut checked = 0;
+        for address in addresses {
+            for args in argument_lists() {
+                for format in [CoordinateFormat::Cartesian, CoordinateFormat::Polar] {
+                    let outcome = std::panic::catch_unwind(|| {
+                        let _ = parse_osc_message(address, &args, format);
+                    });
+                    assert!(
+                        outcome.is_ok(),
+                        "{address} with {args:?} panicked the parser"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000, "too few cases to mean anything: {checked}");
+    }
+
+    #[test]
+    fn a_state_message_without_its_value_is_ignored() {
+        let parsed =
+            parse_osc_message("/omniphony/state/latency", &[], CoordinateFormat::Cartesian);
+        assert!(parsed.is_none(), "{parsed:?}");
+    }
+
+    #[test]
+    fn a_meter_without_its_levels_reads_as_silence() {
+        let parsed = parse_osc_message(
+            "/omniphony/meter/speaker/1",
+            &[],
+            CoordinateFormat::Cartesian,
+        );
+        assert!(
+            matches!(
+                parsed,
+                Some(super::OscEvent::MeterSpeaker { peak_dbfs, rms_dbfs, .. })
+                    if peak_dbfs == -100.0 && rms_dbfs == -100.0
+            ),
+            "{parsed:?}"
+        );
+    }
+}
+
+/// The contract conformance check: every state address the contract crate
+/// defines, sent with the arguments its shape table gives, parses to an event.
+/// An address added to the contract without a parser arm fails here, where it
+/// used to be dropped at run time with nothing but the `ignored` counter going
+/// up.
+#[cfg(test)]
+mod contract_conformance_tests {
+    use super::{CoordinateFormat, parse_osc_message};
+    use crate::osc_contract::{self, shapes::Arg};
+    use rosc::OscType;
+
+    /// Read by the listener before the parser, not by it.
+    const BEFORE_THE_PARSER: &[(&str, &str)] = &[(
+        osc_contract::STATE_SHUTDOWN,
+        "osc::handle_message drops the registration on it",
+    )];
+
+    fn sample(kind: Arg) -> OscType {
+        match kind {
+            Arg::Int => OscType::Int(1),
+            Arg::Float => OscType::Float(1.0),
+            Arg::String => OscType::String("x".into()),
+            Arg::Json => OscType::String("{}".into()),
+            Arg::Blob => OscType::Blob(vec![0]),
+        }
+    }
+
+    #[test]
+    fn every_state_address_in_the_contract_parses_to_an_event() {
+        let mut unread = Vec::new();
+        for (address, shape) in osc_contract::shapes::STATE {
+            if BEFORE_THE_PARSER
+                .iter()
+                .any(|(skipped, _)| skipped == address)
+            {
+                continue;
+            }
+            let args: Vec<OscType> = shape.iter().copied().map(sample).collect();
+            if parse_osc_message(address, &args, CoordinateFormat::Cartesian).is_none() {
+                unread.push(*address);
+            }
+        }
+        assert!(
+            unread.is_empty(),
+            "state addresses the Studio parser does not read: {unread:?}"
+        );
+    }
+
+    /// A malformed message is dropped, not a panic on the receive thread: an
+    /// arm that indexed its first argument used to take an empty one down.
+    #[test]
+    fn a_state_address_without_its_arguments_is_dropped_not_a_panic() {
+        for (address, shape) in osc_contract::shapes::STATE {
+            let _ = parse_osc_message(address, &[], CoordinateFormat::Cartesian);
+            for len in 0..shape.len() {
+                let args: Vec<OscType> = shape[..len].iter().copied().map(sample).collect();
+                let _ = parse_osc_message(address, &args, CoordinateFormat::Cartesian);
+            }
         }
     }
 }

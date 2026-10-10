@@ -9,8 +9,14 @@ use std::sync::{
 
 pub enum Action {
     Refresh,
-    Connect { host: String, port: u16 },
+    Connect {
+        host: String,
+        port: u16,
+    },
     Launch,
+    /// Quit the renderer this Studio launched and launch it again, so a
+    /// rebuilt binary is the one running.
+    Restart,
     Stop,
     InstallService,
     RestartService,
@@ -26,6 +32,8 @@ struct Completion {
 #[derive(Default)]
 pub struct Operations {
     pending: Option<Receiver<Completion>>,
+    /// The pending operation launches a renderer.
+    launching: bool,
     pub status: Option<Result<orender::OrenderServiceStatus, String>>,
     pub error: Option<String>,
 }
@@ -35,11 +43,18 @@ impl Operations {
         self.pending.is_some()
     }
 
+    /// Whether the operation under way launches a renderer: what the "Start
+    /// the audio engine" button shows as starting before the child exists.
+    pub fn launching(&self) -> bool {
+        self.pending() && self.launching
+    }
+
     pub fn request(&mut self, state: &Arc<SharedState>, action: Action) -> bool {
         if self.pending() {
             return false;
         }
         self.error = None;
+        self.launching = matches!(action, Action::Launch | Action::Restart);
         let host = state.clone();
         self.pending = Some(super::jobs::run(state, move || {
             let refresh = !matches!(&action, Action::Connect { .. });
@@ -53,6 +68,25 @@ impl Operations {
             }
         }));
         true
+    }
+
+    /// The action that restarts the local renderer, when Studio manages it:
+    /// the one it launched, else the OS service once its status says it runs.
+    /// `None` for a renderer started some other way, or on another machine.
+    pub fn restart_action(&self, state: &SharedState) -> Option<Action> {
+        if !crate::host::capabilities::ActionPolicy::of(state).manage_process {
+            None
+        } else if orender::launched_renderer_running(state) {
+            Some(Action::Restart)
+        } else if self
+            .status
+            .as_ref()
+            .is_some_and(|status| status.as_ref().is_ok_and(|s| s.running))
+        {
+            Some(Action::RestartService)
+        } else {
+            None
+        }
     }
 
     pub fn poll(&mut self) {
@@ -95,17 +129,23 @@ fn execute(state: &SharedState, action: Action) -> Result<(), String> {
         Action::RestartService => orender::restart_orender_service(),
         Action::UninstallService => orender::uninstall_orender_service(),
         Action::RestartPipewire => orender::restart_pipewire_services(),
-        action @ (Action::Launch | Action::InstallService) => {
+        action @ (Action::Launch | Action::Restart | Action::InstallService) => {
             let config = state.config.snapshot();
             let paths = &state.paths;
             let result = match action {
+                Action::Restart => orender::restart_launched_renderer(
+                    paths,
+                    state,
+                    config.host,
+                    config.osc_rx_port,
+                    config.osc_port,
+                ),
                 Action::Launch => orender::launch_orender(
                     paths,
                     state,
                     config.host,
                     config.osc_rx_port,
                     config.osc_port,
-                    config.osc_metering_enabled,
                     None,
                     None,
                 ),
@@ -115,7 +155,6 @@ fn execute(state: &SharedState, action: Action) -> Result<(), String> {
                     config.host,
                     config.osc_rx_port,
                     config.osc_port,
-                    config.osc_metering_enabled,
                     None,
                     None,
                 ),

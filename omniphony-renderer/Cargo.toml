@@ -1,68 +1,147 @@
 [workspace]
-members = ["renderer", "audio_input", "audio_output", "sys", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony-geometry"]
+members = ["renderer", "audio_input", "audio_output", "audio_rt", "audio_sync", "sys", "diag", "live_log", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony_geometry"]
 resolver = "2"
+
+# Metadata shared by the members. A member opts in field by field
+# (`edition.workspace = true`, …), so an exception stays visible in its own
+# manifest: `orender_ffi` keeps edition 2021, `reference_bridge` its own
+# license, and `omniphony_geometry` spells everything out because it is also
+# built from outside this workspace (the Studio projects).
+[workspace.package]
+# The release version (#676), carried by every crate here and by both Studios.
+# Three crates keep a line of their own: `bridge_api`, whose version is the
+# plugin ABI contract (BRIDGE_API.md, "Versioning"), `spdif`, which the decoder
+# bridges require by version from their own repository, and the OSC contract
+# (`../osc-contract`). Never edit it by hand: `scripts/release_version.py set
+# X.Y.Z` moves it with every other copy (Studio manifests, lockfiles, README).
+version = "0.7.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/mgth/Omniphony"
+# 1.88: let-chains (edition 2024) are used in the engine, and `time`/`vergen`
+# (build-time version stamp) require it too.
+rust-version = "1.89"
+
+# What a release of this tree is paired with, beyond its own crates: the
+# player tag (`mpv-v*`, built from `mgth/mpv-omniphony`) that ships with it.
+# Read by `scripts/release_version.py` for the release manifest and the
+# README's compatibility table.
+[workspace.metadata.release]
+player = "mpv-v0.7.0"
+
+# One version requirement per dependency for the whole workspace. Members
+# inherit with `<dep>.workspace = true` and may add features locally.
+[workspace.dependencies]
+# Workspace crates. Those on the release version are required by path alone;
+# a version requirement stays only on the crates with a line of their own.
+audio_input = { path = "audio_input" }
+audio_output = { path = "audio_output" }
+audio_rt = { path = "audio_rt" }
+audio_sync = { path = "audio_sync" }
+bridge_api = { version = "0.6.0", path = "bridge_api" }
+diag = { path = "diag" }
+dsp_fixtures = { path = "dsp_fixtures" }
+example_backend = { path = "example_backend" }
+host_audio = { path = "host_audio" }
+live_log = { path = "live_log" }
+omniphony_geometry = { path = "omniphony_geometry" }
+omniphony-osc-contract = { version = "0.1.0", path = "../osc-contract" }
+orender_engine = { path = "orender_engine" }
+reference_bridge = { path = "reference_bridge" }
+renderer = { path = "renderer" }
+runtime_control = { path = "runtime_control" }
+script_backend = { path = "script_backend" }
+spdif = { version = "0.1.0", path = "spdif" }
+sys = { path = "sys" }
+
+# Third-party crates.
+abi_stable = "0.11"
+anyhow = "1.0.99"
+chrono = "0.4.41"
+clap = "4.5.45"
+env_logger = "0.11.8"
+libc = "0.2"
+log = "0.4.27"
+parking_lot = "0.12"
+realfft = "3.5"
+rosc = "0.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.142"
+serde_yaml_ng = "0.10"
+# Socket options std does not expose (the UDP send buffer). Pure Rust over
+# libc / windows-sys, both already in the lockfile.
+socket2 = "0.6"
+vergen-gitcl = { version = "1.0.8", default-features = false, features = ["build"] }
+# Feature level v0_3_49: what cargo's feature unification made effective for
+# every member anyway (audio_output needs it).
+pipewire = { version = "0.9.2", features = ["v0_3_49"] }
+cpal = "0.15.3"
+windows-service = "0.7"
+windows = { version = "0.54", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
 
 [package]
 name = "omniphony-renderer"
-version = "0.2.5"
-edition = "2024"
-license = "GPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Omniphony Renderer: bridge-driven spatial audio decoding and rendering"
-repository = "https://github.com/mgth/Omniphony"
+repository.workspace = true
 build = "build.rs"
 authors = ["Rainbaby"]
-rust-version = "1.87.0"
+rust-version.workspace = true
 
 [[bin]]
 name = "orender"
 path = "src/main.rs"
 
 [dependencies]
-renderer = { version = "0.2.4", path = "renderer" }
-audio_output = { version = "0.2.4", path = "audio_output" }
-audio_input = { version = "0.2.4", path = "audio_input" }
-sys = { version = "0.1.0", path = "sys" }
-bridge_api = { version = "0.4.0", path = "bridge_api" }
-spdif = { version = "0.1.0", path = "spdif" }
-runtime_control = { version = "0.2.4", path = "runtime_control" }
-orender_engine = { version = "0.2.2", path = "orender_engine" }
-host_audio = { version = "0.1.0", path = "host_audio" }
-abi_stable = "0.11"
-libloading = "0.8"
+renderer.workspace = true
+audio_output.workspace = true
+audio_rt.workspace = true
+audio_sync.workspace = true
+audio_input.workspace = true
+sys.workspace = true
+diag.workspace = true
+live_log.workspace = true
+bridge_api.workspace = true
+spdif.workspace = true
+runtime_control.workspace = true
+orender_engine.workspace = true
+host_audio.workspace = true
+abi_stable.workspace = true
 
-anyhow = "1.0.99"
-clap = { version = "4.5.45", features = ["derive"] }
-env_logger = "0.11.8"
-log = "0.4.27"
-parking_lot = "0.12"
-arc-swap = "1"
-libc = "0.2"
-flate2 = "1.0"
-rosc = "0.11"
-serde_json = "1.0"
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+log.workspace = true
+libc.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-# Windows API for named pipe support
-# Windows Service Control Manager integration
-windows-service = "0.7"
-windows = { version = "0.54", features = [
-    "Win32_Foundation",
-    "Win32_System_Pipes",
-    "Win32_System_IO",
-    "Win32_Storage_FileSystem",
-    "Win32_Security",
-    "Win32_System_Console",
-    "Win32_System_Threading",
-] }
-
+# The sync host's own-clock sink talks to PipeWire directly.
 [target.'cfg(target_os = "linux")'.dependencies]
-pipewire = { version = "0.9.2", features = ["v0_3_34"] }
+pipewire.workspace = true
+
+[dev-dependencies]
+# Not linked by the tests: depending on it makes `cargo test` build its cdylib,
+# the bridge the CLI tests under tests/ load into the `orender` binary.
+reference_bridge.workspace = true
+# Reads the live state the CLI publishes (unit and tests/ OSC round trips).
+rosc.workspace = true
+# The host-option bounds test: parses hostile config.yaml texts, reads the
+# host options schema.
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
 
 [build-dependencies]
-anyhow = "1.0.99"
-vergen-gitcl = { version = "1.0.8", default-features = false, features = ["build"] }
-chrono = "0.4.41"
-serde_json = "1.0.142"
+anyhow.workspace = true
+vergen-gitcl.workspace = true
+chrono.workspace = true
 
 [profile.release-deploy]
 inherits = "release"
@@ -90,6 +169,11 @@ default = []
 # Usage: cargo build --features saf_vbap
 saf_vbap = ["renderer/saf_vbap"]
 
+# Register the demonstration render backend (`backend_id = "example"`) in the
+# CLI, as the starting point for a custom backend. Off in release builds.
+# Usage: cargo build --features example-backend
+example-backend = ["orender_engine/example-backend"]
+
 # Legacy compatibility alias. Windows ASIO support is compiled by default on Windows.
 asio = []
 
@@ -97,7 +181,11 @@ asio = []
 pipewire = []
 
 # sofar 0.3.0 drops variables from netCDF4-written SOFA files (ASH Toolset
-# exports, issue #185). Drop once https://github.com/andreiltd/sofar/pull/29
-# ships in a release.
+# exports, issue #185; upstream merged the fix in f99153f) and its chunk
+# reader stops at three dimensions, one B-tree level and 256 MiB — a
+# MultiSpeakerBRIR as netCDF4 writes it (issue #219, the BBC R&D set) needs
+# the fork's fix/chunked-nd-datasets. Its fix/no-debug-panics, on top, makes a
+# corrupt file an error in debug builds too (it panicked). Drop once upstream
+# carries all three.
 [patch.crates-io]
-sofar = { git = "https://github.com/mgth/sofar", rev = "c03ff5cfd997d316ae330e2735e82311769b45a3" }
+sofar = { git = "https://github.com/mgth/sofar", rev = "26ca8670b09bd55febc19fbdd73be5af06825ddb" }

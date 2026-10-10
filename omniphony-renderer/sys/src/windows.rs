@@ -21,7 +21,7 @@
 //!
 //! # Service control flow
 //!
-//! ```
+//! ```text
 //! SCM starts process (with args from binPath)
 //!   │
 //!   └─► main() calls try_start_service()

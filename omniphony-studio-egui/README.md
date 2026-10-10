@@ -1,12 +1,12 @@
 # omniphony-studio-egui
 
-Native egui/wgpu host for Omniphony Studio, the replacement for the Tauri
-web frontend. Phase 0 (the spike and its measurements) is documented in
-[`docs/studio-native-ui-spike.md`](../docs/studio-native-ui-spike.md); phase 1
+Omniphony Studio, the native egui/wgpu app. It replaced the Tauri web
+frontend, which was removed in 0.7.0 (#677). Phase 0 (the spike and its measurements) is documented in
+[`docs/studio-native-ui-spike.md`](../docs/archive/studio-native-ui-spike.md); phase 1
 (viewport parity with the three.js scene) in
-[`docs/studio-native-ui-phase1.md`](../docs/studio-native-ui-phase1.md), phase 2
+[`docs/studio-native-ui-phase1.md`](../docs/archive/studio-native-ui-phase1.md), phase 2
 (the panels) in
-[`docs/studio-native-ui-phase2.md`](../docs/studio-native-ui-phase2.md).
+[`docs/studio-native-ui-phase2.md`](../docs/archive/studio-native-ui-phase2.md).
 
 The toolkit-free core owns OSC, state and domain behavior. The scene is a
 separate wgpu crate; the frontend owns drawing and view state. Start with the
@@ -20,9 +20,9 @@ records current acceptance gaps; the phase reports above are historical.
 |---|---|
 | `core/` | `omniphony-studio-core`, the crate with no UI dependency: |
 | `core/src/osc/` | UDP listener, register/heartbeat, control channel; `dispatch.rs` applies events to the model |
-| `core/src/model/` | `AppState`, `RoomRatio`, layouts (copied from `src-tauri`) |
-| `core/src/host/` | What the Tauri host did outside the listener: the command handlers (ported), the OSC config, the preferences file, peak hold, timing stats |
-| `core/src/i18n.rs` | Strings, resolved against the web Studio's catalogues |
+| `core/src/model/` | `AppState`, `RoomRatio`, layouts (first copied from the Tauri host) |
+| `core/src/host/` | Everything outside the listener: the command handlers (ported from the Tauri host), the OSC config, the preferences file, peak hold, timing stats |
+| `core/src/i18n.rs` | Strings, resolved against the catalogues in `i18n/` |
 | `src/main.rs` | CLI, fonts (system CJK fallback face), eframe launch |
 | `src/app.rs` | Panels, camera input, picking, gain-table subscriptions, stats |
 | `src/prefs/` | What the UI remembers across launches (the file I/O is the core's) |
@@ -31,6 +31,8 @@ records current acceptance gaps; the phase reports above are historical.
 | `PANELS.md` | How a panel is laid out: the section, its groups, their insets and rows |
 | `scene/src/view/` | Model → frame: objects, speakers, room, trails, volumes |
 | `scene/src/render/` | wgpu renderer hosted by an `egui_wgpu::Callback`; camera; head glTF; volumes |
+| `i18n/` | The string catalogues, one JSON file per locale (the web Studio, removed in 0.7.0, imported them too) |
+| `assets/` | The head model and the desktop icons |
 
 The core is its own crate so that egui can be replaced the way the web
 frontend was: see [`ARCHITECTURE.md`](ARCHITECTURE.md). CI keeps UI crates out of
@@ -55,7 +57,8 @@ Flags: `--register host:port` (live renderer; controls can modify it),
 The layouts and the head model default to the copies shipped next to the
 executable (`layouts/`, `assets/` — the release archive's layout, or a
 package's `share/omniphony-studio-egui/`) and, for a checkout build, to the
-checkout's own; the working directory plays no part. The renderer is found
+checkout's `layouts/` and this crate's `assets/`; the working directory plays
+no part. The renderer is found
 the same way: next to the executable, then on `PATH`, then the checkout's
 build.
 

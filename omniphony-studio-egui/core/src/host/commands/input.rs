@@ -63,8 +63,10 @@ pub fn control_input_mode(state: &SharedState, value: String) {
 }
 
 pub fn control_input_live_backend(state: &SharedState, value: String) {
+    // PipeWire is the only live-input backend; the renderer rejects the
+    // retired `asio` value (and anything else), so do not send it.
     let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "pipewire" | "asio") {
+    if trimmed != "pipewire" {
         return;
     }
     send_control(
@@ -261,11 +263,10 @@ pub fn set_live_input_clock_mode(state: &SharedState, clock: String) {
     state.inner.lock().unwrap().app.live_input.clock_mode = Some(clock);
 }
 
-/// The bridge library path; empty means "auto-detect".
+/// A single bridge library path; empty means "auto-detect". The list of one
+/// it is, sent as the list to an engine that has one.
 pub fn set_render_bridge_path(state: &SharedState, path: String) {
-    let value = path.trim().to_owned();
-    state.inner.lock().unwrap().app.render_bridge_path = (!value.is_empty()).then(|| value.clone());
-    super::render::control_render_bridge_path(state, value);
+    super::bridges::set_render_bridge_paths(state, vec![path]);
 }
 
 /// The named pipe the renderer reads; empty means "auto-detect".
@@ -275,8 +276,9 @@ pub fn set_orender_input_pipe(state: &SharedState, path: String) {
     super::render::control_render_input_pipe(state, value);
 }
 
-/// Apply: a bridge that has to be (re)started needs its path and clock saved
-/// and the configuration reloaded; otherwise the input document is enough.
+/// Apply: a bridge that has to be (re)started needs its path and clock set
+/// and the pipeline restarted — keeping, not saving, the unsaved edits;
+/// otherwise the input document is enough.
 pub fn apply_input(state: &SharedState, mode: &str, active: Option<&str>) {
     let clock = {
         let live = state.inner.lock().unwrap();
@@ -289,14 +291,11 @@ pub fn apply_input(state: &SharedState, mode: &str, active: Option<&str>) {
     let needs_bootstrap =
         mode == "pipe_bridge" || (mode == "pipewire" && active != Some("pipewire"));
     if needs_bootstrap {
-        let bridge = {
-            let live = state.inner.lock().unwrap();
-            live.app.render_bridge_path.clone().unwrap_or_default()
-        };
-        super::render::control_render_bridge_path(state, bridge);
+        // The whole bridge list, not only its first entry: the single
+        // path would cut it down to one bridge.
+        super::bridges::resend_for_restart(state);
         control_input_live_clock_mode(state, clock);
-        super::engine::control_save_config(state);
-        super::engine::control_reload_config(state);
+        super::engine::control_restart(state);
     } else {
         state.inner.lock().unwrap().app.input_apply_pending = Some(1);
         control_input_live_clock_mode(state, clock);
@@ -311,4 +310,28 @@ pub fn control_input_apply(state: &SharedState) {
             address: osc_contract::CONTROL_INPUT_APPLY.to_string(),
         },
     );
+}
+
+#[cfg(test)]
+mod apply_tests {
+    use super::*;
+    use crate::host::commands::tests::{sent_addresses, state_with_outbox};
+
+    /// A bridge that needs a restart gets one, and the unsaved edits ride it
+    /// over: nothing Apply does writes the renderer's config.
+    #[test]
+    fn a_bridge_apply_restarts_without_saving() {
+        let (state, rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        apply_input(&state, "pipe_bridge", Some("pipe_bridge"));
+        let sent = sent_addresses(&rx);
+        assert_eq!(
+            sent.last().map(String::as_str),
+            Some(osc_contract::CONTROL_RESTART)
+        );
+        assert!(
+            !sent.iter().any(|a| a == osc_contract::CONTROL_SAVE_CONFIG
+                || a == osc_contract::CONTROL_RELOAD_CONFIG),
+            "{sent:?}"
+        );
+    }
 }

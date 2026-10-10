@@ -25,9 +25,10 @@ cargo fmt --all --check
 ```
 
 After dependencies are cached, `--offline` makes these checks independent of
-the network. Keep all three workspace lockfiles in sync when a shared core
-manifest changes: native Studio, renderer, and `omniphony-studio/src-tauri`.
-A dependency used only by the UI belongs in the native frontend manifest.
+the network. Keep both workspace lockfiles in sync when a shared manifest
+changes (`omniphony_geometry`, the OSC contract): the Studio's and the
+renderer's. A dependency used only by the UI belongs in the frontend manifest,
+not the core's.
 
 For an isolated visualization session on Linux/macOS:
 
@@ -48,7 +49,7 @@ files belongs in a core job.
 
 | Change | Start here | Rule |
 |---|---|---|
-| Labels and translations | `../omniphony-studio/src/i18n/` | Reuse catalogue keys and shared formatting |
+| Labels and translations | `i18n/` | Reuse catalogue keys and shared formatting |
 | Row or control appearance | `src/ui/widgets.rs`, `PANELS.md` | Accessible label and keyboard state; stable bounds |
 | Panel draft, tab or confirmation | `src/panels/` | Explicit per-panel fields; preserve edits across echoes |
 | Command validation or protocol | `core/src/host/commands/`, `core/src/osc/` | Typed intent, one authoritative rule, no UI dependency |
@@ -107,6 +108,28 @@ CI also rejects UI crates in the core's dependency graph and toolkits in the
 scene's graph. A failed dependency inspection must fail the check, not yield
 an empty list treated as success.
 
+Two catalogue checks live in `scripts/`, plain Node with no `npm install`:
+
+```sh
+node omniphony-studio-egui/scripts/check-i18n.mjs --strict
+cargo run -q -p renderer --example dump_options_schema --locked \
+  --manifest-path omniphony-renderer/Cargo.toml > options-schema.json
+node omniphony-studio-egui/scripts/check-options-schema.mjs options-schema.json
+```
+
+The first compares every locale with `i18n/en.json`; CI runs it without
+`--strict`, as a diagnostic report with a heuristic for English leftovers.
+Missing keys, orphaned keys and mismatched `{placeholder}` sets are hard gates
+in the core's `every_catalogue_matches_english_structure` test. All locales
+are complete: add or remove keys in every catalogue together, and preserve
+the English placeholders when translating (their order may change). The test
+reads the raw JSON before the runtime English fallback can hide a gap. Run it with
+`cargo test -p omniphony-studio-core --locked i18n::tests` from this directory.
+The second script is a hard gate: every option the engine
+declares must resolve its label and help keys in `i18n/en.json`. CI runs it
+on the engine's schema and on the standalone host's (`host_audio`'s
+`dump_host_options_schema`).
+
 ## Upgrade a dependency or compiler
 
 Keep upgrades separate from feature work and record the prior and new versions
@@ -116,11 +139,7 @@ check feature flags, minimum Rust version and the pinned toolchain. Do not
 remove AccessKit, Wayland, or another platform feature merely to pass a local
 build. Commit the resolved lockfiles.
 
-Run the native workspace tests, architecture gates and Tauri host compilation
-when its shared core changes. For Tauri development without release sidecars,
-the CI check supplies `TAURI_CONFIG` with empty `bundle.externalBin` and null
-`bundle.resources`; that override is for checking, never for release packaging.
-Require green platform CI on the final commit and an independent review.
+Run the workspace tests and the architecture gates. Require green platform CI on the final commit and an independent review.
 
 For a UI/GPU upgrade, also record manual results for keyboard navigation,
 focus, CJK/IME, scale-factor changes, narrow panels, help dialogs and viewport

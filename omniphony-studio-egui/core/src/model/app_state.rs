@@ -50,7 +50,7 @@ pub struct Meter {
     pub rms_dbfs: f64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct RoomRatio {
     pub width: f64,
     pub length: f64,
@@ -63,6 +63,15 @@ pub struct RoomRatio {
     // renderer in the room domain so Studio restores the m/u reliably.
     #[serde(rename = "scaleM", default = "default_room_scale_m")]
     pub scale_m: f64,
+    /// Whether positions are read on the listener's sphere rather than in
+    /// this room: the direct headphone path with the renderer's
+    /// `sphere_coordinates` on (#773). Not a ratio, and never on the wire.
+    /// It is carried here because this value is what the scene and the
+    /// editors convert a position through (`AppState::display_room`), and
+    /// the reading is part of that conversion: the conversions that place a
+    /// source read it, the room's own geometry does not.
+    #[serde(skip)]
+    pub sphere: bool,
 }
 
 fn default_room_scale_m() -> f64 {
@@ -79,6 +88,139 @@ impl Default for RoomRatio {
             lower: 0.5,
             center_blend: 0.5,
             scale_m: 1.0,
+            sphere: false,
+        }
+    }
+}
+
+/// The measured room the render pans in while a BRIR set's loudspeakers
+/// render, as the renderer publishes it in `binaural.brir.room` (#803): the
+/// stage's ratios of it in the user's room's shape, with the metres to one
+/// unit (`scaleM`, the half-width the ratios are written against), its box
+/// in metres, and whether that box is an estimate around the loudspeakers
+/// rather than the file's room.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrirRoom {
+    pub ratio: RoomRatio,
+    /// `[min, max]` corners, renderer frame.
+    pub box_m: [[f64; 3]; 2],
+    pub estimated: bool,
+}
+
+/// A `[x, y, z]` of finite numbers.
+fn point3(v: &serde_json::Value) -> Option<[f64; 3]> {
+    let a = v.as_array()?;
+    if a.len() != 3 {
+        return None;
+    }
+    let mut p = [0.0; 3];
+    for (axis, value) in p.iter_mut().zip(a) {
+        *axis = value.as_f64().filter(|v| v.is_finite())?;
+    }
+    Some(p)
+}
+
+/// The geometry of a resident BRIR set, as the renderer publishes it in
+/// `binaural.brir.loaded`: the loudspeakers in metres around the listener
+/// (renderer frame: x right, y front, z up; the set's order, which is the
+/// order of `brir.layout`), and the room they stand in when the file
+/// describes it. What the scene draws as the measured room.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrirGeometry {
+    pub emitters_m: Vec<[f64; 3]>,
+    /// The room's two opposite corners, when the file states them.
+    pub room_corners_m: Option<[[f64; 3]; 2]>,
+    /// The file's `RoomType`, when it states one.
+    pub room_type: Option<String>,
+    /// The room the render pans in, as the renderer publishes it
+    /// (`brir.room`); `None` from a renderer that publishes none.
+    pub room: Option<BrirRoom>,
+}
+
+impl BrirGeometry {
+    /// Metres kept beyond the farthest loudspeaker on each side when the
+    /// file states no room.
+    pub const BOX_MARGIN_M: f64 = 0.3;
+    /// The floor at least this far below the listener's ears, and this
+    /// much headroom above, when the file states no room.
+    pub const FLOOR_M: f64 = 1.2;
+    pub const HEADROOM_M: f64 = 1.0;
+
+    /// The box the loudspeakers stand in, `[min, max]` in the renderer's
+    /// frame: the one the renderer pans in when it publishes it; else the
+    /// file's corners, else the loudspeakers' bounding box with a margin,
+    /// a floor and some headroom — an indication of the room, not its
+    /// measurement.
+    pub fn room_box_m(&self) -> [[f64; 3]; 2] {
+        if let Some(room) = &self.room {
+            return room.box_m;
+        }
+        if let Some([a, b]) = self.room_corners_m {
+            let mut lo = [0.0; 3];
+            let mut hi = [0.0; 3];
+            for axis in 0..3 {
+                lo[axis] = a[axis].min(b[axis]);
+                hi[axis] = a[axis].max(b[axis]);
+            }
+            return [lo, hi];
+        }
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for e in &self.emitters_m {
+            for axis in 0..3 {
+                lo[axis] = lo[axis].min(e[axis]);
+                hi[axis] = hi[axis].max(e[axis]);
+            }
+        }
+        if self.emitters_m.is_empty() {
+            lo = [0.0; 3];
+            hi = [0.0; 3];
+        }
+        for axis in 0..3 {
+            lo[axis] -= Self::BOX_MARGIN_M;
+            hi[axis] += Self::BOX_MARGIN_M;
+        }
+        lo[2] = lo[2].min(-Self::FLOOR_M);
+        hi[2] = hi[2].max(Self::HEADROOM_M);
+        [lo, hi]
+    }
+
+    /// Metres to one scene unit. The room's scale when the renderer
+    /// publishes it — the half-width its ratios are written against, so the
+    /// loudspeakers drawn in metres and the objects warped by those ratios
+    /// (`AppState::display_room`) share one frame — else the box's reach.
+    pub fn metres_per_unit(&self) -> f64 {
+        self.room
+            .as_ref()
+            .map_or_else(|| self.reach_m(), |room| room.ratio.scale_m.max(0.01))
+    }
+
+    /// Metres to one scene unit from a renderer that publishes no room: the
+    /// box's farthest extent from the listener lands at one unit, so the
+    /// set fills the frame the cube does.
+    pub fn reach_m(&self) -> f64 {
+        let [lo, hi] = self.room_box_m();
+        lo.iter()
+            .chain(hi.iter())
+            .fold(0.0f64, |m, v| m.max(v.abs()))
+            .max(0.01)
+    }
+}
+
+impl RoomRatio {
+    /// The unit cube: no warp at all, every half-axis one unit, `scale_m`
+    /// metres to the unit. What the direct binaural path renders in (the
+    /// renderer's `RoomRatios::UNIT`, scaled by its `unit_scale_m`).
+    pub fn unit(scale_m: f64) -> Self {
+        Self {
+            width: 1.0,
+            length: 1.0,
+            height: 1.0,
+            rear: 1.0,
+            lower: 1.0,
+            center_blend: 0.0,
+            scale_m,
+            sphere: false,
         }
     }
 }
@@ -166,6 +308,23 @@ impl MirrorAxes {
 pub struct DistanceModelState {
     pub value: Option<String>,
     pub metric: Option<String>,
+}
+
+/// The evaluation grid a bridge hints (`evaluationGridBridge` of
+/// `/state/renderer`): what the grid is while it follows the bridge.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeGrid {
+    pub mode: String,
+    pub x_size: u32,
+    pub y_size: u32,
+    pub z_size: u32,
+    pub z_neg_size: u32,
+    pub allow_negative_z: bool,
+    /// The hinting bridge's place among the loaded bridges of
+    /// [`RenderBridges::bridges`].
+    #[serde(default)]
+    pub bridge_index: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -430,6 +589,11 @@ pub struct RuntimeAudioState {
     pub audio_sample_format: Option<String>,
     #[serde(rename = "audioError")]
     pub audio_error: Option<String>,
+    /// The host the engine's output stream plays through, as the engine
+    /// names it: `ASIO`, `WASAPI (fallback: no ASIO driver)`, `CoreAudio`.
+    /// `None` when no stream is open or the backend names no host.
+    #[serde(rename = "audioOutputHost")]
+    pub audio_output_host: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -458,13 +622,17 @@ pub struct LiveInputState {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveOptionsState {
-    pub object_generator_params: Option<serde_json::Value>,
+    /// Stored param values of every object generator (`{ id: { key:
+    /// value } }`), as `renderBackendState.backendParamValuesById` holds the
+    /// backends'.
+    pub object_generator_param_values_by_id: Option<serde_json::Value>,
     pub object_generator_layout_has_height: Option<bool>,
     /// Facts about the crossover bank the renderer actually built (engine,
     /// bands, cutoffs, FIR taps, latency). Passthrough JSON; annotates the
     /// crossover control.
     pub crossover: Option<serde_json::Value>,
-    pub phantom_params: Option<serde_json::Value>,
+    /// Stored param values of the phantom stage (`{ key: value }`).
+    pub phantom_param_values: Option<serde_json::Value>,
     pub fixed_channel_catalog: Option<serde_json::Value>,
     pub fixed_channel_processing: Option<serde_json::Value>,
     pub output_channel_mapping_unroutable: Option<Vec<String>>,
@@ -474,11 +642,37 @@ pub struct LiveOptionsState {
     /// the generic family's entries; `placement` is the real thing.
     pub virtual_bed: Option<serde_json::Value>,
     /// Per-family placement of fixed channels (`renderer::placement`), the
-    /// renderer's `placement` block passed through: one object per family
-    /// (`generic`, `dolby`, `dts`, `auro`, `pcm`) with its own `mode` and
-    /// `layout` (null when inherited), `effectiveMode` and `layoutSource`.
-    /// Read through `host::channels::family_placement`.
+    /// renderer's `placement` block passed through: one object per family of
+    /// its table, keyed by name, with its `label`, `defaultMode`, own `mode`
+    /// and `layout` (null when inherited), `effectiveMode`, `modeSource`
+    /// (absent from renderers older than the headphones default) and
+    /// `layoutSource`. Read through `host::channels::family_placement`.
     pub placement: Option<serde_json::Value>,
+    /// The families to offer, by name, in the renderer's order: the generic
+    /// family, the loaded bridge's, the renderer's PCM input. Studio knows
+    /// no family by name; these are what it shows (`host::channels::families`).
+    pub placement_families: Option<Vec<String>>,
+}
+
+/// A tag the stream's bridge puts on some of its channels (`channelTags` on
+/// `/state/input`): the dialogue a format codes apart from the rest.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChannelTag {
+    /// `dialogue`, or a kind this Studio does not know yet.
+    pub kind: String,
+    /// BCP 47, empty when the stream states none.
+    #[serde(default)]
+    pub language: String,
+    /// The stream's name for the channels, empty when it states none.
+    #[serde(default)]
+    pub label: String,
+    /// Indices into the stream's channels.
+    #[serde(default)]
+    pub channels: Vec<u32>,
+}
+
+impl ChannelTag {
+    pub const DIALOGUE: &'static str = "dialogue";
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -489,6 +683,11 @@ pub struct AppState {
     /// the UI without a typed mirror here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binaural: Option<serde_json::Value>,
+    /// The loudspeakers of the BRIR set a headphone render pans onto in place
+    /// of the editable layout (`binaural.brir.layout`), while it does. Set
+    /// from the renderer state; read-only, the measurement fixes them.
+    #[serde(skip)]
+    pub brir_speakers: Option<Vec<super::layouts::Speaker>>,
     /// Declared live options (`options` block of `/state/renderer`, canonical
     /// snake_case keys straight from the renderer's registry). Passthrough
     /// JSON: a registry row needs no typed mirror here (registry RFC phase 1).
@@ -542,6 +741,13 @@ pub struct AppState {
     pub object_size_intervals: u32,
     #[serde(rename = "vbapAllowNegativeZ")]
     pub vbap_allow_negative_z: Option<bool>,
+    /// Where the evaluation grid comes from: `bridge` (the active bridge's
+    /// hint) or `custom`. `None` from a renderer that predates the setting.
+    #[serde(rename = "evaluationGrid")]
+    pub evaluation_grid: Option<String>,
+    /// The grid the active bridge hints, once the renderer knows it.
+    #[serde(rename = "evaluationGridBridge")]
+    pub evaluation_grid_bridge: Option<BridgeGrid>,
     #[serde(rename = "adaptiveResampling")]
     pub adaptive_resampling: Option<u8>,
     #[serde(rename = "adaptiveResamplingEnableFarMode")]
@@ -634,6 +840,9 @@ pub struct AppState {
     pub diag_rate_hz: Option<f32>,
     #[serde(rename = "supportedDrcModes")]
     pub supported_drc_modes: Vec<String>,
+    /// What the current stream tags among its channels.
+    #[serde(rename = "channelTags")]
+    pub channel_tags: Vec<ChannelTag>,
     #[serde(rename = "inputBackend")]
     pub input_backend: Option<String>,
     #[serde(rename = "inputChannels")]
@@ -660,6 +869,9 @@ pub struct AppState {
     pub render_executable: Option<String>,
     #[serde(rename = "renderAbi")]
     pub render_abi: Option<String>,
+    /// The `bridge_api` version the renderer loads bridges of.
+    #[serde(rename = "renderBridgeApi")]
+    pub render_bridge_api: Option<String>,
     /// Named config profiles (`/omniphony/state/profiles`): the active profile
     /// name and the full name list, mirrored verbatim from the renderer.
     #[serde(rename = "activeProfile")]
@@ -668,6 +880,14 @@ pub struct AppState {
     pub profile_names: Vec<String>,
     #[serde(rename = "renderBridgeError")]
     pub render_bridge_error: Option<String>,
+    /// The decoder bridges (`/omniphony/state/render/bridges`): the paths
+    /// asked for, then each bridge loaded or failed.
+    #[serde(rename = "renderBridges")]
+    pub render_bridges: Option<RenderBridges>,
+    /// The bridge list was edited from this Studio since the last restart it
+    /// sent: the only sign of a pending change once the list is emptied.
+    #[serde(skip)]
+    pub render_bridges_edited: bool,
     #[serde(rename = "liveInput")]
     pub live_input: LiveInputState,
     #[serde(rename = "orenderInputPipe")]
@@ -719,7 +939,286 @@ pub struct AppState {
     pub last_overlay_emit_hash: Option<u64>,
 }
 
+/// Why the connected renderer will not write its configuration file, as its
+/// `render/config_status` says.
+/// The engine and this Studio speak different revisions of the OSC contract
+/// (osc-contract `CONTRACT_REVISION`): controls one side does not know are
+/// refused, and state it does not know is dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContractMismatch {
+    pub engine: u32,
+    pub studio: u32,
+}
+
+impl ContractMismatch {
+    pub fn engine_is_older(self) -> bool {
+        self.engine < self.studio
+    }
+}
+
+/// What is wrong with the connected renderer's decoder bridge, as its
+/// `render/bridge_error` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BridgeProblemKind {
+    /// No bridge was asked for and auto-discovery found none
+    /// (osc-contract `BRIDGE_ERROR_NONE_FOUND`). The renderer runs without a
+    /// decoder: PCM and channel input still work. A degraded but normal state,
+    /// the usual one for Studio's standby renderer while the player, which has
+    /// its own bridge, plays films.
+    NoDecoder,
+    /// A bridge was asked for (`render.bridge_path`, `--bridge-path`) or
+    /// found, and could not be loaded: a wrong path, a mismatched release, a
+    /// file that is no bridge. Something to fix.
+    LoadFailed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgeProblem {
+    pub kind: BridgeProblemKind,
+    /// The engine's own report, trimmed: what it searched, what it refused.
+    pub report: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigRefusal {
+    /// `parse_error`: the file failed to parse, and the renderer runs on its
+    /// built-in defaults.
+    ParseError,
+    /// `newer_schema`: a newer build wrote the file, and the renderer runs on
+    /// what it understands of it.
+    NewerSchema,
+}
+
 impl AppState {
+    /// Whether the speakers shown cannot be edited: the backend froze them,
+    /// or they are a BRIR set's own loudspeakers.
+    /// The path the render takes to the output, from the binaural document
+    /// and the loudspeakers in use (`model::binaural::RenderPath`).
+    pub fn render_path(&self) -> super::binaural::RenderPath {
+        super::binaural::RenderPath::of(self.binaural.as_ref(), self.brir_speakers.is_some())
+    }
+
+    /// The frame the scene draws in and the editors convert through: the
+    /// room the stage pans in — the live room on the speakers and in the
+    /// virtual room, the measured room on a BRIR set's loudspeakers
+    /// (`brir_room`, #803) — and the unit room on the direct binaural path,
+    /// which reads a direction straight off a position
+    /// (`RenderPath::warps_with_room`), or on the listener's sphere when the
+    /// renderer reads it there (`reads_on_sphere`, `RoomRatio::sphere`). One
+    /// resolution for the forward projection, the gizmos' inverse, the
+    /// channel editor's polar conversions and the heatmap volumes, so a
+    /// drag lands where the pointer is and a volume sits on its sources
+    /// whatever the path.
+    pub fn display_room(&self) -> RoomRatio {
+        use super::binaural::RenderPath;
+        match self.render_path() {
+            RenderPath::Direct => RoomRatio {
+                sphere: self.reads_on_sphere(),
+                ..RoomRatio::unit(self.binaural_unit_scale_m())
+            },
+            // A renderer that publishes no measured room pans in the live
+            // one.
+            RenderPath::MeasuredRoom => self
+                .brir_room()
+                .map_or_else(|| self.room_ratio.clone(), |room| room.ratio),
+            RenderPath::Speakers | RenderPath::VirtualRoom => self.room_ratio.clone(),
+        }
+    }
+
+    /// The measured room the render pans in, while the headphones render
+    /// on a BRIR set's loudspeakers and the renderer publishes it
+    /// (`binaural.brir.room`). `None` on another path, or from a renderer
+    /// that pans a set's loudspeakers in the user's room.
+    pub fn brir_room(&self) -> Option<BrirRoom> {
+        self.brir_speakers.as_ref()?;
+        let room = self.binaural.as_ref()?.get("brir")?.get("room")?;
+        let ratio: RoomRatio = serde_json::from_value(room.get("ratio")?.clone()).ok()?;
+        if !(ratio.scale_m.is_finite() && ratio.scale_m > 0.0) {
+            return None;
+        }
+        let box_m = room
+            .get("boxM")
+            .and_then(|v| v.as_array())
+            .filter(|a| a.len() == 2)
+            .and_then(|a| Some([point3(&a[0])?, point3(&a[1])?]))?;
+        let estimated = room
+            .get("estimated")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        Some(BrirRoom {
+            ratio,
+            box_m,
+            estimated,
+        })
+    }
+
+    /// The resident BRIR set's geometry, while the headphones render on its
+    /// loudspeakers (`brir_speakers`, the published `brir.layout`): the
+    /// loudspeakers in metres and the room, from `binaural.brir.loaded`.
+    /// `None` on another path, or from a renderer that publishes no metres.
+    pub fn brir_geometry(&self) -> Option<BrirGeometry> {
+        self.brir_speakers.as_ref()?;
+        let loaded = self.binaural.as_ref()?.get("brir")?.get("loaded")?;
+        let point = point3;
+        let emitters_m = loaded
+            .get("emittersM")?
+            .as_array()?
+            .iter()
+            .map(point)
+            .collect::<Option<Vec<_>>>()?;
+        if emitters_m.is_empty() {
+            return None;
+        }
+        let room_corners_m = loaded
+            .get("roomCornersM")
+            .and_then(|v| v.as_array())
+            .filter(|a| a.len() == 2)
+            .and_then(|a| Some([point(&a[0])?, point(&a[1])?]));
+        let room_type = loaded
+            .get("roomType")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        Some(BrirGeometry {
+            emitters_m,
+            room_corners_m,
+            room_type,
+            room: self.brir_room(),
+        })
+    }
+
+    /// The listening room the early reflections mirror sources in, full
+    /// extents in metres in the renderer's frame (width, depth, height):
+    /// `reflections.roomEffectiveM`, the configured room grown to hold the
+    /// scene, or `roomM` from a renderer that publishes only that. `None`
+    /// while the reflections are off.
+    pub fn binaural_reflection_room_m(&self) -> Option<[f64; 3]> {
+        let reflections = self.binaural.as_ref()?.get("reflections")?;
+        if reflections
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            return None;
+        }
+        let room = reflections
+            .get("roomEffectiveM")
+            .or_else(|| reflections.get("roomM"))?
+            .as_array()?;
+        if room.len() != 3 {
+            return None;
+        }
+        let mut out = [0.0; 3];
+        for (axis, value) in out.iter_mut().zip(room) {
+            *axis = value.as_f64().filter(|v| v.is_finite() && *v > 0.0)?;
+        }
+        Some(out)
+    }
+
+    /// The frame a loudspeaker stands in: the display frame without the
+    /// sphere reading. The reading is how the binaural stage hears a source's
+    /// position; a speaker's position is where it stands, drawn and edited
+    /// as it is, including the reference layout shown on the direct path.
+    /// One definition for the scene's projection and the speaker gizmo's
+    /// inverse, so a speaker lands where it is drawn.
+    pub fn speaker_frame(&self) -> RoomRatio {
+        RoomRatio {
+            sphere: false,
+            ..self.display_room()
+        }
+    }
+
+    /// Whether the renderer reads positions on the listener's sphere
+    /// (`binaural.sphereCoordinates`, #773): the option, on the direct
+    /// headphone path, the one that reads a direction off a position (the
+    /// renderer's `BinauralLiveParams::reads_on_sphere`). A renderer that
+    /// publishes no such key reads the cube.
+    pub fn reads_on_sphere(&self) -> bool {
+        self.render_path() == super::binaural::RenderPath::Direct
+            && self
+                .binaural
+                .as_ref()
+                .and_then(|b| b.get("sphereCoordinates"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    }
+
+    /// Metres to one unit of the direct binaural path's cube
+    /// (`binaural.unitScaleM`, the renderer's distance scale).
+    pub fn binaural_unit_scale_m(&self) -> f64 {
+        self.binaural
+            .as_ref()
+            .and_then(|b| b.get("unitScaleM"))
+            .and_then(serde_json::Value::as_f64)
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .unwrap_or(1.0)
+    }
+
+    pub fn speakers_read_only(&self) -> bool {
+        self.render_backend_state.frozen_speakers || self.brir_speakers.is_some()
+    }
+
+    /// The renderer's decoder bridge problem, if it reported one. An engine
+    /// predating the "none found" marker reports every problem as a failure.
+    pub fn bridge_problem(&self) -> Option<BridgeProblem> {
+        let report = self.render_bridge_error.as_deref()?.trim();
+        if report.is_empty() {
+            return None;
+        }
+        let kind = if report.contains(crate::osc_contract::BRIDGE_ERROR_NONE_FOUND) {
+            BridgeProblemKind::NoDecoder
+        } else {
+            BridgeProblemKind::LoadFailed
+        };
+        Some(BridgeProblem {
+            kind,
+            report: report.to_owned(),
+        })
+    }
+
+    /// Why the renderer will not write its configuration file, if it said so.
+    /// A Reload that reads the file publishes the status again, which lifts
+    /// it.
+    pub fn config_refusal(&self) -> Option<ConfigRefusal> {
+        match self.render_config_status.as_deref()? {
+            "parse_error" => Some(ConfigRefusal::ParseError),
+            "newer_schema" => Some(ConfigRefusal::NewerSchema),
+            _ => None,
+        }
+    }
+
+    /// The engine's OSC contract revision against this build's, when they
+    /// differ. An engine that advertises none predates revisions and counts
+    /// as 0. `None` until the capabilities arrive.
+    pub fn contract_mismatch(&self) -> Option<ContractMismatch> {
+        let caps = self.producer_capabilities.as_ref()?;
+        let engine = caps
+            .get("contractRevision")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(0, |revision| u32::try_from(revision).unwrap_or(u32::MAX));
+        let studio = crate::osc_contract::CONTRACT_REVISION;
+        (engine != studio).then_some(ContractMismatch { engine, studio })
+    }
+
+    /// The current stream's dialogue tag, when it codes its dialogue apart
+    /// (the dialogue level only means something then).
+    pub fn dialogue_tag(&self) -> Option<&ChannelTag> {
+        self.channel_tags
+            .iter()
+            .find(|tag| tag.kind == ChannelTag::DIALOGUE)
+    }
+
+    /// The tag the stream puts on the channel a source carries, if any. A
+    /// stream's own channels are its first sources, numbered as the stream
+    /// numbers them, so a tag's channel indices are source ids; a generated
+    /// or injected source comes after them and carries none.
+    pub fn channel_tag_of(&self, source_id: &str) -> Option<&ChannelTag> {
+        let channel = source_id.parse::<u32>().ok()?;
+        self.channel_tags
+            .iter()
+            .find(|tag| tag.channels.contains(&channel))
+    }
+
     pub fn new(layouts: Vec<Layout>) -> Self {
         Self {
             layouts,
@@ -732,6 +1231,7 @@ impl AppState {
                 lower: 0.5,
                 center_blend: 0.5,
                 scale_m: 1.0,
+                sphere: false,
             },
             ..Default::default()
         }
@@ -848,6 +1348,14 @@ impl AppState {
         self.audio.audio_sample_format = Some(value);
     }
 
+    pub fn set_audio_output_host(&mut self, value: &str) {
+        self.audio.audio_output_host = if value.trim().is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        };
+    }
+
     pub fn set_audio_error(&mut self, value: &str) -> Option<String> {
         self.audio.audio_error = if value.trim().is_empty() {
             None
@@ -885,8 +1393,11 @@ impl Default for AppState {
             render_evaluation_mode_state: RenderEvaluationModeState::default(),
             object_size_intervals: 0,
             binaural: None,
+            brir_speakers: None,
             options: None,
             vbap_allow_negative_z: None,
+            evaluation_grid: None,
+            evaluation_grid_bridge: None,
             adaptive_resampling: Some(0),
             adaptive_resampling_enable_far_mode: Some(1),
             adaptive_resampling_force_silence_in_far_mode: Some(1),
@@ -936,6 +1447,7 @@ impl Default for AppState {
             meter_rate_hz: None,
             diag_rate_hz: None,
             supported_drc_modes: Vec::new(),
+            channel_tags: Vec::new(),
             input_backend: None,
             input_channels: None,
             input_sample_rate: None,
@@ -949,9 +1461,12 @@ impl Default for AppState {
             render_version: None,
             render_executable: None,
             render_abi: None,
+            render_bridge_api: None,
             active_profile: None,
             profile_names: Vec::new(),
             render_bridge_error: None,
+            render_bridges: None,
+            render_bridges_edited: false,
             live_input: LiveInputState::default(),
             orender_input_pipe: None,
             producer_capabilities: None,
@@ -1167,4 +1682,151 @@ mod mirror_axes_tests {
             })
         );
     }
+}
+
+#[cfg(test)]
+mod contract_mismatch_tests {
+    use super::{AppState, ContractMismatch};
+    use crate::osc_contract::CONTRACT_REVISION;
+    use serde_json::json;
+
+    fn with_caps(caps: Option<serde_json::Value>) -> AppState {
+        let mut app = AppState::new(Vec::new());
+        app.producer_capabilities = caps;
+        app
+    }
+
+    #[test]
+    fn the_same_revision_is_no_mismatch() {
+        let app = with_caps(Some(json!({ "contractRevision": CONTRACT_REVISION })));
+        assert_eq!(app.contract_mismatch(), None);
+    }
+
+    #[test]
+    fn an_engine_that_advertises_none_is_revision_zero() {
+        let mismatch = with_caps(Some(json!({ "variant": "embedded" })))
+            .contract_mismatch()
+            .expect("an engine from before revisions differs");
+        assert_eq!(
+            mismatch,
+            ContractMismatch {
+                engine: 0,
+                studio: CONTRACT_REVISION
+            }
+        );
+        assert!(mismatch.engine_is_older());
+    }
+
+    #[test]
+    fn a_newer_engine_is_reported_newer() {
+        let app = with_caps(Some(json!({ "contractRevision": CONTRACT_REVISION + 1 })));
+        assert!(!app.contract_mismatch().unwrap().engine_is_older());
+    }
+
+    #[test]
+    fn nothing_is_said_before_the_capabilities_arrive() {
+        assert_eq!(with_caps(None).contract_mismatch(), None);
+    }
+}
+
+#[cfg(test)]
+mod bridge_problem_tests {
+    use super::{AppState, BridgeProblemKind};
+    use crate::osc_contract::BRIDGE_ERROR_NONE_FOUND;
+
+    fn with_error(error: Option<&str>) -> AppState {
+        let mut app = AppState::new(Vec::new());
+        app.render_bridge_error = error.map(str::to_owned);
+        app
+    }
+
+    /// What the CLI publishes when nothing was asked for and nothing found:
+    /// its own context in front of the engine's marker.
+    #[test]
+    fn nothing_found_is_no_decoder_not_a_failure() {
+        let error = format!(
+            "format bridge unavailable: {BRIDGE_ERROR_NONE_FOUND}: none requested \
+             (no explicit path, no render.bridge_path) and none in the \
+             auto-discovery directories: No bridge plugin found."
+        );
+        let problem = with_error(Some(&error)).bridge_problem().unwrap();
+        assert_eq!(problem.kind, BridgeProblemKind::NoDecoder);
+        assert_eq!(problem.report, error);
+    }
+
+    #[test]
+    fn a_requested_bridge_that_does_not_load_is_a_failure() {
+        for error in [
+            "format bridge unavailable: render.bridge_path '/x/libh_bridge.so' \
+             (from config) does not exist or is not a file.",
+            "Failed to load bridge plugin from /x/libh_bridge.so: bridge_api 0.4.0",
+            // An engine from before the marker: its "none found" text included.
+            "no decoder bridge requested (no explicit path, no render.bridge_path) \
+             and none found by auto-discovery",
+        ] {
+            let problem = with_error(Some(error)).bridge_problem().unwrap();
+            assert_eq!(problem.kind, BridgeProblemKind::LoadFailed, "{error}");
+        }
+    }
+
+    #[test]
+    fn no_error_or_a_blank_one_is_no_problem() {
+        assert_eq!(with_error(None).bridge_problem(), None);
+        assert_eq!(with_error(Some("  \n")).bridge_problem(), None);
+    }
+
+    /// The published report is shown trimmed, as the banner did before.
+    #[test]
+    fn the_report_is_trimmed() {
+        let error = format!("  {BRIDGE_ERROR_NONE_FOUND}: none requested\n");
+        let problem = with_error(Some(&error)).bridge_problem().unwrap();
+        assert_eq!(
+            problem.report,
+            format!("{BRIDGE_ERROR_NONE_FOUND}: none requested")
+        );
+    }
+}
+
+#[cfg(test)]
+mod channel_tag_tests {
+    use super::*;
+
+    /// A tag's channel indices are the ids of the stream's own sources; a
+    /// source that is not one of the stream's channels has no tag.
+    #[test]
+    fn a_source_carries_the_tag_of_its_channel() {
+        let mut state = AppState::new(Vec::new());
+        state.channel_tags = vec![ChannelTag {
+            kind: ChannelTag::DIALOGUE.to_owned(),
+            channels: vec![12, 13, 14],
+            ..ChannelTag::default()
+        }];
+        assert!(state.channel_tag_of("12").is_some());
+        assert!(state.channel_tag_of("14").is_some());
+        assert!(state.channel_tag_of("0").is_none());
+        assert!(state.channel_tag_of("15").is_none());
+        assert!(state.channel_tag_of("object-test").is_none());
+    }
+}
+
+/// The renderer's decoder bridges (`/omniphony/state/render/bridges`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderBridges {
+    /// The paths asked for, in load order; empty for auto-discovery.
+    #[serde(default)]
+    pub requested: Vec<String>,
+    /// Each bridge loaded, then each one that failed.
+    #[serde(default)]
+    pub bridges: Vec<RenderBridge>,
+}
+
+/// One decoder bridge as the renderer reports it: loaded, with the source
+/// families it declares, or failed, with why.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderBridge {
+    pub path: String,
+    #[serde(default)]
+    pub families: Vec<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }

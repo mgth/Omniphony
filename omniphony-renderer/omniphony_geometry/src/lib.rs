@@ -1,0 +1,1422 @@
+//! Canonical coordinate, angle and room-geometry math for Omniphony.
+//!
+//! Before this crate the same handful of formulas existed in five places: four
+//! copies of the room depth warp inside the renderer workspace
+//! (`renderer::speaker_layout`, `renderer::render_backend::room_transform`,
+//! a since-removed file-loaded evaluator, `orender_engine::virtual_bed`),
+//! plus one in the Studio frontend — and two
+//! independent cartesian/spherical pairs that did **not** agree (see
+//! "Frames" below).
+//!
+//! # Frames
+//!
+//! **ADM space** is the wire, file and renderer frame. It is what a layout
+//! YAML stores and what OSC carries:
+//!
+//! ```text
+//! x: left(-1) -> right(+1)
+//! y: back(-1) -> front(+1)
+//! z: floor(-1) -> ceiling(+1)
+//! ```
+//!
+//! Angles are degrees: azimuth `0` = front (`+y`), `+90` = right (`+x`);
+//! elevation `0` = ear level, `+90` = straight up.
+//!
+//! **Scene space** is the Three.js frame the Studio frontend draws in. It is
+//! the same room with the axes relabelled:
+//!
+//! ```text
+//! scene = (adm.y, adm.z, adm.x)   // x = depth/front, y = up, z = right
+//! ```
+//!
+//! The two frames describe *the same angles*, because the swizzle lines the
+//! components up again:
+//!
+//! ```text
+//! scene azimuth = atan2(scene.z, scene.x) = atan2(adm.x, adm.y) = adm azimuth
+//! ```
+//!
+//! That equivalence is the trap this crate exists to close. Applying the
+//! scene-ordered formula to ADM-ordered components — `atan2(z, x)` on ADM data,
+//! without the swizzle — compiles, runs, and yields a *different frame*: it
+//! reads a hard-right speaker as dead ahead and 45° up. The Studio backend did
+//! exactly that on every layout it parsed. Convert frames explicitly with
+//! [`adm_to_scene`](f64::adm_to_scene) / [`scene_to_adm`](f64::scene_to_adm);
+//! never reorder components by hand.
+//!
+//! # Precision
+//!
+//! Every function exists in both [`f32`](mod@f32) (what the renderer's audio path uses)
+//! and [`f64`](mod@f64) (what the Studio backend uses). The two are generated from one
+//! macro so they cannot drift; the arithmetic is written to match the existing
+//! renderer implementations term for term, so adopting this crate there is a
+//! bit-for-bit no-op.
+//!
+//! # Hot paths
+//!
+//! Everything here is allocation-free and branch-light: these run per object
+//! per frame in the renderer, and the embedded target has no cycles to spare.
+
+#![forbid(unsafe_code)]
+
+/// Smallest distance a speaker or object may sit at, in metres.
+///
+/// A zero-distance position has no defined direction, so the angle pair would
+/// be arbitrary; clamping keeps every stored coordinate invertible.
+pub const MIN_DISTANCE: f64 = 0.01;
+
+/// Floor applied to room ratios before dividing by them.
+pub const MIN_ROOM_RATIO: f64 = 0.01;
+
+macro_rules! geometry_for {
+    ($module:ident, $f:ty) => {
+        /// Geometry in `
+        #[doc = stringify!($f)]
+        /// ` precision. See the crate docs for conventions.
+        pub mod $module {
+            /// Smallest representable distance, in metres.
+            pub const MIN_DISTANCE: $f = super::MIN_DISTANCE as $f;
+            /// Floor applied to room ratios before dividing by them.
+            pub const MIN_ROOM_RATIO: $f = super::MIN_ROOM_RATIO as $f;
+
+            // ---------------------------------------------------------------
+            // Frames
+            // ---------------------------------------------------------------
+
+            /// ADM `(x, y, z)` -> Three.js scene `(depth, up, right)`.
+            #[inline]
+            pub fn adm_to_scene(position: [$f; 3]) -> [$f; 3] {
+                [position[1], position[2], position[0]]
+            }
+
+            /// Three.js scene `(depth, up, right)` -> ADM `(x, y, z)`.
+            #[inline]
+            pub fn scene_to_adm(position: [$f; 3]) -> [$f; 3] {
+                [position[2], position[0], position[1]]
+            }
+
+            /// SOFA cartesian (`x` front, `y` left, `z` up) -> ADM `(x, y, z)`
+            /// (`x` right, `y` front, `z` up). SOFA azimuth runs
+            /// counter-clockwise (left positive), ADM clockwise.
+            #[inline]
+            pub fn sofa_to_adm(position: [$f; 3]) -> [$f; 3] {
+                [-position[1], position[0], position[2]]
+            }
+
+            // ---------------------------------------------------------------
+            // Cartesian <-> spherical (ADM frame, degrees)
+            // ---------------------------------------------------------------
+
+            /// ADM cartesian -> `(azimuth_deg, elevation_deg, distance)`.
+            ///
+            /// Exact vertical directions are kept stable: straight up reads
+            /// `+90`, straight down `-90`, and the origin `0` rather than
+            /// whatever `atan2(0.0, 0.0)` happens to give.
+            #[inline]
+            pub fn to_spherical(x: $f, y: $f, z: $f) -> ($f, $f, $f) {
+                let distance = (x * x + y * y + z * z).sqrt();
+                let horizontal = (x * x + y * y).sqrt();
+
+                let azimuth_deg = x.atan2(y).to_degrees();
+                let elevation_deg = if horizontal < 1e-6 {
+                    if z > 0.0 {
+                        90.0
+                    } else if z < 0.0 {
+                        -90.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    z.atan2(horizontal).to_degrees()
+                };
+
+                (azimuth_deg, elevation_deg, distance)
+            }
+
+            /// `(azimuth_deg, elevation_deg, distance)` -> ADM cartesian.
+            #[inline]
+            pub fn from_spherical(
+                azimuth_deg: $f,
+                elevation_deg: $f,
+                distance: $f,
+            ) -> ($f, $f, $f) {
+                let az = azimuth_deg.to_radians();
+                let el = elevation_deg.to_radians();
+                let horizontal = distance * el.cos();
+                (
+                    horizontal * az.sin(),
+                    horizontal * az.cos(),
+                    distance * el.sin(),
+                )
+            }
+
+            // ---------------------------------------------------------------
+            // Angles
+            // ---------------------------------------------------------------
+
+            /// Wrap to `[-180, 180]` by repeated addition — matches
+            /// `orender_engine::spatial::normalize_azimuth_deg`.
+            #[inline]
+            pub fn normalize_deg(angle: $f) -> $f {
+                let mut a = angle;
+                while a < -180.0 {
+                    a += 360.0;
+                }
+                while a > 180.0 {
+                    a -= 360.0;
+                }
+                a
+            }
+
+            /// Wrap to `(-180, 180]`, mapping the `-180` seam onto `+180` so a
+            /// lookup table has one entry per direction, not two.
+            #[inline]
+            pub fn wrap_deg(value: $f) -> $f {
+                let wrapped = (value + 180.0).rem_euclid(360.0) - 180.0;
+                if wrapped == -180.0 { 180.0 } else { wrapped }
+            }
+
+            /// Shortest angular separation, in `[0, 180]`.
+            #[inline]
+            pub fn wrapped_distance_deg(a: $f, b: $f) -> $f {
+                let delta = (a - b).rem_euclid(360.0);
+                delta.min(360.0 - delta)
+            }
+
+            /// Snap to the nearest multiple of `step`, but only when already
+            /// within `threshold` of it. Outside that window the angle is
+            /// returned untouched, so snapping never fights a deliberate edit.
+            #[inline]
+            pub fn snap_deg(angle: $f, step: $f, threshold: $f) -> $f {
+                if step <= 0.0 {
+                    return angle;
+                }
+                let snapped = (angle / step).round() * step;
+                if (angle - snapped).abs() <= threshold {
+                    snapped
+                } else {
+                    angle
+                }
+            }
+
+            // ---------------------------------------------------------------
+            // Room geometry
+            // ---------------------------------------------------------------
+
+            /// Non-linear depth warp on the front/back axis.
+            ///
+            /// A cubic through `(0, 0)` and `(±1, ±ratio)` whose slope at the
+            /// origin is `center_ratio`, so the room can be stretched towards
+            /// the front and the rear by different amounts while the listener
+            /// position stays put and the curve stays smooth across it.
+            /// `center_blend` picks where that origin slope sits between the
+            /// rear and front ratios.
+            #[inline]
+            pub fn map_depth(depth: $f, front_ratio: $f, rear_ratio: $f, center_blend: $f) -> $f {
+                let d = depth.clamp(-1.0, 1.0);
+                let blend = center_blend.clamp(0.0, 1.0);
+                let center_ratio = rear_ratio + (front_ratio - rear_ratio) * blend;
+                if d >= 0.0 {
+                    let t = d;
+                    let a = center_ratio - front_ratio;
+                    let b = 2.0 * (front_ratio - center_ratio);
+                    a * t * t * t + b * t * t + center_ratio * t
+                } else {
+                    let t = -d;
+                    let a = center_ratio - rear_ratio;
+                    let b = 2.0 * (rear_ratio - center_ratio);
+                    -(a * t * t * t + b * t * t + center_ratio * t)
+                }
+            }
+
+            /// Invert [`map_depth`] by bisection.
+            ///
+            /// 28 halvings of a unit interval, so the result is good to about
+            /// `2^-29`. The warp is a monotone cubic with no closed-form
+            /// inverse worth the branch count here; this matches the two
+            /// existing implementations (`orender_engine::virtual_bed` and the
+            /// Studio frontend) iteration for iteration, which is what lets
+            /// them be replaced without moving a single stored coordinate.
+            pub fn inverse_map_depth(
+                mapped_depth: $f,
+                front_ratio: $f,
+                rear_ratio: $f,
+                center_blend: $f,
+            ) -> $f {
+                let (target, mut lo, mut hi) = if mapped_depth >= 0.0 {
+                    (
+                        mapped_depth.clamp(0.0, front_ratio.max(0.0)),
+                        0.0 as $f,
+                        1.0 as $f,
+                    )
+                } else {
+                    (
+                        mapped_depth.clamp(-rear_ratio.max(0.0), 0.0),
+                        -1.0 as $f,
+                        0.0 as $f,
+                    )
+                };
+                for _ in 0..28 {
+                    let mid = (lo + hi) * 0.5;
+                    if map_depth(mid, front_ratio, rear_ratio, center_blend) < target {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                (lo + hi) * 0.5
+            }
+
+            /// Scale a normalised ADM position into room-relative space: the
+            /// coordinates gain models pan in, and that distance attenuation
+            /// measures from.
+            ///
+            /// `room_ratio` is `[width, front, height]`; the rear and lower
+            /// ratios cover the half-axes that are allowed to differ.
+            #[inline]
+            pub fn room_scaled_position(
+                position: [$f; 3],
+                room_ratio: [$f; 3],
+                rear_ratio: $f,
+                lower_ratio: $f,
+                center_blend: $f,
+            ) -> [$f; 3] {
+                [
+                    position[0] * room_ratio[0],
+                    map_depth(position[1], room_ratio[1], rear_ratio, center_blend),
+                    if position[2] >= 0.0 {
+                        position[2] * room_ratio[2]
+                    } else {
+                        position[2] * lower_ratio
+                    },
+                ]
+            }
+
+            /// Inverse of [`room_scaled_position`], clamped back into the
+            /// normalised `[-1, 1]` cube.
+            #[inline]
+            pub fn inverse_room_scaled_position(
+                position: [$f; 3],
+                room_ratio: [$f; 3],
+                rear_ratio: $f,
+                lower_ratio: $f,
+                center_blend: $f,
+            ) -> [$f; 3] {
+                let width = room_ratio[0].max(MIN_ROOM_RATIO);
+                let front = room_ratio[1].max(MIN_ROOM_RATIO);
+                let height = room_ratio[2].max(MIN_ROOM_RATIO);
+                let rear = rear_ratio.max(MIN_ROOM_RATIO);
+                let lower = lower_ratio.max(MIN_ROOM_RATIO);
+
+                [
+                    (position[0] / width).clamp(-1.0, 1.0),
+                    inverse_map_depth(position[1], front, rear, center_blend).clamp(-1.0, 1.0),
+                    if position[2] >= 0.0 {
+                        (position[2] / height).clamp(-1.0, 1.0)
+                    } else {
+                        (position[2] / lower).clamp(-1.0, 1.0)
+                    },
+                ]
+            }
+
+            /// Inverse of [`room_scaled_position`] for a position that states
+            /// a direction: one that reaches past a wall is drawn back along
+            /// its own line until it fits the room, then inverted, so the
+            /// direction it renders at survives. The plain inverse clamps each
+            /// axis on its own, which bends such a position towards the wall:
+            /// a 30° height in a room whose height ratio is 0.4 came back at
+            /// 24.8°. A position inside the room is inverted as it is.
+            #[inline]
+            pub fn inverse_room_scaled_direction(
+                position: [$f; 3],
+                room_ratio: [$f; 3],
+                rear_ratio: $f,
+                lower_ratio: $f,
+                center_blend: $f,
+            ) -> [$f; 3] {
+                let half = |value: $f, positive: $f, negative: $f| {
+                    (if value >= 0.0 { positive } else { negative }).max(MIN_ROOM_RATIO)
+                };
+                let extents = [
+                    room_ratio[0].max(MIN_ROOM_RATIO),
+                    half(position[1], room_ratio[1], rear_ratio),
+                    half(position[2], room_ratio[2], lower_ratio),
+                ];
+                let mut overshoot: $f = 1.0;
+                for axis in 0..3 {
+                    overshoot = overshoot.max(position[axis].abs() / extents[axis]);
+                }
+                let fitted = [
+                    position[0] / overshoot,
+                    position[1] / overshoot,
+                    position[2] / overshoot,
+                ];
+                inverse_room_scaled_position(
+                    fitted,
+                    room_ratio,
+                    rear_ratio,
+                    lower_ratio,
+                    center_blend,
+                )
+            }
+
+            // ---------------------------------------------------------------
+            // Sphere reading of room coordinates
+            // ---------------------------------------------------------------
+
+            /// Azimuth of the room's front corners at ear level under the
+            /// sphere reading, in degrees: where `L`/`R` stand.
+            pub const SPHERE_FRONT_CORNER_DEG: $f = 30.0;
+            /// Azimuth of the room's front corners at the ceiling: where the
+            /// top front pair stands.
+            pub const SPHERE_TOP_FRONT_CORNER_DEG: $f = 45.0;
+            /// Azimuth of the room's rear corners, at every height: where the
+            /// back pair and the top back pair stand.
+            pub const SPHERE_REAR_CORNER_DEG: $f = 135.0;
+
+            /// The front corners' azimuth at a given height fraction: `0` at
+            /// ear level, `1` from the ceiling edge up (and from the floor
+            /// edge down).
+            #[inline]
+            fn sphere_front_corner_deg(height: $f) -> $f {
+                SPHERE_FRONT_CORNER_DEG
+                    + (SPHERE_TOP_FRONT_CORNER_DEG - SPHERE_FRONT_CORNER_DEG) * height
+            }
+
+            /// Read a normalized room position on the listener's sphere: the
+            /// room position that lies in the direction the sphere reading
+            /// hears `position` at, at the same distance relative to the
+            /// room's surface.
+            ///
+            /// A room position is a point of the unit cube, and the direction
+            /// straight off it is a cube's: a front corner at 45°, a top
+            /// corner 35° up. Speakers do not stand there. The sphere reading
+            /// maps the cube onto the sphere so that the places a layout's
+            /// speakers take in the room are heard at their nominal angles:
+            ///
+            /// - **Azimuth.** The horizontal outline of the room, a square,
+            ///   is walked as a circle: linear in the position along each
+            ///   half-wall, between the front centre (0°), the front corner
+            ///   ([`SPHERE_FRONT_CORNER_DEG`] at ear level, widening to
+            ///   [`SPHERE_TOP_FRONT_CORNER_DEG`] at the ceiling), the side
+            ///   wall's centre (90°), the rear corner
+            ///   ([`SPHERE_REAR_CORNER_DEG`]) and the rear centre (180°).
+            /// - **Elevation.** The height over the horizontal reach
+            ///   `max(|x|, |y|)`, not over the horizontal radius: the whole
+            ///   ceiling edge is 45° up, corners included, and the ceiling's
+            ///   centre is overhead.
+            ///
+            /// The direction depends on the direction of `position` only, so
+            /// a source moving along a line through the listener keeps its
+            /// bearing. The returned point has the same `max(|x|, |y|, |z|)`
+            /// as `position`: a point of the room's surface stays on it, in
+            /// the heard direction. Straight up, straight down and the origin
+            /// are returned as they are.
+            ///
+            /// One `sin_cos` per call; no allocation.
+            #[inline]
+            pub fn sphere_reading(position: [$f; 3]) -> [$f; 3] {
+                let [x, y, z] = position;
+                let reach = x.abs().max(y.abs());
+                if reach <= 0.0 {
+                    return position;
+                }
+                let (ux, uy) = (x.abs() / reach, y / reach);
+                let front = sphere_front_corner_deg((z.abs() / reach).min(1.0));
+                let azimuth = if uy >= ux {
+                    // Front wall.
+                    front * ux
+                } else if uy <= -ux {
+                    // Rear wall.
+                    180.0 - (180.0 - SPHERE_REAR_CORNER_DEG) * ux
+                } else if uy >= 0.0 {
+                    // Side wall, front half.
+                    90.0 - (90.0 - front) * uy
+                } else {
+                    // Side wall, rear half.
+                    90.0 - (SPHERE_REAR_CORNER_DEG - 90.0) * uy
+                };
+                let (sin, cos) = azimuth.to_radians().sin_cos();
+                let heard = [reach * sin.copysign(x), reach * cos, z];
+                // Back onto the room's surface at the distance `position`
+                // had: the largest component carries it.
+                let scale =
+                    reach.max(z.abs()) / heard[0].abs().max(heard[1].abs()).max(heard[2].abs());
+                [heard[0] * scale, heard[1] * scale, heard[2] * scale]
+            }
+
+            /// The room position [`sphere_reading`] hears in the direction of
+            /// `position`: its inverse, for a pose stated as an angle that
+            /// must land on that angle under the sphere reading. The length
+            /// of `position` (its radius on the listener's sphere) becomes
+            /// the distance relative to the room's surface, so a direction at
+            /// radius 1 comes back on the surface of the unit cube.
+            #[inline]
+            pub fn inverse_sphere_reading(position: [$f; 3]) -> [$f; 3] {
+                let [x, y, z] = position;
+                let horizontal = (x * x + y * y).sqrt();
+                if horizontal < 1e-6 {
+                    // Straight up or down (or the origin): its own image.
+                    return [0.0, 0.0, z];
+                }
+                let radius = (horizontal * horizontal + z * z).sqrt();
+                let front = sphere_front_corner_deg((z.abs() / horizontal).min(1.0));
+                let azimuth = x.atan2(y).to_degrees().abs();
+                let (ux, uy) = if azimuth <= front {
+                    (azimuth / front, 1.0)
+                } else if azimuth <= 90.0 {
+                    (1.0, (90.0 - azimuth) / (90.0 - front))
+                } else if azimuth <= SPHERE_REAR_CORNER_DEG {
+                    (1.0, (90.0 - azimuth) / (SPHERE_REAR_CORNER_DEG - 90.0))
+                } else {
+                    ((180.0 - azimuth) / (180.0 - SPHERE_REAR_CORNER_DEG), -1.0)
+                };
+                // Up to 45° the point is on a wall, above it on the ceiling.
+                let (reach, height) = if z.abs() <= horizontal {
+                    (radius, radius * z / horizontal)
+                } else {
+                    (radius * horizontal / z.abs(), radius.copysign(z))
+                };
+                [reach * ux.copysign(x), reach * uy, height]
+            }
+
+            /// [`inverse_sphere_reading`] for a pose stated as an angle, kept
+            /// inside the room: a radius past 1 would land beyond the unit
+            /// cube's surface, so the pose is drawn back to it along its own
+            /// direction, the way [`inverse_room_scaled_direction`] fits one
+            /// into a room.
+            #[inline]
+            pub fn inverse_sphere_reading_direction(position: [$f; 3]) -> [$f; 3] {
+                let [x, y, z] = position;
+                let overshoot = (x * x + y * y + z * z).sqrt().max(1.0);
+                inverse_sphere_reading([x / overshoot, y / overshoot, z / overshoot])
+            }
+
+            // ---------------------------------------------------------------
+            // Sampling grids
+            // ---------------------------------------------------------------
+
+            /// `count` positions spread evenly from `min` to `max`, inclusive.
+            ///
+            /// A count of one or zero collapses to `min` rather than dividing
+            /// by zero.
+            pub fn evenly_spaced_axis(count: usize, min: $f, max: $f) -> Vec<$f> {
+                if count <= 1 {
+                    return vec![min];
+                }
+                let step = (max - min) / (count.saturating_sub(1) as $f);
+                (0..count).map(|index| min + step * index as $f).collect()
+            }
+
+            /// Node positions of the cartesian gain table's height axis.
+            ///
+            /// Not symmetric, which is the whole reason this is a function and
+            /// not a step size. The positive half is a plain even spread over
+            /// `[0, 1]`, but the space below the listener is optional and gets
+            /// its own resolution: `z_neg_size` nodes covering `[-1, 0)`,
+            /// stopping short of zero so the two halves do not both land on it.
+            ///
+            /// Both counts are **node counts**, not intervals. The live
+            /// parameter is an interval count and is converted before it gets
+            /// here (`live_params.rs`: `z_size.max(1) + 1`) — a distinction
+            /// that has to survive every hop of the protocol, and the reason
+            /// the Studio asks for these positions instead of rebuilding them.
+            pub fn cartesian_z_axis(z_size: usize, z_neg_size: usize) -> Vec<$f> {
+                let mut values = Vec::with_capacity(z_neg_size + z_size);
+                if z_neg_size > 0 {
+                    for index in 0..z_neg_size {
+                        values.push(-1.0 + index as $f / z_neg_size as $f);
+                    }
+                }
+                values.extend(evenly_spaced_axis(z_size.max(2), 0.0, 1.0));
+                values
+            }
+
+            // ---------------------------------------------------------------
+            // Blend curve
+            // ---------------------------------------------------------------
+
+            /// Piecewise-linear interpolation through sorted control points.
+            fn linear_y(points: &[[$f; 2]], x: $f) -> $f {
+                let last = points.len() - 1;
+                for i in 0..last {
+                    let [x0, y0] = points[i];
+                    let [x1, y1] = points[i + 1];
+                    if x <= x1 {
+                        let span = (x1 - x0).max(1e-6);
+                        let t = ((x - x0) / span).clamp(0.0, 1.0);
+                        return y0 + (y1 - y0) * t;
+                    }
+                }
+                points[last][1]
+            }
+
+            #[inline]
+            fn midpoint(a: [$f; 2], b: [$f; 2]) -> [$f; 2] {
+                [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]
+            }
+
+            /// Quadratic Bézier (`start`, `control`, `end`) as `y` at a given
+            /// `x`, by solving `Bx(u) = x` for `u` in `[0, 1]`.
+            fn quadratic_bezier_y_at_x(
+                start: [$f; 2],
+                control: [$f; 2],
+                end: [$f; 2],
+                x: $f,
+            ) -> $f {
+                let a = start[0] - 2.0 * control[0] + end[0];
+                let b = 2.0 * (control[0] - start[0]);
+                let c = start[0] - x;
+                let u = if a.abs() < 1e-6 {
+                    if b.abs() < 1e-9 { 0.0 } else { -c / b }
+                } else {
+                    let disc = (b * b - 4.0 * a * c).max(0.0).sqrt();
+                    let u1 = (-b + disc) / (2.0 * a);
+                    if (0.0..=1.0).contains(&u1) {
+                        u1
+                    } else {
+                        (-b - disc) / (2.0 * a)
+                    }
+                }
+                .clamp(0.0, 1.0);
+                let omu = 1.0 - u;
+                omu * omu * start[1] + 2.0 * omu * u * control[1] + u * u * end[1]
+            }
+
+            /// Approximating uniform quadratic B-spline as `y(x)`: straight
+            /// from the first point to the first segment midpoint, a quadratic
+            /// Bézier around each interior point (control = the point,
+            /// endpoints = the adjacent midpoints), then straight from the last
+            /// midpoint to the last point. Passes through the endpoints and the
+            /// segment midpoints, tangent to every segment at its midpoint.
+            fn bspline_y(points: &[[$f; 2]], x: $f) -> $f {
+                let last = points.len() - 1;
+                if last <= 1 {
+                    // Fewer than three points: no corner to cut.
+                    return linear_y(points, x);
+                }
+                let m_first = midpoint(points[0], points[1]);
+                if x <= m_first[0] {
+                    let span = (m_first[0] - points[0][0]).max(1e-6);
+                    let t = ((x - points[0][0]) / span).clamp(0.0, 1.0);
+                    return points[0][1] + (m_first[1] - points[0][1]) * t;
+                }
+                let m_last = midpoint(points[last - 1], points[last]);
+                if x >= m_last[0] {
+                    let span = (points[last][0] - m_last[0]).max(1e-6);
+                    let t = ((x - m_last[0]) / span).clamp(0.0, 1.0);
+                    return m_last[1] + (points[last][1] - m_last[1]) * t;
+                }
+                for i in 1..last {
+                    let end = midpoint(points[i], points[i + 1]);
+                    if x <= end[0] {
+                        let start = midpoint(points[i - 1], points[i]);
+                        return quadratic_bezier_y_at_x(start, points[i], end, x);
+                    }
+                }
+                points[last][1]
+            }
+
+            /// Evaluate the hybrid backend's blend curve at normalised `x`.
+            ///
+            /// `smoothing` blends the piecewise-linear curve (0 — passes
+            /// through the control points) with the approximating B-spline
+            /// (1 — corner cutting). Anything outside the point range holds the
+            /// nearest endpoint.
+            ///
+            /// This decides how the hybrid backend crossfades between its two
+            /// inner backends, so the Studio's preview and the audio path must
+            /// be the same function — a preview drawn by a second
+            /// implementation is a preview that can lie.
+            ///
+            /// An empty point set evaluates to 0.
+            pub fn blend_curve_y(points: &[[$f; 2]], smoothing: $f, x: $f) -> $f {
+                if points.is_empty() {
+                    return 0.0;
+                }
+                if x <= points[0][0] {
+                    return points[0][1];
+                }
+                let last = points.len() - 1;
+                if x >= points[last][0] {
+                    return points[last][1];
+                }
+                let linear = linear_y(points, x);
+                let smoothing = smoothing.clamp(0.0, 1.0);
+                if smoothing <= 0.0 {
+                    return linear;
+                }
+                let spline = bspline_y(points, x);
+                (linear + (spline - linear) * smoothing).clamp(0.0, 1.0)
+            }
+
+            // ---------------------------------------------------------------
+            // 3-vectors
+            // ---------------------------------------------------------------
+
+            /// Plain 3-vector arithmetic on `[x, y, z]` arrays, in any frame.
+            ///
+            /// Normalisation takes the zero-length policy as an argument
+            /// ([`try_normalize`](vec3::try_normalize) returns `None` below a
+            /// caller-chosen length) because the callers genuinely differ:
+            /// some keep the input, some fall back to a fixed axis.
+            pub mod vec3 {
+                /// `a · b`.
+                #[inline]
+                pub fn dot(a: [$f; 3], b: [$f; 3]) -> $f {
+                    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+                }
+
+                /// `a × b`.
+                #[inline]
+                pub fn cross(a: [$f; 3], b: [$f; 3]) -> [$f; 3] {
+                    [
+                        a[1] * b[2] - a[2] * b[1],
+                        a[2] * b[0] - a[0] * b[2],
+                        a[0] * b[1] - a[1] * b[0],
+                    ]
+                }
+
+                /// `a − b`.
+                #[inline]
+                pub fn sub(a: [$f; 3], b: [$f; 3]) -> [$f; 3] {
+                    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+                }
+
+                /// `|v|`.
+                #[inline]
+                pub fn length(v: [$f; 3]) -> $f {
+                    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+                }
+
+                /// `|a − b|²`.
+                #[inline]
+                pub fn distance_sq(a: [$f; 3], b: [$f; 3]) -> $f {
+                    let dx = a[0] - b[0];
+                    let dy = a[1] - b[1];
+                    let dz = a[2] - b[2];
+                    dx * dx + dy * dy + dz * dz
+                }
+
+                /// `|a − b|`.
+                #[inline]
+                pub fn distance(a: [$f; 3], b: [$f; 3]) -> $f {
+                    distance_sq(a, b).sqrt()
+                }
+
+                /// `v / |v|`, or `None` when `|v| < min_length`. A NaN length
+                /// is not below the threshold, so NaN propagates rather than
+                /// being mistaken for a zero vector.
+                #[inline]
+                pub fn try_normalize(v: [$f; 3], min_length: $f) -> Option<[$f; 3]> {
+                    let n = length(v);
+                    if n < min_length {
+                        None
+                    } else {
+                        Some([v[0] / n, v[1] / n, v[2] / n])
+                    }
+                }
+            }
+
+            // ---------------------------------------------------------------
+            // Coordinate hydration
+            // ---------------------------------------------------------------
+
+            /// Derive the polar representation of a speaker given its
+            /// cartesian one, clamping the inputs to the normalised cube and
+            /// the distance to [`MIN_DISTANCE`].
+            #[inline]
+            pub fn hydrate_from_cartesian(x: $f, y: $f, z: $f) -> ($f, $f, $f) {
+                let x = x.clamp(-1.0, 1.0);
+                let y = y.clamp(-1.0, 1.0);
+                let z = z.clamp(-1.0, 1.0);
+                let (az, el, dist) = to_spherical(x, y, z);
+                (az, el, dist.max(MIN_DISTANCE))
+            }
+
+            /// Derive the cartesian representation of a speaker given its
+            /// polar one, clamping the result to the normalised cube.
+            #[inline]
+            pub fn hydrate_from_spherical(
+                azimuth_deg: $f,
+                elevation_deg: $f,
+                distance: $f,
+            ) -> ($f, $f, $f) {
+                let (x, y, z) =
+                    from_spherical(azimuth_deg, elevation_deg, distance.max(MIN_DISTANCE));
+                (x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0), z.clamp(-1.0, 1.0))
+            }
+        }
+    };
+}
+
+geometry_for!(f32, ::core::primitive::f32);
+geometry_for!(f64, ::core::primitive::f64);
+
+#[cfg(test)]
+mod tests {
+    use super::f64::*;
+
+    const EPS: f64 = 1e-9;
+
+    fn close(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-6, "expected {b}, got {a}");
+    }
+
+    // ── Frames ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn adm_cardinal_directions_read_as_expected() {
+        // Front centre.
+        let (az, el, _) = to_spherical(0.0, 1.0, 0.0);
+        close(az, 0.0);
+        close(el, 0.0);
+
+        // Hard right.
+        let (az, el, _) = to_spherical(1.0, 0.0, 0.0);
+        close(az, 90.0);
+        close(el, 0.0);
+
+        // Hard left.
+        let (az, _, _) = to_spherical(-1.0, 0.0, 0.0);
+        close(az, -90.0);
+
+        // Directly overhead: azimuth is arbitrary, elevation must be exact.
+        let (_, el, _) = to_spherical(0.0, 0.0, 1.0);
+        close(el, 90.0);
+    }
+
+    /// The regression this crate was written for: the Studio backend used the
+    /// scene-space formula on ADM-ordered components. `FR` from `7.1.4.yaml`
+    /// (x=1, y=1, z=0) is front-right at ear level, and must not read as
+    /// straight-ahead-and-elevated.
+    #[test]
+    fn front_right_speaker_is_not_read_as_elevated_centre() {
+        let (az, el, _) = to_spherical(1.0, 1.0, 0.0);
+        close(az, 45.0);
+        close(el, 0.0);
+
+        // What the un-swizzled formula produced, for the record.
+        let wrong_az = 0.0f64.atan2(1.0).to_degrees();
+        let wrong_el = 1.0f64.atan2((1.0f64 + 0.0).sqrt()).to_degrees();
+        close(wrong_az, 0.0);
+        close(wrong_el, 45.0);
+    }
+
+    /// SOFA's front and left land on ADM's front and left.
+    #[test]
+    fn sofa_frame_maps_front_and_left() {
+        assert_eq!(sofa_to_adm([1.0, 0.0, 0.0]), [0.0, 1.0, 0.0]);
+        assert_eq!(sofa_to_adm([0.0, 1.0, 0.0]), [-1.0, 0.0, 0.0]);
+        assert_eq!(sofa_to_adm([0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]);
+        let (az, _, _) = to_spherical(-1.0, 0.0, 0.0);
+        close(az, -90.0);
+    }
+
+    #[test]
+    fn vec3_normalize_honours_the_callers_threshold() {
+        use super::f64::vec3::*;
+        assert_eq!(try_normalize([3.0, 0.0, 4.0], 1e-6), Some([0.6, 0.0, 0.8]));
+        assert_eq!(try_normalize([1e-7, 0.0, 0.0], 1e-6), None);
+        // NaN is not "below the threshold": it propagates.
+        assert!(try_normalize([f64::NAN, 0.0, 0.0], 1e-6).unwrap()[0].is_nan());
+        assert_eq!(cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), [0.0, 0.0, 1.0]);
+        assert_eq!(dot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]), 32.0);
+        assert_eq!(distance([0.0, 0.0, 0.0], [3.0, 4.0, 0.0]), 5.0);
+    }
+
+    #[test]
+    fn scene_swizzle_preserves_angles() {
+        // Applying the scene-ordered azimuth formula to swizzled components
+        // must agree with the ADM formula on the originals.
+        for &(x, y, z) in &[
+            (1.0, 1.0, 0.0),
+            (-0.3, 0.8, 0.5),
+            (0.0, -1.0, -0.25),
+            (0.7, 0.0, 1.0),
+        ] {
+            let scene = adm_to_scene([x, y, z]);
+            let scene_az = scene[2].atan2(scene[0]).to_degrees();
+            let (adm_az, _, _) = to_spherical(x, y, z);
+            close(scene_az, adm_az);
+
+            let scene_el = scene[1]
+                .atan2((scene[0] * scene[0] + scene[2] * scene[2]).sqrt())
+                .to_degrees();
+            let (_, adm_el, _) = to_spherical(x, y, z);
+            close(scene_el, adm_el);
+        }
+    }
+
+    #[test]
+    fn frame_conversion_round_trips() {
+        let adm = [0.25, -0.5, 0.75];
+        assert_eq!(scene_to_adm(adm_to_scene(adm)), adm);
+    }
+
+    #[test]
+    fn spherical_round_trips() {
+        for &(az, el, dist) in &[
+            (0.0, 0.0, 1.0),
+            (45.0, 30.0, 0.8),
+            (-120.0, -15.0, 1.0),
+            (179.0, 89.0, 0.5),
+        ] {
+            let (x, y, z) = from_spherical(az, el, dist);
+            let (az2, el2, dist2) = to_spherical(x, y, z);
+            close(az2, az);
+            close(el2, el);
+            close(dist2, dist);
+        }
+    }
+
+    // ── Angles ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_and_wrap_agree_away_from_the_seam() {
+        for a in [-359.0, -181.0, -90.0, 0.0, 90.0, 181.0, 540.0] {
+            close(normalize_deg(a), wrap_deg(a));
+        }
+    }
+
+    #[test]
+    fn wrap_folds_the_negative_seam_onto_positive() {
+        close(wrap_deg(-180.0), 180.0);
+        close(wrap_deg(180.0), 180.0);
+        // normalize_deg keeps -180 as itself; that difference is deliberate.
+        close(normalize_deg(-180.0), -180.0);
+    }
+
+    #[test]
+    fn wrapped_distance_takes_the_short_way() {
+        close(wrapped_distance_deg(170.0, -170.0), 20.0);
+        close(wrapped_distance_deg(-170.0, 170.0), 20.0);
+        close(wrapped_distance_deg(0.0, 180.0), 180.0);
+        close(wrapped_distance_deg(10.0, 10.0), 0.0);
+    }
+
+    #[test]
+    fn snap_only_inside_the_threshold() {
+        close(snap_deg(44.0, 45.0, 2.0), 45.0);
+        close(snap_deg(41.0, 45.0, 2.0), 41.0);
+        close(snap_deg(41.0, 0.0, 2.0), 41.0);
+    }
+
+    // ── Room geometry ───────────────────────────────────────────────────────
+
+    #[test]
+    fn depth_warp_pins_its_endpoints() {
+        let (front, rear, blend) = (2.0, 1.5, 0.5);
+        close(map_depth(0.0, front, rear, blend), 0.0);
+        close(map_depth(1.0, front, rear, blend), front);
+        close(map_depth(-1.0, front, rear, blend), -rear);
+    }
+
+    #[test]
+    fn depth_warp_is_monotone() {
+        let (front, rear, blend) = (2.0, 1.2, 0.35);
+        let mut previous = map_depth(-1.0, front, rear, blend);
+        for i in 1..=200 {
+            let d = -1.0 + 2.0 * (i as f64) / 200.0;
+            let current = map_depth(d, front, rear, blend);
+            assert!(current > previous, "not monotone at d={d}");
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn depth_warp_inverts() {
+        for &(front, rear, blend) in &[
+            (1.0, 1.0, 0.5),
+            (2.0, 1.5, 0.5),
+            (3.0, 0.8, 0.0),
+            (1.2, 2.4, 1.0),
+        ] {
+            for i in 0..=40 {
+                let d = -1.0 + 2.0 * (i as f64) / 40.0;
+                let mapped = map_depth(d, front, rear, blend);
+                let back = inverse_map_depth(mapped, front, rear, blend);
+                assert!(
+                    (back - d).abs() < 1e-6,
+                    "depth {d} round-tripped to {back} (front={front}, rear={rear}, blend={blend})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn room_scaling_inverts() {
+        let ratio = [1.5, 2.0, 1.1];
+        let (rear, lower, blend) = (1.3, 0.6, 0.5);
+        for &position in &[
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [-1.0, -1.0, -1.0],
+            [0.3, -0.7, 0.25],
+        ] {
+            let scaled = room_scaled_position(position, ratio, rear, lower, blend);
+            let back = inverse_room_scaled_position(scaled, ratio, rear, lower, blend);
+            for axis in 0..3 {
+                assert!(
+                    (back[axis] - position[axis]).abs() < 1e-6,
+                    "axis {axis}: {:?} -> {:?}",
+                    position,
+                    back
+                );
+            }
+        }
+    }
+
+    /// A direction past a wall keeps its angle through the direction
+    /// inverse, where the plain inverse bends it: the position is drawn back
+    /// along its line into the room, and warping the result renders the
+    /// same angle. Inside the room the two inverses agree.
+    #[test]
+    fn the_direction_inverse_keeps_the_angle_of_a_position_past_a_wall() {
+        // A low room, deeper to the front than to the rear.
+        let ratio = [1.0, 1.2, 0.4];
+        let (rear, lower, blend) = (0.8, 0.48, 0.5);
+        let angles = |p: [f64; 3]| {
+            (
+                p[0].atan2(p[1]).to_degrees(),
+                p[2].atan2((p[0] * p[0] + p[1] * p[1]).sqrt()).to_degrees(),
+            )
+        };
+        for (az, el) in [
+            (-30.0f64, 30.0f64),
+            (110.0, 30.0),
+            (0.0, 45.0),
+            (-135.0, 0.0),
+            (180.0, -20.0),
+        ] {
+            let (x, y, z) = from_spherical(az, el, 1.0);
+            let kept = inverse_room_scaled_direction([x, y, z], ratio, rear, lower, blend);
+            assert!(
+                kept.iter().all(|c| c.abs() <= 1.0 + 1e-9),
+                "{az}/{el}: inside the cube"
+            );
+            let (got_az, got_el) = angles(room_scaled_position(kept, ratio, rear, lower, blend));
+            close(got_az, az);
+            close(got_el, el);
+        }
+        // The plain inverse does bend a height past the ceiling (the reason
+        // this function exists).
+        let (x, y, z) = from_spherical(-30.0, 30.0, 1.0);
+        let bent = inverse_room_scaled_position([x, y, z], ratio, rear, lower, blend);
+        let (_, el) = angles(room_scaled_position(bent, ratio, rear, lower, blend));
+        assert!(el < 26.0, "the plain inverse bends it to {el}°");
+        // Inside the room both agree.
+        let inside = [0.2, -0.3, 0.1];
+        let a = inverse_room_scaled_direction(inside, ratio, rear, lower, blend);
+        let b = inverse_room_scaled_position(inside, ratio, rear, lower, blend);
+        for axis in 0..3 {
+            close(a[axis], b[axis]);
+        }
+    }
+
+    #[test]
+    fn degenerate_ratios_do_not_divide_by_zero() {
+        let back = inverse_room_scaled_position([0.5, 0.5, -0.5], [0.0, 0.0, 0.0], 0.0, 0.0, 0.5);
+        assert!(back.iter().all(|v| v.is_finite()));
+    }
+
+    // ── Sphere reading ──────────────────────────────────────────────────────
+
+    /// Azimuth and elevation the sphere reading hears a room position at.
+    fn heard(x: f64, y: f64, z: f64) -> (f64, f64) {
+        let [hx, hy, hz] = sphere_reading([x, y, z]);
+        let (az, el, _) = to_spherical(hx, hy, hz);
+        (az, el)
+    }
+
+    fn reach(position: [f64; 3]) -> f64 {
+        position[0]
+            .abs()
+            .max(position[1].abs())
+            .max(position[2].abs())
+    }
+
+    /// The places a layout's speakers take in the room are heard at their
+    /// nominal angles: what the reading is for.
+    #[test]
+    fn the_rooms_speaker_places_are_heard_at_their_nominal_angles() {
+        // (room position, azimuth, elevation)
+        let places = [
+            ((0.0, 1.0, 0.0), 0.0, 0.0),       // C
+            ((-1.0, 1.0, 0.0), -30.0, 0.0),    // L
+            ((1.0, 1.0, 0.0), 30.0, 0.0),      // R
+            ((-0.5, 1.0, 0.0), -15.0, 0.0),    // Lsc
+            ((1.0, 0.5, 0.0), 60.0, 0.0),      // Rw
+            ((-1.0, 0.0, 0.0), -90.0, 0.0),    // Ls
+            ((1.0, 0.0, 0.0), 90.0, 0.0),      // Rs
+            ((-1.0, -1.0, 0.0), -135.0, 0.0),  // Lb
+            ((1.0, -1.0, 0.0), 135.0, 0.0),    // Rb
+            ((-1.0, 1.0, 1.0), -45.0, 45.0),   // Tfl
+            ((1.0, 1.0, 1.0), 45.0, 45.0),     // Tfr
+            ((0.0, 1.0, 1.0), 0.0, 45.0),      // Tfc
+            ((-1.0, 0.0, 1.0), -90.0, 45.0),   // Tsl
+            ((-1.0, -1.0, 1.0), -135.0, 45.0), // Tbl
+            ((1.0, -1.0, 1.0), 135.0, 45.0),   // Tbr
+            ((1.0, -1.0, -1.0), 135.0, -45.0), // a floor corner mirrors the top
+        ];
+        for ((x, y, z), azimuth, elevation) in places {
+            let (az, el) = heard(x, y, z);
+            close(az, azimuth);
+            close(el, elevation);
+        }
+        // The rear centre is behind, whichever sign the azimuth takes.
+        let (az, el) = heard(0.0, -1.0, 0.0);
+        close(az.abs(), 180.0);
+        close(el, 0.0);
+    }
+
+    /// A cube reads a front corner at 45° and a top corner 35° up; the
+    /// reading moves both, which is the whole difference.
+    #[test]
+    fn the_sphere_reading_differs_from_the_cubes_own_directions() {
+        let (az, el, _) = to_spherical(-1.0, 1.0, 1.0);
+        close(az, -45.0);
+        assert!((el - 35.264).abs() < 1e-3, "cube top corner at {el}");
+        let (_, el) = heard(-1.0, 1.0, 1.0);
+        close(el, 45.0);
+        let (az, _, _) = to_spherical(-1.0, 1.0, 0.0);
+        close(az, -45.0);
+        let (az, _) = heard(-1.0, 1.0, 0.0);
+        close(az, -30.0);
+    }
+
+    #[test]
+    fn the_vertical_axis_and_the_origin_read_as_themselves() {
+        assert_eq!(sphere_reading([0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]);
+        assert_eq!(sphere_reading([0.0, 0.0, -0.4]), [0.0, 0.0, -0.4]);
+        assert_eq!(sphere_reading([0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]);
+        assert_eq!(inverse_sphere_reading([0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]);
+        assert_eq!(inverse_sphere_reading([0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]);
+        // The ceiling's centre is overhead, and its approach is continuous.
+        let (_, el) = heard(0.001, 0.001, 1.0);
+        assert!(el > 89.9, "near the zenith reads {el}");
+    }
+
+    /// A position grid covering every wall, the ceiling, the floor and the
+    /// inside of the room, the axis left out.
+    fn sample_positions() -> Vec<[f64; 3]> {
+        let steps = [-1.0, -0.75, -0.5, -0.2, 0.0, 0.3, 0.5, 0.8, 1.0];
+        let mut out = Vec::new();
+        for &x in &steps {
+            for &y in &steps {
+                for &z in &steps {
+                    if x != 0.0 || y != 0.0 {
+                        out.push([x, y, z]);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The distance relative to the room's surface is the reading's to keep:
+    /// the distance cues are measured against it.
+    #[test]
+    fn the_sphere_reading_keeps_the_distance_to_the_rooms_surface() {
+        for position in sample_positions() {
+            close(reach(sphere_reading(position)), reach(position));
+        }
+    }
+
+    #[test]
+    fn the_inverse_sphere_reading_undoes_the_reading() {
+        for position in sample_positions() {
+            // The reading lands on the room's surface scaled to the reach;
+            // the inverse takes a direction and a radius.
+            let read = sphere_reading(position);
+            let radius = reach(position);
+            let length = vec3::length(read);
+            let direction = [
+                read[0] / length * radius,
+                read[1] / length * radius,
+                read[2] / length * radius,
+            ];
+            let back = inverse_sphere_reading(direction);
+            for axis in 0..3 {
+                assert!(
+                    (back[axis] - position[axis]).abs() < 1e-9,
+                    "{position:?} came back as {back:?}"
+                );
+            }
+        }
+    }
+
+    /// A pose stated as an angle is stored as the inverse, and must be heard
+    /// at that angle, at the distance its radius states.
+    #[test]
+    fn an_angle_survives_the_inverse_then_the_reading() {
+        for &azimuth in &[
+            -170.0, -135.0, -110.0, -30.0, 0.0, 22.5, 45.0, 90.0, 120.0, 180.0,
+        ] {
+            for &elevation in &[-60.0, -30.0, 0.0, 15.0, 30.0, 45.0, 55.0, 80.0] {
+                for &radius in &[0.5, 1.0, 1.6] {
+                    let (x, y, z) = from_spherical(azimuth, elevation, radius);
+                    let stored = inverse_sphere_reading([x, y, z]);
+                    close(reach(stored), radius);
+                    let (az, el) = heard(stored[0], stored[1], stored[2]);
+                    assert!(
+                        wrapped_distance_deg(az, azimuth) < 1e-6,
+                        "azimuth {azimuth} at elevation {elevation} read {az}"
+                    );
+                    close(el, elevation);
+                }
+            }
+        }
+    }
+
+    /// A pose keeps to the room: past radius 1 it comes back on the surface,
+    /// on its direction; inside, it is the plain inverse.
+    #[test]
+    fn a_pose_past_the_surface_is_drawn_back_onto_it() {
+        let (x, y, z) = from_spherical(-110.0, 20.0, 1.8);
+        let stored = inverse_sphere_reading_direction([x, y, z]);
+        close(reach(stored), 1.0);
+        let (az, el) = heard(stored[0], stored[1], stored[2]);
+        close(az, -110.0);
+        close(el, 20.0);
+        let (x, y, z) = from_spherical(40.0, -10.0, 0.6);
+        assert_eq!(
+            inverse_sphere_reading_direction([x, y, z]),
+            inverse_sphere_reading([x, y, z])
+        );
+    }
+
+    /// A source moving along a line through the listener keeps its bearing.
+    #[test]
+    fn the_heard_direction_does_not_depend_on_the_distance() {
+        for position in sample_positions() {
+            let near = [position[0] * 0.25, position[1] * 0.25, position[2] * 0.25];
+            let (az, el) = heard(position[0], position[1], position[2]);
+            let (az_near, el_near) = heard(near[0], near[1], near[2]);
+            assert!(wrapped_distance_deg(az, az_near) < 1e-9);
+            close(el, el_near);
+        }
+    }
+
+    /// The reading is continuous along a wall and across its corners: an
+    /// object panned round the room never jumps.
+    #[test]
+    fn the_heard_direction_is_continuous_round_the_room() {
+        for &z in &[0.0, 0.4, 1.0] {
+            // Walk the square outline clockwise from the front centre.
+            let outline = |t: f64| -> (f64, f64) {
+                let t = t.rem_euclid(8.0);
+                match t {
+                    t if t < 1.0 => (t, 1.0),
+                    t if t < 3.0 => (1.0, 2.0 - t),
+                    t if t < 5.0 => (4.0 - t, -1.0),
+                    t if t < 7.0 => (-1.0, t - 6.0),
+                    t => (t - 8.0, 1.0),
+                }
+            };
+            let steps = 1600;
+            let mut previous = heard(0.0, 1.0, z).0;
+            let mut travelled = 0.0;
+            for i in 1..=steps {
+                let (x, y) = outline(i as f64 * 8.0 / steps as f64);
+                let az = heard(x, y, z).0;
+                let step = wrapped_distance_deg(az, previous);
+                assert!(step < 0.6, "jump of {step}° near ({x}, {y}, {z})");
+                travelled += step;
+                previous = az;
+            }
+            // Once round, never turning back.
+            close(travelled, 360.0);
+        }
+    }
+
+    // ── Hydration ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn hydration_round_trips_a_layout_speaker() {
+        // FR from layouts/7.1.4.yaml.
+        let (az, el, dist) = hydrate_from_cartesian(1.0, 1.0, 0.0);
+        close(az, 45.0);
+        close(el, 0.0);
+        close(dist, 2.0f64.sqrt());
+
+        let (x, y, z) = hydrate_from_spherical(az, el, dist);
+        close(x, 1.0);
+        close(y, 1.0);
+        close(z, 0.0);
+    }
+
+    #[test]
+    fn hydration_floors_the_distance() {
+        let (_, _, dist) = hydrate_from_cartesian(0.0, 0.0, 0.0);
+        assert!(dist >= MIN_DISTANCE - EPS);
+    }
+
+    #[test]
+    fn hydration_clamps_out_of_range_cartesian() {
+        let (az, _, _) = hydrate_from_cartesian(5.0, 0.0, 0.0);
+        close(az, 90.0);
+    }
+
+    // ── Sampling grids ──────────────────────────────────────────────────────
+
+    #[test]
+    fn an_even_axis_spans_its_ends_inclusively() {
+        assert_eq!(evenly_spaced_axis(2, -1.0, 1.0), vec![-1.0, 1.0]);
+        assert_eq!(evenly_spaced_axis(3, -1.0, 1.0), vec![-1.0, 0.0, 1.0]);
+        assert_eq!(
+            evenly_spaced_axis(5, 0.0, 1.0),
+            vec![0.0, 0.25, 0.5, 0.75, 1.0]
+        );
+    }
+
+    #[test]
+    fn a_degenerate_axis_collapses_to_its_start() {
+        assert_eq!(evenly_spaced_axis(1, -1.0, 1.0), vec![-1.0]);
+        assert_eq!(evenly_spaced_axis(0, -1.0, 1.0), vec![-1.0]);
+    }
+
+    /// With no space below the listener the height axis is just the upper half.
+    #[test]
+    fn the_height_axis_without_a_negative_half_starts_at_zero() {
+        assert_eq!(cartesian_z_axis(3, 0), vec![0.0, 0.5, 1.0]);
+    }
+
+    /// The asymmetric case, and the reason this is a function rather than a
+    /// step: the two halves have independent resolutions, and the negative one
+    /// stops short of zero so they do not both claim it.
+    #[test]
+    fn the_height_axis_halves_are_independent_and_meet_once() {
+        let axis = cartesian_z_axis(3, 2);
+        assert_eq!(axis, vec![-1.0, -0.5, 0.0, 0.5, 1.0]);
+        assert_eq!(axis.iter().filter(|v| **v == 0.0).count(), 1);
+    }
+
+    #[test]
+    fn the_height_axis_is_ascending_for_any_split() {
+        for z_size in 2..8usize {
+            for z_neg in 0..8usize {
+                let axis = cartesian_z_axis(z_size, z_neg);
+                assert_eq!(axis.len(), z_neg + z_size.max(2));
+                for pair in axis.windows(2) {
+                    assert!(
+                        pair[1] > pair[0],
+                        "not ascending at z_size={z_size} z_neg={z_neg}: {axis:?}"
+                    );
+                }
+                assert_eq!(*axis.first().unwrap(), if z_neg > 0 { -1.0 } else { 0.0 });
+                assert_eq!(*axis.last().unwrap(), 1.0);
+            }
+        }
+    }
+
+    /// A single-node request is widened to two, because a table axis with one
+    /// position cannot interpolate.
+    #[test]
+    fn the_height_axis_never_degenerates_to_one_node() {
+        assert_eq!(cartesian_z_axis(1, 0), vec![0.0, 1.0]);
+        assert_eq!(cartesian_z_axis(0, 0), vec![0.0, 1.0]);
+    }
+
+    // ── Blend curve ─────────────────────────────────────────────────────────
+
+    const RAMP: [[f64; 2]; 2] = [[0.0, 0.0], [1.0, 1.0]];
+
+    #[test]
+    fn the_curve_holds_its_endpoints_outside_the_range() {
+        assert_eq!(blend_curve_y(&RAMP, 0.0, -0.5), 0.0);
+        assert_eq!(blend_curve_y(&RAMP, 0.0, 1.5), 1.0);
+        assert_eq!(blend_curve_y(&RAMP, 1.0, -0.5), 0.0);
+    }
+
+    #[test]
+    fn an_empty_curve_is_zero() {
+        assert_eq!(blend_curve_y(&[], 0.0, 0.5), 0.0);
+    }
+
+    #[test]
+    fn zero_smoothing_is_piecewise_linear() {
+        for i in 0..=10 {
+            let x = i as f64 / 10.0;
+            assert!((blend_curve_y(&RAMP, 0.0, x) - x).abs() < 1e-9);
+        }
+    }
+
+    /// Two points have no corner to cut, so smoothing must be a no-op there —
+    /// otherwise the simplest curve would move when the slider does.
+    #[test]
+    fn smoothing_does_nothing_without_an_interior_point() {
+        for smoothing in [0.0, 0.5, 1.0] {
+            assert!((blend_curve_y(&RAMP, smoothing, 0.3) - 0.3).abs() < 1e-9);
+        }
+    }
+
+    /// Corner cutting pulls the curve off a sharp interior point, but must
+    /// leave the endpoints alone.
+    #[test]
+    fn smoothing_cuts_the_corner_and_keeps_the_endpoints() {
+        let knee = [[0.0, 0.0], [0.5, 1.0], [1.0, 1.0]];
+        let linear = blend_curve_y(&knee, 0.0, 0.5);
+        let smooth = blend_curve_y(&knee, 1.0, 0.5);
+        assert!(
+            (linear - 1.0).abs() < 1e-9,
+            "linear passes through the point"
+        );
+        assert!(
+            smooth < linear,
+            "smoothing should cut the corner, got {smooth}"
+        );
+        assert_eq!(blend_curve_y(&knee, 1.0, 0.0), 0.0);
+        assert_eq!(blend_curve_y(&knee, 1.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn smoothing_interpolates_between_linear_and_spline() {
+        let knee = [[0.0, 0.0], [0.5, 1.0], [1.0, 1.0]];
+        let x = 0.4;
+        let linear = blend_curve_y(&knee, 0.0, x);
+        let spline = blend_curve_y(&knee, 1.0, x);
+        let half = blend_curve_y(&knee, 0.5, x);
+        assert!((half - (linear + spline) * 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn smoothing_is_clamped_to_its_range() {
+        let knee = [[0.0, 0.0], [0.5, 1.0], [1.0, 1.0]];
+        assert_eq!(
+            blend_curve_y(&knee, -1.0, 0.4),
+            blend_curve_y(&knee, 0.0, 0.4)
+        );
+        assert_eq!(
+            blend_curve_y(&knee, 2.0, 0.4),
+            blend_curve_y(&knee, 1.0, 0.4)
+        );
+    }
+
+    /// The blend weight drives a crossfade, so it can never leave [0, 1] no
+    /// matter what the spline overshoot does.
+    #[test]
+    fn the_curve_stays_in_range_for_awkward_point_sets() {
+        let spiky = [[0.0, 1.0], [0.2, 0.0], [0.4, 1.0], [0.6, 0.0], [1.0, 1.0]];
+        for i in 0..=100 {
+            let y = blend_curve_y(&spiky, 1.0, i as f64 / 100.0);
+            assert!((0.0..=1.0).contains(&y), "y was {y}");
+        }
+    }
+
+    // ── Precision parity ────────────────────────────────────────────────────
+
+    #[test]
+    fn f32_and_f64_agree_within_single_precision() {
+        for &(x, y, z) in &[(1.0, 1.0, 0.0), (-0.3, 0.8, 0.5), (0.0, -1.0, -0.25)] {
+            let (az64, el64, _) = to_spherical(x, y, z);
+            let (az32, el32, _) = super::f32::to_spherical(x as f32, y as f32, z as f32);
+            assert!((az32 as f64 - az64).abs() < 1e-4);
+            assert!((el32 as f64 - el64).abs() < 1e-4);
+        }
+
+        let m64 = map_depth(0.4, 2.0, 1.5, 0.5);
+        let m32 = super::f32::map_depth(0.4, 2.0, 1.5, 0.5);
+        assert!((m32 as f64 - m64).abs() < 1e-5);
+    }
+}

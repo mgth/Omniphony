@@ -11,8 +11,9 @@ panel may *do*.
 
 Every constant named here is in `src/ui/theme.rs`; every widget in
 `src/ui/section.rs`, `src/ui/group.rs`, `src/ui/widgets.rs` and
-`src/ui/help.rs`. The web classes are quoted for the reader who compares with
-`omniphony-studio/src/styles/app.css`.
+`src/ui/help.rs`. The web classes are quoted for the reader who compares with the web Studio's
+[`app.css`](https://github.com/mgth/Omniphony/blob/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src/styles/app.css) (removed in 0.7.0; the link is its last
+version).
 
 ## The three frames
 
@@ -215,7 +216,7 @@ if chosen != current {
 
 | Section | Groups | Status |
 |---|---|---|
-| Renderer (`renderer.rs`) | Backend, Evaluation, Distance model, Distance diffuse, Ramp; Crossover on both tabs | follows this document |
+| Renderer (`renderer.rs`) | Output mode and decode thread (always offered; a note says it takes effect in the embedded engine only) above the tabs; Backend, Evaluation, Distance model, Distance diffuse, Ramp; Crossover on both tabs | follows this document |
 | Renderer › Binaural tab (`binaural.rs`) | HRTF, Distance, Listening room, Head tracking | follows |
 | Latency (`latency.rs`) | Global far actions, Local resampling controller (its switch in the bar, pause and the wizard in the inset), Stabilization phases | follows |
 | Master (`audio.rs`) | Auto-gain (switch and clip dot in the bar, ceiling in the inset) | follows |

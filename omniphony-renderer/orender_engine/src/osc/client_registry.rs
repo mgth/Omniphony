@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+use super::peer::{Delivery, Peer};
 
 #[derive(Clone)]
 pub(crate) struct OscClientState {
@@ -37,8 +39,41 @@ pub(crate) struct OscClientState {
 const MAX_GAINTABLE_TARGETS: usize = 6;
 
 pub(crate) struct OscClientRegistry {
-    clients: Mutex<HashMap<SocketAddr, OscClientState>>,
+    clients: Mutex<HashMap<Peer, OscClientState>>,
     timeout: Duration,
+    /// The control-plane state count every client is held to
+    /// (`osc_contract::STATE_GENERATION`), and the lock every state
+    /// publication holds from the capture of what it says to its send. Here
+    /// because every state broadcast already goes through the registry, and
+    /// every client hears the same ones.
+    ///
+    /// Held across the capture, not only the send: a state read on one
+    /// thread and sent after another thread published a newer one would go
+    /// out under the higher count and pass for current. Taken before the
+    /// clients lock, never inside it.
+    publication: Mutex<StateGeneration>,
+    /// Whether any client is live, any subscribes to the meters, any to the
+    /// diag traces: what the render path asks every block, so it reads these
+    /// rather than take the lock (#670). Published on every change and on
+    /// every telemetry tick, which is when a timed-out client is noticed.
+    any_live: AtomicBool,
+    any_metering_live: AtomicBool,
+    any_diag_live: AtomicBool,
+}
+
+/// The state count, as a publication holding the lock sees it.
+pub(crate) struct StateGeneration(u32);
+
+impl StateGeneration {
+    pub(crate) fn current(&self) -> u32 {
+        self.0
+    }
+
+    /// The count of the next datagram of state to go out.
+    pub(crate) fn advance(&mut self) -> u32 {
+        self.0 = self.0.wrapping_add(1);
+        self.0
+    }
 }
 
 impl OscClientRegistry {
@@ -46,12 +81,79 @@ impl OscClientRegistry {
         Self {
             clients: Mutex::new(HashMap::new()),
             timeout,
+            publication: Mutex::new(StateGeneration(0)),
+            any_live: AtomicBool::new(false),
+            any_metering_live: AtomicBool::new(false),
+            any_diag_live: AtomicBool::new(false),
         }
     }
 
-    pub(crate) fn insert_permanent(&self, addr: SocketAddr) {
-        self.clients.lock().unwrap().insert(
-            addr,
+    /// Where the state the clients were sent stands. Waits for a publication
+    /// in progress, so a heartbeat ack never reports a count whose state is
+    /// still on its way.
+    pub(crate) fn state_generation(&self) -> u32 {
+        self.publication.lock().unwrap().current()
+    }
+
+    /// Run one state publication — capture, encode, send — under the
+    /// publication lock, given the count to number it with. A broadcast
+    /// advances it once per datagram it numbers (the count wraps); a snapshot
+    /// sent to one client reads it, which tells that client where it stands.
+    /// Must not publish again from inside `publish`.
+    pub(crate) fn publish<R>(&self, publish: impl FnOnce(&mut StateGeneration) -> R) -> R {
+        let mut generation = self.publication.lock().unwrap();
+        publish(&mut generation)
+    }
+
+    /// Publish who is live in `clients` for the lock-free queries.
+    // A stream peer's queue is mutable, but `Peer` hashes and compares on its
+    // connection id only, which never changes.
+    #[allow(clippy::mutable_key_type)]
+    fn publish_presence(&self, clients: &HashMap<Peer, OscClientState>) {
+        let now = Instant::now();
+        let (mut live, mut metering, mut diag) = (false, false, false);
+        for (peer, client) in clients.iter() {
+            if self.expired(peer, client, now) {
+                continue;
+            }
+            live = true;
+            metering |= client.metering_enabled;
+            diag |= client.diag_enabled;
+        }
+        self.any_live.store(live, Ordering::Relaxed);
+        self.any_metering_live.store(metering, Ordering::Relaxed);
+        self.any_diag_live.store(diag, Ordering::Relaxed);
+    }
+
+    /// A datagram client that stopped heartbeating, or a stream client whose
+    /// connection ended. A stream client's liveness is its connection: it is
+    /// never timed out (#680).
+    fn expired(&self, peer: &Peer, client: &OscClientState, now: Instant) -> bool {
+        if peer.is_stream() {
+            return peer.is_closed();
+        }
+        client
+            .last_seen
+            .is_some_and(|t| now.duration_since(t) >= self.timeout)
+    }
+
+    /// Forget a client, as when its stream connection ends.
+    pub(crate) fn remove(&self, addr: &Peer) {
+        let mut clients = self.clients.lock().unwrap();
+        if clients.remove(addr).is_some() {
+            self.publish_presence(&clients);
+        }
+    }
+
+    /// Publish who is live now, for the timeouts no change reports.
+    pub(crate) fn refresh_presence(&self) {
+        self.publish_presence(&self.clients.lock().unwrap());
+    }
+
+    pub(crate) fn insert_permanent(&self, addr: &Peer) {
+        let mut clients = self.clients.lock().unwrap();
+        clients.insert(
+            addr.clone(),
             OscClientState {
                 last_seen: None,
                 metering_enabled: false,
@@ -60,11 +162,12 @@ impl OscClientRegistry {
                 gaintable_targets: BTreeMap::new(),
             },
         );
+        self.publish_presence(&clients);
     }
 
-    pub(crate) fn register(&self, addr: SocketAddr) -> (bool, bool) {
+    pub(crate) fn register(&self, addr: &Peer) -> (bool, bool) {
         let mut clients = self.clients.lock().unwrap();
-        let prev_state = clients.get(&addr).cloned();
+        let prev_state = clients.get(addr).cloned();
         let (metering_enabled, diag_enabled, gaintable_enabled, gaintable_targets) = prev_state
             .map(|e| {
                 (
@@ -76,7 +179,7 @@ impl OscClientRegistry {
             })
             .unwrap_or((false, false, false, BTreeMap::new()));
         let prev = clients.insert(
-            addr,
+            addr.clone(),
             OscClientState {
                 last_seen: Some(Instant::now()),
                 metering_enabled,
@@ -85,15 +188,17 @@ impl OscClientRegistry {
                 gaintable_targets,
             },
         );
+        self.publish_presence(&clients);
         (prev.is_none(), metering_enabled)
     }
 
-    pub(crate) fn heartbeat(&self, addr: SocketAddr) -> bool {
+    pub(crate) fn heartbeat(&self, addr: &Peer) -> bool {
         let mut clients = self.clients.lock().unwrap();
-        match clients.get_mut(&addr) {
+        match clients.get_mut(addr) {
             // Actively-registered client: refresh its liveness and ack.
             Some(entry) if entry.last_seen.is_some() => {
                 entry.last_seen = Some(Instant::now());
+                self.publish_presence(&clients);
                 true
             }
             // Known only as a config-seeded *permanent* target that has never
@@ -121,22 +226,25 @@ impl OscClientRegistry {
                 client.metering_enabled = enabled;
             }
         }
+        self.publish_presence(&clients);
     }
 
-    pub(crate) fn set_metering(&self, addr: SocketAddr, enabled: bool) -> bool {
+    pub(crate) fn set_metering(&self, addr: &Peer, enabled: bool) -> bool {
         let mut clients = self.clients.lock().unwrap();
-        if let Some(entry) = clients.get_mut(&addr) {
+        if let Some(entry) = clients.get_mut(addr) {
             entry.metering_enabled = enabled;
+            self.publish_presence(&clients);
             true
         } else {
             false
         }
     }
 
-    pub(crate) fn set_diag(&self, addr: SocketAddr, enabled: bool) -> bool {
+    pub(crate) fn set_diag(&self, addr: &Peer, enabled: bool) -> bool {
         let mut clients = self.clients.lock().unwrap();
-        if let Some(entry) = clients.get_mut(&addr) {
+        if let Some(entry) = clients.get_mut(addr) {
             entry.diag_enabled = enabled;
+            self.publish_presence(&clients);
             true
         } else {
             false
@@ -146,9 +254,9 @@ impl OscClientRegistry {
     /// Subscribe/unsubscribe a client to the gain-table push stream. Keeps the
     /// last-pushed version on unsubscribe so a quick re-subscribe can skip a
     /// resend. Returns false if the client is unknown.
-    pub(crate) fn set_gaintable(&self, addr: SocketAddr, enabled: bool) -> bool {
+    pub(crate) fn set_gaintable(&self, addr: &Peer, enabled: bool) -> bool {
         let mut clients = self.clients.lock().unwrap();
-        if let Some(entry) = clients.get_mut(&addr) {
+        if let Some(entry) = clients.get_mut(addr) {
             entry.gaintable_enabled = enabled;
             true
         } else {
@@ -158,9 +266,9 @@ impl OscClientRegistry {
 
     /// Record the version last pushed to a client **for one target**, so a
     /// rebuild or a re-subscribe carrying the same version can skip the resend.
-    pub(crate) fn set_gaintable_version(&self, addr: SocketAddr, target: i64, version: u32) {
+    pub(crate) fn set_gaintable_version(&self, addr: &Peer, target: i64, version: u32) {
         let mut clients = self.clients.lock().unwrap();
-        if let Some(entry) = clients.get_mut(&addr) {
+        if let Some(entry) = clients.get_mut(addr) {
             entry.gaintable_targets.insert(target, Some(version));
         }
     }
@@ -168,9 +276,9 @@ impl OscClientRegistry {
     /// Add a target this client wants the gain table for, keeping the ones it
     /// already has. Evicts the lowest target when full rather than refusing, so
     /// a client that legitimately rotates targets keeps working.
-    pub(crate) fn add_gaintable_target(&self, addr: SocketAddr, target: i64) {
+    pub(crate) fn add_gaintable_target(&self, addr: &Peer, target: i64) {
         let mut clients = self.clients.lock().unwrap();
-        if let Some(entry) = clients.get_mut(&addr) {
+        if let Some(entry) = clients.get_mut(addr) {
             if !entry.gaintable_targets.contains_key(&target)
                 && entry.gaintable_targets.len() >= MAX_GAINTABLE_TARGETS
             {
@@ -185,12 +293,8 @@ impl OscClientRegistry {
     /// Which target a client last received `version` for. A NACK carries only
     /// the version, so this is what maps it back to the field to resend —
     /// correct even with several transfers in flight.
-    pub(crate) fn gaintable_target_for_version(
-        &self,
-        addr: SocketAddr,
-        version: u32,
-    ) -> Option<i64> {
-        self.clients.lock().unwrap().get(&addr).and_then(|c| {
+    pub(crate) fn gaintable_target_for_version(&self, addr: &Peer, version: u32) -> Option<i64> {
+        self.clients.lock().unwrap().get(addr).and_then(|c| {
             c.gaintable_targets
                 .iter()
                 .find(|(_, v)| **v == Some(version))
@@ -200,9 +304,9 @@ impl OscClientRegistry {
 
     /// Forget every target of a client (on unsubscribe), so a later subscribe
     /// starts from a clean slate.
-    pub(crate) fn clear_gaintable_targets(&self, addr: SocketAddr) {
+    pub(crate) fn clear_gaintable_targets(&self, addr: &Peer) {
         let mut clients = self.clients.lock().unwrap();
-        if let Some(entry) = clients.get_mut(&addr) {
+        if let Some(entry) = clients.get_mut(addr) {
             entry.gaintable_targets.clear();
         }
     }
@@ -211,20 +315,15 @@ impl OscClientRegistry {
     /// Permanent clients always count; timed clients only while within the
     /// heartbeat window.
     #[allow(clippy::type_complexity)]
-    pub(crate) fn gaintable_subscribers(&self) -> Vec<(SocketAddr, Vec<(i64, Option<u32>)>)> {
+    pub(crate) fn gaintable_subscribers(&self) -> Vec<(Peer, Vec<(i64, Option<u32>)>)> {
         let clients = self.clients.lock().unwrap();
         let now = Instant::now();
         clients
             .iter()
-            .filter(|(_, c)| {
-                c.gaintable_enabled
-                    && c.last_seen
-                        .map(|t| now.duration_since(t) < self.timeout)
-                        .unwrap_or(true)
-            })
+            .filter(|(peer, c)| c.gaintable_enabled && !self.expired(peer, c, now))
             .map(|(addr, c)| {
                 (
-                    *addr,
+                    addr.clone(),
                     c.gaintable_targets
                         .iter()
                         .map(|(target, version)| (*target, *version))
@@ -235,69 +334,55 @@ impl OscClientRegistry {
     }
 
     pub(crate) fn is_any_live(&self) -> bool {
-        let clients = self.clients.lock().unwrap();
-        let now = Instant::now();
-        clients.values().any(|client| {
-            client
-                .last_seen
-                .map(|t| now.duration_since(t) < self.timeout)
-                .unwrap_or(true)
-        })
+        self.any_live.load(Ordering::Relaxed)
     }
 
     pub(crate) fn is_any_metering_live(&self) -> bool {
-        let clients = self.clients.lock().unwrap();
-        let now = Instant::now();
-        clients.values().any(|client| {
-            client.metering_enabled
-                && client
-                    .last_seen
-                    .map(|t| now.duration_since(t) < self.timeout)
-                    .unwrap_or(true)
-        })
+        self.any_metering_live.load(Ordering::Relaxed)
     }
 
     pub(crate) fn is_any_diag_live(&self) -> bool {
-        let clients = self.clients.lock().unwrap();
-        let now = Instant::now();
-        clients.values().any(|client| {
-            client.diag_enabled
-                && client
-                    .last_seen
-                    .map(|t| now.duration_since(t) < self.timeout)
-                    .unwrap_or(true)
-        })
+        self.any_diag_live.load(Ordering::Relaxed)
+    }
+
+    /// Hold the registry, as a slow or contended sender would.
+    #[cfg(test)]
+    pub(crate) fn lock_for_test(&self) -> std::sync::MutexGuard<'_, HashMap<Peer, OscClientState>> {
+        self.clients.lock().unwrap()
     }
 
     #[cfg(test)]
-    pub(crate) fn metering_for(&self, addr: SocketAddr) -> Option<bool> {
+    pub(crate) fn metering_for(&self, addr: &Peer) -> Option<bool> {
         self.clients
             .lock()
             .unwrap()
-            .get(&addr)
+            .get(addr)
             .map(|c| c.metering_enabled)
     }
 
-    pub(crate) fn send_filtered<F>(&self, socket: &std::net::UdpSocket, bytes: &[u8], predicate: F)
-    where
+    pub(crate) fn send_filtered<F>(
+        &self,
+        socket: &std::net::UdpSocket,
+        bytes: &[u8],
+        delivery: Delivery,
+        predicate: F,
+    ) where
         F: Fn(&OscClientState) -> bool,
     {
         let mut clients = self.clients.lock().unwrap();
         let now = Instant::now();
-        clients.retain(|addr, client| match client.last_seen {
-            None => true,
-            Some(t) => {
-                if now.duration_since(t) >= self.timeout {
-                    log::info!("OSC client timed out, removing: {}", addr);
-                    false
-                } else {
-                    true
-                }
+        clients.retain(|addr, client| {
+            if self.expired(addr, client, now) {
+                log::info!("OSC client gone, removing: {}", addr);
+                false
+            } else {
+                true
             }
         });
+        self.publish_presence(&clients);
         for (addr, client) in clients.iter() {
             if predicate(client) {
-                if let Err(e) = socket.send_to(bytes, *addr) {
+                if let Err(e) = addr.send_with(socket, bytes, delivery) {
                     log::warn!("OSC broadcast error to {}: {}", addr, e);
                 }
             }
@@ -312,16 +397,16 @@ mod tests {
     #[test]
     fn permanent_metering_toggle_drives_metering_live() {
         let reg = OscClientRegistry::new(Duration::from_secs(5));
-        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-        reg.insert_permanent(addr);
+        let addr = Peer::Udp("127.0.0.1:9000".parse().unwrap());
+        reg.insert_permanent(&addr);
 
         // Default target starts opted-out → no metering clients.
-        assert_eq!(reg.metering_for(addr), Some(false));
+        assert_eq!(reg.metering_for(&addr), Some(false));
         assert!(!reg.is_any_metering_live());
 
         // `--osc-metering` pre-enables it → metering now flows to the target.
         reg.set_metering_for_permanent(true);
-        assert_eq!(reg.metering_for(addr), Some(true));
+        assert_eq!(reg.metering_for(&addr), Some(true));
         assert!(reg.is_any_metering_live());
 
         reg.set_metering_for_permanent(false);
@@ -335,27 +420,64 @@ mod tests {
         // be reported unknown (→ client re-registers and re-handshakes) instead
         // of being silently acked, which would mask the producer change.
         let reg = OscClientRegistry::new(Duration::from_secs(5));
-        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-        reg.insert_permanent(addr);
+        let addr = Peer::Udp("127.0.0.1:9000".parse().unwrap());
+        reg.insert_permanent(&addr);
 
         // Seeded but never actively registered → heartbeat is unknown.
         assert!(
-            !reg.heartbeat(addr),
+            !reg.heartbeat(&addr),
             "permanent-only seed must not be acked"
         );
 
         // Registering reuses the permanent slot (so `is_new` is false — the live
         // bundle is sent regardless), promotes it to a live client (`last_seen`
         // set), and from then on its heartbeats are acked.
-        let (is_new, _) = reg.register(addr);
+        let (is_new, _) = reg.register(&addr);
         assert!(!is_new, "permanent seed already occupies the slot");
-        assert!(reg.heartbeat(addr), "registered client must be acked");
+        assert!(reg.heartbeat(&addr), "registered client must be acked");
+    }
+
+    /// A stream client's liveness is its connection (#680): it outlives the
+    /// heartbeat timeout a datagram client is held to, and goes with the
+    /// connection.
+    #[test]
+    fn a_stream_client_lives_as_long_as_its_connection() {
+        use crate::osc::peer::StreamPeer;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, addr) = listener.accept().unwrap();
+        let stream = Peer::Tcp(StreamPeer::new(server, addr));
+        let datagram = Peer::Udp("127.0.0.1:9100".parse().unwrap());
+
+        let reg = OscClientRegistry::new(Duration::ZERO);
+        reg.register(&stream);
+        reg.register(&datagram);
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        reg.send_filtered(&socket, b"x", Delivery::Droppable, |_| true);
+        assert!(
+            reg.lock_for_test().contains_key(&stream),
+            "no heartbeat needed"
+        );
+        assert!(!reg.lock_for_test().contains_key(&datagram), "timed out");
+        assert!(reg.is_any_live());
+
+        let Peer::Tcp(peer) = &stream else {
+            unreachable!()
+        };
+        peer.close();
+        reg.refresh_presence();
+        assert!(!reg.is_any_live(), "a closed connection is not live");
+        reg.send_filtered(&socket, b"x", Delivery::Droppable, |_| true);
+        assert!(
+            !reg.lock_for_test().contains_key(&stream),
+            "and is forgotten"
+        );
     }
 
     #[test]
     fn unknown_address_heartbeat_is_unknown() {
         let reg = OscClientRegistry::new(Duration::from_secs(5));
-        let addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
-        assert!(!reg.heartbeat(addr));
+        let addr = Peer::Udp("127.0.0.1:9100".parse().unwrap());
+        assert!(!reg.heartbeat(&addr));
     }
 }

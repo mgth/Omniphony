@@ -1,10 +1,15 @@
 # Omniphony Studio — LEFT overlay panel specification (phase 2, egui port)
 
-Scope: everything inside `#overlay` of the web Studio (`omniphony-studio/src/index.html`
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
+Scope: everything inside `#overlay` of the web Studio ([`omniphony-studio/src/index.html`](https://github.com/mgth/Omniphony/blob/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src/index.html)
 lines 41–773) plus the shared machinery those panels rely on (`state.js`, `flush.js`,
 `i18n.js`, `controls/inline-help.js`, `runtime-connection.js`, `options-binder.js`).
 All paths below are relative to
-`omniphony-studio/`
+[`omniphony-studio/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio)
 (`src/…` = web frontend, `src-tauri/src/…` = Tauri host). Line numbers are from the
 `feat/studio-egui-panels` worktree at the time of writing.
 
@@ -187,8 +192,8 @@ clockMode:'dac', channels:2, sampleRate:192000, map:'7.1-fixed', lfeMode:'object
 `liveInputClockModeDirty`, `lastAutoOpenedInputError (null)`.
 
 Fixed-channel sources: `options ({})` + `optionsSchema ([])` (read via `getLiveOption`),
-`objectGenerators ([])`, `objectGeneratorParams ({})`, `objectGeneratorLayoutHasHeight (true)`,
-`phantomSchema ([])`, `phantomParams ({})`, `fixedChannelCatalog ([])`,
+`objectGenerators ([])`, `objectGeneratorParamValuesById ({})`, `objectGeneratorLayoutHasHeight (true)`,
+`phantomListing (null)`, `phantomParamValues ({})`, `fixedChannelCatalog ([])`,
 `fixedChannelProcessing ({stream:'idle', labels:[], phantom:'no_stream', height:'no_stream'})`,
 `virtualBed (null)`, `virtualBedMaterialized (false)`.
 
@@ -266,7 +271,7 @@ Markup declares `data-option="<snake_key>"` on a `<button data-option-value>`, a
 * button click → `setOption(key, data-option-value)`; select change → `setOption(key, value)`;
   number change → `setOption(key, Number)`; checkbox change → bool (or on/off enum).
 * `setOption` is **optimistic**: `app.options[key] = value`, runs `AFTER_SET[key]`
-  (`object_generator_id` → clears `app.objectGeneratorParams`), `invoke('control_option',
+  (none since each generator keeps its own values), `invoke('control_option',
   {key, value})`, `reflectBoundOptions()`, sets `dirty.audioFormat`, schedules a flush.
 * Host `control_option` (`commands/engine.rs:70–92`) lower-cases the key and sends
   `/omniphony/control/option [key(string), value]` where a JS string → OSC string
@@ -303,7 +308,7 @@ Opened by the brand row **and** by `#aboutBtn` (§3.1). Contents, in order:
 | `about.version` "Version" → `#aboutVersion` | `info.version` = `CARGO_PKG_VERSION` | |
 | `about.license` "License" → `#aboutLicense` | `info.license` = "GPL-3.0-or-later" | |
 | `about.repository` "Repository" → `#aboutRepositoryLink` | `info.repository` (note: host serialises `repository_url`; JS reads `info.repository`, so in practice the baked href `https://github.com/mgth/Omniphony` stays) | external link |
-| `about.rendererVersion` "Renderer" → `#aboutRendererVersion` | `app.renderVersion` (+ `" · ABI " + app.renderAbi` when present); `—` when unknown; tooltip = text + `\n` + `app.renderExecutable` | `updateAboutRendererVersion` |
+| `about.rendererVersion` "Renderer" → `#aboutRendererVersion` | `app.renderVersion` (+ `" · ABI " + app.renderAbi`, then `" · bridge_api " + app.renderBridgeApi`, each when present); `—` when unknown; tooltip = text + `\n` + `app.renderExecutable` | `updateAboutRendererVersion` |
 | `about.configPath` "Config" → `#aboutConfigPath` | `app.renderConfigPath`; if `renderConfigStatus` is `missing`/`parse_error` → `"<path> — " + t('about.configMissing'|'about.configParseError')` in **red `#ff7676`**; no path but connected → `t('about.configDefaults')` in **amber `#ffb347`**; else `—` | `updateAboutConfigPath` |
 | `#aboutCloseBtn` | `common.close` | closes |
 
@@ -499,7 +504,7 @@ Content `#inputSectionContent > .input-panel-shell`, in DOM order:
 | 5 | `#oscBridgePathStatus` | inline red status (`.input-panel-inline-status`, `#ff7d7d`) | — | — | text `"Bridge path missing"` (hard-coded English) when `app.inputError` matches `/bridge path missing|no bridge plugin found|render\.bridge_path/i` and `renderBridgePath` is empty; else hidden | |
 | 6 | `#pipeStatus` | text, placeholder `input.autoDetect` | `input.pipe` "Pipe" | `help.input.pipe` | `app.orenderInputPipe` (not rewritten while focused); row visible only when `hasInputDomain && mode === 'pipe_bridge'` | change → `persistInputPipeNow()`: `app.orenderInputPipe = v||null; control_render_input_pipe {value}` |
 | 7 | `#inputLiveFields` subtitle | `input.liveSource` "Live Source" | | | block visible only when `hasInputDomain && mode === 'pipewire_bridge'` (opacity 0.55 otherwise, but hidden anyway) | |
-| 8 | `#inputBackendSelect` | `pipewire`/`asio` (`input.backend.*`) | `input.backend` | `help.input.backend` | **row permanently hidden and control disabled** (`input.js:226–249`, legacy PCM mode) | change → `liveInput.backend`, `sendInputConfig()` |
+| 8 | ~~`#inputBackendSelect`~~ | **removed** — PipeWire is the only live-input backend (the never-implemented `asio` value was retired), so there is nothing to select; `liveInput.backend` stays `pipewire` | | | | |
 | 9 | `#inputNodeInput` | text, placeholder `omniphony` | `input.node` "Node" | `help.input.node` | `liveInput.node || inputNode`; enabled iff `hasInputDomain && pipewire_bridge` | change → `liveInput.node`, `sendInputConfig()` |
 | 10 | `#inputDescriptionInput` | text, placeholder `Omniphony Bridge Input` | `input.description` | `help.input.description` | `liveInput.description || inputDescription` | same pattern |
 | 11 | `#inputClockModeSelect` (+ `#inputClockInfoBtn` → `#inputClockInfoModal`, title `input.clockInfoTitle`, body `input.clockInfoBody`) | `dac` "DAC" / `pipewire` "PipeWire" / `upstream` "Upstream (advanced)" (`input.clock.*`; the baked option text says "(advanced)", the en.json string is "Upstream") | `input.clock` "Clock" | — (modal instead) | `liveInput.clockMode` (adopted from snapshot only when `!liveInputClockModeDirty`) | change → `liveInput.clockMode = v; liveInputClockModeDirty = true` **(not sent until Apply)** |
@@ -509,8 +514,8 @@ Content `#inputSectionContent > .input-panel-shell`, in DOM order:
 | 15 | `#inputApplyBtn` | `.ui-btn.ui-btn-primary` | text `input.apply` "Apply", or `input.applyPending` "Apply pending..." while `showApplyPending` | — | hidden when embedded | see Apply below |
 
 Effective visible layout today: **Mode**, **Bridge (+Browse)**, then either **Pipe** (pipe_bridge)
-or **Node / Description / Clock** (pipewire_bridge), then **Apply**. Rows 8, 12, 13, 14 are dead
-markup kept for a future rework — port them as hidden or omit.
+or **Node / Description / Clock** (pipewire_bridge), then **Apply**. Rows 12, 13, 14 are dead
+markup kept for a future rework — port them as hidden or omit. Row 8 is gone.
 
 Status line `#inputStatusInfo` = `tf('input.status.bridge', {requested, active, pipe, sync})`
 ("requested {requested} • active {active} • pipe {pipe} • {sync}") + (pipewire_bridge ?
@@ -565,12 +570,12 @@ Body `#twoDSourcesBody` (grid, gap 0.35 rem, internal scroll, DOM order):
 | 2 | `#surroundPlacementRow`: label + two `.toggle-btn` `#surroundPlacementSide` / `#surroundPlacementBack` | button pair `data-option="surround_placement"` values `side` / `back` | label `twoDSources.surroundLabel` "Rear channels (4.x/5.x)"; buttons `twoDSources.surroundSide` "Side" / `twoDSources.surroundBack` "Back" | `.active` on the button whose value matches `getLiveOption('surround_placement')` (HTML default: Side active) | binder → `control_option('surround_placement','side'|'back')` |
 | 3 | `#syntheticObjectsRow` switch `#syntheticObjectsToggle` | checkbox `data-option="synthetic_objects_enabled"` (13 px `.switch-row`) | label `twoDSources.syntheticObjectsLabel` "Synthetic objects", help `help.syntheticObjects` (anchor `.switch-row`) | checked = `!!getLiveOption(...)` | binder → `control_option(key, bool)` (host sends int 0/1) |
 | 4 | `#syntheticObjectsStatus` | note 10 px, padding-left 0.5 rem | `twoDSources.syntheticConfigured` "Configured synthesis; current activity is shown below" when enabled, else `twoDSources.fixedOnly` "Fixed channels only — no synthetic objects" | | |
-| 5 | `#objectGeneratorRow`: label, `#objectGeneratorNoHeightNote`, `#objectGeneratorSelect` | select `data-option="object_generator_id" data-option-empty="none"`; baked options `none` "Off" (`twoDSources.objectGenNone`), `copy_up` "Direct copy" (`objectGenCopyUp`), `pad` "Ambience (PAD)" (`objectGenPad`), `dirac` "Diffuse field (DirAC)" (`objectGenDirac`) — **replaced** by the schema list when `objectGenerators:schema` arrives (`rebuildObjectGeneratorControls`: "Off" + one option per `{id,label,i18nKey}` using `t(i18nKey)` if it resolves else `label`) | label `twoDSources.objectGeneratorLabel` "Generate height objects", help `help.objectGenerator` (anchor `#objectGeneratorRow`) | value = `getLiveOption('object_generator_id') || 'none'`; never disabled | binder → `control_option`; `AFTER_SET` clears `objectGeneratorParams` |
+| 5 | `#objectGeneratorRow`: label, `#objectGeneratorNoHeightNote`, `#objectGeneratorSelect` | select `data-option="object_generator_id" data-option-empty="none"`; baked options `none` "Off" (`twoDSources.objectGenNone`), `copy_up` "Direct copy" (`objectGenCopyUp`), `pad` "Ambience (PAD)" (`objectGenPad`), `dirac` "Diffuse field (DirAC)" (`objectGenDirac`) — **replaced** by the schema list when `objectGenerators:schema` arrives (`rebuildObjectGeneratorControls`: "Off" + one option per `{id,label,i18nKey}` using `t(i18nKey)` if it resolves else `label`) | label `twoDSources.objectGeneratorLabel` "Generate height objects", help `help.objectGenerator` (anchor `#objectGeneratorRow`) | value = `getLiveOption('object_generator_id') || 'none'`; never disabled | binder → `control_option` (each generator keeps its own values) |
 | 5b | `#objectGeneratorNoHeightNote` | inline note 10 px, opacity 0.7, nowrap; baked text `twoDSources.objectGenNoHeight` "No top speakers" | shown (`display:inline`) only when `effectiveHeightReason()` is neither `active` nor `off`; text = `processingReason(reason)` (see table below) | | |
 | 6 | `#objectGenParamsRow` | column of generated sliders (see 5.1) | | visible iff the active generator's schema has ≥1 param | |
 | 7 | `#phantomExtractRow` label + `#phantomExtractModeSelect` | select `data-option="phantom_extract_mode"`: `off` "Off" (`twoDSources.phantomOff`), `broadband` "Broadband", `spectral` "Spectral" | label `twoDSources.phantomLabel` "Phantom extraction", help `help.phantomExtract` (anchor `.switch-row` — resolves to the parent row) | value = `getLiveOption(...)` | binder → `control_option` |
 | 8 | `#phantomStatus` | note 10 px | `processingReason(effectivePhantomReason())` | | |
-| 9 | `#phantomParamsRow` | generated sliders/switches (5.2) | | visible iff mode ≠ `off` && schema non-empty | |
+| 9 | `#phantomParamsRow` | generated controls (5.2) | | visible iff mode ≠ `off` && the listing declares params | |
 | 10 | `#virtualBedActions` → `#virtualBedResetBtn` | `.ui-btn.ui-btn-compact`, right-aligned | `virtualBed.reset` "Reset channel layout" | always shown | `window.confirm(t('confirm.resetVirtualBed'))` → `resetVirtualBed()` (§9.4.4) |
 
 Reason strings (`PROCESSING_REASON_KEYS`, `audio.js:399–412`): `active` → `twoDSources.status.active`
@@ -584,43 +589,46 @@ off → `master_off`; else `fixedChannelProcessing.phantom || 'no_stream'`.
 `effectiveHeightReason()`: generator `none` → `off`; master off → `master_off`; else
 `fixedChannelProcessing.height || 'no_stream'`.
 
-### 5.1 Generator parameter sliders (`buildParamSliders`, `audio.js:502–575`)
+### 5.1 Generator parameter controls (`renderParamForm`, `controls/plugin-params.js`)
 
-Schema: `app.objectGenerators = [{id, label, i18nKey, requiresHeightLayer, params:[{key, label,
-i18nKey, min, max, step, default, unit}]}]` (event `objectGenerators:schema`, JSON string).
-For each param of the **active** generator, one row `<label style="display:flex;gap:0.5rem;
-font-size:11px">`:
+The generators publish their listings in the backends' format
+(`docs/plugin-contract.md`): `app.objectGenerators = [{id, label, i18nKey?, params:[ParamSpec]}]`
+(event `objectGenerators:schema`, JSON string), each `ParamSpec` being
+`{key, label, i18nKey?, unit?, kind:{type, …}, default, requires?, help?}`. The **active**
+generator's params are drawn by the generic form the backends use (`buildParamControl`): a
+`.control-row.generated-param-row` per param — a switch for `bool`, a select for `enum`, a
+slider for `float`/`int` — labelled `t(i18nKey)` if it resolves, else `backendParam.<key>`,
+else `label` (known keys: `twoDSources.padStrength` "Ambience strength", `padHpf` "Bass
+cutoff", `padGain` "Height level", `padCenterAmount` "Center to height", `padCenterHpf` "Center
+bass cutoff", `diracAmount` "Diffuse level", `diracBias` "Diffuse bias", `diracHpf` "Bass
+cutoff").
 
-* name `<span>` (min-width 96 px) = `t(i18nKey)` if it resolves else `label` (known keys:
-  `twoDSources.padStrength` "Ambience strength", `padHpf` "Bass cutoff", `padGain` "Height
-  level", `padCenterAmount` "Center to height", `padCenterHpf` "Center bass cutoff",
-  `diracAmount` "Diffuse level", `diracBias` "Diffuse bias", `diracHpf` "Bass cutoff");
-* `<input type=range min max step>` (`flex:1`), `data-param-key`;
-* value `<span>` (48 px, right-aligned, tabular) = `fmtParamValue`: `step ≥ 1` → integer;
-  `step ≥ 0.1` → `toFixed(1)`; else `toFixed(2)`; + `" " + unit` if a unit is declared.
-* Initial value = `app.objectGeneratorParams[key]` if not null, else `default`.
-* `input` event (live, every drag tick) → update the value text and
-  `applyObjectGeneratorParamNow(key, v)`: optimistic write into `app.objectGeneratorParams`,
-  `invoke('control_object_generator_param',{key, value})` → OSC
-  `/omniphony/control/object_generator/param [key, float]` (renderer clamps).
-* Rows are rebuilt only when the active generator id changes (`builtParamGenId`); otherwise a
-  refresh only rewrites values (skipping the slider that has focus). No help affordance.
+* The readout shows as many decimals as the step means (0.01 → 2, 0.5 → 1, 10 → 0, at most 3),
+  then `" " + unit` if one is declared.
+* Initial value = `app.objectGeneratorParamValuesById[id][key]` if present, else `default`.
+* Live (`live: true`): every drag tick → `applyObjectGeneratorParamNow(id, key, v)`: optimistic
+  write into `app.objectGeneratorParamValuesById[id]`,
+  `invoke('control_object_generator_param',{generator, key, value})` → OSC
+  `/omniphony/control/object_generator/param [generator, key, value]`, the value in its JSON
+  type (the renderer reads it in the declared type and clamps).
+* The form is rebuilt only when the generator id or the locale changes; otherwise a refresh
+  only rewrites values (skipping the control that has focus).
 
-### 5.2 Phantom parameter controls (`buildPhantomParamSliders`, `audio.js:594–740`)
+### 5.2 Phantom parameter controls (`renderParamForm`, `controls/audio.js`)
 
-Schema `app.phantomSchema = [{key, label, i18nKey, min, max, step, default, unit}]` (event
-`phantom:schema`). Same slider row as 5.1, except a **binary** param (`min 0, max 1, step 1`)
-renders as a `.switch-row` (11 px) with a pill switch (`checked = value >= 0.5`, change →
-`applyPhantomParamNow(key, 1|0)`). Sends `control_phantom_extract_param {key, value}` → OSC
-`/omniphony/control/phantom_extract/param`. Known labels: `twoDSources.phantomStrength`
-"Extraction", `phantomPasses` "Passes", `phantomLift` "Lift", `phantomCenter` "Relocalize center",
-`phantomSides` "Relocalize sides", `phantomHeights` "Extract heights", `phantomHeightSplit`
-"Height split".
-Method gating (`applyPhantomParamGate`): keys `passes, center, sides` are broadband-only; keys
-`heights, height_split` are spectral-only. A gated row stays **enabled** but is drawn at
-`opacity:0.7` with tooltip `twoDSources.phantomBroadbandOnly` "Broadband method only" /
-`phantomSpectralOnly` "Spectral method only". Gating is re-applied on every refresh (the mode can
-change without a rebuild).
+The stage's listing `app.phantomListing = {id: "phantom_extract", label, i18nKey, params:
+[ParamSpec]}` (event `phantom:schema`), drawn by the same form: `strength`, `lift`,
+`height_split` are sliders, `passes` an int slider, `center`, `sides`, `heights` switches.
+Sends `control_phantom_extract_param {key, value}` → OSC
+`/omniphony/control/phantom_extract/param [key, value]`. Known labels:
+`twoDSources.phantomStrength` "Extraction", `phantomPasses` "Passes", `phantomLift` "Lift",
+`phantomCenter` "Relocalize center", `phantomSides` "Relocalize sides", `phantomHeights`
+"Extract heights", `phantomHeightSplit` "Height split".
+Method gating (`phantomGate`): a param declares the method it reads with `requires`
+(`broadband`: `passes, center, sides`; `spectral`: `heights, height_split`). A gated row stays
+**enabled** but is drawn at `opacity:0.7` with tooltip `twoDSources.phantomBroadbandOnly`
+"Broadband method only" / `phantomSpectralOnly` "Spectral method only". Gating is re-applied on
+every refresh (the mode can change without a rebuild).
 
 ### 5.3 Virtual-bed objects (side effect of this section; `controls/virtual-bed.js:413–547`)
 

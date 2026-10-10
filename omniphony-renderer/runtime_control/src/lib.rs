@@ -3,8 +3,10 @@
 #![recursion_limit = "256"]
 
 pub mod command;
+pub mod command_table;
 pub mod context;
 pub mod host_control;
+pub mod live_control;
 pub mod osc;
 /// The OSC address contract, shared with the Studio.
 ///
@@ -15,6 +17,8 @@ pub mod osc;
 pub use omniphony_osc_contract as osc_contract;
 pub mod persist;
 pub mod snapshot;
+#[cfg(test)]
+mod test_support;
 
 pub use host_control::HostControlHandler;
 
@@ -38,6 +42,11 @@ pub fn build_fingerprint() -> String {
 /// which is exactly the case a client hits when it believes it is driving its
 /// own renderer but has silently attached to one another environment left
 /// running. Empty when the platform will not tell us.
+///
+/// Reported as the platform gives it: on Linux, once the binary is rebuilt or
+/// replaced under the running process, that is `<path> (deleted)`. The suffix
+/// is kept on purpose — it is the only sign that this process runs an older
+/// build than the file now at `<path>` — and clients classify it.
 pub fn executable_path() -> String {
     std::env::current_exe()
         .ok()

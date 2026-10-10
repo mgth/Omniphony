@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::io::{Cursor, Read, Write};
 
 use super::{
-    AxisLut, AzimuthLut, BackendCapabilities, EvaluationBuildConfig, PreparedEvaluator,
-    RenderRequest, RenderResponse, sample_cartesian_table, sample_polar_table_lut,
+    AxisLut, AzimuthLut, BackendCapabilities, CartesianParts, EvaluationBuildConfig, GainScratch,
+    PolarParts, PreparedEvaluator, RenderRequest, sample_cartesian_table, sample_polar_table_lut,
 };
 use crate::speaker_layout::SpeakerLayout;
 
@@ -503,16 +503,19 @@ impl PreparedEvaluator for EvaluationArtifactEvaluator {
         self.artifact.speaker_count()
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let gains = match &self.artifact {
+    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, out: &mut [f32]) {
+        match &self.artifact {
             LoadedEvaluationArtifact::Cartesian(artifact) => sample_cartesian_table(
-                &artifact.gains,
-                self.artifact.speaker_count(),
-                &artifact.x_lut,
-                &artifact.y_lut,
-                &artifact.z_lut,
+                CartesianParts {
+                    gains: &artifact.gains,
+                    speaker_count: self.artifact.speaker_count(),
+                    x: &artifact.x_lut,
+                    y: &artifact.y_lut,
+                    z: &artifact.z_lut,
+                    position_interpolation: artifact.metadata.position_interpolation,
+                },
                 req.adm_position.map(|value| value as f32),
-                artifact.metadata.position_interpolation,
+                out,
             ),
             LoadedEvaluationArtifact::Polar(artifact) => {
                 let (azimuth, elevation, distance) = crate::spatial_vbap::adm_to_spherical(
@@ -521,17 +524,19 @@ impl PreparedEvaluator for EvaluationArtifactEvaluator {
                     req.adm_position[2] as f32,
                 );
                 sample_polar_table_lut(
-                    &artifact.gains,
-                    self.artifact.speaker_count(),
-                    &artifact.azimuth_lut,
-                    &artifact.elevation_lut,
-                    &artifact.distance_lut,
+                    PolarParts {
+                        gains: &artifact.gains,
+                        speaker_count: self.artifact.speaker_count(),
+                        azimuth: &artifact.azimuth_lut,
+                        elevation: &artifact.elevation_lut,
+                        distance: &artifact.distance_lut,
+                        position_interpolation: artifact.metadata.position_interpolation,
+                    },
                     [azimuth, elevation, distance],
-                    artifact.metadata.position_interpolation,
+                    out,
                 )
             }
-        };
-        RenderResponse { gains }
+        }
     }
 
     fn save_to_file(&self, path: &std::path::Path, _speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -546,21 +551,23 @@ pub fn build_backend_restore_snapshot(
     config: &EvaluationBuildConfig,
 ) -> Option<BackendRestoreSnapshot> {
     match source_backend_id {
-        "vbap" | "barycenter" | "experimental_distance" => Some(BackendRestoreSnapshot {
-            backend_id: source_backend_id.to_string(),
-            backend_label: source_backend_label.to_string(),
-            evaluation_mode: mode,
-            position_interpolation: config.position_interpolation,
-            allow_negative_z: config.polar.allow_negative_z,
-            cartesian_x_size: config.cartesian.x_size.saturating_sub(1),
-            cartesian_y_size: config.cartesian.y_size.saturating_sub(1),
-            cartesian_z_size: config.cartesian.z_size.saturating_sub(1),
-            cartesian_z_neg_size: config.cartesian.z_neg_size,
-            polar_azimuth_values: config.polar.azimuth_values.max(2),
-            polar_elevation_values: config.polar.elevation_values.max(2),
-            polar_distance_res: config.polar.distance_values.saturating_sub(1).max(1),
-            polar_distance_max: config.polar.distance_max.max(0.01),
-        }),
+        "vbap" | "volumetric" | "barycenter" | "experimental_distance" => {
+            Some(BackendRestoreSnapshot {
+                backend_id: source_backend_id.to_string(),
+                backend_label: source_backend_label.to_string(),
+                evaluation_mode: mode,
+                position_interpolation: config.position_interpolation,
+                allow_negative_z: config.polar.allow_negative_z,
+                cartesian_x_size: config.cartesian.x_size.saturating_sub(1),
+                cartesian_y_size: config.cartesian.y_size.saturating_sub(1),
+                cartesian_z_size: config.cartesian.z_size.saturating_sub(1),
+                cartesian_z_neg_size: config.cartesian.z_neg_size,
+                polar_azimuth_values: config.polar.azimuth_values.max(2),
+                polar_elevation_values: config.polar.elevation_values.max(2),
+                polar_distance_res: config.polar.distance_values.saturating_sub(1).max(1),
+                polar_distance_max: config.polar.distance_max.max(0.01),
+            })
+        }
         _ => None,
     }
 }

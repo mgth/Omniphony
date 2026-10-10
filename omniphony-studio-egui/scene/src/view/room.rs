@@ -12,6 +12,122 @@ use crate::render::{
 
 use super::Label;
 
+/// The colour of a measured room (BRIR): its loudspeakers, and the box the
+/// set's geometry will be drawn in. Amber, which no crossover band and
+/// neither the selection nor the feed colour comes near.
+pub const MEASURED_ROOM_COLOR: u32 = 0xffb86b;
+
+/// The colour of the listening room the early reflections mirror sources
+/// in (`binaural.reflections`): sand, apart from the blue room, the teal
+/// cube and the amber measured room.
+pub const LISTENING_ROOM_COLOR: u32 = 0xe0c9a0;
+
+/// How a box is drawn: the user's room, with walls and a screen, or the
+/// listener's cube of the direct binaural path, which has neither.
+pub struct RoomStyle {
+    /// Fill colour and alpha of the box.
+    pub fill: (u32, f32),
+    /// Edge colour and alpha.
+    pub edge: (u32, f32),
+    /// Far-side face colour and alpha.
+    pub face: (u32, f32),
+    /// Whether the 16:9 screen sits on the front wall.
+    pub screen: bool,
+}
+
+impl RoomStyle {
+    /// The speaker room (`scene/setup.js`): `#4d6eff` α 0.08, edges
+    /// `#6f8dff` α 0.45, faces `#233047` α 0.18, the screen on the front.
+    pub const SPEAKER_ROOM: Self = Self {
+        fill: (0x4d6eff, 0.08),
+        edge: (0x6f8dff, 0.45),
+        face: (0x233047, 0.18),
+        screen: true,
+    };
+
+    /// The listener's cube: the normalized positions as the direct path reads
+    /// them, no walls, no screen. Its own colour so it never passes for the
+    /// room.
+    pub const LISTENER_CUBE: Self = Self {
+        fill: (0x7fd1b9, 0.04),
+        edge: (0x8fe0c8, 0.5),
+        face: (0x1f3a33, 0.12),
+        screen: false,
+    };
+
+    /// A measured room (BRIR): the box its loudspeakers stand in, in the
+    /// colour the loudspeakers are drawn in, no screen.
+    pub const MEASURED_ROOM: Self = Self {
+        fill: (MEASURED_ROOM_COLOR, 0.05),
+        edge: (MEASURED_ROOM_COLOR, 0.6),
+        face: (0x3a2e1c, 0.12),
+        screen: false,
+    };
+}
+
+/// The bounds, in scene units, of a box `[min, max]` given in metres in the
+/// renderer's frame (x right, y front, z up) around the listener, at
+/// `metres_per_unit`: scene x is the front, y the height, z the width.
+pub fn metres_box_bounds(box_m: [[f64; 3]; 2], metres_per_unit: f64) -> RoomBounds {
+    let s = metres_per_unit.max(0.01);
+    let [lo, hi] = box_m;
+    RoomBounds {
+        x_min: (lo[1] / s) as f32,
+        x_max: (hi[1] / s) as f32,
+        y_min: (lo[2] / s) as f32,
+        y_max: (hi[2] / s) as f32,
+        z_min: (lo[0] / s) as f32,
+        z_max: (hi[0] / s) as f32,
+    }
+}
+
+/// A measured room's box with its dimensions in metres on its top front
+/// edge, and the scale guide, in the measured room's colour.
+pub fn emit_measured_room(
+    box_m: [[f64; 3]; 2],
+    metres_per_unit: f64,
+    cam_pos: Vec3,
+    frame: &mut FrameData,
+    project: &dyn Fn(Vec3) -> Option<(screen::ScreenPos, f32)>,
+    points_per_unit: &dyn Fn(f32) -> f32,
+    labels: &mut Vec<Label>,
+) {
+    let bounds = metres_box_bounds(box_m, metres_per_unit);
+    emit_room(&bounds, cam_pos, &RoomStyle::MEASURED_ROOM, frame);
+    let [lo, hi] = box_m;
+    let at = Vec3::new(
+        bounds.x_max,
+        bounds.y_max + 0.06,
+        (bounds.z_min + bounds.z_max) * 0.5,
+    );
+    if let Some((p, depth)) = project(at) {
+        labels.push(Label {
+            pos: p,
+            text: format!(
+                "{:.1} × {:.1} × {:.1} m",
+                hi[0] - lo[0],
+                hi[1] - lo[1],
+                hi[2] - lo[2]
+            ),
+            color: screen::rgb(
+                ((MEASURED_ROOM_COLOR >> 16) & 0xff) as u8,
+                ((MEASURED_ROOM_COLOR >> 8) & 0xff) as u8,
+                (MEASURED_ROOM_COLOR & 0xff) as u8,
+            ),
+            size: (0.052 * points_per_unit(depth)).clamp(6.0, 40.0).round(),
+            depth,
+        });
+    }
+    emit_unit_guide(
+        &bounds,
+        metres_per_unit as f32,
+        frame,
+        project,
+        points_per_unit,
+        labels,
+    );
+}
+
 /// Warped room bounds in scene units.
 #[derive(Clone, Copy, Debug)]
 pub struct RoomBounds {
@@ -128,22 +244,23 @@ fn faces(b: &RoomBounds) -> [(Vec3, Vec3, Mat4); 6] {
     ]
 }
 
-/// Box fill, edges, far-side faces and the screen plane.
-pub fn emit_room(bounds: &RoomBounds, cam_pos: Vec3, frame: &mut FrameData) {
-    // Fill: MeshBasicMaterial #4d6eff α 0.08, depth test on, write off.
+/// Box fill, edges, far-side faces and, for the speaker room, the screen
+/// plane.
+pub fn emit_room(bounds: &RoomBounds, cam_pos: Vec3, style: &RoomStyle, frame: &mut FrameData) {
+    // Fill: MeshBasicMaterial, depth test on, write off.
     frame.meshes.push(MeshItem {
         kind: MeshKind::Cube,
         instance: MeshInstance::unlit(
             Mat4::from_scale_rotation_translation(bounds.size(), Quat::IDENTITY, bounds.center()),
-            with_alpha(hex_linear(0x4d6eff), 0.08),
+            with_alpha(hex_linear(style.fill.0), style.fill.1),
         ),
         blend: true,
         depth_test: true,
         order: 0,
     });
 
-    // Edges: #6f8dff α 0.45, no depth test.
-    let edge = with_alpha(hex_linear(0x6f8dff), 0.45);
+    // Edges, no depth test.
+    let edge = with_alpha(hex_linear(style.edge.0), style.edge.1);
     let (x0, x1, y0, y1, z0, z1) = (
         bounds.x_min,
         bounds.x_max,
@@ -176,8 +293,8 @@ pub fn emit_room(bounds: &RoomBounds, cam_pos: Vec3, frame: &mut FrameData) {
         }
     }
 
-    // Faces: #233047 α 0.18, double-sided, no depth; only the far side.
-    let face_color = with_alpha(hex_linear(0x233047), 0.18);
+    // Faces, double-sided, no depth; only the far side.
+    let face_color = with_alpha(hex_linear(style.face.0), style.face.1);
     for (inward, pos, model) in faces(bounds) {
         if inward.dot(cam_pos - pos) > 0.0 {
             frame.meshes.push(MeshItem {
@@ -190,6 +307,9 @@ pub fn emit_room(bounds: &RoomBounds, cam_pos: Vec3, frame: &mut FrameData) {
         }
     }
 
+    if !style.screen {
+        return;
+    }
     // Screen: 16:9 white α 0.18 on the front wall (`fitScreenToUpperHalf`).
     let avail_w = (z1 - z0).max(0.01);
     let avail_h = (y1 - y0).max(0.01);
@@ -284,6 +404,170 @@ pub fn emit_axes(
                 depth,
             });
         }
+    }
+}
+
+/// The listener's sphere: what the room's surface is while the direct path
+/// reads positions on the sphere (#773). Three great circles of the unit
+/// sphere (ear level, the median plane, the frontal plane) in the listener
+/// cube's colour, and the ring 45° up, where the ceiling's edge is heard.
+pub fn emit_listener_sphere(frame: &mut FrameData) {
+    const SEGMENTS: usize = 64;
+    let edge = RoomStyle::LISTENER_CUBE.edge;
+    let colour = with_alpha(hex_linear(edge.0), edge.1);
+    let faint = with_alpha(hex_linear(edge.0), edge.1 * 0.5);
+    // Scene axes: x depth, y up, z right.
+    let rings: [(&dyn Fn(f32, f32) -> Vec3, [f32; 4]); 4] = [
+        (&|c, s| Vec3::new(c, 0.0, s), colour),
+        (&|c, s| Vec3::new(c, s, 0.0), colour),
+        (&|c, s| Vec3::new(0.0, c, s), colour),
+        (
+            &|c, s| {
+                let r = std::f32::consts::FRAC_1_SQRT_2;
+                Vec3::new(c * r, r, s * r)
+            },
+            faint,
+        ),
+    ];
+    for (ring, color) in rings {
+        for i in 0..SEGMENTS {
+            let a0 = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            let a1 = (i + 1) as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            for a in [a0, a1] {
+                frame.overlay_lines.push(LineVertex {
+                    pos: ring(a.cos(), a.sin()).to_array(),
+                    color,
+                });
+            }
+        }
+    }
+}
+
+/// The direct path's scale: one unit of the listener's cube in metres (the
+/// renderer's `unit_scale_m`), laid along the top front edge the way the
+/// room guides are, so the Distance scale slider has a reading in the scene.
+pub fn emit_unit_guide(
+    b: &RoomBounds,
+    scale_m: f32,
+    frame: &mut FrameData,
+    project: &dyn Fn(Vec3) -> Option<(screen::ScreenPos, f32)>,
+    points_per_unit: &dyn Fn(f32) -> f32,
+    labels: &mut Vec<Label>,
+) {
+    const OFF: f32 = 0.08;
+    const TICK: f32 = 0.04;
+    const LABEL_AT: f32 = 2.2;
+    const HEX: u32 = 0x88c7ff;
+    let y_top = b.y_max + 0.06;
+    // One unit: from the centre line to the right face, along the width.
+    let start = Vec3::new(b.x_max + OFF, y_top, 0.0);
+    let end = Vec3::new(b.x_max + OFF, y_top, b.z_max.min(1.0));
+    let colour = with_alpha(hex_linear(HEX), 0.85);
+    let tick = Vec3::X * TICK;
+    let mut segment = |a: Vec3, z: Vec3| {
+        frame.overlay_lines.push(LineVertex {
+            pos: a.to_array(),
+            color: colour,
+        });
+        frame.overlay_lines.push(LineVertex {
+            pos: z.to_array(),
+            color: colour,
+        });
+    };
+    segment(start, end);
+    segment(start - tick, start + tick);
+    segment(end - tick, end + tick);
+    if let Some((p, depth)) = project((start + end) * 0.5 + tick * LABEL_AT) {
+        labels.push(Label {
+            pos: p,
+            text: format!("1 unit = {scale_m:.2} m"),
+            color: screen::rgb(
+                ((HEX >> 16) & 0xff) as u8,
+                ((HEX >> 8) & 0xff) as u8,
+                (HEX & 0xff) as u8,
+            ),
+            size: (0.052 * points_per_unit(depth)).clamp(6.0, 40.0).round(),
+            depth,
+        });
+    }
+}
+
+/// Half-extents, in scene units, of the listening room: `room_m` is the
+/// renderer's `[width, depth, height]` in metres around the listener, and
+/// scene x is the depth (front), y the height, z the width.
+/// `metres_per_unit` is the binaural stage's distance scale, the scale it
+/// reads the sources' frame at.
+pub fn listening_room_half_extents(room_m: [f32; 3], metres_per_unit: f32) -> Vec3 {
+    let mpu = metres_per_unit.max(1e-3);
+    Vec3::new(
+        room_m[1] * 0.5 / mpu,
+        room_m[2] * 0.5 / mpu,
+        room_m[0] * 0.5 / mpu,
+    )
+}
+
+/// Dashes per edge of the listening room.
+const LISTENING_ROOM_DASHES: usize = 6;
+
+/// The listening room of the early reflections: a box of `room_m` metres
+/// with the listener at its centre, world-fixed, drawn as dashed edges in
+/// its own colour so it never passes for a wall of the layout, with its
+/// dimensions on its top front edge. It sits in the frame the sources are
+/// drawn in at the distance scale; through the virtual room, whose
+/// positions the live room warps, it is the stage's own reading of that
+/// frame, an indication rather than a wall the warped positions meet.
+pub fn emit_listening_room(
+    room_m: [f32; 3],
+    metres_per_unit: f32,
+    frame: &mut FrameData,
+    project: &dyn Fn(Vec3) -> Option<(screen::ScreenPos, f32)>,
+    points_per_unit: &dyn Fn(f32) -> f32,
+    labels: &mut Vec<Label>,
+) {
+    let half = listening_room_half_extents(room_m, metres_per_unit);
+    let colour = with_alpha(hex_linear(LISTENING_ROOM_COLOR), 0.7);
+    let corner = |i: usize| {
+        Vec3::new(
+            if i & 1 == 0 { -half.x } else { half.x },
+            if i & 2 == 0 { -half.y } else { half.y },
+            if i & 4 == 0 { -half.z } else { half.z },
+        )
+    };
+    for a in 0..8usize {
+        for bit in [1usize, 2, 4] {
+            let b = a | bit;
+            if b == a {
+                continue;
+            }
+            let (from, to) = (corner(a), corner(b));
+            // Dashes: the odd fractions of the edge are left open.
+            let steps = LISTENING_ROOM_DASHES * 2;
+            for step in (0..steps).step_by(2) {
+                let (t0, t1) = (step as f32 / steps as f32, (step + 1) as f32 / steps as f32);
+                frame.overlay_lines.push(LineVertex {
+                    pos: from.lerp(to, t0).to_array(),
+                    color: colour,
+                });
+                frame.overlay_lines.push(LineVertex {
+                    pos: from.lerp(to, t1).to_array(),
+                    color: colour,
+                });
+            }
+        }
+    }
+    let at = Vec3::new(half.x, half.y + 0.06, 0.0);
+    if let Some((p, depth)) = project(at) {
+        labels.push(Label {
+            pos: p,
+            text: format!("{:.1} × {:.1} × {:.1} m", room_m[0], room_m[1], room_m[2]),
+            color: screen::rgb(
+                ((LISTENING_ROOM_COLOR >> 16) & 0xff) as u8,
+                ((LISTENING_ROOM_COLOR >> 8) & 0xff) as u8,
+                (LISTENING_ROOM_COLOR & 0xff) as u8,
+            ),
+            size: (0.052 * points_per_unit(depth)).clamp(6.0, 40.0).round(),
+            depth,
+        });
     }
 }
 

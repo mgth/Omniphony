@@ -1,12 +1,11 @@
 [package]
 name = "orender_ffi"
-version = "0.6.0"
-# Edition 2021 (not 2024) so cbindgen sees plain #[no_mangle] and unsafe fn
-# bodies stay implicitly unsafe — simpler for a thin C ABI shim.
-edition = "2021"
-license = "GPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "C ABI for the orender spatial audio renderer (produces liborender.so)"
-repository = "https://github.com/mgth/Omniphony"
+repository.workspace = true
 
 [lib]
 # Produces liborender.so / orender.dll
@@ -14,17 +13,20 @@ name = "orender"
 crate-type = ["cdylib"]
 
 [dependencies]
-orender_engine = { version = "0.2.2", path = "../orender_engine" }
+orender_engine.workspace = true
 # For build_fingerprint() (orender_build_id): the git-describe stamp lives in
 # runtime_control, which both hosts already link — one source of truth.
-runtime_control = { version = "0.2.4", path = "../runtime_control" }
-anyhow = "1.0"
-log = "0.4"
-env_logger = "0.11"
+runtime_control.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
 
 [dev-dependencies]
 # The OrenderChannelLabel ↔ RChannelLabel discriminant-parity unit test.
-bridge_api = { version = "0.4.0", path = "../bridge_api" }
+bridge_api.workspace = true
+# Not linked: depending on it makes `cargo test` build its cdylib, the bridge
+# the live-session tests load.
+reference_bridge.workspace = true
 
 [features]
 # SOFA (personalised HRTF) support, on by default: liborender is the desktop
@@ -32,6 +34,10 @@ bridge_api = { version = "0.4.0", path = "../bridge_api" }
 # builds can use --no-default-features.
 default = ["sofa"]
 sofa = ["orender_engine/sofa"]
+# The demonstration render backend (see orender_engine's feature).
+example-backend = ["orender_engine/example-backend"]
 
 [build-dependencies]
-cbindgen = "0.27"
+# 0.28 at least: 0.27 skips `#[unsafe(no_mangle)]` functions (edition 2024) and
+# would emit a header without a single prototype.
+cbindgen = "0.28"

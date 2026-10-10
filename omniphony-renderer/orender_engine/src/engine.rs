@@ -5,29 +5,35 @@
 //! It performs no audio I/O: the host (the `orender` CLI, or `liborender.so`
 //! inside mpv) feeds packets in and consumes rendered samples.
 
-use crate::bridge_loader::{LoadedBridge, resolve_bridge};
-use crate::events::Configuration;
-use crate::osc::{ObjectMeta, OscSender};
+use crate::bridge_loader::{
+    LoadedBridge, configure_presentation, load_bridges, publish_bridges, record_bridge_request,
+    resolve_bridges,
+};
+use crate::decode_step::{
+    Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
+};
+use crate::frame_pipeline::{FrameOutput, FramePipeline};
+use crate::object_gen;
+use crate::osc::OscSender;
 use crate::overlay;
 use crate::renderer_build::{SpatialRendererParams, build_spatial_renderer};
-use crate::{channel_objects, object_gen, render, spatial, virtual_bed};
 use anyhow::{Result, anyhow, bail};
-use bridge_api::{RChannelLabel, RChannelPose, RCoordinateFormat, RDecodedFrame, RInputTransport};
-use renderer::config::Config;
+use bridge_api::{RChannelLabel, RDecodedFrame, RInputTransport};
+use renderer::config::{Config, RenderConfig};
 use renderer::metering::AudioMeter;
-use renderer::placement::SourceFamily;
-use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
+use renderer::spatial_renderer::SpatialRenderer;
 use renderer::speaker_layout::SpeakerLayout;
-use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 
 /// Monitoring cadences this host falls back to when the config declares none.
 ///
 /// Lower than the CLI's: embedded in a player, the only consumer is the
 /// in-process overlay, and the host is the one that may be running on
 /// constrained hardware.
-const EMBEDDED_METER_RATE_HZ: f32 = 10.0;
-const EMBEDDED_DIAG_RATE_HZ: f32 = 10.0;
+pub(crate) const EMBEDDED_METER_RATE_HZ: f32 = 10.0;
+pub(crate) const EMBEDDED_DIAG_RATE_HZ: f32 = 10.0;
 
 /// Options for the engine's OSC live-control server.
 pub struct OscOptions {
@@ -37,6 +43,9 @@ pub struct OscOptions {
     pub port_out: u16,
     /// Registration/listener port for incoming control; 0 = OS-assigned (logged).
     pub port_in: u16,
+    /// Pre-subscribe the monitoring target to meter bundles (`render.osc_metering`),
+    /// so it receives them without registering first.
+    pub metering: bool,
 }
 
 /// One block of rendered, interleaved multichannel `f32` PCM.
@@ -51,62 +60,88 @@ pub struct RenderedAudio {
     /// Absolute decoded sample position at the start of this block, in input
     /// samples (monotonic across the stream; reset by [`Engine::reset`]).
     pub sample_pos: u64,
+    /// The host's timestamp for the packet this block was decoded from, as
+    /// given to [`Engine::set_input_pts`], on the first block of that packet
+    /// only; `None` on the others and when the host gave none. With the
+    /// decode thread on, a packet's audio comes out a few calls after the
+    /// packet went in, so this is how a host that stamps its output with its
+    /// input timestamps finds which packet it is looking at.
+    pub input_pts_us: Option<i64>,
+}
+
+/// Which bounded-buffer call held output is kept for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeldFor {
+    /// [`Engine::process_raw_within`] with the same packet; moving on to
+    /// another packet drops it.
+    Packet,
+    /// [`Engine::drain_with_capacity`]; `process` refuses input until then.
+    Drain,
+}
+
+/// Who decides whether the engine decodes on a thread of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodeThreadMode {
+    /// Decode inline, whatever the live option says (the default).
+    Off,
+    /// Decode on the thread, whatever the live option says.
+    On,
+    /// Follow the live `decode_thread` option (config.yaml, Studio, OSC),
+    /// switching at packet boundaries. A host picks this when it copes with
+    /// either: it stamps its output from [`RenderedAudio::input_pts_us`] and
+    /// drains at end of stream.
+    Live,
 }
 
 /// A decode→render session: bridge plugin + spatial renderer + per-stream state.
 pub struct Engine {
-    bridge: LoadedBridge,
+    /// Shared with the decode thread when there is one. Only that thread locks
+    /// it per packet; everything else here is rare (a label change, a DRC-mode
+    /// change, reset, drain).
+    bridge: Arc<Mutex<LoadedBridge>>,
+    /// Decodes packet N+1 on its own thread while this one renders packet N.
+    /// Off unless the host asks for it: see [`Engine::set_decode_thread`].
+    decode_worker: Option<DecodeWorker>,
+    /// The bridge's `has_objects`, stored by whoever last held the lock. Hosts
+    /// poll it after every packet; with the decode thread on, reading it here
+    /// keeps that poll from waiting on the thread's decode.
+    bridge_has_objects: Arc<AtomicBool>,
+    /// Which packets decoded inline carry the bridge's declaration. The decode
+    /// thread keeps its own: each counts the packets it decodes.
+    declarations: DeclarationTracker,
+    /// A declaration that came with a packet the bridge reported an error for:
+    /// its frames are dropped, but not what it declared, which the next
+    /// frames do not bring again.
+    carried_declaration: Option<Declaration>,
     renderer: SpatialRenderer,
     sample_rate: u32,
-    coordinate_format: RCoordinateFormat,
 
-    // ── per-stream spatial state ──
-    /// Shared fixed-channel planner (routing + plan cache, both stream kinds).
-    fixed_planner: virtual_bed::FixedChannelPlanner,
-    /// Bed-only planner: caches the channel mapping so a steady stream replans
-    /// only when the labels or the placement params actually change.
-    bed_planner: virtual_bed::BedChannelPlanner,
-    /// Cached object↔channel declaration from the bridge (sparse emission),
-    /// sorted by channel. See `docs/channel-object-contract.md`.
-    object_channels: Vec<(u32, usize)>,
-    /// The poses the bridge declares for the current labels
-    /// (`FormatBridge::fixed_channel_poses`), read once per label change —
-    /// `declared_poses_labels` remembers which labels they were read for.
-    declared_poses: Vec<RChannelPose>,
-    declared_poses_labels: Vec<RChannelLabel>,
-    /// The family the bridge declares for the current presentation
-    /// (`FormatBridge::source_family`), read with the poses: it selects the
-    /// placement policy the fixed channels are planned with.
-    source_family: SourceFamily,
-    has_objects: bool,
-    loudness_applied: bool,
+    /// The per-frame sequence, shared with the CLI host (see
+    /// [`crate::frame_pipeline`]), and the per-stream state it keeps. The
+    /// stream's declaration comes from the last [`Declaration`] a decoded
+    /// packet carried: applied from the frame it belongs to, kept until the
+    /// next one (segment starts included, since the tracker has one read for
+    /// them), and dropped by a [`reset`](Engine::reset).
+    pipeline: FramePipeline,
     decoded_samples: u64,
     /// Dynamic object count of the last rendered frame (`channel_count − beds`),
     /// `0` for plain multichannel content. Surfaced over FFI for the host's track
     /// info display. Reset per segment.
     last_object_count: u32,
-    /// Dialogue normalisation level (dBFS, ≤ 0) once a major-sync frame has
-    /// declared it. Surfaced over FFI for the host's track info display. Reset
-    /// per segment.
-    last_dialnorm: Option<i8>,
     /// Channel labels of the bed of the last object-based frame (empty for plain
     /// multichannel / no bed). Surfaced over FFI so the host can show the bed
     /// composition (e.g. "LFE+11 objects"). Reused buffer; reset per segment.
     last_bed_labels: Vec<RChannelLabel>,
 
-    // ── DRC gain ramp state (continues across frames) ──
-    drc_gain: f32,
-    drc_target_gain: f32,
-    drc_ramp_samples_remaining: u32,
     /// DRC mode last pushed to the bridge (selects which DRC words the decoder
     /// extracts → drives `frame.drc_gain`). Synced from the live param each
-    /// `process` so config + OSC changes reach the decoder, mirroring the CLI's
-    /// decoder thread. Empty until the first sync.
-    applied_drc_mode: String,
+    /// `process` so config + OSC changes reach the decoder, as in the CLI.
+    drc_mode: DrcModeSync,
+    /// Log level last pushed to the bridge (first when it was opened), so its
+    /// diagnostics follow `log_level` changes made over OSC.
+    log_level: LogLevelSync,
 
     // ── reusable scratch ──
-    frame_events: Vec<SpatialChannelEvent>,
-    pcm_f32_buf: Vec<f32>,
     /// Spare sample buffers for [`RenderedAudio`], returned by
     /// [`Engine::recycle`] once the host has copied them out.
     ///
@@ -116,42 +151,30 @@ pub struct Engine {
     /// that never recycles allocates exactly as before; it is an optimisation,
     /// not a contract.
     output_pool: Vec<Vec<f32>>,
-    /// Duty-cycle EMA of the render cost, for the meter bundle: raw per-frame
-    /// timings alias with 40-sample TrueHD access units (the FIR crossover's
-    /// burst lands on one frame in ~26), so the emitted figure is smoothed to
-    /// a per-frame equivalent. `PerfLog` keeps recording the raw value.
-    render_duty: renderer::metering::DutyEma,
+    /// Output a bounded-buffer call had no room for, and which call it is for
+    /// (see [`Engine::process_raw_within`], [`Engine::drain_with_capacity`]):
+    /// the retry with a larger buffer gets it back, since decoding again
+    /// cannot recreate it.
+    held: Option<(HeldFor, Vec<RenderedAudio>)>,
+    /// The packet [`HeldFor::Packet`] output was rendered from.
+    held_packet: Vec<u8>,
+    /// Whether the host or the live option decides on the decode thread.
+    decode_thread_mode: DecodeThreadMode,
+    /// The host's timestamp for the packet about to be pushed, from
+    /// [`set_input_pts`](Self::set_input_pts); taken by that packet.
+    input_pts_us: Option<i64>,
+    /// [`RenderedAudio::input_pts_us`] of the first block the last
+    /// bounded-buffer call handed back, for hosts reading it through the C ABI.
+    last_output_input_pts: Option<i64>,
 
     /// Optional OSC live-control server (kept alive here; its Drop stops the
     /// listener thread when the engine is dropped).
     osc: Option<OscSender>,
     /// VU meter, created with the OSC server; feeds outgoing meter bundles.
     audio_meter: Option<AudioMeter>,
-    /// Accumulated object names (id → name) for OSC object broadcast.
-    object_names: HashMap<u32, String>,
     /// Opt-in per-frame perf accumulator (env `ORENDER_PERF_LOG`). `None` = off
     /// (zero overhead). Diagnostic only; safe to remove once perf work lands.
     perf: Option<PerfLog>,
-
-    /// The two stages that synthesize objects from channel content: phantom
-    /// extraction, then the bed→height lift. Both off by default and driven by
-    /// the live params `phantom_extract_mode` / `object_generator_id`. Shared
-    /// with the CLI host — see [`crate::channel_objects`].
-    stages: channel_objects::ChannelObjectStages,
-
-    /// Signature of the last published fixed-channel applicability state. The
-    /// JSON snapshot is rebuilt only when this changes, never every frame.
-    fixed_processing_sig: Option<FixedProcessingSig>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct FixedProcessingSig {
-    stream_has_objects: bool,
-    labels: Vec<RChannelLabel>,
-    options_epoch: u64,
-    output_has_height: bool,
-    phantom_count: usize,
-    height_count: usize,
 }
 
 /// Throttled (~1 Hz) aggregate of per-frame render/decode cost, correlated with
@@ -254,6 +277,9 @@ impl Drop for Engine {
         // teardown window where a worker could read state mid-free. Explicit so
         // it can't regress if the field order changes.
         drop(self.osc.take());
+        // Join the decode thread the same way, so the bridge it shares is
+        // released here, by the engine's own thread, and not by that one.
+        drop(self.decode_worker.take());
         if let Some(perf) = self.perf.as_mut() {
             perf.flush();
         }
@@ -264,46 +290,43 @@ impl Engine {
     /// Build a session around an already-loaded bridge and a constructed
     /// renderer. The bridge must already be configured (presentation, DRC mode)
     /// before the first [`process`](Self::process) call.
-    pub fn new(bridge: LoadedBridge, renderer: SpatialRenderer, sample_rate: u32) -> Self {
+    pub fn new(mut bridge: LoadedBridge, renderer: SpatialRenderer, sample_rate: u32) -> Self {
+        crate::bridge_loader::declare_source_families(&bridge.libs, &renderer.renderer_control());
+        // Checked before each packet without locking the bridge.
+        let log_level = std::mem::take(&mut bridge.log_level);
         let coordinate_format = bridge.bridge.coordinate_format();
+        let bridge_has_objects = Arc::new(AtomicBool::new(bridge.bridge.has_objects()));
         let engine = Self {
-            bridge,
+            bridge: Arc::new(Mutex::new(bridge)),
+            decode_worker: None,
+            bridge_has_objects,
+            declarations: DeclarationTracker::new(),
+            carried_declaration: None,
             renderer,
             sample_rate,
-            coordinate_format,
-            fixed_planner: virtual_bed::FixedChannelPlanner::new(),
-            bed_planner: virtual_bed::BedChannelPlanner::new(),
-            object_channels: Vec::new(),
-            declared_poses: Vec::new(),
-            declared_poses_labels: Vec::new(),
-            source_family: SourceFamily::Generic,
-            has_objects: false,
-            loudness_applied: false,
+            pipeline: FramePipeline::new(coordinate_format),
             decoded_samples: 0,
             last_object_count: 0,
-            last_dialnorm: None,
             last_bed_labels: Vec::new(),
-            drc_gain: 1.0,
-            drc_target_gain: 1.0,
-            drc_ramp_samples_remaining: 0,
-            applied_drc_mode: String::new(),
-            frame_events: Vec::new(),
-            pcm_f32_buf: Vec::new(),
+            drc_mode: DrcModeSync::new(),
+            log_level,
             output_pool: Vec::new(),
-            render_duty: Default::default(),
+            held: None,
+            held_packet: Vec::new(),
+            decode_thread_mode: DecodeThreadMode::Off,
+            input_pts_us: None,
+            last_output_input_pts: None,
             osc: None,
             audio_meter: None,
-            object_names: HashMap::new(),
             perf: std::env::var_os("ORENDER_PERF_LOG")
                 .is_some()
                 .then(PerfLog::new),
-            stages: channel_objects::ChannelObjectStages::new(),
-            fixed_processing_sig: None,
         };
         engine
-            .renderer
-            .renderer_control()
-            .set_fixed_channel_catalog(virtual_bed::fixed_channel_catalog_json());
+            .pipeline
+            .stream
+            .channel_objects
+            .publish_static_state(&engine.renderer.renderer_control());
         engine
     }
 
@@ -314,10 +337,14 @@ impl Engine {
         &mut self,
         factory: Box<dyn object_gen::ObjectGeneratorFactory>,
     ) {
-        self.stages.register_generator(factory);
-        self.renderer
-            .renderer_control()
-            .set_object_generators_schema(self.stages.generator_listings_json());
+        self.pipeline
+            .stream
+            .channel_objects
+            .register_generator(factory);
+        self.pipeline
+            .stream
+            .channel_objects
+            .publish_static_state(&self.renderer.renderer_control());
     }
 
     /// Record the hosting FFI shim's C-ABI version so the live-state snapshot
@@ -340,20 +367,20 @@ impl Engine {
         use std::net::SocketAddrV4;
         use std::str::FromStr;
 
-        // Publish the object-generator schema (built-ins + any host-registered
-        // out-of-tree generators) into RendererControl so the live-state bundle
-        // carries it to Studio.
-        self.renderer
-            .renderer_control()
-            .set_object_generators_schema(self.stages.generator_listings_json());
-        // Publish the phantom-extraction param schema for Studio's sliders.
-        self.renderer
-            .renderer_control()
-            .set_phantom_schema(channel_objects::ChannelObjectStages::phantom_schema_json());
+        // The generator catalogue (built-ins + any host-registered out-of-tree
+        // generators), the phantom-extraction schema and the fixed-channel
+        // catalogue, so the live-state bundle carries them to Studio.
+        self.pipeline
+            .stream
+            .channel_objects
+            .publish_static_state(&self.renderer.renderer_control());
 
         let target = SocketAddrV4::from_str(&format!("{}:{}", opts.host, opts.port_out))
             .map_err(|e| anyhow!("invalid OSC target {}:{}: {e}", opts.host, opts.port_out))?;
         let mut sender = OscSender::new(target)?;
+        if opts.metering {
+            sender.set_default_metering(true);
+        }
         sender.attach_renderer_control(self.renderer.renderer_control());
         sender.start_listener(opts.port_in, true)?;
         // Meter cadence reads the RendererControl atomic each poll (source of
@@ -370,12 +397,13 @@ impl Engine {
     /// resolve the speaker layout (explicit path → config layout → 7.1.4 preset),
     /// load + configure the decoder bridge, and build the renderer. This is the
     /// path both the FFI and the test harness use.
-    /// `bridge_path`: explicit decoder-bridge path, or `None` to take it from
-    /// the config YAML's `render.bridge_path`. As a last-resort fallback, when
-    /// neither is set (or the config path no longer exists), we look for a
-    /// `*_bridge.{so,dll,dylib}` next to the current executable — covers the
+    /// `bridge_paths`: the decoder bridges asked for, in load order, or empty
+    /// to take them from the config YAML's `render.bridge_path(s)`. When
+    /// neither names any, auto-discovery loads every bridge of the first
+    /// folder holding one, next to the current executable first — covers the
     /// Windows bundle case where the user extracted a zip with mpv.exe,
-    /// orender.dll and the bridge .dll all in the same folder.
+    /// orender.dll and the bridge .dlls all in the same folder
+    /// ([`resolve_bridges`]).
     /// `input_codec`: codec identifier of the raw access units the host will
     /// feed (matching the bridge's supported codec IDs). Declared to the
     /// bridge so its `Raw` transport routes to the right decoder; `None`
@@ -383,7 +411,7 @@ impl Engine {
     pub fn from_paths(
         config_yaml_path: Option<&Path>,
         speaker_layout_path: Option<&Path>,
-        bridge_path: Option<&Path>,
+        bridge_paths: &[PathBuf],
         input_codec: Option<&str>,
         sample_rate: u32,
     ) -> Result<Self> {
@@ -398,7 +426,7 @@ impl Engine {
         // Client-visible profiles view (active name + list), applied to the
         // control below once it exists; see docs/config-profiles.md.
         let profiles_info = loaded_cfg.as_ref().map(Config::profiles_info);
-        let render_cfg = loaded_cfg.and_then(|c| c.render);
+        let mut render_cfg = loaded_cfg.and_then(|c| c.render);
 
         let layout = if let Some(p) = speaker_layout_path {
             SpeakerLayout::from_file(p)?
@@ -408,18 +436,23 @@ impl Engine {
             SpeakerLayout::preset("7.1.4")?
         };
 
-        // Resolve the bridge path with the shared strict policy (identical for
-        // the CLI and this FFI/mpv host): an explicitly requested path (FFI
-        // param or config render.bridge_path) must exist or it's an error; only
-        // when nothing is requested do we auto-discover *_bridge.* next to the
-        // host binary. See `bridge_loader::resolve_bridge`.
-        let config_bridge = render_cfg.as_ref().and_then(|c| c.bridge_path.clone());
-        let resolved_bridge = resolve_bridge(bridge_path, config_bridge.as_deref())?;
+        // Resolve the bridges with the shared strict policy (identical for
+        // the CLI and this FFI/mpv host): explicitly requested paths (FFI
+        // param or config render.bridge_path(s)) are never replaced by a
+        // discovered bridge; only when nothing is requested do we
+        // auto-discover *_bridge.* next to the host binary. See
+        // `bridge_loader::resolve_bridges`.
+        let config_bridges = render_cfg
+            .as_ref()
+            .map(RenderConfig::bridges)
+            .unwrap_or_default();
+        let bridge_request = resolve_bridges(bridge_paths, &config_bridges)?;
 
-        // The renderer's table mode/defaults come from the bridge, so load and
-        // configure it before building the renderer.
+        // The renderer's table mode/defaults come from the bridges, so load
+        // and configure them before building the renderer.
         let t_bridge = std::time::Instant::now();
-        let mut bridge = LoadedBridge::load_with_params(&resolved_bridge)?;
+        let loaded_bridges = load_bridges(&bridge_request)?;
+        let mut bridge = LoadedBridge::open(loaded_bridges.libs.clone())?;
         // Honour `render.presentation` like the CLI does. This host has no
         // flags, so the config is the only way to ask for anything other than
         // the default — hard-coding it here made the setting silently
@@ -429,14 +462,11 @@ impl Engine {
             .and_then(renderer::config_fields::presentation::get)
             .map(|p| p.to_string())
             .unwrap_or_else(|| renderer::config_fields::presentation::DEFAULT.to_string());
-        if !bridge.configure("presentation", presentation.as_str()) {
+        if let Err(e) = configure_presentation(&mut bridge.bridge, &presentation) {
             // Not fatal here, unlike the CLI: this host is a decoder inside a
             // player, and refusing to start would drop playback entirely where
             // falling back to the bridge's own default still plays.
-            log::warn!(
-                "Bridge rejected presentation '{}'; keeping the bridge default",
-                presentation
-            );
+            log::warn!("{e}; keeping the bridge default");
         }
         if let Some(codec) = input_codec {
             // Disambiguates the bridge's `Raw` transport (no data_type byte).
@@ -450,9 +480,20 @@ impl Engine {
             "bridge loaded + configured in {:.2}s",
             t_bridge.elapsed().as_secs_f64()
         );
+        // The evaluation grid, settled against the first bridge's hint now
+        // that the bridges are loaded: a config from before `evaluation_grid`
+        // is migrated (in memory, unsaved), and the renderer is built on the
+        // grid in force (docs/multi-bridge.md, "Evaluation grid").
+        let grid_migrated = render_cfg.as_mut().is_some_and(|cfg| {
+            renderer::evaluation_grid::settle_config(
+                cfg,
+                renderer::evaluation_grid::EvaluationGrid::from_hint(vbap_defaults, preferred),
+            )
+            .migrated
+        });
 
         let params = SpatialRendererParams::from_render_config(render_cfg.as_ref());
-        let renderer = build_spatial_renderer(
+        let mut renderer = build_spatial_renderer(
             &params,
             layout,
             sample_rate,
@@ -477,19 +518,28 @@ impl Engine {
             // Diagnose whether that path actually loaded or silently fell back
             // to defaults — `render_cfg` above can't tell us, since
             // `load_or_default` collapses missing/parse-error into defaults.
-            // Surfaced in Studio's About to catch host config mismatches.
-            let status = renderer::config::Config::load_status(path);
-            if status != renderer::config::ConfigLoadStatus::Loaded {
-                log::warn!(
+            // Surfaced in Studio's About to catch host config mismatches. A
+            // restored sidecar that was the previous instance's fallback
+            // keeps parse_error, whatever the file now holds.
+            let status = renderer::config::boot_load_status(path);
+            match status {
+                renderer::config::ConfigLoadStatus::Loaded => {}
+                renderer::config::ConfigLoadStatus::NewerSchema => log::warn!(
+                    "config '{}' was written by a newer Omniphony; running on what this build \
+                     understands of it, and leaving the file untouched",
+                    path.display()
+                ),
+                _ => log::warn!(
                     "config '{}' not loaded ({}); running on built-in defaults",
                     path.display(),
                     status.as_str()
-                );
+                ),
             }
             control.set_config_status(Some(status.as_str().to_string()));
         }
-        // State restored from a live-handoff sidecar is by definition unsaved.
-        if live_restored {
+        // State restored from a live-handoff sidecar is by definition unsaved,
+        // and so is a migrated grid (logged by the settle; Save records it).
+        if live_restored || grid_migrated {
             control.mark_dirty();
         }
 
@@ -505,7 +555,15 @@ impl Engine {
             overlay::load_prefs(&p);
         }
 
-        control.set_bridge_path(Some(resolved_bridge.clone()));
+        // The path asked for (host override, else the config's), not the
+        // resolved one: an auto-discovered bridge next to the host binary must
+        // not end up in the shared config on the next save.
+        crate::renderer_build::record_bridge_paths(&control, bridge_paths, &config_bridges);
+        record_bridge_request(&control, &bridge_request);
+        publish_bridges(&control, &loaded_bridges);
+        // This host reads its input from the player, not from a pipe: keep the
+        // config's `render.input_pipe` as is on the next save.
+        crate::renderer_build::record_input_path(&control, render_cfg.as_ref());
         if let Some(info) = profiles_info {
             control.set_profiles_info(info);
         }
@@ -525,7 +583,7 @@ impl Engine {
 
         // Publish the bridge's supported DRC modes (so studio shows the DRC
         // control). The decode-side mode itself is pushed to the bridge lazily
-        // in `process` (see `sync_drc_mode`), mirroring the CLI's decoder thread.
+        // in `process` (see `sync_live_options`), mirroring the CLI's decoder thread.
         let supported_drc: Vec<String> = bridge
             .bridge
             .supported_drc_modes()
@@ -533,6 +591,11 @@ impl Engine {
             .map(|m| m.as_str().to_string())
             .collect();
         control.set_bridge_supported_drc_modes(supported_drc);
+
+        // The band engines (a gain table per crossover band), now that the
+        // seed above has set the backend and the crossover engine: here, not
+        // on the first frame the player pulls.
+        renderer.prepare_speaker_stage()?;
 
         let engine = Self::new(bridge, renderer, sample_rate);
         log::info!(
@@ -548,32 +611,29 @@ impl Engine {
         self.renderer.output_channel_count() as u32
     }
 
-    /// Per-channel labels of the active output layout, one entry per speaker in
-    /// render (output channel) order. The host (mpv) turns this into a channel
-    /// map. Speakers whose layout name is unrecognised map to
-    /// [`RChannelLabel::Unknown`].
+    /// Per-channel labels of the rendered output, one entry per output channel
+    /// in render order: the layout's speakers, or the binaural pair. The host
+    /// (mpv) turns this into a channel map, so it must match
+    /// [`channel_count`](Self::channel_count) or the frame is malformed
+    /// (silence). Names that do not resolve map to [`RChannelLabel::Unknown`].
+    /// Same source as the standalone renderer's sink labels
+    /// ([`SpatialRenderer::output_channel_names`]).
     pub fn channel_layout(&self) -> Vec<RChannelLabel> {
-        // Binaural output is a plain stereo pair; the layout MUST match
-        // `channel_count()` (2) or the host builds an inconsistent chmap and the
-        // frame is malformed (silence).
-        if self.renderer.output_channel_count() == 2 {
-            return vec![
-                crate::channel_layout::label_for_speaker_name("FL"),
-                crate::channel_layout::label_for_speaker_name("FR"),
-            ];
-        }
         self.renderer
-            .speaker_layout()
-            .speakers
+            .output_channel_names()
             .iter()
-            .map(|s| crate::channel_layout::label_for_speaker_name(&s.name))
+            .map(|name| crate::channel_layout::label_for_speaker_name(name))
             .collect()
     }
 
     /// Whether the current presentation carries dynamic objects. A live fact
     /// about the stream (it may flip mid-stream); hosts must not latch it.
+    ///
+    /// As of the latest packet decoded: with the decode thread on, that can be
+    /// ahead of the audio returned so far by what is in flight: about 30 ms of
+    /// audio, or one packet if that is longer. Never waits on the bridge.
     pub fn has_objects(&self) -> bool {
-        self.bridge.bridge.has_objects()
+        self.bridge_has_objects.load(Ordering::Relaxed)
     }
 
     /// Dynamic object count of the last rendered frame (decoded `channel_count`
@@ -586,13 +646,21 @@ impl Engine {
     /// Dialogue normalisation level in dBFS (≤ 0) once the stream has declared
     /// it, else `None`. For the host's track info display.
     pub fn dialnorm_db(&self) -> Option<i8> {
-        self.last_dialnorm
+        self.pipeline.stream.dialnorm
     }
 
     /// Channel labels of the bed of the last object-based frame (empty for plain
     /// multichannel / no bed). For the host's track info display.
     pub fn bed_labels(&self) -> &[RChannelLabel] {
         &self.last_bed_labels
+    }
+
+    /// The name the bridge gives the current presentation's format
+    /// (`DTS-HD MA + DTS:X 7.1.4`, `Dolby TrueHD + Dolby Atmos`, …), empty
+    /// when it states none. Declaration-level: refreshed with the channel
+    /// labels, never per frame. For the host's track info display.
+    pub fn source_label(&self) -> &str {
+        &self.pipeline.stream.declaration.label
     }
 
     /// Constant DSP latency of the rendered output, in samples at the engine
@@ -649,6 +717,7 @@ impl Engine {
             .renderer_control()
             .live
             .read()
+            .options
             .output_channel_mapping
             .code()
     }
@@ -661,6 +730,7 @@ impl Engine {
                 .renderer_control()
                 .live
                 .write()
+                .options
                 .output_channel_mapping = mapping;
         }
     }
@@ -670,163 +740,121 @@ impl Engine {
         self.sample_rate
     }
 
+    /// Where the listener is: `us` microseconds into the stream, counted as
+    /// the timestamps this engine hands back are (`*out_pts_us`), so from 0
+    /// after [`reset`](Self::reset). A host that buffers the rendered audio
+    /// plays it later than it renders it, and only the host knows by how much;
+    /// this passes it on to OSC clients ([`OscSender::send_heard`]), which can
+    /// then show each block when it is heard. The engine itself holds nothing
+    /// back.
+    pub fn set_heard_us(&mut self, us: i64) {
+        let rate = self.sample_rate.max(1);
+        // Rounded up: the timestamps are rounded down, so a block's own start
+        // comes back to exactly its position rather than a sample short of it.
+        let pos = (i128::from(us.max(0)) * i128::from(rate) + 999_999) / 1_000_000;
+        if let Some(osc) = self.osc.as_mut() {
+            osc.send_heard(u64::try_from(pos).unwrap_or(u64::MAX), rate);
+        }
+    }
+
     /// Reset the session after a seek or stream discontinuity. Flushes the
     /// bridge pipeline and the renderer's per-object/ramp state, and clears the
     /// per-stream spatial state. Live parameters (gains, layout, OSC-applied
     /// settings) are preserved — a seek must not lose live adjustments.
     pub fn reset(&mut self) {
-        self.bridge.bridge.reset();
+        // Audio held for a retry belongs to the stream being flushed.
+        if let Some((_, held)) = self.held.take() {
+            self.recycle(held);
+        }
+        // So is whatever the decode thread is still working on.
+        self.discard_in_flight();
+        self.input_pts_us = None;
+        self.last_output_input_pts = None;
+        // Nothing is in flight now: a switch the live option asked for while
+        // packets were on the thread can land here instead of winding down.
+        let want_thread = self.live_decode_thread();
+        self.follow_live_decode_thread(want_thread);
+        {
+            let mut bridge = self.lock_bridge();
+            bridge.bridge.reset();
+            self.bridge_has_objects
+                .store(bridge.bridge.has_objects(), Ordering::Relaxed);
+        }
+        // The bridge restarts: its next frames come with a declaration read
+        // anew, whatever their labels, and the old one no longer applies.
+        self.declarations.forget();
+        if let Some(worker) = self.decode_worker.as_mut() {
+            worker.fresh = true;
+        }
+        self.carried_declaration = None;
+        self.pipeline.stream.declaration = Default::default();
         self.renderer.reset_runtime_state();
         self.reset_segment_state();
         // Object frames are delta-encoded; after a seek the (static) virtual-bed
         // poses would never be re-sent, so force a full re-emit of object
         // positions + names on the next frame.
+        // The positions start again from 0, and the next block is marked anew.
         if let Some(osc) = self.osc.as_mut() {
             osc.request_full_object_resend();
+            osc.rewind_playout();
         }
         self.decoded_samples = 0;
-        self.drc_gain = 1.0;
-        self.drc_target_gain = 1.0;
-        self.drc_ramp_samples_remaining = 0;
+        self.pipeline.stream.drc = Default::default();
         // Drop overlay scene + motion trails so they don't bridge the seek.
         overlay::clear();
     }
 
+    /// Drop what a segment start invalidates. Not the bridge's declaration:
+    /// a segment start or a bridge reset comes with a fresh one (see
+    /// [`DeclarationTracker`]), applied to the frame right after this.
     fn reset_segment_state(&mut self) {
-        self.has_objects = false;
-        self.fixed_planner.reset();
-        self.bed_planner.reset();
-        self.object_channels.clear();
-        self.declared_poses.clear();
-        self.declared_poses_labels.clear();
-        self.source_family = SourceFamily::Generic;
-        self.frame_events.clear();
-        self.loudness_applied = false;
-        self.object_names.clear();
-        // A new segment may re-declare a different object count / dialnorm / bed.
+        self.pipeline
+            .stream
+            .reset_segment(Some(&self.renderer.renderer_control()));
+        self.reset_track_info();
+    }
+
+    /// A segment starts (`is_new_segment`, or the bridge reset itself): the
+    /// shared segment start, this host's track info, and the overlay, so the
+    /// previous layout's objects do not linger in it.
+    fn begin_segment(&mut self) {
+        self.pipeline
+            .stream
+            .begin_segment(&self.renderer, self.osc.as_mut());
+        self.reset_track_info();
+        overlay::clear();
+    }
+
+    /// A new segment may declare a different object count or bed.
+    fn reset_track_info(&mut self) {
         self.last_object_count = 0;
-        self.last_dialnorm = None;
         self.last_bed_labels.clear();
-        self.fixed_processing_sig = None;
-        self.renderer
-            .renderer_control()
-            .set_fixed_channel_processing(
-                r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
-                    .to_string(),
-            );
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn publish_fixed_processing_state(
-        &mut self,
-        stream_has_objects: bool,
-        labels: &[RChannelLabel],
-        options_epoch: u64,
-        output_has_height: bool,
-        phantom_count: usize,
-        height_count: usize,
-        synthetic_objects_enabled: bool,
-        phantom_mode: renderer::live_params::PhantomExtractMode,
-        height_generator_enabled: bool,
-    ) {
-        let unchanged = self.fixed_processing_sig.as_ref().is_some_and(|sig| {
-            sig.stream_has_objects == stream_has_objects
-                && sig.labels.as_slice() == labels
-                && sig.options_epoch == options_epoch
-                && sig.output_has_height == output_has_height
-                && sig.phantom_count == phantom_count
-                && sig.height_count == height_count
-        });
-        if unchanged {
-            return;
-        }
-
-        self.fixed_processing_sig = Some(FixedProcessingSig {
-            stream_has_objects,
-            labels: labels.to_vec(),
-            options_epoch,
-            output_has_height,
-            phantom_count,
-            height_count,
-        });
-
-        let phantom = if phantom_mode == renderer::live_params::PhantomExtractMode::Off {
-            "off"
-        } else if !synthetic_objects_enabled {
-            "master_off"
-        } else if stream_has_objects {
-            "object_stream"
-        } else if phantom_count > 0 {
-            "active"
-        } else {
-            "insufficient_channels"
-        };
-        let input_has_height = object_gen::input_has_height(labels);
-        let height = if !height_generator_enabled {
-            "off"
-        } else if !synthetic_objects_enabled {
-            "master_off"
-        } else if stream_has_objects {
-            "object_stream"
-        } else if input_has_height {
-            "input_has_height"
-        } else if !output_has_height {
-            "output_has_no_height"
-        } else if height_count > 0 {
-            "active"
-        } else {
-            "insufficient_channels"
-        };
-        let names: Vec<&str> = labels
-            .iter()
-            .map(|&label| bridge_api::labels::canonical_name(label))
-            .collect();
-        let state = serde_json::json!({
-            "stream": if stream_has_objects { "objects" } else { "fixed" },
-            "family": self.source_family.as_str(),
-            "labels": names,
-            "inputHasHeight": input_has_height,
-            "outputHasHeight": output_has_height,
-            "phantom": phantom,
-            "height": height,
-        });
-        self.renderer
-            .renderer_control()
-            .set_fixed_channel_processing(state.to_string());
-    }
-
-    /// Re-read the bridge's declaration — its source family and the poses it
-    /// states for its channels — when the frame's labels differ from the ones
-    /// it was read for. A steady stream compares one short slice per frame
-    /// and never calls into the bridge.
-    fn refresh_declared_poses(&mut self, labels: &[RChannelLabel]) {
-        if self.declared_poses_labels.as_slice() == labels {
-            return;
-        }
-        self.declared_poses.clear();
-        self.declared_poses
-            .extend(self.bridge.bridge.fixed_channel_poses().into_iter());
-        self.source_family =
-            SourceFamily::from_declared(self.bridge.bridge.source_family().as_str());
-        self.declared_poses_labels.clear();
-        self.declared_poses_labels.extend_from_slice(labels);
-    }
-
-    /// Push the live DRC mode to the bridge when it changes (selects which DRC
-    /// words the decoder extracts). Cheap no-op when unchanged. Mirrors the
-    /// CLI's `DecoderCommand::SetDrcMode` handling. The bridge preserves the
-    /// mode across `reset`, so a seek keeps the current DRC setting.
-    fn sync_drc_mode(&mut self) {
-        let live_mode = {
+    /// Bring the decoder in line with the live options it follows, before the
+    /// next packet: the DRC mode (which DRC words the decoder extracts; mirrors
+    /// the CLI's [`DrcModeSync`]), the log level and, in
+    /// [`DecodeThreadMode::Live`], the decode thread. One read of the live
+    /// params per packet; the bridge is locked only when the DRC mode or the
+    /// log level changed. The bridge preserves both across `reset`, so a seek
+    /// keeps them.
+    fn sync_live_options(&mut self) {
+        let (drc_changed, want_thread) = {
             let control = self.renderer.renderer_control();
             let live = control.live.read();
-            if live.drc_mode == self.applied_drc_mode {
-                return;
-            }
-            live.drc_mode.clone()
+            (
+                self.drc_mode.update(&live.options.drc_mode),
+                live.options.decode_thread,
+            )
         };
-        self.bridge.bridge.set_drc_mode(live_mode.as_str().into());
-        self.applied_drc_mode = live_mode;
+        if drc_changed {
+            self.lock_bridge().bridge.set_drc_mode(self.drc_mode.mode());
+        }
+        if self.log_level.update(live_log::current_runtime_level()) {
+            let mut bridge = self.bridge.lock().unwrap_or_else(|e| e.into_inner());
+            self.log_level.push(&mut bridge.bridge);
+        }
+        self.follow_live_decode_thread(want_thread);
     }
 
     /// Push one raw compressed packet and render any frames it produces.
@@ -839,18 +867,72 @@ impl Engine {
         transport: RInputTransport,
         data_type: u8,
     ) -> Result<Vec<RenderedAudio>> {
-        // Push any DRC-mode change (config-seeded or OSC-driven) to the decoder
-        // before it decodes this packet.
-        self.sync_drc_mode();
+        if matches!(self.held, Some((HeldFor::Drain, _))) {
+            bail!("drain output is pending; retry drain with a larger buffer before new input");
+        }
+        // Push any DRC-mode, log-level or decode-thread change (config-seeded
+        // or OSC-driven) to the decoder before it decodes this packet.
+        self.sync_live_options();
+        let pts = self.input_pts_us.take();
 
-        let decode_started = std::time::Instant::now();
-        let result = self
-            .bridge
-            .bridge
-            .push_packet(data.into(), transport, data_type);
-        let decode_time_ms = decode_started.elapsed().as_secs_f32() * 1000.0;
+        if self.decode_worker.is_some() {
+            return self.process_pipelined(data, transport, data_type, pts);
+        }
 
+        let packet = {
+            let mut bridge = self.bridge.lock().unwrap_or_else(|e| e.into_inner());
+            let packet = decode_packet(
+                &mut bridge.bridge,
+                data,
+                transport,
+                data_type,
+                &mut self.declarations,
+            );
+            self.bridge_has_objects
+                .store(bridge.bridge.has_objects(), Ordering::Relaxed);
+            packet
+        };
+        self.render_decoded(packet, pts)
+    }
+
+    /// The host's timestamp for the next packet it pushes, carried with that
+    /// packet's audio as [`RenderedAudio::input_pts_us`]. Optional: a host that
+    /// never calls it gets `None` there.
+    pub fn set_input_pts(&mut self, pts_us: Option<i64>) {
+        self.input_pts_us = pts_us;
+    }
+
+    /// [`RenderedAudio::input_pts_us`] of the first block the last
+    /// [`process_raw_within`](Self::process_raw_within) or
+    /// [`drain_with_capacity`](Self::drain_with_capacity) call handed back:
+    /// `None` when it handed back nothing, or the host gave no timestamp.
+    pub fn last_output_input_pts(&self) -> Option<i64> {
+        self.last_output_input_pts
+    }
+
+    /// Render one packet's worth of decoded frames: the second half of
+    /// [`process`](Self::process), shared by the inline and threaded paths.
+    fn render_decoded(
+        &mut self,
+        packet: DecodedPacket,
+        pts: Option<i64>,
+    ) -> Result<Vec<RenderedAudio>> {
+        let per_frame_decode_time_ms = packet.decode_ms_per_frame();
+        let DecodedPacket {
+            result,
+            declaration,
+            declaration_frame,
+            ..
+        } = packet;
+        let (mut declaration, declaration_frame) = match declaration {
+            Some(own) => {
+                self.carried_declaration = None;
+                (Some(own), declaration_frame)
+            }
+            None => (self.carried_declaration.take(), 0),
+        };
         if !result.error_message.is_empty() {
+            self.carried_declaration = declaration;
             bail!("bridge decode error: {}", result.error_message);
         }
         if result.did_reset {
@@ -859,29 +941,22 @@ impl Engine {
             // the content generation, force a full object re-emit and clear the
             // overlay so OSC clients and the overlay purge the pre-seek objects
             // instead of leaving them behind as stale duplicates.
-            self.renderer.reset_runtime_state();
-            self.reset_segment_state();
-            if let Some(osc) = self.osc.as_mut() {
-                osc.bump_content_generation();
-                osc.request_full_object_resend();
-            }
-            overlay::clear();
+            self.begin_segment();
         }
 
-        // The bridge decodes one packet into N frames synchronously; attribute the
-        // packet's decode cost evenly across its frames so the per-frame meter
-        // bundle reports a comparable figure to the CLI decoder thread.
-        let per_frame_decode_time_ms = if result.frames.is_empty() {
-            decode_time_ms
-        } else {
-            decode_time_ms / result.frames.len() as f32
-        };
-
         let mut out = Vec::with_capacity(result.frames.len());
-        for frame in result.frames.iter() {
-            if let Some(chunk) = self.render_frame(frame, per_frame_decode_time_ms)? {
+        for (i, frame) in result.frames.iter().enumerate() {
+            let declaration = if i == declaration_frame {
+                declaration.take()
+            } else {
+                None
+            };
+            if let Some(chunk) = self.render_frame(frame, per_frame_decode_time_ms, declaration)? {
                 out.push(chunk);
             }
+        }
+        if let Some(first) = out.first_mut() {
+            first.input_pts_us = pts;
         }
         Ok(out)
     }
@@ -889,6 +964,280 @@ impl Engine {
     /// Convenience wrapper for hosts that always feed raw access units.
     pub fn process_raw(&mut self, data: &[u8]) -> Result<Vec<RenderedAudio>> {
         self.process(data, RInputTransport::Raw, 0)
+    }
+
+    /// [`process_raw`](Self::process_raw) for a host whose output buffer holds
+    /// `capacity` interleaved samples.
+    ///
+    /// Returns `Ok(Some(blocks))` when they fit, and `Ok(None)` when they do
+    /// not: the host is expected to call again with the **same packet** and a
+    /// larger buffer. The packet has already been decoded by then, and
+    /// decoding it again would advance the bridge a second time — the stream
+    /// would jump ahead and this packet's audio would be lost. So the blocks
+    /// are held, and the retry returns them without touching the decoder.
+    ///
+    /// A host that moves on to a different packet instead of retrying gets
+    /// that packet decoded normally; the held audio is dropped, as it was
+    /// before retries were possible.
+    pub fn process_raw_within(
+        &mut self,
+        data: &[u8],
+        capacity: usize,
+    ) -> Result<Option<Vec<RenderedAudio>>> {
+        let chunks = match self.held.take() {
+            Some((HeldFor::Packet, held)) if self.held_packet == data => held,
+            Some((HeldFor::Packet, stale)) => {
+                self.recycle(stale);
+                self.process_raw(data)?
+            }
+            // Held drain output stays held: `process` refuses the packet.
+            held => {
+                self.held = held;
+                self.process_raw(data)?
+            }
+        };
+        let out = self.fit_or_hold(chunks, capacity, HeldFor::Packet);
+        if out.is_none() {
+            self.held_packet.clear();
+            self.held_packet.extend_from_slice(data);
+        }
+        Ok(out)
+    }
+
+    /// `chunks` when they fit in `capacity` interleaved samples; otherwise
+    /// `None`, and they are held for the retry `held_for` names. Either way it
+    /// records the timestamp [`last_output_input_pts`](Self::last_output_input_pts)
+    /// reports.
+    fn fit_or_hold(
+        &mut self,
+        chunks: Vec<RenderedAudio>,
+        capacity: usize,
+        held_for: HeldFor,
+    ) -> Option<Vec<RenderedAudio>> {
+        if chunks.iter().map(|c| c.samples.len()).sum::<usize>() > capacity {
+            self.held = Some((held_for, chunks));
+            self.last_output_input_pts = None;
+            return None;
+        }
+        self.last_output_input_pts = chunks.first().and_then(|c| c.input_pts_us);
+        Some(chunks)
+    }
+
+    /// Render what the engine still holds, because the stream is over: with the
+    /// decode thread on, the packets it has been handed and not returned yet.
+    /// One packet's audio per call, oldest first, as [`process`](Self::process)
+    /// returns it, so a buffer that fits one packet's audio fits a drain too:
+    /// the host calls this at end of stream until it returns nothing, and plays
+    /// what comes back.
+    ///
+    /// Not a [`reset`](Self::reset): the renderer keeps its per-object and ramp
+    /// state, because these frames are the continuation of the ones before them.
+    /// Safe to call on an idle engine, and safe to call again once it has
+    /// returned nothing — it returns nothing again.
+    pub fn drain(&mut self) -> Result<Vec<RenderedAudio>> {
+        match self.held.take() {
+            Some((HeldFor::Drain, held)) => return Ok(held),
+            // A retry that never came: the host has moved on, as with a new packet.
+            Some((HeldFor::Packet, held)) => self.recycle(held),
+            None => {}
+        }
+        self.next_in_flight()
+    }
+
+    /// Drain for a host with bounded output capacity. None means retry this
+    /// method with more space, before pushing further input. Keep the rendered
+    /// audio on a short buffer: calling the decoder again cannot recreate it.
+    pub fn drain_with_capacity(
+        &mut self,
+        max_samples: usize,
+    ) -> Result<Option<Vec<RenderedAudio>>> {
+        let chunks = self.drain()?;
+        Ok(self.fit_or_hold(chunks, max_samples, HeldFor::Drain))
+    }
+
+    /// Decode on a thread of its own, overlapping the render, so the two share
+    /// the work across two cores. Off by default, because a packet's audio then
+    /// comes back from a later [`process`](Self::process) call - about 30 ms
+    /// of audio behind, or one packet if that is longer; one packet's audio
+    /// per call, as inline, except while the queue shrinks back to its limit,
+    /// when a call returns two - or from [`drain`](Self::drain), and not every host
+    /// allows for that: one that turns it on takes its timestamps from the
+    /// blocks it gets back ([`RenderedAudio::sample_pos`] for its place in the
+    /// stream, [`RenderedAudio::input_pts_us`] for the host's own timestamp)
+    /// and drains at end of stream.
+    ///
+    /// Switch it while nothing is in flight: before the first packet, after
+    /// [`reset`](Self::reset), or once [`drain`](Self::drain) has returned
+    /// nothing. Turning it off with packets still on the thread is refused
+    /// rather than losing them.
+    pub fn set_decode_thread(&mut self, on: bool) -> Result<()> {
+        self.switch_decode_thread(on, false)?;
+        self.decode_thread_mode = if on {
+            DecodeThreadMode::On
+        } else {
+            DecodeThreadMode::Off
+        };
+        Ok(())
+    }
+
+    /// Choose who decides on the decode thread: the host, forcing it
+    /// [`On`](DecodeThreadMode::On) or [`Off`](DecodeThreadMode::Off) as
+    /// [`set_decode_thread`](Self::set_decode_thread) does, or the live
+    /// `decode_thread` option ([`Live`](DecodeThreadMode::Live)), which the
+    /// engine then follows at packet boundaries, in both directions and with
+    /// packets in flight: turned off, the thread winds down a packet per call
+    /// and the engine decodes inline once it is empty.
+    pub fn set_decode_thread_mode(&mut self, mode: DecodeThreadMode) -> Result<()> {
+        match mode {
+            DecodeThreadMode::On => self.set_decode_thread(true),
+            DecodeThreadMode::Off => self.set_decode_thread(false),
+            DecodeThreadMode::Live => {
+                self.decode_thread_mode = DecodeThreadMode::Live;
+                let want = self.live_decode_thread();
+                self.follow_live_decode_thread(want);
+                Ok(())
+            }
+        }
+    }
+
+    /// Who decides on the decode thread.
+    pub fn decode_thread_mode(&self) -> DecodeThreadMode {
+        self.decode_thread_mode
+    }
+
+    /// Whether the engine decodes on a thread of its own right now (it may
+    /// still be winding down after the live option was turned off).
+    pub fn decode_thread(&self) -> bool {
+        self.decode_worker.is_some()
+    }
+
+    fn start_decode_worker(&mut self) -> Result<()> {
+        // The thread counts packets with a tracker of its own. When it stops,
+        // the inline one has missed them all: start it over now.
+        self.declarations.forget();
+        let has_objects = self.lock_bridge().bridge.has_objects();
+        self.bridge_has_objects
+            .store(has_objects, Ordering::Relaxed);
+        self.decode_worker = Some(DecodeWorker::spawn(
+            &self.bridge,
+            &self.bridge_has_objects,
+            PIPELINE_DEPTH,
+        )?);
+        Ok(())
+    }
+
+    /// Start, keep or stop the decode thread, at a packet boundary. Starting
+    /// it is immediate. Stopping it with packets in flight would lose them or
+    /// return them all at once, so either the thread winds down (`wind_down`,
+    /// the live option: its limit drops to zero, each call hands back up to two
+    /// packets while taking one, and once it is empty the next call decodes
+    /// inline) or the switch is refused (a host forcing it off).
+    fn switch_decode_thread(&mut self, on: bool, wind_down: bool) -> Result<()> {
+        match (on, self.decode_worker.as_ref().map(|w| w.in_flight)) {
+            (true, None) => self.start_decode_worker()?,
+            (false, None) => {}
+            (false, Some(0)) => self.decode_worker = None,
+            (false, Some(_)) if !wind_down => {
+                bail!("packets are still on the decode thread; drain or reset first")
+            }
+            (_, Some(_)) => {
+                if let Some(worker) = self.decode_worker.as_mut() {
+                    worker.winding_down = !on;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The live `decode_thread` option.
+    fn live_decode_thread(&self) -> bool {
+        self.renderer
+            .renderer_control()
+            .live
+            .read()
+            .options
+            .decode_thread
+    }
+
+    /// In [`DecodeThreadMode::Live`], bring the decode thread in line with the
+    /// live option `want` (see [`switch_decode_thread`](Self::switch_decode_thread)).
+    fn follow_live_decode_thread(&mut self, want: bool) {
+        if self.decode_thread_mode != DecodeThreadMode::Live {
+            return;
+        }
+        if let Err(e) = self.switch_decode_thread(want, true) {
+            log::warn!("decode thread requested but not started, decoding inline: {e:#}");
+        }
+    }
+
+    fn lock_bridge(&self) -> MutexGuard<'_, LoadedBridge> {
+        self.bridge.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn process_pipelined(
+        &mut self,
+        data: &[u8],
+        transport: RInputTransport,
+        data_type: u8,
+        pts: Option<i64>,
+    ) -> Result<Vec<RenderedAudio>> {
+        let worker = self
+            .decode_worker
+            .as_mut()
+            .expect("pipelined without a worker");
+        worker.submit(data, transport, data_type, pts)?;
+        // One packet's audio per call, as inline, only later: a host that paces
+        // its feeding by the blocks it gets back - Kodi hands over a packet for
+        // each empty answer - would otherwise be given several packets' audio in
+        // one block and feed less than it plays. Past the limit, wait for the
+        // oldest; otherwise take it only if it is ready.
+        let limit = worker.limit();
+        let done = if worker.in_flight > limit {
+            worker.wait()?
+        } else {
+            match worker.poll()? {
+                Some(done) => done,
+                None => return Ok(Vec::new()),
+            }
+        };
+        let mut out = self.render_decoded(done.packet, done.pts)?;
+        // Still past the limit, because it has just come down: give back one
+        // more, so the queue shrinks to it a packet per call. Waited for, not
+        // polled: when decoding is the slower half the next one is never ready
+        // yet, and the queue would stay where it was.
+        let worker = self
+            .decode_worker
+            .as_mut()
+            .expect("pipelined without a worker");
+        if worker.in_flight > limit {
+            let extra = worker.wait()?;
+            out.extend(self.render_decoded(extra.packet, extra.pts)?);
+        }
+        Ok(out)
+    }
+
+    /// The oldest packet the decode thread still holds that renders to any
+    /// audio, rendered; nothing once it holds none.
+    fn next_in_flight(&mut self) -> Result<Vec<RenderedAudio>> {
+        while self.decode_worker.as_ref().is_some_and(|w| w.in_flight > 0) {
+            let done = self.decode_worker.as_mut().unwrap().wait()?;
+            let out = self.render_decoded(done.packet, done.pts)?;
+            if !out.is_empty() {
+                return Ok(out);
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    /// Wait for everything the decode thread still holds and throw it away.
+    fn discard_in_flight(&mut self) {
+        if let Some(worker) = self.decode_worker.as_mut() {
+            while worker.in_flight > 0 {
+                if worker.wait().is_err() {
+                    break;
+                }
+            }
+        }
     }
 
     /// Hand the sample buffers of a consumed [`process`](Self::process) result
@@ -915,430 +1264,74 @@ impl Engine {
         &mut self,
         frame: &RDecodedFrame,
         decode_time_ms: f32,
+        declaration: Option<Declaration>,
     ) -> Result<Option<RenderedAudio>> {
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
-        let sample_rate = frame.sampling_frequency.max(1);
         let sample_pos_at_start = self.decoded_samples;
 
-        let want_osc = self.osc.as_ref().is_some_and(|o| o.has_osc_clients());
-        // The mpv overlay is produced in-process by the `overlay` module and
-        // pulled over FFI; it needs the same object positions + meter levels as
-        // OSC, but independently of whether any OSC client is connected. It
-        // self-gates (only active once the host has pulled), so the CLI host
-        // pays nothing here.
-        let overlay_active = overlay::is_active();
-        let want_objects = want_osc || overlay_active;
-
         // A mid-stream format change (the initial TrueHD layout settling, or a
-        // 7.1<->5.1 boundary) invalidates the per-segment spatial state. Mirror
-        // the CLI's `is_new_segment` handling: drop has_objects / bed / object
-        // state so a channel-based segment is never stuck on a previous
-        // object-based (or differently-sized) layout — the cause of a 5.1 track
-        // not spatializing until a track swap. Bump the content generation and
-        // force a full re-emit so OSC clients and the overlay purge the previous
-        // layout's objects (otherwise a smaller new layout leaves stale,
-        // inactive objects behind after the boundary).
+        // 7.1<->5.1 boundary) invalidates the per-segment spatial state: a
+        // channel-based segment must never stay on a previous object-based (or
+        // differently-sized) layout — the cause of a 5.1 track not
+        // spatializing until a track swap. The content generation is bumped
+        // and a full re-emit forced so OSC clients and the overlay purge the
+        // previous layout's objects.
         if frame.is_new_segment {
-            self.renderer.reset_runtime_state();
-            self.reset_segment_state();
-            if let Some(osc) = self.osc.as_mut() {
-                osc.bump_content_generation();
-                osc.request_full_object_resend();
-            }
-            overlay::clear();
+            self.begin_segment();
         }
-        self.refresh_declared_poses(&frame.channel_labels);
-
-        // Dialogue normalisation (from major-sync frames), applied once.
-        if !self.loudness_applied {
-            if let Some(dialogue_level) = frame.dialogue_level.into_option() {
-                self.renderer.set_loudness(dialogue_level);
-                self.last_dialnorm = Some(dialogue_level);
-                self.loudness_applied = true;
-                if want_osc {
-                    if let Some(osc) = self.osc.as_ref() {
-                        osc.send_loudness_state();
-                    }
-                }
-            }
+        if let Some(declaration) = declaration {
+            let control = self.renderer.renderer_control();
+            let live = control.live.read();
+            self.pipeline
+                .stream
+                .apply_declaration(declaration, &live.placement);
         }
 
-        // Spatial metadata → bed config + per-channel events (+ OSC objects).
-        for meta in frame.metadata.iter() {
-            self.has_objects = true;
-            // Cache the sparse object↔channel declaration.
-            if !meta.object_channels.is_empty() {
-                let mut decl: Vec<(u32, usize)> = meta
-                    .object_channels
-                    .iter()
-                    .map(|oc| (oc.id, oc.channel as usize))
-                    .collect();
-                decl.sort_unstable_by_key(|&(_, channel)| channel);
-                if self.object_channels != decl {
-                    self.object_channels = decl;
-                }
-            }
-            // Plan the fixed prefix through the shared channel planner:
-            // virtualized by default, per-entry direct opt-in via the
-            // placement layout — identically to fixed-only streams. Mode is
-            // always Spatial here (an object stream cannot pass through the
-            // host), and the plan is cached on (labels, options epoch).
-            self.fixed_planner.plan_object_stream_fixed(
-                &frame.channel_labels,
-                self.source_family,
-                &self.declared_poses,
-                &self.renderer,
-                &mut self.frame_events,
-            );
-            let conf = Configuration::from(meta);
-            spatial::build_spatial_channel_events(
-                &conf,
-                self.coordinate_format,
-                &self.object_channels,
-                &meta.channel_gains,
-                self.fixed_planner.fixed_trims(),
-                meta.sample_pos,
-                meta.ramp_duration,
-                &mut self.frame_events,
-            );
-
-            // Outgoing: broadcast object positions/names to OSC clients and/or
-            // feed the in-process mpv overlay.
-            // Declarations are cached even before an OSC/overlay consumer
-            // connects, so a later Studio attachment sees stable names.
-            for upd in meta.name_updates.iter() {
-                if self.object_names.get(&upd.id).map(String::as_str) != Some(upd.name.as_str()) {
-                    self.object_names.insert(upd.id, upd.name.to_string());
-                }
-            }
-            if want_objects {
-                let mut objects = virtual_bed::build_fixed_channel_objects(
-                    &self.renderer,
-                    self.fixed_planner.fixed_labels(),
-                    self.source_family,
-                    &self.declared_poses,
-                )
-                .unwrap_or_default();
-                objects.extend(spatial::build_object_metas(
-                    &conf,
-                    self.coordinate_format,
-                    &self.object_names,
-                ));
-                if want_osc {
-                    let coord_fmt = match self.coordinate_format {
-                        RCoordinateFormat::Cartesian => 0,
-                        RCoordinateFormat::Polar => 1,
-                    };
-                    if let Some(osc) = self.osc.as_mut() {
-                        let _ = osc.send_object_frame(
-                            meta.sample_pos,
-                            meta.ramp_duration,
-                            coord_fmt,
-                            &objects,
-                        );
-                        let seconds = meta.sample_pos as f64 / sample_rate as f64;
-                        let _ = osc.send_timestamp(meta.sample_pos, seconds);
-                    }
-                }
-                if overlay_active {
-                    overlay::update_positions(overlay_positions(&objects));
-                }
-            }
-        }
-
-        if self.has_objects {
-            let (master, phantom_mode, height_generator_enabled, options_epoch, output_has_height) = {
-                let control = self.renderer.renderer_control();
-                let live = control.live.read();
-                (
-                    live.synthetic_objects_enabled,
-                    live.phantom_extract_mode,
-                    !live.object_generator_id.trim().is_empty()
-                        && !live.object_generator_id.eq_ignore_ascii_case("none"),
-                    control.options_epoch(),
-                    object_gen::layout_has_height(&control.active_topology().speaker_layout),
-                )
-            };
-            let fixed_end = frame
-                .channel_labels
-                .iter()
-                .position(|label| *label == RChannelLabel::Object)
-                .unwrap_or(frame.channel_labels.len());
-            self.publish_fixed_processing_state(
-                true,
-                &frame.channel_labels[..fixed_end],
-                options_epoch,
-                output_has_height,
-                0,
-                0,
-                master,
-                phantom_mode,
-                height_generator_enabled,
-            );
-        }
-
+        self.pipeline.prepare(
+            frame,
+            sample_pos_at_start,
+            Some(&mut self.renderer),
+            self.osc.as_mut(),
+        )?;
         self.decoded_samples += sample_count as u64;
 
-        // Number of synthesized height objects planned this frame by the
-        // object-generator stage (stays 0 unless activated in the bed-only
-        // branch below).
-        let mut synth_count = 0usize;
-        // Phantom-extraction pre-stage object count (planar primaries pulled out of
-        // the bed). Stays 0 unless enabled in the bed-only branch below.
-        let mut phantom_count = 0usize;
-
-        // Bed-only / pre-metadata frames carry no OAMD objects: render them
-        // according to the configured channel mode (host / direct / virtual),
-        // identically to the CLI's file-decode path. The embedded host has no
-        // live input device, so there is no input layout to bias the virtual
-        // poses (`None`), exactly as in the CLI's file-decode path.
-        if !self.has_objects {
-            let labels: &[RChannelLabel] = &frame.channel_labels;
-
-            // The plan depends only on the labels and a few live params, so the
-            // planner reuses it until one of them actually changes — a steady
-            // stream plans once instead of ~1200 times a second.
-            match self.bed_planner.plan(
-                &self.renderer,
-                labels,
-                self.source_family,
-                &self.declared_poses,
-            ) {
-                virtual_bed::BedPlanKind::Events => {
-                    // Spatial mode mixes per channel: direct channels route
-                    // one-hot by label, virtual channels render as VBAP
-                    // objects. The routing is applied by the planner, on change
-                    // only, to avoid per-frame churn.
-                    self.frame_events.clear();
-                    self.frame_events
-                        .extend_from_slice(self.bed_planner.events());
-                }
-                // Host: the mpv decoder declines at the spatial probe and falls
-                // back to ad_lavc, so this only runs for the discarded probe
-                // frame. Silence: no mapping for these labels. Either way emit
-                // silence so the host still advances by the frame's sample count.
-                virtual_bed::BedPlanKind::HostPassthrough | virtual_bed::BedPlanKind::Silence => {
-                    self.frame_events.clear();
-                    let n_channels = self.renderer.output_channel_count() as u32;
-                    let mut samples = self.output_pool.pop().unwrap_or_default();
-                    samples.clear();
-                    samples.resize(sample_count * n_channels as usize, 0.0);
-                    return Ok(Some(RenderedAudio {
-                        samples,
-                        n_channels,
-                        n_frames: sample_count,
-                        sample_pos: sample_pos_at_start,
-                    }));
-                }
-            }
-
-            // Borrowed from the live topology rather than `speaker_layout()`,
-            // which hands back a deep copy of the whole layout.
-            let topology = self.renderer.renderer_control().active_topology();
-            let output_layout = &topology.speaker_layout;
-            let (
-                surround_placement,
-                object_generator_id,
-                synthetic_objects_enabled,
-                phantom_extract_mode,
-                options_epoch,
-            ) = {
-                let control = self.renderer.renderer_control();
-                let live = control.live.read();
-                (
-                    live.surround_placement,
-                    live.object_generator_id.clone(),
-                    live.synthetic_objects_enabled,
-                    live.phantom_extract_mode,
-                    control.options_epoch(),
-                )
-            };
-
-            // Bed→height object generator (2D upmix): plan synthesized height
-            // objects for channel content on a height-capable layout. No-op
-            // unless a generator is selected and the gating passes. The static
-            // positions/names are planned here (before the OSC object emit); the
-            // audio for the new object channels is filled after the bed PCM is
-            // built, below — they then ride the existing object/VBAP path.
-            let ctx = object_gen::PrepareCtx {
-                input_labels: labels,
-                output_layout,
-                sample_rate,
-                surround_placement,
-            };
-            // Phantom-extraction pre-stage runs first: its planar objects occupy the
-            // channel slots right after the bed; the height-lift objects follow. The
-            // audio (and the bed reduction) is applied after the bed PCM is built.
-            let selection = channel_objects::StageSelection {
-                synthetic_objects_enabled,
-                phantom_mode: phantom_extract_mode,
-                generator_id: object_generator_id.as_str(),
-            };
-            let counts = self.stages.sync(&ctx, &selection, options_epoch);
-            phantom_count = counts.phantom;
-            synth_count = counts.synth;
-            self.publish_fixed_processing_state(
-                false,
-                labels,
-                options_epoch,
-                object_gen::layout_has_height(output_layout),
-                phantom_count,
-                synth_count,
-                synthetic_objects_enabled,
-                phantom_extract_mode,
-                selection.generator_selected(),
-            );
-            if counts.any() {
-                let control = self.renderer.renderer_control();
-                let live = control.live.read();
-                self.stages.push_params(
-                    &live.phantom_params,
-                    &live.object_generator_params,
-                    sample_rate,
-                );
-            }
-            // Phantom objects first (channels [channel_count ..]), then the height
-            // objects offset past them.
-            self.frame_events.extend(self.stages.events(channel_count));
-
-            // Outgoing: broadcast the virtual-bed channel poses + any synthesized
-            // height objects as OSC objects and/or feed the in-process mpv
-            // overlay, so they appear in Studio's 3D view and object list.
-            if want_objects {
-                // Only the display path needs the bed layout and the room
-                // ratios, so they are read (and the layout copied) here rather
-                // than on every frame — with no client attached, never.
-                let (
-                    placement,
-                    room_ratio,
-                    room_ratio_rear,
-                    room_ratio_lower,
-                    room_ratio_center_blend,
-                ) = {
-                    let control = self.renderer.renderer_control();
-                    let live = control.live.read();
-                    (
-                        virtual_bed::OwnedPlacement::from_live(&live, self.source_family),
-                        live.room_ratio,
-                        live.room_ratio_rear,
-                        live.room_ratio_lower,
-                        live.room_ratio_center_blend,
-                    )
-                };
-                let mut objects = virtual_bed::build_virtual_bed_objects(
-                    labels,
-                    &placement.policy(&self.declared_poses),
-                    Some(output_layout),
-                    room_ratio,
-                    room_ratio_rear,
-                    room_ratio_lower,
-                    room_ratio_center_blend,
-                    surround_placement,
-                )
-                .unwrap_or_default();
-                objects.extend(self.stages.object_metas());
-                if !objects.is_empty() {
-                    if want_osc {
-                        if let Some(osc) = self.osc.as_mut() {
-                            let _ = osc.send_object_frame(sample_pos_at_start, 0, 0, &objects);
-                        }
-                    }
-                    if overlay_active {
-                        overlay::update_positions(overlay_positions(&objects));
-                    }
-                }
-            }
-        }
-
-        // DRC target from the stream gain, weighted by the live DRC weight.
-        let drc_weight = self
-            .renderer
-            .renderer_control()
-            .live
-            .read()
-            .drc_weight
-            .clamp(0.0, 1.0);
-        self.drc_target_gain = if drc_weight >= 1.0 {
-            frame.drc_gain
-        } else if drc_weight <= 0.0 {
-            1.0
-        } else {
-            frame.drc_gain.powf(drc_weight)
-        };
-        self.drc_ramp_samples_remaining = frame.drc_ramp_duration;
-
-        let mut pcm_f32 = std::mem::take(&mut self.pcm_f32_buf);
-        render::fill_pcm_f32_drc(
-            &mut pcm_f32,
-            &frame.pcm,
-            channel_count,
-            &mut self.drc_gain,
-            self.drc_target_gain,
-            &mut self.drc_ramp_samples_remaining,
-        );
-
-        // Two upmix stages now that the bed PCM exists. First the phantom pre-stage
-        // subtracts correlated content from the bed *in place* and appends its
-        // planar objects; then the height lift runs on the reduced bed and appends
-        // its objects. The renderer sees one extended interleaved buffer
-        // (bed | phantom objects | height objects). Both zero-cost when inactive.
-        let (render_pcm, render_channels): (&[f32], usize) = self.stages.process_and_extend(
-            &mut pcm_f32,
-            channel_count,
-            sample_count,
-            sample_rate,
-            channel_objects::StageCounts {
-                phantom: phantom_count,
-                synth: synth_count,
-            },
-        );
-
-        // VU metering (outgoing): feed object PCM pre-render; speakers post-render.
-        // Needed for OSC metering clients and/or the in-process overlay (object
-        // circle radius tracks RMS).
-        let want_meter_osc = self.osc.as_ref().is_some_and(|o| o.has_metering_clients());
-        let want_metering = want_meter_osc || overlay_active;
-        // The overlay needs object levels even with no OSC client connected, so
-        // create the meter lazily if `enable_osc` never did (studio not running).
-        if want_metering && self.audio_meter.is_none() {
-            self.audio_meter = Some(AudioMeter::new_with_rate_atomic(
-                self.renderer.num_speakers(),
-                self.renderer.renderer_control().meter_rate_atomic(),
-            ));
-        }
-        if want_metering {
-            if let Some(meter) = self.audio_meter.as_mut() {
-                meter.update_channel_count(render_channels);
-                for chunk in render_pcm.chunks_exact(render_channels) {
-                    meter.process_objects(chunk, render_channels);
-                }
-            }
-        }
-
-        let render_started = std::time::Instant::now();
+        // This host has no live input: a stream that carries objects takes
+        // the object path on every frame.
+        let objects = self.pipeline.stream.has_objects;
         let donated = self.output_pool.pop().unwrap_or_default();
-        let rendered = self.renderer.render_frame(
-            render_pcm,
-            render_channels,
-            &self.frame_events,
+        let render = self.pipeline.render(
+            frame,
+            sample_pos_at_start,
+            objects,
+            &mut self.renderer,
+            self.osc.as_mut(),
+            &mut self.audio_meter,
             donated,
-            want_metering,
+            decode_time_ms,
+            crate::osc::MeterTimings::default(),
         )?;
-        let render_time_ms = render_started.elapsed().as_secs_f32() * 1000.0;
-        // Smoothed per-frame-equivalent for the meter bundle (see the field
-        // doc); PerfLog below keeps recording the raw per-frame figure.
-        let render_time_smoothed_ms = self.render_duty.update(
-            render_time_ms,
-            sample_count as f32 / sample_rate as f32 * 1000.0,
-        );
+        let (samples, n_channels) = match render.output {
+            FrameOutput::Rendered { samples, channels } => (samples, channels as u32),
+            FrameOutput::Silence { samples, channels } => {
+                return Ok(Some(self.silence_block(samples, channels, sample_count)));
+            }
+            // The mpv decoder declines at the spatial probe and falls back to
+            // ad_lavc, so this only runs for the discarded probe frame: emit
+            // silence so the host still advances by the frame's sample count.
+            FrameOutput::Passthrough { unused } => {
+                let channels = self.renderer.output_channel_count();
+                return Ok(Some(self.silence_block(unused, channels, sample_count)));
+            }
+        };
 
         // Dynamic object count = decoded channels minus the fixed channels.
         // Only meaningful for object-based content; plain multichannel
         // reports 0.
-        let num_beds = self.fixed_planner.fixed_labels().len();
+        let stream = &self.pipeline.stream;
+        let num_beds = stream.fixed_planner.fixed_labels().len();
         let n_objects = (channel_count as u32).saturating_sub(num_beds as u32);
-        self.last_object_count = if self.has_objects { n_objects } else { 0 };
+        self.last_object_count = if stream.has_objects { n_objects } else { 0 };
 
         // Bed composition for the host's track-info display, e.g. "LFE+11
         // objects". The renderer lays bed channels out first in PCM order (see
@@ -1347,7 +1340,7 @@ impl Engine {
         // NOT `channel_labels[bed_id]` (`bed_indices` are OAMD bed ids, a
         // different space). Reuse the buffer.
         self.last_bed_labels.clear();
-        if self.has_objects {
+        if stream.has_objects {
             for ch in 0..num_beds {
                 if let Some(&lbl) = frame.channel_labels.get(ch) {
                     self.last_bed_labels.push(lbl);
@@ -1360,121 +1353,227 @@ impl Engine {
                 frame.sample_count,
                 n_objects,
                 !frame.metadata.is_empty(),
-                render_time_ms,
+                render.render_ms,
                 decode_time_ms,
             );
         }
 
-        // Return scratch buffers for reuse next frame.
-        self.pcm_f32_buf = pcm_f32;
-        self.frame_events.clear();
-
-        // Take the geometry from the render that produced `rendered.samples`,
-        // never from a fresh output_channel_count(): that re-reads the live
-        // output mode, which the OSC listener flips on its own thread. A switch
-        // to speakers landing between render_frame() above and this line used to
-        // publish `n_channels = 12` alongside 2-channel binaural samples,
-        // breaking RenderedAudio's `samples.len() == n_frames * n_channels`
-        // contract. The FFI's capacity check passed (it measures the real
-        // buffer), so the host trusted the metadata and copied n_frames * 12
-        // floats out of a buffer holding a sixth of that — adjacent heap read
-        // past the end and played as PCM. Intermittent, and only on the way back
-        // to speakers, because that is the direction where the count grows.
-        let n_channels = rendered.n_channels as u32;
-
-        if want_metering {
-            let frame_duration_ms = sample_count as f32 / sample_rate as f32 * 1000.0;
-            let drc_gain = self.drc_gain;
-            if let Some(meter) = self.audio_meter.as_mut() {
-                // Binaural modes meter the stereo output on the dedicated ear
-                // accumulators; the cascaded mode additionally meters the
-                // virtual buses on the speaker accumulators, so Studio's
-                // speaker gauges show the virtual room.
-                if let Some((bus, n_bus)) = self.renderer.virtual_bus() {
-                    meter.process_speakers(bus, n_bus);
-                    meter.process_ears(&rendered.samples);
-                } else if self.renderer.output_is_binaural() {
-                    meter.process_ears(&rendered.samples);
-                } else {
-                    meter.process_speakers(&rendered.samples, n_channels as usize);
-                }
-                meter.process_object_bands(&rendered.object_band_sq);
-                if let Some(snapshot) = meter.poll() {
-                    if overlay_active {
-                        let levels: Vec<(u32, f64)> = snapshot
-                            .object_levels
-                            .iter()
-                            .map(|&(id, _peak, rms)| (id, rms as f64))
-                            .collect();
-                        overlay::update_levels(&levels);
-                    }
-                    if let Some(osc) = self.osc.as_ref().filter(|_| want_meter_osc) {
-                        // Latency/resample/adaptive args are output-stage specific
-                        // and absent in the embedded host → None.
-                        let _ = osc.send_meter_bundle(
-                            &snapshot,
-                            &rendered.object_gains,
-                            &rendered.object_band_gains,
-                            rendered.object_test_position,
-                            rendered.object_test_level,
-                            Some(decode_time_ms),
-                            Some(rendered.crossover_time_ms),
-                            Some(render_time_smoothed_ms),
-                            None,
-                            Some(frame_duration_ms),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(drc_gain),
-                        );
-                    }
-                }
-            }
-        }
-
-        // The FFI hands (n_frames, n_channels) to the host, which sizes its copy
-        // from them and trusts them — so a violation here is not a wrong number,
-        // it is the host reading past the end of this buffer. Cheap enough to
-        // state, and free in release.
-        debug_assert_eq!(
-            rendered.samples.len(),
-            sample_count * n_channels as usize,
-            "RenderedAudio contract: samples.len() must equal n_frames * n_channels"
-        );
         Ok(Some(RenderedAudio {
-            samples: rendered.samples,
+            samples,
             n_channels,
             n_frames: sample_count,
             sample_pos: sample_pos_at_start,
+            input_pts_us: None,
         }))
+    }
+
+    /// A block of silence `channels` wide for a frame of `sample_count`,
+    /// written into `samples`.
+    fn silence_block(
+        &self,
+        mut samples: Vec<f32>,
+        channels: usize,
+        sample_count: usize,
+    ) -> RenderedAudio {
+        samples.clear();
+        samples.resize(sample_count * channels, 0.0);
+        RenderedAudio {
+            samples,
+            n_channels: channels as u32,
+            n_frames: sample_count,
+            sample_pos: self.decoded_samples - sample_count as u64,
+            input_pts_us: None,
+        }
     }
 }
 
-/// Map the per-frame object metas to overlay positions `(id, x, y, z)`. The id
-/// is the object's frame index, matching the `/omniphony/object/{id}` OSC id, so
-/// the overlay keys colours and motion trails exactly as Studio did. Polar
-/// objects carry no front-view cartesian position, so they sit at the origin —
-/// identical to the previous Studio→Lua path, which zeroed non-cartesian
-/// positions before sending them to the overlay.
-fn overlay_positions(objects: &[ObjectMeta]) -> Vec<(u32, f64, f64, f64, String)> {
-    objects
-        .iter()
-        .enumerate()
-        .map(|(idx, o)| {
-            let (x, y, z) = if o.coord_mode.eq_ignore_ascii_case("cartesian") {
-                (o.x as f64, o.y as f64, o.z as f64)
-            } else {
-                (0.0, 0.0, 0.0)
-            };
-            (idx as u32, x, y, z, o.name.clone())
+/// Audio the decode thread may hold before the renderer waits for a packet.
+/// Its job is to let the thread run ahead through cheap packets so a dear one
+/// (a major sync) does not stall the renderer. Counted in audio, not packets,
+/// because a packet is 0.8 ms of TrueHD but 32 ms of E-AC-3: this is 36 TrueHD
+/// access units, capped at [`PIPELINE_DEPTH`], and one E-AC-3 syncframe - never
+/// fewer than one packet, or nothing would overlap.
+const PIPELINE_LAG_SECS: f64 = 0.030;
+
+/// Packets the decode thread may hold at most, whatever their length. On a
+/// real TrueHD Atmos track 2, 32 and 128 came within about 5% of each other.
+const PIPELINE_DEPTH: usize = 32;
+
+struct DecodeJob {
+    data: Vec<u8>,
+    transport: RInputTransport,
+    data_type: u8,
+    /// First packet since the thread started or the engine forgot the bridge's
+    /// declaration: capture it with this one whatever its labels.
+    fresh: bool,
+    /// The host's timestamp for this packet, handed back with its audio.
+    pts: Option<i64>,
+}
+
+struct DecodeDone {
+    /// The job's buffer, handed back to copy a later packet into.
+    data: Vec<u8>,
+    /// With the bridge's declaration read under the same lock as the decode,
+    /// when the thread's tracker says a frame needs it.
+    packet: DecodedPacket,
+    /// The job's [`DecodeJob::pts`].
+    pts: Option<i64>,
+}
+
+/// The bridge's decode, one packet at a time, on a thread of its own.
+struct DecodeWorker {
+    jobs: Option<mpsc::SyncSender<DecodeJob>>,
+    done: mpsc::Receiver<DecodeDone>,
+    in_flight: usize,
+    depth: usize,
+    /// Audio per packet handed back, averaged over about the last `depth`
+    /// of them: it turns [`PIPELINE_LAG_SECS`] into packets. Recent ones, so
+    /// a host feeding fixed-size chunks gets a quiet passage's chunks measured
+    /// by their own length. Zero until one has had any audio.
+    packet_secs: f64,
+    /// Buffers of returned jobs, so a packet is copied, not allocated.
+    spare: Vec<Vec<u8>>,
+    /// The next packet is the first since the thread started or a reset.
+    fresh: bool,
+    /// The live option turned the thread off with packets in flight: hold
+    /// none, so the queue empties a packet per call and the engine can go
+    /// back to decoding inline.
+    winding_down: bool,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DecodeWorker {
+    fn spawn(
+        bridge: &Arc<Mutex<LoadedBridge>>,
+        has_objects: &Arc<AtomicBool>,
+        depth: usize,
+    ) -> Result<Self> {
+        let (jobs, job_rx) = mpsc::sync_channel::<DecodeJob>(depth + 1);
+        let (done_tx, done) = mpsc::channel::<DecodeDone>();
+        let bridge = Arc::clone(bridge);
+        let has_objects = Arc::clone(has_objects);
+        let thread = std::thread::Builder::new()
+            .name("orender-decode".into())
+            .spawn(move || {
+                // Read the declaration under the decode's lock, with the packet
+                // it follows: by the time the engine renders it, the bridge is
+                // on later packets.
+                let mut declarations = DeclarationTracker::new();
+                for job in job_rx {
+                    if job.fresh {
+                        declarations.forget();
+                    }
+                    let mut guard = bridge.lock().unwrap_or_else(|e| e.into_inner());
+                    let packet = decode_packet(
+                        &mut guard.bridge,
+                        &job.data,
+                        job.transport,
+                        job.data_type,
+                        &mut declarations,
+                    );
+                    has_objects.store(guard.bridge.has_objects(), Ordering::Relaxed);
+                    drop(guard);
+                    if done_tx
+                        .send(DecodeDone {
+                            data: job.data,
+                            packet,
+                            pts: job.pts,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            })
+            .map_err(|e| anyhow!("cannot start the decode thread: {e}"))?;
+        Ok(Self {
+            jobs: Some(jobs),
+            done,
+            in_flight: 0,
+            depth,
+            packet_secs: 0.0,
+            spare: Vec::new(),
+            fresh: true,
+            winding_down: false,
+            thread: Some(thread),
         })
-        .collect()
+    }
+
+    /// Packets that may be in flight: as many as make up [`PIPELINE_LAG_SECS`]
+    /// at the length of those returned lately, at least one, at most `depth`.
+    /// One until a packet has returned any audio to measure by; none while
+    /// [`winding_down`](Self::winding_down).
+    fn limit(&self) -> usize {
+        if self.winding_down {
+            return 0;
+        }
+        if self.packet_secs <= 0.0 {
+            return 1;
+        }
+        ((PIPELINE_LAG_SECS / self.packet_secs).ceil() as usize).clamp(1, self.depth)
+    }
+
+    fn submit(
+        &mut self,
+        data: &[u8],
+        transport: RInputTransport,
+        data_type: u8,
+        pts: Option<i64>,
+    ) -> Result<()> {
+        let fresh = std::mem::take(&mut self.fresh);
+        let mut buf = self.spare.pop().unwrap_or_default();
+        buf.clear();
+        buf.extend_from_slice(data);
+        self.jobs
+            .as_ref()
+            .ok_or_else(|| anyhow!("decode thread closed"))?
+            .send(DecodeJob {
+                data: buf,
+                transport,
+                data_type,
+                fresh,
+                pts,
+            })
+            .map_err(|_| anyhow!("decode thread stopped"))?;
+        self.in_flight += 1;
+        Ok(())
+    }
+
+    fn wait(&mut self) -> Result<DecodeDone> {
+        let done = self
+            .done
+            .recv()
+            .map_err(|_| anyhow!("decode thread stopped"))?;
+        Ok(self.returned(done))
+    }
+
+    fn poll(&mut self) -> Result<Option<DecodeDone>> {
+        match self.done.try_recv() {
+            Ok(done) => Ok(Some(self.returned(done))),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => bail!("decode thread stopped"),
+        }
+    }
+
+    /// Count a packet out: its audio towards the average, its buffer to reuse.
+    fn returned(&mut self, mut done: DecodeDone) -> DecodeDone {
+        self.in_flight -= 1;
+        let secs = done.packet.duration_secs();
+        self.packet_secs = if self.packet_secs > 0.0 {
+            self.packet_secs + (secs - self.packet_secs) / self.depth as f64
+        } else {
+            secs
+        };
+        self.spare.push(std::mem::take(&mut done.data));
+        done
+    }
+}
+
+impl Drop for DecodeWorker {
+    fn drop(&mut self) {
+        drop(self.jobs.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }

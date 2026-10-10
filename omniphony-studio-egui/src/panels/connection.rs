@@ -9,7 +9,10 @@ use egui::Color32;
 use crate::app::StudioSpike;
 use crate::host::commands::app as app_cmd;
 use crate::host::commands::mpv_config::MpvOrenderState;
+use crate::host::commands::orender::RendererMismatch;
+use crate::host::services::watchdog::EngineStartProgress;
 use crate::i18n::{t, tf};
+use crate::model::app_state::BridgeProblemKind;
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
 
@@ -106,10 +109,10 @@ impl StudioSpike {
             .map(str::to_owned)
     }
 
-    /// Whether the renderer answering is one this Studio did not start
-    /// (`rendererIsForeign`): `None` while either path is unknown, and never
-    /// true for an embedded producer, which was never ours to start.
-    fn renderer_is_foreign(&self) -> Option<(String, String)> {
+    /// How the renderer answering differs from the one this Studio would
+    /// launch (`rendererIsForeign`, plus a rebuilt binary): `None` while
+    /// either path is unknown, and never for an embedded producer.
+    fn renderer_mismatch(&self) -> Option<RendererMismatch> {
         let live = self.host.read();
         let embedded = live
             .app
@@ -118,7 +121,7 @@ impl StudioSpike {
             .and_then(|c| c.get("variant"))
             .and_then(|v| v.as_str())
             == Some("embedded");
-        foreign_renderer(
+        crate::host::commands::orender::renderer_mismatch(
             embedded,
             live.app.render_executable.as_deref(),
             self.expected_orender_path.as_deref(),
@@ -128,59 +131,166 @@ impl StudioSpike {
     /// The three things that can be wrong with a connection, in the order the
     /// web shows them.
     fn connection_banners(&mut self, ui: &mut egui::Ui) {
-        let bridge_error = {
-            let live = self.host.read();
-            live.app
-                .render_bridge_error
-                .as_deref()
-                .map(str::trim)
-                .filter(|e| !e.is_empty())
-                .map(str::to_owned)
-        };
+        let bridge_problem = self.host.read().app.bridge_problem();
         // While no renderer is connected, say how to bring one up — but not
-        // when there is a more specific banner to show.
-        if bridge_error.is_none() && self.osc_state() != OscState::Connected {
+        // when there is a more specific banner to show. This is what a first
+        // run sees, so it speaks of the audio engine rather than of orender,
+        // and offers the one action that fixes it where Studio can take it:
+        // starting the engine on this machine.
+        if bridge_problem.is_none() && self.osc_state() != OscState::Connected {
+            let can_start = crate::host::capabilities::ActionPolicy::of(&self.host).manage_process;
+            self.host_operations.poll();
+            let pending = self.host_operations.pending();
+            // What the watchdog is about to do, or has just done: a launch
+            // under way here is a start as much as one it made.
+            let progress_shows_launch = self.host_operations.launching();
+            let progress = if !can_start {
+                EngineStartProgress::None
+            } else if progress_shows_launch {
+                EngineStartProgress::Starting
+            } else {
+                EngineStartProgress::of(&self.host)
+            };
+            if let Some(after) = progress.repaint_after() {
+                ui.ctx().request_repaint_after(after);
+            }
+            let mut start = false;
             widgets::banner_with(
                 ui,
-                widgets::Severity::Error,
-                "No renderer connected.",
+                // Not an error on a first run: nothing has failed yet.
+                widgets::Severity::Warning,
+                t("status.noEngine.title"),
                 |ui| {
                     ui.label(
-                        egui::RichText::new("Run orender to create a SPDIF audio input, or launch")
-                            .size(theme::FONT_SIZE_SMALL)
-                            .color(theme::TEXT_MUTED),
+                        egui::RichText::new(t(if can_start {
+                            "status.noEngine.body"
+                        } else {
+                            "status.noEngine.bodyRemote"
+                        }))
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
                     );
-                    // The web says this with an anchor inside the sentence;
-                    // egui has no inline links, so the link is its own line.
-                    ui.hyperlink_to(
-                        egui::RichText::new("mpv-omniphony")
+                    ui.horizontal_wrapped(|ui| {
+                        if can_start {
+                            let (text, shown) = match progress {
+                                EngineStartProgress::None => {
+                                    ("status.noEngine.start", widgets::ButtonProgress::Idle)
+                                }
+                                EngineStartProgress::Countdown { fraction } => (
+                                    "status.noEngine.start",
+                                    widgets::ButtonProgress::Fill(fraction),
+                                ),
+                                EngineStartProgress::Starting => {
+                                    ("status.noEngine.starting", widgets::ButtonProgress::Busy)
+                                }
+                            };
+                            // Clicking during the countdown starts the
+                            // engine at once; a busy button takes no click.
+                            // Another operation under way holds it, as before.
+                            start = ui
+                                .add_enabled_ui(!pending, |ui| {
+                                    widgets::progress_button(
+                                        ui,
+                                        t(text),
+                                        &[
+                                            t("status.noEngine.start"),
+                                            t("status.noEngine.starting"),
+                                        ],
+                                        shown,
+                                    )
+                                })
+                                .inner
+                                .clicked();
+                            // A launch shows on the button itself.
+                            if pending && !progress_shows_launch {
+                                ui.spinner();
+                            }
+                        }
+                        ui.hyperlink_to(
+                            egui::RichText::new(t("status.noEngine.getPlayer"))
+                                .size(theme::FONT_SIZE_SMALL)
+                                .color(theme::ACCENT),
+                            MPV_RELEASES,
+                        );
+                    });
+                    if let Some(error) = &self.host_operations.error {
+                        ui.label(
+                            egui::RichText::new(error)
+                                .size(theme::FONT_SIZE_SMALL)
+                                .color(theme::WARN),
+                        );
+                    }
+                    // The watchdog tried on its own and failed: say why and
+                    // where the engine's log is, rather than only in Studio's
+                    // log, which a first-time user never opens.
+                    if let Some((error, log)) =
+                        crate::host::commands::orender::autostart_failure(&self.host)
+                    {
+                        ui.label(
+                            egui::RichText::new(tf(
+                                "status.noEngine.autostartFailed",
+                                &[("error", &error), ("log", &log.display().to_string())],
+                            ))
                             .size(theme::FONT_SIZE_SMALL)
-                            .color(theme::ACCENT),
-                        MPV_RELEASES,
-                    );
-                    ui.label(
-                        egui::RichText::new("which embeds its own renderer.")
-                            .size(theme::FONT_SIZE_SMALL)
-                            .color(theme::TEXT_MUTED),
-                    );
+                            .color(theme::WARN),
+                        );
+                    }
                 },
             );
+            if start {
+                self.host_operations.request(
+                    &self.host,
+                    crate::host::services::operations::Action::Launch,
+                );
+            }
         }
         // The renderer came up without its decoder bridge: it is running, and
-        // it has no spatial audio. The underlying error is the useful part.
-        if let Some(error) = bridge_error {
-            widgets::banner(
-                ui,
-                widgets::Severity::Error,
-                t("status.bridgeErrorTitle"),
-                Some(&error),
-            );
+        // it decodes no film soundtrack. Finding none is the standby
+        // renderer's normal state while the player, which has its own bridge,
+        // plays films: a warning. A bridge that was asked for or found and
+        // would not load is something to fix: an error.
+        if let Some(problem) = bridge_problem {
+            let (severity, title, hint) = match problem.kind {
+                BridgeProblemKind::NoDecoder => (
+                    widgets::Severity::Warning,
+                    "status.bridgeMissingTitle",
+                    "status.bridgeMissingHint",
+                ),
+                BridgeProblemKind::LoadFailed => (
+                    widgets::Severity::Error,
+                    "status.bridgeErrorTitle",
+                    "status.bridgeErrorHint",
+                ),
+            };
+            widgets::banner_with(ui, severity, t(title), |ui| {
+                // What to do first, in the user's words; the engine's own
+                // report (search paths, config keys) after it.
+                ui.label(
+                    egui::RichText::new(tf(
+                        hint,
+                        &[
+                            ("section", t("section.audioInput")),
+                            ("field", t("input.bridgeBinary")),
+                        ],
+                    ))
+                    .size(theme::FONT_SIZE_SMALL),
+                );
+                ui.label(
+                    egui::RichText::new(&problem.report)
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                );
+            });
         }
-        // Attached to someone else's renderer: the connection looks perfectly
-        // healthy, so this has to be said out loud or every control it does not
-        // implement just vanishes.
-        if let Some((running, expected)) = self.renderer_is_foreign() {
-            widgets::banner(
+        match self.renderer_mismatch() {
+            None => {}
+            // Ours, but its binary was rebuilt under it: still the older
+            // build, until a restart loads the new one.
+            Some(RendererMismatch::Replaced { path }) => self.replaced_renderer_banner(ui, &path),
+            // Attached to someone else's renderer: the connection looks
+            // perfectly healthy, so this has to be said out loud or every
+            // control it does not implement just vanishes.
+            Some(RendererMismatch::Foreign { running, expected }) => widgets::banner(
                 ui,
                 widgets::Severity::Warning,
                 t("status.foreignRendererTitle"),
@@ -188,7 +298,57 @@ impl StudioSpike {
                     "status.foreignRendererDetail",
                     &[("running", &running), ("expected", &expected)],
                 )),
-            );
+            ),
+        }
+    }
+
+    /// The renderer runs an older build of the executable this Studio would
+    /// launch. Offers the restart that fixes it when Studio manages that
+    /// renderer: the one it launched, or the OS service.
+    fn replaced_renderer_banner(&mut self, ui: &mut egui::Ui, path: &str) {
+        let restart = self.host_operations.restart_action(&self.host);
+        self.host_operations.poll();
+        let pending = self.host_operations.pending();
+        let mut clicked = false;
+        widgets::banner_with(
+            ui,
+            widgets::Severity::Warning,
+            t("status.replacedRendererTitle"),
+            |ui| {
+                ui.label(
+                    egui::RichText::new(tf("status.replacedRendererDetail", &[("path", path)]))
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                );
+                // The spinner outlives the button: between the old
+                // renderer's exit and the new one's launch there is, for a
+                // frame, no renderer of ours to restart.
+                if restart.is_some() || pending {
+                    ui.horizontal_wrapped(|ui| {
+                        if restart.is_some() {
+                            clicked = ui
+                                .add_enabled(
+                                    !pending,
+                                    egui::Button::new(t("status.replacedRendererRestart")),
+                                )
+                                .clicked();
+                        }
+                        if pending {
+                            ui.spinner();
+                        }
+                    });
+                }
+                if let Some(error) = &self.host_operations.error {
+                    ui.label(
+                        egui::RichText::new(error)
+                            .size(theme::FONT_SIZE_SMALL)
+                            .color(theme::WARN),
+                    );
+                }
+            },
+        );
+        if let Some(action) = restart.filter(|_| clicked) {
+            self.host_operations.request(&self.host, action);
         }
     }
 }
@@ -417,44 +577,5 @@ impl StudioSpike {
                 port: self.osc_port,
             },
         );
-    }
-}
-
-/// `rendererIsForeign`, as a rule on its own: unknown while either path is
-/// missing, never true for an embedded producer — which was never ours to
-/// start — and true only when the two paths disagree.
-fn foreign_renderer(
-    embedded: bool,
-    running: Option<&str>,
-    expected: Option<&str>,
-) -> Option<(String, String)> {
-    if embedded {
-        return None;
-    }
-    let running = running?.trim();
-    let expected = expected?.trim();
-    if running.is_empty() || expected.is_empty() || running == expected {
-        return None;
-    }
-    Some((running.to_owned(), expected.to_owned()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_foreign_renderer_is_only_claimed_when_both_paths_are_known_and_differ() {
-        let ours = Some("/usr/bin/orender");
-        let theirs = Some("/opt/other/orender");
-        assert!(foreign_renderer(false, theirs, ours).is_some());
-        assert!(foreign_renderer(false, ours, ours).is_none());
-        // Half the answer is no answer: an unknown path must not be reported
-        // as a mismatch.
-        assert!(foreign_renderer(false, None, ours).is_none());
-        assert!(foreign_renderer(false, theirs, None).is_none());
-        assert!(foreign_renderer(false, Some("  "), ours).is_none());
-        // An embedded producer is never one this Studio started.
-        assert!(foreign_renderer(true, theirs, ours).is_none());
     }
 }

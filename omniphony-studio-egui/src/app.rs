@@ -38,6 +38,9 @@ pub struct StudioSpike {
     pub(crate) args: Args,
     pub(crate) osc_stats: Arc<OscStats>,
     pub(crate) camera: OrbitCamera,
+    /// The camera is still gliding (or being dragged): its resting place is
+    /// what the preferences keep, not every frame on the way.
+    pub(crate) camera_moving: bool,
     pub(crate) selection: Selection,
     pub(crate) settings: ViewSettings,
     pub(crate) frame_stats: FrameStats,
@@ -63,8 +66,15 @@ pub struct StudioSpike {
     pub(crate) prefs_writer: crate::host::json_store::Writer<Prefs>,
     /// Log overlay: expanded state and the filter box's text.
     pub(crate) log_expanded: bool,
+    /// "Follow the sound": the scene shows each block when it is heard. View
+    /// state, kept in the prefs; the core holds the stream (`osc::playout`).
+    pub(crate) follow_sound: bool,
+    /// The full control board (`true`) or the Essentials view: what most
+    /// listeners need, the rest behind the switch. View state, kept in the
+    /// prefs; see `panels::essentials`.
+    pub(crate) advanced: bool,
     pub(crate) log_filter: String,
-    /// OSC form fields (`osc_config.json`, shared with the Tauri Studio).
+    /// OSC form fields (`osc_config.json`, the file the Tauri Studio wrote too).
     pub(crate) osc_host: String,
     pub(crate) osc_port: u16,
     /// `auto_start_renderer` / `keep_renderer_alive_on_quit`, as last saved:
@@ -110,6 +120,9 @@ pub struct StudioSpike {
     pub(crate) pinna_depth: f32,
     pub(crate) prtf_depth: f32,
     pub(crate) prtf_freq_scale: f32,
+    /// The renderer's last echo of the parametric settings above, so a new
+    /// one (connect, profile switch, reload) is adopted once.
+    pub(crate) hrir_params_seen: Option<serde_json::Value>,
     /// Target latency being typed, until Apply.
     pub(crate) latency_target_edit: Option<f64>,
     /// Adaptive-controller fields edited but not yet applied.
@@ -214,6 +227,12 @@ pub struct StudioSpike {
     /// A close was asked for while a run was going; the run itself is the
     /// core's.
     pub(crate) auto_tune_quit_asked: bool,
+    /// The prompt held up by a close while the renderer has unsaved edits.
+    pub(crate) unsaved_quit: crate::panels::unsaved_quit::UnsavedQuit,
+    /// Why the last "save and quit" did not save, shown in the prompt.
+    pub(crate) unsaved_quit_error: Option<String>,
+    /// Reload was pressed with unsaved edits: the confirmation is open.
+    pub(crate) reload_confirm_open: bool,
     /// The host's own `SharedState`, kept for the whole session because the
     /// watchdog and the tracked child live in it: a fresh one per call would
     /// forget the renderer it just started.
@@ -320,6 +339,9 @@ impl StudioSpike {
                 listen_port: startup.listen_port,
                 register: None,
                 metering: osc_config.osc_metering_enabled,
+                // The prefs' choice follows in `restore_view`, before the
+                // first frame.
+                playout_sync: true,
             },
         )?;
         log::info!("[osc] listening on udp/{port}");
@@ -345,8 +367,8 @@ impl StudioSpike {
         let mut layout = prefs.side_panels;
         layout.clamp_all(cc.egui_ctx.content_rect().width().max(800.0));
         prefs.side_panels = layout;
-        // The OSC form starts from the same file the Tauri Studio writes, so
-        // both hosts point at the same renderer by default.
+        // The OSC form starts from the same file the Tauri Studio wrote, so a
+        // user coming from it keeps pointing at the same renderer.
         let (osc_host, osc_port) = startup
             .target
             .clone()
@@ -372,9 +394,15 @@ impl StudioSpike {
             control_for_host,
             config_dir.clone(),
             port,
+            crate::host::commands::HostPaths::bundled().with_layouts_dir(args.layouts_dir.clone()),
             osc_stats.clone(),
             waker.clone(),
         ));
+        // A shipped Studio hands its engine library to mpv; file copies, so
+        // off the first paint.
+        let _ = crate::host::services::jobs::run(&host, || {
+            crate::host::engine_deploy::deploy(crate::host::bundle::resource_dir().as_deref())
+        });
         if startup.passive {
             crate::host::commands::app::suppress_autostart(&host);
         }
@@ -396,13 +424,14 @@ impl StudioSpike {
         // nudges it, so an idle Studio wakes for nothing.
         let services = crate::host::services::spawn(host.clone(), repaint, clock)?;
 
-        Ok(Self {
+        let mut app = Self {
             listener,
             services,
             synthetic,
             args,
             osc_stats,
             camera: OrbitCamera::new(),
+            camera_moving: false,
             selection: Selection::default(),
             settings,
             frame_stats: FrameStats::new(),
@@ -423,6 +452,8 @@ impl StudioSpike {
             prefs_dirty: false,
             prefs_writer,
             log_expanded: false,
+            follow_sound: true,
+            advanced: false,
             log_filter: String::new(),
             osc_host,
             osc_port,
@@ -451,6 +482,7 @@ impl StudioSpike {
             pinna_depth: 100.0,
             prtf_depth: 100.0,
             prtf_freq_scale: 100.0,
+            hrir_params_seen: None,
             latency_target_edit: None,
             adaptive_edits: Default::default(),
             file_picker: None,
@@ -503,7 +535,12 @@ impl StudioSpike {
             sofa_browser: None,
             script_editor: None,
             auto_tune_quit_asked: false,
-        })
+            unsaved_quit: Default::default(),
+            unsaved_quit_error: None,
+            reload_confirm_open: false,
+        };
+        app.restore_view(&cc.egui_ctx);
+        Ok(app)
     }
 
     /// Head pose: only while the renderer is in binaural output mode; the
@@ -511,13 +548,7 @@ impl StudioSpike {
     fn ease_head_pose(&mut self, ctx: &egui::Context) {
         let target = {
             let live = self.host.read();
-            let binaural = live
-                .app
-                .binaural
-                .as_ref()
-                .and_then(|b| b.get("outputMode"))
-                .and_then(|m| m.as_str())
-                == Some("binaural");
+            let binaural = live.app.render_path().is_binaural();
             match (binaural, live.head_pose) {
                 (true, Some([w, x, y, z])) => Quat::from_xyzw(-y, -z, -x, w).normalize(),
                 _ => Quat::IDENTITY,
@@ -611,9 +642,11 @@ impl StudioSpike {
         if !ui.ctx().text_edit_focused() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.selection = Selection::default();
         }
-        if self.camera.update() {
+        let gliding = self.camera.update();
+        if gliding {
             ui.ctx().request_repaint();
         }
+        self.camera_moving = gliding || ui.ctx().input(|i| i.pointer.any_down());
         self.ease_head_pose(ui.ctx());
 
         if response.clicked()
@@ -814,6 +847,7 @@ impl StudioSpike {
             self.profiles_row(ui);
             self.updates_panel(ui);
             self.language_row(ui);
+            self.view_mode_row(ui);
             // What comes *in* sits on the left and what goes *out* on the
             // right, as in the web: the objects are the program arriving, so
             // they follow the input sections here, and their two editors take
@@ -834,11 +868,15 @@ impl StudioSpike {
                         "overlay-left-scroll",
                         Some(height),
                         |ui| {
-                            self.osc_section(ui);
-                            self.audio_input_section(ui);
-                            self.sources_2d_section(ui);
-                            self.room_geometry_section(ui);
-                            self.drc_section(ui);
+                            // The Essentials view keeps what a listener
+                            // needs (`panels::essentials`).
+                            if self.advanced {
+                                self.osc_section(ui);
+                                self.audio_input_section(ui);
+                                self.sources_2d_section(ui);
+                                self.room_geometry_section(ui);
+                                self.drc_section(ui);
+                            }
                             self.objects_section(ui);
                         },
                     );
@@ -860,10 +898,16 @@ impl StudioSpike {
                         Some(height),
                         |ui| {
                             self.audio_output_section(ui);
-                            self.latency_section(ui);
-                            self.diagnostics_section(ui);
+                            if self.advanced {
+                                self.latency_section(ui);
+                                self.diagnostics_section(ui);
+                            }
                             self.master_section(ui);
-                            self.renderer_section(ui);
+                            if self.advanced {
+                                self.renderer_section(ui);
+                            } else {
+                                self.listening_section(ui);
+                            }
                             self.headphones_section(ui);
                             self.speakers_section(ui);
                         },
@@ -871,6 +915,8 @@ impl StudioSpike {
                 });
         });
         self.log_overlay(ctx, &layout);
+        self.path_badge(ctx, &mut layout);
+        self.config_banner(ctx, &layout);
         self.scene_fx_bar(ctx);
         self.save_footer(ctx);
         self.band_cursor(ctx, &layout);
@@ -883,6 +929,8 @@ impl StudioSpike {
         self.script_editor_modal(ctx);
         self.auto_tune_modal(ctx);
         self.auto_tune_quit_guard(ctx);
+        self.unsaved_quit_modal(ctx);
+        self.reload_confirm_modal(ctx);
         if !layout_eq(&layout, &self.layout) {
             self.layout = layout;
             self.prefs.side_panels = layout;
@@ -902,6 +950,7 @@ impl StudioSpike {
             self.prefs.display = next;
             self.mark_prefs_dirty();
         }
+        self.remember_view(ctx, self.camera_moving);
     }
 
     /// Where the two side panels sit, in framebuffer pixels, so the renderer

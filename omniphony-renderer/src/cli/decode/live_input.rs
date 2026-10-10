@@ -2,24 +2,29 @@ use super::decoder_thread::DecoderMessage;
 #[cfg(target_os = "linux")]
 use super::decoder_thread::{DecodedAudioData, DecodedSource};
 #[cfg(target_os = "linux")]
+use super::live_bridge::{LiveBridgeDiag, spawn_live_bridge_decoder};
+#[cfg(target_os = "linux")]
 use super::output::I32_PCM_FULL_SCALE;
 use anyhow::Result;
 #[cfg(target_os = "linux")]
-use audio_input::bridge::{BridgeDecodeDiag, LiveBridgeIngestRuntime, spawn_bridge_decode_worker};
+use audio_input::RequestedAudioInputConfig;
+#[cfg(target_os = "linux")]
+use audio_input::bridge::LiveBridgeIngestRuntime;
 #[cfg(target_os = "linux")]
 use audio_input::pipewire::{
     PipewireBridgeBackendKind, PipewireBridgeStreamConfig, run_pipewire_bridge_input_stream,
 };
-#[cfg(target_os = "linux")]
-use audio_input::{InputBackend, RequestedAudioInputConfig};
 use audio_input::{InputClockMode, InputControl, InputMode};
 use audio_output::AudioControl;
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::PipewireBufferConfig;
 #[cfg(target_os = "linux")]
-use bridge_api::{FormatBridgeBox, RChannelLabel, RDecodedFrame};
+use bridge_api::{RChannelLabel, RDecodedFrame};
+use orender_engine::bridge_loader::BridgeLibs;
 #[cfg(target_os = "linux")]
-use orender_engine::bridge_loader::install_bridge_host_log_sink;
+use orender_engine::bridge_loader::{configure_presentation, open_bridges};
+#[cfg(target_os = "linux")]
+use orender_engine::bridge_set::BridgeSet;
 #[cfg(target_os = "linux")]
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -43,7 +48,7 @@ const LIVE_BRIDGE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct LiveBridgeRuntimeConfig {
-    pub lib: bridge_api::BridgeLibRef,
+    pub libs: BridgeLibs,
     pub presentation: String,
     pub clock_mode: InputClockMode,
     pub requested_drc_mode: Arc<std::sync::RwLock<String>>,
@@ -148,8 +153,10 @@ pub fn spawn_live_input_manager(
                 #[cfg(target_os = "linux")]
                 if input_control.requested_snapshot().mode != InputMode::Bridge
                     && current_capture.as_ref().is_some_and(|capture| {
-                        requested_live_input_latency_ms(&audio_control)
-                            != Some(capture.config.target_latency_ms)
+                        capture_latency_is_stale(
+                            audio_control.requested_latency_target_ms(),
+                            capture.config.target_latency_ms,
+                        )
                     })
                 {
                     reconcile_live_input(
@@ -295,14 +302,12 @@ fn reconcile_live_input(
                     }
                 }
 
-                input_control.set_input_state(
-                    InputMode::Pipewire,
-                    Some(InputBackend::Pipewire),
-                    Some(config.channels),
-                    Some(config.sample_rate_hz),
-                    Some(config.node_name.clone()),
-                    Some(config.node_description.clone()),
-                    Some("pipewire-iec61937".to_string()),
+                publish_pipewire_capture_state(
+                    input_control,
+                    &config.node_name,
+                    &config.node_description,
+                    config.channels,
+                    config.sample_rate_hz,
                 );
                 log::info!(
                     "Live input active: mode=pipewire backend=pipewire node={} channels={} rate={}Hz",
@@ -331,6 +336,33 @@ fn reconcile_live_input(
     }
 }
 
+/// Publish the applied input state of a running PipeWire capture: the sink's
+/// node and the carrier it was opened with.
+///
+/// This is what the applied state reads for as long as the capture is up,
+/// whatever the sink's client negotiates (a bitstream or linear PCM) and
+/// whichever producer the rendered frames come from. The handler accepts the
+/// sink's PCM on the strength of this mode (`DecodeHandler::should_accept_source`)
+/// and does not rewrite the state from a decoded frame.
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn publish_pipewire_capture_state(
+    input_control: &InputControl,
+    node_name: &str,
+    node_description: &str,
+    channels: u16,
+    sample_rate_hz: u32,
+) {
+    input_control.set_input_state(
+        InputMode::Pipewire,
+        Some(audio_input::InputBackend::Pipewire),
+        Some(channels),
+        Some(sample_rate_hz),
+        Some(node_name.to_string()),
+        Some(node_description.to_string()),
+        Some("pipewire-iec61937".to_string()),
+    );
+}
+
 // Requested config resolution.
 
 #[cfg(target_os = "linux")]
@@ -353,11 +385,8 @@ fn resolve_pipewire_bridge_config(
     audio_control: &AudioControl,
     bridge_runtime: &LiveBridgeRuntimeConfig,
 ) -> Result<PipewireBridgeInputConfig> {
-    let backend = requested.backend.unwrap_or(InputBackend::Pipewire);
-    if backend != InputBackend::Pipewire {
-        anyhow::bail!("only the PipeWire bridge input backend is implemented on Linux");
-    }
-
+    // PipeWire is the only live-input backend (`requested.backend` is either
+    // unset or `Pipewire`), so there is nothing to select here.
     let channels = requested.channels.unwrap_or(DEFAULT_LIVE_BRIDGE_CHANNELS);
     if channels != 2 && channels != 8 {
         anyhow::bail!(
@@ -377,17 +406,31 @@ fn resolve_pipewire_bridge_config(
             .unwrap_or_else(|| DEFAULT_LIVE_BRIDGE_DESCRIPTION.to_string()),
         channels,
         sample_rate_hz: DEFAULT_LIVE_BRIDGE_SAMPLE_RATE_HZ,
-        target_latency_ms: requested_live_input_latency_ms(audio_control)
-            .unwrap_or(PipewireBufferConfig::default().latency_ms)
-            .max(1),
+        target_latency_ms: resolve_live_input_latency_ms(
+            audio_control.requested_latency_target_ms(),
+        ),
         clock_mode: requested.clock_mode,
         runtime: bridge_runtime.clone(),
     })
 }
 
+/// The latency target a PipeWire capture runs at for a requested one: the
+/// PipeWire default while none is requested, and never below 1 ms.
 #[cfg(target_os = "linux")]
-fn requested_live_input_latency_ms(audio_control: &AudioControl) -> Option<u32> {
-    audio_control.requested_latency_target_ms()
+fn resolve_live_input_latency_ms(requested: Option<u32>) -> u32 {
+    requested
+        .unwrap_or(PipewireBufferConfig::default().latency_ms)
+        .max(1)
+}
+
+/// Whether a capture running at `capture_latency_ms` no longer serves the
+/// requested target. Both sides are resolved the same way: the request is
+/// raw (unset, or below the floor) where the capture holds what it resolved
+/// to, and comparing them as they come reads a request the capture already
+/// serves as a change.
+#[cfg(target_os = "linux")]
+fn capture_latency_is_stale(requested: Option<u32>, capture_latency_ms: u32) -> bool {
+    resolve_live_input_latency_ms(requested) != capture_latency_ms
 }
 
 // Bridge capture entrypoints.
@@ -421,74 +464,45 @@ fn run_pipewire_bridge_capture_loop(
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
     let (raw_tx, raw_rx) = mpsc::sync_channel::<(u8, Vec<u8>)>(256);
-    let bridge = instantiate_live_bridge(&config.runtime)?;
-    let tx_for_frame = tx.clone();
+    let (bridge, log_level) = instantiate_live_bridge(&config.runtime)?;
     // DIAG iec958-chain: capture bridge plugin output cadence. Registry-handed
     // diag metrics — updated each time the harletty plugin emits a decoded
     // PCM frame, so the Studio plot can see whether the plugin batches
     // frames at ~1 s intervals.
     let diag = input_control.diag_registry();
-    let bridge_frame_samples_out =
-        diag.register("bridge_frame_samples", "Frame samples", "bridge", "samples");
-    let bridge_frame_dt_us_out = diag.register("bridge_frame_dt_us", "Frame dt", "bridge", "us");
-    let bridge_frame_count_out = diag.register(
-        "bridge_frame_count",
-        "Frames emitted (counter)",
-        "bridge",
-        "",
-    );
-    let bridge_frames_per_push_packet_out = diag.register(
-        "bridge_frames_per_push_packet",
-        "Frames per push_packet",
-        "bridge",
-        "",
-    );
-    let bridge_push_packet_dt_us_out =
-        diag.register("bridge_push_packet_dt_us", "push_packet dt", "bridge", "us");
-    let mut last_bridge_frame_at: Option<Instant> = None;
-    let mut bridge_frame_count: u64 = 0;
-    spawn_bridge_decode_worker(
+    spawn_live_bridge_decoder(
         bridge,
+        log_level,
         raw_rx,
         Some(config.runtime.requested_drc_mode.clone()),
-        Some(BridgeDecodeDiag {
-            frames_per_push_packet: bridge_frames_per_push_packet_out,
-            push_packet_dt_us: bridge_push_packet_dt_us_out,
+        Some(LiveBridgeDiag {
+            frames_per_push_packet: diag.register(
+                "bridge_frames_per_push_packet",
+                "Frames per push_packet",
+                "bridge",
+                "",
+            ),
+            push_packet_dt_us: diag.register(
+                "bridge_push_packet_dt_us",
+                "push_packet dt",
+                "bridge",
+                "us",
+            ),
+            frame_samples: diag.register(
+                "bridge_frame_samples",
+                "Frame samples",
+                "bridge",
+                "samples",
+            ),
+            frame_dt_us: diag.register("bridge_frame_dt_us", "Frame dt", "bridge", "us"),
+            frame_count: diag.register(
+                "bridge_frame_count",
+                "Frames emitted (counter)",
+                "bridge",
+                "",
+            ),
         }),
-        move |frame, decode_time_ms| {
-            let now = Instant::now();
-            let dt_us = last_bridge_frame_at
-                .map(|prev| now.saturating_duration_since(prev).as_micros() as u64)
-                .unwrap_or(0);
-            last_bridge_frame_at = Some(now);
-            bridge_frame_count = bridge_frame_count.saturating_add(1);
-            bridge_frame_samples_out.store(
-                (frame.sample_count as f64).to_bits(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            // Filter out sub-ms back-to-back updates: the harletty plugin
-            // emits multiple frames per push_packet result, and those are
-            // dispatched in a tight loop with microsecond spacing — meaningless
-            // as a cadence metric. We only publish the dt when it's > 1 ms,
-            // which captures the actual inter-batch intervals.
-            if dt_us >= 1000 {
-                bridge_frame_dt_us_out.store(
-                    (dt_us as f64).to_bits(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-            }
-            bridge_frame_count_out.store(
-                (bridge_frame_count as f64).to_bits(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            let _ = tx_for_frame.try_send(Ok(DecoderMessage::AudioData(DecodedAudioData {
-                source: DecodedSource::Bridge,
-                frame,
-                declaration: None,
-                decode_time_ms,
-                sent_at: Instant::now(),
-            })));
-        },
+        tx.clone(),
     )?;
     let ingest = LiveBridgeIngestRuntime::new(raw_tx);
 
@@ -573,18 +587,12 @@ fn run_pipewire_bridge_pw_stream_backend(
 // Bridge decode/runtime helpers.
 
 #[cfg(target_os = "linux")]
-fn instantiate_live_bridge(runtime: &LiveBridgeRuntimeConfig) -> Result<FormatBridgeBox> {
-    install_bridge_host_log_sink(&runtime.lib);
-    let new_bridge = runtime.lib.new_bridge();
-    // strict mode removed: bridges ignore it; the host always requests non-strict.
-    let mut bridge = new_bridge(false);
-    if !bridge.configure("presentation".into(), runtime.presentation.as_str().into()) {
-        anyhow::bail!(
-            "Bridge rejected presentation value '{}'",
-            runtime.presentation
-        );
-    }
-    Ok(bridge)
+fn instantiate_live_bridge(
+    runtime: &LiveBridgeRuntimeConfig,
+) -> Result<(BridgeSet, orender_engine::decode_step::LogLevelSync)> {
+    let (mut bridge, log_level) = open_bridges(&runtime.libs)?;
+    configure_presentation(&mut bridge, &runtime.presentation)?;
+    Ok((bridge, log_level))
 }
 
 #[cfg(target_os = "linux")]
@@ -658,6 +666,41 @@ mod tests {
         assert_eq!(frame.sample_count, 1);
         assert_eq!(frame.channel_count, 8);
         assert_eq!(frame.sampling_frequency, 48_000);
+    }
+
+    /// A capture started while no latency target is requested runs at the
+    /// PipeWire default. The manager polls this every 50 ms: reading the unset
+    /// request as a change would reconcile, republish the input state and log
+    /// on every tick for as long as the target stays unset.
+    #[test]
+    fn an_unset_latency_target_leaves_a_capture_at_the_default_alone() {
+        let running = resolve_live_input_latency_ms(None);
+
+        assert_eq!(running, PipewireBufferConfig::default().latency_ms);
+        assert!(!capture_latency_is_stale(None, running));
+        assert!(!capture_latency_is_stale(Some(running), running));
+    }
+
+    /// A latency target of 0 (a config value; the `--latency-target` flag
+    /// unsets it instead) is a request the capture cannot run at: it is
+    /// started at 1 ms, and that is not a change to reconcile either.
+    #[test]
+    fn a_zero_latency_target_leaves_a_capture_at_the_floor_alone() {
+        let running = resolve_live_input_latency_ms(Some(0));
+
+        assert_eq!(running, 1);
+        assert!(!capture_latency_is_stale(Some(0), running));
+    }
+
+    /// A target that really moved still restarts the capture, in both
+    /// directions: a new value, and a value cleared back to the default.
+    #[test]
+    fn a_changed_latency_target_makes_the_capture_stale() {
+        let default_ms = resolve_live_input_latency_ms(None);
+        let other_ms = default_ms + 120;
+
+        assert!(capture_latency_is_stale(Some(other_ms), default_ms));
+        assert!(capture_latency_is_stale(None, other_ms));
     }
 
     /// Samples beyond full scale must clamp, not wrap into the opposite sign.

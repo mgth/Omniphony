@@ -1,7 +1,9 @@
+use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
-use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode, RendererControl};
+use anyhow::{Result, anyhow, bail};
+use renderer::config::{ConfigLoadStatus, RenderConfig};
+use renderer::live_params::{LiveParams, RendererControl};
 
 use crate::HostControlHandler;
 
@@ -32,10 +34,12 @@ pub fn save_live_config(
             .ok_or_else(|| anyhow!("no config path available"))?
     };
 
-    save_live_config_to_path(control, host, &path, &path)?;
-    control.mark_clean();
+    refuse_live_state_from_defaults(control, &path)?;
+    let mut config = renderer::config::Config::load_for_update(&path)?;
+    store_live_into_config(control, host, &mut config);
     // A deliberate save supersedes any pending live-handoff overlay.
-    renderer::config::discard_live_sidecar(&path);
+    commit_config(&path, &config)?;
+    control.mark_clean();
 
     Ok(SaveLiveConfigResult {
         path,
@@ -43,11 +47,32 @@ pub fn save_live_config(
     })
 }
 
+/// Refuse to write the live state over `path` while it is the defaults the
+/// engine fell back to because the file failed to parse when it was loaded
+/// (`config_status = parse_error`). Parsing the file again at write time is
+/// not enough: once the user has fixed it, it parses, and the Save would then
+/// replace their layout with those defaults. Only re-reading the file into the
+/// live state lifts this: a reload (a restart on the CLI) or a profile switch,
+/// which both set the status again.
+fn refuse_live_state_from_defaults(control: &RendererControl, path: &Path) -> Result<()> {
+    if control.config_status().as_deref() == Some(ConfigLoadStatus::ParseError.as_str()) {
+        bail!(
+            "{} failed to parse when it was loaded, so the engine is running on built-in \
+             defaults and a save would replace the file with them; fix or remove the file, \
+             press Reload, then save",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Serialize the current live state into a complete config file at `out_path`,
 /// amending a base config loaded from `base_path`. Does NOT mark the live
-/// state clean and does NOT notify clients — used by [`save_live_config`]
-/// (with `out_path == base_path`) and by the shutdown handoff, which writes
-/// the live-state sidecar next to the persistent config.
+/// state clean, does NOT notify clients and keeps no `.bak` — used by the
+/// shutdown handoff, which writes the live-state sidecar next to the
+/// persistent config. A base that fails to parse is read as defaults here:
+/// the sidecar then carries what the engine is actually running on, and
+/// `out_path` is never the base itself.
 pub fn save_live_config_to_path(
     control: &Arc<RendererControl>,
     host: Option<&dyn HostControlHandler>,
@@ -56,7 +81,11 @@ pub fn save_live_config_to_path(
 ) -> Result<()> {
     let mut config = renderer::config::Config::load_or_default(base_path);
     store_live_into_config(control, host, &mut config);
-    config.save(out_path)?;
+    // The next instance reads `config_status` from the file, which the user
+    // may have fixed meanwhile: tell it this state is still the fallback.
+    config.live_from_parse_error =
+        control.config_status().as_deref() == Some(ConfigLoadStatus::ParseError.as_str());
+    config.save_without_backup(out_path)?;
 
     Ok(())
 }
@@ -73,8 +102,7 @@ pub fn store_live_into_config(
 ) {
     let live = control.live.read();
     let render = config.render.get_or_insert_with(Default::default);
-    let requested_bridge_path = control.bridge_path();
-    render.bridge_path = requested_bridge_path;
+    render.set_bridges(&control.bridge_paths());
     render.input_pipe = control
         .input_path()
         .map(|value| std::path::PathBuf::from(value.trim()))
@@ -84,220 +112,55 @@ pub fn store_live_into_config(
     for (idx, spk) in layout_snapshot.speakers.iter_mut().enumerate() {
         if let Some(lp) = live.speakers.get(&idx) {
             spk.delay_ms = lp.delay_ms.max(0.0);
+            spk.gain_db = renderer::live_params::speaker_gain_db(lp.gain);
         }
     }
     layout_snapshot.radius_m = round6(layout_snapshot.radius_m);
     render.current_layout = Some(layout_snapshot);
     render.speaker_layout = None;
 
-    let master_gain_db = 20.0_f32 * live.master_gain.log10();
-    renderer::config_fields::master_gain::store(render, master_gain_db);
-
-    renderer::config_fields::vbap_azimuth_resolution::store(
-        render,
-        live.evaluation.polar.azimuth_values.max(1),
-    );
-    renderer::config_fields::vbap_elevation_resolution::store(
-        render,
-        live.evaluation.polar.elevation_values.max(1),
-    );
-    renderer::config_fields::vbap_distance_res::store(
-        render,
-        live.evaluation.polar.distance_res.max(1),
-    );
-    renderer::config_fields::vbap_distance_max::store(
-        render,
-        live.evaluation.polar.distance_max.max(0.01),
-    );
-    renderer::config_fields::render_evaluation_position_interpolation::store(
-        render,
-        live.evaluation.position_interpolation,
-    );
-    render.render_backend = match live.backend_id() {
-        "vbap" => None,
-        other => Some(other.to_string()),
-    };
-    // Generic per-backend param values, persisted verbatim (empty map is skipped).
-    render.backend_params = control.all_backend_params();
-    render.render_evaluation_mode = match live.requested_evaluation_mode() {
-        LiveEvaluationMode::Auto => None,
-        other => Some(other.as_str().to_string()),
-    };
-    let effective_cartesian = match live.requested_evaluation_mode() {
-        LiveEvaluationMode::PrecomputedCartesian => true,
-        LiveEvaluationMode::PrecomputedPolar => false,
-        LiveEvaluationMode::Realtime => false,
-        LiveEvaluationMode::Auto => matches!(
-            control
-                .backend_rebuild_params()
-                .map(|p| p.preferred_evaluation_mode),
-            Some(PreferredEvaluationMode::PrecomputedCartesian)
-        ),
-    };
-    if effective_cartesian {
-        render.evaluation_cartesian_x_size = Some(live.evaluation.cartesian.x_size.max(1));
-        render.evaluation_cartesian_y_size = Some(live.evaluation.cartesian.y_size.max(1));
-        render.evaluation_cartesian_z_size = Some(live.evaluation.cartesian.z_size.max(1));
-        render.evaluation_cartesian_z_neg_size = Some(live.evaluation.cartesian.z_neg_size);
-    } else {
-        render.evaluation_cartesian_x_size = None;
-        render.evaluation_cartesian_y_size = None;
-        render.evaluation_cartesian_z_size = None;
-        render.evaluation_cartesian_z_neg_size = None;
-    }
-    // Object-size interval count applies to both precomputed modes; persist it
-    // only when enabled (0 is the default and stays out of the file).
-    render.evaluation_object_size_intervals = (live.evaluation.object_size_intervals > 0)
-        .then_some(live.evaluation.object_size_intervals);
+    // Every plugin's param values — backends, object generators, the phantom
+    // stage — persisted verbatim (an empty map is skipped); the legacy keys
+    // they were migrated from are dropped.
+    control.plugin_params().store_to_config(render);
     // VBAP spread tuning (min/max, from_distance, distance range/curve, size
     // policy) now lives in the generic param bag (`render.backend_params`,
-    // written above via `all_backend_params`). Drop the legacy dedicated keys on
-    // save; an old config carrying them is still migrated into the bag on load.
+    // written above). Drop the legacy dedicated keys on save; an old config
+    // carrying them is still migrated into the bag on load.
     render.vbap_spread_min = None;
     render.vbap_spread_max = None;
     render.spread_from_distance = None;
     render.spread_distance_range = None;
     render.spread_distance_curve = None;
     render.size_to_spread_mode = None;
-    renderer::config_fields::use_loudness::store(render, live.use_loudness);
-    // Declared live options (registry rows) + their param bags and the virtual
-    // bed: one call covers what the OSC targeted persists cover, so the full
-    // save and the per-option writes cannot drift.
-    renderer::options::store_live_to_config(render, &live);
-    renderer::config_fields::auto_gain::store(render, live.auto_gain);
-    renderer::config_fields::auto_gain_ceiling_db::store(render, live.auto_gain_ceiling_db);
-    renderer::config_fields::vbap_distance_model::store(render, live.distance_model.to_string());
-    // Room geometry is persisted in metres. Width is the reference and the room
-    // scale is Width/2 = the layout radius, so metres = ratio × radius × factor
-    // (factor 2 for width). The legacy `room_ratio*` are dropped — `Config::load`
-    // re-derives the runtime ratios from these metres.
-    let [w, l, h] = live.room_ratio;
-    let radius = render
-        .current_layout
-        .as_ref()
-        .map(|layout| layout.radius_m)
-        .unwrap_or(1.0);
-    render.room_width_m = Some(round6(w * radius * 2.0));
-    render.room_front_m = Some(round6(l * radius));
-    render.room_rear_m = Some(round6(live.room_ratio_rear * radius));
-    render.room_height_m = Some(round6(h * radius));
-    render.room_lower_m = Some(round6(live.room_ratio_lower * radius));
-    render.room_ratio_center_blend = Some(round6(live.room_ratio_center_blend));
-    render.room_ratio = None;
-    render.room_ratio_rear = None;
-    render.room_ratio_lower = None;
-    render.drc_weight = if (live.drc_weight - 1.0).abs() > 1e-4 {
-        Some(round6(live.drc_weight))
-    } else {
-        None
-    };
-    render.drc_mode = if live.drc_mode != "Off" {
-        Some(live.drc_mode.clone())
-    } else {
-        None
-    };
+    // Declared live options (registry rows: auto-gain, loudness, ramp mode,
+    // DRC, the fixed-channel family, the room, …) + their param bags and the
+    // virtual bed: one call covers what the OSC targeted persists cover, so
+    // the full save and the per-option writes cannot drift. After the layout:
+    // the room is written in metres against its radius.
+    renderer::options::store_live_to_config(
+        render,
+        &live,
+        &renderer::options::OptionEnv::of(control),
+    );
     // Monitoring cadences: the renderer is the source of truth, so always
     // persist the current values (read lock-free from RendererControl).
     render.meter_rate = Some(round6(control.meter_rate_hz()));
     render.diag_rate = Some(round6(control.diag_rate_hz()));
-    renderer::config_fields::distance_diffuse::store(render, live.use_distance_diffuse);
-    renderer::config_fields::distance_diffuse_threshold::store(
-        render,
-        live.distance_diffuse_threshold,
-    );
-    renderer::config_fields::distance_diffuse_curve::store(render, live.distance_diffuse_curve);
-    let default_metric = renderer::spatial_vbap::DistanceMetric::default();
-    render.distance_model_metric = if live.distance_model_metric != default_metric {
-        Some(live.distance_model_metric.to_string())
-    } else {
-        None
-    };
-    render.distance_diffuse_metric = if live.distance_diffuse_metric != default_metric {
-        Some(live.distance_diffuse_metric.to_string())
-    } else {
-        None
-    };
-    let default_mirror_axes = renderer::spatial_vbap::MirrorAxes::default();
-    render.distance_diffuse_mirror_axes =
-        if live.distance_diffuse_mirror_axes != default_mirror_axes {
-            Some(live.distance_diffuse_mirror_axes.to_string())
-        } else {
-            None
-        };
-    // Binaural (headphone) stage: persist the live selection so it survives a
-    // restart — output mode, HRIR source (+ SOFA path), isotropic scale, and the
-    // head-tracking OSC address/format.
-    let (hrir_source, hrtf_sofa_path) = match &live.binaural.hrir_source {
-        renderer::binaural::HrirSource::Sofa(p) if !p.is_empty() => {
-            ("sofa".to_string(), Some(std::path::PathBuf::from(p)))
-        }
-        renderer::binaural::HrirSource::Pinna {
-            preset,
-            d_scale_pct,
-            depth_pct,
-        } => (
-            format!("pinna:{}:{d_scale_pct}:{depth_pct}", preset.as_str()),
-            None,
-        ),
-        renderer::binaural::HrirSource::Prtf {
-            freq_scale_pct,
-            depth_pct,
-        } => (format!("prtf:{freq_scale_pct}:{depth_pct}"), None),
-        other => (other.as_str().to_string(), None),
-    };
-    render.binaural = Some(renderer::config::BinauralConfig {
-        output_mode: Some(live.binaural.output_mode.as_str().to_string()),
-        mode: Some(live.binaural.mode.as_str().to_string()),
-        ear_gains: Some([live.binaural.ears[0].gain, live.binaural.ears[1].gain]),
-        ear_mutes: Some([live.binaural.ears[0].muted, live.binaural.ears[1].muted]),
-        unit_scale_m: Some(live.binaural.unit_scale_m),
-        head_radius_m: Some(live.binaural.head_radius_m),
-        hrir_source: Some(hrir_source),
-        hrtf_sofa_path,
-        head_tracking: Some(renderer::config::HeadTrackingConfig {
-            osc_address: live.binaural.tracking.address.clone(),
-            format: Some(live.binaural.tracking.format.as_str().to_string()),
-            reference_quat: {
-                // Carry the recenter reference through an explicit Save too (the
-                // targeted write-back already persists it on recenter); omit when
-                // back at identity to keep the YAML clean.
-                let r = live.binaural.tracking.reference;
-                (r != renderer::binaural::HeadPose::identity()).then(|| r.to_quat_array())
-            },
-            axes_quat: {
-                let a = live.binaural.tracking.axes;
-                (a != renderer::binaural::HeadPose::identity()).then(|| a.to_quat_array())
-            },
-            extra: Default::default(),
-        }),
-        reflections: Some(renderer::config::ReflectionsConfig {
-            enabled: Some(live.binaural.reflections.enabled),
-            room_width_m: Some(live.binaural.reflections.room_size_m[0]),
-            room_depth_m: Some(live.binaural.reflections.room_size_m[1]),
-            room_height_m: Some(live.binaural.reflections.room_size_m[2]),
-            level: Some(live.binaural.reflections.level),
-            wall_cutoff_hz: Some(live.binaural.reflections.wall_cutoff_hz),
-            extra: Default::default(),
-        }),
-        reverb: Some(renderer::config::ReverbConfig {
-            enabled: Some(live.binaural.reverb.enabled),
-            level: Some(live.binaural.reverb.level),
-            rt60_s: Some(live.binaural.reverb.rt60_s),
-            predelay_ms: Some(live.binaural.reverb.predelay_ms),
-            size: Some(live.binaural.reverb.size),
-            rt60_low_ratio: Some(live.binaural.reverb.rt60_low_ratio),
-            rt60_high_ratio: Some(live.binaural.reverb.rt60_high_ratio),
-            extra: Default::default(),
-        }),
-        air_absorption: Some(live.binaural.air_absorption),
-        diffuse_field_eq: Some(live.binaural.diffuse_field_eq),
-        // Written just below through its descriptor, so the skip-if-default
-        // rule lives in one place — this wholesale rebuild of the section runs
-        // *after* `store_live_to_config` and would otherwise clobber it.
-        hrir_update_lattice: None,
-        extra: Default::default(),
-    });
-    renderer::config_fields::hrir_update_lattice::store(render, live.binaural.hrir_update_lattice);
+    // Binaural: the options are registry rows (stored above). Kept here: the
+    // ear mutes, and the head-tracking recenter reference and axis
+    // calibration, which the recenter writes at once (the persistence
+    // policy's exception) and an explicit Save carries through; both are
+    // omitted when back at identity to keep the YAML clean.
+    let bin = render.binaural.get_or_insert_with(Default::default);
+    bin.ear_mutes = Some([live.binaural.ears[0].muted, live.binaural.ears[1].muted]);
+    let tracking = &live.binaural.tracking;
+    let ht = bin.head_tracking.get_or_insert_with(Default::default);
+    let identity = renderer::binaural::HeadPose::identity();
+    ht.reference_quat =
+        (tracking.reference != identity).then(|| tracking.reference.to_quat_array());
+    ht.axes_quat = (tracking.axes != identity).then(|| tracking.axes.to_quat_array());
+
     // barycenter / experimental_distance params now live in the generic param bag
     // (`render.backend_params`, written below), so drop the legacy dedicated keys
     // on save. Reading an old config still migrates them into the bag on load.
@@ -307,37 +170,11 @@ pub fn store_live_into_config(
     render.experimental_distance_position_error_floor = None;
     render.experimental_distance_position_error_nearest_scale = None;
     render.experimental_distance_position_error_span_scale = None;
-    let hybrid_defaults = renderer::live_params::HybridLiveParams::default();
-    render.hybrid_external_backend =
-        if live.hybrid.external_backend_id != hybrid_defaults.external_backend_id {
-            Some(live.hybrid.external_backend_id.clone())
-        } else {
-            None
-        };
-    render.hybrid_internal_backend =
-        if live.hybrid.internal_backend_id != hybrid_defaults.internal_backend_id {
-            Some(live.hybrid.internal_backend_id.clone())
-        } else {
-            None
-        };
-    render.hybrid_curve = if live.hybrid.curve != hybrid_defaults.curve {
-        Some(live.hybrid.curve.clone())
-    } else {
-        None
-    };
-    render.hybrid_curve_smoothing =
-        if (live.hybrid.curve_smoothing - hybrid_defaults.curve_smoothing).abs() > 1e-4 {
-            Some(live.hybrid.curve_smoothing)
-        } else {
-            None
-        };
-    render.hybrid_metric = if live.hybrid.metric != hybrid_defaults.metric {
-        Some(live.hybrid.metric.to_string())
-    } else {
-        None
-    };
+    // The hybrid curve is a point list, kept out of the registry; the legs,
+    // smoothing and metric are registry rows (stored above).
+    let default_curve = renderer::live_params::HybridLiveParams::default().curve;
+    render.hybrid_curve = (live.hybrid.curve != default_curve).then(|| live.hybrid.curve.clone());
     render.barycenter_localize = None;
-    renderer::config_fields::ramp_mode::store(render, control.requested_ramp_mode().as_str());
 
     drop(live);
 
@@ -346,5 +183,657 @@ pub fn store_live_into_config(
     // core never references those fields directly.
     if let Some(h) = host {
         h.amend_saved_config(render);
+    }
+}
+
+/// Write `config` to `path` as the new persistent config, then drop the
+/// live-handoff sidecar and overlay cache next to it.
+///
+/// Every write of the *whole* live state to `config.yaml` goes through here —
+/// the full save and a profile operation — because each one supersedes
+/// whatever a previous instance left in the sidecar when it fell back and tore
+/// down: a stale sidecar must not override the file on the next boot. A
+/// targeted per-field persist does not: it writes one field and amends the
+/// overlay instead ([`persist_render_fields_to_path`]). (The shutdown handoff,
+/// which *writes* the sidecar, is the other writer that does not.)
+pub fn commit_config(path: &Path, config: &renderer::config::Config) -> Result<()> {
+    config.save(path)?;
+    renderer::config::discard_live_sidecar(path);
+    Ok(())
+}
+
+/// One targeted write-back: the config field(s) a live change must reach the
+/// file right away, instead of waiting for an explicit Save.
+///
+/// `store` reads the live value and writes it into the render section; a
+/// skip-if-default writer keeps a default value out of the file entirely.
+/// Only view state is written this way (docs/persistence-policy.md). Carried in
+/// [`crate::osc::ControlEffects::persist`] by the handlers and performed by the
+/// engine, which owns the I/O.
+#[derive(Debug, Clone, Copy)]
+pub struct PersistOp {
+    /// What is written, for the log.
+    pub what: &'static str,
+    pub store: PersistStore,
+}
+
+/// Where a [`PersistOp`] reads the value it writes.
+#[derive(Debug, Clone, Copy)]
+pub enum PersistStore {
+    /// A field of the live parameters.
+    Live(fn(&mut RenderConfig, &LiveParams)),
+    /// A value `RendererControl` holds outside them (the cadence atomics).
+    Control(fn(&mut RenderConfig, &RendererControl)),
+}
+
+impl PersistOp {
+    /// The head-tracking recenter reference, so the chosen "forward" survives
+    /// an engine rebuild (mpv track change) and a restart.
+    pub const HEAD_CENTER: Self = Self {
+        what: "head recenter",
+        store: PersistStore::Live(|render, live| {
+            let ht = head_tracking_config(render);
+            ht.reference_quat = non_identity_quat(live.binaural.tracking.reference);
+        }),
+    };
+
+    /// The sensor-to-head axis calibration, next to the recenter reference.
+    pub const HEAD_AXES: Self = Self {
+        what: "head axes",
+        store: PersistStore::Live(|render, live| {
+            let ht = head_tracking_config(render);
+            ht.axes_quat = non_identity_quat(live.binaural.tracking.axes);
+        }),
+    };
+
+    /// The meter publication cadence: view state, it never waits for a Save.
+    pub const METER_RATE: Self = Self {
+        what: "meter rate",
+        store: PersistStore::Control(|render, control| {
+            render.meter_rate = Some(round6(control.meter_rate_hz()));
+        }),
+    };
+
+    /// The diagnostics publication cadence: view state, like the meter's.
+    pub const DIAG_RATE: Self = Self {
+        what: "diag rate",
+        store: PersistStore::Control(|render, control| {
+            render.diag_rate = Some(round6(control.diag_rate_hz()));
+        }),
+    };
+}
+
+fn head_tracking_config(render: &mut RenderConfig) -> &mut renderer::config::HeadTrackingConfig {
+    render
+        .binaural
+        .get_or_insert_with(Default::default)
+        .head_tracking
+        .get_or_insert_with(Default::default)
+}
+
+/// `None` at identity, so an "uncentered" / uncalibrated tracker leaves a
+/// clean config rather than persisting a no-op quaternion.
+fn non_identity_quat(pose: renderer::binaural::HeadPose) -> Option<[f32; 4]> {
+    (pose != renderer::binaural::HeadPose::identity()).then(|| pose.to_quat_array())
+}
+
+/// Perform targeted write-backs against the control's config file, if it has
+/// one. Best-effort: a failure is logged, never raised — the live change has
+/// already been applied, and the explicit Save still covers it.
+pub fn persist_ops(control: &RendererControl, ops: &[PersistOp]) {
+    if ops.is_empty() {
+        return;
+    }
+    let Some(path) = control.config_path() else {
+        return;
+    };
+    persist_render_fields_to_path(&path, |render| {
+        let live = control.live.read();
+        for op in ops {
+            match op.store {
+                PersistStore::Live(store) => store(render, &live),
+                PersistStore::Control(store) => store(render, control),
+            }
+        }
+    });
+    let what: Vec<&str> = ops.iter().map(|op| op.what).collect();
+    log::debug!("persisted {} to {}", what.join(", "), path.display());
+}
+
+/// Targeted config write: load the existing config, let `store` set *only*
+/// its fields (every other key survives, unknown ones included via the
+/// config's flattened `extra`) and save it. Best-effort; logs on error, and
+/// leaves a file that fails to parse untouched.
+///
+/// The same fields are written into a pending live-handoff overlay, if there
+/// is one, rather than discarding it: the overlay holds the *other* edits the
+/// user has not saved yet, which a one-field write must neither commit nor
+/// throw away, and amending it keeps its stale copy of this field from
+/// reverting the write on the next boot.
+pub fn persist_render_fields_to_path(path: &Path, store: impl Fn(&mut RenderConfig)) {
+    let written = renderer::config::Config::load_for_update(path).and_then(|mut config| {
+        store(config.render.get_or_insert_with(Default::default));
+        // No `.bak`: a view write must not rotate away the file as it was
+        // before the last Save, and it runs on the OSC thread.
+        config.save_without_backup(path)
+    });
+    if let Err(e) = written {
+        log::warn!("failed to persist a live change to {}: {e}", path.display());
+    }
+    renderer::config::amend_live_overlay(path, |overlay| {
+        store(overlay.render.get_or_insert_with(Default::default));
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renderer::live_params::ChannelRenderMode;
+    use std::path::PathBuf;
+
+    /// A targeted persist amends a pending handoff sidecar in place: it now
+    /// holds every `present` line and none of the `absent` keys.
+    fn assert_sidecar(sidecar: &Path, present: &[&str], absent: &[&str]) {
+        let text = std::fs::read_to_string(sidecar).expect("pending sidecar kept");
+        for line in present {
+            assert!(text.contains(line), "sidecar lacks {line:?}: {text}");
+        }
+        for key in absent {
+            assert!(!text.contains(key), "sidecar still has {key:?}: {text}");
+        }
+    }
+
+    /// The realtime speaker gain lights the Save button, so the Save writes
+    /// it — as the layout's `gain_db` — and the next boot seeds it back.
+    #[test]
+    fn a_save_keeps_the_speaker_output_gains() {
+        let control = crate::test_support::fixture_control();
+        control.live.write().speakers.entry(2).or_default().gain = 0.5;
+        control.live.write().speakers.entry(3).or_default().gain = 0.0;
+        let mut config = renderer::config::Config::default();
+        store_live_into_config(&control, None, &mut config);
+        let layout = config
+            .render
+            .as_ref()
+            .and_then(|r| r.current_layout.as_ref())
+            .expect("layout stored");
+        assert_eq!(layout.speakers[2].gain_db, -6.0);
+        assert_eq!(
+            layout.speakers[3].gain_db,
+            renderer::live_params::SPEAKER_GAIN_FLOOR_DB
+        );
+
+        let seeded = renderer::live_params::speaker_live_from_layout(layout);
+        assert!((seeded[&2].gain - 0.501).abs() < 1e-3);
+        assert_eq!(seeded[&3].gain, 0.0);
+        assert!(!seeded.contains_key(&0), "unity speakers need no entry");
+    }
+
+    /// A config.yaml that fails to parse runs the engine on defaults; neither
+    /// the Save nor a targeted write may then replace it with them.
+    #[test]
+    fn a_file_that_fails_to_parse_survives_save_and_targeted_writes() {
+        let path = temp_config_path("parse-error");
+        let corrupt = "render:\n  current_layout: [ unterminated\n";
+        std::fs::write(&path, corrupt).unwrap();
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+
+        let err = save_live_config(&control, None)
+            .err()
+            .expect("save refused");
+        assert!(err.to_string().contains("left untouched"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
+
+        persist_render_fields_to_path(&path, |render| render.output_file = Some("x".into()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
+        assert!(!renderer::config::backup_path(&path).exists());
+    }
+
+    /// The engine came up on defaults because the file failed to parse; the
+    /// user then fixes the file. A Save must still be refused, or it would
+    /// write those defaults over the fixed file. Once the file has been read
+    /// back into the live state (a reload sets the status again), it goes
+    /// through.
+    #[test]
+    fn save_is_refused_while_the_live_state_is_the_parse_error_fallback() {
+        let path = temp_config_path("parse-error-fixed");
+        let fixed = "render:\n  output_file: kept\n";
+        std::fs::write(&path, fixed).unwrap();
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        control.set_config_status(Some(ConfigLoadStatus::ParseError.as_str().into()));
+
+        let err = save_live_config(&control, None)
+            .err()
+            .expect("save refused");
+        assert!(err.to_string().contains("press Reload"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), fixed);
+
+        control.set_config_status(Some(ConfigLoadStatus::Loaded.as_str().into()));
+        save_live_config(&control, None).expect("save after reload");
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), fixed);
+    }
+
+    /// A newer build saved enum values this one does not know. The engine
+    /// runs on their defaults, and a Save of a state the user did not touch
+    /// writes the newer build's values back, not those defaults.
+    #[test]
+    fn a_save_keeps_the_enum_values_a_newer_build_wrote() {
+        let path = temp_config_path("unknown-enum");
+        std::fs::write(
+            &path,
+            "render:\n  crossover_type: brickwall\n  surround_placement: ceiling\n  \
+             channel_render_mode: hologram\n  placement:\n    generic:\n      mode: hemisphere\n",
+        )
+        .unwrap();
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        let (config, status) = renderer::config::Config::load_or_default_with_status(&path);
+        assert_eq!(status, ConfigLoadStatus::Loaded);
+        renderer::options::seed_live_from_config(
+            &mut control.live.write(),
+            config.render.as_ref().unwrap(),
+            &renderer::options::OptionEnv::of(&control),
+        );
+
+        save_live_config(&control, None).expect("save");
+        let yaml = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        let render = &saved["render"];
+        assert_eq!(render["crossover_type"], "brickwall", "{yaml}");
+        assert_eq!(render["surround_placement"], "ceiling", "{yaml}");
+        assert_eq!(render["channel_render_mode"], "hologram", "{yaml}");
+        assert_eq!(
+            render["placement"]["generic"]["mode"], "hemisphere",
+            "{yaml}"
+        );
+
+        // A setting changed in this build is its own choice, and is saved.
+        control.live.write().options.crossover_type = renderer::live_params::CrossoverType::Fir;
+        save_live_config(&control, None).expect("save");
+        let saved = renderer::config::Config::load(&path).unwrap();
+        let render = saved.render.unwrap();
+        assert_eq!(
+            render.options.crossover_type,
+            Some(renderer::live_params::CrossoverType::Fir)
+        );
+        assert!(!render.extra.contains_key("crossover_type"));
+        assert!(render.extra.contains_key("surround_placement"));
+    }
+
+    /// A placement mode a newer build wrote is kept until the user chooses
+    /// one: replaced by `sphere`, it must not come back when the family is
+    /// then set to inherit.
+    #[test]
+    fn a_chosen_placement_mode_drops_the_kept_one_for_good() {
+        use renderer::placement::{PlacementMode, SourceFamily};
+        let path = temp_config_path("placement-kept-mode");
+        std::fs::write(
+            &path,
+            "render:\n  placement:\n    generic:\n      mode: hemisphere\n",
+        )
+        .unwrap();
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        let config = renderer::config::Config::load(&path).unwrap();
+        renderer::options::seed_live_from_config(
+            &mut control.live.write(),
+            config.render.as_ref().unwrap(),
+            &renderer::options::OptionEnv::of(&control),
+        );
+        let saved_mode = || {
+            let yaml = std::fs::read_to_string(&path).unwrap();
+            let saved: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+            saved["render"]["placement"]["generic"]["mode"].clone()
+        };
+        let set_mode = |mode| {
+            control
+                .live
+                .write()
+                .placement
+                .family_mut(SourceFamily::GENERIC)
+                .set_mode(mode)
+        };
+
+        // Inherit while inheriting: no choice, the kept mode stays.
+        assert!(!set_mode(None));
+        save_live_config(&control, None).expect("save");
+        assert_eq!(saved_mode(), "hemisphere");
+
+        assert!(set_mode(Some(PlacementMode::Sphere)));
+        save_live_config(&control, None).expect("save");
+        assert_eq!(saved_mode(), "sphere");
+
+        assert!(set_mode(None));
+        save_live_config(&control, None).expect("save");
+        assert_eq!(
+            saved_mode(),
+            serde_yaml_ng::Value::Null,
+            "inherit writes no mode"
+        );
+    }
+
+    /// A file a newer build saved is read, but no Save, view write or
+    /// handoff base write touches it.
+    #[test]
+    fn a_file_from_a_newer_build_is_never_written() {
+        let path = temp_config_path("newer-schema");
+        let newer = format!(
+            "schema_version: {}\nrender:\n  output_file: kept\n",
+            renderer::config::CONFIG_SCHEMA_VERSION + 1
+        );
+        std::fs::write(&path, &newer).unwrap();
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        control.set_config_status(Some(ConfigLoadStatus::NewerSchema.as_str().into()));
+
+        let err = save_live_config(&control, None)
+            .err()
+            .expect("save refused");
+        assert!(err.to_string().contains("newer Omniphony"), "{err}");
+        persist_render_fields_to_path(&path, |render| render.output_file = Some("x".into()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+    }
+
+    /// A targeted view write keeps the `.bak` the last Save left: it is the
+    /// file as it was before that Save, the one worth going back to.
+    #[test]
+    fn a_targeted_write_leaves_the_backup_alone() {
+        let path = temp_config_path("bak-kept");
+        let _ = std::fs::remove_file(renderer::config::backup_path(&path));
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        save_live_config(&control, None).expect("first save");
+        let before_save = std::fs::read(&path).unwrap();
+        control.set_meter_rate_hz(7.0);
+        save_live_config(&control, None).expect("second save");
+        assert_eq!(
+            std::fs::read(renderer::config::backup_path(&path)).unwrap(),
+            before_save
+        );
+
+        persist_render_fields_to_path(&path, |render| render.output_file = Some("x".into()));
+        let saved = renderer::config::Config::load(&path).unwrap();
+        assert_eq!(saved.render.unwrap().output_file.as_deref(), Some("x"));
+        assert_eq!(
+            std::fs::read(renderer::config::backup_path(&path)).unwrap(),
+            before_save
+        );
+    }
+
+    /// The engine came up on the parse-error defaults, the user fixed the
+    /// file, then the engine handed its live state over (a restart keeping it,
+    /// mpv taking over). The next instance runs on that handed-over fallback,
+    /// so although the file now parses it must keep refusing the Save, which
+    /// would write the fallback over the fixed file. A handoff from a state
+    /// that did load carries no such mark.
+    #[test]
+    fn a_handoff_keeps_the_parse_error_refusal_across_instances() {
+        use renderer::config::{Config, boot_load_status, live_sidecar_path};
+        let path = temp_config_path("handoff-parse-error");
+        let fixed = "render:\n  output_file: fixed\n";
+        let sidecar = live_sidecar_path(&path);
+
+        let before = crate::test_support::fixture_control();
+        *before.config_path.lock() = Some(path.clone());
+        before.set_config_status(Some(ConfigLoadStatus::ParseError.as_str().into()));
+        std::fs::write(&path, fixed).unwrap();
+        save_live_config_to_path(&before, None, &path, &sidecar).unwrap();
+
+        let (_, restored) = Config::load_or_default_with_live(&path);
+        assert!(restored);
+        let status = boot_load_status(&path);
+        assert_eq!(status, ConfigLoadStatus::ParseError);
+        let after = crate::test_support::fixture_control();
+        *after.config_path.lock() = Some(path.clone());
+        after.set_config_status(Some(status.as_str().into()));
+        assert!(save_live_config(&after, None).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), fixed);
+
+        renderer::config::discard_live_sidecar(&path);
+        before.set_config_status(Some(ConfigLoadStatus::Loaded.as_str().into()));
+        save_live_config_to_path(&before, None, &path, &sidecar).unwrap();
+        let (handed_over, _) = Config::load_or_default_with_live(&path);
+        assert!(!handed_over.live_from_parse_error);
+        renderer::config::discard_live_sidecar(&path);
+    }
+
+    fn temp_config_path(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "orender-crm-persist-{}-{}",
+            std::process::id(),
+            tag
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("config.yaml")
+    }
+
+    #[test]
+    fn persist_channel_render_mode_writes_host_and_amends_sidecar() {
+        let path = temp_config_path("host");
+        // A config with an unknown render key and a known one, both must survive.
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  some_future_key: 42\n",
+        )
+        .unwrap();
+        // A pending handoff holding an unrelated unsaved edit: the persist
+        // must add its field there and keep the edit.
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(&sidecar, "render:\n  surround_placement: back\n").unwrap();
+
+        persist_render_fields_to_path(&path, |render| {
+            renderer::config_fields::channel_render_mode::store(render, ChannelRenderMode::Host)
+        });
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("channel_render_mode: host"),
+            "host not written: {written}"
+        );
+        assert!(
+            written.contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost: {written}"
+        );
+        assert!(
+            written.contains("some_future_key: 42"),
+            "unknown key lost: {written}"
+        );
+        assert_sidecar(
+            &sidecar,
+            &["channel_render_mode: host", "surround_placement: back"],
+            &[],
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_channel_render_mode_spatial_omits_key_and_amends_sidecar() {
+        let path = temp_config_path("spatial");
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  channel_render_mode: host\n",
+        )
+        .unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(
+            &sidecar,
+            "render:\n  channel_render_mode: host\n  surround_placement: back\n",
+        )
+        .unwrap();
+
+        persist_render_fields_to_path(&path, |render| {
+            renderer::config_fields::channel_render_mode::store(render, ChannelRenderMode::Spatial)
+        });
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        // Spatial is the default → skip-if-default omits the key entirely.
+        assert!(
+            !written.contains("channel_render_mode"),
+            "default spatial should omit the key: {written}"
+        );
+        assert!(
+            written.contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost: {written}"
+        );
+        assert_sidecar(
+            &sidecar,
+            &["surround_placement: back"],
+            &["channel_render_mode"],
+        );
+
+        // Reloading yields the default (Spatial).
+        let cfg = renderer::config::Config::load_or_default(&path);
+        let mode = cfg
+            .render
+            .as_ref()
+            .and_then(renderer::config_fields::channel_render_mode::get)
+            .unwrap_or(ChannelRenderMode::Spatial);
+        assert_eq!(mode, ChannelRenderMode::Spatial);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_surround_placement_writes_back_and_amends_sidecar() {
+        use renderer::live_params::SurroundPlacement;
+        let path = temp_config_path("surround-back");
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  some_future_key: 42\n",
+        )
+        .unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(&sidecar, "render:\n  channel_render_mode: host\n").unwrap();
+
+        persist_render_fields_to_path(&path, |render| {
+            renderer::options::store::surround_placement(render, SurroundPlacement::Back)
+        });
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("surround_placement: back"),
+            "back not written: {written}"
+        );
+        assert!(
+            written.contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost: {written}"
+        );
+        assert!(
+            written.contains("some_future_key: 42"),
+            "unknown key lost: {written}"
+        );
+        assert_sidecar(
+            &sidecar,
+            &["surround_placement: back", "channel_render_mode: host"],
+            &[],
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_head_center_writes_reference_and_amends_sidecar() {
+        let path = temp_config_path("head-center");
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  binaural:\n    head_tracking:\n      osc_address: /android/rotationvector\n",
+        )
+        .unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(&sidecar, "render:\n  surround_placement: back\n").unwrap();
+
+        let control = crate::test_support::fixture_control();
+        let reference = [0.5, 0.5, 0.5, 0.5];
+        control.live.write().binaural.tracking.reference =
+            renderer::binaural::HeadPose::from_quat_array(reference);
+        control.set_config_path(path.clone());
+        persist_ops(&control, &[PersistOp::HEAD_CENTER]);
+
+        // Written under binaural.head_tracking, the existing osc_address kept,
+        // bridge_path preserved, and the pending sidecar amended.
+        let cfg = renderer::config::Config::load_or_default(&path);
+        let ht = cfg
+            .render
+            .as_ref()
+            .and_then(|r| r.binaural.as_ref())
+            .and_then(|b| b.head_tracking.as_ref())
+            .expect("head_tracking present");
+        assert_eq!(ht.reference_quat, Some(reference));
+        assert_eq!(ht.osc_address.as_deref(), Some("/android/rotationvector"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost"
+        );
+        assert_sidecar(
+            &sidecar,
+            &["reference_quat", "surround_placement: back"],
+            &[],
+        );
+
+        // Recentering back to identity drops the key entirely.
+        control.live.write().binaural.tracking.reference = renderer::binaural::HeadPose::identity();
+        persist_ops(&control, &[PersistOp::HEAD_CENTER]);
+        let cfg = renderer::config::Config::load_or_default(&path);
+        let ht = cfg
+            .render
+            .as_ref()
+            .and_then(|r| r.binaural.as_ref())
+            .and_then(|b| b.head_tracking.as_ref())
+            .expect("head_tracking present");
+        assert_eq!(ht.reference_quat, None, "identity should omit the key");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_surround_placement_side_omits_key_and_amends_sidecar() {
+        use renderer::live_params::SurroundPlacement;
+        let path = temp_config_path("surround-side");
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  surround_placement: back\n",
+        )
+        .unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(
+            &sidecar,
+            "render:\n  surround_placement: back\n  channel_render_mode: host\n",
+        )
+        .unwrap();
+
+        persist_render_fields_to_path(&path, |render| {
+            renderer::options::store::surround_placement(render, SurroundPlacement::Side)
+        });
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        // Side is the default → skip-if-default omits the key entirely.
+        assert!(
+            !written.contains("surround_placement"),
+            "default side should omit the key: {written}"
+        );
+        assert!(
+            written.contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost: {written}"
+        );
+        assert_sidecar(
+            &sidecar,
+            &["channel_render_mode: host"],
+            &["surround_placement"],
+        );
+
+        let cfg = renderer::config::Config::load_or_default(&path);
+        let placement = cfg
+            .render
+            .as_ref()
+            .and_then(|render| render.options.surround_placement)
+            .unwrap_or(SurroundPlacement::Side);
+        assert_eq!(placement, SurroundPlacement::Side);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

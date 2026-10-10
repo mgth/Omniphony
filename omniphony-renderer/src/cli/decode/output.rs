@@ -70,11 +70,9 @@ pub struct AudioLatencySnapshot {
     pub resampler_pending_latency_ms: Option<f32>,
 }
 
-/// Full scale of the integer sample domain: decoders hand out 24-bit samples
-/// sign-extended into an `i32`, so unity is 2^23 and not `i32::MAX`. Anything
-/// producing frames for the renderer has to scale to this, or it arrives 256x
-/// too loud.
-pub const I32_PCM_FULL_SCALE: i32 = 1 << 23;
+/// Full scale of the integer sample domain (2^23), defined next to the frame
+/// type it describes.
+pub use bridge_api::I32_PCM_FULL_SCALE;
 
 /// Audio sample data in different formats
 pub enum AudioSamples {
@@ -222,6 +220,13 @@ impl AudioWriter {
         Ok(AudioWriter::File(writer))
     }
 
+    /// Whether this is a `file` sink writing to a regular file, which building
+    /// the sink again would start over
+    /// ([`FileAudioWriter::is_regular_file`](audio_output::FileAudioWriter::is_regular_file)).
+    pub fn is_regular_file_sink(&self) -> bool {
+        matches!(self, AudioWriter::File(writer) if writer.is_regular_file())
+    }
+
     pub fn write_pcm_samples(
         &mut self,
         samples: &AudioSamples,
@@ -243,8 +248,14 @@ impl AudioWriter {
             }
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             AudioWriter::Cpal(w) => {
-                let samples_f32 = samples.to_f32();
-                w.write_samples(&samples_f32)?;
+                // Rendered output is already f32: borrow it rather than
+                // cloning the whole block every frame.
+                if let Some(f32_slice) = samples.as_f32() {
+                    w.write_samples(f32_slice)?;
+                } else {
+                    let samples_f32 = samples.to_f32();
+                    w.write_samples(&samples_f32)?;
+                }
                 Ok(())
             }
             AudioWriter::File(file_writer) => {
@@ -261,13 +272,13 @@ impl AudioWriter {
     }
 
     /// Cross-crate handle to the post-rendering pacer, if this backend has
-    /// one. Used by the decode lifecycle to install the handle on the
-    /// audio_input `InputControl` so the PipeWire input thread can drain
-    /// the FIFO into the ring.
+    /// one and was built with pacing on. Used by the decode lifecycle to
+    /// install the handle on the audio_input `InputControl` so the PipeWire
+    /// input thread can drain the FIFO into the ring.
     #[cfg(target_os = "linux")]
     pub fn pacer_handle(&self) -> Option<audio_output::PacerHandle> {
         match self {
-            AudioWriter::Pipewire(w) => Some(w.pacer_handle()),
+            AudioWriter::Pipewire(w) => w.pacer_handle(),
             _ => None,
         }
     }
@@ -322,6 +333,16 @@ impl AudioWriter {
     }
 
     /// Returns the current estimated audio latency in milliseconds, if supported by the backend.
+    /// The host a cpal writer plays through, as Studio shows it (`ASIO`,
+    /// `WASAPI (fallback: …)`, `CoreAudio`); `None` for the other backends.
+    pub fn output_host(&self) -> Option<&'static str> {
+        match self {
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            AudioWriter::Cpal(w) => Some(w.output_host_label()),
+            _ => None,
+        }
+    }
+
     pub fn latency_ms(&self) -> Option<f32> {
         match self {
             #[cfg(target_os = "linux")]
@@ -525,12 +546,12 @@ impl AudioWriter {
     /// Diagnostic metric handles published by the active output backend.
     /// Each entry should be passed to `DiagRegistry::register_external`.
     /// Returns an empty Vec on backends that do not yet publish any diag.
-    pub fn diag_atomic_handles(&self) -> Vec<sys::diag::DiagAtomicHandle> {
+    pub fn diag_atomic_handles(&self) -> Vec<diag::DiagAtomicHandle> {
         match self {
             #[cfg(target_os = "linux")]
             AudioWriter::Pipewire(pw) => pw.diag_atomic_handles(),
             #[cfg(any(target_os = "windows", target_os = "macos"))]
-            AudioWriter::Cpal(_) => Vec::new(),
+            AudioWriter::Cpal(w) => w.diag_atomic_handles(),
             AudioWriter::File(_) => Vec::new(),
             AudioWriter::Unsupported => Vec::new(),
         }

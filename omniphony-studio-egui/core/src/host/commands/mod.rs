@@ -1,14 +1,15 @@
 //! The Tauri host's command handlers (`src-tauri/src/commands/*.rs`), ported
 //! mechanically: `#[tauri::command]` gone, `State<SharedState>` became
 //! `&SharedState`, the `AppHandle` path lookups became [`HostPaths`]. The
-//! bodies are otherwise the host's, so both hosts send the same OSC. Keep in
-//! sync with `src-tauri` until the two share a crate.
+//! bodies were otherwise the host's, so both hosts sent the same OSC. (The
+//! Tauri host was removed in 0.7.0, #677.)
 #![allow(dead_code)]
 
 pub mod adaptive;
 pub mod app;
 pub mod audio;
 pub mod binaural;
+pub mod bridges;
 pub mod diag;
 pub mod engine;
 pub mod gain;
@@ -58,6 +59,13 @@ pub enum OscControlMsg {
         address: String,
         args: Vec<OscType>,
     },
+    /// A chunk of a large transfer, `bytes` of it reserved in the listener's
+    /// send window (see `crate::osc::SendWindow`).
+    SendArgsCounted {
+        address: String,
+        args: Vec<OscType>,
+        bytes: usize,
+    },
     Reconnect {
         request: u64,
         host: String,
@@ -67,6 +75,9 @@ pub enum OscControlMsg {
     SetMeteringEnabled {
         enabled: bool,
     },
+    SetPlayoutSync {
+        enabled: bool,
+    },
 }
 
 /// Paths the Tauri host resolved through `AppHandle::path()`.
@@ -74,6 +85,11 @@ pub enum OscControlMsg {
 pub struct HostPaths {
     /// Bundled resources (layouts, orender binary, engine library).
     pub resource_dir: Option<PathBuf>,
+    /// Where this run read its preset layouts from: the shipped `layouts/`,
+    /// or the checkout's for a build run from its source tree. The Presets
+    /// picker opens there. The shipped copy alone would leave a checkout
+    /// build, which has no resource directory, with no directory at all.
+    pub layouts_dir: Option<PathBuf>,
     /// Where log dumps go.
     pub log_dir: Option<PathBuf>,
     /// The user's downloads directory (memory CSV dumps).
@@ -90,6 +106,12 @@ impl HostPaths {
             resource_dir: crate::host::bundle::resource_dir(),
             ..Self::default()
         }
+    }
+
+    /// The same paths, recording where the preset layouts were read from.
+    pub fn with_layouts_dir(mut self, dir: PathBuf) -> Self {
+        self.layouts_dir = Some(dir);
+        self
     }
 
     pub fn resource_dir(&self) -> Result<PathBuf, String> {
@@ -145,13 +167,14 @@ impl std::ops::Deref for ModelRead<'_> {
 }
 
 impl SharedState {
-    /// Build the host's state. The composition root calls this; the mutable
-    /// odds and ends start empty.
+    /// Build the host's state. The composition root calls this with the
+    /// paths it resolved; the mutable odds and ends start empty.
     pub fn new(
         inner: SharedLive,
         osc_tx: ControlTx,
         config_dir: PathBuf,
         listen_port: u16,
+        paths: HostPaths,
         stats: Arc<crate::osc::OscStats>,
         waker: crate::osc::Waker,
     ) -> Self {
@@ -167,7 +190,7 @@ impl SharedState {
             renderer_child: Default::default(),
             watchdog: Default::default(),
             auto_tune_snapshot: Default::default(),
-            paths: HostPaths::bundled(),
+            paths,
             stats,
             waker,
         }
@@ -198,8 +221,19 @@ pub struct WatchdogControl {
     pub attempts: u8,
     pub cooldown_until: Option<std::time::Instant>,
     pub last_spawn_at: Option<std::time::Instant>,
-    pub check_requested_at: Option<std::time::Instant>,
     pub suppressed: bool,
+    /// Why the last automatic start failed (spawn error or fast exit), for
+    /// the "engine not running" banner. Cleared on re-arm and on a connection.
+    pub last_failure: Option<String>,
+    /// When the watchdog will start a renderer, if every rule lets it and
+    /// only a wait is left: what the "Start the audio engine" button fills
+    /// towards. Written by the watchdog's tick, read by
+    /// [`EngineStartProgress`](crate::host::services::watchdog::EngineStartProgress).
+    pub countdown: Option<crate::host::services::watchdog::Countdown>,
+    /// A renderer was spawned and has not been seen connected since. Set at
+    /// the spawn, cleared by the watchdog on a connection or when it reaps
+    /// the child.
+    pub awaiting_answer: bool,
 }
 
 impl WatchdogControl {
@@ -207,6 +241,7 @@ impl WatchdogControl {
         self.attempts = 0;
         self.cooldown_until = None;
         self.suppressed = false;
+        self.last_failure = None;
     }
 }
 
@@ -233,6 +268,15 @@ pub fn send_control(tx: &ControlTx, msg: OscControlMsg) {
             args: vec![OscType::Float(a), OscType::Float(b), OscType::Float(c)],
         },
         OscControlMsg::SendArgs { address, args } => Control::Send { address, args },
+        OscControlMsg::SendArgsCounted {
+            address,
+            args,
+            bytes,
+        } => Control::SendCounted {
+            address,
+            args,
+            bytes,
+        },
         OscControlMsg::Reconnect {
             host,
             rx_port,
@@ -252,6 +296,7 @@ pub fn send_control(tx: &ControlTx, msg: OscControlMsg) {
             }
         }
         OscControlMsg::SetMeteringEnabled { enabled } => Control::SetMetering { enabled },
+        OscControlMsg::SetPlayoutSync { enabled } => Control::SetPlayoutSync { enabled },
     };
     let _ = tx.send(control);
 }
@@ -299,10 +344,19 @@ pub(crate) mod tests {
     /// The same, with a waker a test can watch: what a command announces to the
     /// clock is part of its contract, since the clock is asleep otherwise.
     pub(crate) fn state_with_waker(waker: crate::osc::Waker) -> SharedState {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (state, rx) = state_with_outbox(waker);
         // Kept alive, so a send does not fail and change what is under test.
         std::mem::forget(rx);
-        SharedState {
+        state
+    }
+
+    /// The same, keeping the other end of the control channel, for a test
+    /// whose contract is what gets sent.
+    pub(crate) fn state_with_outbox(
+        waker: crate::osc::Waker,
+    ) -> (SharedState, std::sync::mpsc::Receiver<crate::osc::Control>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let state = SharedState {
             jobs: Default::default(),
             config: crate::host::config::RuntimeConfig::memory(),
             inner: Arc::new(Mutex::new(crate::osc::dispatch::Live::new(
@@ -319,6 +373,19 @@ pub(crate) mod tests {
             paths: HostPaths::default(),
             stats: crate::osc::OscStats::new(),
             waker,
-        }
+        };
+        (state, rx)
+    }
+
+    /// The addresses of every message sent so far, in order.
+    pub(crate) fn sent_addresses(
+        rx: &std::sync::mpsc::Receiver<crate::osc::Control>,
+    ) -> Vec<String> {
+        rx.try_iter()
+            .filter_map(|control| match control {
+                crate::osc::Control::Send { address, .. } => Some(address),
+                _ => None,
+            })
+            .collect()
     }
 }

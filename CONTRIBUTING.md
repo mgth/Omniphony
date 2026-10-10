@@ -4,16 +4,15 @@ Thanks for your interest in Omniphony! This guide covers how to build, test, and
 contribute to the suite — with a focus on the most common contribution:
 **adding your own spatial render backend**.
 
-Omniphony has a renderer and two Studio frontends:
+Omniphony has a renderer and a Studio frontend:
 
 - **`omniphony-renderer/`** — the real-time decoding, spatial rendering, and OSC
   control engine (a Cargo workspace of several crates).
-- **`omniphony-studio/`** — the supervision / 3D-visualization / live-control
-  desktop app (Tauri + web frontend).
-
-- **`omniphony-studio-egui/`** — native Studio, with separate core, scene and UI crates.
-  Start with its [contributor guide](omniphony-studio-egui/CONTRIBUTING.md) for
-  a first panel change or a toolkit upgrade.
+- **`omniphony-studio-egui/`** — Omniphony Studio, the supervision /
+  3D-visualization / live-control desktop app (native egui/wgpu), with
+  separate core, scene and UI crates. Start with its
+  [contributor guide](omniphony-studio-egui/CONTRIBUTING.md) for a first panel
+  change or a toolkit upgrade.
 
 Most of this guide is about the renderer, since that is where rendering backends
 live and where the realtime contract matters.
@@ -28,10 +27,10 @@ omniphony-renderer/          Cargo workspace (the engine)
   audio_input/               live PipeWire capture
   orender_engine/            engine glue: bridge loading, decode loop, OSC
   runtime_control/           shared control/state types and OSC plumbing
-  bridge_api/                stable ABI for external format bridges
+  bridge_api/                versioned ABI for external format bridges
   spdif/                     IEC61937 / S/PDIF parsing
   example_backend/           reference backend — copy this to start your own
-omniphony-studio/            Tauri control-surface app
+omniphony-studio-egui/       Omniphony Studio (its own Cargo workspace)
 docs/                        design notes and deep-dive guides
 ```
 
@@ -50,10 +49,20 @@ cargo fmt --all -- --check       # formatting must be clean
 ```
 
 CI (`.github/workflows/ci.yml`) checks formatting, builds and tests the renderer
-and native Studio, checks the Studio frontend and contracts, and compiles the
+and the Studio, checks the contracts, and compiles the
 platform targets. Consult the workflow for the exact current matrix; release
-bundling is separate. Clippy is not gated yet because of an existing warning
-backlog; avoid introducing new warnings.
+bundling is separate. It also gates:
+
+- **clippy**, as a ratchet: warnings per crate and lint may only go down
+  (`omniphony-renderer/clippy-baseline.txt`, which also pins the clippy
+  toolchain). Run `omniphony-renderer/scripts/clippy-ratchet.sh`; when you
+  remove warnings, lock it in with `UPDATE_CLIPPY_BASELINE=1` and commit the
+  baseline with your change.
+- **cargo-deny** (`cargo deny --workspace check` in `omniphony-renderer/`):
+  advisories, licences, sources and duplicate crate versions, per `deny.toml`.
+- **the MSRV**: the renderer workspace must still build on its declared
+  `rust-version`.
+- **pinned actions**: every third-party action is referenced by commit SHA.
 
 Before opening a PR, make sure `cargo fmt --all -- --check`, `cargo build`, and
 `cargo test` all pass locally.
@@ -70,9 +79,11 @@ only the renderer's public API:
 
 - **`GainModel`** — maps an object position (+ live render params) to a
   per-speaker gain vector. This is the realtime hot path.
-- **`BackendFactory`** — declares the backend's id, label, and a data-driven
-  parameter schema (Studio renders the controls automatically), and builds a
-  `GainModel` from a speaker layout.
+- **`PluginFactory` + `BackendFactory`** — declares the backend's id, label,
+  and a data-driven parameter schema (Studio renders the controls
+  automatically), and builds a `GainModel` from a speaker layout. The first
+  half is the contract every plugin shares, object generators included: see
+  [`docs/plugin-contract.md`](docs/plugin-contract.md).
 
 ### Steps
 
@@ -83,7 +94,8 @@ only the renderer's public API:
    [`docs/custom-render-backend-integration.md`](docs/custom-render-backend-integration.md),
    the full walk-through.
 
-2. **Implement `GainModel` + `BackendFactory`** for your panner.
+2. **Implement `GainModel`, `PluginFactory` and `BackendFactory`** for your
+   panner.
 
 3. **Register it** — one line where the engine wires up its backends
    (`orender_engine/src/renderer_build.rs`):
@@ -133,9 +145,21 @@ alternative client or host integration (rather than a backend), this is the
 surface you target. The full contract — every address, its direction, arguments
 and semantics — is documented in
 [`docs/osc-control-contract.md`](docs/osc-control-contract.md), and the address
-strings have named constants in
-`omniphony-renderer/runtime_control/src/osc_contract.rs` (the single source of
-truth; `ALL_CONTROL` / `ALL_STATE` are the exhaustive lists).
+strings have named constants in the dependency-free `osc-contract` crate
+(`osc-contract/src/lib.rs`, the single source of truth; `ALL_CONTROL` /
+`ALL_STATE` / `ALL_SESSION` are the exhaustive lists).
+
+## What gets saved, and when
+
+One rule, written down in
+[`docs/persistence-policy.md`](docs/persistence-policy.md): **display and
+cosmetic state is kept the moment it changes; anything that changes what is
+heard, or how the engine behaves, reaches `config.yaml` only through the Save
+button.** Classify a new setting or control before wiring it — the policy says
+how each class is plumbed on both sides. Two tripwires hold it:
+`runtime_control/tests/persistence_policy.rs` in the renderer (no new write
+that bypasses Save without a stated reason) and the `save-config` rule of the
+native Studio's architecture test.
 
 ## Coding conventions
 
@@ -148,6 +172,63 @@ truth; `ALL_CONTROL` / `ALL_STATE` are the exhaustive lists).
 - **Keep it formatted.** Run `cargo fmt --all` before committing.
 - **Branch names**: use generic, descriptive names (e.g. `fix/spdif-parser`,
   `feat/my-backend`).
+
+## Writing tests
+
+A test earns its place by failing when the behaviour it names breaks. The
+rules below come from a review that found tests passing without checking
+anything; each names the failure it prevents.
+
+- **A test must be able to fail.** Never `return` early when a fixture, a
+  device or an environment variable is missing: the run reports `ok` for a
+  test that did not happen. Use `#[ignore = "why"]`, so the reason shows in
+  every run, and make the test fail with a message when run without what it
+  needs. Prefer a committed fixture (the reference bridge and the bundled demo
+  WAV run the engine tests everywhere).
+- **Guard against vacuous comparisons.** Comparing two renders, two state
+  dumps or two lists proves nothing when both are empty: assert that there is
+  something to compare. A negative test checks *which* error it got (the
+  reason in the message), not just `is_err()`: an input that is wrong in two
+  ways fails for the wrong one. A sweep counts what it reached and asserts the
+  count.
+- **Check that it bites.** After writing a test for a fix, revert the fix (or
+  break the code the test guards) and watch it fail. Say so in the PR.
+- **Test through public seams.** Assert what a caller sees — the rendered
+  output, the published state, the returned error — not private fields, exact
+  call counts or a re-implementation of the code under test. Those break on a
+  correct refactor and pass on a wrong one that keeps the structure.
+- **Stay hermetic.** Tests run in parallel, in one process, on machines where
+  a renderer and Studio may be running: bind sockets to port 0 and send only
+  to sockets the test owns (never 9000 or `OMNIPHONY_OSC_PORT`); write under a
+  temp directory of the test's own; change an environment variable only under
+  the one lock its crate's tests share for that, and restore it even on panic;
+  hold a module's test lock before touching its process-global state (the
+  overlay, the OSC port registry).
+- **Every external input gets negative tests**: OSC datagrams, config.yaml,
+  SOFA/WAV files, the C ABI. Malformed input must be refused or bounded, never
+  panic, allocate without bound, or reach the render as NaN. The registry
+  sweeps (`live_options_conformance.rs`, and the engine's control sweeps
+  where they exist) pick up every option registry row on their own: a new
+  option declared there joins them without a test of its own. Anything
+  outside the registry does not: a hand-wired address family (such as
+  `hybrid/curve`) or a lifecycle command needs its own cases, valid and
+  malformed, in the sweep's address list or in a test beside its handler.
+- **Keep fixtures shared and fast.** Reuse the helpers that exist
+  (`dsp_fixtures` for scenes, signals and analysis; `saf_kemar_shared` rather
+  than parsing the embedded set again) and build an expensive fixture once per
+  test, not once per case.
+- **Coverage guides, it does not gate.** A covered line is not a checked one.
+  To find untested code, measure locally — no global threshold, which would
+  reward tests that execute without asserting:
+
+  ```sh
+  cd omniphony-renderer
+  RUSTFLAGS="-C instrument-coverage" LLVM_PROFILE_FILE="$PWD/../cov/%p-%m.profraw" \
+    CARGO_TARGET_DIR=../cov/target cargo test --workspace
+  ```
+
+  then merge the profiles with `llvm-profdata` and report with `llvm-cov`,
+  using an LLVM matching the toolchain's (`rustc -vV`).
 
 ## DSP validation
 
@@ -175,7 +256,7 @@ for the full contract, the wide matrix, and how deferred thresholds are tracked.
 - **Changed a `Cargo.toml`? Commit the regenerated `Cargo.lock` with it.** CI
   builds with `--locked`, so it fails rather than resolving a dependency the
   repository has not recorded. Each workspace has its own lock:
-  `omniphony-renderer/`, `omniphony-studio-egui/`, `omniphony-studio/src-tauri/`.
+  `omniphony-renderer/` and `omniphony-studio-egui/`.
 
 By contributing, you agree that your contributions are licensed under the
 project's `GPL-3.0-or-later` license.

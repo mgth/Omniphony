@@ -17,8 +17,9 @@ use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
 use crate::host::channels::{
-    Channel, CoordMode, PlacementMode, adm_to_meters, adm_to_polar, build_layout_payload,
-    effective_channels_for, family_placement, meters_to_adm, polar_to_adm,
+    Channel, CoordMode, PlacementMode, adm_polar_distance_m, adm_to_meters, adm_to_polar,
+    build_layout_payload, effective_channels_for, family_label, family_placement, meters_to_adm,
+    polar_to_adm,
 };
 use crate::host::commands::engine;
 use crate::i18n::t;
@@ -50,7 +51,7 @@ impl StudioSpike {
         let Some(name) = self.selected_channel() else {
             return;
         };
-        let (channel, room, scale_m, direct, family, mode) = {
+        let (channel, room, scale_m, direct, family, family_name, mode) = {
             let live = self.host.read();
             let family = live.editing_family;
             let channels = effective_channels_for(&live.channels, &live.app, family);
@@ -60,14 +61,15 @@ impl StudioSpike {
             let direct = (!channel.spatialize).then(|| self.direct_target(&live, &name));
             (
                 channel,
-                live.app.room_ratio.clone(),
-                live.app.room_ratio.scale_m.max(0.001),
+                live.app.display_room(),
+                live.app.display_room().scale_m.max(0.001),
                 direct,
                 family,
+                family_label(&live.app, family),
                 family_placement(&live.app, family).effective_mode,
             )
         };
-        let trailing = format!("{name} · {}", t(family.i18n_key()));
+        let trailing = format!("{name} · {family_name}");
         section::pinned_header(ui, t("channelEdit.title"), Some(&trailing));
 
         // The gain first, before the routing: an input trim that applies in
@@ -311,8 +313,8 @@ impl StudioSpike {
     ) {
         let adm = position.unwrap_or([0.0; 3]);
         let (az, el, dist) = adm_to_polar(room, adm);
-        let meters = adm_to_meters(room, adm, scale_m);
-        let dist_m = (meters[0] * meters[0] + meters[1] * meters[1] + meters[2] * meters[2]).sqrt();
+        // The radius at the frame's scale: the metres the field takes back.
+        let dist_m = adm_polar_distance_m(room, adm, scale_m);
         let cell = |value: f64, speed: f64, decimals: usize| {
             if position.is_some() {
                 CoordCell::field(value as f32, speed, decimals)
@@ -375,7 +377,7 @@ impl StudioSpike {
     /// path the output speakers use, so the channel lands exactly where it was
     /// put.
     fn set_channel_cartesian(&mut self, name: &str, adm: [f64; 3]) {
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.host.read().app.display_room();
         let adm = [
             adm[0].clamp(-1.0, 1.0),
             adm[1].clamp(-1.0, 1.0),
@@ -408,7 +410,7 @@ impl StudioSpike {
             self.set_channel_polar(name, azimuth, elevation, distance);
             return;
         }
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.host.read().app.display_room();
         let distance = distance.max(0.01);
         let adm = polar_to_adm(&room, azimuth, elevation, distance);
         let live = self.host.read();
@@ -430,7 +432,7 @@ impl StudioSpike {
     }
 
     fn set_channel_polar(&mut self, name: &str, azimuth: f64, elevation: f64, distance: f64) {
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.host.read().app.display_room();
         let distance = if distance > 0.0 { distance } else { 0.01 };
         let adm = polar_to_adm(&room, azimuth, elevation, distance);
         self.commit_channel(name, |c| {

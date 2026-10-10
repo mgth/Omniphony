@@ -30,6 +30,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=cbindgen.toml");
+    println!("cargo:rerun-if-env-changed=CI");
 
     // On Linux, stamp the release cdylib with a SemVer soname
     // (`liborender.so.<ABI major>`) so the packaged library participates in
@@ -56,6 +57,39 @@ fn main() {
         println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/liborender.dylib");
     }
 
+    // With MSVC, the linker names a program database after its output, so
+    // this library (`orender.dll`) and the `orender` executable both write
+    // `orender.pdb` into the same `deps/` folder: cargo warns of the collision,
+    // and when the two links overlap one fails with LNK1201. Keep this
+    // library's database in its own build folder instead.
+    //
+    // rustc records only the file name in the DLL (`/PDBALTPATH:%_PDB%`), and
+    // next to the DLL that name is now the executable's database. A debug
+    // build records the full path instead (the later option wins), so a
+    // debugger finds this one; a release DLL keeps the bare name, recording
+    // no build-machine path, and ships without its database anyway.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+        let pdb = PathBuf::from(out_dir).join("orender.pdb");
+        println!("cargo:rustc-cdylib-link-arg=/PDB:{}", pdb.display());
+        if profile != "release" {
+            println!("cargo:rustc-cdylib-link-arg=/PDBALTPATH:{}", pdb.display());
+        }
+
+        // The static C runtime comes from the workspace's .cargo/config.toml,
+        // which a RUSTFLAGS variable silently replaces: the player's workflow
+        // builds this library with one. Without the flag the DLL needs the
+        // Visual C++ Redistributable, and fails to load on a fresh Windows.
+        let features = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+        if !features.split(',').any(|f| f == "crt-static") {
+            println!(
+                "cargo:warning=orender.dll is built without the static C runtime and will \
+                 need the Visual C++ Redistributable: add `-C target-feature=+crt-static` \
+                 to RUSTFLAGS (it replaces omniphony-renderer/.cargo/config.toml)"
+            );
+        }
+    }
+
     // Load cbindgen.toml explicitly: the library Builder (unlike the cbindgen
     // CLI) does not pick it up on its own, and the export/enum settings there
     // (forced OrenderChannelLabel emission, name-prefixed variants) are part of
@@ -71,9 +105,12 @@ fn main() {
             bindings.write_to_file(&out);
         }
         // Don't fail the cdylib build if header generation hits a snag during
-        // development; surface it as a warning instead.
-        Err(e) => {
+        // development; surface it as a warning instead. In CI it is an error:
+        // a stale committed header would otherwise pass the drift check that
+        // compares it against this build's output.
+        Err(e) if std::env::var_os("CI").is_none() => {
             println!("cargo:warning=cbindgen failed to generate orender.h: {e}");
         }
+        Err(e) => panic!("cbindgen failed to generate orender.h: {e}"),
     }
 }

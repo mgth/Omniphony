@@ -8,6 +8,8 @@
 //! keeps all grid FIRs time-aligned so they can be linearly interpolated without
 //! comb-filtering.
 
+use super::itd::{SPEED_OF_SOUND, lateral_sine};
+
 /// Kernel **capacity** per ear, in taps: the fixed size of every
 /// [`HrirPair`] and of the convolver state. The number of taps actually
 /// convolved is [`hrir_len`], which scales with the sample rate so the
@@ -103,7 +105,6 @@ impl SyntheticHrir {
     /// `θ_min`: angle of the deepest shadow, past which the bright spot
     /// behind the head brings the level back up.
     const THETA_MIN_DEG: f32 = 150.0;
-    const SPEED_OF_SOUND: f32 = 343.0;
 
     /// `α(θ)`, with `cos_theta` the cosine of the angle from the ear's axis.
     #[inline]
@@ -119,7 +120,7 @@ impl SyntheticHrir {
     /// the DC gain so the total is exactly 1; at high frequency only the
     /// impulse survives, leaving `α`.
     fn shelf_ir(&self, alpha: f32, sample_rate: u32, out: &mut [f32; HRIR_LEN]) {
-        let w0 = Self::SPEED_OF_SOUND / self.head_radius_m.clamp(0.05, 0.15);
+        let w0 = SPEED_OF_SOUND / self.head_radius_m.clamp(0.05, 0.15);
         let p = (-2.0 * w0 / sample_rate as f32).exp();
         let mut tail = (1.0 - alpha) * (1.0 - p);
         for (n, slot) in out.iter_mut().enumerate() {
@@ -134,7 +135,7 @@ impl SyntheticHrir {
 /// the sine of the lateral angle. 0.5 for both ears anywhere in the median
 /// plane, 1 for the ear on the source's side of the interaural axis.
 pub fn ear_exposure(az_deg: f32, el_deg: f32) -> (f32, f32) {
-    let lateral = (az_deg.to_radians().sin() * el_deg.to_radians().cos()).clamp(-1.0, 1.0);
+    let lateral = lateral_sine(az_deg.to_radians(), el_deg.to_radians()).clamp(-1.0, 1.0);
     (0.5 * (1.0 - lateral), 0.5 * (1.0 + lateral))
 }
 
@@ -163,7 +164,7 @@ impl HrirProvider for SyntheticHrir {
         let el = el_deg.to_radians();
         // Cosine of the angle from the right ear's axis (+X): the lateral
         // sine. The left ear sees the supplementary angle.
-        let lateral = (az.sin() * el.cos()).clamp(-1.0, 1.0);
+        let lateral = lateral_sine(az, el).clamp(-1.0, 1.0);
         let mut pair = HrirPair::zeroed();
         self.shelf_ir(Self::alpha(-lateral), sample_rate, &mut pair.left);
         self.shelf_ir(Self::alpha(lateral), sample_rate, &mut pair.right);
@@ -271,7 +272,7 @@ impl ParametricPinnaHrir {
     /// amplitude factor.
     fn echo_train(az_deg: f32, el_deg: f32, sample_rate: u32, d: &[f32; 5]) -> ([f32; 5], f32) {
         let (az, el) = (az_deg.to_radians(), el_deg.to_radians());
-        let lateral = (az.sin() * el.cos()).clamp(-1.0, 1.0);
+        let lateral = lateral_sine(az, el).clamp(-1.0, 1.0);
         let theta = lateral.asin();
         // Angle around the interaural axis, from the front, in (−180°, 180°].
         let phi = el.sin().atan2(az.cos() * el.cos());
@@ -551,8 +552,8 @@ impl HrirSet {
     /// convolvers' current kernels to find out whether anything moved at all.
     /// Both costs are wasted whenever an object barely turned.
     ///
-    /// The grid is measured every [`AZ_STEP_DEG`](Self::AZ_STEP_DEG) /
-    /// [`EL_STEP_DEG`](Self::EL_STEP_DEG) — 5° — but `fa`/`fe` below are
+    /// The grid is measured every `AZ_STEP_DEG` /
+    /// `EL_STEP_DEG` — 5° — but `fa`/`fe` below are
     /// continuous, so today a 0.01° move yields a numerically different kernel
     /// and arms a full crossfade. That is precision the measurements do not
     /// contain: below the lattice we are only interpolating measurement noise.
@@ -809,7 +810,7 @@ mod tests {
             (
                 "saf",
                 HrirSet::new(
-                    &crate::binaural::measured::MeasuredHrirData::saf_kemar(),
+                    &*crate::binaural::measured::MeasuredHrirData::saf_kemar_shared(48_000),
                     48_000,
                 ),
             ),
@@ -1078,7 +1079,7 @@ mod tests {
     #[test]
     fn a_96k_set_uses_256_taps_and_is_silent_beyond() {
         let set = HrirSet::new(
-            &crate::binaural::measured::MeasuredHrirData::saf_kemar().resampled_to(96_000),
+            &*crate::binaural::measured::MeasuredHrirData::saf_kemar_shared(96_000),
             96_000,
         );
         assert_eq!(set.len(), 256);
@@ -1194,7 +1195,7 @@ mod tests {
     fn five_degree_grid_has_1944_nodes() {
         let t0 = std::time::Instant::now();
         let set = HrirSet::new(
-            &crate::binaural::measured::MeasuredHrirData::saf_kemar(),
+            &*crate::binaural::measured::MeasuredHrirData::saf_kemar_shared(48_000),
             48_000,
         );
         let elapsed = t0.elapsed();

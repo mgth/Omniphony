@@ -1,6 +1,11 @@
 # Omniphony Studio — Phase 2 specification: RIGHT overlay, save footer, scene-effects bar, band cursor
 
-Source tree: `omniphony-studio/`
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
+Source tree: [`omniphony-studio/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio)
 (branch `feat/studio-egui-panels`). All paths below are relative to that
 directory unless prefixed with `src-tauri/`. Line numbers are from the tree as
 read on 2026-09-10.
@@ -856,6 +861,7 @@ Title `binaural.distanceTitle` "Distance".
 |---|---|---|---|---|
 | `#binauralUnitScale` + `#binauralUnitScaleVal` | range `0.1..10 step 0.1`, baked 1; value `toFixed(1)` | `binaural.distanceScale` "Distance scale (m / unit)" / `help.binaural.distanceScale` | `b.unitScaleM` | `control_binaural_unit_scale {value}` → `/omniphony/control/binaural/unit_scale` float clamp 0.01..100 |
 | `#binauralAirAbsorption` | switch, baked checked | `binaural.airAbsorption` "Air absorption (distance HF roll-off)" / `help.binaural.airAbsorption` | `b.airAbsorption` | `control_binaural_air_absorption {enable}` → `/omniphony/control/binaural/air_absorption` int |
+| Sphere coordinates (native Studio, 2026-10; first row, direct headphone mode only) | switch, off | `binaural.sphereCoordinates` "Read positions on a sphere" / `help.binaural.sphereCoordinates` | `b.sphereCoordinates` | `control_binaural_sphere_coordinates {enable}` → `/omniphony/control/binaural/sphere_coordinates` int |
 
 #### 3.3.3 Listening room (`#binauralRoomSection`)
 
@@ -1189,7 +1195,7 @@ recompute, `control_distance_model_metric` → `/omniphony/control/distance_mode
 ---
 ## 4. Speakers section and speaker editor
 
-Sources (all under `omniphony-studio/`, line numbers as read on 2026-09-10):
+Sources (all under [`omniphony-studio/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), line numbers as read on 2026-09-10):
 
 | File | Role |
 |---|---|

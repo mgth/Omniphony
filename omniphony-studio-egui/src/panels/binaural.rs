@@ -13,16 +13,16 @@ use crate::app::StudioSpike;
 use crate::host::commands::SharedState;
 use crate::host::commands::binaural as cmd;
 use crate::i18n::{t, tf};
+use crate::model::binaural::{HRIR_SOURCES, OutputMode, hrir_source_offered, last_hrir_file};
 use crate::ui::group::Group;
 use crate::ui::{theme, widgets};
 
-/// HRTF sources, in the select's order.
-const HRIR_SOURCES: &[(&str, &str)] = &[
-    ("saf", "binaural.hrtfSource.kemar"),
-    ("synthetic", "binaural.hrtfSource.synthetic"),
-    ("pinna", "binaural.hrtfSource.pinna"),
-    ("prtf", "binaural.hrtfSource.prtf"),
-    ("sofa", "binaural.hrtfSource.sofa"),
+/// Which measured head orientations of a BRIR stay resident, as the
+/// renderer reports it (`auto` follows the head-tracking address).
+const BRIR_TRACKING: &[(&str, &str)] = &[
+    ("auto", "binaural.brirHeadTracking.auto"),
+    ("on", "binaural.brirHeadTracking.on"),
+    ("off", "binaural.brirHeadTracking.off"),
 ];
 
 const TRACK_FORMATS: &[(&str, &str)] = &[
@@ -52,6 +52,34 @@ fn flag(doc: Option<&serde_json::Value>, path: &[&str], fallback: bool) -> bool 
     cursor.and_then(|v| v.as_bool()).unwrap_or(fallback)
 }
 
+/// Which binaural path the renderer runs, as the state describes it. Each
+/// path consumes a different set of the tab's fields (see `binaural_tab`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BinauralPath {
+    /// Every object through its own HRTF pair.
+    Direct,
+    /// The virtual speaker layout, each speaker through an HRTF pair.
+    Cascaded,
+    /// The virtual speaker layout through a measured room (a `brir` source,
+    /// which forces the virtual-speaker path).
+    Brir,
+}
+
+impl BinauralPath {
+    fn of(doc: Option<&serde_json::Value>) -> Self {
+        if text(doc, &["hrirSource"]).as_deref() == Some("brir") {
+            return Self::Brir;
+        }
+        match text(doc, &["modeEffective"])
+            .or_else(|| text(doc, &["mode"]))
+            .as_deref()
+        {
+            Some("cascaded") => Self::Cascaded,
+            _ => Self::Direct,
+        }
+    }
+}
+
 fn text(doc: Option<&serde_json::Value>, path: &[&str]) -> Option<String> {
     let mut cursor = doc;
     for key in path {
@@ -70,13 +98,83 @@ impl StudioSpike {
             live.app.binaural.clone()
         };
         let doc = doc.as_ref();
-        self.hrtf_block(ui, doc);
-        self.distance_block(ui, doc);
-        self.room_block(ui, doc);
+        self.adopt_hrir_params(doc);
+        // What each group feeds, from the renderer's binaural stage:
+        // - Direct and Cascaded run the HRTF stage, which reads every group
+        //   (the source and its shaping, the distance cues, the synthetic
+        //   room, the head pose);
+        // - a measured room (BRIR) reads its own file options and the head
+        //   pose only — the measurement is the distance, the reflections and
+        //   the tail, so those groups are not drawn;
+        // - with the output on the speakers nothing here renders: the tab
+        //   stays editable, with a note saying so.
+        let path = BinauralPath::of(doc);
+        if text(doc, &["outputMode"]).as_deref() != Some("binaural") {
+            widgets::note(ui, t("binaural.speakerOutputNote"));
+        }
+        self.hrtf_block(ui, doc, path, true);
+        if path != BinauralPath::Brir {
+            self.distance_block(ui, doc, path);
+            self.room_block(ui, doc);
+        }
         self.tracking_block(ui, doc);
     }
 
-    fn hrtf_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
+    /// Take the parametric settings the renderer echoes (`hrirParams`) when
+    /// they change: at connect, after a profile switch or a reload. Without
+    /// it the sliders showed their defaults over a saved setup, and touching
+    /// one sent the defaults of the others. During a drag the echo is what
+    /// was just sent, so nothing fights the slider.
+    fn adopt_hrir_params(&mut self, doc: Option<&serde_json::Value>) {
+        let Some(params) = doc
+            .and_then(|d| d.get("hrirParams"))
+            .filter(|p| p.is_object())
+        else {
+            return;
+        };
+        if self.hrir_params_seen.as_ref() == Some(params) {
+            return;
+        }
+        self.hrir_params_seen = Some(params.clone());
+        let pct = |key: &str| params.get(key).and_then(serde_json::Value::as_f64);
+        if let Some(preset) = params.get("preset").and_then(serde_json::Value::as_str) {
+            self.pinna_preset = preset.to_owned();
+            if let Some(v) = pct("dScalePct") {
+                self.pinna_d_scale = v as f32;
+            }
+            if let Some(v) = pct("depthPct") {
+                self.pinna_depth = v as f32;
+            }
+        } else {
+            if let Some(v) = pct("freqScalePct") {
+                self.prtf_freq_scale = v as f32;
+            }
+            if let Some(v) = pct("depthPct") {
+                self.prtf_depth = v as f32;
+            }
+        }
+    }
+
+    /// The Essentials view's HRTF group: the source, its file and what was
+    /// loaded, without the rows that shape it.
+    pub(crate) fn essentials_hrtf(&mut self, ui: &mut Ui) {
+        let doc = {
+            let live = self.host.read();
+            live.app.binaural.clone()
+        };
+        let doc = doc.as_ref();
+        self.adopt_hrir_params(doc);
+        self.hrtf_block(ui, doc, BinauralPath::of(doc), false);
+    }
+
+    /// The HRTF group; `full: false` leaves out the shaping rows.
+    fn hrtf_block(
+        &mut self,
+        ui: &mut Ui,
+        doc: Option<&serde_json::Value>,
+        path: BinauralPath,
+        full: bool,
+    ) {
         let source = text(doc, &["hrirSource"]).unwrap_or_else(|| "saf".to_owned());
         let effective = text(doc, &["hrirEffective"]);
         // The source select and, for a SOFA file, its Browse button: only
@@ -84,6 +182,7 @@ impl StudioSpike {
         // one otherwise would download a file nothing plays.
         let mut chosen = source.clone();
         let mut browse = false;
+        let mut browse_brir = false;
         Group::new("HRTF")
             .help("help.binaural.hrtf")
             .actions(|ui| {
@@ -91,6 +190,14 @@ impl StudioSpike {
                     browse = ui
                         .button(t("backend.file.browse"))
                         .on_hover_text(t("binaural.sofaBrowseTitle"))
+                        .clicked();
+                }
+                if source == "brir" {
+                    // A room response is a local file of the renderer's:
+                    // the native picker, not the HRTF database browser.
+                    browse_brir = ui
+                        .button(t("backend.file.browse"))
+                        .on_hover_text(t("binaural.brirBrowseTitle"))
                         .clicked();
                 }
                 widgets::bounded_combo(ui, 160.0, |ui, w| {
@@ -103,14 +210,26 @@ impl StudioSpike {
                         .width(w)
                         .truncate()
                         .show_ui(ui, |ui| {
+                            // The output mode says which sources apply: a
+                            // measured room is listed under the virtual room
+                            // only (`hrir_source_offered`).
                             for (id, key) in HRIR_SOURCES {
-                                ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                                if !hrir_source_offered(doc, id) {
+                                    continue;
+                                }
+                                let entry =
+                                    ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                                // A file source names the file it reopens.
+                                if let Some(name) = last_hrir_file(doc, id) {
+                                    entry
+                                        .on_hover_text(tf("binaural.lastFile", &[("name", &name)]));
+                                }
                             }
                         })
                 });
             })
             .show(ui, |ui| {
-                self.hrtf_rows(ui, doc, &source, effective.as_deref())
+                self.hrtf_rows(ui, doc, path, &source, effective.as_deref(), full)
             });
         if chosen != source {
             self.send_hrir_source(&chosen);
@@ -118,17 +237,35 @@ impl StudioSpike {
         if browse {
             self.open_sofa_browser();
         }
+        if browse_brir {
+            self.pick_files(
+                ui.ctx(),
+                crate::ui::file_dialogs::Purpose::Brir,
+                &["sofa".to_owned()],
+            );
+        }
     }
 
     /// The HRTF group's inset: what was loaded, the EQ, the head, the update
-    /// lattice, and the parametric sources' own settings.
+    /// lattice, and the parametric sources' own settings — or, for a measured
+    /// room, its file, status and options alone: the EQ, the head radius and
+    /// the lattice shape the HRTF stage, which a room response bypasses.
     fn hrtf_rows(
         &mut self,
         ui: &mut Ui,
         doc: Option<&serde_json::Value>,
+        path: BinauralPath,
         source: &str,
         effective: Option<&str>,
+        full: bool,
     ) {
+        if path == BinauralPath::Brir {
+            // A room response has its own status: the HRIR grid's effective
+            // source is the direct path's KEMAR meanwhile, not a fallback.
+            self.brir_rows(ui, doc);
+            widgets::note(ui, t("binaural.brirMeasuredNote"));
+            return;
+        }
         // The renderer says what it actually loaded; a fallback means the
         // requested source did not work.
         if let Some(effective) = effective
@@ -172,6 +309,15 @@ impl StudioSpike {
             }
         }
 
+        // Where a measured room is chosen: under the virtual room, the one
+        // headphone path that can render it.
+        if !OutputMode::virtual_room(doc) {
+            widgets::note(ui, t("binaural.brirUnderVirtualRoom"));
+        }
+
+        if !full {
+            return;
+        }
         let mut eq = flag(doc, &["diffuseFieldEq"], false);
         if widgets::switch_row_help(
             ui,
@@ -235,8 +381,8 @@ impl StudioSpike {
         }
 
         // The parametric sources carry their settings inside the source
-        // string, so the renderer never echoes them back: this panel owns
-        // them, like the web does.
+        // string; the renderer echoes them in `hrirParams`, which
+        // `adopt_hrir_params` takes into these fields.
         if source == "pinna" {
             let presets = [
                 ("pbnh", "binaural.pinnaPreset.pbnh"),
@@ -322,6 +468,144 @@ impl StudioSpike {
         }
     }
 
+    /// The BRIR source's inset: the file, what the renderer holds of it (or
+    /// why it holds nothing), and the load options.
+    fn brir_rows(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
+        let small = |line: String, color: egui::Color32| {
+            RichText::new(line)
+                .size(theme::FONT_SIZE_SMALL)
+                .color(color)
+        };
+        let path = text(doc, &["brirSofaPath"]);
+        match &path {
+            Some(path) => {
+                let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
+                ui.label(small(format!("File: {name}"), theme::TEXT_MUTED))
+                    .on_hover_text(path);
+            }
+            None => {
+                ui.label(small(t("binaural.brirNoFile").to_owned(), theme::WARN));
+            }
+        }
+        let status = doc.and_then(|d| d.get("brir"));
+        let loaded = status
+            .and_then(|b| b.get("loaded"))
+            .filter(|v| !v.is_null());
+        if let Some(error) = text(doc, &["brir", "error"]) {
+            ui.label(small(t("binaural.brirError").to_owned(), theme::WARN))
+                .on_hover_text(error);
+        } else if let Some(loaded) = loaded {
+            let count = |key: &str| loaded.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+            let conventions = loaded
+                .get("conventions")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("BRIR")
+                .to_owned();
+            let (taps, rate) = (count("maxTaps"), count("sampleRate"));
+            let seconds = if rate > 0 {
+                taps as f64 / rate as f64
+            } else {
+                0.0
+            };
+            let line = tf(
+                "binaural.brirLoaded",
+                &[
+                    ("conventions", conventions.as_str()),
+                    ("emitters", &count("emitters").to_string()),
+                    ("orientations", &count("orientations").to_string()),
+                    ("seconds", &format!("{seconds:.2}")),
+                    (
+                        "mb",
+                        &format!("{:.0}", count("bytes") as f64 / (1024.0 * 1024.0)),
+                    ),
+                ],
+            );
+            ui.label(small(line, theme::TEXT_MUTED));
+        } else if path.is_some() {
+            ui.label(small(
+                t("binaural.brirLoading").to_owned(),
+                theme::TEXT_MUTED,
+            ));
+        }
+        // The set's loudspeakers did not fit the speaker stage: the room
+        // renders on the editable layout instead, and the view shows that.
+        if let Some(error) = text(doc, &["brir", "layoutError"]) {
+            ui.label(small(t("binaural.brirLayoutError").to_owned(), theme::WARN))
+                .on_hover_text(error);
+        }
+
+        // Load options: a change reloads the set on the renderer.
+        let tracking = match status.and_then(|b| b.get("headTracking")) {
+            Some(serde_json::Value::Bool(true)) => "on",
+            Some(serde_json::Value::Bool(false)) => "off",
+            _ => "auto",
+        };
+        let mut chosen = tracking;
+        widgets::label_row_help(
+            ui,
+            t("binaural.brirHeadTracking"),
+            "help.binaural.brirHeadTracking",
+            |ui| {
+                widgets::bounded_combo(ui, 160.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("brir-head-tracking")
+                        .selected_text(t(BRIR_TRACKING
+                            .iter()
+                            .find(|(id, _)| *id == tracking)
+                            .map(|(_, key)| *key)
+                            .unwrap_or("binaural.brirHeadTracking.auto")))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, key) in BRIR_TRACKING {
+                                ui.selectable_value(&mut chosen, *id, t(key));
+                            }
+                        })
+                });
+            },
+        );
+        if chosen != tracking {
+            cmd::control_brir_head_tracking(
+                &self.host,
+                match chosen {
+                    "on" => Some(true),
+                    "off" => Some(false),
+                    _ => None,
+                },
+            );
+        }
+        let mut max_length = number(doc, &["brir", "maxLengthS"], 2.0) as f32;
+        if widgets::value_slider_help(
+            ui,
+            t("binaural.brirMaxLength"),
+            "help.binaural.brirMaxLength",
+            &mut max_length,
+            0.0..=5.0,
+            0.1,
+            |v| {
+                if v <= 0.0 {
+                    t("binaural.brirWhole").to_owned()
+                } else {
+                    format!("{v:.1} s")
+                }
+            },
+        ) {
+            cmd::control_brir_max_length(&self.host, max_length);
+        }
+        let mut floor = number(doc, &["brir", "tailFloorDb"], 60.0) as f32;
+        if widgets::value_slider_help(
+            ui,
+            t("binaural.brirTailFloor"),
+            "help.binaural.brirTailFloor",
+            &mut floor,
+            30.0..=90.0,
+            1.0,
+            |v| format!("{v:.0} dB"),
+        ) {
+            cmd::control_brir_tail_floor(&self.host, floor);
+        }
+    }
+
     /// The parametric sources encode their parameters in the source string.
     fn send_hrir_source(&mut self, source: &str) {
         let value = match source {
@@ -341,11 +625,24 @@ impl StudioSpike {
         cmd::control_hrir_source(&self.host, value);
     }
 
-    fn distance_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
-        Group::new(t("binaural.distanceTitle")).show(ui, |ui| self.distance_rows(ui, doc));
+    fn distance_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>, path: BinauralPath) {
+        Group::new(t("binaural.distanceTitle")).show(ui, |ui| self.distance_rows(ui, doc, path));
     }
 
-    fn distance_rows(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
+    fn distance_rows(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>, path: BinauralPath) {
+        // How a position is read is the direct path's question: the virtual
+        // room pans through the speaker stage and keeps the room model.
+        if path == BinauralPath::Direct {
+            let mut sphere = flag(doc, &["sphereCoordinates"], false);
+            if widgets::switch_row_help(
+                ui,
+                t("binaural.sphereCoordinates"),
+                "help.binaural.sphereCoordinates",
+                &mut sphere,
+            ) {
+                cmd::control_binaural_sphere_coordinates(&self.host, sphere);
+            }
+        }
         let mut scale = number(doc, &["unitScaleM"], 1.0) as f32;
         if widgets::value_slider_help(
             ui,
@@ -430,6 +727,32 @@ impl StudioSpike {
                     |v| format!("{v:.1}"),
                 ) {
                     cmd::control_binaural_reflections_room(&self.host, axis.to_owned(), value);
+                }
+            }
+            // The room in use: the configured one grown to hold the scene
+            // (`roomEffectiveM`), said when it differs, since the sliders
+            // above are then a minimum rather than the room.
+            if let Some(in_use) = doc
+                .and_then(|d| d.get("reflections"))
+                .and_then(|r| r.get("roomEffectiveM"))
+                .and_then(|v| v.as_array())
+                .filter(|a| a.len() == 3)
+            {
+                let value = |i: usize| in_use[i].as_f64().unwrap_or(room[i]);
+                let grown = (0..3).any(|i| (value(i) - room[i]).abs() > 0.05);
+                if grown {
+                    ui.label(
+                        RichText::new(tf(
+                            "binaural.roomInUse",
+                            &[
+                                ("w", &format!("{:.1}", value(0))),
+                                ("d", &format!("{:.1}", value(1))),
+                                ("h", &format!("{:.1}", value(2))),
+                            ],
+                        ))
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                    );
                 }
             }
             // The cutoff travels in hertz; the slider is in kilohertz.

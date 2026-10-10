@@ -1,22 +1,20 @@
 [package]
 name = "audio_input"
-version = "0.2.4"
-edition = "2024"
-license = "GPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-anyhow = "1.0.99"
-audio_output = { path = "../audio_output" }
-bridge_api = { path = "../bridge_api" }
-libc = "0.2"
-log = "0.4.27"
-renderer = { path = "../renderer" }
-serde = { version = "1.0", features = ["derive"] }
-spdif = { path = "../spdif" }
-sys = { path = "../sys" }
-
-[build-dependencies]
-pkg-config = "0.3"
+anyhow.workspace = true
+audio_output.workspace = true
+diag.workspace = true
+libc.workspace = true
+log.workspace = true
+renderer.workspace = true
+serde.workspace = true
+spdif.workspace = true
+sys.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-pipewire = { version = "0.9.2", features = ["v0_3_34"] }
+pipewire.workspace = true

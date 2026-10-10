@@ -1,7 +1,7 @@
 //! In-process spatial overlay generator for the mpv host.
 //!
 //! Historically the front-view object overlay was produced outside the
-//! renderer: orender broadcast OSC → omniphony-studio rebuilt a compact CSV →
+//! renderer: orender broadcast OSC → the (since removed) web Studio rebuilt a compact CSV →
 //! pushed it to mpv over the JSON IPC socket → a ~530-line Lua script parsed it
 //! and built the ASS markup. orender already owns the positions and meter
 //! levels first-hand, so this module moves the whole rendering into Rust: it
@@ -85,8 +85,9 @@ const Y_TICK_HALF: f64 = 5.0; // half-length of the Y=0 perpendicular tick, px
 /// How long after the last FFI pull the overlay keeps doing per-frame work.
 const ACTIVE_TIMEOUT_MS: u64 = 1000;
 
-/// Mirror of `OBJECT_COLOR_PALETTE` in omniphony-studio so the overlay shows the
-/// same colour Studio's 3D view picks for the same object.
+/// Mirror of `PALETTE` in `omniphony-studio-egui/scene/src/view/objects.rs`
+/// so the overlay shows the same colour Studio's 3D view picks for the same
+/// object.
 const STUDIO_PALETTE: [&str; 16] = [
     "FF6B6B", "4ECDC4", "FFE66D", "5DADE2", "AF7AC5", "F5B041", "58D68D", "EC7063", "48C9B0",
     "F4D03F", "5499C7", "A569BD", "EB984E", "45B39D", "7FB3D5", "F1948A",
@@ -108,7 +109,7 @@ struct TrailCfg {
 
 impl Default for TrailCfg {
     fn default() -> Self {
-        // Match omniphony-studio's UI defaults (trails on, diffuse, 7 s,
+        // Match Studio's UI defaults (trails on, diffuse, 7 s,
         // teleport threshold 0.5 → squared 0.25) so the overlay shows trails
         // out of the box without an OSC controller. Studio can still override
         // these live over OSC when it is connected.
@@ -638,6 +639,11 @@ fn save_prefs() {
         mode,
         s.cfg.teleport_sq.sqrt(),
     );
+    // On a first start nothing has created the config directory yet (only
+    // Save does), and the toggles would be lost until it exists.
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let _ = std::fs::write(&path, body);
 }
 
@@ -678,7 +684,7 @@ pub fn build_ass(res_x: u32, res_y: u32) -> String {
     render(&mut s, res_x as f64, res_y as f64, now)
 }
 
-// ── labels (mirror of omniphony-studio's getObjectDisplayName/formatObjectLabel) ─
+// ── labels (the web Studio's getObjectDisplayName/formatObjectLabel rules) ────
 
 /// Clean an object name into a display label, matching Studio's 3D-view rules:
 /// strip a leading `a_`/`v_`/`obj_` (or `:`/`-` separator) prefix, then keep the
@@ -719,7 +725,7 @@ fn ass_escape(s: &str) -> String {
         .collect()
 }
 
-// ── colours (ported from omniphony-studio osc_listener.rs) ─────────────────
+// ── colours (ported from the web Studio's host, removed in 0.7.0) ───────────
 
 fn parse_hex(hex: &str) -> (u8, u8, u8) {
     let b = hex.as_bytes();
@@ -1444,19 +1450,33 @@ fn render(s: &mut OverlayState, res_x: f64, res_y: f64, now: f64) -> String {
     body
 }
 
+/// Held by every test that changes the process-global overlay state, this
+/// module's and any other that drives it (the control-message sweep).
+#[cfg(test)]
+pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // The overlay state is a process-global singleton, so the tests must not
     // run concurrently against it. Serialise them and reset to a known state.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    use super::TEST_LOCK;
 
     fn guard() -> std::sync::MutexGuard<'static, ()> {
         let g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let o = overlay();
+        // A test that panicked under a lock must not leave it poisoned: the
+        // production accessors treat a poisoned lock as "skip the write".
+        o.state.clear_poison();
+        o.prefs_path.clear_poison();
         // Detach any persistence path so tests never touch the filesystem.
-        *overlay().prefs_path.lock().unwrap() = None;
-        clear();
+        *o.prefs_path.lock().unwrap() = None;
+        // Reset the *whole* display state, not just the scene: a test that
+        // leaves e.g. the trail config behind would turn the next test's
+        // "this change must publish" write into a no-op, so the outcome would
+        // depend on which test happened to take the lock first.
+        *o.state.lock().unwrap() = OverlayState::default();
         set_enabled(true);
         set_rendering(true);
         set_labels_enabled(true);

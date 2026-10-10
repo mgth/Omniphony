@@ -18,17 +18,26 @@ can never crash the audio thread.
 > built and tested as a workspace member in CI — so it always stays in sync with
 > the public surface a backend needs. Everything below is implemented there; read
 > it alongside this guide.
+>
+> The hosts only register it when built with the `example-backend` feature
+> (`cargo build --features example-backend` for `orender`, the same feature on
+> `orender_ffi` for `liborender`), so release builds don't offer it in Studio.
+> Build with the feature to select `backend_id = "example"` and try it end to end.
 
-## The two traits
+## The traits
 
 A backend is two small pieces, both implementable from your own crate:
 
 1. [`GainModel`](../omniphony-renderer/renderer/src/render_backend.rs) — the
    model itself: identity, capabilities, and the hot-path gain computation.
-2. [`BackendFactory`](../omniphony-renderer/renderer/src/backend_registry.rs) —
-   how the runtime builds your model: a stable id, a label, a declarative
-   parameter schema, and a `build_plan` that captures what it needs from the
-   build context and returns a builder closure.
+2. The factory — how the runtime builds your model:
+   [`PluginFactory`](../omniphony-renderer/renderer/src/plugin.rs), a stable
+   id, a label and a declarative parameter schema — the contract every
+   plugin shares, object generators included (see
+   [the plugin contract](plugin-contract.md)) — and
+   [`BackendFactory`](../omniphony-renderer/renderer/src/backend_registry.rs),
+   a `build_plan` that captures what it needs from the build context and
+   returns a builder closure.
 
 There is **no** `BackendDescriptor`, `RenderBackendKind`, or `GainModelKind` to
 extend any more. Identity is a plain string id carried on the model and the
@@ -42,7 +51,17 @@ pub trait GainModel: Send + Sync + 'static {
     fn backend_label(&self) -> &'static str;
     fn capabilities(&self) -> BackendCapabilities;
     fn speaker_count(&self) -> usize;
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
+    // Optional: defaults to no working memory.
+    fn new_scratch(&self) -> GainScratch;
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]);
+    // Optional: defaults to `compute_gains`.
+    fn compute_gains_with_hint(
+        &self,
+        req: &RenderRequest,
+        hint: &mut NeighbourHint,
+        scratch: &mut GainScratch,
+        out: &mut [f32],
+    );
     fn save_to_file(&self, path: &Path, speaker_layout: &SpeakerLayout) -> Result<()>;
 }
 ```
@@ -51,26 +70,64 @@ pub trait GainModel: Send + Sync + 'static {
 what the UI shows. The audio hot path runs `compute_gains` through a
 `PreparedRenderEngine` wrapping your model — you never wire that up yourself.
 
+`compute_gains` writes one gain per speaker into `out`, the caller's buffer:
+`out.len() == speaker_count()`. Nothing is returned and nothing is sized by a
+constant: the buffers follow the layout.
+
+`new_scratch` only matters to a model that needs working memory besides `out`:
+a second gain set to blend with, the arrays of a solver. The model is shared
+between threads (`&self`), so it cannot keep that memory itself; it describes
+it once, sized for its layout, and every caller hands its own back as `scratch`
+on each call:
+
+```rust
+struct MyScratch { other: Vec<f32> }
+
+fn new_scratch(&self) -> GainScratch {
+    GainScratch::new(MyScratch { other: vec![0.0; self.speaker_count()] })
+}
+
+fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+    let Some(MyScratch { other }) = scratch.state() else {
+        return foreign_scratch(out); // not a scratch this model made: silence
+    };
+    // ... fill `out`, using `other` ...
+}
+```
+
+A model that wraps another keeps the inner model's scratch inside its own and
+passes it down. Leave the default in place otherwise, and ignore `scratch`.
+
+`compute_gains_with_hint` only matters to a model with an iterative solver. A
+precomputed table is built row by row, the cells of a row in order, and this is
+the method the build calls: `hint` holds whatever the model stored at the
+previous cell of the row (empty at the first), so a solver can start from its
+neighbour's solution. The result must depend on nothing but the request and the
+hint. Leave the default in place otherwise — it ignores the hint.
+
 ### The hot-path contract (read before writing `compute_gains`)
 
 `compute_gains` runs in the realtime audio thread, once per object per band per
 frame. It **MUST**:
 
-- **not panic** — return a best-effort gain vector instead (e.g. zeroed);
+- **not panic** — write a best-effort gain vector instead (e.g. zeros);
 - **not allocate** on the heap, lock, or block;
-- return exactly `speaker_count()` finite gains.
+- write every one of the `speaker_count()` gains of `out`, all finite. `out`
+  arrives holding whatever the caller last had there, not zeros: a gain left
+  unwritten is a stale one.
 
 Do any expensive setup (triangulation, lookup tables, caches) when the model is
-*built*, not here. As a safety net the engine smoke-tests every freshly built
-backend on a few reference positions on the build thread: a model that panics or
-returns a malformed gain vector is rejected at topology build time (surfaced to
-Studio as a recompute error) instead of crashing the audio thread. That guard
-only covers the build-time probe, so honouring the contract above is still
-required for correct realtime behaviour.
+*built*, not here, and size any working memory in `new_scratch`. As a safety net
+the engine smoke-tests every freshly built backend on a few reference positions
+on the build thread: a model that panics, leaves a gain unwritten or writes a
+non-finite one is rejected at topology build time (surfaced to Studio as a
+recompute error) instead of crashing the audio thread. That guard only covers
+the build-time probe, so honouring the contract above is still required for
+correct realtime behaviour.
 
-Use the stack-backed `Gains` buffer for output (`Gains::zeroed(n)` does not
-allocate). See `example_backend`'s `compute_gains` for a complete, allocation-free
-example.
+See `example_backend`'s `compute_gains` for a complete, allocation-free
+example, and `backend_conformance` for the checks a backend's own tests can run
+(a gain left unwritten and a heap allocation included).
 
 ## Step 2 — Declare capabilities
 
@@ -99,13 +156,19 @@ over-declare a capability "for later". Studio reasons with capabilities
 If `supports_table_export` is `false`, return an explicit error from
 `save_to_file` rather than silently succeeding.
 
-## Step 3 — Implement `BackendFactory`
+## Step 3 — Implement `PluginFactory` and `BackendFactory`
 
 ```rust
-pub trait BackendFactory: Send + Sync {
+pub trait PluginFactory: Send + Sync {
     fn id(&self) -> &'static str;
-    fn label(&self) -> &'static str { self.id() }            // defaults to id
-    fn param_schema(&self) -> Vec<ParamSpec> { Vec::new() }  // defaults to none
+    fn label(&self) -> &'static str { self.id() }                 // defaults to id
+    fn i18n_key(&self) -> Option<&'static str> { None }           // Studio label key
+    fn param_schema(&self) -> Vec<ParamSpec> { Vec::new() }       // defaults to none
+    fn param_schema_for(&self, params: &ParamMap) -> Vec<ParamSpec> { self.param_schema() }
+}
+
+pub trait BackendFactory: PluginFactory {
+    fn realtime_capable(&self) -> bool { true }
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan>;
 }
 ```
@@ -148,9 +211,11 @@ parameter values through `ctx.backend_param(self.id(), key)`.
 ## Step 4 — Declare tunable parameters (optional)
 
 Parameters are **declared as data** in `param_schema()`; the host stores values
-generically and Studio renders the matching control (slider / checkbox / select)
+generically and Studio renders the matching control (slider / switch / select)
 automatically. There is no typed field to add anywhere in the renderer and no
-Studio code to touch.
+Studio code to touch. The schema is the same `ParamSpec` every plugin declares
+(builders, units, `requires`, how a value is read in its declared type: see
+[the plugin contract](plugin-contract.md#parameters-paramspec)).
 
 ```rust
 fn param_schema(&self) -> Vec<ParamSpec> {
@@ -164,8 +229,9 @@ fn param_schema(&self) -> Vec<ParamSpec> {
 
 Read the values at build time via `BackendBuildCtx::backend_param` (Step 3).
 Values set over OSC (`/omniphony/control/backend/param`) or loaded from config
-are replayed into the store and trigger a rebuild, so your backend picks them up
-on the next build.
+(`render.backend_params`) are replayed into the store and trigger a rebuild, so
+your backend picks them up on the next build; they reach `config.yaml` through
+the Save button.
 
 ## Step 5 — Register it (the one line)
 
@@ -177,18 +243,19 @@ control.register_backend(Box::new(my_backend::MyFactory));
 
 The built-in host does this in
 [`renderer_build.rs`](../omniphony-renderer/orender_engine/src/renderer_build.rs)
-(see the `example_backend::ExampleFactory` registration). After that line,
+(see the `example_backend::ExampleFactory` registration, behind the
+`example-backend` feature). After that line,
 selecting `backend_id = "my_model"` — from config (`render_backend = "my_model"`),
 over OSC, or from the Studio dropdown — routes a topology rebuild through your
 factory. A later registration with the same id replaces an earlier one, so a host
-can override a built-in.
+can override a built-in — the one registry rule of every plugin kind.
 
 ## Step 6 — It appears in Studio automatically
 
 The runtime snapshot
 ([`snapshot.rs`](../omniphony-renderer/runtime_control/src/snapshot.rs)) publishes
-the registry's `available_backends` (id, label, **and parameter schema**) plus the
-current param values. Studio populates its backend dropdown and generates the
+the registry's `available_backends` (id, label, **and parameter schema**, the
+listing format every plugin kind publishes) plus the current param values. Studio populates its backend dropdown and generates the
 parameter controls from that snapshot — no per-backend JavaScript, no manual
 serde bridge. If your capabilities are correct, the surrounding UI sections adapt
 on their own.
@@ -211,7 +278,8 @@ OSC/state plumbing for a backend that uses the generic parameter schema.
 - [ ] implement `GainModel` (id, label, capabilities, `compute_gains`, …)
 - [ ] honour the hot-path contract in `compute_gains`
 - [ ] declare honest `BackendCapabilities`
-- [ ] implement `BackendFactory` returning a `BackendBuildPlan::Dynamic`
+- [ ] implement `PluginFactory` (id, label, schema) and `BackendFactory`
+      returning a `BackendBuildPlan::Dynamic`
 - [ ] declare any tunables in `param_schema()` and read them via `backend_param`
 - [ ] `register_backend(...)` your factory in the host (one line)
 - [ ] `cargo fmt` + `cargo build/test --workspace`
@@ -230,8 +298,9 @@ OSC/state plumbing for a backend that uses the generic parameter schema.
 
 ## Built-in backends and typed plans
 
-The shipped backends (VBAP, Barycenter, Distance, Hybrid) use *typed*
-`BackendBuildPlan` variants (`Vbap`, `Barycenter`, …) rather than `Dynamic`,
+The shipped backends (VBAP, Volumetric, Barycenter, Distance, Hybrid) use
+*typed* `BackendBuildPlan` variants (`Vbap`, `Volumetric`, `Barycenter`, …)
+rather than `Dynamic`,
 because they share geometry/evaluation machinery and the composite Hybrid backend
 builds inner backends by id. Contributor backends do **not** need a typed
 variant: `Dynamic` carries an arbitrary builder closure and is a first-class

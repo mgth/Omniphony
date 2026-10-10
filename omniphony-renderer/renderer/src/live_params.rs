@@ -3,9 +3,9 @@
 //! # Design
 //!
 //! `RendererControl` is wrapped in an `Arc` and held by both the `SpatialRenderer`
-//! (reads) and the `OscSender` listener thread (writes).  The render thread takes a
-//! snapshot at the beginning of each frame so that the `RwLock` on `LiveParams` is
-//! held for the shortest possible time.
+//! (reads) and the `OscSender` listener thread (writes). `LiveParams` sits in a
+//! [`LiveCell`]: the render thread loads it without a lock, so no control write
+//! can make it wait.
 //!
 //! Speaker position updates (via `/omniphony/control/speaker/{idx}/{az|el|distance}` +
 //! `/omniphony/control/speakers/apply`) trigger a background recompute of the VBAP
@@ -21,12 +21,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::backend_registry::{BackendRegistry, TopologyBuildPlan, prepare_topology_build_plan};
+pub use crate::live_cell::LiveCell;
 use crate::render_backend::{EvaluationBuildConfig, PreparedRenderEngine, RenderRequest};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LiveEvaluationMode {
+    #[default]
     Auto,
     Realtime,
     PrecomputedPolar,
@@ -74,6 +76,10 @@ impl PreferredEvaluationMode {
 pub enum RampMode {
     Off,
     Frame,
+    /// The object's position advances every sample. While it moves, its gains
+    /// are evaluated every few samples (`LiveParams::sample_ramp_stride`) and
+    /// interpolated linearly in between; while it holds, they are evaluated
+    /// once per block.
     Sample,
     /// One VBAP evaluation per object per frame (the destination gains), then a
     /// per-sample linear interpolation of the gains from the previous block's
@@ -82,8 +88,12 @@ pub enum RampMode {
     Interp,
 }
 
+/// The widest `LiveParams::sample_ramp_stride`: 0.67 ms at 48 kHz. Bounds the
+/// speaker stage's per-segment scratch, which lives on the stack.
+pub const MAX_SAMPLE_RAMP_STRIDE: usize = 32;
+
 impl RampMode {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Frame => "frame",
@@ -168,7 +178,7 @@ pub enum PhantomExtractMode {
 }
 
 impl PhantomExtractMode {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Broadband => "broadband",
@@ -207,7 +217,7 @@ pub enum CrossoverType {
 }
 
 impl CrossoverType {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Lr4 => "lr4",
             Self::Fir => "fir",
@@ -264,7 +274,7 @@ pub enum SurroundPlacement {
 }
 
 impl SurroundPlacement {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Side => "side",
             Self::Back => "back",
@@ -300,7 +310,7 @@ pub enum OutputChannelMapping {
 }
 
 impl OutputChannelMapping {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::ByIndex => "by_index",
             Self::ByName => "by_name",
@@ -568,6 +578,33 @@ impl Default for BinauralReverb {
     }
 }
 
+/// Load-time choices for a BRIR source ([`crate::binaural::HrirSource::Brir`]):
+/// what the loader keeps resident. A change reloads the set.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BrirLiveParams {
+    /// Keep every measured head orientation resident (head tracking) rather
+    /// than only the one nearest straight ahead. `None` follows the
+    /// head-tracking input: orientations are loaded when an OSC address is
+    /// configured, otherwise a single one — the memory difference is the
+    /// whole set versus one orientation of it.
+    pub head_tracking: Option<bool>,
+    /// Longest response kept, seconds (`0` = whole responses).
+    pub max_length_s: f32,
+    /// Decibels below a response's total energy at which its tail is cut.
+    pub tail_floor_db: f32,
+}
+
+impl Default for BrirLiveParams {
+    fn default() -> Self {
+        let d = crate::binaural::brir::BrirLoadOptions::default();
+        Self {
+            head_tracking: None,
+            max_length_s: d.max_length_s,
+            tail_floor_db: d.tail_floor_db,
+        }
+    }
+}
+
 /// Live-tunable parameters for the binaural (headphone) output stage.
 ///
 /// `unit_scale_m` is an **isotropic** metres-per-ADM-unit factor for distance
@@ -610,6 +647,24 @@ pub struct BinauralLiveParams {
     /// (see `binaural::diffuse_field`): takes the measured head's tonal
     /// signature out while keeping every interaural difference. Opt-in.
     pub diffuse_field_eq: bool,
+    /// Read room coordinates on the listener's sphere instead of in the room
+    /// cube (#773): a position is mapped to the direction a layout's speaker
+    /// standing there is heard at
+    /// ([`omniphony_geometry::f32::sphere_reading`]), so the room's front
+    /// corners are at ±30° rather than a cube's ±45°, and its top corners
+    /// 45° up rather than 35°. Only the direct path reads a position itself
+    /// ([`Self::reads_on_sphere`]); the virtual room and a BRIR set keep the
+    /// room model. Opt-in.
+    pub sphere_coordinates: bool,
+    /// Load-time choices for a BRIR source (see [`BrirLiveParams`]).
+    pub brir: BrirLiveParams,
+    /// The last SOFA HRTF file and the last room-response file a source
+    /// named (`sofa:<path>`, `brir:<path>`, or the config's own keys). A
+    /// bare `sofa` / `brir` selector reopens them, and the config keeps them
+    /// while another source renders, so switching away from a file and back
+    /// does not lose it. Empty when none was ever named.
+    pub last_sofa_path: String,
+    pub last_brir_path: String,
 }
 
 impl Default for BinauralLiveParams {
@@ -628,7 +683,37 @@ impl Default for BinauralLiveParams {
             reverb: BinauralReverb::default(),
             air_absorption: true,
             diffuse_field_eq: false,
+            sphere_coordinates: false,
+            brir: BrirLiveParams::default(),
+            last_sofa_path: String::new(),
+            last_brir_path: String::new(),
         }
+    }
+}
+
+impl BinauralLiveParams {
+    /// Whether the virtual-speaker path feeds the binaural stage: the
+    /// `Cascaded` mode, or a BRIR source, which only knows its loudspeakers
+    /// and so has everything panned onto them whatever the mode says.
+    pub fn cascade_active(&self) -> bool {
+        matches!(self.mode, BinauralMode::Cascaded)
+            || matches!(self.hrir_source, crate::binaural::HrirSource::Brir(_))
+    }
+
+    /// Whether the output renders each source directly as a direction on the
+    /// listener's sphere: binaural output outside the cascade. That path reads
+    /// a direction straight off the normalized position and applies no room
+    /// warp (see [`crate::binaural`]); every other path pans through the
+    /// speaker stage, which does.
+    pub fn renders_direct(&self) -> bool {
+        matches!(self.output_mode, OutputMode::Binaural) && !self.cascade_active()
+    }
+
+    /// Whether positions are read on the listener's sphere
+    /// ([`Self::sphere_coordinates`]): the option, on the one path that reads
+    /// a direction off a position.
+    pub fn reads_on_sphere(&self) -> bool {
+        self.sphere_coordinates && self.renders_direct()
     }
 }
 
@@ -880,9 +965,9 @@ impl RotationAxis {
                 azimuth_deg,
                 elevation_deg,
             } => {
-                let az = azimuth_deg.to_radians();
-                let el = elevation_deg.to_radians();
-                let axis = [el.cos() * az.sin(), el.cos() * az.cos(), el.sin()];
+                let (x, y, z) =
+                    omniphony_geometry::f32::from_spherical(azimuth_deg, elevation_deg, 1.0);
+                let axis = [x, y, z];
                 // Any pair perpendicular to the axis will do. Seeding from
                 // whichever world axis is *least* aligned with it keeps the
                 // cross product well away from zero — which is exactly what a
@@ -900,21 +985,10 @@ impl RotationAxis {
     }
 }
 
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
+use omniphony_geometry::f32::vec3::cross;
 
 fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if n < 1e-6 {
-        [1.0, 0.0, 0.0]
-    } else {
-        [v[0] / n, v[1] / n, v[2] / n]
-    }
+    omniphony_geometry::f32::vec3::try_normalize(v, 1e-6).unwrap_or([1.0, 0.0, 0.0])
 }
 
 /// An orbit applied to the object test's placed position.
@@ -983,19 +1057,21 @@ impl ObjectTestRotation {
     }
 }
 
-/// Per-speaker live params seeded from a layout: only the configured delays
-/// (gains/mutes are runtime-only and start at defaults). Shared by renderer
-/// construction and the live profile switch so the two cannot drift.
+/// Per-speaker live params seeded from a layout: the configured delays and
+/// output gains (mutes are transient and start unmuted). Shared by renderer
+/// construction, a layout replacement and the live profile switch so they
+/// cannot drift.
 pub fn speaker_live_from_layout(
     layout: &crate::speaker_layout::SpeakerLayout,
 ) -> std::collections::HashMap<usize, SpeakerLiveParams> {
     let mut speakers = std::collections::HashMap::new();
     for (idx, spk) in layout.speakers.iter().enumerate() {
-        if spk.delay_ms != 0.0 {
+        if spk.delay_ms != 0.0 || spk.gain_db != 0.0 {
             speakers.insert(
                 idx,
                 SpeakerLiveParams {
                     delay_ms: spk.delay_ms.max(0.0),
+                    gain: speaker_gain_linear(spk.gain_db),
                     ..Default::default()
                 },
             );
@@ -1004,7 +1080,30 @@ pub fn speaker_live_from_layout(
     speakers
 }
 
-#[derive(Clone, Copy)]
+/// Quietest output gain a layout stores, in dB: a speaker turned fully down
+/// saves as this rather than as negative infinity.
+pub const SPEAKER_GAIN_FLOOR_DB: f32 = -120.0;
+
+/// A live linear speaker gain as the layout's `gain_db`, to 0.1 dB (the
+/// resolution Studio edits it at).
+pub fn speaker_gain_db(gain: f32) -> f32 {
+    if gain <= 0.0 || !gain.is_finite() {
+        return SPEAKER_GAIN_FLOOR_DB;
+    }
+    let db = (20.0 * gain.log10()).max(SPEAKER_GAIN_FLOOR_DB);
+    (db * 10.0).round() / 10.0
+}
+
+/// A layout's `gain_db` as the live linear speaker gain.
+pub fn speaker_gain_linear(gain_db: f32) -> f32 {
+    if gain_db <= SPEAKER_GAIN_FLOOR_DB {
+        0.0
+    } else {
+        10.0_f32.powf(gain_db / 20.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CartesianEvaluationParams {
     pub x_size: usize,
     pub y_size: usize,
@@ -1012,7 +1111,7 @@ pub struct CartesianEvaluationParams {
     pub z_neg_size: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct PolarEvaluationParams {
     pub azimuth_values: i32,
     pub elevation_values: i32,
@@ -1020,7 +1119,7 @@ pub struct PolarEvaluationParams {
     pub distance_max: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct EvaluationLiveParams {
     pub mode: LiveEvaluationMode,
     pub position_interpolation: bool,
@@ -1030,6 +1129,17 @@ pub struct EvaluationLiveParams {
     /// default; `N` ⇒ `N + 1` size tables interpolated at read time). Applies to
     /// both precomputed modes; ignored for backends without `supports_event_size`.
     pub object_size_intervals: usize,
+    /// Positions below the floor keep their negative z (else they are
+    /// clamped onto it). Baked into the gain models.
+    pub allow_negative_z: bool,
+    /// Where the grid (mode, Cartesian cells, negative z) comes from
+    /// (`render.evaluation_grid`, see [`crate::evaluation_grid`]).
+    pub source: crate::evaluation_grid::EvaluationGridSource,
+    /// The grid the active bridge hints, once known: the grid itself while
+    /// it follows the bridge, published either way.
+    pub bridge_hint: Option<crate::evaluation_grid::EvaluationGrid>,
+    /// Which loaded bridge hints it, in load order.
+    pub bridge_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1085,13 +1195,20 @@ pub struct HybridLiveParams {
     pub metric: crate::spatial_vbap::DistanceMetric,
 }
 
+/// The hybrid backend's default outer leg (blend ratio 1).
+pub const HYBRID_DEFAULT_EXTERNAL_BACKEND_ID: &str = "vbap";
+/// The hybrid backend's default inner leg (blend ratio 0).
+pub const HYBRID_DEFAULT_INTERNAL_BACKEND_ID: &str = "barycenter";
+/// Piecewise-linear by default.
+pub const HYBRID_DEFAULT_CURVE_SMOOTHING: f32 = 0.0;
+
 impl Default for HybridLiveParams {
     fn default() -> Self {
         Self {
-            external_backend_id: "vbap".to_string(),
-            internal_backend_id: "barycenter".to_string(),
+            external_backend_id: HYBRID_DEFAULT_EXTERNAL_BACKEND_ID.to_string(),
+            internal_backend_id: HYBRID_DEFAULT_INTERNAL_BACKEND_ID.to_string(),
             curve: vec![[0.0, 0.0], [1.0, 1.0]],
-            curve_smoothing: 0.0,
+            curve_smoothing: HYBRID_DEFAULT_CURVE_SMOOTHING,
             metric: crate::spatial_vbap::DistanceMetric::Chebyshev,
         }
     }
@@ -1099,9 +1216,18 @@ impl Default for HybridLiveParams {
 
 /// Live-tunable rendering parameters.
 ///
-/// Written (exclusively) by the OSC listener thread, read via snapshot by the
-/// render thread.
+/// Written by the control threads (OSC listener, config seeding), read
+/// lock-free by the render thread through [`LiveCell`]. `Clone` because a
+/// write edits a copy and publishes it. `Default` is a blank state with no
+/// renderer behind it (no speakers, the declared options at their
+/// defaults): a scratch for code that edits a config through the option
+/// rows (`options::store_client_values`), never what a renderer starts with.
+#[derive(Clone, Default)]
 pub struct LiveParams {
+    /// The options declared in `options::declared` (one field per option,
+    /// defaulted from its row).
+    pub options: crate::options::DeclaredOptions,
+
     /// Master output gain, linear scale (1.0 = unity, 0.5 ≈ −6 dB).
     pub master_gain: f32,
 
@@ -1128,28 +1254,11 @@ pub struct LiveParams {
     /// (w, d, h) to derive a scalar spread for backends that consume it.
     pub size_to_spread_mode: crate::render_backend::SizeToSpreadMode,
 
-    /// Ramp processing mode for object moves and gain transitions.
-    pub ramp_mode: RampMode,
-
     /// Requested spatial render backend identifier.
     pub backend_id: String,
 
     /// Requested evaluation parameters for the current gain model.
     pub evaluation: EvaluationLiveParams,
-
-    /// Apply dialogue normalisation gain stored in the renderer.
-    pub use_loudness: bool,
-
-    /// Automatic gain reduction: when set, the gain stage permanently lowers
-    /// output gain on detected clipping (peak hold, no recovery). Live-tunable
-    /// via `/omniphony/control/auto_gain`.
-    pub auto_gain: bool,
-
-    /// Target ceiling (dBFS) that auto-gain corrects detected peaks down to.
-    /// Clipping is detected at 0 dBFS (peak > 1.0); when it fires, the master
-    /// gain is lowered so the peak lands at this level instead of exactly 0 dBFS,
-    /// leaving headroom so corrections fire less often. Default −1 dBFS.
-    pub auto_gain_ceiling_db: f32,
 
     /// Distance attenuation model currently applied by the renderer.
     pub distance_model: crate::spatial_vbap::DistanceModel,
@@ -1251,13 +1360,6 @@ pub struct LiveParams {
     /// Runtime tuning parameters for the hybrid backend.
     pub hybrid: HybridLiveParams,
 
-    /// Selected Dynamic Range Control mode (as string).
-    pub drc_mode: String,
-    /// DRC weighting in [0.0, 1.0]. 1.0 applies the full bridge-decoded DRC gain;
-    /// 0.0 bypasses it entirely. Intermediate values scale the dB reduction
-    /// linearly (effective_gain = bridge_gain.powf(drc_weight)).
-    pub drc_weight: f32,
-
     /// Binaural (headphone) output stage parameters. When
     /// `binaural.output_mode == OutputMode::Binaural`, the renderer bypasses the
     /// speaker/VBAP path and emits a 2-channel frame instead.
@@ -1269,67 +1371,12 @@ pub struct LiveParams {
     /// is an internal/host override, not a Studio or persistent live option.
     pub channel_render_mode: ChannelRenderMode,
 
-    /// Where the 4.x/5.x surround pair (`Ls`/`Rs`) is placed: side vs back.
-    /// Consulted only for channel content without dedicated back channels;
-    /// 7.x sources ignore it. Live-tunable via
-    /// `/omniphony/control/surround_placement`.
-    pub surround_placement: SurroundPlacement,
-
-    /// How output channels map to device ports: positionless `ByIndex` (default,
-    /// port N = layout speaker N) or positional `ByName`. Consulted when the
-    /// output stream is (re)configured. Live-tunable via
-    /// `/omniphony/control/output_channel_mapping`.
-    pub output_channel_mapping: OutputChannelMapping,
-
-    /// Crossover filter implementation: minimum-latency IIR (`lr4`) or
-    /// linear-phase FIR (`fir`). The speaker stage compares this against the
-    /// bank it built every frame, so a flip takes effect without a topology
-    /// change. Live-tunable via `/omniphony/control/crossover_type`.
-    pub crossover_type: CrossoverType,
-
-    /// FIR crossover transition width as a fraction of the lowest cutoff
-    /// (the Kaiser design's `transition_ratio`): smaller = steeper bands but
-    /// more taps, latency and ringing; larger = the opposite. Only consulted
-    /// by the `fir` engine; the speaker stage rebuilds the bank live when it
-    /// moves. Clamped to [0.05, 2.0]. Live-tunable via
-    /// `/omniphony/control/crossover_fir_transition_ratio`.
-    pub crossover_fir_transition_ratio: f32,
-
     /// Where fixed channels go, per source family (consulted only when
     /// `channel_render_mode == Spatial`): each family's mode — sphere, room
     /// or manual — and its entries (`spatialize` virtual/direct, `gain_db`
     /// trim, and the pose in manual mode). See `crate::placement`.
     /// Live-tunable via the `placement` OSC controls.
     pub placement: crate::placement::PlacementState,
-
-    /// Selects the bed→height object generator (2D upmix): synthesizes height
-    /// objects from channel-based content so a height-capable layout (7.1.4, …)
-    /// is exercised when the source has no height. Empty / `"none"` = disabled
-    /// (the default). Consulted only for channel content without spatial objects;
-    /// object streams ignore it. Live-tunable via
-    /// `/omniphony/control/object_generator`.
-    pub object_generator_id: String,
-
-    /// Live-tunable parameter overrides for the active object generator, keyed by
-    /// the param `key` the generator declares in its schema. Sparse: an absent key
-    /// uses the generator's built-in default. Cleared when the active generator
-    /// changes. Set via `/omniphony/control/object_generator/param`.
-    pub object_generator_params: std::collections::HashMap<String, f32>,
-
-    /// Global permission for renderer-synthesized objects. When false, both the
-    /// phantom extractor and height generator are bypassed without clearing
-    /// their configured selections or parameters.
-    pub synthetic_objects_enabled: bool,
-
-    /// Phantom-source extraction algorithm. `Off` disables only this stage;
-    /// the global synthesized-object master may independently suppress it.
-    pub phantom_extract_mode: PhantomExtractMode,
-
-    /// Live-tunable parameter overrides for the phantom-extraction stage, keyed by
-    /// the param `key` it declares (`strength` / `passes` / `lift`). Sparse: an
-    /// absent key uses the stage's default. Set via
-    /// `/omniphony/control/phantom_extract/param`.
-    pub phantom_params: std::collections::HashMap<String, f32>,
 }
 
 impl LiveParams {
@@ -1344,6 +1391,151 @@ impl LiveParams {
     pub fn requested_evaluation_mode(&self) -> LiveEvaluationMode {
         self.evaluation.mode
     }
+}
+
+/// The room warp a position goes through before it is panned: the ratios
+/// the live params carry for it, taken together so a reader has one value
+/// instead of four. Both ends of a render read the same one — the layout's
+/// cartesian speakers are placed with it when a topology is built
+/// ([`RenderTopology::room`]) and every object follows it per frame — so
+/// the stage pans in one room. For the editable layout it is the live room;
+/// for a BRIR set's loudspeakers, the measured room they stand in
+/// ([`crate::binaural::brir::MeasuredRoom`]), which the user's room cannot
+/// describe.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoomRatios {
+    /// `[width, front, height]`.
+    pub ratio: [f32; 3],
+    pub rear: f32,
+    pub lower: f32,
+    pub center_blend: f32,
+}
+
+impl RoomRatios {
+    /// The unit cube: no warp at all.
+    pub const UNIT: Self = Self {
+        ratio: [1.0, 1.0, 1.0],
+        rear: 1.0,
+        lower: 1.0,
+        center_blend: 0.0,
+    };
+
+    /// The user's room, as the live params hold it.
+    pub fn of_live(live: &LiveParams) -> Self {
+        Self {
+            ratio: live.room_ratio,
+            rear: live.room_ratio_rear,
+            lower: live.room_ratio_lower,
+            center_blend: live.room_ratio_center_blend,
+        }
+    }
+
+    /// Room warp of a normalized position
+    /// ([`omniphony_geometry::f32::room_scaled_position`]).
+    #[inline]
+    pub fn scale(&self, position: [f32; 3]) -> [f32; 3] {
+        omniphony_geometry::f32::room_scaled_position(
+            position,
+            self.ratio,
+            self.rear,
+            self.lower,
+            self.center_blend,
+        )
+    }
+
+    /// Inverse room warp of a real ADM position, clamped into the normalized
+    /// cube ([`omniphony_geometry::f32::inverse_room_scaled_position`]).
+    #[inline]
+    pub fn inverse(&self, position: [f32; 3]) -> [f32; 3] {
+        omniphony_geometry::f32::inverse_room_scaled_position(
+            position,
+            self.ratio,
+            self.rear,
+            self.lower,
+            self.center_blend,
+        )
+    }
+
+    /// Inverse room warp of a position that states a direction — a pose
+    /// placed by angle — kept on that direction when it reaches past a wall
+    /// of a room smaller than its radius, which the clamping [`Self::inverse`]
+    /// would bend ([`omniphony_geometry::f32::inverse_room_scaled_direction`]).
+    #[inline]
+    pub fn inverse_direction(&self, position: [f32; 3]) -> [f32; 3] {
+        omniphony_geometry::f32::inverse_room_scaled_direction(
+            position,
+            self.ratio,
+            self.rear,
+            self.lower,
+            self.center_blend,
+        )
+    }
+}
+
+/// What the output in force does to a normalized position on its way to
+/// the listener. A pose stated as an angle (a Sphere direction, a polar
+/// placement entry) is stored as the position that comes out of it at that
+/// angle, so it has to be the warp that is actually applied downstream:
+/// pre-compensating a direct binaural pose for the live room left it warped,
+/// `L` at −49° instead of −30° in the default room (#781), and a measured
+/// room's pose for the user's room moved it off its loudspeaker (#803).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OutputWarp {
+    /// The room warp of the speaker stage, which the cascaded binaural mode
+    /// also pans through: the room `topology` pans in. The direct binaural
+    /// path reads the direction straight off the position, in the unit cube:
+    /// [`RoomRatios::UNIT`], no warp at all.
+    Room(RoomRatios),
+    /// The direct binaural path reading positions on the listener's sphere
+    /// ([`BinauralLiveParams::reads_on_sphere`]).
+    Sphere,
+}
+
+impl OutputWarp {
+    /// No warp: the position is the direction.
+    pub const NONE: Self = Self::Room(RoomRatios::UNIT);
+
+    /// The warp of the output the live params select.
+    pub fn for_output(live: &LiveParams, topology: &RenderTopology) -> Self {
+        if live.binaural.reads_on_sphere() {
+            Self::Sphere
+        } else if live.binaural.renders_direct() {
+            Self::NONE
+        } else {
+            Self::Room(topology.room)
+        }
+    }
+
+    /// The normalized position that this warp brings out in the direction of
+    /// `position`, a real ADM position stating a direction and a radius:
+    /// [`RoomRatios::inverse_direction`] for a room,
+    /// [`omniphony_geometry::f32::inverse_sphere_reading_direction`] for the
+    /// sphere. Either way a radius that reaches past the room is drawn back
+    /// into it along its direction.
+    #[inline]
+    pub fn inverse_direction(&self, position: [f32; 3]) -> [f32; 3] {
+        match self {
+            Self::Room(room) => room.inverse_direction(position),
+            Self::Sphere => omniphony_geometry::f32::inverse_sphere_reading_direction(position),
+        }
+    }
+}
+
+impl From<RoomRatios> for OutputWarp {
+    fn from(room: RoomRatios) -> Self {
+        Self::Room(room)
+    }
+}
+
+/// What a headphone render with a BRIR source pans onto
+/// ([`RendererControl::brir_layout`]): the set's loudspeakers as a layout,
+/// placed as fractions of the measured room, and that room as the stage's
+/// warp.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrirLayout {
+    pub layout: SpeakerLayout,
+    pub room: RoomRatios,
+    pub measured: crate::binaural::brir::MeasuredRoom,
 }
 
 /// Parse a `"width,length,height"` string into `[f32; 3]`.
@@ -1381,22 +1573,22 @@ impl BackendRebuildParams {
     }
 }
 
-fn rebuild_params_allow_negative_z(params: Option<BackendRebuildParams>) -> bool {
-    params.map(|value| value.allow_negative_z).unwrap_or(false)
-}
-
+/// The evaluation layer's build config: the request template carries `room`,
+/// the room the topology being planned pans in, so a sampled table reads
+/// its positions in the room its speakers were placed in.
 fn evaluation_build_config_from_live(
     live: &LiveParams,
+    room: RoomRatios,
     allow_negative_z: bool,
 ) -> EvaluationBuildConfig {
     EvaluationBuildConfig {
         request_template: RenderRequest {
             adm_position: [0.0, 0.0, 0.0],
             event_size: [0.0, 0.0, 0.0],
-            room_ratio: live.room_ratio,
-            room_ratio_rear: live.room_ratio_rear,
-            room_ratio_lower: live.room_ratio_lower,
-            room_ratio_center_blend: live.room_ratio_center_blend,
+            room_ratio: room.ratio,
+            room_ratio_rear: room.rear,
+            room_ratio_lower: room.lower,
+            room_ratio_center_blend: room.center_blend,
             use_distance_diffuse: live.use_distance_diffuse,
             distance_diffuse_threshold: live.distance_diffuse_threshold,
             distance_diffuse_curve: live.distance_diffuse_curve,
@@ -1427,10 +1619,17 @@ fn evaluation_build_config_from_live(
 /// Immutable render-time snapshot published atomically to the audio thread.
 ///
 /// This is the only topology state the renderer should consume during a frame:
-/// the speaker layout, the VBAP panner built for that layout, and the derived
+/// the speaker layout, the backend built for that layout, and the derived
 /// mappings that tie both together.
 pub struct RenderTopology {
     pub speaker_layout: SpeakerLayout,
+    /// The backend built for `speaker_layout`. In a topology published on the
+    /// control it samples no gain table (see
+    /// [`crate::render_backend::wrap_unsampled_engine`]): it names the backend
+    /// and the effective evaluation mode, and carries the decorated model a
+    /// recompute reuses. Audio gains come from the speaker stage's band
+    /// engines, each a topology of its own built with
+    /// [`crate::backend_registry::TopologyBuildPlan::build_band_topology_reusing`].
     pub backend: Arc<PreparedRenderEngine>,
     pub backend_to_speaker_mapping: Option<Vec<usize>>,
     /// Per-label speaker lookup for the channel-routing table (re-resolved on
@@ -1442,6 +1641,32 @@ pub struct RenderTopology {
     /// built at. A recompute whose generation matches can reuse `backend`'s
     /// decorated model instead of re-triangulating. Defaults to 0 (initial build).
     pub geometry_generation: u64,
+    /// The backend id whose plan built `backend`'s gain model. Reuse also
+    /// requires it to match: the generation tracks geometry, not which backend
+    /// is selected, so without it a backend switch that lands without a bump
+    /// would re-wrap the previous backend's model. Empty until set by a plan.
+    pub model_backend_id: String,
+    /// `speaker_layout` is the resident BRIR set's virtual loudspeakers
+    /// (`SpeakerLayout::from_brir_emitters`), not the editable layout: bus
+    /// `n` is emitter `n`, and the editable layout's per-speaker rows (gain,
+    /// mute, delay) do not apply to it.
+    pub brir_layout: bool,
+    /// The room the stage pans in on this topology: the one
+    /// `speaker_layout`'s cartesian speakers were placed in when it was
+    /// built, which every object follows per frame
+    /// ([`OutputWarp::for_output`]). The live room for the editable layout,
+    /// the measured room for a BRIR set's loudspeakers (`brir_layout`).
+    pub room: RoomRatios,
+    /// The measured room `room` was derived from, while `brir_layout`: the
+    /// box in metres and whether it is the file's or an estimate, for the
+    /// state. `None` on the editable layout.
+    pub measured_room: Option<crate::binaural::brir::MeasuredRoom>,
+    /// The grid this topology's evaluation was planned on; `None` for one
+    /// built without a plan.
+    pub grid: Option<crate::evaluation_grid::EvaluationGrid>,
+    /// The grid request it answers ([`crate::evaluation_grid`]): the latest
+    /// when its plan was prepared, or a later one that took it as it is.
+    pub(crate) grid_generation: std::sync::atomic::AtomicU64,
 }
 
 impl RenderTopology {
@@ -1481,12 +1706,41 @@ impl RenderTopology {
             backend,
             backend_to_speaker_mapping,
             geometry_generation: 0,
+            model_backend_id: String::new(),
+            brir_layout: false,
+            // Every construction records the room it placed the speakers
+            // in (`with_room`); the cube until then.
+            room: RoomRatios::UNIT,
+            measured_room: None,
+            grid: None,
+            grid_generation: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
-    /// Set the geometry generation this topology was built at (chaining helper).
-    pub fn with_geometry_generation(mut self, generation: u64) -> Self {
+    /// Record the room this topology's speakers were placed in, which its
+    /// objects pan in (chaining helper; see [`Self::room`]).
+    pub fn with_room(mut self, room: RoomRatios) -> Self {
+        self.room = room;
+        self
+    }
+
+    /// Record the grid request this topology answers (chaining helper).
+    pub fn with_grid(
+        mut self,
+        grid: Option<crate::evaluation_grid::EvaluationGrid>,
+        generation: u64,
+    ) -> Self {
+        self.grid = grid;
+        *self.grid_generation.get_mut() = generation;
+        self
+    }
+
+    /// Record what this topology's gain model was built from: the geometry
+    /// generation and the backend id (chaining helper). Both gate reuse in
+    /// `TopologyBuildPlan::build_topology_reusing`.
+    pub fn with_model_origin(mut self, generation: u64, backend_id: &str) -> Self {
         self.geometry_generation = generation;
+        self.model_backend_id = backend_id.to_string();
         self
     }
 
@@ -1506,13 +1760,26 @@ impl RenderTopology {
 
 /// Shared control object held by both `SpatialRenderer` and `OscSender`.
 ///
-/// The renderer reads `live` via a snapshot and loads the current immutable
-/// `RenderTopology` lock-free at the start of each frame. The OSC listener writes
+/// The renderer loads `live` and the current immutable `RenderTopology`
+/// lock-free. The OSC listener writes
 /// `live`, edits the staging layout, rebuilds a new `RenderTopology` in the
 /// background, then publishes it atomically.
+/// One decoder bridge as a host reports it (`/omniphony/state/render/bridges`):
+/// one that loaded, with the source families it declares, or one that was
+/// asked for or found and did not, with why.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BridgeStatus {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub families: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 pub struct RendererControl {
-    /// Live-tunable parameters (protected by a readers-writer lock).
-    pub live: RwLock<LiveParams>,
+    /// Live-tunable parameters: read lock-free, written under a mutex that
+    /// only writers take (see [`LiveCell`]).
+    pub live: LiveCell<LiveParams>,
 
     /// Current render topology, shared between render thread (reads) and OSC
     /// listener (writes on recompute).  Lock-free: the render thread loads an
@@ -1546,6 +1813,26 @@ pub struct RendererControl {
     /// SOFA file that failed to load falls back to the embedded KEMAR set).
     /// Written by the renderer's rebuild worker, read by the state snapshot.
     pub binaural_hrir_status: ArcSwap<crate::binaural::HrirStatus>,
+
+    /// What the last BRIR set load produced (the `brir` HRIR source): the
+    /// file asked for, what is resident, or why it failed. Written by the
+    /// BRIR stage's worker, read by the state snapshot.
+    pub binaural_brir_status: ArcSwap<crate::binaural::BrirStatus>,
+    /// Bumped with every [`Self::set_binaural_brir_status`]: identifies the
+    /// set a BRIR layout was derived from (never 0, which names the user's
+    /// layout in [`Self::render_layout_key`]).
+    brir_status_generation: std::sync::atomic::AtomicU64,
+    /// Which layout the last prepared topology rebuild was for: 0 for the
+    /// editable layout, else the BRIR status generation whose emitters it
+    /// was built on. Compared by [`Self::render_layout_outdated`].
+    render_layout_key: std::sync::atomic::AtomicU64,
+    /// Width the speaker stage was opened with (0 until a renderer reports
+    /// it): a BRIR layout wider than this cannot be installed.
+    speaker_stage_width: std::sync::atomic::AtomicUsize,
+    /// A host rebuilds the topology when [`Self::render_layout_outdated`]
+    /// says so (the OSC listener, which also tells its clients). While
+    /// `false`, the renderer's own layout follower does it.
+    relayout_by_host: AtomicBool,
 
     /// Bumped whenever per-object live params change.
     /// Render sample rate, published so control-thread work that has to produce
@@ -1607,21 +1894,32 @@ pub struct RendererControl {
     /// next to the build fingerprint.
     pub host_abi: Mutex<Option<(u32, u32)>>,
 
-    /// Facts about the crossover bank the speaker stage actually built
-    /// (engine, bands, cutoffs, taps, latency). Written by the render thread
-    /// on every bank (re)build, broadcast in the `/state/renderer` snapshot so
+    /// Facts about the crossover bank the speaker stage is rendering with
+    /// (engine, bands, cutoffs, taps, latency). Written when the stage
+    /// installs a band set, broadcast in the `/state/renderer` snapshot so
     /// Studio can annotate the crossover control. `None` until the first
     /// build.
     crossover_info: Mutex<Option<CrossoverInfo>>,
 
+    /// A band-build outcome of the speaker stage not broadcast yet: the
+    /// reason its worker could not build the band engines for a topology or
+    /// crossover change (the previous ones keep rendering), or an empty
+    /// string once a later build went through. The OSC listener takes it and
+    /// broadcasts it on the recompute-error address, where a failed topology
+    /// rebuild is reported too. Coalesced: only the latest outcome is kept.
+    band_build_error: Mutex<Option<String>>,
+
     /// Actual renderer input path used for this process.
     pub input_path: Mutex<Option<String>>,
-    /// Requested format bridge path to be persisted into render.bridge_path.
-    pub bridge_path: Mutex<Option<PathBuf>>,
+    /// The decoder bridges asked for, in load order, to be persisted as
+    /// `render.bridge_path(s)` (`RenderConfig::set_bridges`); empty for
+    /// auto-discovery.
+    pub bridge_paths: Mutex<Vec<PathBuf>>,
+    /// The bridges the host loaded, then those that failed, as it reports
+    /// them; empty before a load.
+    pub bridges_status: Mutex<Vec<BridgeStatus>>,
     /// Supported DRC modes reported by the bridge.
     pub bridge_supported_drc_modes: Mutex<Vec<String>>,
-    /// Requested ramp mode from OSC control.
-    pub requested_ramp_mode: Mutex<RampMode>,
 
     /// OSC meter cadence in Hz (`f32::to_bits`). Read lock-free by `AudioMeter`
     /// each poll; OSC-adjustable and persisted to config. The renderer is the
@@ -1648,27 +1946,36 @@ pub struct RendererControl {
     /// is already shared); only read off the audio hot path (topology rebuild).
     backend_registry: RwLock<BackendRegistry>,
 
-    /// Host-set backend parameter values, keyed by `backend_id` then param key
-    /// (see [`crate::backend_params`]). Generic so a backend's params need no
-    /// typed field here. Read at topology-build time, never on the audio hot path.
-    backend_params: RwLock<HashMap<String, HashMap<String, crate::backend_params::ParamValue>>>,
+    /// Every plugin's host-set parameter values — backends, object generators,
+    /// the phantom-extraction stage — keyed by kind, plugin id, then param key
+    /// (see [`crate::plugin`]). Generic so a plugin's params need no typed field
+    /// here. Read by a backend at topology-build time and by a synthesizing
+    /// stage when [`plugin_params_generation`](Self::plugin_params_generation)
+    /// moves, never on the audio hot path.
+    plugin_params: RwLock<crate::plugin::PluginParams>,
 
-    /// JSON schema (`[{id,label,i18nKey,params:[…]}]`) of the available bed→height
-    /// object generators, set by the engine from its registry (which lives in
-    /// `orender_engine` and so can't be held here as a typed registry). Published
-    /// to Studio so host-registered (out-of-tree) generators appear too. `"[]"`
-    /// until the engine sets it.
-    object_generators_schema: RwLock<String>,
+    /// Bumped by every write to `plugin_params`, so a stage that applies its
+    /// parameters can tell with one atomic load per frame that none changed.
+    plugin_params_generation: std::sync::atomic::AtomicU64,
 
-    /// JSON schema (`[{key,label,i18nKey,…}]`) of the phantom-extraction stage's
-    /// declared params, set by the engine so Studio builds its sliders. `"[]"`
-    /// until the engine sets it.
-    phantom_schema: RwLock<String>,
+    /// The listings (`id`, label, declared params) of the bed→height object
+    /// generators and of the phantom-extraction stage, set by the engine from
+    /// its registry (which lives in `orender_engine` and so can't be held here
+    /// as a typed registry). Published to Studio so host-registered
+    /// (out-of-tree) generators appear too, and used to read an incoming value
+    /// in the type its parameter declares. Empty until the engine sets them.
+    object_generator_listings: RwLock<Vec<crate::plugin::PluginListing>>,
+    phantom_listing: RwLock<Option<crate::plugin::PluginListing>>,
 
     /// Canonical fixed-channel editor catalogue supplied by the engine. Kept as
     /// JSON because the canonical poses live in `orender_engine`, above this
     /// crate in the dependency graph.
     fixed_channel_catalog: RwLock<String>,
+
+    /// The current stream's channel tags (`FormatBridge::channel_tags`) as a
+    /// JSON array, supplied by the engine when they change: Studio shows the
+    /// dialogue level only while a stream tags dialogue.
+    channel_tags: RwLock<String>,
 
     /// Current fixed-channel/synthesized-object applicability state supplied by
     /// the engine on declaration/topology/option changes (never per sample).
@@ -1679,6 +1986,11 @@ pub struct RendererControl {
     /// updated by the OSC profile operations; read by the state snapshot.
     /// Control-plane only, never touched on the audio path.
     profiles_info: Mutex<ProfilesInfo>,
+
+    /// Where the evaluation grid stands: the latest grid request, the hints
+    /// the active bridge offers, the grid the speaker stage installed (see
+    /// [`crate::evaluation_grid`]).
+    pub(crate) grid: crate::evaluation_grid::GridRequests,
 }
 
 /// Client-visible view of the named config profiles (active + names).
@@ -1697,6 +2009,16 @@ impl Default for ProfilesInfo {
     }
 }
 
+/// A generation that tells readers the live params changed must be bumped
+/// once they are published, not while the write guard is still held.
+#[track_caller]
+fn debug_assert_bumped_after_publish() {
+    debug_assert!(
+        !crate::live_cell::write_held_on_this_thread(),
+        "live params generation bumped while their write guard is held: drop it first"
+    );
+}
+
 impl RendererControl {
     /// Create a new `RendererControl` and wrap it in an `Arc`.
     ///
@@ -1711,7 +2033,7 @@ impl RendererControl {
         backend_rebuild_params: Option<BackendRebuildParams>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            live: RwLock::new(live),
+            live: LiveCell::new(live),
             topology: ArcSwap::new(Arc::new(initial_topology)),
             editable_layout: Mutex::new(editable_layout),
             backend_rebuild_params: RwLock::new(backend_rebuild_params),
@@ -1719,6 +2041,11 @@ impl RendererControl {
             recompute_pending: AtomicBool::new(false),
             config_dirty: AtomicBool::new(false),
             binaural_hrir_status: ArcSwap::from_pointee(crate::binaural::HrirStatus::default()),
+            binaural_brir_status: ArcSwap::from_pointee(crate::binaural::BrirStatus::default()),
+            brir_status_generation: std::sync::atomic::AtomicU64::new(0),
+            render_layout_key: std::sync::atomic::AtomicU64::new(0),
+            speaker_stage_width: std::sync::atomic::AtomicUsize::new(0),
+            relayout_by_host: AtomicBool::new(false),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
             live_state_generation: std::sync::atomic::AtomicU64::new(0),
@@ -1730,10 +2057,11 @@ impl RendererControl {
             bridge_error: Mutex::new(None),
             host_abi: Mutex::new(None),
             crossover_info: Mutex::new(None),
+            band_build_error: Mutex::new(None),
             input_path: Mutex::new(None),
-            bridge_path: Mutex::new(None),
+            bridge_paths: Mutex::new(Vec::new()),
+            bridges_status: Mutex::new(Vec::new()),
             bridge_supported_drc_modes: Mutex::new(Vec::new()),
-            requested_ramp_mode: Mutex::new(RampMode::Frame),
             // Seeded by the renderer at construction; 48 kHz until then.
             sample_rate: std::sync::atomic::AtomicU32::new(48_000),
             // Seeded from config (or a host default) after construction.
@@ -1742,15 +2070,18 @@ impl RendererControl {
             meter_rate_default_hz_bits: std::sync::atomic::AtomicU32::new(50.0_f32.to_bits()),
             diag_rate_default_hz_bits: std::sync::atomic::AtomicU32::new(50.0_f32.to_bits()),
             backend_registry: RwLock::new(BackendRegistry::builtin()),
-            backend_params: RwLock::new(HashMap::new()),
-            object_generators_schema: RwLock::new("[]".to_string()),
-            phantom_schema: RwLock::new("[]".to_string()),
+            plugin_params: RwLock::new(Default::default()),
+            plugin_params_generation: std::sync::atomic::AtomicU64::new(0),
+            object_generator_listings: RwLock::new(Vec::new()),
+            phantom_listing: RwLock::new(None),
             fixed_channel_catalog: RwLock::new("[]".to_string()),
+            channel_tags: RwLock::new("[]".to_string()),
             fixed_channel_processing: RwLock::new(
                 r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
                     .to_string(),
             ),
             profiles_info: Mutex::new(ProfilesInfo::default()),
+            grid: Default::default(),
         })
     }
 
@@ -1759,13 +2090,15 @@ impl RendererControl {
         *self.profiles_info.lock() = info;
     }
 
-    /// Drop every host-set backend parameter. The live profile switch calls
-    /// this before replaying the incoming profile's `backend_params`: the
-    /// replay only inserts, so without the clear the outgoing profile's keys
-    /// would survive the switch and be committed into the incoming profile by
-    /// the next save.
-    pub fn clear_backend_params(&self) {
-        self.backend_params.write().clear();
+    /// Drop every host-set plugin parameter. The live profile switch calls
+    /// this before replaying the incoming profile's param keys: the replay
+    /// only inserts, so without the clear the outgoing profile's keys would
+    /// survive the switch and be committed into the incoming profile by the
+    /// next save.
+    pub fn clear_plugin_params(&self) {
+        *self.plugin_params.write() = Default::default();
+        self.plugin_params_generation
+            .fetch_add(1, Ordering::Release);
     }
 
     /// Current client-visible profiles view (active name + name list).
@@ -1781,25 +2114,86 @@ impl RendererControl {
         self.backend_registry.write().register(factory);
     }
 
-    /// Set the published object-generator schema JSON (called by the engine from
-    /// its registry, so any host-registered out-of-tree generators are included).
-    pub fn set_object_generators_schema(&self, json: String) {
-        *self.object_generators_schema.write() = json;
+    /// Set the object-generator listings (called by the engine from its
+    /// registry, so any host-registered out-of-tree generators are included)
+    /// and read the values already stored for them in their declared types.
+    pub fn set_object_generator_listings(&self, listings: Vec<crate::plugin::PluginListing>) {
+        self.plugin_params
+            .write()
+            .canonicalize(crate::plugin::PluginKind::ObjectGenerator, &listings);
+        *self.object_generator_listings.write() = listings;
+        self.plugin_params_generation
+            .fetch_add(1, Ordering::Release);
     }
 
-    /// The published object-generator schema JSON (`"[]"` until the engine sets it).
-    pub fn object_generators_schema(&self) -> String {
-        self.object_generators_schema.read().clone()
+    /// The object-generator listings (empty until the engine sets them).
+    pub fn object_generator_listings(&self) -> Vec<crate::plugin::PluginListing> {
+        self.object_generator_listings.read().clone()
     }
 
-    /// Set the published phantom-extraction param schema JSON (called by the engine).
-    pub fn set_phantom_schema(&self, json: String) {
-        *self.phantom_schema.write() = json;
+    /// Set the phantom-extraction stage's listing (called by the engine) and
+    /// read the values already stored for it in their declared types.
+    pub fn set_phantom_listing(&self, listing: crate::plugin::PluginListing) {
+        self.plugin_params.write().canonicalize(
+            crate::plugin::PluginKind::PhantomExtract,
+            std::slice::from_ref(&listing),
+        );
+        *self.phantom_listing.write() = Some(listing);
+        self.plugin_params_generation
+            .fetch_add(1, Ordering::Release);
     }
 
-    /// The published phantom-extraction schema JSON (`"[]"` until the engine sets it).
-    pub fn phantom_schema(&self) -> String {
-        self.phantom_schema.read().clone()
+    /// The phantom-extraction stage's listing (`None` until the engine sets it).
+    pub fn phantom_listing(&self) -> Option<crate::plugin::PluginListing> {
+        self.phantom_listing.read().clone()
+    }
+
+    /// The published generator listings as the JSON `/state/object_generators`
+    /// carries.
+    pub fn object_generators_json(&self) -> String {
+        serde_json::to_string(&*self.object_generator_listings.read())
+            .unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// The phantom stage's listing as the JSON `/state/phantom` carries
+    /// (`null` until the engine sets it).
+    pub fn phantom_json(&self) -> String {
+        serde_json::to_string(&*self.phantom_listing.read()).unwrap_or_else(|_| "null".to_string())
+    }
+
+    /// The declared parameter `key` of plugin `id`, if the plugin is known
+    /// and declares it. A backend's static schema only: a dynamic one (the
+    /// scriptable backend's) is not known before its build.
+    pub fn plugin_param_spec(
+        &self,
+        kind: crate::plugin::PluginKind,
+        id: &str,
+        key: &str,
+    ) -> Option<crate::backend_params::ParamSpec> {
+        use crate::plugin::PluginKind;
+        match kind {
+            PluginKind::Backend => self
+                .backend_registry
+                .read()
+                .get(id)?
+                .param_schema()
+                .into_iter()
+                .find(|spec| spec.key == key),
+            PluginKind::ObjectGenerator => self
+                .object_generator_listings
+                .read()
+                .iter()
+                .find(|listing| listing.id == id)?
+                .spec(key)
+                .cloned(),
+            PluginKind::PhantomExtract => self
+                .phantom_listing
+                .read()
+                .as_ref()
+                .filter(|listing| listing.id == id)?
+                .spec(key)
+                .cloned(),
+        }
     }
 
     pub fn set_fixed_channel_catalog(&self, json: String) {
@@ -1808,6 +2202,20 @@ impl RendererControl {
 
     pub fn fixed_channel_catalog(&self) -> String {
         self.fixed_channel_catalog.read().clone()
+    }
+
+    /// Publish the stream's channel tags only when they actually changed.
+    pub fn set_channel_tags(&self, json: String) {
+        let mut current = self.channel_tags.write();
+        if *current != json {
+            *current = json;
+            drop(current);
+            self.bump_live_state();
+        }
+    }
+
+    pub fn channel_tags(&self) -> String {
+        self.channel_tags.read().clone()
     }
 
     /// Publish a new applicability snapshot only when it actually changed.
@@ -1831,7 +2239,7 @@ impl RendererControl {
 
     /// Id + label of every registered backend, for the host to publish so the UI
     /// can list the selectable backends (built-in and contributor-registered).
-    pub fn available_backends(&self) -> Vec<crate::backend_registry::BackendListing> {
+    pub fn available_backends(&self) -> Vec<crate::plugin::PluginListing> {
         // Resolve dynamic schemas (e.g. the scriptable backend's, which depends
         // on its selected file) against the current param store, with File-kind
         // handles resolved to absolute renderer paths so the schema reader can open
@@ -1839,68 +2247,134 @@ impl RendererControl {
         // of the selection combo regardless of registration order (see `hybrid_last`).
         let registry = self.backend_registry.read();
         let resolved = self.resolved_backend_params(&registry);
-        let listings = registry.available_with(&resolved);
+        let listings = registry.listings_with(&resolved);
         crate::backend_registry::hybrid_last(listings)
     }
 
     /// Resolve File-kind param handles to absolute renderer paths so backend
     /// factories read a real path (see [`crate::backend_files`]). Takes the
     /// already-held registry guard to avoid re-locking it.
-    fn resolved_backend_params(
-        &self,
-        registry: &BackendRegistry,
-    ) -> HashMap<String, HashMap<String, crate::backend_params::ParamValue>> {
+    fn resolved_backend_params(&self, registry: &BackendRegistry) -> crate::plugin::ParamBag {
         let config_dir = self
             .config_path()
             .and_then(|path| path.parent().map(|dir| dir.to_path_buf()));
-        let raw = self.backend_params.read();
-        crate::backend_files::resolve_file_params(&raw, config_dir.as_deref(), |backend_id, key| {
-            registry
-                .get(backend_id)
-                .map(|factory| {
-                    factory.param_schema().iter().any(|spec| {
-                        spec.key == key
-                            && matches!(spec.kind, crate::backend_params::ParamKind::File { .. })
+        let raw = self.plugin_params.read();
+        crate::backend_files::resolve_file_params(
+            raw.bag(crate::plugin::PluginKind::Backend),
+            config_dir.as_deref(),
+            |backend_id, key| {
+                registry
+                    .get(backend_id)
+                    .map(|factory| {
+                        factory.param_schema().iter().any(|spec| {
+                            spec.key == key
+                                && matches!(
+                                    spec.kind,
+                                    crate::backend_params::ParamKind::File { .. }
+                                )
+                        })
                     })
-                })
-                .unwrap_or(false)
-        })
+                    .unwrap_or(false)
+            },
+        )
     }
 
-    /// Set one backend parameter value (host/OSC). Stored generically and applied
-    /// at the next topology rebuild.
+    /// Set one plugin parameter value (host/OSC), in the type the parameter
+    /// declares when it is known ([`ParamSpec::coerce`]). Returns `false`,
+    /// storing nothing, when a declared parameter cannot read the value; an
+    /// undeclared key is stored as it comes (a dynamic schema is not known
+    /// before its build). A backend reads it at the next topology rebuild, a
+    /// stage on its next frame.
+    ///
+    /// [`ParamSpec::coerce`]: crate::backend_params::ParamSpec::coerce
+    pub fn set_plugin_param(
+        &self,
+        kind: crate::plugin::PluginKind,
+        id: &str,
+        key: &str,
+        value: crate::backend_params::ParamValue,
+    ) -> bool {
+        let value = match self.plugin_param_spec(kind, id, key) {
+            Some(spec) => match spec.coerce(&value) {
+                Some(value) => value,
+                None => return false,
+            },
+            None => value,
+        };
+        self.plugin_params.write().set(kind, id, key, value);
+        self.plugin_params_generation
+            .fetch_add(1, Ordering::Release);
+        true
+    }
+
+    /// Set one backend parameter value — [`set_plugin_param`] for a backend.
+    ///
+    /// [`set_plugin_param`]: Self::set_plugin_param
     pub fn set_backend_param(
         &self,
         backend_id: &str,
         key: &str,
         value: crate::backend_params::ParamValue,
-    ) {
-        self.backend_params
-            .write()
-            .entry(backend_id.to_string())
-            .or_default()
-            .insert(key.to_string(), value);
+    ) -> bool {
+        self.set_plugin_param(crate::plugin::PluginKind::Backend, backend_id, key, value)
     }
 
-    /// A clone of the stored param values for `backend_id` (empty if none set),
-    /// for the host to publish alongside the backend's schema.
-    pub fn backend_params_for(
-        &self,
-        backend_id: &str,
-    ) -> HashMap<String, crate::backend_params::ParamValue> {
-        self.backend_params
-            .read()
-            .get(backend_id)
-            .cloned()
-            .unwrap_or_default()
+    /// A clone of one kind's stored values (`plugin id -> key -> value`), for
+    /// the host to publish alongside the schemas.
+    pub fn plugin_param_bag(&self, kind: crate::plugin::PluginKind) -> crate::plugin::ParamBag {
+        self.plugin_params.read().bag(kind).clone()
     }
 
-    /// A clone of the entire backend-param store (`backend_id -> key -> value`),
-    /// for the host to persist to config.
-    pub fn all_backend_params(
-        &self,
-    ) -> HashMap<String, HashMap<String, crate::backend_params::ParamValue>> {
-        self.backend_params.read().clone()
+    /// The backend-param store (`backend_id -> key -> value`).
+    pub fn all_backend_params(&self) -> crate::plugin::ParamBag {
+        self.plugin_param_bag(crate::plugin::PluginKind::Backend)
+    }
+
+    /// Merge values read from a config ([`PluginParams::from_config`]) into
+    /// the store, each in its parameter's declared type when the plugin is
+    /// already known. Never drops a value: one a declared parameter cannot
+    /// read is kept as the file had it, and the plugin falls back to its
+    /// default for it.
+    ///
+    /// [`PluginParams::from_config`]: crate::plugin::PluginParams::from_config
+    pub fn seed_plugin_params(&self, mut incoming: crate::plugin::PluginParams) {
+        use crate::plugin::PluginKind;
+        incoming.canonicalize(
+            PluginKind::Backend,
+            &self.backend_registry.read().listings(),
+        );
+        incoming.canonicalize(
+            PluginKind::ObjectGenerator,
+            &self.object_generator_listings.read(),
+        );
+        if let Some(listing) = self.phantom_listing.read().as_ref() {
+            incoming.canonicalize(PluginKind::PhantomExtract, std::slice::from_ref(listing));
+        }
+        let mut store = self.plugin_params.write();
+        for kind in PluginKind::ALL {
+            for (id, values) in incoming.bag_mut(kind).drain() {
+                store.bag_mut(kind).entry(id).or_default().extend(values);
+            }
+        }
+        drop(store);
+        self.plugin_params_generation
+            .fetch_add(1, Ordering::Release);
+    }
+
+    /// A clone of every stored plugin value, for the host to persist to config.
+    pub fn plugin_params(&self) -> crate::plugin::PluginParams {
+        self.plugin_params.read().clone()
+    }
+
+    /// Run `f` on the stored plugin values under one read lock, without
+    /// cloning them — how a stage applies its parameters.
+    pub fn with_plugin_params<R>(&self, f: impl FnOnce(&crate::plugin::PluginParams) -> R) -> R {
+        f(&self.plugin_params.read())
+    }
+
+    /// Bumped on every plugin-parameter write (see `plugin_params_generation`).
+    pub fn plugin_params_generation(&self) -> u64 {
+        self.plugin_params_generation.load(Ordering::Acquire)
     }
 
     /// Shared meter-cadence atomic (Hz bits) for `AudioMeter::new_with_rate_atomic`.
@@ -2001,10 +2475,10 @@ impl RendererControl {
         *self.host_abi.lock() = Some((major, minor));
     }
 
-    /// Publish the crossover bank the speaker stage just built. Bumps the
-    /// live-state generation only when the facts actually changed, so the
-    /// per-frame refresh path can call this unconditionally without
-    /// re-broadcast churn (a bank rebuild is rare: topology or engine flip).
+    /// Publish the crossover bank the speaker stage just installed. Bumps the
+    /// live-state generation only when the facts actually changed, so an
+    /// install can call this unconditionally without re-broadcast churn (a
+    /// bank swap is rare: topology or engine flip).
     pub fn set_crossover_info(&self, info: CrossoverInfo) {
         let mut guard = self.crossover_info.lock();
         if guard.as_ref() != Some(&info) {
@@ -2014,9 +2488,21 @@ impl RendererControl {
         }
     }
 
-    /// Facts about the last crossover bank built (see [`CrossoverInfo`]).
+    /// Facts about the crossover bank in use (see [`CrossoverInfo`]).
     pub fn crossover_info(&self) -> Option<CrossoverInfo> {
         self.crossover_info.lock().clone()
+    }
+
+    /// Record why the speaker stage could not build its band engines, for
+    /// the OSC listener to broadcast; an empty string clears the error on
+    /// the clients. See the field.
+    pub fn report_band_build_error(&self, message: String) {
+        *self.band_build_error.lock() = Some(message);
+    }
+
+    /// Take the band-build outcome reported since the last call, if any.
+    pub fn take_band_build_error(&self) -> Option<String> {
+        self.band_build_error.lock().take()
     }
 
     pub fn host_abi(&self) -> Option<(u32, u32)> {
@@ -2040,7 +2526,12 @@ impl RendererControl {
         f(&mut layout)
     }
 
+    /// Publish `topology` whatever the grid requests say (the build itself,
+    /// an offline render settling on the calling thread). A rebuild that a
+    /// later grid request may have overtaken publishes through
+    /// [`Self::publish_topology_if_current`] instead.
     pub fn publish_topology(&self, topology: RenderTopology) {
+        self.forget_grid_pair();
         self.topology.store(Arc::new(topology));
     }
 
@@ -2052,19 +2543,162 @@ impl RendererControl {
         *self.backend_rebuild_params.write() = params;
     }
 
+    /// Tell the render thread the per-object live params changed. Call it
+    /// after the write guard is dropped: the render thread loads the live
+    /// params after this generation, so a bump it sees comes with the data
+    /// (see [`LiveCell`]).
     pub fn mark_object_params_dirty(&self) {
+        debug_assert_bumped_after_publish();
         self.object_params_generation
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Release);
     }
 
+    /// [`mark_object_params_dirty`](Self::mark_object_params_dirty) for the
+    /// per-speaker live params.
     pub fn mark_speaker_params_dirty(&self) {
+        debug_assert_bumped_after_publish();
         self.speaker_params_generation
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Release);
     }
 
     /// The last binaural HRIR build's outcome (see the field).
     pub fn binaural_hrir_status(&self) -> Arc<crate::binaural::HrirStatus> {
         self.binaural_hrir_status.load_full()
+    }
+
+    /// The last BRIR set load's outcome (see the field).
+    pub fn binaural_brir_status(&self) -> Arc<crate::binaural::BrirStatus> {
+        self.binaural_brir_status.load_full()
+    }
+
+    /// Record a BRIR load's outcome (the BRIR stage's status sink). A loaded
+    /// set changes the layout a headphone render pans onto: hosts notice it
+    /// through [`Self::render_layout_outdated`].
+    pub fn set_binaural_brir_status(&self, status: crate::binaural::BrirStatus) {
+        self.binaural_brir_status.store(Arc::new(status));
+        self.brir_status_generation.fetch_add(1, Ordering::Release);
+        self.bump_live_state();
+    }
+
+    /// Whether a host follows [`Self::render_layout_outdated`] itself (see
+    /// the field). The OSC listener claims it while it runs.
+    pub fn set_relayout_by_host(&self, on: bool) {
+        self.relayout_by_host.store(on, Ordering::Release);
+    }
+
+    pub fn relayout_by_host(&self) -> bool {
+        self.relayout_by_host.load(Ordering::Acquire)
+    }
+
+    /// What [`Self::render_layout_outdated`] depends on that can move without
+    /// the live params changing: the BRIR status generation, the layout the
+    /// last rebuild was for, and whether a host follows it. The render thread
+    /// compares it each frame (three loads) and only then asks the question.
+    pub fn render_layout_fingerprint(&self) -> (u64, u64, bool) {
+        (
+            self.brir_status_generation.load(Ordering::Acquire),
+            self.render_layout_key.load(Ordering::Acquire),
+            self.relayout_by_host(),
+        )
+    }
+
+    /// Record the width the speaker stage was opened with (see the field).
+    pub fn set_speaker_stage_width(&self, width: usize) {
+        self.speaker_stage_width.store(width, Ordering::Relaxed);
+    }
+
+    /// The layout a headphone render with a BRIR source pans onto, when one
+    /// applies, and the room it pans in: the output is binaural, the source
+    /// is a BRIR set, and that file's set is resident. The room is the
+    /// measured one the set's loudspeakers stand in
+    /// ([`crate::binaural::brir::MeasuredRoom`]), with the user's front/rear
+    /// blend, which is a panning policy rather than a room; the loudspeakers
+    /// are placed in it as fractions, so the stage's warp returns each to
+    /// its measured position and an object is panned among them in the
+    /// room's own metric, not the user's room's (#803). `Ok(None)` otherwise
+    /// (the editable layout applies, in the live room); `Err` when the set's
+    /// layout cannot be used (too wide for the speaker stage, or not a valid
+    /// layout), which also falls back to the editable one.
+    pub fn brir_layout(&self) -> Result<Option<BrirLayout>, String> {
+        let Some((loaded, center_blend)) =
+            self.brir_set_in_use(|loaded, live| (loaded.clone(), live.room_ratio_center_blend))
+        else {
+            return Ok(None);
+        };
+        let measured = crate::binaural::brir::MeasuredRoom::of(
+            &loaded.emitter_positions,
+            loaded.room_corners_m,
+        );
+        let room = measured.ratios(center_blend);
+        let layout = SpeakerLayout::from_brir_emitters(
+            &loaded.emitter_positions,
+            &room,
+            measured.radius_m(),
+        )
+        .map_err(|e| e.to_string())?;
+        let width = self.speaker_stage_width.load(Ordering::Relaxed);
+        if !Self::brir_layout_fits(loaded.emitter_positions.len(), width) {
+            return Err(format!(
+                "the BRIR set needs {} virtual speakers (with the LFE) but the renderer \
+                 was opened with {width}; it renders on the speaker layout instead",
+                layout.num_speakers()
+            ));
+        }
+        Ok(Some(BrirLayout {
+            layout,
+            room,
+            measured,
+        }))
+    }
+
+    /// Whether a set of `emitters` (plus the LFE bus) fits a speaker stage
+    /// of `width` (0: not reported yet, assumed to fit).
+    fn brir_layout_fits(emitters: usize, width: usize) -> bool {
+        // `emitters + 1 <= width`: the LFE bus takes a channel too.
+        width == 0 || emitters < width
+    }
+
+    /// `f` of the resident BRIR set and the live params when a headphone
+    /// render uses the set.
+    fn brir_set_in_use<R>(
+        &self,
+        f: impl FnOnce(&crate::binaural::BrirSummary, &LiveParams) -> R,
+    ) -> Option<R> {
+        let status = self.binaural_brir_status();
+        let loaded = status.loaded.as_ref()?;
+        let live = self.live.read();
+        let in_use = live.binaural.output_mode == OutputMode::Binaural
+            && matches!(
+                &live.binaural.hrir_source,
+                crate::binaural::HrirSource::Brir(path) if *path == status.path
+            );
+        in_use.then(|| f(loaded, &live))
+    }
+
+    /// The [`Self::render_layout_key`] a rebuild prepared now would record:
+    /// the BRIR status generation while a set's layout applies, else 0.
+    /// Builds no layout.
+    fn wanted_render_layout_key(&self) -> u64 {
+        // Read before the status: a load landing in between then reads as
+        // outdated once more, never as current with the older set.
+        let generation = self.brir_status_generation.load(Ordering::Acquire);
+        let width = self.speaker_stage_width.load(Ordering::Relaxed);
+        match self.brir_set_in_use(|loaded, _| {
+            Self::brir_layout_fits(loaded.emitter_positions.len(), width)
+        }) {
+            Some(true) => generation,
+            _ => 0,
+        }
+    }
+
+    /// `true` when the published topology was not prepared for the layout
+    /// the render should pan onto: a BRIR set landed or went away, or the
+    /// output switched between speakers and headphones with one selected.
+    /// Hosts poll it and rebuild the topology
+    /// ([`Self::prepare_topology_rebuild`] picks the layout). Cheap: no
+    /// layout is built unless a BRIR set is in use.
+    pub fn render_layout_outdated(&self) -> bool {
+        self.wanted_render_layout_key() != self.render_layout_key.load(Ordering::Acquire)
     }
 
     /// Signal that live state changed and should be re-broadcast to clients.
@@ -2088,12 +2722,15 @@ impl RendererControl {
 
     /// Bump the options epoch: a `REPLAN`-flagged live option changed, so the
     /// synthesized-object plan signatures must invalidate (see [`crate::options`]).
+    /// Like the params generations, bumped after the write guard is dropped
+    /// and read before the live params are loaded.
     pub fn bump_options_epoch(&self) {
-        self.options_epoch.fetch_add(1, Ordering::Relaxed);
+        debug_assert_bumped_after_publish();
+        self.options_epoch.fetch_add(1, Ordering::Release);
     }
 
     pub fn options_epoch(&self) -> u64 {
-        self.options_epoch.load(Ordering::Relaxed)
+        self.options_epoch.load(Ordering::Acquire)
     }
 
     /// Flag that output clipping was detected this frame on `speaker_idx`
@@ -2110,21 +2747,78 @@ impl RendererControl {
         (idx >= 0).then_some(idx as usize)
     }
 
+    /// Plan a rebuild of the render topology on the layout the render pans
+    /// onto: the resident BRIR set's emitters while a headphone render uses
+    /// one ([`Self::brir_layout`]), the editable layout otherwise. Records
+    /// which, for [`Self::render_layout_outdated`], and invalidates the gain
+    /// model when that is another layout than the last rebuild's: whatever
+    /// asked for the rebuild (an evaluation-only edit reuses the model), the
+    /// previous layout's triangulation cannot serve this one.
     pub fn prepare_topology_rebuild(&self) -> Option<TopologyBuildPlan> {
-        let layout = self.editable_layout();
-        self.prepare_topology_rebuild_for_layout(layout)
+        let key = self.wanted_render_layout_key();
+        // Recorded whatever comes of it: a set whose layout cannot be built
+        // falls back to the editable layout once, not on every poll.
+        let previous = self.render_layout_key.swap(key, Ordering::AcqRel);
+        if previous != key {
+            // Before the plan below captures the generation.
+            self.bump_geometry_generation();
+        }
+        let brir = if key == 0 {
+            None
+        } else {
+            self.brir_layout().unwrap_or_else(|e| {
+                log::warn!("BRIR layout not used: {e}");
+                None
+            })
+        };
+        let (layout, room, measured_room) = match brir {
+            Some(brir) => (brir.layout, brir.room, Some(brir.measured)),
+            None => (
+                self.editable_layout(),
+                RoomRatios::of_live(&self.live.read()),
+                None,
+            ),
+        };
+        let mut plan = self.prepare_topology_rebuild_for_layout(layout, room)?;
+        plan.brir_layout = measured_room.is_some();
+        plan.measured_room = measured_room;
+        Some(plan)
     }
 
+    /// Plan a rebuild of the render topology on `layout`, panning in `room`:
+    /// the live room for the editable layout and its bands, a measured room
+    /// for a BRIR set's loudspeakers ([`Self::prepare_topology_rebuild`]
+    /// picks both). The plan places the layout's cartesian speakers in it
+    /// and the built topology records it for its objects
+    /// ([`RenderTopology::room`]).
     pub fn prepare_topology_rebuild_for_layout(
         &self,
         layout: SpeakerLayout,
+        room: RoomRatios,
     ) -> Option<TopologyBuildPlan> {
         let live = self.live.read();
-        let backend_rebuild_params = self.backend_rebuild_params();
-        let evaluation_build_config = evaluation_build_config_from_live(
+        // Negative z is a live setting (the bridge's hint, or the user's in
+        // a forced grid), not the build's fact: the gain models and the
+        // polar grid take it from the live params.
+        let allow_negative_z = live.evaluation.allow_negative_z;
+        let backend_rebuild_params = self.backend_rebuild_params().map(|mut params| {
+            params.allow_negative_z = allow_negative_z;
+            if let Some(vbap) = params.vbap.as_mut() {
+                vbap.allow_negative_z = allow_negative_z;
+            }
+            params
+        });
+        let evaluation_build_config =
+            evaluation_build_config_from_live(&live, room, allow_negative_z);
+        let grid = crate::evaluation_grid::EvaluationGrid::of_live(
             &live,
-            rebuild_params_allow_negative_z(backend_rebuild_params),
+            backend_rebuild_params
+                .map(|params| params.preferred_evaluation_mode())
+                .unwrap_or(PreferredEvaluationMode::PrecomputedCartesian),
         );
+        // Read before the geometry: a request made meanwhile then reads as
+        // newer than this plan.
+        let grid_generation = self.grid_generation();
         let geometry_generation = self.geometry_generation();
         let registry = self.backend_registry.read();
         // File-kind handles are resolved to absolute renderer paths here too, so
@@ -2134,12 +2828,15 @@ impl RendererControl {
             &registry,
             layout,
             &live,
+            room,
             backend_rebuild_params,
             &backend_params,
             evaluation_build_config,
         )
         .map(|mut plan| {
             plan.geometry_generation = geometry_generation;
+            plan.grid = Some(grid);
+            plan.grid_generation = grid_generation;
             plan
         })
     }
@@ -2160,14 +2857,33 @@ impl RendererControl {
         let layout = topology.speaker_layout.clone();
         let speaker_count = layout.speakers.len();
 
+        // Every band's gains are kept, so all of them count in the budget.
+        let bands = crate::crossover::compute_bands(&layout);
+
         // Same cartesian grid the full gain table uses.
         let (x_positions, y_positions, z_positions, template) = {
             let live = self.live.read();
-            let rebuild_params = self.backend_rebuild_params();
+            // The published topology's room: the bands are built from its
+            // layout, so the table reads positions in the room its speakers
+            // were placed in.
             let config = evaluation_build_config_from_live(
                 &live,
-                rebuild_params_allow_negative_z(rebuild_params),
+                topology.room,
+                live.evaluation.allow_negative_z,
             );
+            // The axes below are as long as the sizes asked for: refuse a
+            // grid past the table budget before allocating them.
+            let c = &config.cartesian;
+            crate::render_backend::check_table_budget(
+                "cartesian",
+                &[
+                    c.x_size.max(2),
+                    c.y_size.max(2),
+                    c.z_size.max(2).saturating_add(c.z_neg_size),
+                ],
+                speaker_count,
+                bands.len(),
+            )?;
             (
                 crate::render_backend::evenly_spaced_axis(
                     config.cartesian.x_size.max(2),
@@ -2189,8 +2905,6 @@ impl RendererControl {
         let (nx, ny, nz) = (x_positions.len(), y_positions.len(), z_positions.len());
         let cell_count = nx * ny * nz;
 
-        let bands = crate::crossover::compute_bands(&layout);
-
         let mut band_meta: Vec<(f32, f32)> = Vec::with_capacity(bands.len());
         let mut band_gains_all: Vec<Vec<f32>> = Vec::with_capacity(bands.len());
         for band in &bands {
@@ -2207,25 +2921,31 @@ impl RendererControl {
                         .collect(),
                 };
                 let band_topology = self
-                    .prepare_topology_rebuild_for_layout(band_layout)
+                    .prepare_topology_rebuild_for_layout(band_layout, topology.room)
                     .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology"))?
-                    .build_topology()?;
-                let per_cell: Vec<crate::spatial_vbap::Gains> = (0..cell_count)
-                    .into_par_iter()
-                    .map(|idx| {
-                        let xi = idx % nx;
-                        let yi = (idx / nx) % ny;
-                        let zi = idx / (nx * ny);
-                        let mut req = template;
-                        req.adm_position = [
-                            x_positions[xi] as f64,
-                            y_positions[yi] as f64,
-                            z_positions[zi] as f64,
-                        ];
-                        band_topology.backend.compute_gains(&req).gains
-                    })
-                    .collect();
-                for (idx, cell) in per_cell.iter().enumerate() {
+                    .build_band_topology_reusing(None)?;
+                // The band's own gains, one row of `n` per cell, then scattered
+                // to the layout's speakers.
+                let backend = &band_topology.backend;
+                let mut per_cell = vec![0.0f32; cell_count * n];
+                crate::background_pool::install(|| {
+                    per_cell.par_chunks_mut(n).enumerate().for_each_init(
+                        || backend.new_scratch(),
+                        |scratch, (idx, cell)| {
+                            let xi = idx % nx;
+                            let yi = (idx / nx) % ny;
+                            let zi = idx / (nx * ny);
+                            let mut req = template;
+                            req.adm_position = [
+                                x_positions[xi] as f64,
+                                y_positions[yi] as f64,
+                                z_positions[zi] as f64,
+                            ];
+                            backend.compute_gains(&req, scratch, cell);
+                        },
+                    )
+                });
+                for (idx, cell) in per_cell.chunks_exact(n).enumerate() {
                     let base = idx * speaker_count;
                     for (gi, &g) in cell.iter().enumerate() {
                         gains[base + indices[gi]] = g;
@@ -2268,12 +2988,15 @@ impl RendererControl {
         })
     }
 
-    /// Mark live params as dirty (changed since last save) and return the new state.
+    /// Mark live params as dirty: changed since they were last saved to (or
+    /// loaded from) the config file. Clients learn it from
+    /// `/state/config/saved`.
     pub fn mark_dirty(&self) {
         self.config_dirty.store(true, Ordering::Relaxed);
     }
 
-    /// Mark live params as clean (just saved) and return the new state.
+    /// Mark live params as clean: they match the config file (just saved, or
+    /// just adopted from it).
     pub fn mark_clean(&self) {
         self.config_dirty.store(false, Ordering::Relaxed);
     }
@@ -2286,12 +3009,25 @@ impl RendererControl {
         self.input_path.lock().clone()
     }
 
-    pub fn set_bridge_path(&self, bridge_path: Option<PathBuf>) {
-        *self.bridge_path.lock() = bridge_path;
+    pub fn set_bridge_paths(&self, paths: Vec<PathBuf>) {
+        *self.bridge_paths.lock() = paths;
     }
 
-    pub fn bridge_path(&self) -> Option<PathBuf> {
-        self.bridge_path.lock().clone()
+    pub fn bridge_paths(&self) -> Vec<PathBuf> {
+        self.bridge_paths.lock().clone()
+    }
+
+    pub fn set_bridges_status(&self, status: Vec<BridgeStatus>) {
+        *self.bridges_status.lock() = status;
+    }
+
+    pub fn bridges_status(&self) -> Vec<BridgeStatus> {
+        self.bridges_status.lock().clone()
+    }
+
+    /// The first bridge asked for, for clients that only know one.
+    pub fn first_bridge_path(&self) -> Option<PathBuf> {
+        self.bridge_paths.lock().first().cloned()
     }
 
     pub fn set_bridge_supported_drc_modes(&self, modes: Vec<String>) {
@@ -2300,13 +3036,5 @@ impl RendererControl {
 
     pub fn bridge_supported_drc_modes(&self) -> Vec<String> {
         self.bridge_supported_drc_modes.lock().clone()
-    }
-
-    pub fn set_requested_ramp_mode(&self, mode: RampMode) {
-        *self.requested_ramp_mode.lock() = mode;
-    }
-
-    pub fn requested_ramp_mode(&self) -> RampMode {
-        *self.requested_ramp_mode.lock()
     }
 }

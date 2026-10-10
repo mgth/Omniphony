@@ -6,6 +6,8 @@ use rosc::{OscMessage, OscType};
 pub enum RuntimeCommand {
     SaveConfig,
     ReloadConfig,
+    /// Restart the pipeline keeping the unsaved live state.
+    Restart,
     Quit,
     /// Another local instance wants the OSC RX port; only honoured by
     /// instances started with `--osc-yield` (see `sys::shutdown::is_yieldable`).
@@ -28,10 +30,22 @@ pub fn parse_runtime_log_level(value: &str) -> Option<LevelFilter> {
     }
 }
 
+/// The addresses [`parse_process_command`] answers to.
+pub const PROCESS_COMMANDS: &[&str] = &[
+    osc_contract::CONTROL_SAVE_CONFIG,
+    osc_contract::CONTROL_RELOAD_CONFIG,
+    osc_contract::CONTROL_RESTART,
+    osc_contract::CONTROL_QUIT,
+    osc_contract::CONTROL_YIELD_PORT,
+    osc_contract::CONTROL_RESUME,
+    osc_contract::CONTROL_LOG_LEVEL,
+];
+
 pub fn parse_process_command(msg: &OscMessage) -> Option<RuntimeCommand> {
     match msg.addr.as_str() {
         osc_contract::CONTROL_SAVE_CONFIG => Some(RuntimeCommand::SaveConfig),
         osc_contract::CONTROL_RELOAD_CONFIG => Some(RuntimeCommand::ReloadConfig),
+        osc_contract::CONTROL_RESTART => Some(RuntimeCommand::Restart),
         osc_contract::CONTROL_QUIT => Some(RuntimeCommand::Quit),
         osc_contract::CONTROL_YIELD_PORT => Some(RuntimeCommand::YieldPort),
         osc_contract::CONTROL_RESUME => Some(RuntimeCommand::Resume),

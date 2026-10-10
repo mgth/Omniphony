@@ -1,103 +1,41 @@
 #![cfg(target_os = "linux")]
 
 use anyhow::{Result, anyhow};
-use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
 use pipewire as pw;
-use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::callback_state::CallbackState;
-use crate::output_telemetry::{LatencySample, OutputTelemetry};
+use crate::callback_core::{CallbackContext, CallbackShared, OutputCallbackCore, PacerLink};
+use crate::callback_log::{CallbackLogDrain, callback_event};
+use crate::pipewire_registry::{
+    ClientEntry, client_from_props, connect_main_loop, non_empty, owner_pid, registry_snapshot,
+};
 use crate::{
-    ADAPTIVE_BAND_FAR, AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO,
-    adaptive_runtime::{
-        FarModeStepCtx, FarModeStepInputs, LatencyMetricTargets, LowRecoverPhase,
-        MAX_INTEGRAL_TERM, PRE_BRIDGE_CALIBRATION_CALLBACKS, compute_hard_recover_high_plan,
-        discard_ring_samples, far_mode_band_from_latency, far_mode_step, note_refill_or_underrun,
-        output_to_input_domain_samples, paused_rate_adjust, postprocess_interleaved_output,
-        reset_adaptive_runtime, run_adaptive_servo, should_run_adaptive_servo,
-        update_latency_metrics, zero_pad_tail,
-    },
-    adaptive_runtime_state_name_from_code, clamp_ratio_for_local_resampler,
-    local_resampler_ratio_bounds,
-    resampler_fifo::RESAMPLER_CHUNK_SIZE,
+    AdaptiveResamplingConfig, local_resampler_ratio_bounds,
+    pacer::{PacerDrainEnds, PacerHandle, paced_ring_frames, pre_roll_frames},
+    resampler_fifo::{RESAMPLER_CHUNK_SIZE, new_output_resampler},
     ring_buffer_io::{
-        flush_ring_buffer, push_samples_drop_overflow, push_samples_with_backpressure,
+        RingMonitor, RingReader, RingWriter, flush_ring_buffer, push_samples_drop_overflow,
+        push_samples_with_backpressure, sample_ring,
     },
 };
 
-// FFI bindings for PipeWire thread-safe rate control and stream timing
-#[link(name = "pipewire-0.3")]
-unsafe extern "C" {
-    fn pw_stream_set_control(
-        stream: *mut std::ffi::c_void,
-        id: u32,
-        n_values: u32,
-        values: *const f32,
-        flags: u32,
-    ) -> i32;
-
-    fn pw_thread_loop_lock(loop_: *mut std::ffi::c_void);
-    fn pw_thread_loop_unlock(loop_: *mut std::ffi::c_void);
-
-    /// RT-safe.  `time` must point to a zero-initialised PwTime.
-    fn pw_stream_get_time(stream: *mut std::ffi::c_void, time: *mut PwTime) -> i32;
-}
-
-/// Mirrors `struct spa_fraction` from <spa/utils/defs.h>
-#[repr(C)]
-struct SpaFraction {
-    num: u32,
-    denom: u32,
-}
-
-/// Mirrors `struct pw_time` from <pipewire/stream.h>.
-/// Must match the full C struct exactly to avoid stack corruption when
-/// pw_stream_get_time() writes past the end of an undersized struct.
-/// Fields up to `queued` exist since 0.3.0; `buffered`/`queued_buffers`/
-/// `avail_buffers` were added in 0.3.50; `size` in 1.1.0.
-/// Total: 64 bytes (verified against pipewire-sys bindgen output).
-#[repr(C)]
-#[derive(Default)]
-struct PwTime {
-    now: i64,
-    rate: SpaFraction,
-    ticks: u64,
-    /// Downstream graph latency in `rate` ticks (frames at `rate.denom` Hz).
-    /// Does NOT include queued ring-buffer samples.
-    delay: i64,
-    queued: u64,
-    // Fields added in 0.3.50 — must be present to avoid stack overflow.
-    buffered: u64,
-    queued_buffers: u32,
-    avail_buffers: u32,
-    // Field added in 1.1.0.
-    size: u64,
-}
-
-impl Default for SpaFraction {
-    fn default() -> Self {
-        SpaFraction { num: 0, denom: 1 }
-    }
-}
-
-// SPA control IDs from spa/control/control.h
-const SPA_PROP_RATE: u32 = 3;
+/// `SPA_PROP_rate` from <spa/param/props.h>: the stream adapter's resample
+/// rate scaler, the control `pw_stream_set_control` takes to speed up or slow
+/// down how fast the graph drains this stream.
+const SPA_PROP_RATE: u32 = pw::spa::sys::SPA_PROP_rate;
 
 /// Convert speaker name to PipeWire channel position name
 /// PipeWire expects lowercase positions like "FL", "FR", "FC", "LFE", "RL", "RR", etc.
-fn to_pipewire_position(name: &str) -> String {
+pub(crate) fn to_pipewire_position(name: &str) -> String {
     match name {
         "C" => "FC".to_string(),    // Center → Front-Center
         "BL" => "RL".to_string(),   // Back-Left → Rear-Left
@@ -112,8 +50,7 @@ fn to_pipewire_position(name: &str) -> String {
 /// Four properties, because stating the device once is not enough:
 ///
 /// - `target.object` is what WirePlumber 0.5 resolves first; `node.target` is
-///   the deprecated spelling it only falls back to. The input side already
-///   states both (`build_pipewire_bridge_capture_stream_properties`).
+///   the deprecated spelling it only falls back to, so both are stated.
 /// - `node.dont-move` makes the session manager ignore a `target.node` entry
 ///   in the default metadata. Any mixer offering "play on the default device"
 ///   writes `target.node = -1` there, and that entry outranks both properties
@@ -129,7 +66,7 @@ fn to_pipewire_position(name: &str) -> String {
 /// the graph it is triggered by — hands the output stream a clock that only
 /// this stream keeps alive. The ring then stops draining altogether, which
 /// reads as an endless "Buffer drain timeout" and total silence.
-fn output_target_properties(target: &str) -> [(&'static str, &str); 4] {
+pub(crate) fn output_target_properties(target: &str) -> [(&'static str, &str); 4] {
     [
         ("target.object", target),
         ("node.target", target),
@@ -137,9 +74,6 @@ fn output_target_properties(target: &str) -> [(&'static str, &str); 4] {
         ("node.dont-fallback", "true"),
     ]
 }
-
-// Buffer size: 4 seconds of audio at 48kHz, 16 channels
-const BUFFER_SIZE: usize = 48000 * 16 * 4;
 
 /// Runtime configuration for PipeWire buffer sizes and quantum.
 ///
@@ -154,7 +88,8 @@ const BUFFER_SIZE: usize = 48000 * 16 * 4;
 pub struct PipewireBufferConfig {
     /// Target latency used by the PI controller (ms). Default: 500.
     pub latency_ms: u32,
-    /// Maximum buffer fill before applying back-pressure (ms). Default: latency_ms × 2.
+    /// Maximum buffer fill before applying back-pressure (ms), and the ring's
+    /// capacity (plus one pacer FIFO with pacing on). Default: latency_ms × 2.
     pub max_latency_ms: u32,
     /// PipeWire processing quantum in frames. Default: 1024 (~21ms at 48kHz).
     pub quantum_frames: u32,
@@ -173,95 +108,117 @@ impl Default for PipewireBufferConfig {
 
 pub type PipewireAdaptiveResamplingConfig = AdaptiveResamplingConfig;
 
+/// Bound on the registry round trip behind the device list: a wedged daemon
+/// must not hang the caller (the control surface asks for this list).
+const DEVICE_LIST_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// An `Audio/Sink` node offered as an output device, with its owning client.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SinkCandidate {
+    /// `node.name`, what `target.object` is set to.
+    value: String,
+    /// Human-readable label: description, nick, or device name.
+    label: String,
+    client_id: Option<u32>,
+}
+
+/// Reads a registry `Node` global: `Some` only for a named `Audio/Sink`.
+fn sink_candidate_from_props<'a>(get: impl Fn(&str) -> Option<&'a str>) -> Option<SinkCandidate> {
+    if get(*pw::keys::MEDIA_CLASS)? != "Audio/Sink" {
+        return None;
+    }
+    let value = non_empty(get(*pw::keys::NODE_NAME))?;
+    let label = non_empty(get(*pw::keys::NODE_DESCRIPTION))
+        .or_else(|| non_empty(get(*pw::keys::NODE_NICK)))
+        .or_else(|| non_empty(get(*pw::keys::DEVICE_DESCRIPTION)))
+        .or_else(|| non_empty(get(*pw::keys::DEVICE_NAME)))
+        .unwrap_or(value);
+    Some(SinkCandidate {
+        value: value.to_string(),
+        label: label.to_string(),
+        client_id: non_empty(get(*pw::keys::CLIENT_ID)).and_then(|v| v.parse().ok()),
+    })
+}
+
+/// The `(node.name, label)` list offered for output, sorted by label.
+///
+/// Sinks this very process publishes are left out: that is Omniphony's own
+/// bridge input sink, and rendering into it loops the output straight back
+/// into the decoder input, with a clock only this output stream keeps alive
+/// (see [`output_target_properties`]). Offering it would only let the user
+/// pick the one device that cannot work.
+fn output_device_list(
+    sinks: &[SinkCandidate],
+    clients: &[ClientEntry],
+    own_pid: u32,
+) -> Vec<(String, String)> {
+    let mut devices: Vec<(String, String)> = sinks
+        .iter()
+        .filter(|sink| owner_pid(sink.client_id, clients) != Some(own_pid))
+        .map(|sink| (sink.value.clone(), sink.label.clone()))
+        .collect();
+    devices.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    devices.dedup_by(|a, b| a.0 == b.0);
+    devices
+}
+
 pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
-    pw::init();
-
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| anyhow!("Failed to create PipeWire main loop: {e:?}"))?;
-    let context = pw::context::ContextRc::new(&mainloop, None)
-        .map_err(|e| anyhow!("Failed to create PipeWire context: {e:?}"))?;
-    let core = context
-        .connect_rc(None)
-        .map_err(|e| anyhow!("Failed to connect to PipeWire core: {e:?}"))?;
-    let registry = core
-        .get_registry()
-        .map_err(|e| anyhow!("Failed to get PipeWire registry: {e:?}"))?;
-
-    let done = Rc::new(Cell::new(false));
-    let collected = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
-
-    let pending = core
-        .sync(0)
-        .map_err(|e| anyhow!("PipeWire sync failed: {e:?}"))?;
-
-    let done_clone = Rc::clone(&done);
-    let loop_clone = mainloop.clone();
-    let _listener_core = core
-        .add_listener_local()
-        .done(move |id, seq| {
-            if id == pw::core::PW_ID_CORE && seq == pending {
-                done_clone.set(true);
-                loop_clone.quit();
-            }
-        })
-        .register();
-
-    let collected_clone = Rc::clone(&collected);
-    let _listener_registry = registry
-        .add_listener_local()
-        .global(move |global| {
-            if global.type_ != pw::types::ObjectType::Node {
-                return;
-            }
+    let conn = connect_main_loop()?;
+    let sinks = Rc::new(RefCell::new(Vec::<SinkCandidate>::new()));
+    let clients = Rc::new(RefCell::new(Vec::<ClientEntry>::new()));
+    let sinks_for_registry = Rc::clone(&sinks);
+    let clients_for_registry = Rc::clone(&clients);
+    let answered = registry_snapshot(
+        &conn.mainloop,
+        &conn.core,
+        DEVICE_LIST_TIMEOUT,
+        move |global| {
             let Some(props) = global.props.as_ref() else {
                 return;
             };
-            let Some(media_class) = props.get(*pw::keys::MEDIA_CLASS) else {
-                return;
-            };
-            if media_class != "Audio/Sink" {
-                return;
+            match global.type_ {
+                pw::types::ObjectType::Node => {
+                    if let Some(sink) = sink_candidate_from_props(|key| props.get(key)) {
+                        sinks_for_registry.borrow_mut().push(sink);
+                    }
+                }
+                pw::types::ObjectType::Client => {
+                    clients_for_registry
+                        .borrow_mut()
+                        .push(client_from_props(global.id, |key| props.get(key)));
+                }
+                _ => {}
             }
-
-            let Some(value) = props
-                .get(*pw::keys::NODE_NAME)
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-            else {
-                return;
-            };
-
-            let label = props
-                .get(*pw::keys::NODE_DESCRIPTION)
-                .or_else(|| props.get(*pw::keys::NODE_NICK))
-                .or_else(|| props.get(*pw::keys::DEVICE_DESCRIPTION))
-                .or_else(|| props.get(*pw::keys::DEVICE_NAME))
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .unwrap_or(value);
-
-            collected_clone
-                .borrow_mut()
-                .push((value.to_string(), label.to_string()));
-        })
-        .register();
-
-    while !done.get() {
-        mainloop.run();
+        },
+    )?;
+    if !answered {
+        return Err(anyhow!(
+            "PipeWire registry did not answer within {DEVICE_LIST_TIMEOUT:?}"
+        ));
     }
-
-    let mut devices = collected.borrow().clone();
-    devices.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-    devices.dedup_by(|a, b| a.0 == b.0);
-    Ok(devices)
+    Ok(output_device_list(
+        &sinks.borrow(),
+        &clients.borrow(),
+        std::process::id(),
+    ))
 }
 
-// Small always-on PipeWire latency servo used even when user-facing adaptive
-// resampling is disabled. The goal is not aggressive correction, only holding
-// the ring buffer close to the requested latency target without audible glitches.
-const LATENCY_SERVO_P_GAIN: f64 = 0.000004;
-const LATENCY_SERVO_I_GAIN: f64 = 0.0000002;
-const LATENCY_SERVO_MAX_RATE_ADJUST: f64 = 0.03;
+/// Drift, in samples, the servo leaves alone on this backend.
+const SERVO_DEADBAND_SAMPLES: usize = 480;
+
+/// The `SPA_PROP_rate` value that makes the graph drain the ring
+/// `consume_adjust` times as fast as nominal: what the callback publishes as
+/// its native rate.
+///
+/// The stream adapter resamples with `in_rate * rate / out_rate` input frames
+/// per output frame (spa audioconvert divides its resampler rate by
+/// `props.rate`), so a value above 1.0 consumes more of this stream per graph
+/// cycle. That is the same direction as `consume_adjust`: no inversion, unlike
+/// the local resampler's output/input ratio.
+fn pipewire_rate_for_consume_adjust(consume_adjust: f64) -> f32 {
+    consume_adjust as f32
+}
+
 fn wallclock_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -270,21 +227,26 @@ fn wallclock_millis() -> u64 {
 }
 
 pub struct PipewireWriter {
-    sample_buffer: Arc<ArrayQueue<f32>>,
-    /// Post-rendering pacer FIFO. When `pacer_enabled` is true,
-    /// `write_samples` pushes here instead of directly to `sample_buffer`;
-    /// the PipeWire INPUT thread drains this FIFO into `sample_buffer` at
-    /// a cadence that mirrors the IEC958 chunk arrival rate, so the ring
-    /// buffer the DAC consumes sees a smooth flow regardless of the
-    /// decoder's burst pattern.
-    pacer_fifo: Arc<ArrayQueue<f32>>,
-    pacer_enabled: bool,
+    /// The ring the DAC callback reads, seen from here: its level, and the
+    /// request to drop what a flush gave up on. Neither of its ends — the
+    /// callback holds the reading one, and the writing one is `write_target`
+    /// without the pacer, the pacer drain's with it.
+    ring: RingMonitor,
+    /// Where `write_samples` pushes: the ring itself, or, when the
+    /// post-rendering pacer is on, the pacer FIFO. The PipeWire INPUT thread
+    /// then drains that FIFO into the ring at a cadence that mirrors the
+    /// IEC958 chunk arrival rate, so the ring buffer the DAC consumes sees a
+    /// smooth flow regardless of the decoder's burst pattern.
+    ///
+    /// Which of the two is settled when the writer is built: each ring has
+    /// one producer, so the renderer cannot take turns with the drain.
+    write_target: RingWriter,
+    /// The drain's handle on the pacer; `None` when pacing is off.
+    pacer: Option<PacerHandle>,
     /// When true, `write_samples` pushes without ever blocking and drops the
     /// overflow above the back-pressure threshold instead of waiting for the
     /// DAC to drain. Decouples the producer from the consumer clock.
     backpressure_disabled: Arc<AtomicBool>,
-    pacer_pre_roll_complete: Arc<AtomicBool>,
-    pacer_flush_requested: Arc<AtomicBool>,
     pacer_pre_roll_threshold_samples: usize,
     sample_rate: u32,
     channel_count: u32,
@@ -294,36 +256,59 @@ pub struct PipewireWriter {
     quantum_ms: f32,
     stream_ready: Arc<AtomicBool>,
     enable_adaptive_resampling: bool,
-    /// Current rate-adjust factor applied by the PI controller (f32 bits).
-    /// 1.0 = nominal; >1.0 = PipeWire consuming slightly faster; <1.0 = slower.
-    /// Only meaningful when adaptive resampling is enabled.
-    current_rate_adjust: Arc<AtomicU32>,
-    /// 0 = unknown, 1 = near, 2 = far.
-    current_adaptive_band: Arc<AtomicU8>,
-    /// 0 = idle, 1 = low-recover, 2 = settling, 3 = high-recover.
-    current_runtime_state: Arc<AtomicU8>,
+    /// What the process callback reads and publishes: the live config, the
+    /// servo's rate adjust, band and state, and every telemetry atomic.
+    shared: CallbackShared,
     /// Signals the PipeWire worker thread to stop and exit cleanly.
     shutdown_requested: Arc<AtomicBool>,
-    /// Every atomic this backend publishes — latency gauges, cumulative
-    /// counters, diag-plot mirrors, pacer counters. See [`OutputTelemetry`].
-    telemetry: OutputTelemetry,
     /// Configured ring-buffer target latency (from PipewireBufferConfig::latency_ms).
     target_latency_ms: u32,
-    live_adaptive_config: Arc<Mutex<AdaptiveResamplingConfig>>,
-    reset_ratio_requested: Arc<AtomicBool>,
     pw_thread: Option<thread::JoinHandle<()>>,
     bootstrap_started_at: Instant,
     bootstrap_write_calls: u32,
     bootstrap_written_samples: usize,
-    /// Direct trigger mode: pending trigger counter shared with the capture mainloop.
-    /// The output process callback increments this (Bresenham); the capture mainloop drains it
-    /// and calls pw_stream_trigger_process() from its own thread (required for correct operation).
-    pending_input_triggers: Arc<AtomicI64>,
-    /// Sample rate of the capture stream, used to compute the Bresenham trigger ratio.
-    input_trigger_rate_hz: Arc<AtomicU32>,
-    /// Observed capture quantum in transport frames. Combined with input_trigger_rate_hz so
-    /// direct trigger mode follows real audio duration instead of callback count alone.
-    input_trigger_quantum_frames: Arc<AtomicU32>,
+    input_trigger: InputTrigger,
+}
+
+/// Direct trigger mode: the output callback schedules the capture stream's
+/// cycles, Bresenham-style, in proportion to the audio it plays.
+#[derive(Clone)]
+struct InputTrigger {
+    /// Cycles owed to the capture stream. The output callback increments it;
+    /// the capture mainloop drains it and calls `pw_stream_trigger_process()`
+    /// from its own thread (required for correct operation).
+    pending: Arc<AtomicI64>,
+    /// Sample rate of the capture stream, for the trigger ratio.
+    rate_hz: Arc<AtomicU32>,
+    /// Observed capture quantum in transport frames. Combined with `rate_hz`
+    /// so the schedule follows real audio duration, not callback count alone.
+    quantum_frames: Arc<AtomicU32>,
+}
+
+impl InputTrigger {
+    fn new() -> Self {
+        Self {
+            pending: Arc::new(AtomicI64::new(0)),
+            rate_hz: Arc::new(AtomicU32::new(0)),
+            quantum_frames: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Owe the capture stream the cycles `output_frames` at `output_rate`
+    /// amount to. `acc` carries the remainder from one callback to the next.
+    fn schedule(&self, acc: &mut i64, output_frames: usize, output_rate: u32) {
+        let in_rate = self.rate_hz.load(Ordering::Relaxed) as i64;
+        let in_quantum = self.quantum_frames.load(Ordering::Relaxed) as i64;
+        if in_rate <= 0 || in_quantum <= 0 || output_frames == 0 {
+            return;
+        }
+        *acc += (output_frames as i64).saturating_mul(in_rate);
+        let trigger_den = (output_rate as i64).saturating_mul(in_quantum);
+        while trigger_den > 0 && *acc >= trigger_den {
+            self.pending.fetch_add(1, Ordering::Relaxed);
+            *acc -= trigger_den;
+        }
+    }
 }
 
 impl PipewireWriter {
@@ -374,54 +359,73 @@ impl PipewireWriter {
             buffer_config.max_latency_ms = corrected;
         }
 
-        let sample_buffer = Arc::new(ArrayQueue::new(BUFFER_SIZE));
-        let buffer_clone = sample_buffer.clone();
-        // Pacer FIFO: capacity matches the ring so worst-case can buffer
-        // the same amount of audio. It only fills meaningfully when the
-        // input-thread drain lags or is paused (eg. during pre-roll).
-        let pacer_fifo = Arc::new(ArrayQueue::new(BUFFER_SIZE));
+        // The ring holds what the back-pressure threshold lets in:
+        // `max_latency_ms` of frames, plus one full pacer FIFO when the pacer
+        // drain writes it (see `paced_ring_frames`). A change of latency
+        // rebuilds the writer, and the ring with it.
+        let channels = channel_count as usize;
+        let max_buffer_frames =
+            (buffer_config.max_latency_ms as usize * sample_rate as usize / 1000).max(1);
         let pacer_enabled = adaptive_config.use_output_pacing;
+        let ring_frames = if pacer_enabled {
+            paced_ring_frames(max_buffer_frames, sample_rate)
+        } else {
+            max_buffer_frames
+        };
+        let (ring_writer, ring_reader) = sample_ring(ring_frames, channels);
+        let ring = ring_writer.monitor();
         let backpressure_disabled = Arc::new(AtomicBool::new(adaptive_config.disable_backpressure));
-        let pacer_pre_roll_complete = Arc::new(AtomicBool::new(false));
-        let pacer_flush_requested = Arc::new(AtomicBool::new(false));
-        // 64 ms of audio at the output rate × channel count. Covers >1 AU
-        // for both supported input codecs (~32 ms per AU) with margin.
-        let pacer_pre_roll_threshold_samples =
-            ((sample_rate as usize) * (channel_count as usize) * 64 / 1000).max(1);
-        // One bundle instead of twenty-seven atomics created, stored and
-        // cloned one by one.
-        let telemetry = OutputTelemetry::new();
-        let telemetry_for_thread = telemetry.clone();
+        let shared = CallbackShared::new(adaptive_config);
+        let telemetry = &shared.telemetry;
+        // 64 ms of audio at the output rate (see `pre_roll_frames`). Whole
+        // frames: the FIFO only ever holds whole frames, so a threshold inside
+        // one would never be reached.
+        let pacer_pre_roll_frames = pre_roll_frames(sample_rate);
+        let pacer_pre_roll_threshold_samples = pacer_pre_roll_frames * channels;
+        // The ring's writing end goes to the renderer, or to the pacer drain
+        // with the renderer writing to the pacer FIFO instead. The callback
+        // gets the pacer's flags, to make it re-prime after a recovery.
+        let (write_target, pacer, pacer_link) = if pacer_enabled {
+            // Pacer FIFO: the renderer's writes are held below the pre-roll
+            // threshold (see `write_samples`), so that is all it ever holds.
+            // The drain clock does not wait for the ring: what goes above
+            // the ring's capacity is dropped by the drain.
+            let (fifo_writer, fifo_reader) = sample_ring(pacer_pre_roll_frames, channels);
+            let pre_roll_complete = Arc::new(AtomicBool::new(false));
+            let flush_requested = Arc::new(AtomicBool::new(false));
+            let handle = PacerHandle {
+                ends: Arc::new(Mutex::new(PacerDrainEnds {
+                    fifo: fifo_reader,
+                    ring: ring_writer,
+                })),
+                pre_roll_complete: Arc::clone(&pre_roll_complete),
+                flush_requested: Arc::clone(&flush_requested),
+                pre_roll_threshold_samples: pacer_pre_roll_threshold_samples,
+                out_sample_rate: sample_rate,
+                out_channels: channel_count,
+                diag_drain_total: Arc::clone(&telemetry.pacer_drain_total),
+                diag_underrun_total: Arc::clone(&telemetry.pacer_underrun_total),
+                diag_fifo_level: Arc::clone(&telemetry.pacer_fifo_level),
+            };
+            let link = PacerLink {
+                pre_roll_complete,
+                flush_requested,
+                buffer_samples: pacer_pre_roll_threshold_samples,
+            };
+            (fifo_writer, Some(handle), Some(link))
+        } else {
+            (ring_writer, None, None)
+        };
         let stream_ready = Arc::new(AtomicBool::new(false));
         let ready_clone = stream_ready.clone();
         let ready_for_thread_cleanup = stream_ready.clone();
-        let current_rate_adjust = Arc::new(AtomicU32::new(1.0f32.to_bits()));
-        let rate_adjust_clone = current_rate_adjust.clone();
-        let current_adaptive_band = Arc::new(AtomicU8::new(0));
-        let adaptive_band_clone = current_adaptive_band.clone();
-        let current_runtime_state = Arc::new(AtomicU8::new(0));
-        let runtime_state_clone = current_runtime_state.clone();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         let shutdown_requested_clone = shutdown_requested.clone();
-        let live_config = Arc::new(Mutex::new(adaptive_config));
-        let adaptive_config_for_thread = Arc::clone(&live_config);
-        let reset_ratio_requested = Arc::new(AtomicBool::new(false));
-        let reset_ratio_for_thread = Arc::clone(&reset_ratio_requested);
-        let pending_input_triggers = Arc::new(AtomicI64::new(0));
-        let pending_input_triggers_for_thread = Arc::clone(&pending_input_triggers);
-        let input_trigger_rate_hz = Arc::new(AtomicU32::new(0));
-        let input_trigger_rate_for_thread = Arc::clone(&input_trigger_rate_hz);
-        let input_trigger_quantum_frames = Arc::new(AtomicU32::new(0));
-        let input_trigger_quantum_for_thread = Arc::clone(&input_trigger_quantum_frames);
-        // Pacer atomics cloned into the PipeWire thread so the DAC callback
-        // can flush the FIFO and re-arm pre-roll on recovery_reacquire.
-        let pacer_pre_roll_complete_for_thread = Arc::clone(&pacer_pre_roll_complete);
-        let pacer_flush_requested_for_thread = Arc::clone(&pacer_flush_requested);
-        let pacer_enabled_for_thread = pacer_enabled;
-        let pacer_pre_roll_threshold_for_thread = pacer_pre_roll_threshold_samples;
+        let input_trigger = InputTrigger::new();
+        let input_trigger_for_thread = input_trigger.clone();
+        let shared_for_thread = shared.clone();
 
         // Capture before moving buffer_config into the thread closure.
-        let max_latency_ms = buffer_config.max_latency_ms;
         let target_latency_ms = buffer_config.latency_ms;
         let output_rate_for_quantum = output_sample_rate.unwrap_or(sample_rate);
         let quantum_ms =
@@ -431,7 +435,7 @@ impl PipewireWriter {
         let pw_thread = thread::spawn(move || {
             log::debug!("PipeWire thread started");
             if let Err(e) = run_pipewire_loop(
-                buffer_clone,
+                ring_reader,
                 sample_rate,
                 channel_count,
                 ready_clone,
@@ -440,21 +444,11 @@ impl PipewireWriter {
                 enable_adaptive_resampling,
                 output_sample_rate,
                 buffer_config,
-                adaptive_config_for_thread,
-                reset_ratio_for_thread,
-                rate_adjust_clone,
-                adaptive_band_clone,
-                runtime_state_clone,
+                shared_for_thread,
                 shutdown_requested_clone,
-                telemetry_for_thread,
-                pending_input_triggers_for_thread,
-                input_trigger_rate_for_thread,
-                input_trigger_quantum_for_thread,
+                input_trigger_for_thread,
                 input_clock_us,
-                pacer_pre_roll_complete_for_thread,
-                pacer_flush_requested_for_thread,
-                pacer_enabled_for_thread,
-                pacer_pre_roll_threshold_for_thread,
+                pacer_link,
             ) {
                 log::error!("PipeWire thread error: {}", e);
             }
@@ -486,16 +480,13 @@ impl PipewireWriter {
             log::info!("PipeWire adaptive resampling disabled (fixed playback rate)");
         }
 
-        let max_buffer_samples =
-            (max_latency_ms as usize * sample_rate as usize / 1000) * channel_count as usize;
+        let max_buffer_samples = max_buffer_frames * channels;
 
         Ok(Self {
-            sample_buffer,
-            pacer_fifo,
-            pacer_enabled,
+            ring,
+            write_target,
+            pacer,
             backpressure_disabled,
-            pacer_pre_roll_complete,
-            pacer_flush_requested,
             pacer_pre_roll_threshold_samples,
             sample_rate,
             channel_count,
@@ -503,21 +494,14 @@ impl PipewireWriter {
             quantum_ms,
             stream_ready,
             enable_adaptive_resampling,
-            current_rate_adjust,
-            current_adaptive_band,
-            current_runtime_state,
+            shared,
             shutdown_requested,
-            telemetry,
             target_latency_ms,
-            live_adaptive_config: live_config,
-            reset_ratio_requested,
             pw_thread: Some(pw_thread),
             bootstrap_started_at: Instant::now(),
             bootstrap_write_calls: 0,
             bootstrap_written_samples: 0,
-            pending_input_triggers,
-            input_trigger_rate_hz,
-            input_trigger_quantum_frames,
+            input_trigger,
         })
     }
 
@@ -527,7 +511,8 @@ impl PipewireWriter {
         // This matches the PI's mental model of "samples committed to the
         // pipeline" — back-pressure drops are exceptional and would show
         // up as a separate divergence anyway.
-        self.telemetry
+        self.shared
+            .telemetry
             .cumulative_written_input_samples
             .fetch_add(samples.len() as u64, Ordering::Relaxed);
         // Check if stream is ready
@@ -544,18 +529,18 @@ impl PipewireWriter {
         // backpressure on the renderer push: this guarantees the pacer
         // contributes a *fixed* latency (= pre_roll_threshold) instead of
         // drifting up to seconds of buffered audio.
-        let pacer_active = self.pacer_enabled;
-        let target_buffer: &Arc<ArrayQueue<f32>> = if pacer_active {
-            &self.pacer_fifo
-        } else {
-            &self.sample_buffer
-        };
+        let pacer_active = self.pacer.is_some();
+        let target_buffer = &mut self.write_target;
         let max_buffer_fill = if pacer_active {
             self.pacer_pre_roll_threshold_samples
         } else {
             self.max_buffer_samples
         };
-        let buffer_before = self.sample_buffer.len();
+        // The ring's level frames the first few writes in the log; it is not
+        // read after that, so that the renderer does not pull the callback's
+        // counters into its cache on every write.
+        let bootstrap = self.bootstrap_write_calls < 5;
+        let buffer_before = if bootstrap { self.ring.fill() } else { 0 };
         // Back-pressure disabled (diagnostic): never block the renderer; push
         // what fits below the threshold and drop the overflow. This unhooks the
         // producer from the DAC drain clock so the source (mpv) free-runs.
@@ -587,18 +572,19 @@ impl PipewireWriter {
             .bootstrap_written_samples
             .saturating_add(report.pushed_samples);
         if report.pushed_samples > 0 {
-            self.telemetry
+            self.shared
+                .telemetry
                 .last_write_ms
                 .store(wallclock_millis(), Ordering::Relaxed);
         }
-        if self.bootstrap_write_calls <= 5 {
+        if bootstrap {
             log::debug!(
                 "PipeWire bootstrap write #{}: pushed {} / {} samples, ring {} -> {}, elapsed {:.0} ms",
                 self.bootstrap_write_calls,
                 report.pushed_samples,
                 samples.len(),
                 buffer_before,
-                self.sample_buffer.len(),
+                self.ring.fill(),
                 self.bootstrap_started_at.elapsed().as_secs_f64() * 1000.0
             );
         }
@@ -608,7 +594,7 @@ impl PipewireWriter {
 
     pub fn flush(&mut self) -> Result<()> {
         let report = flush_ring_buffer(
-            &self.sample_buffer,
+            &self.ring,
             Duration::from_secs(5),
             Duration::from_millis(10),
             Some(Duration::from_millis(500)),
@@ -620,7 +606,7 @@ impl PipewireWriter {
             );
         } else if report.stalled {
             log::debug!(
-                "Flush: buffer stalled at {} samples, draining",
+                "Flush: buffer stalled at {} samples, left for the callback to drop",
                 report.remaining_samples
             );
         }
@@ -638,7 +624,7 @@ impl PipewireWriter {
     }
 
     pub fn buffer_fill_level(&self) -> usize {
-        self.sample_buffer.len()
+        self.ring.fill()
     }
 
     /// Estimated current end-to-end audio latency in milliseconds.
@@ -647,7 +633,7 @@ impl PipewireWriter {
     /// - Ring buffer latency: current fill (in frames) / sample_rate
     /// - PipeWire quantum latency: quantum_frames / output_sample_rate
     pub fn latency_ms(&self) -> f32 {
-        let fill_frames = self.sample_buffer.len() / self.channel_count as usize;
+        let fill_frames = self.ring.fill() / self.channel_count as usize;
         let ring_ms = fill_frames as f32 / self.sample_rate as f32 * 1000.0;
         ring_ms + self.quantum_ms
     }
@@ -658,9 +644,7 @@ impl PipewireWriter {
     /// (e.g. 1.0015 = consuming 0.15 % faster than nominal to drain the buffer).
     pub fn rate_adjust(&self) -> Option<f32> {
         if self.enable_adaptive_resampling {
-            Some(f32::from_bits(
-                self.current_rate_adjust.load(Ordering::Relaxed),
-            ))
+            Some(self.shared.rate_adjust())
         } else {
             None
         }
@@ -669,39 +653,31 @@ impl PipewireWriter {
     /// Set the capture sample rate for the Bresenham trigger ratio.
     /// Once set, the output RT callback increments pending_input_triggers() per output callback.
     pub fn set_input_trigger_rate_hz(&self, rate_hz: u32) {
-        self.input_trigger_rate_hz.store(rate_hz, Ordering::Relaxed);
+        self.input_trigger.rate_hz.store(rate_hz, Ordering::Relaxed);
     }
 
     /// Set the observed capture quantum in transport frames for direct-trigger scheduling.
     pub fn set_input_trigger_quantum_frames(&self, quantum_frames: u32) {
-        self.input_trigger_quantum_frames
+        self.input_trigger
+            .quantum_frames
             .store(quantum_frames, Ordering::Relaxed);
     }
 
     /// Returns the Arc that the output RT callback increments (Bresenham).
     /// Pass this to InputControl.set_pending_input_triggers() so the capture mainloop can drain it.
     pub fn pending_input_triggers(&self) -> Arc<AtomicI64> {
-        Arc::clone(&self.pending_input_triggers)
+        Arc::clone(&self.input_trigger.pending)
     }
 
     /// Hand a cross-crate handle to the post-rendering pacer to the audio
     /// input layer (via `InputControl::install_output_pacer`). The input
     /// PwStream callback uses this to drain the FIFO into the ring buffer
     /// in lockstep with IEC958 chunk arrival.
-    pub fn pacer_handle(&self) -> crate::pacer::PacerHandle {
-        crate::pacer::PacerHandle {
-            pacer_fifo: Arc::clone(&self.pacer_fifo),
-            ring: Arc::clone(&self.sample_buffer),
-            pre_roll_complete: Arc::clone(&self.pacer_pre_roll_complete),
-            flush_requested: Arc::clone(&self.pacer_flush_requested),
-            pre_roll_threshold_samples: self.pacer_pre_roll_threshold_samples,
-            out_sample_rate: self.sample_rate,
-            out_channels: self.channel_count,
-            enabled: self.pacer_enabled,
-            diag_drain_total: Arc::clone(&self.telemetry.pacer_drain_total),
-            diag_underrun_total: Arc::clone(&self.telemetry.pacer_underrun_total),
-            diag_fifo_level: Arc::clone(&self.telemetry.pacer_fifo_level),
-        }
+    ///
+    /// `None` when this output was built with pacing off: there is then no
+    /// FIFO to drain, and the ring's writing end is the renderer's.
+    pub fn pacer_handle(&self) -> Option<PacerHandle> {
+        self.pacer.clone()
     }
 
     /// Hot-swap the back-pressure disable flag. Called when
@@ -712,23 +688,23 @@ impl PipewireWriter {
     }
 
     pub fn adaptive_band(&self) -> Option<&'static str> {
-        match self.current_adaptive_band.load(Ordering::Relaxed) {
-            1 => Some("near"),
-            2 => Some("far"),
-            3 => Some("hard"),
-            _ => None,
-        }
+        self.shared.adaptive_band()
     }
 
     pub fn adaptive_runtime_state(&self) -> Option<&'static str> {
-        adaptive_runtime_state_name_from_code(self.current_runtime_state.load(Ordering::Relaxed))
+        self.shared.adaptive_runtime_state()
     }
 
-    /// Downstream graph latency in ms as reported by pw_stream_get_time().delay.
+    /// Downstream graph latency in ms as reported by pw_stream_get_time_n().delay.
     /// Includes PipeWire graph scheduling and the netjack2 driver quantum.
     /// Returns 0.0 until the stream has been active for ~2 seconds.
     pub fn graph_latency_ms(&self) -> f32 {
-        f32::from_bits(self.telemetry.graph_latency_ms_bits.load(Ordering::Relaxed))
+        f32::from_bits(
+            self.shared
+                .telemetry
+                .graph_latency_ms_bits
+                .load(Ordering::Relaxed),
+        )
     }
 
     /// Target audio delay seen by the listener:
@@ -746,7 +722,8 @@ impl PipewireWriter {
     /// current ring-buffer latency + PipeWire graph latency.
     pub fn measured_audio_delay_ms(&self) -> f32 {
         f32::from_bits(
-            self.telemetry
+            self.shared
+                .telemetry
                 .measured_latency_ms_bits
                 .load(Ordering::Relaxed),
         )
@@ -754,7 +731,8 @@ impl PipewireWriter {
 
     pub fn control_audio_delay_ms(&self) -> f32 {
         f32::from_bits(
-            self.telemetry
+            self.shared
+                .telemetry
                 .control_latency_ms_bits
                 .load(Ordering::Relaxed),
         )
@@ -763,7 +741,8 @@ impl PipewireWriter {
     /// EMA-smoothed control latency in ms (the value the servo actually tracks).
     pub fn smoothed_control_audio_delay_ms(&self) -> f32 {
         f32::from_bits(
-            self.telemetry
+            self.shared
+                .telemetry
                 .smoothed_control_latency_ms_bits
                 .load(Ordering::Relaxed),
         )
@@ -772,7 +751,8 @@ impl PipewireWriter {
     /// Ring-buffer occupancy converted to ms (first component of `control_available`).
     pub fn avail_input_audio_delay_ms(&self) -> f32 {
         f32::from_bits(
-            self.telemetry
+            self.shared
+                .telemetry
                 .avail_input_latency_ms_bits
                 .load(Ordering::Relaxed),
         )
@@ -782,7 +762,8 @@ impl PipewireWriter {
     /// (second component of `control_available`).
     pub fn output_fifo_audio_delay_ms(&self) -> f32 {
         f32::from_bits(
-            self.telemetry
+            self.shared
+                .telemetry
                 .output_fifo_latency_ms_bits
                 .load(Ordering::Relaxed),
         )
@@ -792,7 +773,8 @@ impl PipewireWriter {
     /// (third component of `control_available`).
     pub fn resampler_pending_audio_delay_ms(&self) -> f32 {
         f32::from_bits(
-            self.telemetry
+            self.shared
+                .telemetry
                 .resampler_pending_latency_ms_bits
                 .load(Ordering::Relaxed),
         )
@@ -800,7 +782,7 @@ impl PipewireWriter {
 
     /// Signal the audio thread to snap the resampling ratio back to base and reset the integrator.
     pub fn request_ratio_reset(&self) {
-        self.reset_ratio_requested.store(true, Ordering::Relaxed);
+        self.shared.request_ratio_reset();
     }
 
     /// Update adaptive resampling tuning parameters without restarting the audio thread.
@@ -809,33 +791,36 @@ impl PipewireWriter {
         // into the ring, and swapping producers under a running stream is what
         // the single-producer invariant forbids. Say so rather than silently
         // ignoring the request.
-        if config.use_output_pacing != self.pacer_enabled {
+        let pacer_enabled = self.pacer.is_some();
+        if config.use_output_pacing != pacer_enabled {
             log::warn!(
                 "Output pacing is fixed for the lifetime of the audio output                  (running with {}, requested {}); the change takes effect at the                  next output start.",
-                self.pacer_enabled,
+                pacer_enabled,
                 config.use_output_pacing
             );
         }
         self.set_backpressure_disabled(config.disable_backpressure);
-        *self.live_adaptive_config.lock() = config;
+        *self.shared.live_config.lock() = config;
     }
 
     /// Diagnostic metric handles published by the PipeWire output backend.
     /// Registered in the global registry by the caller; adding a metric to
-    /// [`OutputTelemetry`] surfaces it in the diag plot with no change here.
-    pub fn diag_atomic_handles(&self) -> Vec<sys::diag::DiagAtomicHandle> {
-        self.telemetry.diag_handles()
+    /// [`OutputTelemetry`](crate::output_telemetry::OutputTelemetry) surfaces it in the diag plot with no change here.
+    pub fn diag_atomic_handles(&self) -> Vec<diag::DiagAtomicHandle> {
+        self.shared.telemetry.diag_handles()
     }
 }
 
 impl Drop for PipewireWriter {
     fn drop(&mut self) {
         log::debug!("Dropping PipeWire writer");
+        // The callback returns at its top from here on, so what is left in the
+        // ring is never played and goes with the ring. It is not popped from
+        // this thread: the ring has one consumer, the callback. And it is not
+        // flushed again either — flush() was already called by finalize(), and
+        // a second one would block for another 500ms–5s if the callback is in
+        // recovery mode.
         self.shutdown_requested.store(true, Ordering::Relaxed);
-        // Discard any remaining samples — flush() was already called by finalize().
-        // Calling flush() again here would block for another 500ms–5s if the callback
-        // is in recovery mode.  A quick drain + brief pause is sufficient for Drop.
-        while self.sample_buffer.pop().is_some() {}
         if let Some(handle) = self.pw_thread.take() {
             let _ = handle.join();
         }
@@ -843,7 +828,7 @@ impl Drop for PipewireWriter {
 }
 
 fn run_pipewire_loop(
-    buffer: Arc<ArrayQueue<f32>>,
+    ring: RingReader,
     sample_rate: u32, // Native sample rate (48000 Hz)
     channel_count: u32,
     stream_ready: Arc<AtomicBool>,
@@ -852,21 +837,11 @@ fn run_pipewire_loop(
     enable_adaptive_resampling: bool,
     output_sample_rate: Option<u32>, // Target output rate for upsampling
     buffer_config: PipewireBufferConfig,
-    adaptive_config: Arc<Mutex<PipewireAdaptiveResamplingConfig>>,
-    reset_ratio_requested: Arc<AtomicBool>,
-    current_rate_adjust: Arc<AtomicU32>,
-    current_adaptive_band: Arc<AtomicU8>,
-    current_runtime_state: Arc<AtomicU8>,
+    shared: CallbackShared,
     shutdown_requested: Arc<AtomicBool>,
-    telemetry: OutputTelemetry,
-    pending_input_triggers: Arc<AtomicI64>,
-    input_trigger_rate_hz: Arc<AtomicU32>,
-    input_trigger_quantum_frames: Arc<AtomicU32>,
-    input_clock_us: Arc<std::sync::atomic::AtomicU64>,
-    pacer_pre_roll_complete: Arc<AtomicBool>,
-    pacer_flush_requested: Arc<AtomicBool>,
-    pacer_enabled: bool,
-    pacer_pre_roll_threshold_samples: usize,
+    input_trigger: InputTrigger,
+    input_clock_us: Arc<AtomicU64>,
+    pacer: Option<PacerLink>,
 ) -> Result<()> {
     // Determine actual output rate and resampling ratio
     let actual_output_rate = output_sample_rate.unwrap_or(sample_rate);
@@ -899,63 +874,19 @@ fn run_pipewire_loop(
         .connect_rc(None)
         .map_err(|e| anyhow!("Failed to connect: {:?}", e))?;
 
-    let mut props = pw::properties::PropertiesBox::new();
-
-    // Set node name
-    props.insert("node.name", "omniphony-vbap-renderer");
-    props.insert("media.name", "VBAP Spatial Audio");
-
-    // Set target output node if specified
-    if let Some(ref target) = output_device {
-        for (key, value) in output_target_properties(target) {
-            props.insert(key, value);
-        }
-        log::info!(
-            "PipeWire output target: {} (pinned: no session move, no default-sink fallback)",
-            target
-        );
-    }
-
-    // Set channel names if provided (e.g., "FL,FR,C,LFE,BL,BR")
-    // audio.position tells PipeWire the spatial positions of channels
-    // Convert to PipeWire standard names (C→FC, BL→RL, BR→RR)
-    let positions_string = channel_names.as_ref().map(|names| {
-        names
-            .iter()
-            .map(|n| to_pipewire_position(n))
-            .collect::<Vec<_>>()
-            .join(",")
-    });
-    let channels_string = channel_count.to_string();
-    if let Some(ref positions) = positions_string {
-        props.insert("audio.position", positions.as_str());
-        props.insert("audio.channels", channels_string.as_str());
-        log::info!("PipeWire channel positions: {}", positions);
-    }
-
-    // `node.latency` controls the PipeWire processing quantum (callback size),
-    // not an abstract graph latency. Requesting the ring target (e.g. 500 ms)
-    // here forced PipeWire into ~256 ms callbacks: the control loop then ran
-    // once per 256 ms and the `callback/2` midpoint correction became a fixed
-    // ~128 ms offset. The target latency must live in the `sample_buffer` ring
-    // (target_buffer_fill), so request only the processing quantum here.
-    let requested_latency_frames = buffer_config.quantum_frames;
-    let requested_latency_str = format!("{}/{}", requested_latency_frames, actual_output_rate);
-    props.insert("node.latency", requested_latency_str.as_str());
-
-    log::debug!(
-        "PipeWire stream properties configured: latency={}/{} (~{:.0}ms)",
-        requested_latency_frames,
+    let props = output_stream_properties(
+        channel_count,
+        output_device.as_deref(),
+        channel_names.as_deref(),
+        buffer_config.quantum_frames,
         actual_output_rate,
-        requested_latency_frames as f64 / actual_output_rate as f64 * 1000.0
     );
-
     let stream = pw::stream::StreamBox::new(&core, "omniphony-audio", props)
         .map_err(|e| anyhow!("Failed to create stream: {:?}", e))?;
 
     // Setup state changed listener
     let ready_for_state = stream_ready.clone();
-    let graph_latency_for_state = telemetry.graph_latency_ms_bits.clone();
+    let graph_latency_for_state = shared.telemetry.graph_latency_ms_bits.clone();
     let _state_listener = stream
         .add_local_listener_with_user_data(())
         .state_changed(move |_, _, old, new| {
@@ -977,116 +908,33 @@ fn run_pipewire_loop(
         .register()
         .map_err(|e| anyhow!("Failed to register state listener: {:?}", e))?;
 
-    // Atomic for adaptive rate matching (stores f32::to_bits(rate))
-    // 1.0 = normal speed, >1.0 = faster, <1.0 = slower
-    let desired_rate = Arc::new(AtomicU32::new(1.0f32.to_bits()));
-
-    // Snapshot the current config for initialisation (resampler max ratio, thresholds).
-    // The live Arc is polled in the callback for any subsequent updates.
-    let adaptive_config_snapshot = adaptive_config.lock().clone();
-
     // Initialize resampler for true rate conversion and for adaptive 1:1 operation.
-    let resampler_opt = if use_local_resampler {
-        let params = SincInterpolationParameters {
-            sinc_len: 256,
-            f_cutoff: 0.95,
-            interpolation: SincInterpolationType::Linear,
-            oversampling_factor: 256,
-            window: WindowFunction::BlackmanHarris2,
-        };
-
-        // Rubato expects a relative ratio bound (>= 1.0), not an absolute ratio.
-        let max_resample_ratio_relative = LOCAL_RESAMPLER_MAX_RELATIVE_RATIO;
-        let (min_resample_ratio_abs, max_resample_ratio_abs) =
-            local_resampler_ratio_bounds(resample_ratio);
-
+    let resampler = if use_local_resampler {
+        let (min_ratio, max_ratio) = local_resampler_ratio_bounds(resample_ratio);
         log::debug!(
             "Initializing PipeWire resampler: base_ratio={:.4}, min_ratio={:.4}, max_ratio={:.4}, chunk_size={}",
             resample_ratio,
-            min_resample_ratio_abs,
-            max_resample_ratio_abs,
+            min_ratio,
+            max_ratio,
             RESAMPLER_CHUNK_SIZE
         );
-
-        let resampler = SincFixedIn::<f32>::new(
-            resample_ratio,
-            max_resample_ratio_relative,
-            params,
-            RESAMPLER_CHUNK_SIZE,
-            channel_count as usize,
+        Some(
+            new_output_resampler(resample_ratio, channel_count as usize)
+                .map_err(|e| anyhow!("Failed to create resampler: {:?}", e))?,
         )
-        .map_err(|e| anyhow!("Failed to create resampler: {:?}", e))?;
-
-        Some(resampler)
     } else {
         None
     };
 
-    // Setup process callback
-    let buffer_for_callback = buffer.clone();
-    let desired_rate_for_callback = desired_rate.clone();
-    let rate_adjust_for_callback = current_rate_adjust.clone();
-    let shutdown_requested_for_callback = shutdown_requested.clone();
-    let graph_latency_for_callback = telemetry.graph_latency_ms_bits.clone();
-    let output_callback_dt_us_for_callback = telemetry.output_callback_dt_us_bits.clone();
-    let output_fifo_input_domain_samples_for_callback =
-        telemetry.output_fifo_input_domain_samples_bits.clone();
-    let output_resampler_pending_input_samples_for_callback = telemetry
-        .output_resampler_pending_input_samples_bits
-        .clone();
-    let cumulative_written_for_callback = telemetry.cumulative_written_input_samples.clone();
-    let cumulative_drained_for_callback = telemetry.cumulative_drained_input_samples.clone();
-    let input_clock_us_for_callback = input_clock_us.clone();
-    let cumulative_flow_control_available_for_callback =
-        telemetry.cumulative_flow_control_available_bits.clone();
-    let output_effective_ratio_ppm_for_callback = telemetry.output_effective_ratio_ppm_bits.clone();
-    let output_ring_input_samples_for_callback = telemetry.output_ring_input_samples_bits.clone();
-    let runtime_state_code_for_callback = telemetry.runtime_state_code_bits.clone();
-    let recovery_discard_count_for_callback = telemetry.recovery_discard_count_bits.clone();
-    let live_adaptive_config_for_callback = Arc::clone(&adaptive_config);
-    let reset_ratio_for_callback = Arc::clone(&reset_ratio_requested);
-    let adaptive_resampling_enabled = enable_adaptive_resampling;
-    let latency_servo_enabled = !use_local_resampler;
-    // Direct trigger mode: Bresenham accumulator and shared counter for the capture mainloop.
-    let pending_input_triggers_for_callback = Arc::clone(&pending_input_triggers);
-    let input_trigger_rate_for_callback = Arc::clone(&input_trigger_rate_hz);
-    let input_trigger_quantum_for_callback = Arc::clone(&input_trigger_quantum_frames);
-    // Compute channel-aware buffer thresholds for the callback (ms → frames → samples).
-    // IMPORTANT: these thresholds are compared against `buffer_for_callback.len()`, which
-    // stores INPUT-domain samples (writer pushes at `sample_rate` before local resampling).
-    // Therefore the conversion must use the input sample rate, not `actual_output_rate`.
-    // Using output rate here underestimates latency when downsampling (e.g. 96k -> 48k),
-    // causing too-low target fill, long-term A/V drift, and instability.
-    //
-    // latency_ms is used as the PI controller setpoint.
-    let latency_frames = (buffer_config.latency_ms as usize * sample_rate as usize) / 1000;
-    let max_buffer_frames = (buffer_config.max_latency_ms as usize * sample_rate as usize) / 1000;
-    let min_buffer_fill = latency_frames * channel_count as usize;
-    let max_buffer_fill = max_buffer_frames * channel_count as usize;
-    let target_buffer_fill = min_buffer_fill;
-
-    // Everything the callback carries between invocations, in one place; see
-    // [`CallbackState`]. What it *publishes* lives in `telemetry`.
-    let mut state = CallbackState::new(
-        resampler_opt,
-        channel_count as usize,
-        resample_ratio,
-        target_buffer_fill,
-        adaptive_config_snapshot.clone(),
-    );
-
-    // Treat errors above ~120 ms as transient mismatch and allow faster convergence.
-    let samples_per_ms = (sample_rate as usize).saturating_mul(channel_count as usize) / 1000;
-    let samples_per_ms_f64 = samples_per_ms as f64;
-    // The live config as this callback sees it.
-    //
-    // The config is pushed from the control thread and read from the realtime
-    // callback, which used to take the mutex — blocking — up to three times per
-    // callback, and could see a different value at each. It is a handful of
-    // scalars, so the callback keeps its own copy and refreshes it once, at
-    // entry, without blocking: on contention the previous copy stands until the
-    // next callback, a few milliseconds later.
-
+    // The servo's setpoint, from the latency target. It is compared against
+    // ring levels, which count INPUT-domain samples (the writer pushes at
+    // `sample_rate`, before local resampling), so it is converted at the input
+    // rate: the output rate underestimates the latency when downsampling (e.g.
+    // 96k -> 48k), giving too low a fill, long-term A/V drift and instability.
+    let target_buffer_fill =
+        (buffer_config.latency_ms as usize * sample_rate as usize) / 1000 * channel_count as usize;
+    let max_buffer_fill = (buffer_config.max_latency_ms as usize * sample_rate as usize) / 1000
+        * channel_count as usize;
     log::info!(
         "PipeWire buffer thresholds ({}ch): latency={}ms max={}ms quantum={}fr | \
          target={} max={} samples",
@@ -1094,992 +942,129 @@ fn run_pipewire_loop(
         buffer_config.latency_ms,
         buffer_config.max_latency_ms,
         buffer_config.quantum_frames,
-        min_buffer_fill,
+        target_buffer_fill,
         max_buffer_fill
     );
+    if let Some(pacer) = &pacer {
+        // The pacer adds its fixed capacity to the end-to-end latency, so the
+        // ring aims for the rest: ring + pacer lands on `latency_ms`.
+        log::debug!(
+            "PipeWire ring target: {} samples ({} for the output pacer)",
+            target_buffer_fill.saturating_sub(pacer.buffer_samples),
+            pacer.buffer_samples
+        );
+    }
 
+    let initial_config = shared.live_config.lock().clone();
+    let (mut callback_core, callback_log_reader) = OutputCallbackCore::new(
+        CallbackContext {
+            channel_count: channel_count as usize,
+            dest_channels: channel_count as usize,
+            input_sample_rate: sample_rate,
+            output_sample_rate: actual_output_rate,
+            target_buffer_fill,
+            servo_deadband_samples: SERVO_DEADBAND_SAMPLES,
+            adaptive_resampling: enable_adaptive_resampling,
+            pacer,
+            input_clock_us: Some(input_clock_us),
+        },
+        shared.clone(),
+        ring,
+        resampler,
+        initial_config,
+        module_path!(),
+    );
+    // The callback reports through this queue; the drain thread logs. Declared
+    // before the listener, so it outlives the callback and logs its last events.
+    let _callback_log_drain = CallbackLogDrain::spawn(callback_log_reader);
+
+    let shutdown_requested_for_callback = shutdown_requested.clone();
+    let graph_latency = shared.telemetry.graph_latency_ms_bits.clone();
+    // Remainder of the input-trigger schedule, carried between callbacks.
+    let mut trigger_acc = 0i64;
     let _listener = stream
         .add_local_listener_with_user_data(())
         .process(move |stream, _| {
             if shutdown_requested_for_callback.load(Ordering::Relaxed) {
                 return;
             }
-            // DIAG output-callback: publish inter-callback dt + snapshot of
-            // ring level + resampler ratio (in ppm dev from 1.0). The
-            // resampler in/out per-callback deltas are computed below using
-            // ring/FIFO snapshots taken before any drain.
-            let now_cb = Instant::now();
-            let dt_cb_us = state.last_callback_at
-                .map(|prev| now_cb.saturating_duration_since(prev).as_micros() as u64)
-                .unwrap_or(0);
-            state.last_callback_at = Some(now_cb);
-            output_callback_dt_us_for_callback
-                .store((dt_cb_us as f64).to_bits(), Ordering::Relaxed);
-            let ring_input_samples_at_entry = buffer_for_callback.len();
-            output_ring_input_samples_for_callback
-                .store((ring_input_samples_at_entry as f64).to_bits(), Ordering::Relaxed);
-            let callback_count = state.runtime.advance_callback();
-            let mut callback_output_frames: usize = 0;
-
-            // --- Test controls: reset ratio / pause PI ---
-            if reset_ratio_for_callback.load(Ordering::Relaxed) {
-                reset_ratio_for_callback.store(false, Ordering::Relaxed);
-                if let Some(ref mut resampler) = state.resampler.engine {
-                    let _ = resampler.set_resample_ratio(state.resampler.configured_ratio, false);
-                }
-                let reset = reset_adaptive_runtime(&mut state.runtime, state.resampler.configured_ratio);
-                state.resampler.effective_ratio = reset.effective_resample_ratio;
-                rate_adjust_for_callback
-                    .store(reset.displayed_rate_adjust.to_bits(), Ordering::Relaxed);
-                desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                current_adaptive_band.store(reset.adaptive_band, Ordering::Relaxed);
-            }
-            // The one config read of this callback. Everything downstream uses
-            // `state.adaptive_config`, so the whole callback also sees one consistent
-            // config rather than re-reading a value that can change under it.
-            if let Some(cfg) = live_adaptive_config_for_callback.try_lock() {
-                state.adaptive_config.clone_from(&cfg);
-            }
-            let is_pi_paused = state.adaptive_config.paused;
-
+            let mut output_frames = 0;
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 // Per-cycle frame count requested by PipeWire for THIS callback.
                 // `data.data()` below only exposes the mapped capacity (maxsize),
                 // which can be many quanta large; `requested()` is the real
                 // processing quantum.
-                let requested_frames_this_cycle = buffer.requested();
+                let requested_frames = buffer.requested();
                 let datas = buffer.datas_mut();
                 if datas.is_empty() {
                     return;
                 }
-
                 let data = &mut datas[0];
                 let chunk_size_bytes = data.chunk().size();
 
-                // Get the data slice and fill it
                 let written = if let Some(slice) = data.data() {
                     let capacity_samples = slice.len() / 4; // 4 bytes per f32
                     let dest = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            slice.as_ptr() as *mut f32,
-                            capacity_samples,
-                        )
+                        std::slice::from_raw_parts_mut(slice.as_ptr() as *mut f32, capacity_samples)
                     };
-
                     let ch = channel_count as usize;
-                    // `data.data()` exposes the full mapped buffer capacity, which
-                    // can span many quanta. `buffer.requested()` is the number of
-                    // frames PipeWire wants for THIS cycle. Producing the whole
-                    // capacity instead handed PipeWire ~256 ms per callback, which
-                    // collapsed the control loop to a 256 ms granularity (the DAC
+                    // Produce the per-cycle request, not the whole capacity:
+                    // that handed PipeWire ~256 ms per callback and collapsed
+                    // the control loop to a 256 ms granularity (the DAC
                     // latency sawtooth + a fixed ~128 ms `callback/2` offset).
-                    // Clamp to the per-cycle request, falling back to capacity if
-                    // it is unavailable.
+                    // Capacity only when the request is unavailable.
                     let capacity_frames = capacity_samples / ch;
-                    let max_frames = if requested_frames_this_cycle > 0 {
-                        (requested_frames_this_cycle as usize).min(capacity_frames)
+                    let frames = if requested_frames > 0 {
+                        (requested_frames as usize).min(capacity_frames)
                     } else {
                         capacity_frames
                     };
-                    let max_samples = max_frames * ch;
-                    let frame_aligned_max = max_samples;
-                    callback_output_frames = max_frames;
-                    // When the pacer is active, it adds its (fixed) capacity
-                    // to the total end-to-end latency. To keep the user's
-                    // configured `latency_ms` as the TOTAL latency target
-                    // (rather than just the ring level), subtract the pacer
-                    // capacity from the PI's setpoint. The PI then aims for
-                    // a ring level of `user_target − pacer_capacity` and the
-                    // sum (ring + pacer) lands at user_target. Without this,
-                    // setting latency to 500 ms would actually give
-                    // 500 + pacer_capacity audible delay.
-                    let runtime_target_buffer_fill = if pacer_enabled {
-                        target_buffer_fill.saturating_sub(pacer_pre_roll_threshold_samples)
-                    } else {
-                        target_buffer_fill
-                    };
-
-                    if callback_count == 1 {
-                        log::info!(
-                            "PipeWire callback #1: buffer={} bytes, {} samples, {} channels → {} frames (remainder: {}) | requested_frames={} chunk_size_bytes={}",
-                            slice.len(), max_samples, ch, max_frames, max_samples % ch,
-                            requested_frames_this_cycle, chunk_size_bytes
+                    let samples = frames * ch;
+                    let callback_number = callback_core.callback_count() + 1;
+                    if callback_number == 1 {
+                        callback_event!(
+                            callback_core.log(),
+                            Info,
+                            "PipeWire callback #1",
+                            buffer_bytes = slice.len(),
+                            samples = samples,
+                            channels = ch,
+                            frames = frames,
+                            requested_frames = requested_frames,
+                            chunk_size_bytes = chunk_size_bytes
                         );
-                        if max_samples != frame_aligned_max {
-                            log::warn!(
-                                "PipeWire buffer NOT frame-aligned! {} samples / {} channels = {} remainder. Sink may have different channel count.",
-                                max_samples, ch, max_samples % ch
-                            );
+                    }
+                    // Downstream graph latency, every ~100 callbacks to
+                    // amortise the cost (`pw_stream_get_time_n` is RT-safe
+                    // inside the process callback).
+                    if callback_number % 100 == 50 {
+                        if let Some(delay_ms) = graph_delay_ms(stream) {
+                            graph_latency.store(delay_ms.to_bits(), Ordering::Relaxed);
                         }
                     }
-                    if runtime_target_buffer_fill != state.logged_runtime_target {
-                        log::debug!(
-                            "PipeWire runtime target fill adjusted to {} samples for observed callback size {} samples",
-                            runtime_target_buffer_fill,
-                            frame_aligned_max
-                        );
-                        state.logged_runtime_target = runtime_target_buffer_fill;
-                    }
-
-                    // Sample downstream graph latency (RT-safe: pw_stream_get_time is RT-safe
-                    // inside the process callback). Update every ~100 callbacks to amortise cost.
-                    if callback_count % 100 == 50 {
-                        let stream_ptr = stream.as_raw_ptr();
-                        let mut pw_t = PwTime::default();
-                        let ok = unsafe { pw_stream_get_time(stream_ptr as *mut _, &mut pw_t) };
-                        if ok == 0 && pw_t.rate.denom > 0 && pw_t.delay > 0 {
-                            let delay_ms = pw_t.delay as f32 / pw_t.rate.denom as f32 * 1000.0;
-                            graph_latency_for_callback.store(delay_ms.to_bits(), Ordering::Relaxed);
-                        }
-                    }
-
-                    // Check if we have enough samples to prevent stuttering
-                    let available = buffer_for_callback.len();
-                    // Raw FIFO level (oscillates with the chunk cycle) — kept
-                    // for the components plot so the chunk dynamics remain
-                    // observable.
-                    let output_fifo_input_domain_samples_raw = output_to_input_domain_samples(
-                        state.resampler.fifo.output_len(),
-                        state.resampler.effective_ratio,
+                    callback_core.process(
+                        &mut dest[..samples],
+                        f32::from_bits(graph_latency.load(Ordering::Relaxed)),
                     );
-                    let pending_resampler_input_samples = state.resampler.fifo.pending_input_samples();
-                    // DIAG: publish the FIFO and resampler-pending raw input-
-                    // domain levels so the diag plot can see whether either is
-                    // the source of the post-d43ddab residual sawtooth.
-                    output_fifo_input_domain_samples_for_callback.store(
-                        (output_fifo_input_domain_samples_raw as f64).to_bits(),
-                        Ordering::Relaxed,
-                    );
-                    output_resampler_pending_input_samples_for_callback.store(
-                        (pending_resampler_input_samples as f64).to_bits(),
-                        Ordering::Relaxed,
-                    );
-                    // Callback consumption (input-domain samples).
-                    let callback_input_domain_samples = if state.resampler.effective_ratio > 0.0 {
-                        ((frame_aligned_max as f64) / state.resampler.effective_ratio).round() as usize
-                    } else {
-                        frame_aligned_max
-                    };
-                    // Increment cumulative-drained BEFORE we read the running
-                    // difference for control_available. callback_input_domain
-                    // _samples is what's about to be consumed this cycle.
-                    cumulative_drained_for_callback
-                        .fetch_add(callback_input_domain_samples as u64, Ordering::Relaxed);
-                    // Cumulative-flow control_available: difference between
-                    // total written-to-pipeline and total drained-from-ring,
-                    // both in input domain. Smooth by construction — chunk
-                    // granularity is just discretisation of the same flow.
-                    // No phase lag, no EMA, no constant approximation.
-                    let written = cumulative_written_for_callback.load(Ordering::Relaxed);
-                    let drained = cumulative_drained_for_callback.load(Ordering::Relaxed);
-                    let control_available_override =
-                        written.saturating_sub(drained).min(usize::MAX as u64) as usize;
-                    // Publish for direct diag-plot inspection (raw counters
-                    // converted to f64 bits so the registry can read them).
-                    cumulative_flow_control_available_for_callback.store(
-                        (control_available_override as f64).to_bits(),
-                        Ordering::Relaxed,
-                    );
-                    // Classical control_available calculation (ring + FIFO +
-                    // pending - callback/2). The cumulative-flow override was
-                    // tried during the 0.4 Hz investigation but caused
-                    // bootstrap deadlock: at startup the callback increments
-                    // `drained` before any write has happened, so the override
-                    // saturates to 0, the state machine enters perpetual
-                    // low-recover, the ring fills, and write_samples hits
-                    // the back-pressure timeout (`Buffer drain timeout after
-                    // 2s`). See LATENCY_DAC_SAWTOOTH_REPORT.md, session
-                    // 2026-05-17, "Cancellation attempts". The cumulative
-                    // counters and `cumulative_flow_control_available` are
-                    // still published as observation metrics below.
-                    // Read the measured callback period (us) for the IIR
-                    // cutoff math. Fallback to the configured quantum if
-                    // the atomic hasn't been populated yet on the first
-                    // callback.
-                    let callback_dt_us =
-                        f64::from_bits(output_callback_dt_us_for_callback.load(Ordering::Relaxed));
-                    let callback_dt_s = if callback_dt_us > 0.0 {
-                        callback_dt_us / 1_000_000.0
-                    } else {
-                        // Same nominal as `quantum_ms` (computed at
-                        // construction); kept as a constant fallback.
-                        (1024_f64) / (sample_rate as f64)
-                    };
-                    // Pacer's contribution to the user-visible latency:
-                    // the configured pre-roll capacity, used as a FIXED
-                    // amount. Backpressure in `write_samples` clamps the
-                    // pacer to this capacity, so the live `pacer_fifo.len()`
-                    // never significantly exceeds it. Combined with the
-                    // `runtime_target_buffer_fill` adjustment above, this
-                    // keeps the total end-to-end latency at the user's
-                    // configured `latency_ms` regardless of whether the
-                    // pacer is active.
-                    let pacer_buffer_samples = if pacer_enabled {
-                        pacer_pre_roll_threshold_samples
-                    } else {
-                        0
-                    };
-                    let mut metrics = update_latency_metrics(
-                        &mut state.runtime,
-                        available,
-                        output_fifo_input_domain_samples_raw,
-                        pending_resampler_input_samples,
-                        pacer_buffer_samples,
-                        callback_input_domain_samples,
-                        channel_count as usize,
-                        sample_rate,
-                        f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed)),
-                        state.adaptive_config.control_smoothing_cutoff_hz,
-                        state.adaptive_config.control_smoothing_order,
-                        callback_dt_s,
-                        LatencyMetricTargets {
-                            measured_latency_ms_bits: &telemetry.measured_latency_ms_bits,
-                            control_latency_ms_bits: &telemetry.control_latency_ms_bits,
-                        },
-                    );
-                    let _ = control_available_override; // kept for future revival of the flow override
-                    // Pre-bridge clock substitution. When `use_pre_bridge_clock`
-                    // is on and the input PwStream has produced at least one
-                    // chunk, replace `metrics.smoothed_control_available` with
-                    // a drift signal computed from the IEC958 source clock and
-                    // the DAC drain counter — both monotone and bursting-free,
-                    // so the PI sees genuine clock drift without the decoder's
-                    // 3.1 Hz batching ripple. The first reading captures a
-                    // calibration offset so the substituted value lands on
-                    // `target_buffer_fill` and only deviates as the two clocks
-                    // actually diverge. The diag plot and the low-recover
-                    // state machine keep using the unmodified ring-based
-                    // metrics (control_available, control_latency_ms).
-                    let input_clock_us_now =
-                        f64::from_bits(input_clock_us_for_callback.load(Ordering::Relaxed));
-                    let pre_bridge_requested = state.adaptive_config.use_pre_bridge_clock;
-                    let pre_bridge_ready = pre_bridge_requested && input_clock_us_now > 0.0;
-                    if pre_bridge_ready {
-                        let input_clock_samples_eq = (input_clock_us_now / 1_000_000.0
-                            * sample_rate as f64
-                            * channel_count as f64)
-                            as i64;
-                        let drained_now =
-                            cumulative_drained_for_callback.load(Ordering::Relaxed) as i64;
-                        if !state.runtime.pre_bridge_offset_initialized {
-                            // Accumulate the raw (input_clock − drained) over
-                            // PRE_BRIDGE_CALIBRATION_CALLBACKS callbacks (≥ 1
-                            // full decoder batching cycle) and finalize the
-                            // offset as the average. A single-sample capture
-                            // would lock in the decoder's instantaneous
-                            // internal latency (0..~320 ms for the lossless
-                            // multichannel codec) and
-                            // bias the ring's steady-state position by up to
-                            // half that range. Averaging removes the bias.
-                            state.runtime.pre_bridge_offset_accum +=
-                                (input_clock_samples_eq - drained_now) as i128;
-                            state.runtime.pre_bridge_offset_count += 1;
-                            if state.runtime.pre_bridge_offset_count
-                                >= PRE_BRIDGE_CALIBRATION_CALLBACKS
-                            {
-                                let count = state.runtime.pre_bridge_offset_count as i128;
-                                state.runtime.pre_bridge_offset_samples =
-                                    (state.runtime.pre_bridge_offset_accum / count) as i64;
-                                state.runtime.pre_bridge_offset_initialized = true;
-                            }
-                        } else {
-                            let drift_samples = input_clock_samples_eq
-                                - drained_now
-                                - state.runtime.pre_bridge_offset_samples;
-                            let target = runtime_target_buffer_fill as i64;
-                            let override_value = (target + drift_samples).max(0) as usize;
-                            metrics.smoothed_control_available = override_value;
-                        }
-                    }
-                    // Freeze the PI only while we are still waiting for the
-                    // first IEC958 chunk to arrive (no source-clock data
-                    // yet). Once chunks are flowing, leave the ring-mode PI
-                    // running during the calibration window — it keeps the
-                    // ring stable around `target_buffer_fill`, so the offset
-                    // we accumulate is centred on the steady-state value
-                    // instead of a drift trajectory. Without this, the
-                    // resampler ratio would stay frozen during calibration
-                    // and the clock skew (~−55000 ppm here) would shift the
-                    // ring by ~82 ms over the 1.5 s window — the very bias
-                    // the averaging is supposed to remove.
-                    let pre_bridge_bootstrap_freeze =
-                        pre_bridge_requested && !pre_bridge_ready;
-                    let is_pi_paused = is_pi_paused || pre_bridge_bootstrap_freeze;
-                    // Publish the smoothed control latency for display. Fold in
-                    // the pacer's fixed contribution (`pacer_buffer_samples`,
-                    // the same amount already added to the raw/control latency
-                    // via `display_control_available`) so the smoothed value is
-                    // the true end-to-end latency and stays comparable to the
-                    // target. The servo keeps tracking the pacer-excluded
-                    // `metrics.smoothed_control_available`; only the displayed
-                    // value changes here.
-                    telemetry.publish_latency(
-                        &LatencySample {
-                            smoothed_control_available: metrics
-                                .smoothed_control_available
-                                .saturating_add(pacer_buffer_samples),
-                            control_latency_ms: metrics.control_latency_ms,
-                            rate_adjust: f32::from_bits(
-                                rate_adjust_for_callback.load(Ordering::Relaxed),
-                            ),
-                            avail_input_samples: available,
-                            output_fifo_input_domain_samples:
-                                output_fifo_input_domain_samples_raw,
-                            resampler_pending_input_samples: pending_resampler_input_samples,
-                        },
-                        channel_count,
-                        sample_rate,
-                    );
-                    // Band classification feeds the low-recover state machine: use
-                    // raw control_available so the hysteresis bands act on the real
-                    // buffer level. (The servo gets the smoothed value separately.)
-                    let fallback_band = far_mode_band_from_latency(
-                        &state.adaptive_config,
-                        metrics.control_available,
-                        runtime_target_buffer_fill,
-                        samples_per_ms,
-                    );
-                    current_adaptive_band.store(fallback_band, Ordering::Relaxed);
-                    if let Some(ref mut resampler) = state.resampler.engine {
-                        if adaptive_resampling_enabled
-                            && !is_pi_paused
-                            && state.runtime.low_recover_phase == LowRecoverPhase::Inactive
-                        {
-                            state.adaptive_update_interval =
-                                state.adaptive_config.update_interval_callbacks.max(1) as u64;
-                            if should_run_adaptive_servo(
-                                callback_count,
-                                state.adaptive_update_interval as u32,
-                                metrics.total_available_input_domain,
-                                channel_count as usize,
-                            ) {
-                                let mut decision = run_adaptive_servo(
-                                    &mut state.runtime,
-                                    &state.adaptive_config,
-                                    metrics,
-                                    runtime_target_buffer_fill,
-                                    state.resampler.configured_ratio,
-                                    480,
-                                    state.adaptive_config.max_adjust.max(0.000_001),
-                                    samples_per_ms,
-                                    samples_per_ms_f64,
-                                );
-                                current_adaptive_band.store(decision.adaptive_band, Ordering::Relaxed);
-
-                                let clamped_ratio = clamp_ratio_for_local_resampler(
-                                    state.resampler.configured_ratio,
-                                    decision.step.current_ratio,
-                                );
-                                decision.step.current_ratio = clamped_ratio;
-                                decision.step.consume_adjust = state.resampler.configured_ratio / clamped_ratio;
-                                decision.effective_resample_ratio = clamped_ratio;
-                                decision.displayed_rate_adjust =
-                                    paused_rate_adjust(state.resampler.configured_ratio, clamped_ratio);
-
-                                if let Err(e) =
-                                    resampler.set_resample_ratio(clamped_ratio, true)
-                                        as Result<(), rubato::ResampleError>
-                                {
-                                    log::warn!("Failed to set resampler ratio: {}", e);
-                                } else {
-                                    state.resampler.effective_ratio = clamped_ratio;
-                                    if state.resampler.effective_ratio.to_bits()
-                                        != state.runtime.last_logged_ratio_bits
-                                    {
-                                        let rel_ratio = state.resampler.effective_ratio / state.resampler.configured_ratio;
-                                        log::debug!(
-                                            "PipeWire adaptive ratio applied: base={:.6} effective={:.6} relative={:.6} consume={:.6} drift={} buf={}/{}",
-                                            state.resampler.configured_ratio,
-                                            state.resampler.effective_ratio,
-                                            rel_ratio,
-                                            decision.step.consume_adjust,
-                                            decision.step.drift,
-                                            metrics.control_available,
-                                            runtime_target_buffer_fill
-                                        );
-                                    }
-                                    state.runtime.last_logged_ratio_bits =
-                                        state.resampler.effective_ratio.to_bits();
-                                    decision.effective_resample_ratio = state.resampler.effective_ratio;
-                                }
-
-                                rate_adjust_for_callback
-                                    .store(decision.displayed_rate_adjust.to_bits(), Ordering::Relaxed);
-
-                                if callback_count % 100 == 0 {
-                                    log::debug!(
-                                        "PipeWire Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
-                                        metrics.control_available,
-                                        runtime_target_buffer_fill,
-                                        decision.step.drift,
-                                        decision.step.current_ratio,
-                                        state.resampler.configured_ratio,
-                                        decision.step.p_term,
-                                        decision.step.i_term
-                                    );
-                                }
-                            }
-                        }
-
-                        let audio_samples_needed = max_samples;
-                        let low_recover_was_active =
-                            state.runtime.low_recover_phase != LowRecoverPhase::Inactive;
-                        // State machine on raw: its entry/exit/settle bands are
-                        // already the hysteresis; smoothing on top added phase lag
-                        // that drove a slow oscillation.
-                        let far_decision = far_mode_step(
-                            &mut state.runtime,
-                            &FarModeStepCtx {
-                                adaptive_config: &state.adaptive_config,
-                                channel_count: channel_count as usize,
-                                input_sample_rate: sample_rate,
-                                output_sample_rate: actual_output_rate,
-                                runtime_state_code: &current_runtime_state,
-                                latency: LatencyMetricTargets {
-                                    measured_latency_ms_bits: &telemetry.measured_latency_ms_bits,
-                                    control_latency_ms_bits: &telemetry.control_latency_ms_bits,
-                                },
-                            },
-                            FarModeStepInputs {
-                                is_far_band: current_adaptive_band.load(Ordering::Relaxed)
-                                    == ADAPTIVE_BAND_FAR,
-                                control_available: metrics.control_available,
-                                smoothed_control_available: metrics.smoothed_control_available,
-                                target_buffer_fill: runtime_target_buffer_fill,
-                                callback_input_domain_samples,
-                                resample_ratio: state.resampler.effective_ratio,
-                                pacer_buffer_samples,
-                                graph_latency_ms: f32::from_bits(
-                                    graph_latency_for_callback.load(Ordering::Relaxed),
-                                ),
-                            },
-                        );
-                        if far_decision.hold_low_recover {
-                            desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                            if !low_recover_was_active {
-                                resampler.reset();
-                                let _ = resampler.set_resample_ratio(state.resampler.configured_ratio, false);
-                                state.resampler.fifo.reset();
-                            } else if state.resampler.effective_ratio.to_bits() != state.resampler.configured_ratio.to_bits() {
-                                let _ = resampler.set_resample_ratio(state.resampler.configured_ratio, false);
-                            }
-                            state.resampler.effective_ratio = state.resampler.configured_ratio;
-                        }
-                        if far_decision.recovery_reacquire_pending {
-                            resampler.reset();
-                            let _ = resampler.set_resample_ratio(state.resampler.configured_ratio, false);
-                            state.resampler.fifo.reset();
-                            state.resampler.effective_ratio = state.resampler.configured_ratio;
-                            rate_adjust_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                            desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                            state.runtime.recovery_reacquire_pending = false;
-                            // The drained counter we use as the pre-bridge
-                            // reference may have advanced during recovery
-                            // while input_clock_us did not (paused source).
-                            // Drop the cached offset and the in-flight
-                            // averaging window so the next steady-state run
-                            // captures a fresh, valid mean.
-                            state.runtime.pre_bridge_offset_initialized = false;
-                            state.runtime.pre_bridge_offset_accum = 0;
-                            state.runtime.pre_bridge_offset_count = 0;
-                            // Flush the post-rendering pacer too: rendered
-                            // samples queued before the reacquire are stale.
-                            // Re-arm pre-roll so the input thread re-primes
-                            // before starting real drains.
-                            pacer_flush_requested.store(true, Ordering::Release);
-                            pacer_pre_roll_complete.store(false, Ordering::Relaxed);
-                            if far_decision.mute_far_output {
-                                if let Err(e) = state.resampler.fifo.ensure_output_samples(
-                                    &buffer_for_callback,
-                                    resampler,
-                                    audio_samples_needed,
-                                ) {
-                                    log::error!("Resampler error during recovery reacquire: {}", e);
-                                } else if state.resampler.fifo.output_len() > 0 {
-                                    state.resampler.fifo.discard_samples(audio_samples_needed);
-                                }
-                                dest[..max_samples].fill(0.0);
-                                max_samples
-                            } else if let Err(e) = state.resampler.fifo.ensure_output_samples(
-                                &buffer_for_callback,
-                                resampler,
-                                audio_samples_needed,
-                            ) {
-                                log::error!("Resampler error during recovery reacquire: {}", e);
-                                zero_pad_tail(&mut dest[..max_samples], 0);
-                                max_samples
-                            } else if state.resampler.fifo.output_len() >= audio_samples_needed {
-                                let copied =
-                                    state.resampler.fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
-                                debug_assert_eq!(copied, audio_samples_needed);
-                                postprocess_interleaved_output(
-                                    &mut dest[..audio_samples_needed],
-                                    ch,
-                                    far_decision.mute_far_output,
-                                    &mut state.runtime,
-                                );
-                                max_samples
-                            } else {
-                                let copy_count =
-                                    state.resampler.fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
-                                zero_pad_tail(&mut dest[..max_samples], copy_count);
-                                note_refill_or_underrun(
-                                    &mut state.runtime,
-                                    "Resampler output underrun",
-                                    "Resampler output underrun",
-                                    copy_count,
-                                    audio_samples_needed,
-                                );
-                                postprocess_interleaved_output(
-                                    &mut dest[..audio_samples_needed],
-                                    ch,
-                                    far_decision.mute_far_output,
-                                    &mut state.runtime,
-                                );
-                                max_samples
-                            }
-                        } else {
-                            if far_decision.hold_low_recover {
-                                let muted_samples_to_consume = if far_decision.mute_far_output
-                                    && far_decision.consume_while_muted
-                                {
-                                    audio_samples_needed
-                                } else {
-                                    0
-                                };
-                                let prepared_samples = if far_decision.mute_far_output {
-                                    muted_samples_to_consume
-                                        .saturating_add(far_decision.low_recover_trim_output_samples)
-                                } else {
-                                    audio_samples_needed
-                                        .saturating_add(far_decision.low_recover_trim_output_samples)
-                                };
-                                if prepared_samples > 0 {
-                                    if let Err(e) = state.resampler.fifo.ensure_output_samples(
-                                        &buffer_for_callback,
-                                        resampler,
-                                        prepared_samples,
-                                    ) {
-                                        log::error!("Resampler error: {}", e);
-                                    } else {
-                                        if far_decision.low_recover_trim_output_samples > 0 {
-                                            state.resampler.fifo.discard_samples(
-                                                far_decision.low_recover_trim_output_samples,
-                                            );
-                                        }
-                                        if muted_samples_to_consume > 0 {
-                                            state.resampler.fifo.discard_samples(muted_samples_to_consume);
-                                        }
-                                    }
-                                }
-                                if far_decision.mute_far_output {
-                                    dest[..max_samples].fill(0.0);
-                                }
-                            } else if let Err(e) = state.resampler.fifo.ensure_output_samples(
-                                &buffer_for_callback,
-                                resampler,
-                                audio_samples_needed,
-                            ) {
-                                log::error!("Resampler error: {}", e);
-                            }
-                            if far_decision.hard_recover_high {
-                                let plan = compute_hard_recover_high_plan(
-                                    callback_input_domain_samples,
-                                    metrics.control_available,
-                                    runtime_target_buffer_fill,
-                                    state.resampler.effective_ratio,
-                                    channel_count as usize,
-                                );
-                                if let Err(e) = state.resampler.fifo.ensure_output_samples(
-                                    &buffer_for_callback,
-                                    resampler,
-                                    plan.desired_consume_output_samples,
-                                ) {
-                                    log::error!("Resampler error: {}", e);
-                                }
-                                state.resampler.fifo.discard_samples(plan.desired_consume_output_samples);
-                                dest[..max_samples].fill(0.0);
-                            } else if far_decision.hold_low_recover && far_decision.mute_far_output {
-                                dest[..max_samples].fill(0.0);
-                            } else if state.resampler.fifo.output_len() >= audio_samples_needed {
-                                let copied =
-                                    state.resampler.fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
-                                debug_assert_eq!(copied, audio_samples_needed);
-                                postprocess_interleaved_output(
-                                    &mut dest[..audio_samples_needed],
-                                    ch,
-                                    far_decision.mute_far_output,
-                                    &mut state.runtime,
-                                );
-                            } else {
-                                let fifo_available = state.resampler.fifo.output_len();
-                                let copy_count =
-                                    state.resampler.fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
-                                zero_pad_tail(&mut dest[..max_samples], copy_count);
-                                note_refill_or_underrun(
-                                    &mut state.runtime,
-                                    "Resampler underrun",
-                                    "Resampler underrun",
-                                    fifo_available,
-                                    audio_samples_needed,
-                                );
-                            }
-                            max_samples
-                        }
-                    } else {
-                        if latency_servo_enabled
-                            && !is_pi_paused
-                            && callback_count % state.adaptive_update_interval == 0
-                            && state.runtime.low_recover_phase == LowRecoverPhase::Inactive
-                        {
-                            if adaptive_resampling_enabled {
-                                state.adaptive_update_interval =
-                                    state.adaptive_config.update_interval_callbacks.max(1) as u64;
-                            }
-                            let drift = metrics.smoothed_control_available as i64
-                                - runtime_target_buffer_fill as i64;
-
-                            if adaptive_resampling_enabled {
-                                let decision = run_adaptive_servo(
-                                    &mut state.runtime,
-                                    &state.adaptive_config,
-                                    metrics,
-                                    runtime_target_buffer_fill,
-                                    1.0,
-                                    480,
-                                    state.adaptive_config.max_adjust.max(0.000_001),
-                                    samples_per_ms,
-                                    samples_per_ms_f64,
-                                );
-                                current_adaptive_band.store(decision.adaptive_band, Ordering::Relaxed);
-                                rate_adjust_for_callback.store(
-                                    decision.displayed_rate_adjust.to_bits(),
-                                    Ordering::Relaxed,
-                                );
-                                desired_rate_for_callback
-                                    .store((decision.step.current_ratio as f32).to_bits(), Ordering::Relaxed);
-
-                                if callback_count % 100 == 0 {
-                                    log::trace!(
-                                        "PipeWire native adaptive: buf={}/{} drift={} rate={:.6} consume={:.6} (P={:.6} I={:.6})",
-                                        metrics.control_available,
-                                        runtime_target_buffer_fill,
-                                        decision.step.drift,
-                                        decision.step.current_ratio,
-                                        decision.step.consume_adjust,
-                                        decision.step.p_term,
-                                        decision.step.i_term
-                                    );
-                                }
-                            } else {
-                                if drift.abs() > 480 {
-                                    state.runtime.controller_state.accumulated_drift += drift as f64;
-                                    let integral_contribution =
-                                        state.runtime.controller_state.accumulated_drift
-                                            * LATENCY_SERVO_I_GAIN;
-                                    if integral_contribution.abs() > MAX_INTEGRAL_TERM {
-                                        state.runtime.controller_state.accumulated_drift =
-                                            (MAX_INTEGRAL_TERM / LATENCY_SERVO_I_GAIN)
-                                                * integral_contribution.signum();
-                                    }
-                                }
-                                // Band classification on raw — see resampler path.
-                                let far_band = far_mode_band_from_latency(
-                                    &state.adaptive_config,
-                                    metrics.control_available,
-                                    runtime_target_buffer_fill,
-                                    samples_per_ms,
-                                );
-                                current_adaptive_band.store(far_band, Ordering::Relaxed);
-                                let p_term = {
-                                drift as f64 * LATENCY_SERVO_P_GAIN / 100.0
-                                };
-                                let i_term = {
-                                state.runtime.controller_state.accumulated_drift * LATENCY_SERVO_I_GAIN
-                                };
-                                let max_adjust = {
-                                LATENCY_SERVO_MAX_RATE_ADJUST
-                                };
-                                let consume_adjust =
-                                    (1.0 + p_term + i_term).clamp(1.0 - max_adjust, 1.0 + max_adjust);
-                                let pipewire_rate = (1.0 / consume_adjust) as f32;
-
-                                rate_adjust_for_callback
-                                    .store((consume_adjust as f32).to_bits(), Ordering::Relaxed);
-                                desired_rate_for_callback.store(pipewire_rate.to_bits(), Ordering::Relaxed);
-
-                                if callback_count % 100 == 0 {
-                                    log::trace!(
-                                        "PipeWire latency servo: buf={} target={} max={} drift={} -> consume={:.6} pw_rate={:.6}",
-                                        metrics.control_available,
-                                        runtime_target_buffer_fill,
-                                        max_buffer_fill,
-                                        drift,
-                                        consume_adjust,
-                                        pipewire_rate
-                                    );
-                                }
-                            }
-                        }
-
-                        let available_frames = available / ch;
-                        let frames_to_read = available_frames.min(max_frames);
-                        let samples_to_read = frames_to_read * ch;
-
-                        // State machine on raw — see resampler path.
-                        // Straight copy: the ratio is 1.0, so input and output
-                        // domains coincide. Same step as the resampler path.
-                        let far_decision = far_mode_step(
-                            &mut state.runtime,
-                            &FarModeStepCtx {
-                                adaptive_config: &state.adaptive_config,
-                                channel_count: channel_count as usize,
-                                input_sample_rate: sample_rate,
-                                output_sample_rate: actual_output_rate,
-                                runtime_state_code: &current_runtime_state,
-                                latency: LatencyMetricTargets {
-                                    measured_latency_ms_bits: &telemetry.measured_latency_ms_bits,
-                                    control_latency_ms_bits: &telemetry.control_latency_ms_bits,
-                                },
-                            },
-                            FarModeStepInputs {
-                                is_far_band: current_adaptive_band.load(Ordering::Relaxed)
-                                    == ADAPTIVE_BAND_FAR,
-                                control_available: metrics.control_available,
-                                smoothed_control_available: metrics.smoothed_control_available,
-                                target_buffer_fill: runtime_target_buffer_fill,
-                                callback_input_domain_samples,
-                                resample_ratio: 1.0,
-                                pacer_buffer_samples,
-                                graph_latency_ms: f32::from_bits(
-                                    graph_latency_for_callback.load(Ordering::Relaxed),
-                                ),
-                            },
-                        );
-                        if far_decision.hold_low_recover {
-                            desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                        }
-                        if far_decision.recovery_reacquire_pending {
-                            desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                            rate_adjust_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                            state.runtime.recovery_reacquire_pending = false;
-                            state.runtime.pre_bridge_offset_initialized = false;
-                            state.runtime.pre_bridge_offset_accum = 0;
-                            state.runtime.pre_bridge_offset_count = 0;
-                            pacer_flush_requested.store(true, Ordering::Release);
-                            pacer_pre_roll_complete.store(false, Ordering::Relaxed);
-                            if far_decision.mute_far_output {
-                                let dropped =
-                                    discard_ring_samples(&buffer_for_callback, samples_to_read);
-                                state.recovery_discard_total =
-                                    state.recovery_discard_total.saturating_add(dropped as u64);
-                                recovery_discard_count_for_callback.store(
-                                    (state.recovery_discard_total as f64).to_bits(),
-                                    Ordering::Relaxed,
-                                );
-                                if dropped < samples_to_read {
-                                    log::debug!(
-                                        "Recovery reacquire underfed: consumed {} / {} samples while re-priming output",
-                                        dropped,
-                                        samples_to_read
-                                    );
-                                }
-                                dest[..max_samples].fill(0.0);
-                                max_samples
-                            } else {
-                                let mut count = 0;
-                                while count < samples_to_read {
-                                    if let Some(sample_f32) = buffer_for_callback.pop() {
-                                        dest[count] = sample_f32;
-                                        count += 1;
-                                    } else {
-                                        break;
-                                    }
-                                }
-
-                                while count < max_samples {
-                                    dest[count] = 0.0;
-                                    count += 1;
-                                }
-                                postprocess_interleaved_output(
-                                    dest,
-                                    ch,
-                                    far_decision.mute_far_output,
-                                    &mut state.runtime,
-                                );
-                                max_samples
-                            }
-                        } else if far_decision.hard_recover_high {
-                            let plan = compute_hard_recover_high_plan(
-                                callback_input_domain_samples,
-                                metrics.control_available,
-                                runtime_target_buffer_fill,
-                                1.0,
-                                channel_count as usize,
-                            );
-                            let dropped =
-                                discard_ring_samples(&buffer_for_callback, plan.desired_consume_input_samples);
-                            state.recovery_discard_total =
-                                state.recovery_discard_total.saturating_add(dropped as u64);
-                            recovery_discard_count_for_callback.store(
-                                (state.recovery_discard_total as f64).to_bits(),
-                                Ordering::Relaxed,
-                            );
-                            if dropped < plan.desired_consume_input_samples {
-                                log::debug!(
-                                    "Far hard recover underfed: consumed {} / {} samples while targeting exact recovery",
-                                    dropped,
-                                    plan.desired_consume_input_samples
-                                );
-                            }
-                            dest[..max_samples].fill(0.0);
-                            max_samples
-                        } else if far_decision.hold_low_recover {
-                            let muted_samples_to_consume = if far_decision.mute_far_output
-                                && far_decision.consume_while_muted
-                            {
-                                samples_to_read
-                            } else {
-                                0
-                            };
-                            let samples_to_discard = muted_samples_to_consume
-                                .saturating_add(far_decision.low_recover_trim_input_samples);
-                            if samples_to_discard > 0 {
-                                let dropped =
-                                    discard_ring_samples(&buffer_for_callback, samples_to_discard);
-                                state.recovery_discard_total =
-                                    state.recovery_discard_total.saturating_add(dropped as u64);
-                                recovery_discard_count_for_callback.store(
-                                    (state.recovery_discard_total as f64).to_bits(),
-                                    Ordering::Relaxed,
-                                );
-                                if dropped < samples_to_discard {
-                                    log::debug!(
-                                        "Low-recover muted consume underfed: consumed {} / {} samples while stabilizing resume latency",
-                                        dropped,
-                                        samples_to_discard
-                                    );
-                                }
-                            }
-                            if far_decision.mute_far_output {
-                                dest[..max_samples].fill(0.0);
-                                max_samples
-                            } else {
-                                let mut count = 0;
-                                while count < samples_to_read {
-                                    if let Some(sample_f32) = buffer_for_callback.pop() {
-                                        dest[count] = sample_f32;
-                                        count += 1;
-                                    } else {
-                                        break;
-                                    }
-                                }
-
-                                while count < max_samples {
-                                    dest[count] = 0.0;
-                                    count += 1;
-                                }
-                                postprocess_interleaved_output(
-                                    dest,
-                                    ch,
-                                    far_decision.mute_far_output,
-                                    &mut state.runtime,
-                                );
-                                max_samples
-                            }
-                        } else {
-                            let mut count = 0;
-                            while count < samples_to_read {
-                                if let Some(sample_f32) = buffer_for_callback.pop() {
-                                    dest[count] = sample_f32;
-                                    count += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-
-                            while count < max_samples {
-                                dest[count] = 0.0;
-                                count += 1;
-                            }
-                            postprocess_interleaved_output(
-                                dest,
-                                ch,
-                                far_decision.mute_far_output,
-                                &mut state.runtime,
-                            );
-
-                            if samples_to_read < frame_aligned_max {
-                                note_refill_or_underrun(
-                                    &mut state.runtime,
-                                    "Buffer underrun",
-                                    "Buffer underrun",
-                                    samples_to_read,
-                                    frame_aligned_max,
-                                );
-                            }
-
-                            max_samples
-                        }
-                    }
+                    output_frames = frames;
+                    samples
                 } else {
                     0
                 };
 
-                // Update chunk metadata
                 let chunk = data.chunk_mut();
                 *chunk.offset_mut() = 0;
                 *chunk.size_mut() = (written * 4) as u32;
                 *chunk.stride_mut() = 4;
             }
+            input_trigger.schedule(&mut trigger_acc, output_frames, actual_output_rate);
+        })
+        .register()
+        .map_err(|e| anyhow!("Failed to register process listener: {:?}", e))?;
 
-            // Direct trigger mode: increment the shared pending-trigger counter (Bresenham).
-            // The capture mainloop drains this counter and fires pw_stream_trigger_process()
-            // from its own thread — the only reliable caller for the capture DRIVER stream.
-            let in_rate = input_trigger_rate_for_callback.load(Ordering::Relaxed) as i64;
-            let in_quantum = input_trigger_quantum_for_callback.load(Ordering::Relaxed) as i64;
-            if in_rate > 0 && in_quantum > 0 && callback_output_frames > 0 {
-                state.bresenham_acc += (callback_output_frames as i64).saturating_mul(in_rate);
-                let trigger_den = (actual_output_rate as i64).saturating_mul(in_quantum);
-                while trigger_den > 0 && state.bresenham_acc >= trigger_den {
-                    pending_input_triggers_for_callback.fetch_add(1, Ordering::Relaxed);
-                    state.bresenham_acc -= trigger_den;
-                }
-            }
-            // DIAG output-callback: publish current adaptive runtime state
-            // (so the diag plot reveals any periodic state transitions even
-            // when PI servo is paused).
-            runtime_state_code_for_callback.store(
-                (current_runtime_state.load(Ordering::Relaxed) as f64).to_bits(),
-                Ordering::Relaxed,
-            );
-            // DIAG output: effective ratio (ppm deviation from 1.0).
-            let ratio_ppm_dev = (state.resampler.effective_ratio - 1.0) * 1_000_000.0;
-            output_effective_ratio_ppm_for_callback
-                .store((ratio_ppm_dev).to_bits(), Ordering::Relaxed);
-        })        .register()        .map_err(|e| anyhow!("Failed to register process listener: {:?}", e))?;
-
-    // Configure audio format
-    let mut audio_info = pw::spa::param::audio::AudioInfoRaw::new();
-    audio_info.set_format(pw::spa::param::audio::AudioFormat::F32LE);
-    audio_info.set_rate(actual_output_rate); // Use output rate (may be upsampled)
-    audio_info.set_channels(channel_count);
-
-    // Serialize format
-    let values: Vec<u8> = pw::spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(Vec::new()),
-        &pw::spa::pod::Value::Object(pw::spa::pod::Object {
-            type_: pw::spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
-            id: pw::spa::param::ParamType::EnumFormat.as_raw(),
-            properties: audio_info.into(),
-        }),
-    )
-    .map_err(|e| anyhow!("Failed to serialize format: {:?}", e))?
-    .0
-    .into_inner();
-
+    let format = output_format_pod(actual_output_rate, channel_count)?;
     let param =
-        pw::spa::pod::Pod::from_bytes(&values).ok_or_else(|| anyhow!("Failed to create param"))?;
+        pw::spa::pod::Pod::from_bytes(&format).ok_or_else(|| anyhow!("Failed to create param"))?;
 
     log::debug!("Connecting PipeWire stream...");
 
@@ -2105,61 +1090,19 @@ fn run_pipewire_loop(
 
     log::debug!("PipeWire thread loop started");
 
-    // Thread-safe PipeWire rate control loop.
-    // Runs whenever we are in the direct-copy path so the gentle latency servo
-    // can hold the ring buffer near the requested target even with the public
-    // adaptive mode disabled.
-    if !use_local_resampler {
-        let stream_ptr = stream.as_raw_ptr();
-        let loop_ptr = main_loop.as_raw_ptr();
-        let mut last_applied_rate = 1.0f32;
-
-        loop {
-            if shutdown_requested.load(Ordering::Relaxed) {
-                break;
-            }
-            // Sleep to avoid busy-waiting (check every 50ms)
-            thread::sleep(Duration::from_millis(50));
-
-            // Read desired rate from atomic
-            let rate_bits = desired_rate.load(Ordering::Relaxed);
-            let desired_rate_value = f32::from_bits(rate_bits);
-
-            // Apply every actual control-value change so the observed behavior
-            // matches the requested ratio without an extra deadband here.
-            if desired_rate_value.to_bits() != last_applied_rate.to_bits() {
-                // Lock the thread loop for thread-safe API calls
-                unsafe {
-                    pw_thread_loop_lock(loop_ptr as *mut _);
-
-                    // Apply rate control
-                    let rate = desired_rate_value;
-                    let result = pw_stream_set_control(
-                        stream_ptr as *mut _,
-                        SPA_PROP_RATE,
-                        1,
-                        &rate as *const f32,
-                        0,
-                    );
-
-                    pw_thread_loop_unlock(loop_ptr as *mut _);
-
-                    if result == 0 {
-                        last_applied_rate = desired_rate_value;
-                        log::trace!("Applied rate adjustment: {:.6}", rate);
-                    } else {
-                        log::warn!("Failed to apply rate control: {}", result);
-                    }
-                }
-            }
-        }
-    } else {
-        loop {
-            if shutdown_requested.load(Ordering::Relaxed) {
-                break;
-            }
+    if use_local_resampler {
+        while !shutdown_requested.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_secs(1));
         }
+    } else {
+        // The direct-copy path's servo steers the stream's own rate; apply it
+        // from here, off the callback.
+        apply_native_rate_until_shutdown(
+            &stream,
+            &main_loop,
+            &shared.native_rate,
+            &shutdown_requested,
+        );
     }
 
     // Stop the thread loop before returning so a dropped writer cannot leave
@@ -2169,9 +1112,264 @@ fn run_pipewire_loop(
     Ok(())
 }
 
+/// The output stream's properties: its name, the device it is pinned to, its
+/// channel positions and its processing quantum.
+fn output_stream_properties(
+    channel_count: u32,
+    output_device: Option<&str>,
+    channel_names: Option<&[String]>,
+    quantum_frames: u32,
+    output_rate: u32,
+) -> pw::properties::PropertiesBox {
+    let mut props = pw::properties::PropertiesBox::new();
+    props.insert("node.name", "omniphony-vbap-renderer");
+    props.insert("media.name", "VBAP Spatial Audio");
+
+    if let Some(target) = output_device {
+        for (key, value) in output_target_properties(target) {
+            props.insert(key, value);
+        }
+        log::info!(
+            "PipeWire output target: {} (pinned: no session move, no default-sink fallback)",
+            target
+        );
+    }
+
+    // audio.position tells PipeWire the spatial positions of the channels
+    // (e.g. "FL,FR,C,LFE,BL,BR"), in its standard names (C→FC, BL→RL, BR→RR).
+    if let Some(names) = channel_names {
+        let positions = names
+            .iter()
+            .map(|n| to_pipewire_position(n))
+            .collect::<Vec<_>>()
+            .join(",");
+        props.insert("audio.position", positions.as_str());
+        props.insert("audio.channels", channel_count.to_string().as_str());
+        log::info!("PipeWire channel positions: {}", positions);
+    }
+
+    // `node.latency` controls the PipeWire processing quantum (callback size),
+    // not an abstract graph latency. Requesting the ring target (e.g. 500 ms)
+    // here forced PipeWire into ~256 ms callbacks: the control loop then ran
+    // once per 256 ms and the `callback/2` midpoint correction became a fixed
+    // ~128 ms offset. The target latency must live in the sample ring
+    // (target_buffer_fill), so request only the processing quantum here.
+    props.insert(
+        "node.latency",
+        format!("{}/{}", quantum_frames, output_rate).as_str(),
+    );
+    log::debug!(
+        "PipeWire stream properties configured: latency={}/{} (~{:.0}ms)",
+        quantum_frames,
+        output_rate,
+        quantum_frames as f64 / output_rate as f64 * 1000.0
+    );
+    props
+}
+
+/// The `EnumFormat` the stream offers: interleaved f32 at `rate`.
+fn output_format_pod(rate: u32, channels: u32) -> Result<Vec<u8>> {
+    let mut audio_info = pw::spa::param::audio::AudioInfoRaw::new();
+    audio_info.set_format(pw::spa::param::audio::AudioFormat::F32LE);
+    audio_info.set_rate(rate);
+    audio_info.set_channels(channels);
+    Ok(pw::spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &pw::spa::pod::Value::Object(pw::spa::pod::Object {
+            type_: pw::spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
+            id: pw::spa::param::ParamType::EnumFormat.as_raw(),
+            properties: audio_info.into(),
+        }),
+    )
+    .map_err(|e| anyhow!("Failed to serialize format: {:?}", e))?
+    .0
+    .into_inner())
+}
+
+/// The graph's delay downstream of `stream`, in ms, when it reports one.
+fn graph_delay_ms(stream: &pw::stream::Stream) -> Option<f32> {
+    // `pw_stream_get_time_n` with our struct size: the library writes only as
+    // much of `pw_time` as it knows, whatever version it is.
+    let mut time = std::mem::MaybeUninit::<pw::sys::pw_time>::zeroed();
+    let ok = unsafe {
+        pw::sys::pw_stream_get_time_n(
+            stream.as_raw_ptr(),
+            time.as_mut_ptr(),
+            std::mem::size_of::<pw::sys::pw_time>(),
+        )
+    };
+    // Zero-initialised, so fully initialised whatever the call wrote.
+    let time = unsafe { time.assume_init() };
+    (ok == 0 && time.rate.denom > 0 && time.delay > 0)
+        .then(|| time.delay as f32 / time.rate.denom as f32 * 1000.0)
+}
+
+/// Apply the callback's native rate to the stream as `SPA_PROP_rate` until
+/// shutdown, every change of it and nothing else.
+fn apply_native_rate_until_shutdown(
+    stream: &pw::stream::StreamBox,
+    main_loop: &pw::thread_loop::ThreadLoopRc,
+    native_rate: &AtomicU32,
+    shutdown_requested: &AtomicBool,
+) {
+    let stream_ptr = stream.as_raw_ptr();
+    let loop_ptr = main_loop.as_raw_ptr();
+    let mut last_applied_rate = 1.0f32;
+
+    while !shutdown_requested.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_millis(50));
+        let mut rate = pipewire_rate_for_consume_adjust(f32::from_bits(
+            native_rate.load(Ordering::Relaxed),
+        ) as f64);
+        // No deadband here: the observed behaviour follows the requested
+        // ratio exactly.
+        if rate.to_bits() == last_applied_rate.to_bits() {
+            continue;
+        }
+        let result = unsafe {
+            pw::sys::pw_thread_loop_lock(loop_ptr);
+            // `pw_stream_set_control` is variadic in C: after the first (id,
+            // n_values, values) triple it reads further triples until an id
+            // of 0, hence the trailing terminator.
+            let result = pw::sys::pw_stream_set_control(
+                stream_ptr,
+                SPA_PROP_RATE,
+                1,
+                &mut rate as *mut f32,
+                0u32,
+            );
+            pw::sys::pw_thread_loop_unlock(loop_ptr);
+            result
+        };
+        if result == 0 {
+            last_applied_rate = rate;
+            log::trace!("Applied rate adjustment: {:.6}", rate);
+        } else {
+            log::warn!("Failed to apply rate control: {}", result);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sink(value: &str, label: &str, client_id: Option<u32>) -> SinkCandidate {
+        SinkCandidate {
+            value: value.into(),
+            label: label.into(),
+            client_id,
+        }
+    }
+
+    fn client(id: u32, pid: Option<u32>) -> ClientEntry {
+        ClientEntry {
+            id,
+            pid,
+            binary: None,
+        }
+    }
+
+    /// Omniphony's own bridge sink (published by this process) is not an
+    /// output device: rendering into it would feed the output back into
+    /// the decoder input. Every other sink stays, including one whose owner
+    /// cannot be resolved.
+    #[test]
+    fn device_list_leaves_out_this_processes_own_sinks() {
+        let own_pid = 4242;
+        let sinks = [
+            sink("omniphony", "Omniphony", Some(7)),
+            sink("alsa_output.dac", "USB DAC", Some(8)),
+            sink("other_renderer", "Omniphony (other)", Some(9)),
+            sink("loaded_by_daemon", "Null sink", None),
+        ];
+        let clients = [
+            client(7, Some(own_pid)),
+            client(8, Some(100)),
+            client(9, Some(200)),
+        ];
+        let list = output_device_list(&sinks, &clients, own_pid);
+        assert_eq!(
+            list,
+            vec![
+                ("loaded_by_daemon".to_string(), "Null sink".to_string()),
+                (
+                    "other_renderer".to_string(),
+                    "Omniphony (other)".to_string()
+                ),
+                ("alsa_output.dac".to_string(), "USB DAC".to_string()),
+            ]
+        );
+    }
+
+    /// Talks to the session's PipeWire daemon: run with `--ignored` to see
+    /// the list a renderer would offer. Read-only (one registry snapshot).
+    #[test]
+    #[ignore = "needs a running PipeWire session"]
+    fn live_device_list_answers_within_the_timeout() {
+        let devices = list_pipewire_output_devices().expect("device list");
+        for (value, label) in &devices {
+            eprintln!("{value}\t{label}");
+        }
+    }
+
+    #[test]
+    fn device_list_sorts_by_label_and_drops_duplicate_names() {
+        let sinks = [
+            sink("b", "Beta", None),
+            sink("a", "Alpha", None),
+            sink("b", "Beta", None),
+        ];
+        let list = output_device_list(&sinks, &[], 1);
+        assert_eq!(
+            list,
+            vec![
+                ("a".to_string(), "Alpha".to_string()),
+                ("b".to_string(), "Beta".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn sink_candidates_are_named_audio_sinks_with_a_label_fallback() {
+        let props = |pairs: &'static [(&'static str, &'static str)]| {
+            move |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+        };
+        let s = sink_candidate_from_props(props(&[
+            ("media.class", "Audio/Sink"),
+            ("node.name", " dac "),
+            ("node.nick", "DAC nick"),
+            ("client.id", "12"),
+        ]))
+        .expect("a named sink");
+        assert_eq!(s, sink("dac", "DAC nick", Some(12)));
+        assert!(
+            sink_candidate_from_props(props(&[
+                ("media.class", "Audio/Source"),
+                ("node.name", "mic"),
+            ]))
+            .is_none()
+        );
+        assert!(
+            sink_candidate_from_props(props(&[("media.class", "Audio/Sink"), ("node.name", " ")]))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rate_control_is_the_spa_rate_property() {
+        // 0x10c in <spa/param/props.h>; the old literal 3 named no rate control.
+        assert_eq!(SPA_PROP_RATE, 0x10c);
+    }
+
+    #[test]
+    fn rate_control_drains_faster_when_the_ring_is_too_full() {
+        // Ring above target -> consume_adjust > 1 -> the adapter must consume
+        // more input per cycle, which SPA_PROP_rate does for values above 1.
+        assert!(pipewire_rate_for_consume_adjust(1.001) > 1.0);
+        assert!(pipewire_rate_for_consume_adjust(0.999) < 1.0);
+        assert_eq!(pipewire_rate_for_consume_adjust(1.0), 1.0);
+    }
 
     #[test]
     fn output_target_is_stated_in_both_spellings() {

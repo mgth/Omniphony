@@ -5,6 +5,13 @@ Rust host almost verbatim. That was possible because Tauri enforced a boundary:
 the JavaScript UI reached the renderer only through the host's typed commands
 (156 `invoke()` calls to 135 commands) and did not know a single OSC address.
 
+(The web frontend and its Tauri host were removed in 0.7.0, #677. Comments
+in this workspace that say a function was ported from the Tauri host, or cite
+`src-tauri/…` or `*.js` files, refer to that code; its last version is at
+commit
+[49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio)
+of mgth/Omniphony.)
+
 This crate has to stay as replaceable. egui is a choice, not a foundation: the
 day another toolkit serves the Studio better, moving should mean rewriting the
 drawing, not re-porting the behaviour. The port lost the boundary on the way in
@@ -66,6 +73,7 @@ The rule ids:
 | `raw-send` | `ctl.send*(…)`, `control.send(…)`, `send_control(…)`, `send_json_control(…)` |
 | `side-effect` | spawning a thread or process, `thread::sleep`, file or network I/O (`fs::…`, `UdpSocket`, `to_socket_addrs`, `ureq`) |
 | `frame-tick` | defining a `maintain_*` function |
+| `save-config` | saving the renderer's config (`request_save_config(…)`, `SaveAndSwitch`) anywhere but the Save button, the quit prompt and the profile-switch prompt — see [`docs/persistence-policy.md`](../docs/persistence-policy.md) |
 
 Two exemptions are written into the test with their reason: `main.rs` reads the
 CJK font and `render/head.rs` reads the head mesh, once, before the first
@@ -167,7 +175,7 @@ retired three that way — `toolkit-in-core`, `core-imports-ui` and `model-impl`
 — and the read-only handle retired `model-write`: with no `&mut Live` to be
 had, the scanner had nothing left to find that the compiler would not. A rule
 at zero is not deleted otherwise: `osc-address`, `raw-send`, `side-effect`,
-`frame-tick` all stand at zero and stay as cheap tripwires.
+`frame-tick` and `save-config` all stand at zero and stay as cheap tripwires.
 `toolkit-in-scene` lasted two commits: the scene became a crate, and a crate
 cannot name a toolkit it does not depend on.
 

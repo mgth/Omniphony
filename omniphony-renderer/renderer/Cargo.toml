@@ -1,41 +1,49 @@
 [package]
 name = "renderer"
-version = "0.2.4"
-edition = "2024"
-license = "GPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "VBAP-based spatial audio renderer"
 
 [lib]
 name = "renderer"
 
 [dependencies]
-anyhow = "1"
-omniphony-geometry = { version = "0.1.0", path = "../omniphony-geometry" }
-bridge_api = { version = "0.4.0", path = "../bridge_api" }
-log = "0.4"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml_ng = "0.10"
+anyhow.workspace = true
+omniphony_geometry.workspace = true
+omniphony-osc-contract.workspace = true
+bridge_api.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
 arc-swap = "1"
-libc = "0.2"
-parking_lot = "0.12"
+libc.workspace = true
+parking_lot.workspace = true
 flate2 = "1.0"
-realfft = "3.5"
+realfft.workspace = true
 rayon = "1"
-sys = { path = "../sys" }
 sofar = { version = "0.3", optional = true }
 
 [build-dependencies]
-anyhow = "1"
+anyhow.workspace = true
 bindgen = "0.70"
 
 [dev-dependencies]
 criterion = "0.5"
-dsp_fixtures = { path = "../dsp_fixtures" }
+dsp_fixtures.workspace = true
 
 [[bench]]
 name = "render_frame"
 harness = false
+
+# Loads a room-response SOFA file through the BRIR loader and prints what it
+# holds (`cargo run --release -p renderer --features sofa --example brir_probe
+# -- <file> [all|front|raw M R E N]`).
+[[example]]
+name = "brir_probe"
+required-features = ["sofa"]
 
 [features]
 # Worst-case block-time gate. Opt-in and run alone: a timing measurement must
@@ -44,11 +52,15 @@ harness = false
 #   cargo test --release -p renderer --features perf-gate -- --test-threads=1
 perf-gate = []
 saf_vbap = []
+# `renderer::test_support`: renderer fixtures for other crates' tests. Enable it
+# from `[dev-dependencies]` only.
+test-support = []
 # Enables loading external SOFA HRTF files for the binaural stage (adds a SOFA
 # reader dependency). Off by default — the embedded SAF KEMAR set is always available.
 sofa = ["dep:sofar"]
-# Opt-in wide DSP validation matrix. Off by default so the PR gate stays
-# inside its CI time budget; #[ignore] is reserved for tracked deferrals.
+# Opt-in wide DSP validation matrix. Off by default, so the debug test run
+# stays quick; CI runs it in the optimised renderer step, where it costs a
+# fraction of a second. #[ignore] is reserved for tracked deferrals.
 # Gates only `#[cfg(feature = "wide-matrix")]` test code in this crate — it
 # forwards to nothing, so it cannot affect a release build.
 wide-matrix = []

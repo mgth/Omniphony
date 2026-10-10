@@ -1,11 +1,10 @@
-//! Studio strings. The catalogues are the web Studio's own `i18n/*.json`,
-//! embedded at build time so both hosts stay key-for-key identical until the
-//! cutover moves them into this crate.
+//! Studio strings. The catalogues are `omniphony-studio-egui/i18n/*.json`,
+//! embedded at build time.
 //!
-//! Every locale is English overridden by its own entries, exactly as the web
-//! spreads `{...enTranslations, ...frTranslations}`: a key a translator has not
-//! reached yet reads in English rather than as a raw key. `t` resolves a key
-//! and `tf` substitutes `{name}` placeholders.
+//! Every locale overrides English with its own entries: a missing translation
+//! reads in English rather than as a raw key. Tests check the raw catalogues
+//! for key and placeholder parity before this fallback can hide a gap.
+//! `t` resolves a key and `tf` substitutes `{name}` placeholders.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,50 +13,30 @@ use std::sync::{Mutex, OnceLock};
 /// The locales, in the order the language picker offers them. The first is the
 /// base every other one falls back to.
 const CATALOGUES: &[(&str, &str)] = &[
-    (
-        "en",
-        include_str!("../../../omniphony-studio/src/i18n/en.json"),
-    ),
-    (
-        "fr",
-        include_str!("../../../omniphony-studio/src/i18n/fr.json"),
-    ),
-    (
-        "de",
-        include_str!("../../../omniphony-studio/src/i18n/de.json"),
-    ),
-    (
-        "ja",
-        include_str!("../../../omniphony-studio/src/i18n/ja.json"),
-    ),
-    (
-        "es",
-        include_str!("../../../omniphony-studio/src/i18n/es.json"),
-    ),
-    (
-        "it",
-        include_str!("../../../omniphony-studio/src/i18n/it.json"),
-    ),
-    (
-        "pt-BR",
-        include_str!("../../../omniphony-studio/src/i18n/pt-BR.json"),
-    ),
-    (
-        "zh-CN",
-        include_str!("../../../omniphony-studio/src/i18n/zh-CN.json"),
-    ),
+    ("en", include_str!("../../i18n/en.json")),
+    ("fr", include_str!("../../i18n/fr.json")),
+    ("de", include_str!("../../i18n/de.json")),
+    ("ja", include_str!("../../i18n/ja.json")),
+    ("es", include_str!("../../i18n/es.json")),
+    ("it", include_str!("../../i18n/it.json")),
+    ("pt-BR", include_str!("../../i18n/pt-BR.json")),
+    ("zh-CN", include_str!("../../i18n/zh-CN.json")),
 ];
 
 /// Which catalogue `t` reads. An index rather than a name, so resolving a key
 /// costs an atomic load and a hash lookup.
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
+fn parse_catalogue(json: &str) -> Result<HashMap<String, String>, serde_json::Error> {
+    serde_json::from_str(json)
+}
+
 /// Every catalogue, parsed once and merged over English.
 fn catalogues() -> &'static Vec<HashMap<String, String>> {
     static ALL: OnceLock<Vec<HashMap<String, String>>> = OnceLock::new();
     ALL.get_or_init(|| {
         let parse = |name: &str, json: &str| {
-            serde_json::from_str::<HashMap<String, String>>(json).unwrap_or_else(|e| {
+            parse_catalogue(json).unwrap_or_else(|e| {
                 log::error!("[i18n] {name}.json: {e}");
                 HashMap::new()
             })
@@ -115,8 +94,14 @@ pub fn active_locale() -> &'static str {
 /// catalogues — Brazilian Portuguese and simplified Chinese — so those are
 /// matched on the full tag and everything else on the language alone.
 fn detect_system_locale() -> String {
+    locale_from(|key| std::env::var(key).ok())
+}
+
+/// [`detect_system_locale`] over any variable lookup, so its rules are tested
+/// without touching the process environment.
+fn locale_from(var: impl Fn(&str) -> Option<String>) -> String {
     for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        let Ok(value) = std::env::var(key) else {
+        let Some(value) = var(key) else {
             continue;
         };
         let tag = value
@@ -194,6 +179,7 @@ pub fn tf(key: &str, values: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn a_missing_key_is_leaked_once_not_once_per_call() {
@@ -227,13 +213,98 @@ mod tests {
         let all = catalogues();
         assert_eq!(all.len(), CATALOGUES.len());
         for (index, (name, _)) in CATALOGUES.iter().enumerate() {
-            assert!(
-                all[index].len() >= all[0].len(),
-                "{name} lost keys English has"
-            );
-            // The fallback is what makes a partial translation usable: every
-            // key English knows must resolve in every locale.
+            // Probe the runtime maps as well as the raw catalogue gate below.
             assert!(all[index].contains_key("app.title"), "{name}");
+        }
+    }
+
+    fn placeholders(value: &str) -> BTreeSet<&str> {
+        value
+            .split('{')
+            .skip(1)
+            .filter_map(|tail| tail.split_once('}').map(|(name, _)| name))
+            .collect()
+    }
+
+    fn catalogue_structure_errors(
+        english: &HashMap<String, String>,
+        translated: &HashMap<String, String>,
+    ) -> Vec<String> {
+        let mut errors = Vec::new();
+        for (key, source) in english {
+            match translated.get(key) {
+                None => errors.push(format!("{key} (missing translation)")),
+                Some(value) => {
+                    let expected = placeholders(source);
+                    let actual = placeholders(value);
+                    if expected != actual {
+                        errors.push(format!(
+                            "{key} (placeholders: expected {expected:?}, found {actual:?})"
+                        ));
+                    }
+                }
+            }
+        }
+        for key in translated.keys() {
+            if !english.contains_key(key) {
+                errors.push(format!("{key} (absent from en.json)"));
+            }
+        }
+        errors.sort();
+        errors
+    }
+
+    #[test]
+    fn every_catalogue_matches_english_structure() {
+        // Read the raw catalogues: catalogues() merges in English, hiding
+        // missing translations. With every locale complete, the ratchet is
+        // simply zero missing keys; there is no debt baseline to maintain.
+        let parse = |name: &str, json: &str| {
+            parse_catalogue(json).unwrap_or_else(|error| panic!("{name}.json: {error}"))
+        };
+        let english = parse(CATALOGUES[0].0, CATALOGUES[0].1);
+        let mut errors = Vec::new();
+        for (name, json) in &CATALOGUES[1..] {
+            let translated = parse(name, json);
+            errors.extend(
+                catalogue_structure_errors(&english, &translated)
+                    .into_iter()
+                    .map(|error| format!("{name}.json: {error}")),
+            );
+        }
+        assert!(
+            errors.is_empty(),
+            "Every i18n catalogue must match en.json's keys and placeholders:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_structure_gate_rejects_missing_and_orphaned_keys() {
+        let english = parse_catalogue(r#"{"kept":"Title", "missing":"Message"}"#).unwrap();
+        let translated = parse_catalogue(r#"{"kept":"Titel", "orphan":"Nachricht"}"#).unwrap();
+        assert_eq!(
+            catalogue_structure_errors(&english, &translated),
+            [
+                "missing (missing translation)",
+                "orphan (absent from en.json)"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_structure_gate_checks_placeholder_sets() {
+        let english = HashMap::from([("status".into(), "Error: {error} at {path}".into())]);
+        for (value, valid) in [
+            ("Fehler bei {path}", false),
+            ("{fehler} bei {path}", false),
+            ("{error} bei {path}: {extra}", false),
+            ("{path}：エラー {error}", true),
+            ("{path}：{error}（{error}）", true),
+        ] {
+            let translated = HashMap::from([("status".into(), value.into())]);
+            let errors = catalogue_structure_errors(&english, &translated);
+            assert_eq!(errors.is_empty(), valid, "{value:?}: {errors:?}");
         }
     }
 
@@ -251,19 +322,25 @@ mod tests {
 
     #[test]
     fn the_two_region_sensitive_tags_are_matched_on_the_full_tag() {
+        let lc_all =
+            |value: &'static str| locale_from(move |k| (k == "LC_ALL").then(|| value.into()));
         // Region matters for exactly these two catalogues.
-        unsafe { std::env::set_var("LC_ALL", "pt_BR.UTF-8") };
-        assert_eq!(detect_system_locale(), "pt-BR");
-        unsafe { std::env::set_var("LC_ALL", "zh_CN.UTF-8") };
-        assert_eq!(detect_system_locale(), "zh-CN");
+        assert_eq!(lc_all("pt_BR.UTF-8"), "pt-BR");
+        assert_eq!(lc_all("zh_CN.UTF-8"), "zh-CN");
         // Everything else matches on the language alone.
-        unsafe { std::env::set_var("LC_ALL", "fr_CA.UTF-8") };
-        assert_eq!(detect_system_locale(), "fr");
+        assert_eq!(lc_all("fr_CA.UTF-8"), "fr");
         // The C locale says nothing about a language.
-        unsafe { std::env::set_var("LC_ALL", "C") };
-        unsafe { std::env::remove_var("LC_MESSAGES") };
-        unsafe { std::env::remove_var("LANG") };
-        assert_eq!(detect_system_locale(), "en");
-        unsafe { std::env::remove_var("LC_ALL") };
+        assert_eq!(lc_all("C"), "en");
+    }
+
+    #[test]
+    fn a_silent_variable_defers_to_the_next_one() {
+        let vars = |k: &str| match k {
+            "LC_ALL" => Some("C".to_owned()),
+            "LANG" => Some("de_DE.UTF-8".to_owned()),
+            _ => None,
+        };
+        assert_eq!(locale_from(vars), "de");
+        assert_eq!(locale_from(|_| None), "en");
     }
 }

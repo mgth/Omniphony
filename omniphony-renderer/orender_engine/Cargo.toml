@@ -1,34 +1,58 @@
 [package]
 name = "orender_engine"
-version = "0.2.3"
-edition = "2024"
-license = "GPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Headless decode→render engine for the orender spatial audio renderer (host-agnostic, no audio I/O)"
-repository = "https://github.com/mgth/Omniphony"
+repository.workspace = true
 
 [dependencies]
-renderer = { version = "0.2.4", path = "../renderer" }
-# Demonstration render backend, registered at startup to prove the open backend
-# frontier end-to-end. A real deployment would register/discover backends here.
-example_backend = { path = "../example_backend" }
+renderer.workspace = true
+# Demonstration render backend: the starting point contributors copy. Only
+# built and registered with the `example-backend` feature, so release builds
+# don't ship (or offer in Studio) a backend nobody should render with.
+example_backend = { workspace = true, optional = true }
 # User-scriptable (Lua) render backend, registered at startup.
-script_backend = { path = "../script_backend" }
-omniphony-geometry = { version = "0.1.0", path = "../omniphony-geometry" }
-bridge_api = { version = "0.4.0", path = "../bridge_api" }
-runtime_control = { version = "0.2.4", path = "../runtime_control" }
-sys = { version = "0.1.0", path = "../sys" }
+script_backend.workspace = true
+omniphony_geometry.workspace = true
+bridge_api.workspace = true
+runtime_control.workspace = true
+# The wire contract's names (the `bridge_error` marker a client matches on).
+omniphony-osc-contract.workspace = true
+sys.workspace = true
+live_log.workspace = true
 # Audio output/input belong to the host_audio crate and reach the OSC server
 # via runtime_control::HostControlHandler — never a dependency of this engine
 # so liborender cross-compiles without cpal/pipewire/asio.
-abi_stable = "0.11"
-anyhow = "1.0"
-log = "0.4"
-rosc = "0.11"
-serde_json = "1.0"
+abi_stable.workspace = true
+anyhow.workspace = true
+log.workspace = true
+rosc.workspace = true
+# The wait-free queue the render path hands its OSC telemetry over (#670).
+# Pure Rust, no system library: safe for the liborender cdylib.
+rtrb = "0.4"
+serde_json.workspace = true
+# The OSC sockets' send buffer, which std cannot set (see osc::transport).
+# Pure Rust over libc / windows-sys, no system library: safe for the
+# liborender cdylib and its cross builds.
+socket2.workspace = true
 # Real-input FFT for the DirAC diffuse→height object generator (pure Rust, no
 # system deps — safe for the liborender cdylib). Already in the workspace lock.
-realfft = "3.5"
+realfft.workspace = true
 
 [features]
 # Personalised HRTF loading (SOFA files) in the binaural stage.
 sofa = ["renderer/sofa"]
+# Register the demonstration backend (`backend_id = "example"`), for contributors
+# trying the render-backend frontier end to end. Off in release builds.
+example-backend = ["dep:example_backend"]
+
+[dev-dependencies]
+# Shared renderer fixtures (`renderer::test_support`).
+renderer = { workspace = true, features = ["test-support"] }
+# Parses the hostile config.yaml texts of the boot-path test.
+serde_yaml_ng.workspace = true
+# Not linked by the tests: depending on it makes `cargo test` build its cdylib,
+# the bridge the tests under tests/ load when no other one is given.
+reference_bridge.workspace = true

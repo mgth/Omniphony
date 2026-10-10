@@ -66,6 +66,9 @@ pub const TRAIL_MIN_POINT_INTERVAL: Duration = Duration::from_millis(70);
 pub const TRAIL_MAX_POINTS: usize = 240;
 
 /// The whole live model: the host's `AppState` plus the UI-only mirrors.
+/// How long the same control refusal stays one log line.
+const CONTROL_ERROR_REPEAT: Duration = Duration::from_secs(10);
+
 pub struct Live {
     pub diagnostics: crate::host::diagnostics::History,
     pub backend_file_pending: Option<crate::host::services::backend_files::Pending>,
@@ -96,8 +99,16 @@ pub struct Live {
     pub overlay: Option<serde_json::Value>,
     pub object_test_position: Option<ObjectTestPosition>,
     pub options_schema: Option<serde_json::Value>,
-    pub object_generators_schema: Option<serde_json::Value>,
-    pub phantom_schema: Option<serde_json::Value>,
+    /// The options the standalone renderer's host declares
+    /// (`/state/host_options`: `options`, `applied`, `pending`). `None` for
+    /// the embedded engine, which declares none.
+    pub host_options: Option<serde_json::Value>,
+    /// The object generators' listings (`/state/object_generators`): `[{ id,
+    /// label, i18nKey?, params: [ParamSpec] }]`, the format of the backends'
+    /// `availableBackends`.
+    pub object_generator_listings: Option<serde_json::Value>,
+    /// The phantom stage's listing (`/state/phantom`), in the same format.
+    pub phantom_listing: Option<serde_json::Value>,
     pub drc_gain: Option<f64>,
     pub ear_levels: HashMap<String, Meter>,
     /// Last clip report: speaker index and when it arrived.
@@ -124,6 +135,10 @@ pub struct Live {
     /// When the last spatial frame arrived. The channel editor's at-rest
     /// markers stand down while a stream owns the scene.
     pub last_spatial_frame_at: Option<Instant>,
+    /// How far the scene runs behind the render while it follows the sound
+    /// (`osc::playout`): `None` when it does not — switched off, or no heard
+    /// position from the renderer.
+    pub playout_delay: Option<std::time::Duration>,
     /// The family the channel editor and the at-rest markers show. Follows
     /// the family of a stream when one starts (`followed_family` remembers
     /// which, so a tab picked while it plays is not overridden on the next
@@ -138,6 +153,11 @@ pub struct Live {
     pub peak_hold_db: HashMap<String, f64>,
     /// Log ring shown by the log overlay (`src/log.js`, 120 entries).
     pub log: VecDeque<LogLine>,
+    /// Whether the state held is the engine's, by its state generation.
+    pub state_sync: crate::osc::state_sync::StateSync,
+    /// The last control refusal logged, so a control re-sent on a timer is
+    /// logged once and not once per send.
+    last_control_error: Option<(String, String, Instant)>,
     /// Set while a config save is in flight (`app.saveRequested`).
     pub save_requested: bool,
     /// Where the release check is up to.
@@ -292,7 +312,80 @@ impl std::ops::DerefMut for Live {
     }
 }
 
+/// A `staged` group of declared options (`/state/options_schema`): its
+/// writes wait for an apply. What a generic Apply button needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedGroup {
+    /// The group key (`/control/options/apply` takes it).
+    pub key: String,
+    /// The i18n key of its title.
+    pub i18n_key: String,
+    /// Whether it holds staged values not applied yet (`pending` in
+    /// `/state/host_options`).
+    pub pending: bool,
+}
+
 impl Live {
+    /// The `staged` groups the schema declares, in schema order, each with
+    /// its pending flag. Read from the schema, not from a list in Studio: a
+    /// group a newer renderer stages gets its Apply button without a Studio
+    /// change.
+    pub fn staged_groups(&self) -> Vec<StagedGroup> {
+        let mut groups: Vec<StagedGroup> = Vec::new();
+        let specs = self
+            .options_schema
+            .as_ref()
+            .and_then(|s| s.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for group in specs.iter().filter_map(|spec| spec.get("group")) {
+            if group.get("mode").and_then(|m| m.as_str()) != Some("staged") {
+                continue;
+            }
+            let Some(key) = group.get("key").and_then(|k| k.as_str()) else {
+                continue;
+            };
+            if groups.iter().any(|g| g.key == key) {
+                continue;
+            }
+            let pending = self
+                .host_options
+                .as_ref()
+                .and_then(|h| h.get("pending"))
+                .and_then(|p| p.get(key))
+                .and_then(|p| p.as_bool())
+                .unwrap_or(false);
+            groups.push(StagedGroup {
+                key: key.to_owned(),
+                i18n_key: group
+                    .get("i18nKey")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                pending,
+            });
+        }
+        groups
+    }
+
+    /// One `staged` group by key, if the schema declares it.
+    pub fn staged_group(&self, key: &str) -> Option<StagedGroup> {
+        self.staged_groups().into_iter().find(|g| g.key == key)
+    }
+
+    /// Clear a group's pending flag the moment its apply goes out, so the
+    /// button does not offer a second click before the renderer's echo.
+    pub fn clear_group_pending(&mut self, key: &str) {
+        if let Some(pending) = self
+            .host_options
+            .as_mut()
+            .and_then(|h| h.get_mut("pending"))
+            .and_then(|p| p.as_object_mut())
+        {
+            pending.insert(key.to_owned(), serde_json::Value::Bool(false));
+        }
+    }
+
     /// One declared live option, falling back to the published schema's
     /// default when the renderer has not sent a snapshot yet
     /// (`getLiveOption`).
@@ -327,6 +420,20 @@ impl Live {
     }
 
     #[allow(dead_code)] // used by the bool options of panels not ported yet
+    /// Whether the connected renderer declares `key` in its options schema,
+    /// so a write to it is taken. `false` before the schema arrives and for
+    /// an option the renderer does not know.
+    pub fn declares_option(&self, key: &str) -> bool {
+        self.options_schema
+            .as_ref()
+            .and_then(|s| s.as_array())
+            .is_some_and(|specs| {
+                specs
+                    .iter()
+                    .any(|spec| spec.get("key").and_then(|k| k.as_str()) == Some(key))
+            })
+    }
+
     pub fn option_bool(&self, key: &str) -> Option<bool> {
         self.option(key).and_then(|v| v.as_bool())
     }
@@ -411,6 +518,8 @@ impl Live {
     pub fn new(app: AppState) -> Self {
         Self {
             app,
+            state_sync: Default::default(),
+            last_control_error: None,
             master_reported: false,
             source_level_seen: HashMap::new(),
             speaker_level_seen: HashMap::new(),
@@ -424,6 +533,7 @@ impl Live {
             overlay: None,
             object_test_position: None,
             last_spatial_frame_at: None,
+            playout_delay: None,
             editing_family: Default::default(),
             followed_family: None,
             stage_windows: std::array::from_fn(|_| TimeWindow::new(RENDER_TIME_WINDOW_MS)),
@@ -450,8 +560,9 @@ impl Live {
             backend_file_pending: None,
             backend_file_error: None,
             options_schema: None,
-            object_generators_schema: None,
-            phantom_schema: None,
+            host_options: None,
+            object_generator_listings: None,
+            phantom_listing: None,
             drc_gain: None,
             ear_levels: HashMap::new(),
             clip: None,
@@ -464,8 +575,13 @@ impl Live {
         }
     }
 
-    /// The speakers of the layout the renderer currently runs.
+    /// The speakers of the layout the renderer currently runs: a BRIR set's
+    /// own loudspeakers while a headphone render uses one, else the selected
+    /// layout's.
     pub fn selected_speakers(&self) -> &[Speaker] {
+        if let Some(speakers) = &self.app.brir_speakers {
+            return speakers;
+        }
         let key = self.app.selected_layout_key.as_deref();
         self.app
             .layouts
@@ -792,6 +908,9 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             live.app.osc_metering_enabled = Some(u8::from(enabled));
             Change::None
         }
+        // The diag plot re-sends its subscription while it is open, so the
+        // engine's echo of it has nothing to correct.
+        OscEvent::StateOscDiag { .. } => Change::None,
         OscEvent::StateCapabilities { value } => {
             let Ok(caps) = serde_json::from_str(&value) else {
                 return Change::None;
@@ -880,6 +999,47 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             live.app.osc_snapshot_ready = true;
             Change::Snapshot
         }
+        OscEvent::StateGeneration {
+            generation,
+            full,
+            part,
+            parts,
+        } => {
+            if full {
+                live.state_sync.on_snapshot_part(generation, part, parts);
+            } else {
+                live.state_sync.on_update(generation);
+            }
+            Change::None
+        }
+        OscEvent::StateControlError {
+            address,
+            code,
+            message,
+        } => {
+            // In the log rather than a dialog: a control that does nothing is
+            // what this replaces, and the log line says which and why.
+            let now = Instant::now();
+            let repeated = live.last_control_error.as_ref().is_some_and(|(a, c, at)| {
+                *a == address && *c == code && now.duration_since(*at) < CONTROL_ERROR_REPEAT
+            });
+            live.last_control_error = Some((address.clone(), code.clone(), now));
+            if repeated {
+                return Change::None;
+            }
+            let address = if address.is_empty() {
+                "(undecodable)"
+            } else {
+                address.as_str()
+            };
+            log::warn!("[osc] control not applied: {address}: {message} ({code})");
+            live.push_log(
+                "warn",
+                "control",
+                format!("{address} not applied: {message} ({code})"),
+            );
+            Change::Snapshot
+        }
         OscEvent::StateLatency { value } => {
             live.app.set_latency_value(value);
             Change::None
@@ -944,16 +1104,20 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             Change::Scene
         }
         OscEvent::StateObjectGenerators { value } => {
-            live.object_generators_schema = serde_json::from_str(&value).ok();
+            live.object_generator_listings = serde_json::from_str(&value).ok();
             Change::None
         }
         OscEvent::StatePhantom { value } => {
-            live.phantom_schema = serde_json::from_str(&value).ok();
+            live.phantom_listing = serde_json::from_str(&value).ok();
             Change::None
         }
         OscEvent::StateOptionsSchema { value } => {
             live.options_schema = serde_json::from_str(&value).ok();
             Change::None
+        }
+        OscEvent::StateHostOptions { value } => {
+            live.host_options = serde_json::from_str(&value).ok();
+            Change::Snapshot
         }
         OscEvent::StateObjectTestPosition {
             x,
@@ -1029,9 +1193,19 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             live.app.render_abi = non_empty(value);
             Change::None
         }
+        OscEvent::StateRenderBridgeApi { value } => {
+            live.app.render_bridge_api = non_empty(value);
+            Change::None
+        }
         OscEvent::StateRenderBridgeError { value } => {
             live.app.render_bridge_error = non_empty(value);
             Change::None
+        }
+        OscEvent::StateRenderBridges { value } => {
+            live.app.render_bridges = serde_json::from_str(&value).ok();
+            // The Input panel draws the list: a change another client made,
+            // or the restart's new status, must show without other traffic.
+            Change::Snapshot
         }
 
         // ── panels: renderer evaluation grid ──────────────────────────────
@@ -1069,6 +1243,11 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             live.app.vbap_polar.distance_max = (value > 0.0).then_some(value);
             Change::Snapshot
         }
+        OscEvent::StateRenderEvaluationObjectSizeIntervals { value } => {
+            let changed = live.app.object_size_intervals != value;
+            live.app.object_size_intervals = value;
+            snapshot_if(changed)
+        }
         OscEvent::StateRenderEvaluationPositionInterpolation { enabled } => {
             live.app.vbap_polar.position_interpolation = Some(enabled);
             Change::Snapshot
@@ -1101,11 +1280,14 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateConfigSaveError { message } => {
             let message = non_empty(message);
+            // An empty error is the renderer clearing the last one as a save
+            // *starts*: the answer is the `saved` that follows, so the save
+            // stays pending until then.
             if let Some(text) = &message {
                 live.push_log("error", "config", text.clone());
+                live.save_requested = false;
             }
             live.app.save_error = message;
-            live.save_requested = false;
             Change::Snapshot
         }
 
@@ -1264,6 +1446,122 @@ mod panel_event_tests {
         Live::new(AppState::new(Vec::new()))
     }
 
+    /// A renderer that does not declare an option refuses a write to it, so
+    /// the schema decides whether its control is offered: a value in the
+    /// snapshot is not enough (an older standalone renderer publishes
+    /// `decode_thread` there and still refuses it).
+    #[test]
+    fn an_option_is_declared_by_the_schema_not_by_the_snapshot() {
+        let mut live = live();
+        live.app.options = Some(serde_json::json!({"decode_thread": false}));
+        assert!(!live.declares_option("decode_thread"));
+        live.options_schema = Some(serde_json::json!([{"key": "auto_gain"}]));
+        assert!(!live.declares_option("decode_thread"));
+        live.options_schema = Some(serde_json::json!([
+            {"key": "auto_gain"},
+            {"key": "decode_thread", "flags": ["embedded_only"]}
+        ]));
+        assert!(live.declares_option("decode_thread"));
+    }
+
+    /// The renderer refuses to write a file it could not parse or a newer
+    /// build wrote; a Reload of the fixed file publishes `loaded` and lifts
+    /// the refusal (and the Studio banner that shows it).
+    #[test]
+    fn the_config_refusal_follows_the_published_status() {
+        use crate::model::app_state::ConfigRefusal;
+        let mut l = live();
+        let status = |value: &str| OscEvent::StateRenderConfigStatus {
+            value: value.to_owned(),
+        };
+        assert_eq!(l.app.config_refusal(), None);
+        apply_event(&mut l, status("parse_error"));
+        assert_eq!(l.app.config_refusal(), Some(ConfigRefusal::ParseError));
+        apply_event(&mut l, status("loaded"));
+        assert_eq!(l.app.config_refusal(), None);
+        apply_event(&mut l, status("newer_schema"));
+        assert_eq!(l.app.config_refusal(), Some(ConfigRefusal::NewerSchema));
+        // A missing file runs on defaults too, but there is nothing to refuse:
+        // the first Save creates it.
+        apply_event(&mut l, status("missing"));
+        assert_eq!(l.app.config_refusal(), None);
+        apply_event(&mut l, status(""));
+        assert_eq!(l.app.config_refusal(), None);
+    }
+
+    /// The engine's bridge list: a loaded entry carries its families, a
+    /// failed one its error and no families; anything unreadable is no list.
+    #[test]
+    fn the_bridge_list_is_read_from_its_json() {
+        use crate::model::app_state::{RenderBridge, RenderBridges};
+        let mut l = live();
+        let change = apply_event(
+            &mut l,
+            OscEvent::StateRenderBridges {
+                value: r#"{"requested":["/a.so","/b.so"],"bridges":[
+                    {"path":"/a.so","families":["dts"]},
+                    {"path":"/b.so","error":"does not exist"}]}"#
+                    .to_owned(),
+            },
+        );
+        assert_eq!(change, Change::Snapshot);
+        assert_eq!(
+            l.app.render_bridges,
+            Some(RenderBridges {
+                requested: vec!["/a.so".into(), "/b.so".into()],
+                bridges: vec![
+                    RenderBridge {
+                        path: "/a.so".into(),
+                        families: vec!["dts".into()],
+                        error: None,
+                    },
+                    RenderBridge {
+                        path: "/b.so".into(),
+                        families: Vec::new(),
+                        error: Some("does not exist".into()),
+                    },
+                ],
+            })
+        );
+        apply_event(
+            &mut l,
+            OscEvent::StateRenderBridges {
+                value: "not json".to_owned(),
+            },
+        );
+        assert_eq!(l.app.render_bridges, None);
+    }
+
+    /// The Input panel marks the bridge decoding the stream from the
+    /// playing family and the bridge list: a change of either repaints.
+    #[test]
+    fn the_decoding_bridge_inputs_repaint() {
+        let mut l = live();
+        let renderer = |stream: &str, family: &str| OscEvent::StateRenderer {
+            value: serde_json::json!({
+                "fixedChannelProcessing": { "stream": stream, "family": family }
+            })
+            .to_string(),
+        };
+        assert_eq!(
+            apply_event(&mut l, renderer("fixed", "dts")),
+            Change::Snapshot
+        );
+        assert_eq!(
+            crate::host::channels::playing_family(&l.app),
+            Some(crate::host::channels::Family::named("dts"))
+        );
+        assert_eq!(
+            apply_event(&mut l, renderer("idle", "dts")),
+            Change::Snapshot
+        );
+        assert_eq!(crate::host::channels::playing_family(&l.app), None);
+        let bridges = OscEvent::StateRenderBridges {
+            value: r#"{"requested":[],"bridges":[{"path":"/a.so","families":["dts"]}]}"#.to_owned(),
+        };
+        assert_eq!(apply_event(&mut l, bridges), Change::Snapshot);
+    }
+
     #[test]
     fn evaluation_sizes_treat_zero_as_unset_except_the_negative_z_one() {
         let mut l = live();
@@ -1315,6 +1613,25 @@ mod panel_event_tests {
         assert_eq!(l.app.save_error.as_deref(), Some("read-only"));
         assert_eq!(l.log.len(), 1);
         assert_eq!(l.log[0].level, LogLevel::Error);
+    }
+
+    /// The renderer clears the last error as a save starts, before it writes
+    /// the file: that is not the answer, and taking it for one sent "save and
+    /// quit" back to its prompt.
+    #[test]
+    fn the_error_cleared_as_a_save_starts_keeps_it_pending() {
+        let mut l = live();
+        l.save_requested = true;
+        l.app.save_error = Some("read-only".to_owned());
+        apply_event(
+            &mut l,
+            OscEvent::StateConfigSaveError {
+                message: String::new(),
+            },
+        );
+        assert!(l.save_requested);
+        assert_eq!(l.app.save_error, None);
+        assert!(l.log.is_empty());
     }
 
     #[test]

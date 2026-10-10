@@ -63,60 +63,102 @@ const FALLBACK_BED: &[(&str, f64, f64, f64, bool, (f64, f64))] = &[
 // Families and modes
 // ---------------------------------------------------------------------------
 
-/// A source family, as the renderer's placement policy knows it
-/// (`renderer::placement::SourceFamily`): the format a stream comes from.
-/// `Generic` is the base the others inherit from, and what an undeclared
-/// format gets.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
-pub enum Family {
-    #[default]
-    Generic,
-    Dolby,
-    Dts,
-    Auro,
-    Pcm,
+/// A source family, by the name the renderer publishes
+/// (`placementFamilies`). Studio knows no format by name: the renderer's
+/// table holds its own families and the loaded bridge's, and this only
+/// carries one of those names — plus the generic family, the base the others
+/// inherit from, which every renderer has.
+///
+/// Names are interned (a handful per process, kept for its life), so a
+/// family stays `Copy` and comparing two is cheap.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub struct Family(&'static str);
+
+impl Default for Family {
+    fn default() -> Self {
+        Self::GENERIC
+    }
 }
 
 impl Family {
-    pub const ALL: [Family; 5] = [Self::Generic, Self::Dolby, Self::Dts, Self::Auro, Self::Pcm];
+    pub const GENERIC: Family = Family("generic");
+
+    /// The family of that name, case-insensitive.
+    pub fn named(name: &str) -> Self {
+        static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+        let name = name.trim();
+        if name.eq_ignore_ascii_case(Self::GENERIC.0) {
+            return Self::GENERIC;
+        }
+        let mut names = NAMES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(known) = names.iter().find(|known| known.eq_ignore_ascii_case(name)) {
+            return Self(known);
+        }
+        let interned: &'static str = Box::leak(name.to_ascii_lowercase().into_boxed_str());
+        names.push(interned);
+        Self(interned)
+    }
 
     /// The wire name, as the renderer's controls and snapshot spell it.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Generic => "generic",
-            Self::Dolby => "dolby",
-            Self::Dts => "dts",
-            Self::Auro => "auro",
-            Self::Pcm => "pcm",
-        }
+        self.0
     }
 
-    pub fn parse(s: &str) -> Option<Self> {
-        let s = s.trim();
-        Self::ALL
-            .into_iter()
-            .find(|f| f.as_str().eq_ignore_ascii_case(s))
+    pub fn is_generic(self) -> bool {
+        self == Self::GENERIC
     }
+}
 
-    /// The Studio string naming the family.
-    pub fn i18n_key(self) -> &'static str {
-        match self {
-            Self::Generic => "placement.family.generic",
-            Self::Dolby => "placement.family.dolby",
-            Self::Dts => "placement.family.dts",
-            Self::Auro => "placement.family.auro",
-            Self::Pcm => "placement.family.pcm",
-        }
+/// The families to offer, in the renderer's order: its `placementFamilies`,
+/// else (a renderer from before the list) the families its `placement`
+/// block reports, generic first; offline, the generic family alone.
+pub fn families(app: &AppState) -> Vec<Family> {
+    if let Some(names) = app.live_options.placement_families.as_ref() {
+        return names.iter().map(|name| Family::named(name)).collect();
     }
+    let mut families = vec![Family::GENERIC];
+    if let Some(blocks) = app
+        .live_options
+        .placement
+        .as_ref()
+        .and_then(|p| p.as_object())
+    {
+        families.extend(
+            blocks
+                .keys()
+                .map(|name| Family::named(name))
+                .filter(|family| !family.is_generic()),
+        );
+    }
+    families
+}
 
-    /// The renderer's built-in default when neither the family nor the
-    /// generic one sets a mode: Auro-3D is a sphere, the rest a room.
-    fn builtin_mode(self) -> PlacementMode {
-        match self {
-            Self::Auro => PlacementMode::Sphere,
-            _ => PlacementMode::Room,
-        }
+/// What to call a family: the renderer's label for it (the bridge's, for
+/// a bridge family), the name when it states none. The generic family is
+/// Studio's own word, translated.
+pub fn family_label(app: &AppState, family: Family) -> String {
+    if family.is_generic() {
+        return crate::i18n::t("placement.family.generic").to_owned();
     }
+    placement_block(app, family)
+        .and_then(|block| block.get("label"))
+        .and_then(|label| label.as_str())
+        .filter(|label| !label.trim().is_empty())
+        .unwrap_or(family.as_str())
+        .to_owned()
+}
+
+/// The mode a family runs in on speakers when neither it nor the generic
+/// family sets one, as the renderer reports it (`defaultMode`): room when it
+/// says nothing.
+fn default_mode(app: &AppState, family: Family) -> PlacementMode {
+    placement_block(app, family)
+        .and_then(|block| block.get("defaultMode"))
+        .and_then(|mode| mode.as_str())
+        .and_then(PlacementMode::parse)
+        .unwrap_or(PlacementMode::Room)
 }
 
 /// How a family's fixed channels are placed (`renderer::placement::PlacementMode`).
@@ -154,6 +196,20 @@ impl PlacementMode {
     }
 }
 
+/// Why a family runs in the mode it does (`modeSource`), in the order the
+/// renderer's rule looks (`renderer::placement::PlacementState::resolve_mode`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModeSource {
+    /// The family's own choice.
+    Own,
+    /// The generic family's choice, inherited.
+    Generic,
+    /// Nobody chose, and the output is headphones: Sphere.
+    Headphones,
+    /// Nobody chose, and the output is speakers: the family's default.
+    Family,
+}
+
 /// Whose entries a family uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LayoutSource {
@@ -173,6 +229,7 @@ pub struct FamilyPlacement {
     /// The family's own mode, `None` when it inherits.
     pub own_mode: Option<PlacementMode>,
     pub effective_mode: PlacementMode,
+    pub mode_source: ModeSource,
     pub layout_source: LayoutSource,
 }
 
@@ -198,14 +255,34 @@ fn own_speakers(app: &AppState, family: Family) -> Option<&Vec<serde_json::Value
         .as_array()
 }
 
+/// Whether the renderer defaults a family nobody chose a mode for by output
+/// (Sphere on headphones): it says why a family runs in its mode
+/// (`modeSource`). A renderer from before that gives every such family its
+/// `defaultMode`, headphones included, and Studio must show and edit what
+/// that renderer plays.
+fn resolves_by_output(app: &AppState, family: Family) -> bool {
+    placement_block(app, family).is_some_and(|block| block.get("modeSource").is_some())
+}
+
 pub fn family_placement(app: &AppState, family: Family) -> FamilyPlacement {
     let own = own_mode(app, family);
-    let effective_mode = own
-        .or_else(|| own_mode(app, Family::Generic))
-        .unwrap_or_else(|| family.builtin_mode());
+    let headphones = app
+        .binaural
+        .as_ref()
+        .and_then(|b| b.get("outputMode"))
+        .and_then(|v| v.as_str())
+        == Some("binaural");
+    let (effective_mode, mode_source) = match (own, own_mode(app, Family::GENERIC)) {
+        (Some(mode), _) => (mode, ModeSource::Own),
+        (None, Some(mode)) => (mode, ModeSource::Generic),
+        (None, None) if headphones && resolves_by_output(app, family) => {
+            (PlacementMode::Sphere, ModeSource::Headphones)
+        }
+        (None, None) => (default_mode(app, family), ModeSource::Family),
+    };
     let layout_source = if own_speakers(app, family).is_some() {
         LayoutSource::Own
-    } else if own_speakers(app, Family::Generic).is_some() || legacy_bed_speakers(app).is_some() {
+    } else if own_speakers(app, Family::GENERIC).is_some() || legacy_bed_speakers(app).is_some() {
         LayoutSource::Generic
     } else {
         LayoutSource::None
@@ -213,6 +290,7 @@ pub fn family_placement(app: &AppState, family: Family) -> FamilyPlacement {
     FamilyPlacement {
         own_mode: own,
         effective_mode,
+        mode_source,
         layout_source,
     }
 }
@@ -221,7 +299,7 @@ pub fn family_placement(app: &AppState, family: Family) -> FamilyPlacement {
 /// legacy single bed a renderer from before placement reports.
 pub fn family_speakers(app: &AppState, family: Family) -> Option<&Vec<serde_json::Value>> {
     own_speakers(app, family)
-        .or_else(|| own_speakers(app, Family::Generic))
+        .or_else(|| own_speakers(app, Family::GENERIC))
         .or_else(|| legacy_bed_speakers(app))
 }
 
@@ -244,7 +322,7 @@ pub fn playing_family(app: &AppState) -> Option<Family> {
     processing
         .get("family")
         .and_then(|f| f.as_str())
-        .and_then(Family::parse)
+        .map(Family::named)
 }
 
 /// Normalise a channel name exactly like `bridge_api::labels`: drop whitespace,
@@ -310,9 +388,9 @@ impl ChannelCatalog {
             .flatten()
             .filter_map(|v| v.as_str())
             .chain(
-                Family::ALL
-                    .iter()
-                    .flat_map(|&family| own_speakers(app, family).into_iter().flatten())
+                families(app)
+                    .into_iter()
+                    .flat_map(|family| own_speakers(app, family).into_iter().flatten())
                     .chain(legacy_bed_speakers(app).into_iter().flatten())
                     .filter_map(|s| s.get("name").and_then(|v| v.as_str())),
             )
@@ -378,12 +456,20 @@ pub struct Channel {
 }
 
 /// Polar → ADM normalised cartesian, exactly like the speaker editor: the room
-/// warp is inverted and the result clamped. "Norm" is the ADM position, not a
-/// raw axis swizzle.
+/// warp is inverted, a position past a wall first drawn back along its own
+/// line so that the angle survives (the renderer's `angles_to_normalized`;
+/// a measured room can be lower than the entry's radius). "Norm" is the ADM
+/// position, not a raw axis swizzle.
 pub fn polar_to_adm(room: &RoomRatio, azimuth: f64, elevation: f64, distance: f64) -> [f64; 3] {
     use omniphony_geometry::f64 as g;
     let (x, y, z) = g::from_spherical(azimuth, elevation, distance);
-    g::inverse_room_scaled_position(
+    if room.sphere {
+        // The sphere reading hears every position through its own mapping:
+        // the pose is the room position it hears at this angle (the
+        // renderer's `OutputWarp::Sphere`).
+        return g::inverse_sphere_reading_direction([x, y, z]);
+    }
+    g::inverse_room_scaled_direction(
         [x, y, z],
         [room.width, room.length, room.height],
         room.rear,
@@ -396,6 +482,14 @@ pub fn polar_to_adm(room: &RoomRatio, azimuth: f64, elevation: f64, distance: f6
 /// room warp is re-applied, then the spherical form derived.
 pub fn adm_to_polar(room: &RoomRatio, adm: [f64; 3]) -> (f64, f64, f64) {
     use omniphony_geometry::f64 as g;
+    if room.sphere {
+        // Where the sphere reading hears the position, at its distance to
+        // the room's surface: the radius `polar_to_adm` takes back.
+        let read = g::sphere_reading(adm);
+        let (az, el, _) = g::to_spherical(read[0], read[1], read[2]);
+        let reach = adm[0].abs().max(adm[1].abs()).max(adm[2].abs());
+        return (az, el, reach.max(0.01));
+    }
     let scaled = g::room_scaled_position(
         adm,
         [room.width, room.length, room.height],
@@ -405,6 +499,22 @@ pub fn adm_to_polar(room: &RoomRatio, adm: [f64; 3]) -> (f64, f64, f64) {
     );
     let (az, el, dist) = g::to_spherical(scaled[0], scaled[1], scaled[2]);
     (az, el, dist.max(0.01))
+}
+
+/// The polar radius of `adm` in metres: what the polar table's metre field
+/// shows, and takes back as `metres / scale_m` for [`polar_to_adm`]. It is
+/// the radius [`adm_to_polar`] gives, at the frame's scale: the length of
+/// the room-warped position, or, under the sphere reading, the distance to
+/// the room's surface, which is the distance the binaural stage's cues
+/// measure. The length of [`adm_to_meters`] is the first only: under the
+/// sphere reading it is the room position's, and a field showing it read
+/// 0.71 m for the 0.50 m just typed into it.
+pub fn adm_polar_distance_m(room: &RoomRatio, adm: [f64; 3], scale_m: f64) -> f64 {
+    if room.sphere {
+        return adm_to_polar(room, adm).2 * scale_m;
+    }
+    let metres = adm_to_meters(room, adm, scale_m);
+    (metres[0] * metres[0] + metres[1] * metres[1] + metres[2] * metres[2]).sqrt()
 }
 
 /// Normalised ADM → Omniphony-axis metres, honouring the room geometry.
@@ -567,7 +677,12 @@ pub fn effective_channels_for(
     app: &AppState,
     family: Family,
 ) -> Vec<Channel> {
-    let room = &app.room_ratio;
+    // The room a pose is read in: the one the output renders in and the
+    // scene draws in (`AppState::display_room`), so a polar entry on the
+    // direct headphone path lands on its angle rather than being
+    // pre-compensated for a warp that path does not apply (#783's rule).
+    let room = app.display_room();
+    let room = &room;
     let mode = family_placement(app, family).effective_mode;
     let mut bases = catalog.bases.clone();
     let add_base = |name: &str, source: Option<&serde_json::Value>, bases: &mut Vec<Base>| {
@@ -797,6 +912,7 @@ mod tests {
             lower: 0.5,
             center_blend: 0.5,
             scale_m: 1.5,
+            sphere: false,
         }
     }
 
@@ -843,6 +959,115 @@ mod tests {
             for i in 0..3 {
                 assert!((back[i] - adm[i]).abs() < 1e-6, "{adm:?} -> {back:?}");
             }
+        }
+    }
+
+    /// While the renderer reads positions on the sphere (#773), a polar
+    /// entry is the room position heard at its angle, as the renderer stores
+    /// it: `L` at −30° is the room's front-left corner, and the top front
+    /// pair its upper front corners. The readout of a room position is the
+    /// angle it is heard at, at its distance to the room's surface.
+    #[test]
+    fn polar_entries_follow_the_sphere_reading() {
+        let sphere = RoomRatio {
+            sphere: true,
+            ..RoomRatio::unit(1.0)
+        };
+        let close = |a: [f64; 3], b: [f64; 3]| {
+            assert!(
+                (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-9),
+                "{a:?} is not {b:?}"
+            );
+        };
+        close(polar_to_adm(&sphere, -30.0, 0.0, 1.0), [-1.0, 1.0, 0.0]);
+        close(polar_to_adm(&sphere, 45.0, 45.0, 1.0), [1.0, 1.0, 1.0]);
+        close(polar_to_adm(&sphere, 135.0, 0.0, 0.5), [0.5, -0.5, 0.0]);
+        // Past the surface the entry is held on it, on its angle.
+        close(polar_to_adm(&sphere, -90.0, 0.0, 2.0), [-1.0, 0.0, 0.0]);
+        for (az, el, distance) in [(-30.0, 0.0, 1.0), (110.0, 30.0, 1.0), (-135.0, 45.0, 0.7)] {
+            let adm = polar_to_adm(&sphere, az, el, distance);
+            let (az_back, el_back, distance_back) = adm_to_polar(&sphere, adm);
+            assert!(
+                (az_back - az).abs() < 1e-6
+                    && (el_back - el).abs() < 1e-6
+                    && (distance_back - distance).abs() < 1e-9,
+                "{az}/{el}/{distance} read back {az_back}/{el_back}/{distance_back}"
+            );
+        }
+        // The cube reads the same corner at 45°.
+        let (az, ..) = adm_to_polar(&RoomRatio::unit(1.0), [-1.0, 1.0, 0.0]);
+        assert!((az + 45.0).abs() < 1e-9);
+    }
+
+    /// The polar table's metre field reads back the metres typed into it,
+    /// in every frame: the value is divided by the scale and taken as the
+    /// polar radius, so what is shown must be that radius at the scale.
+    /// Under the sphere reading the room position's own length is another
+    /// number: 0.50 m at −30° is the room point (−0.5, 0.5, 0), 0.71 long.
+    #[test]
+    fn the_polar_metre_distance_reads_back_what_was_entered() {
+        let frames = [
+            ("unit", RoomRatio::unit(1.0)),
+            ("live room", room()),
+            (
+                "sphere",
+                RoomRatio {
+                    sphere: true,
+                    ..RoomRatio::unit(1.0)
+                },
+            ),
+            (
+                "sphere at 2.5 m",
+                RoomRatio {
+                    sphere: true,
+                    ..RoomRatio::unit(2.5)
+                },
+            ),
+        ];
+        for (name, frame) in &frames {
+            let scale_m = frame.scale_m;
+            for (az, el, entered_m) in [(-30.0, 0.0, 0.5), (110.0, 20.0, 0.8), (45.0, 45.0, 0.3)] {
+                // The field's edit: metres over the scale, as the radius.
+                let adm = polar_to_adm(frame, az, el, entered_m / scale_m);
+                let shown = adm_polar_distance_m(frame, adm, scale_m);
+                assert!(
+                    (shown - entered_m).abs() < 1e-6,
+                    "{name}: {entered_m} m at {az}/{el} reads back {shown} m"
+                );
+            }
+        }
+        let sphere = &frames[2].1;
+        let adm = polar_to_adm(sphere, -30.0, 0.0, 0.5);
+        let room_length = (adm[0] * adm[0] + adm[1] * adm[1] + adm[2] * adm[2]).sqrt();
+        assert!((room_length - 0.5f64.sqrt()).abs() < 1e-9, "{adm:?}");
+    }
+
+    /// A polar entry past a wall of a low room keeps its angle, as the
+    /// renderer keeps it: the position is drawn back into the room, not
+    /// clamped axis by axis (#803).
+    #[test]
+    fn a_polar_entry_keeps_its_angle_in_a_low_room() {
+        let low = RoomRatio {
+            width: 1.0,
+            length: 1.2,
+            height: 0.4,
+            rear: 0.8,
+            lower: 0.48,
+            center_blend: 0.5,
+            scale_m: 2.5,
+            sphere: false,
+        };
+        for (az, el) in [(-30.0, 30.0), (110.0, 30.0), (-45.0, 45.0), (-135.0, 0.0)] {
+            let adm = polar_to_adm(&low, az, el, 1.0);
+            assert!(
+                adm.iter().all(|c| c.abs() <= 1.0 + 1e-9),
+                "{az}/{el}: {adm:?}"
+            );
+            let (got_az, got_el, _) = adm_to_polar(&low, adm);
+            assert!(
+                (got_az - az).abs() < 1e-6 && (got_el - el).abs() < 1e-6,
+                "{az}/{el} came back as {got_az}/{got_el}"
+            );
         }
     }
 
@@ -935,6 +1160,64 @@ mod tests {
         app
     }
 
+    /// The renderer's rule, mirrored: on headphones a family nobody chose a
+    /// mode for is on the sphere, and says why; a choice still wins.
+    #[test]
+    fn headphones_default_a_family_to_the_sphere() {
+        let mut app = app_with_placement(serde_json::json!({
+            "dolby": { "defaultMode": "room", "modeSource": "family" },
+            "dts": { "defaultMode": "room", "mode": "room", "modeSource": "own" }
+        }));
+        let dolby = || family_placement(&app, Family::named("dolby"));
+        assert_eq!(
+            (dolby().effective_mode, dolby().mode_source),
+            (PlacementMode::Room, ModeSource::Family)
+        );
+        app.binaural = Some(serde_json::json!({ "outputMode": "binaural" }));
+        let dolby = family_placement(&app, Family::named("dolby"));
+        assert_eq!(
+            (dolby.effective_mode, dolby.mode_source),
+            (PlacementMode::Sphere, ModeSource::Headphones)
+        );
+        let dts = family_placement(&app, Family::named("dts"));
+        assert_eq!(
+            (dts.effective_mode, dts.mode_source),
+            (PlacementMode::Room, ModeSource::Own)
+        );
+    }
+
+    /// A renderer from before the headphones default (no `modeSource`) keeps
+    /// a family nobody chose for in its `defaultMode` on headphones too.
+    /// Studio shows that mode, and switching to Manual starts from the room
+    /// poses that renderer plays, not from the sphere.
+    #[test]
+    fn an_older_renderer_keeps_its_default_mode_on_headphones() {
+        let entries = serde_json::json!({ "speakers": [
+            { "name": "Ls", "coord_mode": "polar", "azimuth": -135.0, "elevation": 0.0, "distance": 1.0 }
+        ] });
+        let mut app = app_with_placement(serde_json::json!({
+            "generic": { "layout": entries },
+            "dolby": {
+                "defaultMode": "room",
+                "mode": null,
+                "effectiveMode": "room",
+                "layoutSource": "generic"
+            }
+        }));
+        app.binaural = Some(serde_json::json!({ "outputMode": "binaural" }));
+        let dolby = family_placement(&app, Family::named("dolby"));
+        assert_eq!(
+            (dolby.effective_mode, dolby.mode_source),
+            (PlacementMode::Room, ModeSource::Family)
+        );
+        let mut catalog = ChannelCatalog::default();
+        catalog.refresh(&app);
+        let channels = effective_channels_for(&catalog, &app, Family::named("dolby"));
+        let ls = channels.iter().find(|c| c.name == "Ls").expect("Ls");
+        assert_eq!(ls.coord_mode, CoordMode::Cartesian);
+        assert_eq!((ls.x, ls.y, ls.z), (-1.0, 0.0, 0.0), "the room corner");
+    }
+
     #[test]
     fn families_inherit_the_generic_mode_and_entries() {
         let app = app_with_placement(serde_json::json!({
@@ -946,17 +1229,17 @@ mod tests {
             },
             "auro": { "mode": "sphere" }
         }));
-        let dts = family_placement(&app, Family::Dts);
+        let dts = family_placement(&app, Family::named("dts"));
         assert_eq!(dts.own_mode, None);
         assert_eq!(dts.effective_mode, PlacementMode::Manual);
         assert_eq!(dts.layout_source, LayoutSource::Generic);
-        let auro = family_placement(&app, Family::Auro);
+        let auro = family_placement(&app, Family::named("auro"));
         assert_eq!(auro.own_mode, Some(PlacementMode::Sphere));
         assert_eq!(auro.effective_mode, PlacementMode::Sphere);
 
         let mut catalog = ChannelCatalog::default();
         catalog.refresh(&app);
-        let ls = effective_channels_for(&catalog, &app, Family::Dts)
+        let ls = effective_channels_for(&catalog, &app, Family::named("dts"))
             .into_iter()
             .find(|c| c.name == "Ls")
             .expect("Ls");
@@ -975,10 +1258,10 @@ mod tests {
         let mut catalog = ChannelCatalog::default();
         catalog.refresh(&app);
         assert_eq!(
-            family_placement(&app, Family::Dolby).effective_mode,
+            family_placement(&app, Family::named("dolby")).effective_mode,
             PlacementMode::Room
         );
-        let channels = effective_channels_for(&catalog, &app, Family::Dolby);
+        let channels = effective_channels_for(&catalog, &app, Family::named("dolby"));
         let ls = channels.iter().find(|c| c.name == "Ls").expect("Ls");
         assert_eq!(ls.coord_mode, CoordMode::Cartesian);
         assert_eq!(
@@ -995,7 +1278,7 @@ mod tests {
             "generic": { "layout": entries },
             "dolby": { "mode": "sphere" }
         }));
-        let channels = effective_channels_for(&catalog, &app, Family::Dolby);
+        let channels = effective_channels_for(&catalog, &app, Family::named("dolby"));
         let ls = channels.iter().find(|c| c.name == "Ls").expect("Ls");
         assert_eq!(ls.coord_mode, CoordMode::Polar);
         assert_eq!((ls.azimuth, ls.elevation), (-110.0, 0.0));
@@ -1006,9 +1289,81 @@ mod tests {
             ls.y
         );
         assert_eq!(
-            family_placement(&app, Family::Dolby).layout_source,
+            family_placement(&app, Family::named("dolby")).layout_source,
             LayoutSource::Generic
         );
+    }
+
+    /// The direct headphone path reads a pose straight off the position,
+    /// so a manual polar entry is read back on its angle there: through the
+    /// payload and the model, not only the coordinate helpers. The cascaded
+    /// path keeps the live room's reading.
+    #[test]
+    fn a_manual_polar_entry_reads_back_on_its_angle_on_the_direct_path() {
+        let entries = serde_json::json!({ "speakers": [
+            { "name": "L", "coord_mode": "polar", "azimuth": -30.0, "elevation": 0.0, "distance": 1.0 }
+        ] });
+        let placement = serde_json::json!({
+            "generic": { "layout": entries },
+            "dolby": { "mode": "manual" }
+        });
+        let mut app = app_with_placement(placement.clone());
+        app.room_ratio = room();
+        app.binaural = Some(serde_json::json!({
+            "outputMode": "binaural", "mode": "direct", "modeEffective": "direct",
+            "hrirSource": "saf", "unitScaleM": 1.0,
+        }));
+        let mut catalog = ChannelCatalog::default();
+        catalog.refresh(&app);
+        let read = |app: &AppState| {
+            let channels = effective_channels_for(&catalog, app, Family::named("dolby"));
+            channels.into_iter().find(|c| c.name == "L").expect("L")
+        };
+        let l = read(&app);
+        assert_eq!((l.azimuth, l.elevation, l.distance), (-30.0, 0.0, 1.0));
+        assert!(
+            (l.x + 0.5).abs() < 1e-6 && (l.y - 0.866).abs() < 1e-3,
+            "{} {}",
+            l.x,
+            l.y
+        );
+        let (azimuth, _, distance) = adm_to_polar(&app.display_room(), [l.x, l.y, l.z]);
+        assert!((azimuth + 30.0).abs() < 1e-6 && (distance - 1.0).abs() < 1e-6);
+
+        // Serialised and read again, the same entry comes back the same.
+        let channels = effective_channels_for(&catalog, &app, Family::named("dolby"));
+        let payload = build_layout_payload(&app, &channels);
+        let stored = payload["speakers"]
+            .as_array()
+            .and_then(|s| s.iter().find(|e| e["name"] == "L"))
+            .expect("L stored");
+        assert_eq!(
+            (stored["azimuth"].as_f64(), stored["distance"].as_f64()),
+            (Some(-30.0), Some(1.0))
+        );
+        app.live_options.placement = Some(serde_json::json!({
+            "generic": { "layout": payload },
+            "dolby": { "mode": "manual" }
+        }));
+        let again = read(&app);
+        assert_eq!((again.azimuth, again.distance), (-30.0, 1.0));
+        assert!((again.x - l.x).abs() < 1e-9 && (again.y - l.y).abs() < 1e-9);
+
+        // Through the virtual room the live room's reading applies: the
+        // position is pre-compensated for the warp the speaker stage undoes.
+        app.binaural = Some(serde_json::json!({
+            "outputMode": "binaural", "mode": "cascaded", "modeEffective": "cascaded",
+            "hrirSource": "saf",
+        }));
+        let warped = read(&app);
+        assert_eq!((warped.azimuth, warped.distance), (-30.0, 1.0));
+        assert!(
+            (warped.y - l.y).abs() > 0.1,
+            "the live room moves it: {}",
+            warped.y
+        );
+        let (azimuth, _, _) = adm_to_polar(&app.room_ratio, [warped.x, warped.y, warped.z]);
+        assert!((azimuth + 30.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1017,13 +1372,15 @@ mod tests {
         assert_eq!(playing_family(&app), None);
         app.live_options.fixed_channel_processing =
             Some(serde_json::json!({ "stream": "fixed", "family": "auro" }));
-        assert_eq!(playing_family(&app), Some(Family::Auro));
+        assert_eq!(playing_family(&app), Some(Family::named("auro")));
         app.live_options.fixed_channel_processing =
             Some(serde_json::json!({ "stream": "idle", "family": "auro" }));
         assert_eq!(playing_family(&app), None);
+        // A stream whose family the renderer's table lacks is reported as
+        // the generic family it is rendered with.
         app.live_options.fixed_channel_processing =
-            Some(serde_json::json!({ "stream": "fixed", "family": "mpeg-h" }));
-        assert_eq!(playing_family(&app), None, "an unknown family is not one");
+            Some(serde_json::json!({ "stream": "fixed", "family": "generic" }));
+        assert_eq!(playing_family(&app), Some(Family::GENERIC));
     }
 
     #[test]
@@ -1033,12 +1390,12 @@ mod tests {
             { "name": "LFE", "coord_mode": "cartesian", "x": 0.0, "y": 1.0, "z": 0.0, "spatialize": false, "gain_db": -6.0 }
         ] }));
         assert_eq!(
-            family_placement(&app, Family::Dts).layout_source,
+            family_placement(&app, Family::named("dts")).layout_source,
             LayoutSource::Generic
         );
         let mut catalog = ChannelCatalog::default();
         catalog.refresh(&app);
-        let lfe = effective_channels_for(&catalog, &app, Family::Dts)
+        let lfe = effective_channels_for(&catalog, &app, Family::named("dts"))
             .into_iter()
             .find(|c| c.name == "LFE")
             .expect("LFE");

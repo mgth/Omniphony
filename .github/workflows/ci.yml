@@ -1,15 +1,20 @@
 name: CI
 
 # Integration gate for the `main` (integration) and `release` branches.
-# Linux validates formatting, tests, native Studio, the web frontend and the
-# Tauri host. macOS and Windows compile the renderer and native Studio; Windows
-# also checks the shared core on stable. Release archives are built by release.yml.
+# Linux x64 validates formatting and tests (build-and-test) and, in a job of
+# its own beside it, the native Studio (studio), skipped on a pull request
+# that touches nothing it builds. macOS (arm64) and Windows (x64) build and
+# test the renderer workspace, the OSC contract and the native Studio;
+# Windows also checks that its binaries need no Visual C++ runtime.
+# Linux arm64 builds and tests the renderer workspace,
+# the engine an embedded box runs. Release archives are built by release.yml.
+# The supported targets, and what each job guarantees for them, are listed in
+# the README ("Supported platforms"); keep the two in step.
 #
-# NOTE on scope: `clippy` is NOT gated yet — the workspace currently has ~70
-# clippy warnings plus a couple of deny-level lints, several inside hot audio
-# loops where the lint suggestions are not obviously safe. Cleaning that up is a
-# separate, careful pass; until then a clippy gate would block merges for
-# reasons unrelated to correctness.
+# The `lint` job ratchets clippy (counts per crate and lint can only go down,
+# omniphony-renderer/scripts/clippy-ratchet.sh), runs cargo-deny and checks
+# that every action is pinned by commit; `msrv` builds the renderer on its
+# declared minimum Rust.
 on:
   push:
     branches: [main, release]
@@ -22,6 +27,15 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job builds its workspace crates from scratch (the checkout is dated
+# after the cache restore, see "Date the checkout..."), so incremental state is
+# never reused: it only slows the compiler and bloats the build trees. Line
+# tables keep file:line in panics and backtraces; full debuginfo only made the
+# trees, the links and the caches bigger. Release builds are not affected.
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
@@ -31,82 +45,138 @@ jobs:
     # backstop against a genuine stall, not a performance target.
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 20
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           components: rustfmt
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      # The renderer's debug tests are its DSP run unoptimised: the library's
+      # unit tests took 155 s in debug against 12 s optimised, and the engine
+      # and integration tests spend their time in the same code. Opt-level 1
+      # for that one crate cuts the debug test run without changing what it
+      # checks: debug assertions and overflow checks stay on, and Rust floats
+      # mean the same at every opt-level. CI only: a local debug build stays
+      # unoptimised for the debugger. Cargo takes no environment variable for a
+      # per-package profile, hence the file; written before the cache step,
+      # whose key hashes it.
+      - name: Build the renderer crate at opt-level 1 in debug builds
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          printf '[profile.dev.package.renderer]\nopt-level = 1\n' > .cargo/config.toml
+
+      # Dependencies only: the cache drops this repository's own crates and
+      # the incremental state before saving, which a run rebuilds anyway, so an
+      # entry is a fraction of the whole build tree. Whole trees made each
+      # entry 1.5-2.5 GB, the repository's 10 GB went over, and the caches
+      # evicted one another, so runs built cold at random. Keyed by the
+      # lockfiles, the toolchains (the native Studio's pin included) and the
+      # CARGO_* environment. Saved from main only: a pull request restores
+      # main's entries and would only push them out with its own.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         # Caching is an optimization, not a correctness step: a crash of the
         # cache action must never fail the build.
         continue-on-error: true
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            omniphony-renderer/target
-          # Keyed off the lockfile: it names the exact versions the build will
-          # use, so the cache turns over when they do and not before.
-          key: ${{ runner.os }}-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-ci-cargo-
+          workspaces: |
+            omniphony-renderer
+            osc-contract
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # A restored build tree can be newer than this checkout: a run on main
+      # that finished after this one checked out saved it. Cargo then sees
+      # this branch's own crates older than the artifacts main built from its
+      # sources, and reuses them: a PR built against main's code, red or
+      # green for the wrong reason. So every build tree is restored before
+      # any build, and every tracked file dated after the last restore: the
+      # workspace crates rebuild — which a checkout older than the caches
+      # always made them do — and the dependencies stay cached.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
 
       # Fast fail before the heavy build if formatting drifts.
       - name: Check formatting
         working-directory: omniphony-renderer
         run: cargo fmt --all -- --check
 
+      # The release version is written in a dozen manifests and lockfiles; a
+      # copy left behind is a release whose parts disagree on what they are
+      # (#676). The script needs tomllib (3.11), which ubuntu-22.04 lacks.
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Check every copy of the release version agrees
+        run: python3 scripts/release_version.py check
+
       # ── Platform dependencies ─────────────────────────────────────────────
       # Same PipeWire PPA as release.yml: ubuntu-22.04 ships PipeWire 0.3.48 but
-      # pipewire-rs 0.9.x needs >= 0.3.65. The GUI/Tauri libs are kept too so the
-      # whole workspace links exactly as in the release build (cheap, robust).
+      # pipewire-rs 0.9.x needs >= 0.3.65. What the renderer workspace links,
+      # nothing more.
       - name: Install Linux system dependencies
         run: |
-          # The two metadata calls below reach Launchpad and can hang rather
-          # than fail when it is unwell, so each is bounded: a retry loop is
-          # useless against a command that never returns.
+          # `apt-get update` reaches Launchpad and can hang rather than fail
+          # when it is unwell, so it is bounded: a retry loop is useless
+          # against a command that never returns.
           #
           # The install is NOT capped, deliberately. The archive mirror is
-          # often merely slow — a 27 MB webkit fetch crawling at a few hundred
+          # often merely slow — a 27 MB package crawling at a few hundred
           # kB/s is not a stall, and a per-command cap turns a slow run into a
           # failed one (it did: exit 124 mid-download). `timeout-minutes` on
           # the job is the right backstop for a genuine stall; here we only
           # retry, so a dropped download gets another go.
-          for attempt in 1 2 3; do
-            if sudo timeout 180 add-apt-repository ppa:pipewire-debian/pipewire-upstream -y; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "Failed to add PipeWire PPA after $attempt attempts" >&2
-              exit 1
-            fi
-            sleep 10
-          done
-          for attempt in 1 2 3; do
+          # The PPA is added by hand, not with add-apt-repository: that tool
+          # fetches the archive's signing key through Launchpad's API, which
+          # answers 500 (GPGKeyTemporarilyNotFoundError) whenever Launchpad
+          # is unwell — as it was on 2026-09-21, for hours. The key is
+          # vendored instead (.github/keys/pipewire-upstream-ppa.asc,
+          # fingerprint FC43B7352BCC0EC8AF2EEB8B25088A0359807596, the one the
+          # API reports for the PPA and the one its InRelease is signed
+          # with), so only the archive host itself is needed.
+          sudo install -d -m 755 /etc/apt/keyrings
+          gpg --dearmor < .github/keys/pipewire-upstream-ppa.asc \
+            | sudo tee /etc/apt/keyrings/pipewire-upstream-ppa.gpg > /dev/null
+          suite="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          echo "deb [signed-by=/etc/apt/keyrings/pipewire-upstream-ppa.gpg] https://ppa.launchpadcontent.net/pipewire-debian/pipewire-upstream/ubuntu $suite main" \
+            | sudo tee /etc/apt/sources.list.d/pipewire-upstream.list > /dev/null
+          # `apt-get update` exits 0 when the PPA answers 503 (it only warns
+          # and keeps the stock index), and the install then picks Ubuntu's
+          # 0.3.48, which libspa refuses ("no field `flags`") long after this
+          # step passed. Launchpad does answer 503 intermittently (2026-09-21:
+          # two probes in six), so the update is retried until the candidate
+          # version actually comes from the PPA.
+          pipewire_candidate() {
+            apt-cache policy libpipewire-0.3-dev | awk '/Candidate:/ { print $2 }'
+          }
+          for attempt in 1 2 3 4 5 6 7 8; do
             if sudo timeout 180 apt-get update; then
-              break
+              candidate="$(pipewire_candidate)"
+              if [ -n "$candidate" ] && dpkg --compare-versions "$candidate" ge 0.3.65; then
+                echo "PipeWire candidate from the PPA: $candidate"
+                break
+              fi
+              echo "PipeWire candidate is '$candidate' (the PPA index was not fetched); retrying" >&2
             fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "apt-get update failed after $attempt attempts" >&2
+            if [ "$attempt" -eq 8 ]; then
+              echo "apt-get update never fetched the PipeWire PPA after $attempt attempts" >&2
               exit 1
             fi
-            sleep 10
+            sleep 20
           done
           for attempt in 1 2 3; do
             if sudo apt-get install -y \
-              libwebkit2gtk-4.1-dev \
-              libssl-dev \
-              libgtk-3-dev \
-              libayatana-appindicator3-dev \
-              librsvg2-dev \
               libpipewire-0.3-dev \
+              libasound2-dev \
               libxkbcommon-dev \
               libwayland-dev \
               pkg-config; then
@@ -118,6 +188,12 @@ jobs:
             fi
             sleep 10
           done
+          installed="$(dpkg-query -W -f='${Version}' libpipewire-0.3-dev)"
+          if ! dpkg --compare-versions "$installed" ge 0.3.65; then
+            echo "libpipewire-0.3-dev $installed installed; pipewire-rs 0.9 needs >= 0.3.65" >&2
+            exit 1
+          fi
+          echo "libpipewire-0.3-dev $installed"
 
       # ── Rust: build + test (strict gate) ──────────────────────────────────
       # Every cargo invocation below passes --locked. Two things follow from it:
@@ -134,15 +210,91 @@ jobs:
         working-directory: omniphony-renderer
         run: cargo test --workspace --locked
 
-      # Compile-only gate for the release-only perf tests. The perf-gate
-      # feature is off in the normal test run and its module is compiled out
-      # in debug builds, so nothing above ever type-checks it and it can rot
-      # silently (it did: E0057, caught on PR #222). Check-only on purpose —
-      # the timing test itself must run alone and stays out of the parallel
-      # PR gate (see renderer/src/spatial_renderer/perf_gate.rs module doc).
-      - name: Check perf-gate feature compiles (release)
+      # The bridge ABI policy (BRIDGE_API.md, "Versioning") held against a
+      # real old plugin: the reference bridge built at the last release tag
+      # is loaded into this host, which must load it when both share a
+      # bridge_api minor and otherwise refuse it with an error naming both
+      # versions. The layout itself is pinned by bridge_api's abi_baseline
+      # test in the run above. The old bridge gets a target directory of its
+      # own so its library does not replace the current one.
+      - name: Load the previous release's bridge
+        run: |
+          tag="$(git ls-remote --tags --refs origin 'v*' \
+            | sed 's|.*refs/tags/||' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -n 1)"
+          echo "Last release: $tag"
+          git fetch --no-tags --depth=1 origin "refs/tags/$tag:refs/tags/$tag"
+          git worktree add --detach "$RUNNER_TEMP/previous-release" "$tag"
+          target="$GITHUB_WORKSPACE/omniphony-renderer/target/previous-release"
+          (cd "$RUNNER_TEMP/previous-release/omniphony-renderer" \
+            && CARGO_TARGET_DIR="$target" cargo build --locked -p reference_bridge)
+          cd omniphony-renderer
+          ORENDER_PREVIOUS_RELEASE_BRIDGE="$target/debug/libreference_bridge.so" \
+            cargo test --locked -p orender_engine --test previous_release_bridge -- --ignored --nocapture
+
+      # The renderer's unit tests, optimised. Its hot loops have CPU-specific
+      # builds picked at run time (AVX2 today, wider where a CPU has it), each
+      # pinned to return the portable build's bits; the speaker-major mix, the
+      # cached table reads and the convolvers are pinned the same way against
+      # their reference. The test run above is a debug build, where none of
+      # this is vectorised, so the comparison that matters — the code the
+      # release ships — would otherwise only ever be run by hand.
+      #
+      # The whole library, not a name filter: exactness tests are named for
+      # what they pin, and a `bit_for_bit` / `bit_identical` filter silently
+      # missed every one named otherwise. Optimised, the full suite runs in a
+      # few seconds; the cost is the optimised build, paid either way. Built
+      # with the perf-gate feature so the next step reuses this binary; the
+      # gate itself is skipped here and run there, alone.
+      #
+      # With the wide DSP validation matrix: three extra sweeps (crossover
+      # flatness, VBAP energy, binaural ITD) that cost a fraction of a second
+      # optimised, so they need not wait for a separate job. Its known misses
+      # stay `#[ignore]`d with their measured value (dsp_fixtures/README.md).
+      #
+      # What the comparison exercises depends on the runner's CPU: a test whose
+      # wider build this CPU lacks prints that it skipped the comparison and
+      # passes. `--nocapture` keeps that line in the log, and the CPU's vector
+      # extensions are listed first, so the log says what was compared.
+      - name: Test the renderer optimised, SIMD builds included (release)
         working-directory: omniphony-renderer
-        run: cargo check --release -p renderer --features perf-gate --tests --locked
+        run: |
+          echo "Runner CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
+          echo "Vector extensions: $(grep -m1 '^flags' /proc/cpuinfo | grep -o 'avx[^ ]*' | sort -u | tr '\n' ' ')"
+          cargo test --release -p renderer --features perf-gate,wide-matrix --lib --locked -- --skip spatial_renderer::perf_gate --nocapture
+
+      # The criterion bench, run once per measurement as a test (`cargo test`
+      # on a criterion target runs each benchmark a single time and checks it
+      # completes; it times nothing). Without it the bench was not even
+      # compiled, and a renderer API change could break it unnoticed until
+      # someone sat down to measure. Same features as the step above, so it
+      # reuses its optimised build. Named, not `--benches`: that also selects
+      # the library's own tests (perf gate included, which must run alone).
+      - name: Run the render benchmarks once (release, test mode)
+        working-directory: omniphony-renderer
+        run: cargo test --release -p renderer --bench render_frame --features perf-gate,wide-matrix --locked
+
+      # The worst-case block-time gate (renderer/src/spatial_renderer/
+      # perf_gate.rs): a high percentile of per-block render time, budgeted as
+      # a fraction of the block period rather than in microseconds, so a slow
+      # runner does not fail it. Steady and all-moving measured 2-5 % of real
+      # time on these runners against a 25 % budget. The topology-change cases
+      # time the render thread while the band worker builds, and gate what a
+      # change adds over as many blocks rendered with no change (the FIR
+      # crossover's own slowest block varies 10-32 % by runner CPU): they
+      # hold on a 4-vCPU runner because background builds run in the idle
+      # scheduling class (renderer/src/background_pool.rs); without it the
+      # render thread lost whole 3 ms scheduler slices to them. Release only,
+      # behind the perf-gate feature and on one test thread: a timing
+      # measurement must not share the machine with the rest of the suite,
+      # and in this step it does not. The optimised library step built this
+      # same test binary (same features: perf-gate only adds the gate's
+      # module, wide-matrix only test sweeps) and skipped the gate, so this
+      # step compiles nothing.
+      - name: Run the perf gate (release)
+        working-directory: omniphony-renderer
+        run: cargo test --release -p renderer --features perf-gate,wide-matrix --lib --locked -- spatial_renderer::perf_gate --test-threads=1 --nocapture
 
       # The OSC contract is a crate of its own, shared by the engine and the
       # Studio and a member of neither workspace, so `--workspace` above does
@@ -164,12 +316,145 @@ jobs:
              -L target/debug -lorender -o target/debug/orender_smoke
           LD_LIBRARY_PATH=target/debug target/debug/orender_smoke
 
+      # orender_ffi's build.rs regenerates include/orender.h with cbindgen on
+      # every build (and fails the build in CI if it cannot), so after the
+      # builds above the checked-out header is what this commit's source
+      # generates. Any difference is a header that was not regenerated and
+      # committed with its source change — the file mpv compiles against.
+      - name: Check the committed C header is up to date
+        run: |
+          if ! git diff --exit-code -- omniphony-renderer/orender_ffi/include/orender.h; then
+            echo "orender_ffi/include/orender.h is stale: run 'cargo build -p orender_ffi' in omniphony-renderer and commit the regenerated header." >&2
+            exit 1
+          fi
+
+      # The header is consumed from C (mpv, C11) and must stay usable from C++:
+      # compile it standalone as strict ISO C and C++, warnings as errors.
+      - name: Check the C header compiles as strict C and C++
+        working-directory: omniphony-renderer/orender_ffi/include
+        run: |
+          printf '#include "orender.h"\nint main(void) { return 0; }\n' > "$RUNNER_TEMP/orender_h.c"
+          cp "$RUNNER_TEMP/orender_h.c" "$RUNNER_TEMP/orender_h.cpp"
+          gcc -std=c11 -Wall -Wextra -pedantic -Werror -fsyntax-only -I. "$RUNNER_TEMP/orender_h.c"
+          g++ -std=c++17 -Wall -Wextra -pedantic -Werror -fsyntax-only -I. "$RUNNER_TEMP/orender_h.cpp"
+
+      # Options-schema contract: the renderer dumps its declared live options
+      # (registry rows); every option must resolve its Studio i18n keys. Hard
+      # gate — an option declared engine-side but invisible to the UI is the
+      # silent-omission class the registry exists to kill.
+      - name: Check options-schema ↔ Studio contract
+        run: |
+          cargo run -q -p renderer --example dump_options_schema --locked \
+            --manifest-path omniphony-renderer/Cargo.toml > /tmp/options-schema.json
+          node omniphony-studio-egui/scripts/check-options-schema.mjs /tmp/options-schema.json
+          cargo run -q -p host_audio --example dump_host_options_schema --locked \
+            --manifest-path omniphony-renderer/Cargo.toml > /tmp/host-options-schema.json
+          node omniphony-studio-egui/scripts/check-options-schema.mjs /tmp/host-options-schema.json
+
+  # Which jobs a pull request concerns. Only `studio` is optional: on a pull
+  # request whose files it builds nothing of, it is skipped, and GitHub
+  # counts a skipped job as passing a required check. Read from the pull
+  # request's own files, the diff against its base: the train's merge of main
+  # brings nothing main has not passed already, and every push to main runs
+  # every job. Anything but a pull request, and any failure to list the
+  # files, runs everything.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      studio: ${{ steps.filter.outputs.studio }}
+    steps:
+      - name: List what the pull request touches
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            echo "studio=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The files API stops at 3,000: a pull request that size runs it all.
+          if ! files="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename')" \
+            || [ "$(printf '%s\n' "$files" | wc -l)" -ge 3000 ]; then
+            echo "studio=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The native Studio and the path dependencies it builds (core and
+          # scene take the OSC contract and omniphony_geometry), its i18n check,
+          # and what the version-bump step resolves: every manifest and
+          # lockfile, and the script itself. This workflow too.
+          studio_paths='^(omniphony-studio-egui/|osc-contract/|omniphony-renderer/omniphony_geometry/|scripts/release_version\.py$|\.github/workflows/ci\.yml$)|(^|/)Cargo\.(toml|lock)$'
+          # A here-string, not a pipe: `grep -q` stops at its first match,
+          # and under pipefail the writer it leaves behind dies of SIGPIPE
+          # and turns a match into a miss on a long list.
+          if grep -qE "$studio_paths" <<<"$files"; then
+            echo "studio=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No native Studio file touched: the studio job is skipped."
+            echo "studio=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The native Studio half of the Linux x64 gate, beside build-and-test
+  # rather than after it, with the release-version bump across every
+  # lockfile. None of it builds the renderer, and in build-and-test it added
+  # minutes to the longest job. The job name is a required check on `main`:
+  # rename it and branch protection must follow.
+  #
+  # No system package: the native Studio opens Wayland and xkbcommon at run
+  # time and its file dialogs go through the desktop portal, so it links
+  # nothing it would need a -dev package for.
+  studio:
+    needs: changes
+    # Skipped only on an explicit "false": if `changes` failed, run.
+    if: ${{ !cancelled() && needs.changes.outputs.studio != 'false' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 20
+
+      # Stable for the version bump; the native Studio's pinned toolchain is
+      # installed below.
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      # Dependencies only, saved from main only: see build-and-test. The
+      # renderer is listed for its registry entries alone, which the version
+      # bump resolves offline; this job does not build it.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        continue-on-error: true
+        with:
+          workspaces: |
+            omniphony-studio-egui
+            omniphony-renderer
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Dated after the restore, for the reason given in build-and-test.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
+
+      # The version bump below runs scripts/release_version.py, which needs
+      # tomllib (3.11); ubuntu-22.04 lacks it.
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
       # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
       # The phase-2 replacement of the web frontend. It is a separate workspace
       # (the egui app and its toolkit-free core, omniphony-studio-core)
       # with its own toolchain pin (egui 0.36 needs a newer rustc than the
       # renderer workspace uses), so it gets its own steps rather than joining
-      # the workspace build above. Without them the whole port would have no
+      # the renderer workspace build. Without them the whole port would have no
       # gate at all: the renderer steps do not compile a line of it.
       #
       # The tests are pure — coordinate round-trips, formatting rules, layout
@@ -178,19 +463,6 @@ jobs:
       # here, but a pinned toolchain comes without components: rustfmt has to
       # be asked for by name. The version is read from the pin file so the two
       # cannot drift apart.
-      # The native Studio's own build tree, cached separately from the
-      # renderer's. It is a different toolchain and a disjoint dependency set —
-      # egui, wgpu and their graphics stack are nobody else's — and one entry
-      # holding both would be evicted by whichever changed last. Its Cargo.lock
-      # is tracked, so the key can be exact rather than a guess from manifests.
-      - name: Cache the native Studio build
-        uses: actions/cache@v5
-        continue-on-error: true
-        with:
-          path: omniphony-studio-egui/target
-          key: ${{ runner.os }}-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
-          restore-keys: ${{ runner.os }}-studio-egui-
-
       - name: Install rustfmt for the native Studio toolchain
         working-directory: omniphony-studio-egui
         run: |
@@ -245,95 +517,83 @@ jobs:
         working-directory: omniphony-studio-egui
         run: cargo test --workspace --locked
 
-      # ── Studio frontend build (no Tauri bundling / no sidecar) ─────────────
-      - name: Install Studio npm dependencies
-        working-directory: omniphony-studio
-        run: npm ci
-
-      - name: Build Studio frontend
-        working-directory: omniphony-studio
-        run: npm run build
-
-      # This host has a separate build tree from both the renderer and native
-      # Studio. Cache it too so core changes do not rebuild GTK/WebKit every PR.
-      - name: Cache the Tauri host build
-        uses: actions/cache@v5
-        continue-on-error: true
-        with:
-          path: omniphony-studio/src-tauri/target
-          key: ${{ runner.os }}-studio-tauri-${{ hashFiles('omniphony-studio/src-tauri/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-studio-tauri-
-
-      # Type-check the web host as a consumer of the shared native core. No
-      # sidecar/resource bundle is needed for this compatibility gate.
-      - name: Check Tauri host against the shared core
-        working-directory: omniphony-studio/src-tauri
-        env:
-          TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":null}}'
-        run: cargo check --locked
-
-      # Drift pins for the renderer<->Studio mirrors (channel-spelling
-      # normalisation, geometry golden vectors) — hard gates, like knip below.
-      - name: Channel-alias parity tests
-        working-directory: omniphony-studio
-        run: npm run test:labels
-
-      - name: Math golden-vector tests
-        working-directory: omniphony-studio
-        run: npm run test:math
-
-      # Translation parity is reported but never blocks a merge: incomplete
-      # locales fall back to English at runtime, so this is a heads-up, not a
-      # gate. Emits ::warning:: annotations on the PR.
-      - name: Check i18n parity (warn-only)
-        working-directory: omniphony-studio
-        continue-on-error: true
-        run: npm run i18n:check
-
-      # Dead-code gate (knip): a module with no importer fails the build.
-      # An orphaned ingestion module is how live-option state silently stopped
-      # reaching the UI for months (see docs/live-options-registry.md, "The
-      # incident"); unused *exports* are only warnings for now.
-      - name: Dead-code lint (knip)
-        working-directory: omniphony-studio
-        run: npm run lint:dead
-
-      # Options-schema contract: the renderer dumps its declared live options
-      # (registry rows); every option must resolve its Studio i18n keys. Hard
-      # gate — an option declared engine-side but invisible to the UI is the
-      # silent-omission class the registry exists to kill.
-      - name: Check options-schema ↔ Studio contract
+      # `check` only sees the tree at its current version; a copy the bump
+      # forgets to move shows up at the next release, when the release build
+      # refuses its lockfile (#712 review: a path dependency's entry in
+      # another workspace's lock). So bump for real, resolve both workspaces
+      # `--locked` as the builds will, then put the tree back. Offline, for
+      # this runner's platform only: the native Studio build fetched its
+      # dependencies and the fetch below the renderer's (this job does not
+      # build it), not the Windows/macOS-only ones, and the lockfile is
+      # checked as a whole either way.
+      - name: Bump the release version and resolve every lockfile
         run: |
-          cargo run -q -p renderer --example dump_options_schema --locked \
-            --manifest-path omniphony-renderer/Cargo.toml > /tmp/options-schema.json
-          node omniphony-studio/scripts/check-options-schema.mjs /tmp/options-schema.json
+          set -euo pipefail
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          (cd omniphony-renderer && cargo fetch --locked --target "$host")
+          trap 'git checkout -- .' EXIT
+          python3 scripts/release_version.py set 99.0.0 --player mpv-v99.0.0
+          for workspace in omniphony-renderer omniphony-studio-egui; do
+            (cd "$workspace" && cargo metadata --locked --offline --filter-platform "$host" \
+              --format-version 1 > /dev/null)
+            echo "$workspace: lockfile valid at 99.0.0"
+          done
+
+      # Catalogue diagnostics, including a heuristic for English leftovers.
+      # Missing/orphaned keys and placeholder mismatches already fail the
+      # core's i18n tests above. This script also emits ::warning:: annotations
+      # on the PR. A plain node script, no npm install.
+      - name: Check i18n parity (warn-only)
+        continue-on-error: true
+        run: node omniphony-studio-egui/scripts/check-i18n.mjs
 
   build-macos:
-    # macOS arm64 compile gate. The renderer workspace pulls the CoreAudio
-    # output backend (cpal) and the `sys` signal/IO layer, both of which carry
-    # macOS-specific code paths. Build-only (no PipeWire/Tauri) — this catches
-    # macOS portability regressions on PRs, before the tag-triggered release
-    # builds (liborender / Studio / mpv) ever run on macOS.
+    # macOS arm64 build and test gate. The renderer workspace pulls the
+    # CoreAudio output backend (cpal) and the `sys` signal/IO layer, both of
+    # which carry macOS-specific code paths. No PipeWire; the
+    # test suites are the same as on Linux, so a macOS regression shows on
+    # the PR rather than in a user's report after a release (#200, #201,
+    # #205 and #260 all reached users that way). The job name is a required
+    # check on `main`: rename it and branch protection must follow.
     runs-on: macos-14
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           components: rustfmt
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      # Opt-level 1 for the renderer crate in debug builds, as in build-and-test.
+      - name: Build the renderer crate at opt-level 1 in debug builds
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          printf '[profile.dev.package.renderer]\nopt-level = 1\n' > .cargo/config.toml
+
+      # Dependencies only, saved from main only: see build-and-test.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         continue-on-error: true
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            omniphony-renderer/target
-          key: macos-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
-          restore-keys: macos-ci-cargo-
+          workspaces: |
+            omniphony-renderer
+            omniphony-studio-egui
+            osc-contract
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # A restored build tree can be newer than this checkout: a run on main
+      # that finished after this one checked out saved it. Cargo then sees
+      # this branch's own crates older than the artifacts main built from its
+      # sources, and reuses them: a PR built against main's code, red or
+      # green for the wrong reason. So every build tree is restored before
+      # any build, and every tracked file dated after the last restore: the
+      # workspace crates rebuild — which a checkout older than the caches
+      # always made them do — and the dependencies stay cached.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
 
       - name: Build renderer workspace (macOS arm64)
         working-directory: omniphony-renderer
@@ -342,22 +602,42 @@ jobs:
       # The native Studio ships on macOS too (release.yml attaches an archive
       # per platform). Until this step existed only the Linux job compiled it,
       # so a platform-specific break — wgpu's Metal path, winit, the file
-      # dialogs — surfaced at release time. Same toolchain pin and build tree
-      # as the Linux job.
-      - name: Cache the native Studio build
-        uses: actions/cache@v5
-        continue-on-error: true
-        with:
-          path: omniphony-studio-egui/target
-          key: macos-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
-          restore-keys: macos-studio-egui-
-
+      # dialogs — surfaced at release time. Same toolchain pin as the Linux
+      # job.
       - name: Build native Studio (macOS arm64)
         working-directory: omniphony-studio-egui
         run: cargo build --workspace --locked
 
+      # The whole suite, as on Linux. Tests that need a sound device or a
+      # PipeWire daemon are #[ignore]d or compiled for Linux only, so none of
+      # them runs here. --no-fail-fast here and on the other non-Linux-x64
+      # jobs: a platform break tends to fail several crates at once, and one
+      # run should name them all rather than stop at the first.
+      #
+      # One part of it matters on macOS more than anywhere: macOS refuses a
+      # UDP send larger than the socket's send buffer (EMSGSIZE), and that
+      # buffer starts at net.inet.udp.maxdgram: 9,216 bytes, far under a state
+      # bundle or a backend script. Linux and Windows have no such limit, so
+      # the large-datagram tests (`maximum_size` / `send_buffer` /
+      # `deeply_nested` in their names) only prove the sockets lift it here.
+      # The sysctl values are printed so the log says what they ran against.
+      - name: Test renderer workspace (macOS arm64)
+        working-directory: omniphony-renderer
+        run: |
+          sysctl net.inet.udp.maxdgram net.inet.udp.recvspace
+          cargo test --workspace --locked --no-fail-fast
+
+      - name: Test the OSC contract (macOS arm64)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --no-fail-fast --manifest-path osc-contract/Cargo.toml
+
+      - name: Test native Studio (macOS arm64)
+        if: ${{ !cancelled() }}
+        working-directory: omniphony-studio-egui
+        run: cargo test --workspace --locked --no-fail-fast
+
   build-windows:
-    # Windows x64 compile gate. On Windows cpal always pulls its ASIO backend
+    # Windows x64 build and test gate. On Windows cpal always pulls its ASIO backend
     # (audio_output enables the feature per-target; the workspace `asio` feature
     # is a legacy no-op alias), so this is the only job that exercises asio-sys:
     # fetching the SDK, running bindgen over asio.h, compiling the SDK's C++ into
@@ -365,59 +645,335 @@ jobs:
     # ever built by the tag-triggered release.yml — a broken SDK setup surfaced at
     # release time, not on the PR that caused it.
     #
-    # Build-only: no Tauri bundle, and no vcpkg/SAF since saf_vbap is opt-in and
-    # the default VBAP backend is pure Rust. bindgen finds libclang on the runner
-    # image without any setup, which is why no LLVM step appears here.
+    # No installer, and no vcpkg/SAF since saf_vbap is opt-in and the
+    # default VBAP backend is pure Rust. bindgen finds libclang on the runner
+    # image without any setup, which is why no LLVM step appears here. The
+    # test suites are the same as on Linux. The job name is a required check
+    # on `main`: rename it and branch protection must follow.
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # Opt-level 1 for the renderer crate in debug builds, as in build-and-test.
+      - name: Build the renderer crate at opt-level 1 in debug builds
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          printf '[profile.dev.package.renderer]\nopt-level = 1\n' > .cargo/config.toml
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      # Dependencies only, saved from main only: see build-and-test.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         continue-on-error: true
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            omniphony-renderer/target
-          key: windows-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
-          restore-keys: windows-ci-cargo-
+          workspaces: |
+            omniphony-renderer
+            omniphony-studio-egui
+            osc-contract
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # A restored build tree can be newer than this checkout: a run on main
+      # that finished after this one checked out saved it. Cargo then sees
+      # this branch's own crates older than the artifacts main built from its
+      # sources, and reuses them: a PR built against main's code, red or
+      # green for the wrong reason. So every build tree is restored before
+      # any build, and every tracked file dated after the last restore: the
+      # workspace crates rebuild — which a checkout older than the caches
+      # always made them do — and the dependencies stay cached.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
 
       - name: Setup ASIO SDK
         uses: ./.github/actions/setup-asio-sdk
-
       - name: Build renderer workspace (Windows x64)
         working-directory: omniphony-renderer
         run: cargo build --workspace --locked
 
-      # The native Studio's core, which the Tauri host depends on. Its Windows
-      # path — the process-tree working-set readout — had never been compiled
-      # for Windows by anything: the Linux job builds the whole egui workspace,
-      # this job built only the renderer, and the Tauri host carried its own
-      # copy of the module. It did not compile, and nothing said so.
-      #
-      # Run from the repository root on purpose. `omniphony-studio-egui` pins a
-      # toolchain for egui's sake; the core does not need it, and the Tauri host
-      # builds it on stable, which is what this checks.
-      - name: Build the native Studio core (Windows x64)
-        run: cargo build --locked --manifest-path omniphony-studio-egui/core/Cargo.toml
+      # Tests that need a sound device (ASIO, WASAPI) or a PipeWire daemon are
+      # #[ignore]d or compiled for Linux only, so none of them runs here.
+      # The steps after this one run even when it fails (`!cancelled()`), on
+      # this job and the other non-Linux-x64 ones: a red renderer suite
+      # should not hide the state of the Studio's.
+      - name: Test renderer workspace (Windows x64)
+        working-directory: omniphony-renderer
+        run: cargo test --workspace --locked --no-fail-fast
 
-      # The whole native Studio, on its pinned toolchain this time: it ships
-      # on Windows (release.yml attaches an archive per platform), and the
-      # step above only proves the core. Run from inside the directory so the
-      # pin applies.
-      - name: Cache the native Studio build
-        uses: actions/cache@v5
-        continue-on-error: true
-        with:
-          path: omniphony-studio-egui/target
-          key: windows-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
-          restore-keys: windows-studio-egui-
+      - name: Test the OSC contract (Windows x64)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --no-fail-fast --manifest-path osc-contract/Cargo.toml
 
+      # The whole native Studio, on its pinned toolchain: it ships on Windows
+      # (release.yml attaches an archive per platform). Run from inside the
+      # directory so the pin applies.
       - name: Build native Studio (Windows x64)
+        if: ${{ !cancelled() }}
         working-directory: omniphony-studio-egui
         run: cargo build --workspace --locked
+
+      - name: Test native Studio (Windows x64)
+        if: ${{ !cancelled() }}
+        working-directory: omniphony-studio-egui
+        run: cargo test --workspace --locked --no-fail-fast
+
+      # The static C runtime (each workspace's .cargo/config.toml): a binary
+      # built without it runs here, where the redistributable is installed,
+      # and fails on a fresh Windows. Only its import table tells.
+      - name: Check the binaries need no Visual C++ runtime (Windows x64)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          python scripts/check_windows_crt_imports.py \
+            omniphony-renderer/target/debug/orender.exe \
+            omniphony-renderer/target/debug/orender.dll \
+            omniphony-studio-egui/target/debug/omniphony-studio-egui.exe
+
+  build-linux-arm64:
+    # Linux arm64 build and test gate, on GitHub's native arm64 runner (no
+    # emulation). The embedded target — an aarch64 box running mpv with
+    # liborender — is this platform, and until this job existed CI compiled
+    # nothing for it: the aarch64 code paths (the FPCR flush-to-zero the
+    # render thread claims, see renderer/src/dsp) were only ever built on
+    # macOS and only ever run by hand. The engine only: the native Studio
+    # is not shipped for Linux arm64.
+    #
+    # Ubuntu 24.04 rather than the x64 job's 22.04 because its stock PipeWire
+    # (1.0) already satisfies pipewire-rs 0.9 (>= 0.3.65), so no PPA is
+    # needed here.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # Opt-level 1 for the renderer crate in debug builds, as in build-and-test.
+      - name: Build the renderer crate at opt-level 1 in debug builds
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          printf '[profile.dev.package.renderer]\nopt-level = 1\n' > .cargo/config.toml
+
+      # Dependencies only, saved from main only: see build-and-test.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        continue-on-error: true
+        with:
+          workspaces: |
+            omniphony-renderer
+            osc-contract
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # See the x64 job: a restored build tree can be newer than this checkout.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
+
+      # PipeWire for the output and input backends; libclang for the
+      # bindgen run in pipewire-sys and libspa-sys. Bounded and retried for
+      # the same reasons as the x64 job's install.
+      - name: Install Linux system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo timeout 180 apt-get update \
+              && sudo apt-get install -y libpipewire-0.3-dev libclang-dev clang pkg-config; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "apt-get failed after $attempt attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "libpipewire-0.3-dev $(dpkg-query -W -f='${Version}' libpipewire-0.3-dev)"
+
+      - name: Build renderer workspace (Linux arm64)
+        working-directory: omniphony-renderer
+        run: cargo build --workspace --locked
+
+      # Tests that need a sound device or a PipeWire daemon are #[ignore]d,
+      # as on x64.
+      - name: Test renderer workspace (Linux arm64)
+        working-directory: omniphony-renderer
+        run: cargo test --workspace --locked --no-fail-fast
+
+      - name: Test the OSC contract (Linux arm64)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --no-fail-fast --manifest-path osc-contract/Cargo.toml
+
+      # liborender is what the embedded box's mpv loads: same header/link
+      # smoke test as the x64 job.
+      - name: C ABI smoke test (liborender, Linux arm64)
+        if: ${{ !cancelled() }}
+        working-directory: omniphony-renderer
+        run: |
+          cc -Wall -Werror -I orender_ffi/include orender_ffi/examples/smoke.c \
+             -L target/debug -lorender -o target/debug/orender_smoke
+          LD_LIBRARY_PATH=target/debug target/debug/orender_smoke
+
+  lint:
+    # Static gates that need no test run: action pinning, cargo-deny and the
+    # clippy ratchet for the renderer workspace.
+    #
+    # Ubuntu 24.04 rather than build-and-test's 22.04: clippy compiles the
+    # PipeWire -sys build scripts, and 24.04's stock PipeWire (1.0) already
+    # satisfies pipewire-rs 0.9, so this job needs no PPA.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # A tag can be moved by whoever controls the action's repository, and
+      # the release jobs run actions with `contents: write`; a commit cannot
+      # be moved. Every `uses:` therefore names a full commit SHA, with the
+      # version it was taken from in a trailing comment. Local actions
+      # (`./...`) are part of this repository and exempt.
+      - name: Check every action is pinned by commit
+        run: |
+          unpinned="$(grep -rnE '^[[:space:]]*(-[[:space:]]+)?uses:' .github/workflows .github/actions \
+            | grep -vE 'uses:[[:space:]]*\./' \
+            | grep -vE 'uses:[[:space:]]*[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)' || true)"
+          if [ -n "$unpinned" ]; then
+            echo "::error::Actions must be pinned by full commit SHA (with the version as a trailing comment):"
+            echo "$unpinned"
+            exit 1
+          fi
+
+      # The release binary, pinned by version and checksum, rather than the
+      # cargo-deny action: its image carries its own, older Rust, and the
+      # graph is resolved with whichever cargo runs it.
+      - name: Install cargo-deny
+        env:
+          DENY_VERSION: 0.20.2
+          DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          archive="cargo-deny-$DENY_VERSION-x86_64-unknown-linux-musl"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/$archive.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/$DENY_VERSION/$archive.tar.gz"
+          echo "$DENY_SHA256  $RUNNER_TEMP/$archive.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive.tar.gz" -C "$RUNNER_TEMP"
+          install -m 755 "$RUNNER_TEMP/$archive/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
+
+      # Advisories, banned or duplicated crates, licences and sources, against
+      # omniphony-renderer/deny.toml. `--workspace` makes every member a root:
+      # without it only the root package (`orender`) is, and liborender's
+      # graph is never looked at. Before clippy because it compiles nothing.
+      # A new RustSec advisory fails this without any commit moving: fix it by
+      # updating the crate, or ignore the advisory in deny.toml with a reason.
+      - name: cargo-deny
+        working-directory: omniphony-renderer
+        run: cargo deny --workspace --locked check
+
+      # The ratchet installs its toolchain after the cache is restored, so the
+      # cache cannot see it among the installed ones: name it in the key, or a
+      # toolchain move would keep restoring artifacts built by the old one.
+      - name: Read the clippy toolchain for the cache key
+        run: |
+          echo "CLIPPY_TOOLCHAIN=$(sed -n 's/^# toolchain: *//p' omniphony-renderer/clippy-baseline.txt)" >> "$GITHUB_ENV"
+
+      # Dependencies only, saved from main only: see build-and-test.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        continue-on-error: true
+        with:
+          workspaces: |
+            omniphony-renderer
+          env-vars: CLIPPY_TOOLCHAIN
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Dated after the restore, for the reason given in build-and-test.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
+
+      # PipeWire for the output and input backends; libclang for the bindgen
+      # run in pipewire-sys and libspa-sys. Bounded and retried for the same
+      # reasons as build-and-test's install.
+      - name: Install Linux system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo timeout 180 apt-get update \
+              && sudo apt-get install -y libpipewire-0.3-dev libclang-dev clang pkg-config; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "apt-get failed after $attempt attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # Warnings per crate and lint may only go down: a crate absent from
+      # omniphony-renderer/clippy-baseline.txt is held at zero, any other
+      # count above its baseline fails, and a count below it fails until the
+      # lowered baseline is committed. The baseline names the clippy toolchain
+      # it was taken with, and the script installs and runs that one, so a
+      # new Rust release cannot add warnings to main. Deny-level lints fail
+      # clippy itself.
+      - name: Clippy ratchet
+        run: omniphony-renderer/scripts/clippy-ratchet.sh
+
+  msrv:
+    # The renderer workspace on the minimum Rust it declares
+    # (`rust-version` in omniphony-renderer/Cargo.toml, read from there so the
+    # two cannot drift). Every other job builds on the latest stable, so a
+    # newer language feature or std API, or a dependency raising its own
+    # floor, would otherwise leave the declared version false. A check, not a
+    # build: what an MSRV breaks is name resolution and type checking.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # As in the lint job: the MSRV toolchain is installed after the restore,
+      # so it is named in the cache key.
+      - name: Read the MSRV for the cache key
+        run: |
+          echo "MSRV_TOOLCHAIN=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' omniphony-renderer/Cargo.toml)" >> "$GITHUB_ENV"
+
+      # Dependencies only, saved from main only: see build-and-test.
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        continue-on-error: true
+        with:
+          workspaces: |
+            omniphony-renderer
+          env-vars: MSRV_TOOLCHAIN
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Dated after the restore, for the reason given in build-and-test.
+      - name: Date the checkout after the restored build trees
+        shell: bash
+        run: git ls-files -z | xargs -0 touch -c
+
+      # As in the lint job: stock PipeWire on 24.04, no PPA.
+      - name: Install Linux system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo timeout 180 apt-get update \
+              && sudo apt-get install -y libpipewire-0.3-dev libclang-dev clang pkg-config; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "apt-get failed after $attempt attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Check the renderer workspace on its MSRV
+        working-directory: omniphony-renderer
+        run: |
+          msrv="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ -z "$msrv" ]; then
+            echo "::error::no workspace rust-version in omniphony-renderer/Cargo.toml"
+            exit 1
+          fi
+          echo "Declared MSRV: $msrv"
+          rustup toolchain install --profile minimal "$msrv"
+          cargo "+$msrv" check --workspace --all-targets --locked

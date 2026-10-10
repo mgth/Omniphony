@@ -20,7 +20,7 @@
 //! **weights**, not signs — sign patterns alone cannot lateralise a
 //! broadband signal, since delayed copies with opposite signs do not
 //! cancel: each ear reads the lines of its own side at full weight and the
-//! other side's at [`SIDE_WEIGHT`]. On the first lap a source on the right
+//! other side's at `SIDE_WEIGHT`. On the first lap a source on the right
 //! is therefore heard mostly on the right; the Householder mixing then
 //! spreads it over every line and the tail goes diffuse and balanced. The
 //! weighted rows keep the properties issue #145 relies on: zero-sum, equal
@@ -51,15 +51,15 @@
 //!   21…62 ms set, allocated for the maximum): shorter lines make a small,
 //!   dense room, longer ones a sparser, larger one. The feedback gains are
 //!   recomputed with the lengths so the RT60 stays what was asked, and the
-//!   lines stretch at no more than [`SIZE_SLEW`] samples per sample — a
+//!   lines stretch at no more than `SIZE_SLEW` samples per sample — a
 //!   size change is a second-long ±2 % pitch drift, not a splice.
 //! - **per-band decay**: the loop gain of each line is a broadband value
-//!   plus two first-order shelves, one below [`LOW_BAND_HZ`] and one above
-//!   [`HIGH_BAND_HZ`], whose gains are the RT60 ratios of those bands
+//!   plus two first-order shelves, one below `LOW_BAND_HZ` and one above
+//!   `HIGH_BAND_HZ`, whose gains are the RT60 ratios of those bands
 //!   (`rt60_low_ratio`, `rt60_high_ratio`, relative to the broadband
 //!   RT60). A ratio of 1 leaves a shelf at exactly zero: the default tail
 //!   is arithmetically the one before the shelves existed. The fixed
-//!   one-pole [`DAMPING_48K`] stays underneath as the wall's own
+//!   one-pole `DAMPING_48K` stays underneath as the wall's own
 //!   high-frequency loss; the high ratio acts on top of it.
 //!
 //! In a real room the reverberant field level is roughly independent of
@@ -68,9 +68,8 @@
 //! send with distance (near-field roll-in): the DRR falls with distance
 //! without ever touching the direct object level.
 
-use crate::crossover::filter::{
-    BiquadCoeffs, BiquadState, biquad, butterworth2_hp, butterworth2_lp,
-};
+use crate::delay_line::read_linear;
+use crate::dsp::iir::{BiquadCoeffs, BiquadState, biquad, one_pole_bilinear_gain, pole_at_rate};
 use crate::live_params::BinauralReverb;
 
 /// Number of delay lines. Sixteen: dense enough that a sustained tone no
@@ -170,9 +169,13 @@ const MOD_RATES_HZ: [f32; N] = [
 ];
 
 /// Modulation targets are recomputed every this many samples and slewed
-/// linearly in between, making the tail independent of the caller's block
-/// size (a 128-sample update at the fastest LFO moves the delay by well
-/// under a tenth of a sample).
+/// linearly in between (a 128-sample update at the fastest LFO moves the
+/// delay by well under a tenth of a sample). The segments run on the
+/// network's own sample clock, carried across `process_block` calls, so the
+/// tail does not depend on how the caller cuts its blocks: restarting a
+/// segment at every block made two renders of the same programme differ by
+/// −44 dB as soon as their block sizes were not multiples of this — which a
+/// file reader's blocks, cut wherever its reads land, never promise.
 const MOD_UPDATE: usize = 128;
 
 /// Crossover of the interaural-coherence shaping (Hz): shared mid below,
@@ -207,6 +210,11 @@ pub struct Fdn {
     mod_phase: [f32; N],
     /// Current (slewed) modulated delay per line, in samples.
     cur_delay: [f32; N],
+    /// Per-sample delay step of the current modulation segment, per line.
+    mod_step: [f32; N],
+    /// Samples left in the current modulation segment; 0 starts the next
+    /// one at the next sample. Kept across blocks (see [`MOD_UPDATE`]).
+    mod_left: usize,
     /// Interaural-coherence crossover: LR4 low-pass (shared mid path) and
     /// LR4 high-pass (per-return paths) share these per-section coefficients.
     xover_lp: BiquadCoeffs,
@@ -251,10 +259,6 @@ impl Fdn {
         }
         // 120 ms pre-delay capacity; the active length is set per block.
         let pre_cap = (sample_rate as usize * 120 / 1000).max(16);
-        let one_pole = |hz: f32| {
-            let g = (std::f32::consts::PI * hz / sample_rate as f32).tan();
-            g / (1.0 + g)
-        };
         Self {
             lines,
             base_len,
@@ -266,12 +270,14 @@ impl Fdn {
             fb_high: [0.0; N],
             band_lo: [0.0; N],
             band_hi: [0.0; N],
-            k_lo: one_pole(LOW_BAND_HZ),
-            k_hi: one_pole(HIGH_BAND_HZ),
+            k_lo: one_pole_bilinear_gain(LOW_BAND_HZ, sample_rate),
+            k_hi: one_pole_bilinear_gain(HIGH_BAND_HZ, sample_rate),
             mod_phase,
             cur_delay: base_len,
-            xover_lp: butterworth2_lp(COHERENCE_XOVER_HZ, sample_rate),
-            xover_hp: butterworth2_hp(COHERENCE_XOVER_HZ, sample_rate),
+            mod_step: [0.0; N],
+            mod_left: 0,
+            xover_lp: BiquadCoeffs::butterworth2_lp(COHERENCE_XOVER_HZ, sample_rate),
+            xover_hp: BiquadCoeffs::butterworth2_hp(COHERENCE_XOVER_HZ, sample_rate),
             xover_state: Default::default(),
             predelay: vec![[0.0; 2]; pre_cap],
             pre_pos: 0,
@@ -279,7 +285,7 @@ impl Fdn {
             sample_rate,
             cached: (0.0, 0.0, 0.0, 0.0),
             primed: false,
-            damp_mix: 1.0 - DAMPING_48K.powf(48_000.0 / sample_rate as f32),
+            damp_mix: 1.0 - pole_at_rate(DAMPING_48K, sample_rate),
             mod_depth: MOD_DEPTH_48K * scale,
         }
     }
@@ -337,6 +343,8 @@ impl Fdn {
         self.predelay.fill([0.0; 2]);
         self.xover_state = Default::default();
         self.cur_delay = self.size_len;
+        // The slew in flight was heading from the delays just reset.
+        self.mod_left = 0;
         self.primed = false;
     }
 
@@ -357,21 +365,28 @@ impl Fdn {
         let pre_cap = self.predelay.len();
         self.primed = true;
 
+        let len = bus_l.len().min(bus_r.len());
         let mut offset = 0usize;
-        for (chunk_l, chunk_r) in bus_l.chunks(MOD_UPDATE).zip(bus_r.chunks(MOD_UPDATE)) {
-            let chunk = chunk_l;
-            // Advance the line LFOs to the end of this chunk and slew each
-            // delay linearly toward its new target across the chunk — at
-            // most `SIZE_SLEW` per sample, which only a size change reaches.
-            let mut d_step = [0.0f32; N];
-            for i in 0..N {
-                self.mod_phase[i] = (self.mod_phase[i]
-                    + std::f32::consts::TAU * MOD_RATES_HZ[i] * chunk.len() as f32 / sr)
-                    % std::f32::consts::TAU;
-                let target = self.size_len[i] + depth * self.mod_phase[i].sin();
-                d_step[i] = ((target - self.cur_delay[i]) / chunk.len() as f32)
-                    .clamp(-SIZE_SLEW, SIZE_SLEW);
+        while offset < len {
+            if self.mod_left == 0 {
+                // A new segment: advance the line LFOs to its end and slew
+                // each delay linearly toward its new target across it — at
+                // most `SIZE_SLEW` per sample, which only a size change
+                // reaches. A segment may straddle blocks; its step waits in
+                // `mod_step` for the rest of it.
+                for i in 0..N {
+                    self.mod_phase[i] = (self.mod_phase[i]
+                        + std::f32::consts::TAU * MOD_RATES_HZ[i] * MOD_UPDATE as f32 / sr)
+                        % std::f32::consts::TAU;
+                    let target = self.size_len[i] + depth * self.mod_phase[i].sin();
+                    self.mod_step[i] = ((target - self.cur_delay[i]) / MOD_UPDATE as f32)
+                        .clamp(-SIZE_SLEW, SIZE_SLEW);
+                }
+                self.mod_left = MOD_UPDATE;
             }
+            let n = self.mod_left.min(len - offset);
+            let (chunk_l, chunk_r) = (&bus_l[offset..offset + n], &bus_r[offset..offset + n]);
+            let d_step = self.mod_step;
 
             for (s, (&in_l, &in_r)) in chunk_l.iter().zip(chunk_r).enumerate() {
                 // Pre-delay (integer, fixed per block). `pre_len < pre_cap`,
@@ -397,18 +412,7 @@ impl Fdn {
                 let mut sum = 0.0f32;
                 for i in 0..N {
                     self.cur_delay[i] += d_step[i];
-                    let d = self.cur_delay[i];
-                    let cap = self.lines[i].len();
-                    let di = d as usize;
-                    let frac = d - di as f32;
-                    let r0 = if self.pos[i] >= di {
-                        self.pos[i] - di
-                    } else {
-                        self.pos[i] + cap - di
-                    };
-                    let r1 = if r0 == 0 { cap - 1 } else { r0 - 1 };
-                    let line = &self.lines[i];
-                    o[i] = line[r0] * (1.0 - frac) + line[r1] * frac;
+                    o[i] = read_linear(&self.lines[i], self.pos[i], self.cur_delay[i]);
                     sum += o[i];
                 }
 
@@ -477,7 +481,8 @@ impl Fdn {
                     }
                 }
             }
-            offset += chunk.len();
+            self.mod_left -= n;
+            offset += n;
         }
     }
 }
@@ -818,6 +823,43 @@ mod tests {
             (small - big).abs() < 3.0,
             "decay slope moved with the size: {small:.1} dB vs {big:.1} dB"
         );
+    }
+
+    /// The tail is a function of the send signal only, not of how the
+    /// caller cuts it into blocks: any cut gives the same samples, bit for
+    /// bit. The modulation segments used to restart at every block, and a
+    /// block size that was not a multiple of [`MOD_UPDATE`] moved the tail
+    /// by −44 dB (re peak) against the same signal in other blocks.
+    #[test]
+    fn the_tail_does_not_depend_on_the_block_cuts() {
+        let bus_l = noise(9_000);
+        let bus_r: Vec<f32> = bus_l.iter().rev().copied().collect();
+        let render = |blocks: &[usize]| -> Vec<f32> {
+            let mut fdn = Fdn::new(48_000);
+            fdn.set_params(&params(0.3, 20.0));
+            let mut out = vec![0.0f32; bus_l.len() * 2];
+            let (mut at, mut b) = (0, 0);
+            while at < bus_l.len() {
+                let n = blocks[b % blocks.len()].min(bus_l.len() - at);
+                b += 1;
+                fdn.process_block(
+                    &bus_l[at..at + n],
+                    &bus_r[at..at + n],
+                    1.0,
+                    &mut out[at * 2..(at + n) * 2],
+                );
+                at += n;
+            }
+            out
+        };
+        let aligned = render(&[1024]);
+        assert!(aligned.iter().any(|&v| v != 0.0), "no tail at all");
+        for blocks in [&[680, 2048][..], &[1, 127, 129, 300], &[4096]] {
+            assert!(
+                aligned == render(blocks),
+                "blocks {blocks:?} changed the tail"
+            );
+        }
     }
 
     /// A size change on a running network slews the lines at `SIZE_SLEW`
