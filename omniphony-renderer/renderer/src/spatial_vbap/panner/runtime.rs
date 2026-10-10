@@ -84,22 +84,6 @@ impl VbapPanner {
         self.n_virtual_centres
     }
 
-    /// The native triangulation this panner pans with, for a model that
-    /// needs the faces' geometry (the volumetric backend measures depth
-    /// against them). `None` under `saf_vbap`, whose layout keeps its own.
-    pub(crate) fn triangulation(
-        &self,
-    ) -> Option<crate::spatial_vbap::vbap_native::TriangulationView<'_>> {
-        #[cfg(not(feature = "saf_vbap"))]
-        {
-            Some(self.source.triangulation())
-        }
-        #[cfg(feature = "saf_vbap")]
-        {
-            None
-        }
-    }
-
     // ── Direct gain computation ──────────────────────────────────────────────
 
     /// Compute panning gains for a source at an ADM cartesian position.
@@ -115,6 +99,14 @@ impl VbapPanner {
     /// Compute panning gains for a source direction (no spread).
     pub fn get_gains(&self, azimuth_deg: f32, elevation_deg: f32) -> Gains {
         self.gains_direct(azimuth_deg, elevation_deg, 0.0)
+    }
+
+    /// Compute panning gains for a source direction with a spread, as
+    /// [`Self::get_gains_cartesian`] does for a position, but for a bare
+    /// direction: nothing clamps it to the horizon. The volumetric backend
+    /// pans the direction opposite an object with it.
+    pub fn get_gains_spread(&self, azimuth_deg: f32, elevation_deg: f32, spread: f32) -> Gains {
+        self.gains_direct(azimuth_deg, elevation_deg, spread)
     }
 
     /// Direct triangulation-based VBAP gains. The native backend stores the

@@ -201,6 +201,7 @@ impl VolumetricBuildPlan {
         let vbap = crate::render_backend::VbapBackend::new(panner, self.vbap.spread_params());
         Ok(Box::new(crate::render_backend::VolumetricBackend::new(
             vbap,
+            &self.vbap.positions,
             &self.speaker_radii,
             self.params,
         )?))

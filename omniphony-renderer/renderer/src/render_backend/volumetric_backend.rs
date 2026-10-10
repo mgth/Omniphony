@@ -22,22 +22,32 @@
 //! inside and outside the hull; outside, the out-of-hull modes apply
 //! unchanged.
 //!
-//! Virtual loudspeakers (the poles that close an open hull, and whatever else
-//! the triangulation adds) have no distance of their own. Each is placed on
-//! the plane of the real loudspeakers it downmixes onto when those are
-//! coplanar and that plane does not run through the listener, else at those
-//! loudspeakers' mean distance. A layout without floor speakers thus gets a
-//! cone of a floor hanging from its bed ring, and a wall closed around a
-//! virtual centre keeps being a flat wall.
+//! The surface is always closed: it is triangulated with the virtual poles
+//! whatever out-of-hull mode the VBAP underneath renders with, so the depth
+//! stays continuous when a direction leaves an open hull (where that VBAP
+//! folds its gains onto the boundary, continuously too). Virtual
+//! loudspeakers (the poles, and the centres closing coplanar faces) have no
+//! distance of their own. Each is placed on the plane of the real
+//! loudspeakers it downmixes onto when those are coplanar and that plane
+//! does not run through the listener, else at those loudspeakers' mean
+//! distance. A layout without floor speakers thus gets a cone of a floor
+//! hanging from its bed ring, and a wall closed around a virtual centre
+//! keeps being a flat wall.
+//!
+//! The antipode is VBAP at the direction opposite the object as it is
+//! panned (below the horizon clamped to it when the panner does not allow
+//! negative z): the opposite direction itself is never clamped, so an
+//! object overhead has its antipode under the floor, not in front.
 
 use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
 use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse, VbapBackend};
 use crate::spatial_vbap::vbap_native::{
-    FACE_HIT_TOLERANCE, TriangulationView, compute_dummy_rings, unit_direction_deg,
+    FACE_HIT_TOLERANCE, compute_dummy_rings, invert_ls_mtx_3d, prepare_triangulation,
+    unit_direction_deg,
 };
-use crate::spatial_vbap::{Gains, adm_to_spherical};
+use crate::spatial_vbap::{Gains, OutOfHullMode, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 use omniphony_geometry::f32::vec3::{cross, dot, length, sub, try_normalize};
 
@@ -113,9 +123,28 @@ const LISTENER_EPS: f32 = 1e-6;
 /// plane) gives no usable distance.
 const PLANE_EPS: f32 = 1e-6;
 
-/// A depth below this is rounding: an object authored on a wall measures a
-/// few ulps inside it, and must still get VBAP's gains bit for bit.
-const DEPTH_EPS: f32 = 1e-5;
+/// A linear depth below this is rounding: an object authored on a wall
+/// measures a few ulps inside it (about `1e-7`), and must still get VBAP's
+/// gains bit for bit. The band is a ramp, not a step, and sits before the
+/// depth curve: a curve below `1` would turn a step of this size into a
+/// large one.
+const DEPTH_EPS: f32 = 1e-6;
+
+/// Read-only view of a triangulation: what the surface is built from.
+#[derive(Clone, Copy)]
+struct TriangulationView<'a> {
+    /// Unit direction of every effective loudspeaker: the real ones first,
+    /// in layout order, then the virtual ones.
+    unit_dirs: &'a [[f32; 3]],
+    /// The faces, as indices into `unit_dirs`.
+    faces: &'a [[usize; 3]],
+    /// The inverse loudspeaker matrix of each face, row-major: `vbap3d`'s
+    /// hit test is `inverse · direction` all above `FACE_HIT_TOLERANCE`.
+    inverse: &'a [[f32; 9]],
+    /// Per effective loudspeaker, whether it is virtual: a pole closing an
+    /// open hull, or the centre of a coplanar face.
+    is_virtual: &'a [bool],
+}
 
 /// How far off a fitted plane a real loudspeaker may sit for its ring to
 /// count as coplanar, relative to the ring's mean distance.
@@ -142,11 +171,48 @@ pub struct LoudspeakerSurface {
 }
 
 impl LoudspeakerSurface {
+    /// The surface of the loudspeakers at `dirs_deg` (`[azimuth, elevation]`
+    /// in degrees, as the panner takes them), real loudspeaker `i` standing
+    /// `radii[i]` from the listener. The triangulation is closed with the
+    /// virtual poles whatever the panner's own out-of-hull mode, so that a
+    /// direction outside an open hull still meets the surface.
+    pub(crate) fn from_directions(dirs_deg: &[[f32; 2]], radii: &[f32]) -> Result<Self> {
+        anyhow::ensure!(
+            dirs_deg.len() == radii.len(),
+            "the loudspeaker surface got {} directions for {} distances",
+            dirs_deg.len(),
+            radii.len()
+        );
+        let tri = prepare_triangulation(dirs_deg, true, true, OutOfHullMode::VirtualPoles)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "the loudspeaker surface cannot be triangulated for {} loudspeakers",
+                    dirs_deg.len()
+                )
+            })?;
+        let inverse = invert_ls_mtx_3d(&tri.u_spkr, &tri.ls_groups);
+        let is_virtual: Vec<bool> = tri
+            .is_dummy
+            .iter()
+            .zip(&tri.is_centre)
+            .map(|(pole, centre)| *pole || *centre)
+            .collect();
+        Self::new(
+            &TriangulationView {
+                unit_dirs: &tri.u_spkr,
+                faces: &tri.ls_groups,
+                inverse: &inverse,
+                is_virtual: &is_virtual,
+            },
+            radii,
+        )
+    }
+
     /// The surface of `view`'s triangulation with every real loudspeaker `i`
     /// at `radii[i]` from the listener, in the room the triangulation was
     /// built in. Virtual loudspeakers get the distance described in the
     /// module docs.
-    pub(crate) fn new(view: &TriangulationView<'_>, radii: &[f32]) -> Result<Self> {
+    fn new(view: &TriangulationView<'_>, radii: &[f32]) -> Result<Self> {
         let n_real = radii.len();
         anyhow::ensure!(
             view.is_virtual.iter().filter(|virt| !**virt).count() == n_real
@@ -300,22 +366,26 @@ pub struct VolumetricBackend {
 }
 
 impl VolumetricBackend {
-    /// Wrap `vbap`, whose real loudspeaker `i` stands `speaker_radii[i]` from
-    /// the listener in the room its triangulation was built in.
-    pub fn new(vbap: VbapBackend, speaker_radii: &[f32], params: VolumetricParams) -> Result<Self> {
+    /// Wrap `vbap`, built on the loudspeakers at `speaker_dirs_deg` (the
+    /// directions the panner was given), real loudspeaker `i` standing
+    /// `speaker_radii[i]` from the listener in the room those directions were
+    /// placed in.
+    pub fn new(
+        vbap: VbapBackend,
+        speaker_dirs_deg: &[[f32; 2]],
+        speaker_radii: &[f32],
+        params: VolumetricParams,
+    ) -> Result<Self> {
         anyhow::ensure!(
-            speaker_radii.len() == vbap.speaker_count(),
-            "the volumetric backend got {} loudspeaker distances for {} loudspeakers",
+            speaker_dirs_deg.len() == vbap.speaker_count()
+                && speaker_radii.len() == vbap.speaker_count(),
+            "the volumetric backend got {} loudspeaker directions and {} distances for {} \
+             loudspeakers",
+            speaker_dirs_deg.len(),
             speaker_radii.len(),
             vbap.speaker_count()
         );
-        let view = vbap.panner().triangulation().ok_or_else(|| {
-            anyhow::anyhow!(
-                "the volumetric backend needs the native VBAP triangulation; this build \
-                 pans with the SAF library, which keeps its own"
-            )
-        })?;
-        let surface = LoudspeakerSurface::new(&view, speaker_radii)?;
+        let surface = LoudspeakerSurface::from_directions(speaker_dirs_deg, speaker_radii)?;
         let depth_curve = if params.depth_curve.is_finite() {
             params.depth_curve.clamp(
                 VolumetricParams::DEPTH_CURVE_MIN,
@@ -383,7 +453,10 @@ impl VolumetricBackend {
             return (0.0, None);
         }
         let linear = (1.0 - radius / ahead).clamp(0.0, 1.0);
-        if linear <= DEPTH_EPS {
+        // The rounding band, as a ramp: zero up to `DEPTH_EPS`, then rising
+        // continuously to one at the listener.
+        let linear = ((linear - DEPTH_EPS) / (1.0 - DEPTH_EPS)).max(0.0);
+        if linear <= 0.0 {
             return (0.0, None);
         }
         let depth = if self.params.depth_curve == 1.0 {
@@ -423,16 +496,23 @@ impl VolumetricBackend {
         gains
     }
 
-    fn central_gains(&self, req: &RenderRequest, at_listener: bool) -> Gains {
+    /// The central distribution for the request's object at `position` (as
+    /// panned: room-scaled, clamped to the horizon when the panner does so).
+    fn central_gains(&self, req: &RenderRequest, position: [f32; 3], at_listener: bool) -> Gains {
         match self.params.central {
             CentralDistribution::Uniform => self.uniform_gains(),
             CentralDistribution::Antipode if at_listener => self.uniform_gains(),
             CentralDistribution::Antipode => {
-                // Mirrored on the authored position, like the diffuse decorator:
-                // the warp of an asymmetric room is not an odd function.
-                let mut mirror = *req;
-                mirror.adm_position = req.adm_position.map(|value| -value);
-                self.vbap.compute_gains(&mirror).gains
+                // The direction opposite the object, in the space `reach` was
+                // measured in, panned as a bare direction: the panner's clamp
+                // applies to positions, and would send the antipode of an
+                // object overhead to the front instead of under the floor.
+                let (azimuth, elevation, _) =
+                    adm_to_spherical(-position[0], -position[1], -position[2]);
+                let spread = self.vbap.effective_spread(req, position);
+                self.vbap
+                    .panner()
+                    .get_gains_spread(azimuth, elevation, spread)
             }
         }
     }
@@ -446,7 +526,7 @@ impl VolumetricBackend {
             return RenderResponse { gains: face };
         }
         let weight = self.central_weight(depth, reach).clamp(0.0, 1.0);
-        let central = self.central_gains(req, reach.is_none());
+        let central = self.central_gains(req, position, reach.is_none());
 
         // Equal-power crossfade, then renormalised: the two sets share
         // loudspeakers, so their coherent sum is not unit power.
@@ -525,18 +605,30 @@ mod tests {
         }
     }
 
-    fn vbap(layout: &SpeakerLayout) -> VbapBackend {
+    fn dirs(layout: &SpeakerLayout) -> Vec<[f32; 2]> {
         let room = RoomRatios::UNIT;
-        let dirs = layout
+        layout
             .spatializable_positions_for_room(room.ratio, room.rear, room.lower, room.center_blend)
-            .0;
-        let panner = VbapPanner::new(&dirs, 5, 5, 0.0, OutOfHullMode::default())
+            .0
+    }
+
+    fn vbap_with(layout: &SpeakerLayout, mode: OutOfHullMode, negative_z: bool) -> VbapBackend {
+        let panner = VbapPanner::new(&dirs(layout), 5, 5, 0.0, mode)
             .expect("triangulation")
-            .with_negative_z(true);
+            .with_negative_z(negative_z);
         VbapBackend::new(panner, VbapSpreadParams::default())
     }
 
-    fn volumetric(layout: &SpeakerLayout, params: VolumetricParams) -> VolumetricBackend {
+    fn vbap(layout: &SpeakerLayout) -> VbapBackend {
+        vbap_with(layout, OutOfHullMode::default(), true)
+    }
+
+    fn volumetric_with(
+        layout: &SpeakerLayout,
+        params: VolumetricParams,
+        mode: OutOfHullMode,
+        negative_z: bool,
+    ) -> VolumetricBackend {
         let room = RoomRatios::UNIT;
         let radii = layout.spatializable_radii_for_room(
             room.ratio,
@@ -544,7 +636,25 @@ mod tests {
             room.lower,
             room.center_blend,
         );
-        VolumetricBackend::new(vbap(layout), &radii, params).expect("volumetric backend")
+        VolumetricBackend::new(
+            vbap_with(layout, mode, negative_z),
+            &dirs(layout),
+            &radii,
+            params,
+        )
+        .expect("volumetric backend")
+    }
+
+    fn volumetric(layout: &SpeakerLayout, params: VolumetricParams) -> VolumetricBackend {
+        volumetric_with(layout, params, OutOfHullMode::default(), true)
+    }
+
+    fn l2_step(a: &Gains, b: &Gains) -> f32 {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y) * (x - y))
+            .sum::<f32>()
+            .sqrt()
     }
 
     fn with_central(central: CentralDistribution) -> VolumetricParams {
@@ -899,10 +1009,151 @@ mod tests {
     #[test]
     fn the_surface_refuses_mismatched_radii() {
         let layout = layout_714();
-        let err = VolumetricBackend::new(vbap(&layout), &[1.0; 3], VolumetricParams::default())
-            .err()
-            .expect("three distances for eleven loudspeakers");
-        assert!(err.to_string().contains("3 loudspeaker distances"), "{err}");
+        let err = VolumetricBackend::new(
+            vbap(&layout),
+            &dirs(&layout),
+            &[1.0; 3],
+            VolumetricParams::default(),
+        )
+        .err()
+        .expect("three distances for eleven loudspeakers");
+        assert!(err.to_string().contains("3 distances"), "{err}");
+    }
+
+    /// Review finding: with the VBAP underneath in a mode that leaves the
+    /// hull open (`fade`, `blend`), a direction dipping below the horizon
+    /// used to meet no surface at all, and the depth dropped to zero in one
+    /// step. The surface is closed with the poles whatever the mode.
+    #[test]
+    fn the_depth_surface_is_closed_whatever_the_out_of_hull_mode() {
+        let layout = layout_714();
+        for mode in [
+            OutOfHullMode::Fade,
+            OutOfHullMode::Blend {
+                power: OutOfHullMode::DEFAULT_BLEND_POWER,
+            },
+            OutOfHullMode::VirtualPoles,
+        ] {
+            let model = volumetric_with(
+                &layout,
+                with_central(CentralDistribution::Antipode),
+                mode,
+                true,
+            );
+            let plain = vbap_with(&layout, mode, true);
+            let just_below = model.depth(&request([-0.3, 0.5, -0.0005]));
+            assert!(
+                (just_below - 0.5).abs() < 0.01,
+                "{mode:?}: depth just below the horizon {just_below}, expected about 0.5"
+            );
+            // The step the volumetric gains take is bounded by the steps the
+            // VBAP underneath takes on its own, at the object and at its
+            // antipode (its fold is what it is): the depth and the antipode
+            // add none of their own.
+            let mut previous: Option<(Gains, Gains, Gains)> = None;
+            for step in 0..=40 {
+                let z = 0.01 - step as f64 * 0.0005;
+                let req = request([-0.3, 0.5, z]);
+                let gains = model.compute_gains(&req).gains;
+                let reference = plain.compute_gains(&req).gains;
+                let opposite = plain.compute_gains(&request([0.3, -0.5, -z])).gains;
+                if let Some((previous, previous_reference, previous_opposite)) = &previous {
+                    let jump = l2_step(&gains, previous);
+                    let own = l2_step(&reference, previous_reference);
+                    let across = l2_step(&opposite, previous_opposite);
+                    assert!(
+                        jump <= own + across + 0.01,
+                        "{mode:?}: gains stepped by {jump} at z = {z}, VBAP alone steps by \
+                         {own} there and {across} at the antipode"
+                    );
+                }
+                previous = Some((gains, reference, opposite));
+            }
+        }
+    }
+
+    /// Review finding: the antipode of an object overhead is under the
+    /// floor, even when the panner clamps *positions* to the horizon.
+    #[test]
+    fn the_antipode_is_the_opposite_direction_even_with_the_horizon_clamp() {
+        let layout = octahedron();
+        let (c, t, d) = (
+            index_of(&layout, "C"),
+            index_of(&layout, "T"),
+            index_of(&layout, "D"),
+        );
+        let model = volumetric_with(
+            &layout,
+            with_central(CentralDistribution::Antipode),
+            OutOfHullMode::default(),
+            false,
+        );
+        let gains = model.compute_gains(&request([0.0, 0.0, 0.5])).gains;
+        assert!(
+            (gains[t] * gains[t] - 0.75).abs() < 1e-3,
+            "top {}",
+            gains[t]
+        );
+        assert!(
+            (gains[d] * gains[d] - 0.25).abs() < 1e-3,
+            "bottom {}",
+            gains[d]
+        );
+        assert!(
+            gains[c].abs() < 1e-4,
+            "front should be silent, got {}",
+            gains[c]
+        );
+    }
+
+    /// Review finding: the rounding band used to cut the depth *before* the
+    /// curve, so a curve below one turned a negligible linear depth into a
+    /// large gain that vanished in one step. The band is a ramp, and the
+    /// curve bends what comes out of it.
+    #[test]
+    fn the_rounding_band_stays_continuous_under_a_bent_curve() {
+        let layout = octahedron();
+        let b = index_of(&layout, "B");
+        let model = volumetric(
+            &layout,
+            VolumetricParams {
+                central: CentralDistribution::Antipode,
+                depth_curve: 0.25,
+            },
+        );
+        let inside = model.compute_gains(&request([0.0, 0.999989, 0.0])).gains;
+        let nearer = model.compute_gains(&request([0.0, 0.999991, 0.0])).gains;
+        assert!(
+            inside[b] > 0.1,
+            "a quarter-root curve lifts a tiny depth: back {}",
+            inside[b]
+        );
+        let jump = l2_step(&inside, &nearer);
+        assert!(jump < 0.02, "gains stepped by {jump} across two microns");
+    }
+
+    /// Objects authored on the walls and the ceiling, all around: every one
+    /// reads a depth of exactly zero, so the rounding band covers what the
+    /// plane arithmetic leaves.
+    #[test]
+    fn every_wall_point_reads_zero_depth() {
+        let model = volumetric(&layout_714(), VolumetricParams::default());
+        for az_step in 0..36 {
+            let az = (az_step as f64 * 10.0 + 3.0).to_radians();
+            for z in [0.0, 0.5, 1.0] {
+                // On the wall: scaled so the larger horizontal coordinate is 1;
+                // on the ceiling: z = 1 and the point anywhere inside it.
+                let (x, y) = (az.sin(), az.cos());
+                let position = if z < 1.0 {
+                    let scale = 1.0 / x.abs().max(y.abs());
+                    [x * scale, y * scale, z]
+                } else {
+                    [x * 0.6, y * 0.6, 1.0]
+                };
+                let depth = model.depth(&request(position));
+                assert_eq!(depth, 0.0, "{position:?} is on the surface");
+            }
+        }
     }
 
     /// A ring of real loudspeakers on one wall, as the triangulation closes a

@@ -4,7 +4,7 @@
 
 use super::{Gains, normalized_spread_to_degrees};
 use crate::spatial_vbap::vbap_native::{
-    DummyRing, OutOfHullMode, TriangulationView, invert_ls_mtx_3d, prepare_triangulation, vbap3d,
+    DummyRing, OutOfHullMode, invert_ls_mtx_3d, prepare_triangulation, vbap3d,
 };
 
 /// Pure-Rust equivalent of `SpartaVbapLayout`.
@@ -22,7 +22,7 @@ pub(crate) struct NativeVbapLayout {
     /// Total speaker count used for triangulation (real + virtual poles +
     /// virtual centres).
     n_eff: usize,
-    /// Unit direction of every effective speaker, real ones first.
+    #[allow(dead_code)]
     u_spkr: Vec<[f32; 3]>,
     ls_groups: Vec<[usize; 3]>,
     layout_inv_mtx: Vec<[f32; 9]>,
@@ -30,10 +30,6 @@ pub(crate) struct NativeVbapLayout {
     /// for triangulation. `vbap3d` uses this to fold dummy gain back into real
     /// speakers of the matched triangle instead of letting it be silently dropped.
     is_dummy: Vec<bool>,
-    /// Per effective speaker, whether it is virtual at all: a pole or a
-    /// coplanar-face centre. The real speakers come first, so this is the
-    /// index test; kept as flags for the triangulation view.
-    is_virtual: Vec<bool>,
     /// Out-of-hull rendering mode, baked at construction (it shapes the
     /// triangulation itself in `VirtualPoles`).
     mode: OutOfHullMode,
@@ -80,20 +76,9 @@ impl NativeVbapLayout {
             ls_groups: tri.ls_groups,
             layout_inv_mtx,
             is_dummy: tri.is_dummy,
-            is_virtual: (0..n_eff).map(|index| index >= n_real).collect(),
             mode,
             dummy_rings,
         })
-    }
-
-    /// The triangulation, for a model that sweeps the faces itself.
-    pub(crate) fn triangulation(&self) -> TriangulationView<'_> {
-        TriangulationView {
-            unit_dirs: &self.u_spkr,
-            faces: &self.ls_groups,
-            inverse: &self.layout_inv_mtx,
-            is_virtual: &self.is_virtual,
-        }
     }
 
     /// Compute VBAP gains for a single source direction and spread.

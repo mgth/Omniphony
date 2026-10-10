@@ -43,7 +43,7 @@ unchanged outside it.
 
 | Value | What plays the central share | Character |
 |---|---|---|
-| `antipode` (default) | VBAP at the opposite direction: the loudspeakers facing the object across the listener | The object stays a pair of images, the near wall and the far wall. Their power centroid is kept on the object, so they meet at equal level at the listener, not before. |
+| `antipode` (default) | VBAP at the direction opposite the object as it is panned: the loudspeakers facing it across the listener. The opposite direction is panned as a bare direction, never clamped to the horizon, so an object overhead has its antipode under the floor. | The object stays a pair of images, the near wall and the far wall. Their power centroid is kept on the object, so they meet at equal level at the listener, not before. |
 | `uniform` | Equal power over every spatialized loudspeaker | The image dissolves into the whole array as the object nears the listener. Continuous through the listener's position. |
 
 With `antipode` the opposite direction is undefined at the listener's exact
@@ -59,13 +59,23 @@ holds on longer. `1` is linear in the distance along the ray.
 
 ### Virtual loudspeakers
 
-The triangulation closes an open hull with virtual loudspeakers (the poles,
-on a layout without floor or ceiling), which have no distance of their own.
-Each is placed on the plane of the real loudspeakers it downmixes onto when
-those are coplanar and that plane does not run through the listener, else at
-those loudspeakers' mean distance. A 7.1.4 without floor speakers thus gets
-a cone of a floor hanging from its bed ring; a wall closed around a virtual
-centre keeps being a flat wall.
+The surface is triangulated on its own, always closed with the virtual
+poles, whatever out-of-hull mode the VBAP underneath renders with: a
+direction that leaves an open hull (where that VBAP folds its gains onto the
+boundary) still meets the surface, so the depth stays continuous there.
+Virtual loudspeakers (the poles, and the centres that close a coplanar face)
+have no distance of their own. Each is placed on the plane of the real
+loudspeakers it downmixes onto when those are coplanar and that plane does
+not run through the listener, else at those loudspeakers' mean distance. A
+7.1.4 without floor speakers thus gets a cone of a floor hanging from its
+bed ring; a wall closed around a virtual centre keeps being a flat wall.
+
+### Rounding
+
+An object authored on a wall measures a few ulps inside it. Linear depths
+below `1e-6` are taken as rounding, through a ramp rather than a step, and
+before the depth curve: a curve below `1` would turn a step of that size into
+a large one. On the surface the gains are therefore VBAP's exactly.
 
 ### The VBAP underneath
 
@@ -76,9 +86,11 @@ plain VBAP one. The Studio shows both sets on the backend's parameter form.
 
 ## What it costs
 
-One more sweep of the faces per object (a 3×3 product per face, as VBAP's
-own hit test), one dot product for the plane, and with `antipode` a second
-VBAP evaluation at the mirrored position. No allocation per request. The
+Two sweeps of the surface per object (a 3×3 product per face, as VBAP's own
+hit test: one ahead, one behind for the antipode's weight), one dot product
+per plane, and with `antipode` a second VBAP evaluation at the opposite
+direction. No allocation per request; the surface is built once per
+topology. The
 depth is a pure function of position, so both sampled tables hold it, the
 polar one on its distance axis.
 

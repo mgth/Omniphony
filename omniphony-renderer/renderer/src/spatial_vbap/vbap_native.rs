@@ -42,24 +42,6 @@ pub(crate) fn unit_direction_deg(az_deg: f32, el_deg: f32) -> [f32; 3] {
 /// that share it rather than in neither.
 pub(crate) const FACE_HIT_TOLERANCE: f32 = -0.001;
 
-/// Read-only view of a triangulation, for a model that pans with VBAP's faces
-/// but needs their geometry too (the volumetric backend measures depth
-/// against them).
-#[derive(Clone, Copy)]
-pub struct TriangulationView<'a> {
-    /// Unit direction of every effective loudspeaker: the real ones first,
-    /// in layout order, then the virtual ones.
-    pub unit_dirs: &'a [[f32; 3]],
-    /// The faces, as indices into `unit_dirs`.
-    pub faces: &'a [[usize; 3]],
-    /// The inverse loudspeaker matrix of each face, row-major: `vbap3d`'s
-    /// hit test is `inverse · direction` all above [`FACE_HIT_TOLERANCE`].
-    pub inverse: &'a [[f32; 9]],
-    /// Per effective loudspeaker, whether it is virtual: a pole closing an
-    /// open hull, or the centre of a coplanar face.
-    pub is_virtual: &'a [bool],
-}
-
 /// Normalise a 3-vector; returns the original vector if the norm is tiny.
 #[inline]
 fn normalise3(v: [f32; 3]) -> [f32; 3] {
