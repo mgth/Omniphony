@@ -797,6 +797,7 @@
   "status.noEngine.body": "Studio は Omniphony のオーディオエンジンのコントロールパネルですが、操作するエンジンがまだありません。ここで起動するか、エンジンを内蔵した mpv-omniphony で何かを再生してください。",
   "status.noEngine.bodyRemote": "Studio が操作するように設定されたオーディオエンジンから応答がありません。そのエンジンを起動するか、エンジンを内蔵した mpv-omniphony で何かを再生してください。",
   "status.noEngine.start": "オーディオエンジンを起動",
+  "status.noEngine.starting": "オーディオエンジンを起動しています…",
   "status.noEngine.getPlayer": "mpv-omniphony を入手",
   "status.noEngine.autostartFailed": "エンジンの自動起動に失敗しました: {error}\nログ: {log}",
   "status.error": "エラー",

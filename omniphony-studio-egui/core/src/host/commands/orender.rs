@@ -1033,6 +1033,7 @@ fn spawn_orender_process(
         let mut wd = state.watchdog.lock().unwrap();
         wd.last_spawn_at = Some(std::time::Instant::now());
         wd.check_requested_at = None;
+        wd.awaiting_answer = true;
     }
 
     Ok(serde_json::json!({

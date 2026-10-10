@@ -591,6 +591,84 @@ pub fn status_dot(ui: &mut Ui, colour: Color32, text: impl Into<egui::WidgetText
     });
 }
 
+/// What a [`progress_button`] shows behind its label.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ButtonProgress {
+    /// A plain button.
+    Idle,
+    /// Filled from the left up to this share, 0 to 1.
+    Fill(f32),
+    /// Working on it: a band sweeps across, and the button takes no clicks.
+    Busy,
+}
+
+/// How long the busy band takes to cross the button.
+const BUSY_SWEEP_SECS: f64 = 1.4;
+/// The busy band's width, as a share of the button's.
+const BUSY_BAND: f32 = 0.35;
+
+/// A button with its progress drawn behind the label, inside its own rect.
+///
+/// `labels` lists every label the button can show: it takes the width of the
+/// widest, so a label that changes with the progress never moves what sits
+/// beside it. The fill goes under the button's own (translucent) frame, in a
+/// slot reserved before it, so the label stays on top.
+pub fn progress_button(
+    ui: &mut Ui,
+    text: &str,
+    labels: &[&str],
+    progress: ButtonProgress,
+) -> Response {
+    let widest = labels
+        .iter()
+        .copied()
+        .chain(std::iter::once(text))
+        .map(|label| {
+            egui::WidgetText::from(label)
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Button,
+                )
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max);
+    let width = widest + 2.0 * ui.spacing().button_padding.x;
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let busy = progress == ButtonProgress::Busy;
+    let response = ui.add_enabled(!busy, egui::Button::new(text).min_size(vec2(width, 0.0)));
+    let rect = response.rect;
+    let span = match progress {
+        ButtonProgress::Idle => None,
+        ButtonProgress::Fill(share) => Some((
+            rect.left(),
+            egui::lerp(rect.x_range(), share.clamp(0.0, 1.0)),
+        )),
+        ButtonProgress::Busy => {
+            let phase = (ui.input(|i| i.time) / BUSY_SWEEP_SECS).fract() as f32;
+            let band = rect.width() * BUSY_BAND;
+            let left = egui::lerp((rect.left() - band)..=rect.right(), phase);
+            Some((left, left + band))
+        }
+    };
+    if let Some((left, right)) = span
+        && right > left
+    {
+        let clip = egui::Rect::from_x_y_ranges(left..=right, rect.y_range()).intersect(rect);
+        ui.painter().with_clip_rect(clip).set(
+            slot,
+            egui::epaint::RectShape::filled(
+                rect,
+                ui.visuals().widgets.inactive.corner_radius,
+                theme::ACCENT.gamma_multiply(0.3),
+            ),
+        );
+    }
+    response
+}
+
 /// Severity of a banner row (`#bridgeErrorBanner`, `#foreignRendererBanner`,
 /// `#updateAvailableBanner`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1233,5 +1311,122 @@ mod coord_table_tests {
             output.textures_delta.clear();
             assert!(taken <= width + 0.5, "{taken} pt of {width}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One frame with a progress button showing `text` in `progress`, after
+    /// `events`: its rect, and whether it was clicked.
+    fn frame(
+        ctx: &egui::Context,
+        text: &str,
+        progress: ButtonProgress,
+        events: Vec<egui::Event>,
+    ) -> (egui::Rect, bool) {
+        let mut out = (egui::Rect::NOTHING, false);
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(400.0, 100.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let response =
+                    progress_button(ui, text, &["Start", "Starting the engine…"], progress);
+                out = (response.rect, response.clicked());
+            },
+        );
+        output.textures_delta.clear();
+        out
+    }
+
+    fn click(ctx: &egui::Context, text: &str, progress: ButtonProgress, at: egui::Pos2) -> bool {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(ctx, text, progress, vec![egui::Event::PointerMoved(at)]);
+        frame(ctx, text, progress, vec![button(true)]);
+        frame(ctx, text, progress, vec![button(false)]).1
+    }
+
+    #[test]
+    fn the_button_keeps_its_rect_whatever_it_shows() {
+        let ctx = egui::Context::default();
+        let rect = frame(&ctx, "Start", ButtonProgress::Idle, Vec::new()).0;
+        for (text, progress) in [
+            ("Start", ButtonProgress::Fill(0.0)),
+            ("Start", ButtonProgress::Fill(0.6)),
+            ("Start", ButtonProgress::Fill(1.0)),
+            ("Starting the engine…", ButtonProgress::Busy),
+            ("Start", ButtonProgress::Idle),
+        ] {
+            assert_eq!(
+                frame(&ctx, text, progress, Vec::new()).0,
+                rect,
+                "{text} {progress:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fill_is_painted_under_the_label_up_to_its_share() {
+        let ctx = egui::Context::default();
+        let fill = theme::ACCENT.gamma_multiply(0.3);
+        let painted = |progress| {
+            let mut rect = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                rect = progress_button(ui, "Start", &[], progress).rect;
+            });
+            output.textures_delta.clear();
+            let fills: Vec<_> = output
+                .shapes
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| matches!(&s.shape, egui::Shape::Rect(r) if r.fill == fill))
+                .map(|(i, s)| (i, s.clip_rect))
+                .collect();
+            let label = output
+                .shapes
+                .iter()
+                .position(|s| matches!(s.shape, egui::Shape::Text(_)))
+                .expect("a label");
+            (rect, fills, label)
+        };
+        let (rect, fills, label) = painted(ButtonProgress::Fill(0.5));
+        let [(index, clip)] = fills[..] else {
+            panic!("one fill expected, got {fills:?}")
+        };
+        assert!(index < label, "the fill must sit under the label");
+        assert!((clip.left() - rect.left()).abs() < 0.5);
+        assert!((clip.right() - rect.center().x).abs() < 0.5);
+        assert!(painted(ButtonProgress::Idle).1.is_empty());
+        assert!(painted(ButtonProgress::Fill(0.0)).1.is_empty());
+        let (rect, fills, _) = painted(ButtonProgress::Busy);
+        assert!(fills.iter().all(|(_, clip)| rect.contains_rect(*clip)));
+    }
+
+    #[test]
+    fn a_counting_down_button_takes_the_first_click_and_a_busy_one_none() {
+        let ctx = egui::Context::default();
+        let centre = frame(&ctx, "Start", ButtonProgress::Idle, Vec::new())
+            .0
+            .center();
+        assert!(click(&ctx, "Start", ButtonProgress::Fill(0.4), centre));
+        assert!(click(&ctx, "Start", ButtonProgress::Idle, centre));
+        assert!(!click(
+            &ctx,
+            "Starting the engine…",
+            ButtonProgress::Busy,
+            centre
+        ));
     }
 }

@@ -797,6 +797,7 @@
   "status.noEngine.body": "Studio est le panneau de contrôle du moteur audio d'Omniphony, et il n'y a pas encore de moteur à piloter. Lance-le ici, ou lis quelque chose dans mpv-omniphony, qui embarque le sien.",
   "status.noEngine.bodyRemote": "Studio n'obtient pas de réponse du moteur audio qu'il doit piloter. Lance ce moteur, ou lis quelque chose dans mpv-omniphony, qui embarque le sien.",
   "status.noEngine.start": "Lancer le moteur audio",
+  "status.noEngine.starting": "Lancement du moteur audio…",
   "status.noEngine.getPlayer": "Obtenir mpv-omniphony",
   "status.noEngine.autostartFailed": "Le démarrage automatique du moteur a échoué : {error}\nSon journal : {log}",
   "status.error": "Erreur",
