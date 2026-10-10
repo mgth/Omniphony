@@ -51,9 +51,17 @@ pub trait GainModel: Send + Sync + 'static {
     fn backend_label(&self) -> &'static str;
     fn capabilities(&self) -> BackendCapabilities;
     fn speaker_count(&self) -> usize;
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
+    // Optional: defaults to no working memory.
+    fn new_scratch(&self) -> GainScratch;
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]);
     // Optional: defaults to `compute_gains`.
-    fn compute_gains_with_hint(&self, req: &RenderRequest, hint: &mut NeighbourHint) -> RenderResponse;
+    fn compute_gains_with_hint(
+        &self,
+        req: &RenderRequest,
+        hint: &mut NeighbourHint,
+        scratch: &mut GainScratch,
+        out: &mut [f32],
+    );
     fn save_to_file(&self, path: &Path, speaker_layout: &SpeakerLayout) -> Result<()>;
 }
 ```
@@ -61,6 +69,34 @@ pub trait GainModel: Send + Sync + 'static {
 `backend_id` is the stable selection key (e.g. `"my_model"`); `backend_label` is
 what the UI shows. The audio hot path runs `compute_gains` through a
 `PreparedRenderEngine` wrapping your model — you never wire that up yourself.
+
+`compute_gains` writes one gain per speaker into `out`, the caller's buffer:
+`out.len() == speaker_count()`. Nothing is returned and nothing is sized by a
+constant: the buffers follow the layout.
+
+`new_scratch` only matters to a model that needs working memory besides `out`:
+a second gain set to blend with, the arrays of a solver. The model is shared
+between threads (`&self`), so it cannot keep that memory itself; it describes
+it once, sized for its layout, and every caller hands its own back as `scratch`
+on each call:
+
+```rust
+struct MyScratch { other: Vec<f32> }
+
+fn new_scratch(&self) -> GainScratch {
+    GainScratch::new(MyScratch { other: vec![0.0; self.speaker_count()] })
+}
+
+fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+    let Some(MyScratch { other }) = scratch.state() else {
+        return foreign_scratch(out); // not a scratch this model made: silence
+    };
+    // ... fill `out`, using `other` ...
+}
+```
+
+A model that wraps another keeps the inner model's scratch inside its own and
+passes it down. Leave the default in place otherwise, and ignore `scratch`.
 
 `compute_gains_with_hint` only matters to a model with an iterative solver. A
 precomputed table is built row by row, the cells of a row in order, and this is
@@ -74,21 +110,24 @@ hint. Leave the default in place otherwise — it ignores the hint.
 `compute_gains` runs in the realtime audio thread, once per object per band per
 frame. It **MUST**:
 
-- **not panic** — return a best-effort gain vector instead (e.g. zeroed);
+- **not panic** — write a best-effort gain vector instead (e.g. zeros);
 - **not allocate** on the heap, lock, or block;
-- return exactly `speaker_count()` finite gains.
+- write every one of the `speaker_count()` gains of `out`, all finite. `out`
+  arrives holding whatever the caller last had there, not zeros: a gain left
+  unwritten is a stale one.
 
 Do any expensive setup (triangulation, lookup tables, caches) when the model is
-*built*, not here. As a safety net the engine smoke-tests every freshly built
-backend on a few reference positions on the build thread: a model that panics or
-returns a malformed gain vector is rejected at topology build time (surfaced to
-Studio as a recompute error) instead of crashing the audio thread. That guard
-only covers the build-time probe, so honouring the contract above is still
-required for correct realtime behaviour.
+*built*, not here, and size any working memory in `new_scratch`. As a safety net
+the engine smoke-tests every freshly built backend on a few reference positions
+on the build thread: a model that panics, leaves a gain unwritten or writes a
+non-finite one is rejected at topology build time (surfaced to Studio as a
+recompute error) instead of crashing the audio thread. That guard only covers
+the build-time probe, so honouring the contract above is still required for
+correct realtime behaviour.
 
-Use the stack-backed `Gains` buffer for output (`Gains::zeroed(n)` does not
-allocate). See `example_backend`'s `compute_gains` for a complete, allocation-free
-example.
+See `example_backend`'s `compute_gains` for a complete, allocation-free
+example, and `backend_conformance` for the checks a backend's own tests can run
+(a gain left unwritten and a heap allocation included).
 
 ## Step 2 — Declare capabilities
 

@@ -13,6 +13,29 @@ use crate::render_backend::PreparedRenderEngine;
 use crate::spatial_renderer::tests::{build_table_renderer, noise_block};
 use crate::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
 
+/// The reference keeps a source's gains as the mix it stands for did: one
+/// vector per band, each one gain per speaker.
+type Gains = Vec<f32>;
+
+fn zeroed(speakers: usize) -> Gains {
+    vec![0.0; speakers]
+}
+
+/// The stage's band gains as the reference's vectors.
+fn band_sets(gains: &BandGains) -> Vec<Gains> {
+    gains.bands().map(<[f32]>::to_vec).collect()
+}
+
+/// The reference's vectors as the stage's band gains.
+fn flat(sets: &[Gains]) -> BandGains {
+    let mut gains = BandGains::new();
+    gains.shape(sets.len(), sets.first().map_or(0, Vec::len));
+    for (band, set) in gains.bands_mut().zip(sets) {
+        band.copy_from_slice(set);
+    }
+    gains
+}
+
 /// Everything the mix keeps per channel, for the reference: it runs against
 /// the same stage as `mix_channels` (bands, table, crossover bank) but on its
 /// own copy of the channel history.
@@ -95,7 +118,7 @@ fn reference_mix_channels(
                     output[out_base + speaker_idx] += sample * gain;
                 }
             }
-            let mut gains = Gains::zeroed(num_speakers);
+            let mut gains = zeroed(num_speakers);
             gains[..num_speakers].copy_from_slice(&routing);
             last_gains.push((ch, vec![gains], Vec::new()));
             continue;
@@ -128,16 +151,24 @@ fn reference_mix_channels(
         };
 
         let render_params = frame.ramp_context.render_params();
-        let lookup = |position: [f64; 3], size: [f32; 3], out: &mut Vec<Gains>| {
+        // The reference reads the bands on working memory of its own.
+        let mut band_scratches: Vec<_> = stage
+            .render_bands
+            .iter()
+            .map(BandRenderer::new_scratch)
+            .collect();
+        let mut read = BandGains::new();
+        let mut lookup = |position: [f64; 3], size: [f32; 3], out: &mut Vec<Gains>| {
             SpeakerRenderStage::fill_band_gains(
                 &stage.unified_table,
                 None,
-                &stage.render_bands,
+                (&stage.render_bands, &mut band_scratches),
                 render_params,
                 position,
                 size,
-                out,
-            )
+                &mut read,
+            );
+            *out = band_sets(&read);
         };
         let idle = RampProgress {
             completed_units: 0,
@@ -171,7 +202,7 @@ fn reference_mix_channels(
                 ramp.advance_ramp(sample_length as u64);
             }
             RampMode::Sample => {
-                band_gains.resize(stage.render_bands.len(), Gains::zeroed(num_speakers));
+                band_gains.resize(stage.render_bands.len(), zeroed(num_speakers));
                 let mut last_pos = [f64::NAN; 3];
                 let mut last_size = [f32::NAN; 3];
                 for sample_idx in 0..sample_length {
@@ -202,28 +233,23 @@ fn reference_mix_channels(
                     &mut state.interp_end,
                 );
                 let n_bands = state.interp_end.len();
-                if channel.interp_prev_gains.len() != n_bands {
-                    channel.interp_prev_gains.clear();
-                    channel
-                        .interp_prev_gains
-                        .extend_from_slice(&state.interp_end);
+                let mut prev = band_sets(&channel.interp_prev_gains);
+                if prev.len() != n_bands {
+                    prev = state.interp_end.clone();
                 }
-                band_gains.resize(n_bands, Gains::zeroed(num_speakers));
+                band_gains.resize(n_bands, zeroed(num_speakers));
                 let inv_n = 1.0 / sample_length.max(1) as f32;
                 for sample_idx in 0..sample_length {
                     let f = (sample_idx as f32 + 1.0) * inv_n;
                     for (b, slot) in band_gains.iter_mut().enumerate() {
-                        let (s0, s1) = (&channel.interp_prev_gains[b], &state.interp_end[b]);
+                        let (s0, s1) = (&prev[b], &state.interp_end[b]);
                         for (spk, g) in slot[..num_speakers].iter_mut().enumerate() {
                             *g = s0[spk] * (1.0 - f) + s1[spk] * f;
                         }
                     }
                     mix_sample(output, sample_idx, &band_gains);
                 }
-                channel.interp_prev_gains.clear();
-                channel
-                    .interp_prev_gains
-                    .extend_from_slice(&state.interp_end);
+                channel.interp_prev_gains = flat(&state.interp_end);
             }
         }
         last_gains.push((ch, band_gains, band_sq));
@@ -404,7 +430,7 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
         }
         if measure_breakdown {
             for (ch, band_gains, band_sq) in &want_gains {
-                let mut summed = Gains::zeroed(num_speakers);
+                let mut summed = zeroed(num_speakers);
                 for gains in band_gains {
                     for (sum, &g) in summed.iter_mut().zip(gains.iter()) {
                         *sum += g;
@@ -425,7 +451,7 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
                         .object_band_gains
                         .iter()
                         .find(|(idx, _)| idx == ch)
-                        .map(|(_, bands)| bands.iter().map(|g| bits(g)).collect::<Vec<_>>());
+                        .map(|(_, bands)| bands.bands().map(bits).collect::<Vec<_>>());
                     assert_eq!(
                         metered_bands,
                         Some(band_gains.iter().map(|g| bits(g)).collect()),
@@ -528,7 +554,7 @@ fn bus_sums_match_a_sample_major_accumulation() {
     let gains_for = |seed: u32| -> Vec<Gains> {
         (0..BANDS as u32)
             .map(|b| {
-                let mut g = Gains::zeroed(SPEAKERS);
+                let mut g = zeroed(SPEAKERS);
                 for (k, v) in g.iter_mut().enumerate() {
                     *v = gain(seed * 131 + b * 17 + k as u32);
                 }
@@ -572,13 +598,17 @@ fn bus_sums_match_a_sample_major_accumulation() {
         match shape {
             0 => {
                 // Two runs, to cover a range that does not start at zero.
-                bus.add_constant(&bands, &start, 0..5);
-                bus.add_constant(&bands, &start, 5..BLOCK);
+                bus.add_constant(&bands, &flat(&start), 0..5);
+                bus.add_constant(&bands, &flat(&start), 5..BLOCK);
             }
-            1 => bus.add_lerp(&bands, &start, &end, &fractions, 0..BLOCK),
+            1 => bus.add_lerp(&bands, &flat(&start), &flat(&end), &fractions, 0..BLOCK),
             _ => {
                 for sample_idx in 0..BLOCK {
-                    bus.add_constant(&bands, &gains_at(sample_idx), sample_idx..sample_idx + 1);
+                    bus.add_constant(
+                        &bands,
+                        &flat(&gains_at(sample_idx)),
+                        sample_idx..sample_idx + 1,
+                    );
                 }
             }
         }
@@ -620,8 +650,14 @@ fn object_test_is_bit_identical_to_the_sample_major_mix() {
             distance_model: crate::spatial_vbap::DistanceModel::Linear,
         };
         let mut prev: Vec<Gains> = Vec::new();
-        let mut end: Vec<Gains> = Vec::new();
+        let mut read = BandGains::new();
         let mut filter_states: Option<CrossoverStates> = None;
+        // The reference reads the bands on working memory of its own.
+        let mut band_scratches: Vec<_> = stage
+            .render_bands
+            .iter()
+            .map(BandRenderer::new_scratch)
+            .collect();
 
         for block in 0..12 {
             let az = (block as f32 * 23.0).to_radians();
@@ -647,12 +683,13 @@ fn object_test_is_bit_identical_to_the_sample_major_mix() {
             SpeakerRenderStage::fill_band_gains(
                 &stage.unified_table,
                 None,
-                &stage.render_bands,
+                (&stage.render_bands, &mut band_scratches),
                 render_params,
                 position.map(|v| v as f64),
                 test.size,
-                &mut end,
+                &mut read,
             );
+            let end = band_sets(&read);
             if prev.len() != end.len() {
                 prev = end.clone();
             }
@@ -669,7 +706,7 @@ fn object_test_is_bit_identical_to_the_sample_major_mix() {
                 };
                 let frame = &mut want[sample_idx * num_speakers..(sample_idx + 1) * num_speakers];
                 for (b, (s0, s1)) in prev.iter().zip(&end).enumerate() {
-                    let mut gains = Gains::zeroed(num_speakers);
+                    let mut gains = zeroed(num_speakers);
                     for (spk, g) in gains.iter_mut().enumerate() {
                         *g = s0[spk] * (1.0 - f) + s1[spk] * f;
                     }
@@ -758,8 +795,8 @@ impl RampProbe {
         let bands = vec![vec![1.0f32; len]];
         let mut planar = vec![0.0f32; SPEAKERS * len];
         let mut output = vec![0.0f32; SPEAKERS * len];
-        let mut band_gains = vec![Gains::zeroed(SPEAKERS)];
-        let mut segment_end = Vec::new();
+        let mut band_gains = flat(&[zeroed(SPEAKERS)]);
+        let mut segment_end = BandGains::new();
         let mut lookups = 0;
         let mut bus = MixBus::silent(&mut planar, &mut output, len, SPEAKERS);
         // The positions the ramp goes through, read off a copy of it.
@@ -789,11 +826,7 @@ impl RampProbe {
             &mut segment_end,
             |position, _size, out| {
                 lookups += 1;
-                out.clear();
-                let mut gains = Gains::zeroed(SPEAKERS);
-                gains.set(0, position[0] as f32);
-                gains.set(1, 1.0 - position[0] as f32);
-                out.push(gains);
+                *out = flat(&[vec![position[0] as f32, 1.0 - position[0] as f32]]);
             },
         );
         bus.finish();
@@ -869,8 +902,8 @@ fn stride_keeps_segment_ends_and_settled_samples_exact() {
             let bands = vec![vec![1.0f32; BLOCK]];
             let mut planar = vec![0.0f32; BLOCK];
             let mut output = vec![0.0f32; BLOCK];
-            let mut band_gains = vec![Gains::zeroed(1)];
-            let mut segment_end = Vec::new();
+            let mut band_gains = flat(&[zeroed(1)]);
+            let mut segment_end = BandGains::new();
             let mut bus = MixBus::silent(&mut planar, &mut output, BLOCK, 1);
             mix_sample_ramp(
                 &mut bus,
@@ -884,12 +917,7 @@ fn stride_keeps_segment_ends_and_settled_samples_exact() {
                 block + 1,
                 &mut band_gains,
                 &mut segment_end,
-                |position, _size, out| {
-                    out.clear();
-                    let mut gains = Gains::zeroed(1);
-                    gains.set(0, law(position[0]));
-                    out.push(gains);
-                },
+                |position, _size, out| *out = flat(&[vec![law(position[0])]]),
             );
             bus.finish();
             out.extend_from_slice(&output);

@@ -318,6 +318,7 @@ pub fn build_renderer_state_json(
             },
             "airAbsorption": live.binaural.air_absorption,
             "diffuseFieldEq": live.binaural.diffuse_field_eq,
+            "sphereCoordinates": live.binaural.sphere_coordinates,
             "hrirSource": live.binaural.hrir_source.as_str(),
             // The parametric sources' settings, which travel inside the
             // source string: echoed so a client shows what is rendered (and

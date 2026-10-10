@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
-use super::{BackendCapabilities, GainModel, NeighbourHint, RenderRequest, RenderResponse};
+use super::{BackendCapabilities, GainModel, GainScratch, NeighbourHint, RenderRequest};
 use crate::spatial_vbap::{DistanceMetric, calculate_distance_attenuation};
 use crate::speaker_layout::SpeakerLayout;
 
@@ -24,9 +24,9 @@ impl DistanceAttenuatedModel {
         Self { inner, metric }
     }
 
-    fn attenuate(&self, req: &RenderRequest, mut response: RenderResponse) -> RenderResponse {
+    fn attenuate(&self, req: &RenderRequest, gains: &mut [f32]) {
         if req.distance_model == crate::spatial_vbap::DistanceModel::None {
-            return response;
+            return;
         }
         let scaled = room_scaled_position(
             req.adm_position.map(|value| value as f32),
@@ -37,10 +37,9 @@ impl DistanceAttenuatedModel {
         );
         let distance = self.metric.measure(scaled);
         let attenuation = calculate_distance_attenuation(distance, req.distance_model);
-        for gain in response.gains.iter_mut() {
+        for gain in gains.iter_mut() {
             *gain *= attenuation;
         }
-        response
     }
 }
 
@@ -66,16 +65,25 @@ impl GainModel for DistanceAttenuatedModel {
         self.inner.speaker_count()
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        self.attenuate(req, self.inner.compute_gains(req))
+    /// The inner model's: this stage scales its gains in place.
+    fn new_scratch(&self) -> GainScratch {
+        self.inner.new_scratch()
+    }
+
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        self.inner.compute_gains(req, scratch, out);
+        self.attenuate(req, out);
     }
 
     fn compute_gains_with_hint(
         &self,
         req: &RenderRequest,
         hint: &mut NeighbourHint,
-    ) -> RenderResponse {
-        self.attenuate(req, self.inner.compute_gains_with_hint(req, hint))
+        scratch: &mut GainScratch,
+        out: &mut [f32],
+    ) {
+        self.inner.compute_gains_with_hint(req, hint, scratch, out);
+        self.attenuate(req, out);
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -124,12 +132,9 @@ mod tests {
     #[test]
     fn none_model_is_a_noop() {
         let position = [0.4, 0.2, 0.1];
-        let decorated = wrapped()
-            .compute_gains(&request(position, DistanceModel::None))
-            .gains;
+        let decorated = wrapped().gains_at(&request(position, DistanceModel::None));
         let bare = BarycenterBackend::new(speakers(), 0.0)
-            .compute_gains(&request(position, DistanceModel::None))
-            .gains;
+            .gains_at(&request(position, DistanceModel::None));
         for (a, b) in decorated.iter().zip(bare.iter()) {
             assert!((a - b).abs() < 1e-6, "{a} vs {b}");
         }
@@ -140,9 +145,7 @@ mod tests {
         // The distance model now works for any backend, not just VBAP.
         let position = [0.6, 0.0, 0.0];
         let model = wrapped();
-        let gains = model
-            .compute_gains(&request(position, DistanceModel::Linear))
-            .gains;
+        let gains = model.gains_at(&request(position, DistanceModel::Linear));
         let energy: f32 = gains.iter().map(|g| g * g).sum();
         // Barycenter alone is unit energy; Linear attenuation at distance 0.6 is
         // 1/(1+0.6) ≈ 0.625, so energy ≈ 0.625² ≈ 0.39 < 1.
@@ -162,9 +165,7 @@ mod tests {
             Box::new(BarycenterBackend::new(speakers(), 0.0)),
             DistanceMetric::Chebyshev,
         );
-        let gains = chebyshev
-            .compute_gains(&request(position, DistanceModel::Linear))
-            .gains;
+        let gains = chebyshev.gains_at(&request(position, DistanceModel::Linear));
         let energy: f32 = gains.iter().map(|g| g * g).sum();
         let expected = (1.0f32 / (1.0 + 0.6)).powi(2);
         assert!(

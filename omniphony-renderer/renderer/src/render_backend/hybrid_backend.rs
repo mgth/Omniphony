@@ -1,7 +1,10 @@
 use anyhow::Result;
 
-use super::{BackendCapabilities, GainModel, NeighbourHint, RenderRequest, RenderResponse};
-use crate::spatial_vbap::{DistanceMetric, Gains};
+use super::{
+    BackendCapabilities, GainModel, GainScratch, NeighbourHint, RenderRequest, foreign_scratch,
+    normalize_to_unit_energy,
+};
+use crate::spatial_vbap::DistanceMetric;
 use crate::speaker_layout::SpeakerLayout;
 
 /// Largest distance from the cube centre under each metric, used to normalise the
@@ -30,6 +33,14 @@ pub struct HybridBackend {
     max_distance: f32,
 }
 
+/// What a caller of [`HybridBackend`] holds: the external model's gains while
+/// they are blended into the internal model's, and the scratch of each.
+struct HybridScratch {
+    external_gains: Vec<f32>,
+    external: GainScratch,
+    internal: GainScratch,
+}
+
 impl HybridBackend {
     pub fn new(
         external: Box<dyn GainModel>,
@@ -55,13 +66,27 @@ impl HybridBackend {
         self.internal.speaker_count()
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let external = self.external.compute_gains(req).gains;
-        let internal = self.internal.compute_gains(req).gains;
-        self.blend(req, &external, &internal)
+    /// The working memory of one caller: see [`HybridScratch`].
+    pub fn new_scratch(&self) -> GainScratch {
+        GainScratch::new(HybridScratch {
+            external_gains: vec![0.0; self.external.speaker_count()],
+            external: self.external.new_scratch(),
+            internal: self.internal.new_scratch(),
+        })
     }
 
-    fn blend(&self, req: &RenderRequest, external: &Gains, internal: &Gains) -> RenderResponse {
+    pub fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        let Some(scratch) = scratch.state::<HybridScratch>() else {
+            return foreign_scratch(out);
+        };
+        self.external
+            .compute_gains(req, &mut scratch.external, &mut scratch.external_gains);
+        self.internal.compute_gains(req, &mut scratch.internal, out);
+        self.blend(req, &scratch.external_gains, out);
+    }
+
+    /// Blend `external` into `gains`, which holds the internal model's.
+    fn blend(&self, req: &RenderRequest, external: &[f32], gains: &mut [f32]) {
         // Distance on the raw ADM position, normalised by the metric's maximum
         // (Chebyshev: 1 on the cube surface; spherical: √3 at a corner), so the
         // blend curve's X axis stays in [0, 1] regardless of metric.
@@ -73,21 +98,21 @@ impl HybridBackend {
         };
         let ratio = self.curve.eval(normalized);
 
-        let count = internal.len().min(external.len());
-        let mut gains = Gains::zeroed(self.speaker_count());
+        // The two inner models share the layout; were one narrower, the
+        // speakers it lacks are silent, not left on the internal gains.
+        let count = gains.len().min(external.len());
+        gains[count..].fill(0.0);
         let mut energy = 0.0f32;
-        for index in 0..count {
-            let mixed = (1.0 - ratio) * internal[index] + ratio * external[index];
-            gains.set(index, mixed);
+        for (gain, &external) in gains.iter_mut().zip(external) {
+            let mixed = (1.0 - ratio) * *gain + ratio * external;
+            *gain = mixed;
             energy += mixed * mixed;
         }
 
         // A weighted average of two unit-energy vectors is generally not
         // unit-energy (it dips toward the middle of the crossfade), so we
         // renormalise to keep loudness stable across the blend.
-        gains.normalize_to_unit_energy(energy);
-
-        RenderResponse { gains }
+        normalize_to_unit_energy(gains, energy);
     }
 
     pub fn save_to_file(
@@ -132,18 +157,34 @@ impl GainModel for HybridBackend {
         HybridBackend::speaker_count(self)
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        HybridBackend::compute_gains(self, req)
+    fn new_scratch(&self) -> GainScratch {
+        HybridBackend::new_scratch(self)
+    }
+
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        HybridBackend::compute_gains(self, req, scratch, out)
     }
 
     fn compute_gains_with_hint(
         &self,
         req: &RenderRequest,
         hint: &mut NeighbourHint,
-    ) -> RenderResponse {
-        let external = self.external.compute_gains_with_hint(req, hint).gains;
-        let internal = self.internal.compute_gains_with_hint(req, hint).gains;
-        self.blend(req, &external, &internal)
+        scratch: &mut GainScratch,
+        out: &mut [f32],
+    ) {
+        let Some(scratch) = scratch.state::<HybridScratch>() else {
+            return foreign_scratch(out);
+        };
+        // The external model claims its hint slots first, at every cell.
+        self.external.compute_gains_with_hint(
+            req,
+            hint,
+            &mut scratch.external,
+            &mut scratch.external_gains,
+        );
+        self.internal
+            .compute_gains_with_hint(req, hint, &mut scratch.internal, out);
+        self.blend(req, &scratch.external_gains, out);
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -301,12 +342,9 @@ mod tests {
     #[test]
     fn constant_zero_curve_matches_internal() {
         let position = [0.3, 0.1, 0.2];
-        let blended = hybrid(BlendCurve::new(vec![[0.0, 0.0], [1.0, 0.0]], 0.0))
-            .compute_gains(&request(position))
-            .gains;
-        let internal = BarycenterBackend::new(speakers(), 0.0)
-            .compute_gains(&request(position))
-            .gains;
+        let blended =
+            hybrid(BlendCurve::new(vec![[0.0, 0.0], [1.0, 0.0]], 0.0)).gains_at(&request(position));
+        let internal = BarycenterBackend::new(speakers(), 0.0).gains_at(&request(position));
         for (a, b) in blended.iter().zip(internal.iter()) {
             assert!((a - b).abs() < 1e-5, "{a} vs {b}");
         }
@@ -315,15 +353,13 @@ mod tests {
     #[test]
     fn constant_one_curve_matches_external() {
         let position = [0.3, 0.1, 0.2];
-        let blended = hybrid(BlendCurve::new(vec![[0.0, 1.0], [1.0, 1.0]], 0.0))
-            .compute_gains(&request(position))
-            .gains;
+        let blended =
+            hybrid(BlendCurve::new(vec![[0.0, 1.0], [1.0, 1.0]], 0.0)).gains_at(&request(position));
         let external = ExperimentalDistanceBackend::new(
             speakers(),
             crate::live_params::ExperimentalDistanceLiveParams::default(),
         )
-        .compute_gains(&request(position))
-        .gains;
+        .gains_at(&request(position));
         for (a, b) in blended.iter().zip(external.iter()) {
             assert!((a - b).abs() < 1e-5, "{a} vs {b}");
         }
@@ -348,18 +384,30 @@ mod tests {
             for hint in [&mut hint, &mut external_hint, &mut internal_hint] {
                 hint.begin_cell();
             }
-            let blended = GainModel::compute_gains_with_hint(&hybrid, &req, &mut hint).gains;
-            let expected = hybrid
-                .blend(
-                    &req,
-                    &external
-                        .compute_gains_with_hint(&req, &mut external_hint)
-                        .gains,
-                    &internal
-                        .compute_gains_with_hint(&req, &mut internal_hint)
-                        .gains,
-                )
-                .gains;
+            let count = hybrid.speaker_count();
+            let mut blended = vec![0.0f32; count];
+            GainModel::compute_gains_with_hint(
+                &hybrid,
+                &req,
+                &mut hint,
+                &mut hybrid.new_scratch(),
+                &mut blended,
+            );
+            let mut external_gains = vec![0.0f32; count];
+            external.compute_gains_with_hint(
+                &req,
+                &mut external_hint,
+                &mut external.new_scratch(),
+                &mut external_gains,
+            );
+            let mut expected = vec![0.0f32; count];
+            internal.compute_gains_with_hint(
+                &req,
+                &mut internal_hint,
+                &mut internal.new_scratch(),
+                &mut expected,
+            );
+            hybrid.blend(&req, &external_gains, &mut expected);
             for (a, b) in blended.iter().zip(expected.iter()) {
                 assert!(a.to_bits() == b.to_bits(), "step {step}: {a} vs {b}");
             }
@@ -425,8 +473,7 @@ mod tests {
     fn blend_renormalises_energy() {
         // Halfway blend between two distinct backends still yields unit energy.
         let blended = hybrid(BlendCurve::new(vec![[0.0, 0.5], [1.0, 0.5]], 0.0))
-            .compute_gains(&request([0.3, 0.1, 0.2]))
-            .gains;
+            .gains_at(&request([0.3, 0.1, 0.2]));
         let energy: f32 = blended.iter().map(|gain| gain * gain).sum();
         assert!((energy - 1.0).abs() < 1e-4, "energy={energy}");
     }

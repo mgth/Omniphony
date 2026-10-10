@@ -11,9 +11,9 @@
 //! contract:
 //!
 //! * **Contract** — over a grid of positions, `compute_gains` must not panic,
-//!   must return exactly [`speaker_count`](GainModel::speaker_count) gains, every
-//!   gain finite, non-negative, and not absurdly large (a runaway gain clips and
-//!   can damage equipment).
+//!   must write every one of the [`speaker_count`](GainModel::speaker_count)
+//!   gains it is handed, every gain finite, non-negative, and not absurdly large
+//!   (a runaway gain clips and can damage equipment).
 //! * **Energy** — the panner must not be silent everywhere, and (optionally) keep
 //!   its total energy within a caller-declared band. Energy normalisation differs
 //!   between panners (power-preserving vs amplitude-preserving), so the tight band
@@ -184,11 +184,15 @@ pub fn check(model: &dyn GainModel, opts: &ConformanceOptions) -> ConformanceRep
 
     // Probe each position, collecting (position, gain-vector) for the contract
     // and energy checks, and reusing it for continuity.
-    let gains_at = |position: [f64; 3]| -> Result<Vec<f32>, String> {
+    let mut scratch = model.new_scratch();
+    let mut gains_at = |position: [f64; 3]| -> Result<Vec<f32>, String> {
         let mut request = opts.request_template;
         request.adm_position = position;
-        let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            model.compute_gains(&request)
+        // A gain the model does not write is still NaN afterwards, and is
+        // reported with the non-finite ones.
+        let mut gains = vec![f32::NAN; expected];
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            model.compute_gains(&request, &mut scratch, &mut gains)
         }))
         .map_err(|payload| {
             format!(
@@ -196,7 +200,7 @@ pub fn check(model: &dyn GainModel, opts: &ConformanceOptions) -> ConformanceRep
                 panic_message(payload.as_ref())
             )
         })?;
-        Ok(response.gains.to_vec())
+        Ok(gains)
     };
 
     for &position in &opts.positions {
@@ -208,17 +212,11 @@ pub fn check(model: &dyn GainModel, opts: &ConformanceOptions) -> ConformanceRep
             }
         };
 
-        if gains.len() != expected {
-            failures.push(format!(
-                "returned {} gains at {position:?}, expected speaker_count() = {expected}",
-                gains.len()
-            ));
-            continue;
-        }
         for (i, &g) in gains.iter().enumerate() {
             if !g.is_finite() {
                 failures.push(format!(
-                    "non-finite gain {g} for speaker {i} at {position:?}"
+                    "non-finite gain {g} for speaker {i} at {position:?} (every gain must be \
+                     written, and finite)"
                 ));
             } else {
                 if opts.require_non_negative && g < 0.0 {
@@ -412,12 +410,16 @@ pub fn check_zero_alloc(model: &dyn GainModel, opts: &ConformanceOptions) -> Zer
         return ZeroAllocReport::Skipped;
     }
 
+    // The scratch and the gains are the caller's, made once per layout:
+    // outside the counted region, as they are outside a render block.
+    let mut scratch = model.new_scratch();
+    let mut gains = vec![0.0f32; model.speaker_count()];
     let mut request = opts.request_template;
     let (_, allocations) = count_allocations(|| {
         for &position in &opts.positions {
             request.adm_position = position;
-            let response = model.compute_gains(&request);
-            std::hint::black_box(&response);
+            model.compute_gains(&request, &mut scratch, &mut gains);
+            std::hint::black_box(&gains);
         }
     });
     ZeroAllocReport::Ran { allocations }
@@ -426,8 +428,8 @@ pub fn check_zero_alloc(model: &dyn GainModel, opts: &ConformanceOptions) -> Zer
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render_backend::{BackendCapabilities, RenderResponse, VbapBackend};
-    use crate::spatial_vbap::{Gains, VbapPanner};
+    use crate::render_backend::{BackendCapabilities, GainScratch, VbapBackend};
+    use crate::spatial_vbap::VbapPanner;
     use crate::speaker_layout::SpeakerLayout;
 
     /// Build a real VBAP gain model from the 7.1.4 preset.
@@ -459,7 +461,7 @@ mod tests {
     enum Mode {
         Nan,
         Negative,
-        TooFew,
+        Unwritten,
         Silent,
         Panic,
         Runaway,
@@ -480,22 +482,23 @@ mod tests {
         fn speaker_count(&self) -> usize {
             self.speakers
         }
-        fn compute_gains(&self, _req: &RenderRequest) -> RenderResponse {
-            let n = self.speakers;
-            let mut gains = Gains::zeroed(n);
+        fn compute_gains(
+            &self,
+            _req: &RenderRequest,
+            _scratch: &mut GainScratch,
+            gains: &mut [f32],
+        ) {
+            // The last gain is left as the caller had it.
+            let written = gains.len() - usize::from(matches!(self.mode, Mode::Unwritten));
+            gains[..written].fill(0.0);
             match self.mode {
                 Mode::Nan => gains[0] = f32::NAN,
                 Mode::Negative => gains[0] = -0.5,
                 Mode::Runaway => gains[0] = 1000.0,
-                Mode::Silent => {} // all zeros, every position
-                Mode::TooFew => {
-                    return RenderResponse {
-                        gains: Gains::zeroed(n - 1),
-                    };
-                }
+                // All zeros, every position.
+                Mode::Silent | Mode::Unwritten => {}
                 Mode::Panic => panic!("boom"),
             }
-            RenderResponse { gains }
         }
         fn save_to_file(&self, _p: &std::path::Path, _l: &SpeakerLayout) -> anyhow::Result<()> {
             anyhow::bail!("unsupported")
@@ -526,8 +529,8 @@ mod tests {
         fails_with(Mode::Runaway, "exceeds max_gain");
     }
     #[test]
-    fn harness_catches_wrong_count() {
-        fails_with(Mode::TooFew, "expected speaker_count");
+    fn harness_catches_an_unwritten_gain() {
+        fails_with(Mode::Unwritten, "for speaker 7");
     }
     #[test]
     fn harness_catches_silence() {
