@@ -1,10 +1,12 @@
 //! Object (source) visuals: `sources.js` `updateSourceColorsFromSelection`,
 //! `updateSourceSelectionStyles`, `updateSourceDecorations`, `objectBadge`,
-//! `getObjectBaseColor`, and the halo/outline/effective-render renderables.
+//! `getObjectBaseColor`, and the halo/outline/perceived-image renderables.
 
 use glam::Vec3;
 
 use crate::model::app_state::RoomRatio;
+use crate::model::layouts::crossover_bands;
+use crate::model::perceived::{self, Band, Head};
 use crate::osc::dispatch::Live;
 use glam::{Mat4, Quat};
 
@@ -92,8 +94,18 @@ pub struct ObjectVisual {
     pub ring_opacity: f32,
     pub halo_color: [f32; 3],
     pub halo_opacity: f32,
-    /// Effective-render centroid (scene) when the toggle is on and gains exist.
-    pub effective_pos: Option<Vec3>,
+    /// The perceived image (`model::perceived`) when the toggle is on and
+    /// the stage reports gains.
+    pub perceived: Option<Perceived>,
+}
+
+/// Where an object is heard, and how sharply.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Perceived {
+    /// The image's point in the scene, on the loudspeakers carrying it.
+    pub pos: Vec3,
+    /// `|rE|`: 1 for one loudspeaker, towards 0 as the image spreads.
+    pub focus: f32,
 }
 
 /// `objectBadge(id).code`.
@@ -284,10 +296,25 @@ pub fn collect(
     settings: &ViewSettings,
     room: &RoomRatio,
     speakers: &[SpeakerRef],
+    head: &Head,
     selected_object: Option<&str>,
     selected_speaker: Option<usize>,
 ) -> Vec<ObjectVisual> {
     let mut out = Vec::with_capacity(live.app.sources.len());
+    // What the perceived image reads, once per frame: the loudspeakers as
+    // drawn, in the frame the objects are, and the bands the stage splits
+    // the objects into.
+    let (positions, bands_hz): (Vec<[f32; 3]>, Vec<(f64, f64)>) =
+        if settings.effective_render_enabled {
+            (
+                speakers.iter().map(|s| s.scene_pos.to_array()).collect(),
+                crossover_bands(live.selected_speakers()),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+    let band_hz = |band: usize| bands_hz.get(band).copied().unwrap_or((0.0, f64::INFINITY));
+    let mut band_scratch: Vec<Band<'_>> = Vec::new();
     for (id, src) in &live.app.sources {
         // Metadata-silent objects (gain ≤ −128 dB) draw nothing at all.
         if src.gain_db.is_some_and(|g| g <= -128) {
@@ -437,29 +464,42 @@ pub fn collect(
         let _ = &mut sphere_opacity;
         let _ = &mut halo_color;
 
-        // Effective-render centroid: gain²-weighted speaker positions.
-        let effective_pos = if settings.effective_render_enabled {
-            let band = live
+        // The perceived image: the selected band's, or every band's mix
+        // while all bands are shown (`model::perceived`).
+        let perceived = if settings.effective_render_enabled {
+            let band_gains = live
                 .app
                 .object_band_gains
                 .get(id)
-                .filter(|_| !settings.heatmap_all_bands)
-                .and_then(|bands| bands.get(settings.heatmap_band_index))
-                .filter(|g| !g.is_empty());
-            let gains = band.or_else(|| live.app.object_speaker_gains.get(id));
-            gains.and_then(|g| {
-                let mut acc = Vec3::ZERO;
-                let mut wsum = 0.0f32;
-                for (i, &gain) in g.iter().enumerate() {
-                    if gain <= 0.0 {
-                        continue;
+                .filter(|bands| !bands.is_empty());
+            let image =
+                match band_gains {
+                    Some(bands) if !settings.heatmap_all_bands => {
+                        let band = settings.heatmap_band_index;
+                        bands
+                            .get(band)
+                            .filter(|g| !g.is_empty())
+                            .and_then(|g| perceived::band_image(g, &positions, head, band_hz(band)))
                     }
-                    let Some(sp) = speakers.get(i) else { continue };
-                    let w = (gain * gain) as f32;
-                    acc += sp.scene_pos * w;
-                    wsum += w;
-                }
-                (wsum > 1e-9).then(|| acc / wsum)
+                    Some(bands) => {
+                        let band_rms = live.object_band_rms.get(id);
+                        band_scratch.clear();
+                        band_scratch.extend(bands.iter().enumerate().map(|(band, gains)| Band {
+                            gains,
+                            hz: band_hz(band),
+                            rms_dbfs: band_rms.and_then(|rms| rms.get(band).copied()),
+                        }));
+                        perceived::object_image(&band_scratch, &positions, head)
+                    }
+                    // An engine without band gains: its summed gains are the one
+                    // band there is.
+                    None => live.app.object_speaker_gains.get(id).and_then(|g| {
+                        perceived::band_image(g, &positions, head, (0.0, f64::INFINITY))
+                    }),
+                };
+            image.map(|image| Perceived {
+                pos: Vec3::from_array(image.point()),
+                focus: image.focus,
             })
         } else {
             None
@@ -480,7 +520,7 @@ pub fn collect(
             ring_opacity,
             halo_color,
             halo_opacity,
-            effective_pos,
+            perceived,
         });
     }
     out.sort_by(|a, b| match (a.id.parse::<u32>(), b.id.parse::<u32>()) {
@@ -545,13 +585,20 @@ pub fn emit(
         ObjectDisplayMode::TransparentSphere => {}
     }
 
-    if let Some(p) = obj.effective_pos {
-        let marker_scale = (mesh_scale * 0.12).max(0.035);
+    if let Some(image) = obj.perceived {
+        let p = image.pos;
+        // The focus shows in the marker itself: sharp and solid for one
+        // loudspeaker, larger and fainter as the image spreads over the
+        // array. (A ring of the loudspeakers' angular spread was tried and
+        // said nothing: VBAP spreads 30–60° by nature.)
+        let spread = 1.0 - image.focus.clamp(0.0, 1.0);
+        let marker_scale = (mesh_scale * 0.12).max(0.035) * (1.0 + spread);
         let (opacity, emissive) = if obj.selected {
             (0.68, EFFECTIVE_EMISSIVE_SELECTED)
         } else {
             (0.34, EFFECTIVE_EMISSIVE)
         };
+        let opacity = opacity * (1.0 - 0.6 * spread);
         let e = hex_linear(emissive);
         frame.meshes.push(MeshItem {
             kind: MeshKind::Sphere,
