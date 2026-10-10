@@ -861,6 +861,7 @@ Title `binaural.distanceTitle` "Distance".
 |---|---|---|---|---|
 | `#binauralUnitScale` + `#binauralUnitScaleVal` | range `0.1..10 step 0.1`, baked 1; value `toFixed(1)` | `binaural.distanceScale` "Distance scale (m / unit)" / `help.binaural.distanceScale` | `b.unitScaleM` | `control_binaural_unit_scale {value}` → `/omniphony/control/binaural/unit_scale` float clamp 0.01..100 |
 | `#binauralAirAbsorption` | switch, baked checked | `binaural.airAbsorption` "Air absorption (distance HF roll-off)" / `help.binaural.airAbsorption` | `b.airAbsorption` | `control_binaural_air_absorption {enable}` → `/omniphony/control/binaural/air_absorption` int |
+| Sphere coordinates (native Studio, 2026-10; first row, direct headphone mode only) | switch, off | `binaural.sphereCoordinates` "Read positions on a sphere" / `help.binaural.sphereCoordinates` | `b.sphereCoordinates` | `control_binaural_sphere_coordinates {enable}` → `/omniphony/control/binaural/sphere_coordinates` int |
 
 #### 3.3.3 Listening room (`#binauralRoomSection`)
 

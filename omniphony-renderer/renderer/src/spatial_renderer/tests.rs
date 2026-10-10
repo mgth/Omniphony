@@ -1228,6 +1228,99 @@ fn binaural_object_ramp_advances_and_lateralizes() {
     );
 }
 
+/// Renders one object at `position` on headphones for a few blocks, after
+/// `configure` set the binaural live params up, and returns every sample.
+fn render_binaural_object(
+    position: [f64; 3],
+    configure: impl FnOnce(&mut crate::live_params::BinauralLiveParams),
+) -> Vec<f32> {
+    let layout = SpeakerLayout::preset("7.1.4").unwrap();
+    let mut r = SpatialRenderer::new(test_support::spec(layout)).unwrap();
+    {
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        configure(&mut live.binaural);
+    }
+    let mut lcg: u32 = 0x2468_ace1;
+    let mut noise_block = move || -> Vec<f32> {
+        (0..64)
+            .map(|_| {
+                lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                (lcg >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            })
+            .collect()
+    };
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(0),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some(position),
+        sample_pos: Some(0),
+    }];
+    let mut out = Vec::new();
+    for i in 0..6 {
+        let events: &[SpatialChannelEvent] = if i == 0 { &event } else { &[] };
+        let pcm = noise_block();
+        out.extend(
+            r.render_frame(&pcm, 1, events, Vec::new(), false)
+                .unwrap()
+                .samples,
+        );
+    }
+    out
+}
+
+/// With the sphere reading on (#773), the direct path hears an object where
+/// the reading puts it: the room's front-left corner sounds exactly like an
+/// object the cube reading has at −30° on the front wall, and no longer like
+/// the cube's own corner at −45°. The distance cues are part of "exactly":
+/// reflections and reverb are on, and the reading keeps the distance to the
+/// room's surface.
+#[test]
+fn binaural_sphere_reading_hears_a_room_corner_where_its_speaker_stands() {
+    let with_cues = |sphere: bool| {
+        move |binaural: &mut crate::live_params::BinauralLiveParams| {
+            binaural.sphere_coordinates = sphere;
+            binaural.reflections.enabled = true;
+            binaural.reverb.enabled = true;
+            binaural.unit_scale_m = 4.0;
+        }
+    };
+    let corner = [-1.0, 1.0, 0.0];
+    let read = omniphony_geometry::f64::sphere_reading(corner);
+    let (azimuth, elevation, _) = omniphony_geometry::f64::to_spherical(read[0], read[1], read[2]);
+    assert!((azimuth + 30.0).abs() < 1e-9 && elevation.abs() < 1e-9);
+
+    let sphere = render_binaural_object(corner, with_cues(true));
+    let cube_at_the_angle = render_binaural_object(read, with_cues(false));
+    let cube = render_binaural_object(corner, with_cues(false));
+    assert!(sphere.iter().any(|x| x.abs() > 1e-6), "silent render");
+    assert_eq!(
+        sphere, cube_at_the_angle,
+        "the reading is the cube reading of the position it returns"
+    );
+    assert_ne!(sphere, cube, "the option changed nothing");
+}
+
+/// The sphere reading is the direct path's alone: the virtual room pans
+/// through the speaker stage and keeps the room model.
+#[test]
+fn binaural_sphere_reading_leaves_the_virtual_room_alone() {
+    let cascaded = |sphere: bool| {
+        move |binaural: &mut crate::live_params::BinauralLiveParams| {
+            binaural.mode = crate::live_params::BinauralMode::Cascaded;
+            binaural.sphere_coordinates = sphere;
+        }
+    };
+    let corner = [-1.0, 1.0, 1.0];
+    let off = render_binaural_object(corner, cascaded(false));
+    let on = render_binaural_object(corner, cascaded(true));
+    assert!(off.iter().any(|x| x.abs() > 1e-6), "silent render");
+    assert_eq!(on, off);
+}
+
 /// Regression: the master gain must scale the binaural output exactly like
 /// it scales the speaker path (it used to be applied only in the VBAP
 /// branch, so the master control was inert on headphones).

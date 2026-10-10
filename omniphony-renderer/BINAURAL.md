@@ -64,7 +64,10 @@ Studio's 3D view follows the path that renders. On the direct path the
 objects sit in the listener's cube — no room warp, `unit_scale_m` metres to
 the unit, read off a guide on its edge — and the speaker layout is hidden,
 since nothing feeds it (Display → *Speaker layout on headphones* keeps it as
-a ghosted reference). Through the virtual room the user's room is drawn
+a ghosted reference). With *Read positions on a sphere* on (see *Sphere
+coordinates* below) the cube gives way to the listener's sphere, and every
+source is drawn where it is heard: a sound in the room's front-left corner
+at −30° on the sphere. Through the virtual room the user's room is drawn
 with its speakers as wireframe cubes: the virtual speakers the cascade
 convolves, metered. A measured room replaces the user's room: its
 loudspeakers are wireframe cubes at their measured positions in metres,
@@ -114,6 +117,75 @@ smaller.
 | `reverb.rt60_high_ratio` | `1.0` | decay time above ~4 kHz as a ratio of `rt60_s` (0.25–4): below 1 the treble dies first (air, soft furnishings), on top of the network's fixed wall damping |
 | `air_absorption` | `true` | distance low-pass on the direct path (HF dies with distance — true outdoors too) |
 | `diffuse_field_eq` | `false` | divide the HRIR set by its own diffuse-field response (third-octave smoothed, ±12 dB, 200 Hz–16 kHz) at build time: removes the measured head's tonal signature, keeps every interaural difference |
+| `sphere_coordinates` | `false` | read room coordinates on the listener's sphere rather than in the room cube: the room's corners are heard where a layout's speakers stand (see *Sphere coordinates* below). Direct path only |
+
+## Sphere coordinates
+
+An object's position is a point of the room: a cube, whose corners and wall
+centres are where a layout's speakers stand (`L` is the front-left corner,
+the top front pair the two upper front corners). The direct path reads the
+direction straight off that point, and a cube's directions are not a
+layout's: the front corners are at ±45° where `L`/`R` stand at ±30°, and a
+top corner is 35° up where the top speakers stand at 45°. On speakers that
+does not matter, since the object is panned between the speakers wherever
+they really are. On headphones the direction is what is heard.
+
+`sphere_coordinates: true` reads the position on the listener's sphere
+instead, so that each place a speaker takes in the room is heard at that
+speaker's nominal angle:
+
+| Place in the room | Cube reading | Sphere reading |
+|---|---|---|
+| Front centre `(0, 1, 0)` | 0° | 0° |
+| Front corners `(±1, 1, 0)` (`L`/`R`) | ±45° | ±30° |
+| Side wall, front half `(±1, 0.5, 0)` (`Lw`/`Rw`) | ±63° | ±60° |
+| Side walls `(±1, 0, 0)` (`Ls`/`Rs` of a 7.x) | ±90° | ±90° |
+| Rear corners `(±1, −1, 0)` (`Lb`/`Rb`) | ±135° | ±135° |
+| Top front corners `(±1, 1, 1)` | ±45°, 35° up | ±45°, 45° up |
+| Top sides `(±1, 0, 1)` | ±90°, 45° up | ±90°, 45° up |
+| Top rear corners `(±1, −1, 1)` | ±135°, 35° up | ±135°, 45° up |
+| Ceiling centre `(0, 0, 1)` | overhead | overhead |
+
+Between those places the reading is continuous:
+
+- **Azimuth** runs linearly along each half-wall, between the front centre,
+  the front corner, the side wall's centre, the rear corner and the rear
+  centre. The front corner is at 30° at ear level and widens to 45° at the
+  ceiling (and at the floor), linearly with the height.
+- **Elevation** is the height over the horizontal reach `max(|x|, |y|)`
+  rather than over the horizontal radius, so the whole ceiling edge is 45°
+  up, corners included, and the ceiling is read from 45° to overhead.
+- **Distance** is unchanged: the cues already measure it against the room's
+  surface (see *Distance* under the usage tips), where every point of the
+  surface is at one unit. A source keeps its bearing as it moves along a
+  line through the listener.
+
+It applies to every position the direct path renders: objects, the object
+test, and fixed channels placed in the room (the Room placement, or a
+cartesian Manual entry), which then agree with the objects around them. A
+fixed channel placed by angle (the Sphere placement, the default on
+headphones, or a polar Manual entry) stays on its angle: it is stored as the
+room position the reading hears there, which also puts it on the room's
+surface, at the same distance as every other speaker of the layout (as a
+plain direction the cues read `C` at 1 unit and `L` at 0.87).
+
+The virtual room and a room response (BRIR) are not affected: they pan
+through the speaker stage, and keep the room model. Speaker output never
+reads a direction off a position and is not affected either.
+
+The anchors are the renderer's nominal angle table, the one the Sphere
+placement uses (ITU-R BS.2051 where it names the position). They are
+constants of `omniphony_geometry` (`SPHERE_FRONT_CORNER_DEG` and its
+siblings, with `sphere_reading` and its inverse).
+
+To compare the two readings by ear, play a speaker check that places one
+sound at each speaker position of a 7.1.4 and switch the option while it
+runs: the switch takes effect on the next block. In Studio it is *Read
+positions on a sphere*, in the Distance group of the Binaural tab, shown
+while the headphone mode is the direct one; the 3D view then draws the
+listener's sphere in place of the cube, with every source where it is heard,
+and the object list's polar readout, the channel editor's and its gizmo
+follow the same reading (the cartesian columns stay the room position).
 
 ## Head tracking
 
@@ -377,6 +449,7 @@ carry no license at all). Accordingly:
 | `/omniphony/control/binaural/reverb/rt60_high_ratio` | `f` (0.25–4) | treble decay, as a ratio of RT60 |
 | `/omniphony/control/binaural/air_absorption` | `i\|f` (bool) | distance HF roll-off |
 | `/omniphony/control/binaural/diffuse_field_eq` | `i\|f` (bool) | diffuse-field equalisation of the HRIR set |
+| `/omniphony/control/binaural/sphere_coordinates` | `i\|f` (bool) | read room coordinates on the listener's sphere (direct path) |
 | `/omniphony/control/head/orientation` | `fff` (euler) | set pose directly |
 | `/omniphony/control/head/quat` | `ffff` | set pose directly |
 | `/omniphony/control/head/recenter` | — | current orientation becomes "front" |

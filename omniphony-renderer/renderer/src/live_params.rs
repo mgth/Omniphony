@@ -647,6 +647,15 @@ pub struct BinauralLiveParams {
     /// (see `binaural::diffuse_field`): takes the measured head's tonal
     /// signature out while keeping every interaural difference. Opt-in.
     pub diffuse_field_eq: bool,
+    /// Read room coordinates on the listener's sphere instead of in the room
+    /// cube (#773): a position is mapped to the direction a layout's speaker
+    /// standing there is heard at
+    /// ([`omniphony_geometry::f32::sphere_reading`]), so the room's front
+    /// corners are at ±30° rather than a cube's ±45°, and its top corners
+    /// 45° up rather than 35°. Only the direct path reads a position itself
+    /// ([`Self::reads_on_sphere`]); the virtual room and a BRIR set keep the
+    /// room model. Opt-in.
+    pub sphere_coordinates: bool,
     /// Load-time choices for a BRIR source (see [`BrirLiveParams`]).
     pub brir: BrirLiveParams,
     /// The last SOFA HRTF file and the last room-response file a source
@@ -674,6 +683,7 @@ impl Default for BinauralLiveParams {
             reverb: BinauralReverb::default(),
             air_absorption: true,
             diffuse_field_eq: false,
+            sphere_coordinates: false,
             brir: BrirLiveParams::default(),
             last_sofa_path: String::new(),
             last_brir_path: String::new(),
@@ -697,6 +707,13 @@ impl BinauralLiveParams {
     /// speaker stage, which does.
     pub fn renders_direct(&self) -> bool {
         matches!(self.output_mode, OutputMode::Binaural) && !self.cascade_active()
+    }
+
+    /// Whether positions are read on the listener's sphere
+    /// ([`Self::sphere_coordinates`]): the option, on the one path that reads
+    /// a direction off a position.
+    pub fn reads_on_sphere(&self) -> bool {
+        self.sphere_coordinates && self.renders_direct()
     }
 }
 
@@ -1413,23 +1430,6 @@ impl RoomRatios {
         }
     }
 
-    /// The warp the output in force applies to a normalized position: the
-    /// room `topology` pans in on the speaker stage (which the cascaded
-    /// binaural mode also pans through), none on the direct binaural path,
-    /// which reads the direction straight off the position
-    /// ([`BinauralLiveParams::renders_direct`]). A pose stated as an angle
-    /// is pre-compensated for it, so it must be the warp that is actually
-    /// undone downstream: pre-compensating a direct binaural pose for the
-    /// live room left it warped, `L` at −49° instead of −30° in the default
-    /// room (#781), and a measured room's pose for the user's room moved it
-    /// off its loudspeaker (#803).
-    pub fn for_output(live: &LiveParams, topology: &RenderTopology) -> Self {
-        if live.binaural.renders_direct() {
-            return Self::UNIT;
-        }
-        topology.room
-    }
-
     /// Room warp of a normalized position
     /// ([`omniphony_geometry::f32::room_scaled_position`]).
     #[inline]
@@ -1469,6 +1469,61 @@ impl RoomRatios {
             self.lower,
             self.center_blend,
         )
+    }
+}
+
+/// What the output in force does to a normalized position on its way to
+/// the listener. A pose stated as an angle (a Sphere direction, a polar
+/// placement entry) is stored as the position that comes out of it at that
+/// angle, so it has to be the warp that is actually applied downstream:
+/// pre-compensating a direct binaural pose for the live room left it warped,
+/// `L` at −49° instead of −30° in the default room (#781), and a measured
+/// room's pose for the user's room moved it off its loudspeaker (#803).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OutputWarp {
+    /// The room warp of the speaker stage, which the cascaded binaural mode
+    /// also pans through: the room `topology` pans in. The direct binaural
+    /// path reads the direction straight off the position, in the unit cube:
+    /// [`RoomRatios::UNIT`], no warp at all.
+    Room(RoomRatios),
+    /// The direct binaural path reading positions on the listener's sphere
+    /// ([`BinauralLiveParams::reads_on_sphere`]).
+    Sphere,
+}
+
+impl OutputWarp {
+    /// No warp: the position is the direction.
+    pub const NONE: Self = Self::Room(RoomRatios::UNIT);
+
+    /// The warp of the output the live params select.
+    pub fn for_output(live: &LiveParams, topology: &RenderTopology) -> Self {
+        if live.binaural.reads_on_sphere() {
+            Self::Sphere
+        } else if live.binaural.renders_direct() {
+            Self::NONE
+        } else {
+            Self::Room(topology.room)
+        }
+    }
+
+    /// The normalized position that this warp brings out in the direction of
+    /// `position`, a real ADM position stating a direction and a radius:
+    /// [`RoomRatios::inverse_direction`] for a room,
+    /// [`omniphony_geometry::f32::inverse_sphere_reading_direction`] for the
+    /// sphere. Either way a radius that reaches past the room is drawn back
+    /// into it along its direction.
+    #[inline]
+    pub fn inverse_direction(&self, position: [f32; 3]) -> [f32; 3] {
+        match self {
+            Self::Room(room) => room.inverse_direction(position),
+            Self::Sphere => omniphony_geometry::f32::inverse_sphere_reading_direction(position),
+        }
+    }
+}
+
+impl From<RoomRatios> for OutputWarp {
+    fn from(room: RoomRatios) -> Self {
+        Self::Room(room)
     }
 }
 
@@ -1599,7 +1654,7 @@ pub struct RenderTopology {
     /// The room the stage pans in on this topology: the one
     /// `speaker_layout`'s cartesian speakers were placed in when it was
     /// built, which every object follows per frame
-    /// ([`RoomRatios::for_output`]). The live room for the editable layout,
+    /// ([`OutputWarp::for_output`]). The live room for the editable layout,
     /// the measured room for a BRIR set's loudspeakers (`brir_layout`).
     pub room: RoomRatios,
     /// The measured room `room` was derived from, while `brir_layout`: the

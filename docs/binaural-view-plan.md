@@ -57,7 +57,7 @@ The engine has three headphone paths (`BinauralLiveParams`,
 
 | Path | Geometry the engine uses | Added around the direct sound |
 |---|---|---|
-| **Direct** (`mode: direct`, HRTF source) | each source read as a direction straight off its normalized position: **no room warp** (`RoomRatios::for_output` returns `UNIT`, #783); distance cues measured against the unit cube's surface (#760), scaled by `unit_scale_m` | ITD, air absorption, shoebox early reflections (listener-centred room `reflections.roomM`, grown to contain the scene), late reverb |
+| **Direct** (`mode: direct`, HRTF source) | each source read as a direction straight off its normalized position: **no room warp** (`OutputWarp::for_output` returns no warp, #783); distance cues measured against the unit cube's surface (#760), scaled by `unit_scale_m` | ITD, air absorption, shoebox early reflections (listener-centred room `reflections.roomM`, grown to contain the scene), late reverb |
 | **Virtual room** (`mode: cascaded`, HRTF source) | the speaker stage on the **editable layout**, with the **live room warp** (the user's room ratio), then one HRTF pair per virtual speaker; the virtual bus is metered (`render_metering.rs`) | the same cues, applied to the virtual speakers |
 | **Measured room** (`brir` source, mode forced to cascaded) | the speaker stage on the **set's loudspeakers** projected onto the cube (`SpeakerLayout::from_brir_emitters`), still with the live room warp; one measured pair per virtual speaker | nothing: the measurement is the room |
 
@@ -155,7 +155,7 @@ virtual room on KEMAR, as the engine renders it).
 ### 2b. Direct: the unit cube, no warp
 
 - Positions placed with a unit `RoomRatio` (the mirror of
-  `RoomRatios::for_output`): `scene_position` takes the cube for objects,
+  `OutputWarp::for_output`): `scene_position` takes the cube for objects,
   beds and the reference speakers whenever the path is `Direct`.
 - The unit cube (listener-centred, −1..1 on every axis) is drawn in place of
   the user's room box, in its own colour, with one metre guide: "1 unit =
