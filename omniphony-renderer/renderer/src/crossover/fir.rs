@@ -358,13 +358,19 @@ impl FirCrossoverBank {
         // Band outputs telescope so their sum is exactly the delayed input.
         let n = self.num_bands;
         out[0].copy_from_slice(&lp_out[0]);
-        for k in 1..n - 1 {
-            for i in 0..BLOCK {
-                out[k][i] = lp_out[k][i] - lp_out[k - 1][i];
+        // Slices walked together rather than indexed: a block is then one
+        // pass the compiler widens, whatever it decides to inline here.
+        for (out, pair) in out[1..n - 1].iter_mut().zip(lp_out.windows(2)) {
+            for ((out, &upper), &lower) in out.iter_mut().zip(&pair[1]).zip(&pair[0]) {
+                *out = upper - lower;
             }
         }
-        for i in 0..BLOCK {
-            out[n - 1][i] = delay_work[i] - lp_out[n - 2][i];
+        for ((out, &delayed), &lower) in out[n - 1]
+            .iter_mut()
+            .zip(&delay_work[..BLOCK])
+            .zip(&lp_out[n - 2])
+        {
+            *out = delayed - lower;
         }
 
         *read_idx = 0;
