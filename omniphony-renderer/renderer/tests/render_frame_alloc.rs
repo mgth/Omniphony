@@ -5,21 +5,15 @@
 //! binary, for the counting allocator.
 
 use bridge_api::RChannelLabel;
-use renderer::backend_conformance::{
-    ConformanceOptions, CountingAllocator, ZeroAllocReport, check_zero_alloc, count_allocations,
-};
+use renderer::backend_conformance::{CountingAllocator, count_allocations};
 use renderer::live_params::{
     BinauralMode, CrossoverType, LiveEvaluationMode, LiveParams, OutputMode,
     PreferredEvaluationMode, RampMode,
 };
-use renderer::render_backend::{
-    CentralDistribution, GainModel, VbapBackend, VbapSpreadParams, VolumetricBackend,
-    VolumetricParams,
-};
 use renderer::spatial_renderer::{
     ChannelRoute, RendererSpec, SpatialChannelEvent, SpatialRenderer,
 };
-use renderer::spatial_vbap::{DistanceModel, OutOfHullMode, VbapPanner, VbapTableMode};
+use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
 use renderer::speaker_layout::SpeakerLayout;
 
 #[global_allocator]
@@ -192,14 +186,20 @@ fn a_warmed_up_render_does_not_allocate() {
     }
 }
 
-/// The gain models that compute live, each with the spread its objects pan
-/// with: VBAP and the volumetric model built on it pan a spread source as a
-/// cloud of directions, on more working memory than a point source.
-const REALTIME_MODELS: [(&str, f32); 5] = [
+/// The gain models that compute live without allocating, each with the
+/// spread its objects pan with: VBAP and the volumetric model built on it pan
+/// a spread source as a cloud of directions, on more working memory than a
+/// point source. Not those two under `saf_vbap`: SAF allocates the gains it
+/// returns, and its layout is rebuilt on every call.
+const REALTIME_MODELS: &[(&str, f32)] = &[
     ("barycenter", 0.0),
+    #[cfg(not(feature = "saf_vbap"))]
     ("vbap", 0.0),
+    #[cfg(not(feature = "saf_vbap"))]
     ("vbap", 0.3),
+    #[cfg(not(feature = "saf_vbap"))]
     ("volumetric", 0.0),
+    #[cfg(not(feature = "saf_vbap"))]
     ("volumetric", 0.3),
 ];
 
@@ -213,7 +213,7 @@ const REALTIME_MODELS: [(&str, f32); 5] = [
 /// nothing for them.
 #[test]
 fn a_warmed_up_realtime_render_does_not_allocate() {
-    for (backend, spread) in REALTIME_MODELS {
+    for &(backend, spread) in REALTIME_MODELS {
         for crossover in [CrossoverType::Lr4, CrossoverType::Fir] {
             for ramp_mode in [RampMode::Frame, RampMode::Sample, RampMode::Interp] {
                 let configure = |live: &mut LiveParams| {
@@ -249,9 +249,18 @@ fn a_warmed_up_realtime_render_does_not_allocate() {
 /// them: `compute_gains` on the scratch the model made allocates nothing,
 /// whatever the out-of-hull mode folds or downmixes, on a layout closed by
 /// virtual poles as on one with height speakers, for a point source and for
-/// a spread one.
+/// a spread one. The native panner's contract: under `saf_vbap` the gains
+/// come from SAF, which allocates them.
+#[cfg(not(feature = "saf_vbap"))]
 #[test]
 fn the_vbap_models_compute_gains_without_allocating() {
+    use renderer::backend_conformance::{ConformanceOptions, ZeroAllocReport, check_zero_alloc};
+    use renderer::render_backend::{
+        CentralDistribution, GainModel, VbapBackend, VbapSpreadParams, VolumetricBackend,
+        VolumetricParams,
+    };
+    use renderer::spatial_vbap::{OutOfHullMode, VbapPanner};
+
     let modes = [
         OutOfHullMode::Fade,
         OutOfHullMode::default(),
@@ -326,7 +335,7 @@ fn a_warmed_up_render_on_128_speakers_does_not_allocate() {
             );
         }
 
-        for (backend, spread) in REALTIME_MODELS {
+        for &(backend, spread) in REALTIME_MODELS {
             let r = dome();
             let control = r.renderer_control();
             {
