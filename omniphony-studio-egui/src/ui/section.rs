@@ -205,6 +205,24 @@ impl<'a> Section<'a> {
     }
 
     pub fn show<R>(self, ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+        self.show_keeping(ui, &mut (), |_, _| {}, |_, ui| body(ui))
+    }
+
+    /// [`Section::show`] with rows that stay in view while the section is
+    /// folded: `kept` draws under the header whether the body is open or
+    /// not, and the body follows it. For the one choice a section hangs on
+    /// and that is made more often than the section is opened (the output
+    /// mode) — not a way to keep a section's favourite rows out.
+    ///
+    /// Both closures get `owner`, since each needs the panel's state and two
+    /// closures cannot both borrow it.
+    pub fn show_keeping<S, R>(
+        self,
+        ui: &mut Ui,
+        owner: &mut S,
+        kept: impl FnOnce(&mut S, &mut Ui),
+        body: impl FnOnce(&mut S, &mut Ui) -> R,
+    ) -> Option<R> {
         let Section {
             id: section_id,
             title,
@@ -354,7 +372,10 @@ impl<'a> Section<'a> {
                 d.insert_temp(open_states_changed_id(), true);
             });
         }
-        state.show_body_unindented(ui, body).map(|r| r.inner)
+        kept(owner, ui);
+        state
+            .show_body_unindented(ui, |ui| body(owner, ui))
+            .map(|r| r.inner)
     }
 }
 
@@ -454,6 +475,32 @@ mod tests {
         output.textures_delta.clear();
         assert!(widget_drawn, "the header widget did not draw");
         assert!(!body_drawn, "the body drew while closed");
+    }
+
+    /// The kept rows draw under the header of a closed section, and before
+    /// the body of an open one.
+    #[test]
+    fn the_kept_rows_show_while_the_section_is_closed() {
+        for open in [false, true] {
+            let ctx = egui::Context::default();
+            let mut drawn: Vec<&str> = Vec::new();
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                Section::new(
+                    if open { "kept-open" } else { "kept-closed" },
+                    "section.display",
+                )
+                .default_open(open)
+                .show_keeping(
+                    ui,
+                    &mut drawn,
+                    |drawn, _| drawn.push("kept"),
+                    |drawn, _| drawn.push("body"),
+                );
+            });
+            output.textures_delta.clear();
+            let expected: &[&str] = if open { &["kept", "body"] } else { &["kept"] };
+            assert_eq!(drawn, expected);
+        }
     }
 }
 

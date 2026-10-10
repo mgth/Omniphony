@@ -49,20 +49,22 @@ impl StudioSpike {
                     == Some("embedded"),
             )
         };
+        // No summary: the cards kept under the header say the mode, folded
+        // or not.
         Section::new("listeningSection", "essentials.listening")
             .icon(&crate::ui::icons::SECTION_RENDERER)
             .default_open(true)
-            .summary(t(mode.i18n_key()))
-            .show(ui, |ui| {
-                self.output_mode_row(ui);
-                if embedded {
-                    widgets::note(ui, t("outputMode.mpvNote"));
-                }
-                if mode != OutputMode::Speaker {
-                    self.essentials_hrtf(ui);
-                }
-                self.placement_readout(ui);
-            });
+            .show_keeping(
+                ui,
+                self,
+                |app, ui| app.output_mode_rows(ui, embedded),
+                |app, ui| {
+                    if mode != OutputMode::Speaker {
+                        app.essentials_hrtf(ui);
+                    }
+                    app.placement_readout(ui);
+                },
+            );
     }
 
     /// Which placement the fixed channels get, and why: for the stream that

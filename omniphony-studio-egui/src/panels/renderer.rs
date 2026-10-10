@@ -186,16 +186,14 @@ impl StudioSpike {
                 .and_then(|c| c.get("variant"))
                 .and_then(|v| v.as_str())
                 == Some("embedded");
-            // No backend evaluates anything on the direct path: the folded
-            // section names the path instead.
-            let summary = if path.speakers_render() {
+            // No backend evaluates anything on the direct path, and the
+            // cards under the header already name it: no summary there.
+            let summary = path.speakers_render().then(|| {
                 format!(
                     "{backend} / {}",
                     tf("renderer.summary", &[("mode", evaluation_label(&mode))])
                 )
-            } else {
-                t(OutputMode::BinauralDirect.i18n_key()).to_owned()
-            };
+            });
             (
                 summary,
                 embedded,
@@ -210,76 +208,89 @@ impl StudioSpike {
         // it stays in view with the section folded; its numbers open the body.
         let perf = self.perf_snapshot();
         let mut section = Section::new("rendererSection", "section.renderer")
-            .icon(&crate::ui::icons::SECTION_RENDERER)
-            .summary(summary);
+            .icon(&crate::ui::icons::SECTION_RENDERER);
+        if let Some(summary) = summary {
+            section = section.summary(summary);
+        }
         if let Some(perf) = perf {
             section = section.header_widget(move |ui| renderer_perf::perf_bar(ui, &perf));
         }
-        section.show(ui, |ui| {
-            if let Some(perf) = &perf {
-                renderer_perf::perf_readouts(ui, perf);
-            }
-            self.output_mode_row(ui);
-            // The embedded host applies the output mode at player start.
-            if embedded {
-                widgets::note(ui, t("outputMode.mpvNote"));
-            }
-            // Where decoding runs: a choice that takes effect in a player's
-            // embedded engine only. It is offered on the standalone renderer
-            // too, which shares the player's config and always decodes on a
-            // thread of its own: the note says the switch changes nothing
-            // there.
-            if let Some(mut on) = decode_thread {
-                if widgets::switch_row_help(
-                    ui,
-                    t("renderer.decodeThreadLabel"),
-                    "help.decodeThread",
-                    &mut on,
-                ) {
-                    self.set_option("decode_thread", serde_json::json!(on));
+        section.show_keeping(
+            ui,
+            self,
+            // The output mode stays under the header of the folded section:
+            // it is chosen more often than the renderer is tuned.
+            |app, ui| app.output_mode_rows(ui, embedded),
+            |app, ui| {
+                if let Some(perf) = &perf {
+                    renderer_perf::perf_readouts(ui, perf);
                 }
-            }
-            if !embedded {
-                widgets::note(ui, t("renderer.decodeThreadStandaloneNote"));
-            }
-            ui.add_space(2.0);
-            // The tab bar sits under the output mode that decides it, and
-            // only where both stages render.
-            let (tab, choice) = self.renderer_tab.on_path(path);
-            if choice
-                && let Some(tab) = widgets::tab_bar(
-                    ui,
-                    &self.renderer_tab,
-                    &[
-                        (RendererTab::Renderer, t("rendererTabs.renderer")),
-                        (RendererTab::Binaural, t("rendererTabs.binaural")),
-                    ],
-                )
-            {
-                self.renderer_tab = tab;
-            }
-            // Groups in the order their choices constrain one another: the
-            // backend first, since it says which evaluation modes exist; the
-            // two distance treatments it applies; how gains move between
-            // frames; and last the crossover, which belongs to the speaker
-            // stage and so follows both tabs of a room.
-            match tab {
-                RendererTab::Renderer => {
-                    self.backend_group(ui);
-                    self.evaluation_group(ui);
-                    self.distance_model_group(ui);
-                    self.distance_diffuse_group(ui);
-                    self.ramp_group(ui);
+                // Where decoding runs: a choice that takes effect in a
+                // player's embedded engine only. It is offered on the
+                // standalone renderer too, which shares the player's config
+                // and always decodes on a thread of its own: the note says
+                // the switch changes nothing there.
+                if let Some(mut on) = decode_thread {
+                    if widgets::switch_row_help(
+                        ui,
+                        t("renderer.decodeThreadLabel"),
+                        "help.decodeThread",
+                        &mut on,
+                    ) {
+                        app.set_option("decode_thread", serde_json::json!(on));
+                    }
                 }
-                RendererTab::Binaural => self.binaural_tab(ui),
-            }
-            if path.speakers_render() {
-                self.crossover_group(ui);
-            }
-        });
+                if !embedded {
+                    widgets::note(ui, t("renderer.decodeThreadStandaloneNote"));
+                }
+                ui.add_space(2.0);
+                // The tab bar only where both stages render.
+                let (tab, choice) = app.renderer_tab.on_path(path);
+                if choice
+                    && let Some(tab) = widgets::tab_bar(
+                        ui,
+                        &app.renderer_tab,
+                        &[
+                            (RendererTab::Renderer, t("rendererTabs.renderer")),
+                            (RendererTab::Binaural, t("rendererTabs.binaural")),
+                        ],
+                    )
+                {
+                    app.renderer_tab = tab;
+                }
+                // Groups in the order their choices constrain one another:
+                // the backend first, since it says which evaluation modes
+                // exist; the two distance treatments it applies; how gains
+                // move between frames; and last the crossover, which belongs
+                // to the speaker stage and so follows both tabs of a room.
+                match tab {
+                    RendererTab::Renderer => {
+                        app.backend_group(ui);
+                        app.evaluation_group(ui);
+                        app.distance_model_group(ui);
+                        app.distance_diffuse_group(ui);
+                        app.ramp_group(ui);
+                    }
+                    RendererTab::Binaural => app.binaural_tab(ui),
+                }
+                if path.speakers_render() {
+                    app.crossover_group(ui);
+                }
+            },
+        );
     }
 
-    pub(crate) fn output_mode_row(&mut self, ui: &mut Ui) {
+    /// The output mode and, on the player's embedded engine, the note that
+    /// it applies at player start: the rows the Renderer and Listening
+    /// sections keep in view while folded.
+    pub(crate) fn output_mode_rows(&mut self, ui: &mut Ui, embedded: bool) {
+        self.output_mode_row(ui);
+        if embedded {
+            widgets::note(ui, t("outputMode.mpvNote"));
+        }
+    }
+
+    fn output_mode_row(&mut self, ui: &mut Ui) {
         let current = {
             let live = self.host.read();
             OutputMode::from_state(live.app.binaural.as_ref())
