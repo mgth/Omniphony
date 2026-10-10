@@ -597,6 +597,39 @@ impl SpeakerLayout {
         (positions, mapping)
     }
 
+    /// How far each spatializable speaker stands from the listener once
+    /// placed in the room, in the order of
+    /// [`Self::spatializable_positions_for_room`]: a cartesian speaker is
+    /// scaled as there, a polar one keeps its hydrated distance. The depth a
+    /// volumetric render measures is against these.
+    pub fn spatializable_radii_for_room(
+        &self,
+        room_ratio: [f32; 3],
+        room_ratio_rear: f32,
+        room_ratio_lower: f32,
+        room_ratio_center_blend: f32,
+    ) -> Vec<f32> {
+        self.speakers
+            .iter()
+            .filter(|speaker| speaker.spatialize)
+            .map(|speaker| {
+                let position = [speaker.x, speaker.y, speaker.z];
+                let placed = if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
+                    geometry::room_scaled_position(
+                        position,
+                        room_ratio,
+                        room_ratio_rear,
+                        room_ratio_lower,
+                        room_ratio_center_blend,
+                    )
+                } else {
+                    position
+                };
+                geometry::vec3::length(placed)
+            })
+            .collect()
+    }
+
     /// Get speaker names
     pub fn speaker_names(&self) -> Vec<&str> {
         self.speakers.iter().map(|s| s.name.as_str()).collect()

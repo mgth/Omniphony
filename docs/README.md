@@ -31,6 +31,7 @@ Contracts held by tests; change the page and the test together.
 | [channel-object-contract.md](channel-object-contract.md) | One channel/object contract from bridge to host |
 | [plugin-contract.md](plugin-contract.md) | Render-backend plugins |
 | [custom-render-backend-integration.md](custom-render-backend-integration.md) | Writing a render backend |
+| [volumetric-backend.md](volumetric-backend.md) | The volumetric backend: VBAP with the object's depth |
 | [live-options-registry.md](live-options-registry.md) | The declared registry of live options |
 | [from-file-evaluator-architecture.md](from-file-evaluator-architecture.md) | Serialized evaluation artifacts |
 | [latency-regulation.md](latency-regulation.md) | The output latency controller |

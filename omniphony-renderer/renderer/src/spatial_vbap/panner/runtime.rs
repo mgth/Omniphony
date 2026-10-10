@@ -101,6 +101,14 @@ impl VbapPanner {
         self.gains_direct(azimuth_deg, elevation_deg, 0.0)
     }
 
+    /// Compute panning gains for a source direction with a spread, as
+    /// [`Self::get_gains_cartesian`] does for a position, but for a bare
+    /// direction: nothing clamps it to the horizon. The volumetric backend
+    /// pans the direction opposite an object with it.
+    pub fn get_gains_spread(&self, azimuth_deg: f32, elevation_deg: f32, spread: f32) -> Gains {
+        self.gains_direct(azimuth_deg, elevation_deg, spread)
+    }
+
     /// Direct triangulation-based VBAP gains. The native backend stores the
     /// triangulated layout (plain data); the SAF backend rebuilds it per call
     /// because its FFI handle is not `Sync` and the evaluation layer samples the

@@ -259,8 +259,9 @@ OSC/state plumbing for a backend that uses the generic parameter schema.
 
 ## Built-in backends and typed plans
 
-The shipped backends (VBAP, Barycenter, Distance, Hybrid) use *typed*
-`BackendBuildPlan` variants (`Vbap`, `Barycenter`, …) rather than `Dynamic`,
+The shipped backends (VBAP, Volumetric, Barycenter, Distance, Hybrid) use
+*typed* `BackendBuildPlan` variants (`Vbap`, `Volumetric`, `Barycenter`, …)
+rather than `Dynamic`,
 because they share geometry/evaluation machinery and the composite Hybrid backend
 builds inner backends by id. Contributor backends do **not** need a typed
 variant: `Dynamic` carries an arbitrary builder closure and is a first-class
