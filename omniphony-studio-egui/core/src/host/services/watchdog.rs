@@ -24,6 +24,10 @@ const DEBOUNCE: Duration = Duration::from_secs(6);
 /// `WATCHDOG_GOODBYE_GRACE`: a renderer that said goodbye is not coming back,
 /// so its port is free almost at once and the debounce is short-circuited.
 const GOODBYE_GRACE: Duration = Duration::from_millis(500);
+/// How often a child of ours is looked at again while a goodbye's grace runs:
+/// it says goodbye before it has finished exiting, and the wait that leads to
+/// the start must not begin a whole pass after it is gone.
+const LEAVING_POLL: Duration = Duration::from_millis(50);
 /// `WATCHDOG_FAST_FAIL_WINDOW`: a child that dies this soon after its spawn
 /// did not start — it failed.
 const FAST_FAIL: Duration = Duration::from_secs(5);
@@ -66,6 +70,11 @@ enum Verdict {
     /// Every rule lets a start through, but a wait is not over: the start
     /// comes in `left`, at the end of a wait `span` long in all.
     Pending { left: Duration, span: Duration },
+    /// A renderer said goodbye and a child we started still runs: if the
+    /// goodbye was its own, it is on its way out. Nothing is promised, since
+    /// it may as well be a child standing by that stays; but for the `left`
+    /// of the grace it is worth looking again sooner than the next pass.
+    Leaving { left: Duration },
     /// A service-managed renderer is someone else's responsibility.
     Managed,
     /// Something else holds the renderer's port — an embedded renderer the
@@ -110,7 +119,15 @@ fn verdict<S: FnOnce() -> bool, P: FnOnce() -> bool>(facts: Facts<S, P>) -> Verd
         return Verdict::Wait;
     }
     if facts.child_running {
-        return Verdict::Wait;
+        // Never a start while it runs, goodbye or not.
+        let grace_left = facts
+            .goodbye_for
+            .map(|since| GOODBYE_GRACE.saturating_sub(since))
+            .filter(|left| !left.is_zero());
+        return match grace_left {
+            Some(left) => Verdict::Leaving { left },
+            None => Verdict::Wait,
+        };
     }
     if let Some((left, span)) = wait_left(facts.down_for, facts.goodbye_for, facts.cooldown_left) {
         // The probes belong to the moment of the start: binding the port
@@ -304,6 +321,9 @@ impl Watchdog {
             },
         };
         let verdict = verdict(facts);
+        if let Verdict::Leaving { left } = verdict {
+            next = next.min(now + left.min(LEAVING_POLL));
+        }
         let countdown = match verdict {
             Verdict::Pending { left, span } => {
                 let due = now + left;
@@ -328,7 +348,7 @@ impl Watchdog {
             next: Some(next),
         };
         match verdict {
-            Verdict::Wait | Verdict::Pending { .. } => return due,
+            Verdict::Wait | Verdict::Pending { .. } | Verdict::Leaving { .. } => return due,
             Verdict::Managed => {
                 self.refused = true;
                 return due;
@@ -915,6 +935,103 @@ mod tests {
         let again = tick_at_ms(&mut watchdog, &state, t0, 300);
         assert!(!again.changed);
         assert_eq!(again.next, Some(goodbye + GOODBYE_GRACE));
+    }
+
+    #[test]
+    fn a_child_saying_goodbye_is_looked_at_again_but_never_started_over() {
+        let leaving = |goodbye_for| {
+            verdict(unprobed(Facts {
+                down_for: Duration::from_millis(100),
+                goodbye_for,
+                child_running: true,
+                ..clear()
+            }))
+        };
+        assert_eq!(
+            leaving(Some(Duration::from_millis(100))),
+            Verdict::Leaving {
+                left: GOODBYE_GRACE - Duration::from_millis(100)
+            }
+        );
+        // Past the grace it is a running child like any other: no start, and
+        // no hurry either.
+        assert_eq!(leaving(Some(GOODBYE_GRACE)), Verdict::Wait);
+        assert_eq!(leaving(None), Verdict::Wait);
+    }
+
+    /// The renderer Studio launched says goodbye before it has finished
+    /// exiting: the pass woken by the goodbye still finds it running.
+    #[cfg(unix)]
+    #[test]
+    fn a_goodbye_from_a_child_still_exiting_keeps_its_grace_deadline() {
+        let t0 = Instant::now();
+        let (state, mut watchdog) = connected_then_passed(t0);
+        let child = std::process::Command::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .spawn()
+            .expect("sh and sleep are available on unix");
+        *state.renderer_child.lock().unwrap() = Some(child);
+        let goodbye = t0 + Duration::from_millis(200);
+        state.stats.registered.store(false, Ordering::Relaxed);
+        state.stats.goodbye.heard(goodbye);
+        // Still running: nothing is promised, but it is looked at again well
+        // inside the grace, pass after pass.
+        for millis in [200, 250] {
+            let tick = tick_at_ms(&mut watchdog, &state, t0, millis);
+            assert!(!tick.changed, "{millis} ms");
+            assert_eq!(
+                tick.next,
+                Some(t0 + Duration::from_millis(millis) + LEAVING_POLL),
+                "{millis} ms"
+            );
+            assert_eq!(state.watchdog.lock().unwrap().countdown, None);
+        }
+        // It exits. The next look finds it gone and counts the rest of the
+        // grace down, from the goodbye to the deadline it always had.
+        {
+            let mut slot = state.renderer_child.lock().unwrap();
+            let child = slot.as_mut().unwrap();
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+        let gone = tick_at_ms(&mut watchdog, &state, t0, 300);
+        assert!(gone.changed);
+        assert_eq!(gone.next, Some(goodbye + GOODBYE_GRACE));
+        assert_eq!(
+            state.watchdog.lock().unwrap().countdown,
+            Some(Countdown {
+                from: goodbye,
+                due: goodbye + GOODBYE_GRACE
+            })
+        );
+    }
+
+    /// A child that outlives the grace is not started over, and is back to
+    /// the ordinary cadence.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_outlives_its_goodbye_grace_is_left_running() {
+        let t0 = Instant::now();
+        let (state, mut watchdog) = connected_then_passed(t0);
+        let child = std::process::Command::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .spawn()
+            .expect("sh and sleep are available on unix");
+        *state.renderer_child.lock().unwrap() = Some(child);
+        state.stats.registered.store(false, Ordering::Relaxed);
+        state.stats.goodbye.heard(t0);
+        let late = t0 + GOODBYE_GRACE;
+        let tick = watchdog.tick(
+            &state,
+            late,
+            &crate::host::runtime::StopToken::cancelled_for_test(),
+        );
+        assert_eq!(tick.next, Some(late + TICK));
+        assert_eq!(state.watchdog.lock().unwrap().countdown, None);
+        assert!(orender::launched_renderer_running(&state));
+        let mut child = state.renderer_child.lock().unwrap().take().unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 
     #[test]
