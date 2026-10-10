@@ -4,6 +4,7 @@ use anyhow::Result;
 
 use crate::live_params::{
     BackendRebuildParams, LiveEvaluationMode, LiveParams, PreferredEvaluationMode, RenderTopology,
+    RoomRatios,
 };
 use crate::plugin::{PluginFactory, PluginListing, PluginRegistry};
 use crate::render_backend::{
@@ -336,6 +337,12 @@ pub struct TopologyBuildPlan {
     /// layout (set by `RendererControl::prepare_topology_rebuild`); the
     /// built topology carries it as [`RenderTopology::brir_layout`].
     pub brir_layout: bool,
+    /// The room `layout`'s cartesian speakers are placed in, which the built
+    /// topology's objects pan in ([`RenderTopology::room`]).
+    pub room: RoomRatios,
+    /// The measured room `room` was derived from, for a BRIR set's
+    /// loudspeakers ([`RenderTopology::measured_room`]).
+    pub measured_room: Option<crate::binaural::brir::MeasuredRoom>,
     /// The grid the evaluation is planned on and the grid request that was
     /// the latest then (see [`crate::evaluation_grid`]); the built topology
     /// records both. Set by `RendererControl::prepare_topology_rebuild_for_layout`.
@@ -438,8 +445,10 @@ impl TopologyBuildPlan {
         };
         let mut topology = RenderTopology::new(Arc::new(engine), self.layout.clone())?
             .with_model_origin(self.geometry_generation, &self.backend_id)
+            .with_room(self.room)
             .with_grid(self.grid, self.grid_generation);
         topology.brir_layout = self.brir_layout;
+        topology.measured_room = self.measured_room.clone();
         smoke_test_engine(
             &topology.backend,
             &self.evaluation_build_config,
@@ -560,18 +569,14 @@ pub(crate) fn collect_omni_mask(layout: &SpeakerLayout) -> Vec<bool> {
 fn build_vbap_build_plan(
     layout: &SpeakerLayout,
     live: &LiveParams,
+    room: RoomRatios,
     rebuild_params: BackendRebuildParams,
     spread: crate::render_backend::VbapSpreadParams,
     out_of_hull_mode: crate::spatial_vbap::OutOfHullMode,
 ) -> Option<BackendBuildPlan> {
     let rebuild = rebuild_params.vbap?;
     let positions = layout
-        .spatializable_positions_for_room(
-            live.room_ratio,
-            live.room_ratio_rear,
-            live.room_ratio_lower,
-            live.room_ratio_center_blend,
-        )
+        .spatializable_positions_for_room(room.ratio, room.rear, room.lower, room.center_blend)
         .0;
     let azimuth_resolution = if live.evaluation.polar.azimuth_values > 0 {
         ((360.0f32 / (live.evaluation.polar.azimuth_values as f32)).round() as i32).clamp(1, 360)
@@ -630,10 +635,10 @@ fn build_vbap_build_plan(
         spread_distance_range: spread.spread_distance_range,
         spread_distance_curve: spread.spread_distance_curve,
         size_to_spread_mode: spread.size_to_spread_mode,
-        room_ratio: live.room_ratio,
-        room_ratio_rear: live.room_ratio_rear,
-        room_ratio_lower: live.room_ratio_lower,
-        room_ratio_center_blend: live.room_ratio_center_blend,
+        room_ratio: room.ratio,
+        room_ratio_rear: room.rear,
+        room_ratio_lower: room.lower,
+        room_ratio_center_blend: room.center_blend,
         diffuse: live.use_distance_diffuse,
         diffuse_thr: live.distance_diffuse_threshold,
         diffuse_curve: live.distance_diffuse_curve,
@@ -797,6 +802,7 @@ fn build_inner_backend_plan(
         "vbap" => build_vbap_build_plan(
             ctx.layout,
             ctx.live,
+            ctx.room,
             ctx.backend_rebuild_params?,
             vbap_spread_params(ctx, backend_id),
             vbap_out_of_hull_mode(ctx, backend_id),
@@ -853,6 +859,12 @@ fn preferred_evaluation_mode(
 pub struct BackendBuildCtx<'a> {
     pub layout: &'a SpeakerLayout,
     pub live: &'a LiveParams,
+    /// The room the topology pans in: where `layout`'s cartesian speakers
+    /// are placed, and what the built topology's objects follow
+    /// ([`crate::live_params::RenderTopology::room`]). Read here rather
+    /// than off `live`, whose room is the user's: a BRIR set's loudspeakers
+    /// stand in their measured room.
+    pub room: RoomRatios,
     pub backend_rebuild_params: Option<BackendRebuildParams>,
     /// The registry the active backend was looked up in. A composite backend
     /// (hybrid) resolves its inner models through this so any registered backend
@@ -1183,6 +1195,7 @@ pub fn prepare_topology_build_plan(
     registry: &BackendRegistry,
     layout: SpeakerLayout,
     live: &LiveParams,
+    room: RoomRatios,
     backend_rebuild_params: Option<BackendRebuildParams>,
     backend_params: &std::collections::HashMap<
         String,
@@ -1196,6 +1209,7 @@ pub fn prepare_topology_build_plan(
     let ctx = BackendBuildCtx {
         layout: &layout,
         live,
+        room,
         backend_rebuild_params,
         backend_params,
         registry,
@@ -1229,6 +1243,8 @@ pub fn prepare_topology_build_plan(
         evaluation_build_config,
         geometry_generation: 0,
         brir_layout: false,
+        room,
+        measured_room: None,
         grid: None,
         grid_generation: 0,
     })
@@ -1559,6 +1575,8 @@ mod tests {
             evaluation_build_config: build_config(),
             geometry_generation: 0,
             brir_layout: false,
+            room: RoomRatios::UNIT,
+            measured_room: None,
             grid: None,
             grid_generation: 0,
         };

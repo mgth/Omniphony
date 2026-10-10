@@ -289,10 +289,12 @@ impl BandRenderer {
     /// The engine for `band` of `layout`. `geometry_generation` is the one of
     /// the published topology `layout` comes from: the band's gain model is
     /// recorded as built for that geometry, not for whatever generation the
-    /// control has reached by the time this runs.
+    /// control has reached by the time this runs. `room` is that topology's
+    /// too: the band's speakers are placed in the room its objects pan in.
     pub(super) fn from_band(
         band: &FreqBand,
         layout: &crate::speaker_layout::SpeakerLayout,
+        room: crate::live_params::RoomRatios,
         geometry_generation: u64,
         num_speakers: usize,
         control: &Arc<RendererControl>,
@@ -338,7 +340,7 @@ impl BandRenderer {
                     .collect(),
             };
             let mut plan = control
-                .prepare_topology_rebuild_for_layout(band_layout)
+                .prepare_topology_rebuild_for_layout(band_layout, room)
                 .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology rebuild"))?;
             // The plan carries the control's generation as of now, which an
             // edit made since `layout` was published has already moved on:

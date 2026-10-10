@@ -585,20 +585,20 @@ impl StreamState {
         &self,
         control: &RendererControl,
         labels: &[RChannelLabel],
-        output_layout: &SpeakerLayout,
+        topology: &renderer::live_params::RenderTopology,
     ) -> Vec<ObjectMeta> {
         let (placement, room, surround_placement) = {
             let live = control.live.read();
             (
                 OwnedPlacement::from_live(&live, self.declaration.family),
-                RoomRatios::for_output(&live),
+                RoomRatios::for_output(&live, topology),
                 live.options.surround_placement,
             )
         };
         let mut objects = build_virtual_bed_objects(
             labels,
             &placement.policy(&self.declaration.poses),
-            Some(output_layout),
+            Some(&topology.speaker_layout),
             room,
             surround_placement,
         )

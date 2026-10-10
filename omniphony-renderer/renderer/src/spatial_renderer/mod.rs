@@ -82,6 +82,11 @@ struct LiveSnapshot<'a> {
     object_test: Option<crate::live_params::ObjectTest>,
     /// Orbit applied to it. Inert at diameter 0.
     object_test_rotation: crate::live_params::ObjectTestRotation,
+    /// The room the objects pan in: the published topology's, in which its
+    /// speakers were placed (`RenderTopology::room`), not the live params'
+    /// — the two only agree on the editable layout once a room edit's
+    /// rebuild has landed, and never on a BRIR set's loudspeakers, which
+    /// stand in their measured room.
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -912,10 +917,10 @@ impl SpatialRenderer {
                 speaker_test: g.speaker_test,
                 object_test: g.object_test,
                 object_test_rotation: g.object_test_rotation,
-                room_ratio: g.room_ratio,
-                room_ratio_rear: g.room_ratio_rear,
-                room_ratio_lower: g.room_ratio_lower,
-                room_ratio_center_blend: g.room_ratio_center_blend,
+                room_ratio: topology.room.ratio,
+                room_ratio_rear: topology.room.rear,
+                room_ratio_lower: topology.room.lower,
+                room_ratio_center_blend: topology.room.center_blend,
                 use_distance_diffuse: g.use_distance_diffuse,
                 distance_diffuse_threshold: g.distance_diffuse_threshold,
                 distance_diffuse_curve: g.distance_diffuse_curve,
@@ -1483,18 +1488,20 @@ impl SpatialRenderer {
         self.last_output_latency
     }
 
-    /// The virtual-speaker bus of the last cascaded frame, when the cascaded
-    /// binaural mode rendered it: `(interleaved_samples, channel_count)` in
-    /// app-layout speaker order, post per-speaker params. The host meters
-    /// this so Studio's speaker gauges show the virtual room while the
-    /// stereo output feeds the ear meters. `None` outside cascaded mode.
+    /// The virtual-speaker bus of the last cascaded frame, when the cascade
+    /// rendered it — the cascaded binaural mode, or a BRIR source, which
+    /// forces the cascade whatever the mode: `(interleaved_samples,
+    /// channel_count)` in app-layout speaker order, post per-speaker params.
+    /// The host meters this so Studio's speaker gauges show the virtual or
+    /// measured room while the stereo output feeds the ear meters. `None`
+    /// outside the cascade.
     pub fn virtual_bus(&self) -> Option<(&[f32], usize)> {
         let active = {
             let g = self.control.live.read();
             matches!(
                 g.binaural.output_mode,
                 crate::live_params::OutputMode::Binaural
-            ) && matches!(g.binaural.mode, crate::live_params::BinauralMode::Cascaded)
+            ) && g.binaural.cascade_active()
         };
         if !active {
             return None;

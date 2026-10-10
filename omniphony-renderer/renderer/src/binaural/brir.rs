@@ -180,6 +180,102 @@ pub fn room_corners_relative(corners: [[f32; 3]; 2], listener: [f32; 3]) -> [[f3
     [relative(corners[0]), relative(corners[1])]
 }
 
+/// The room a BRIR set's loudspeakers stand in, relative to the listener in
+/// the renderer's frame (`x` right, `y` front, `z` up, metres): the box the
+/// stage pans in while the set renders, in place of the user's room
+/// ([`crate::live_params::RoomRatios`]). The file's two corners when it
+/// states them (`RoomCornerA`/`RoomCornerB`), grown to contain every
+/// loudspeaker so that each keeps its place in the panning space; else an
+/// estimate from the loudspeakers' bounding box — a margin on every side, a
+/// floor under the listener's ears and some headroom — which the state says
+/// is one (`estimated`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredRoom {
+    /// `[min, max]` corners.
+    pub box_m: [[f32; 3]; 2],
+    /// The box is the loudspeakers' bounding box with margins, not the
+    /// file's room.
+    pub estimated: bool,
+}
+
+impl MeasuredRoom {
+    /// Metres kept beyond the farthest loudspeaker on each side when the
+    /// file states no room.
+    pub const BOX_MARGIN_M: f32 = 0.3;
+    /// The floor at least this far below the listener's ears, and this much
+    /// headroom above, when the file states no room.
+    pub const FLOOR_M: f32 = 1.2;
+    pub const HEADROOM_M: f32 = 1.0;
+
+    /// The room of a set whose loudspeakers stand at `emitters` (relative
+    /// to the listener, renderer frame, metres), inside `corners` when the
+    /// file states them.
+    pub fn of(emitters: &[[f32; 3]], corners: Option<[[f32; 3]; 2]>) -> Self {
+        let mut lo = [f32::INFINITY; 3];
+        let mut hi = [f32::NEG_INFINITY; 3];
+        let mut grow = |p: [f32; 3]| {
+            for axis in 0..3 {
+                lo[axis] = lo[axis].min(p[axis]);
+                hi[axis] = hi[axis].max(p[axis]);
+            }
+        };
+        for &e in emitters {
+            grow(e);
+        }
+        if let Some([a, b]) = corners {
+            grow(a);
+            grow(b);
+            // The listener stands in the room too.
+            grow([0.0; 3]);
+            return Self {
+                box_m: [lo, hi],
+                estimated: false,
+            };
+        }
+        if emitters.is_empty() {
+            lo = [0.0; 3];
+            hi = [0.0; 3];
+        }
+        for axis in 0..3 {
+            lo[axis] -= Self::BOX_MARGIN_M;
+            hi[axis] += Self::BOX_MARGIN_M;
+        }
+        lo[2] = lo[2].min(-Self::FLOOR_M);
+        hi[2] = hi[2].max(Self::HEADROOM_M);
+        Self {
+            box_m: [lo, hi],
+            estimated: true,
+        }
+    }
+
+    /// Metres to one unit of the room's ratios: the half-width, as the
+    /// user's room counts it (`config_fields::room`), taken to the farther
+    /// side wall so that every loudspeaker reads as a fraction within the
+    /// cube — the ratios describe a room the listener is centred in
+    /// across, which a measured room need not be.
+    pub fn radius_m(&self) -> f32 {
+        let [lo, hi] = self.box_m;
+        lo[0].abs().max(hi[0].abs()).max(0.01)
+    }
+
+    /// The room as the stage pans in it: width 1 (the reference, like the
+    /// user's room), the other extents as multiples of [`Self::radius_m`].
+    /// `center_blend` is the user's front/rear blend — how the cube's depth
+    /// is mapped into a room the listener is not centred in along, a
+    /// panning policy rather than a measurement.
+    pub fn ratios(&self, center_blend: f32) -> crate::live_params::RoomRatios {
+        let radius = self.radius_m();
+        let [lo, hi] = self.box_m;
+        let extent = |m: f32| (m / radius).max(omniphony_geometry::f32::MIN_ROOM_RATIO);
+        crate::live_params::RoomRatios {
+            ratio: [1.0, extent(hi[1]), extent(hi[2])],
+            rear: extent(-lo[1]),
+            lower: extent(-lo[2]),
+            center_blend: center_blend.clamp(0.0, 1.0),
+        }
+    }
+}
+
 /// Row `i` of a `[M][C]` or `[I][C]` array (the single row when the array
 /// holds one), or the origin.
 fn row3(arr: &[f32], i: usize) -> [f32; 3] {
@@ -1538,5 +1634,82 @@ mod tests {
         let lh = load("longhrir.sofa");
         assert_eq!(lh.emitters().len(), 5);
         assert_eq!(lh.orientations().len(), 1);
+    }
+
+    /// The room a set's loudspeakers stand in: the file's corners when it
+    /// states them, grown to hold every loudspeaker (and the listener);
+    /// else the loudspeakers' bounding box with a margin, a floor and
+    /// headroom, flagged as an estimate.
+    #[test]
+    fn a_measured_room_is_the_files_box_or_an_estimate_around_the_loudspeakers() {
+        let emitters = [
+            [-1.5, 3.0, 0.0],
+            [1.5, 3.0, 0.0],
+            [-2.0, 0.0, 0.0],
+            [2.0, -1.0, 1.2],
+        ];
+        let stated = MeasuredRoom::of(&emitters, Some([[2.5, -2.0, -1.3], [-2.5, 3.5, 1.4]]));
+        assert!(!stated.estimated);
+        assert_eq!(
+            stated.box_m,
+            [[-2.5, -2.0, -1.3], [2.5, 3.5, 1.4]],
+            "corners in any order"
+        );
+        // A loudspeaker outside the stated box keeps its place in the room.
+        let grown = MeasuredRoom::of(&emitters, Some([[-2.5, -2.0, -1.3], [2.5, 2.0, 1.4]]));
+        assert_eq!(
+            grown.box_m[1][1], 3.0,
+            "the front wall moved out to the fronts"
+        );
+        assert!(!grown.estimated);
+
+        let estimate = MeasuredRoom::of(&emitters, None);
+        assert!(estimate.estimated);
+        let m = MeasuredRoom::BOX_MARGIN_M;
+        assert_eq!(
+            estimate.box_m[0],
+            [-2.0 - m, -1.0 - m, -MeasuredRoom::FLOOR_M]
+        );
+        assert_eq!(estimate.box_m[1], [2.0 + m, 3.0 + m, 1.2 + m]);
+        // Headroom applies when the loudspeakers are lower than it.
+        let flat = MeasuredRoom::of(&[[-1.0, 1.0, 0.0], [1.0, 1.0, 0.0]], None);
+        assert_eq!(flat.box_m[1][2], MeasuredRoom::HEADROOM_M);
+    }
+
+    /// The stage's ratios of a measured room: the half-width is the unit,
+    /// taken to the farther side wall, the other walls as multiples of it,
+    /// the user's blend kept. A cube the listener is centred in is the unit
+    /// cube: the direction reading of the direct path (#783), which a
+    /// measured room generalises (#803).
+    #[test]
+    fn a_measured_rooms_ratios_put_the_listener_where_it_was_measured() {
+        let room = MeasuredRoom {
+            box_m: [[-2.0, -1.0, -1.2], [3.0, 4.5, 1.8]],
+            estimated: false,
+        };
+        assert_eq!(room.radius_m(), 3.0, "the farther side wall");
+        let ratios = room.ratios(0.25);
+        assert_eq!(ratios.ratio[0], 1.0);
+        assert!((ratios.ratio[1] - 1.5).abs() < 1e-6 && (ratios.ratio[2] - 0.6).abs() < 1e-6);
+        assert!((ratios.rear - 1.0 / 3.0).abs() < 1e-6);
+        assert!((ratios.lower - 0.4).abs() < 1e-6);
+        assert_eq!(ratios.center_blend, 0.25);
+
+        let cube = MeasuredRoom {
+            box_m: [[-2.5; 3], [2.5; 3]],
+            estimated: true,
+        };
+        assert_eq!(
+            cube.ratios(0.0),
+            crate::live_params::RoomRatios::UNIT,
+            "a centred cube pans as the direction reading does"
+        );
+        // A wall at the listener never collapses an axis.
+        let flat = MeasuredRoom {
+            box_m: [[-1.0, 0.0, 0.0], [1.0, 2.0, 0.0]],
+            estimated: true,
+        };
+        let ratios = flat.ratios(0.5);
+        assert!(ratios.rear > 0.0 && ratios.lower > 0.0 && ratios.ratio[2] > 0.0);
     }
 }

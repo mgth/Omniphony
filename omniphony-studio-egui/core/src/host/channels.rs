@@ -456,12 +456,14 @@ pub struct Channel {
 }
 
 /// Polar → ADM normalised cartesian, exactly like the speaker editor: the room
-/// warp is inverted and the result clamped. "Norm" is the ADM position, not a
-/// raw axis swizzle.
+/// warp is inverted, a position past a wall first drawn back along its own
+/// line so that the angle survives (the renderer's `angles_to_normalized`;
+/// a measured room can be lower than the entry's radius). "Norm" is the ADM
+/// position, not a raw axis swizzle.
 pub fn polar_to_adm(room: &RoomRatio, azimuth: f64, elevation: f64, distance: f64) -> [f64; 3] {
     use omniphony_geometry::f64 as g;
     let (x, y, z) = g::from_spherical(azimuth, elevation, distance);
-    g::inverse_room_scaled_position(
+    g::inverse_room_scaled_direction(
         [x, y, z],
         [room.width, room.length, room.height],
         room.rear,
@@ -926,6 +928,34 @@ mod tests {
             for i in 0..3 {
                 assert!((back[i] - adm[i]).abs() < 1e-6, "{adm:?} -> {back:?}");
             }
+        }
+    }
+
+    /// A polar entry past a wall of a low room keeps its angle, as the
+    /// renderer keeps it: the position is drawn back into the room, not
+    /// clamped axis by axis (#803).
+    #[test]
+    fn a_polar_entry_keeps_its_angle_in_a_low_room() {
+        let low = RoomRatio {
+            width: 1.0,
+            length: 1.2,
+            height: 0.4,
+            rear: 0.8,
+            lower: 0.48,
+            center_blend: 0.5,
+            scale_m: 2.5,
+        };
+        for (az, el) in [(-30.0, 30.0), (110.0, 30.0), (-45.0, 45.0), (-135.0, 0.0)] {
+            let adm = polar_to_adm(&low, az, el, 1.0);
+            assert!(
+                adm.iter().all(|c| c.abs() <= 1.0 + 1e-9),
+                "{az}/{el}: {adm:?}"
+            );
+            let (got_az, got_el, _) = adm_to_polar(&low, adm);
+            assert!(
+                (got_az - az).abs() < 1e-6 && (got_el - el).abs() < 1e-6,
+                "{az}/{el} came back as {got_az}/{got_el}"
+            );
         }
     }
 
