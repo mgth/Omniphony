@@ -85,6 +85,11 @@ pub enum OscControlMsg {
 pub struct HostPaths {
     /// Bundled resources (layouts, orender binary, engine library).
     pub resource_dir: Option<PathBuf>,
+    /// Where this run read its preset layouts from: the shipped `layouts/`,
+    /// or the checkout's for a build run from its source tree. The Presets
+    /// picker opens there. The shipped copy alone would leave a checkout
+    /// build, which has no resource directory, with no directory at all.
+    pub layouts_dir: Option<PathBuf>,
     /// Where log dumps go.
     pub log_dir: Option<PathBuf>,
     /// The user's downloads directory (memory CSV dumps).
@@ -101,6 +106,12 @@ impl HostPaths {
             resource_dir: crate::host::bundle::resource_dir(),
             ..Self::default()
         }
+    }
+
+    /// The same paths, recording where the preset layouts were read from.
+    pub fn with_layouts_dir(mut self, dir: PathBuf) -> Self {
+        self.layouts_dir = Some(dir);
+        self
     }
 
     pub fn resource_dir(&self) -> Result<PathBuf, String> {
@@ -156,13 +167,14 @@ impl std::ops::Deref for ModelRead<'_> {
 }
 
 impl SharedState {
-    /// Build the host's state. The composition root calls this; the mutable
-    /// odds and ends start empty.
+    /// Build the host's state. The composition root calls this with the
+    /// paths it resolved; the mutable odds and ends start empty.
     pub fn new(
         inner: SharedLive,
         osc_tx: ControlTx,
         config_dir: PathBuf,
         listen_port: u16,
+        paths: HostPaths,
         stats: Arc<crate::osc::OscStats>,
         waker: crate::osc::Waker,
     ) -> Self {
@@ -178,7 +190,7 @@ impl SharedState {
             renderer_child: Default::default(),
             watchdog: Default::default(),
             auto_tune_snapshot: Default::default(),
-            paths: HostPaths::bundled(),
+            paths,
             stats,
             waker,
         }
