@@ -286,6 +286,10 @@ Rules:
   per frame. The engine applies the live `dialogue_gain_db` option to the
   dialogue channels with the PCM conversion, ramped over 20 ms, before the
   upmix stages, and publishes the tags as `channelTags` on `/state/input`.
+  The Studio names a tagged channel after its tag — its row in the object
+  list carries the tag's name on a line above the meter, and its scene
+  label reads `Dialogue · L` — so that it is told from the bed channel of
+  the same label.
 
 ### Rendering (engine/CLI)
 

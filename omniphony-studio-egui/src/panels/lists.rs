@@ -29,6 +29,9 @@ struct Row {
     colour: Color32,
     /// Extra note shown after the label (bed channels, gain).
     detail: Option<String>,
+    /// The name of the stream's tag on this channel (`Dialogue`), on a line
+    /// of its own above the meter line.
+    tag: Option<String>,
     /// Normalised position, for the plan thumbnail.
     position: Option<[f64; 3]>,
     /// False for a direct feed, which sits outside the room model.
@@ -188,6 +191,7 @@ impl StudioSpike {
                     soloed: self.ear_solo == Some(ear),
                     colour: theme::TEXT,
                     detail: None,
+                    tag: None,
                     position: None,
                     spatialize: true,
                     speaker: false,
@@ -520,6 +524,9 @@ impl StudioSpike {
                     // thumbnail, which is drawn at the destination speaker
                     // and framed in black.
                     detail: None,
+                    // A dialogue element coded apart has an L, an R and a C
+                    // beside the bed's: the stream's tag tells them apart.
+                    tag: live.app.channel_tag_of(id).map(view::objects::tag_name),
                     position: Some(direct.map_or([src.x, src.y, src.z], |s| [s.x, s.y, s.z])),
                     spatialize: direct.is_none(),
                     speaker: false,
@@ -672,6 +679,7 @@ impl StudioSpike {
                         .filter(|g| (*g - 1.0).abs() > 1e-3)
                         .map(|g| crate::panels::audio::format_linear_as_db(Some(g))),
                     position: Some([speaker.x, speaker.y, speaker.z]),
+                    tag: None,
                     spatialize: speaker.spatialize != 0,
                     speaker: true,
                     freq_low: speaker.freq_low,
@@ -1103,8 +1111,8 @@ fn list_row(
     (action, response.rect)
 }
 
-/// What a row's frame holds: the badge down its left, then the details line,
-/// the meter line and the band bars.
+/// What a row's frame holds: the badge down its left, then the tag line, the
+/// details line, the meter line and the band bars.
 fn row_body(
     ui: &mut Ui,
     list: &str,
@@ -1122,6 +1130,9 @@ fn row_body(
         let (reserved, _) = ui.allocate_exact_size(vec2(row_glyphs::STRIP_W, 0.0), Sense::hover());
         let content = ui
             .vertical(|ui| {
+                if let Some(tag) = &row.tag {
+                    tag_line(ui, tag);
+                }
                 if let Some(details) = &row.details {
                     details_line(ui, details);
                 }
@@ -1179,10 +1190,35 @@ fn row_body(
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         }
         strip.on_hover_text("Drag to reorder");
+    } else if let Some(tag) = &row.tag {
+        // A tagged channel says whose it is, icon or not.
+        strip.on_hover_text(format!("{tag} · {}", row.label));
     } else if row.strip_icon.is_some() {
         // The name hides behind the icon, so it shows on hover.
         strip.on_hover_text(&row.label);
     }
+}
+
+/// The channel tag's name, on a line of its own: the meter line's columns
+/// are fixed and its meter takes what they leave, so a name there, which the
+/// stream chooses and can be any length, would be taken out of the meter.
+/// Here it is cut to the row's width, and egui shows it whole on hover.
+fn tag_line(ui: &mut Ui, tag: &str) -> egui::Response {
+    ui.scope(|ui| {
+        // Small text, not a control: a text line's height, as the details
+        // line has.
+        ui.spacing_mut().interact_size.y = 12.0;
+        ui.add(
+            egui::Label::new(
+                RichText::new(tag)
+                    .size(theme::FONT_SIZE_SMALL)
+                    .color(theme::TEXT_MUTED),
+            )
+            .truncate()
+            .selectable(false),
+        )
+    })
+    .inner
 }
 
 /// `.object-head`: the coordinates on the left, cut short when the row is
@@ -1373,6 +1409,7 @@ mod tests {
             soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,
+            tag: None,
             position: None,
             spatialize: true,
             speaker: true,
@@ -1418,6 +1455,89 @@ mod tests {
         check_row_clicks(false);
     }
 
+    /// A channel tag's name is the stream's and can be any length. It has a
+    /// line of its own, cut to the row's width, so that the meter line keeps
+    /// the room it has on an untagged row down to the narrowest panel.
+    #[test]
+    fn a_long_tag_is_cut_to_the_row_and_leaves_the_meter_line_alone() {
+        use super::{Row, RowState, list_row, tag_line};
+        const TAG: &str = "Dialogue, original version with the director's commentary (fr)";
+        let row = |tag: Option<&str>| Row {
+            id: "12".to_owned(),
+            label: "L".to_owned(),
+            meter: None,
+            hold: None,
+            muted: false,
+            soloed: false,
+            colour: egui::Color32::WHITE,
+            detail: None,
+            tag: tag.map(str::to_owned),
+            position: Some([0.0, 1.0, 0.0]),
+            spatialize: true,
+            speaker: false,
+            freq_low: None,
+            freq_high: None,
+            fixed: false,
+            virtual_speaker: false,
+            contribution: None,
+            band_gains: Vec::new(),
+            size: None,
+            moving: false,
+            strip: "L".to_owned(),
+            strip_icon: None,
+            colorized: false,
+            details: None,
+        };
+        // The narrowest the side panels go.
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(220.0, 100.0));
+        let ctx = egui::Context::default();
+        let run = |add: &mut dyn FnMut(&mut egui::Ui)| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| add(ui),
+            );
+            output.textures_delta.clear();
+        };
+        let mut plain = egui::Rect::NOTHING;
+        let mut tagged = egui::Rect::NOTHING;
+        run(&mut |ui| plain = list_row(ui, "plain", &row(None), RowState::default(), &[]).1);
+        run(&mut |ui| {
+            tagged = list_row(ui, "tagged", &row(Some(TAG)), RowState::default(), &[]).1;
+        });
+        // The tagged row is as wide as the plain one, inside the panel, and
+        // one line taller: nothing was taken from the meter line.
+        assert_eq!(tagged.left(), plain.left());
+        assert_eq!(tagged.right(), plain.right());
+        assert!(tagged.right() <= screen.right(), "{tagged:?}");
+        assert!(tagged.height() > plain.height(), "{tagged:?} vs {plain:?}");
+
+        // The name itself stops where its line does.
+        let mut line = egui::Rect::NOTHING;
+        let mut room = 0.0;
+        let mut whole = 0.0;
+        run(&mut |ui| {
+            room = ui.available_width();
+            whole = ui
+                .painter()
+                .layout_no_wrap(
+                    TAG.to_owned(),
+                    egui::FontId::proportional(crate::ui::theme::FONT_SIZE_SMALL),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x;
+            line = tag_line(ui, TAG).rect;
+        });
+        assert!(
+            whole > room,
+            "the name must be too long for the test: {whole} <= {room}"
+        );
+        assert!(line.width() <= room, "{line:?} in {room}");
+    }
+
     fn check_row_clicks(speaker: bool) {
         use super::{Row, RowAction, RowState, list_row};
         let row = Row {
@@ -1429,6 +1549,7 @@ mod tests {
             soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,
+            tag: None,
             position: None,
             spatialize: true,
             speaker,
