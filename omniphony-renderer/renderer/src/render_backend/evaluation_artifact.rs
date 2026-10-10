@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::io::{Cursor, Read, Write};
 
 use super::{
-    AxisLut, AzimuthLut, BackendCapabilities, EvaluationBuildConfig, PreparedEvaluator,
-    RenderRequest, RenderResponse, sample_cartesian_table, sample_polar_table_lut,
+    AxisLut, AzimuthLut, BackendCapabilities, CartesianParts, EvaluationBuildConfig, GainScratch,
+    PolarParts, PreparedEvaluator, RenderRequest, sample_cartesian_table, sample_polar_table_lut,
 };
 use crate::speaker_layout::SpeakerLayout;
 
@@ -503,16 +503,19 @@ impl PreparedEvaluator for EvaluationArtifactEvaluator {
         self.artifact.speaker_count()
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let gains = match &self.artifact {
+    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, out: &mut [f32]) {
+        match &self.artifact {
             LoadedEvaluationArtifact::Cartesian(artifact) => sample_cartesian_table(
-                &artifact.gains,
-                self.artifact.speaker_count(),
-                &artifact.x_lut,
-                &artifact.y_lut,
-                &artifact.z_lut,
+                CartesianParts {
+                    gains: &artifact.gains,
+                    speaker_count: self.artifact.speaker_count(),
+                    x: &artifact.x_lut,
+                    y: &artifact.y_lut,
+                    z: &artifact.z_lut,
+                    position_interpolation: artifact.metadata.position_interpolation,
+                },
                 req.adm_position.map(|value| value as f32),
-                artifact.metadata.position_interpolation,
+                out,
             ),
             LoadedEvaluationArtifact::Polar(artifact) => {
                 let (azimuth, elevation, distance) = crate::spatial_vbap::adm_to_spherical(
@@ -521,17 +524,19 @@ impl PreparedEvaluator for EvaluationArtifactEvaluator {
                     req.adm_position[2] as f32,
                 );
                 sample_polar_table_lut(
-                    &artifact.gains,
-                    self.artifact.speaker_count(),
-                    &artifact.azimuth_lut,
-                    &artifact.elevation_lut,
-                    &artifact.distance_lut,
+                    PolarParts {
+                        gains: &artifact.gains,
+                        speaker_count: self.artifact.speaker_count(),
+                        azimuth: &artifact.azimuth_lut,
+                        elevation: &artifact.elevation_lut,
+                        distance: &artifact.distance_lut,
+                        position_interpolation: artifact.metadata.position_interpolation,
+                    },
                     [azimuth, elevation, distance],
-                    artifact.metadata.position_interpolation,
+                    out,
                 )
             }
-        };
-        RenderResponse { gains }
+        }
     }
 
     fn save_to_file(&self, path: &std::path::Path, _speaker_layout: &SpeakerLayout) -> Result<()> {

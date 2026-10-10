@@ -35,7 +35,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::ChannelRoute;
-use super::components::{BandRenderer, ChannelState};
+use super::components::{BandRenderer, BandScratch, ChannelState};
 use super::{GAIN_SLEW_SECS, SpatialRenderer};
 use crate::ramp_strategy::RampProgress;
 
@@ -77,6 +77,9 @@ pub(super) struct BandSet {
     key: BandSetKey,
     topology: Arc<RenderTopology>,
     render_bands: Vec<BandRenderer>,
+    /// The working memory `render_bands` are read with, one per band: made
+    /// with the set, so the first block mixed on it allocates none.
+    band_scratches: Vec<BandScratch>,
     crossover_filter_bank: Option<CrossoverBank>,
     /// The facts about that bank, published on the control when the set is
     /// installed: a set that is dropped instead must not be advertised.
@@ -110,6 +113,9 @@ pub(super) struct SpeakerRenderStage {
     /// one replaces ([`Self::unbuilt_replacing`]) for that build to take
     /// over; nothing is mixed before it. Each returns full-size `Gains`.
     pub(super) render_bands: Vec<BandRenderer>,
+    /// The working memory of each installed band engine, in band order.
+    /// Empty until the first build, like the bands it serves.
+    band_scratches: Vec<BandScratch>,
     /// What the installed band engines were built for; `None` until the
     /// first build, which [`Self::refresh_for_topology`] then always runs.
     built: Option<BandSetKey>,
@@ -737,10 +743,13 @@ impl SpeakerRenderStage {
     /// `cache` is the calling channel's cell cache for the unified table; a
     /// source with no channel of its own passes `None` and reads the table
     /// directly. The gains are the same either way.
+    ///
+    /// `bands` are the band engines and the working memory of each, in band
+    /// order; a band without its scratch is silent.
     fn fill_band_gains(
         unified: &Option<MultiBandTable>,
         cache: Option<&mut CornerCache>,
-        render_bands: &[BandRenderer],
+        bands: (&[BandRenderer], &mut [BandScratch]),
         render_params: crate::ramp_strategy::RampRenderParams,
         position: [f64; 3],
         size: [f32; 3],
@@ -753,12 +762,31 @@ impl SpeakerRenderStage {
                 None => table.sample_into(position, out),
             }
         } else {
-            out.clear();
-            out.extend(
-                render_bands
+            let (render_bands, band_scratches) = bands;
+            // The bands overwrite every gain, so a buffer that already has
+            // the shape — the steady state — is left alone.
+            let shaped = out.len() == render_bands.len()
+                && out
                     .iter()
-                    .map(|b| b.compute_gains(render_params, position, size)),
-            );
+                    .zip(render_bands)
+                    .all(|(gains, band)| gains.len() == band.num_speakers);
+            if !shaped {
+                out.clear();
+                out.extend(
+                    render_bands
+                        .iter()
+                        .map(|band| Gains::zeroed(band.num_speakers)),
+                );
+            }
+            let mut band_scratches = band_scratches.iter_mut();
+            for (band, gains) in render_bands.iter().zip(out.iter_mut()) {
+                match band_scratches.next() {
+                    Some(scratch) => {
+                        band.compute_gains(render_params, position, size, scratch, gains)
+                    }
+                    None => gains.fill(0.0),
+                }
+            }
         }
     }
 
@@ -1075,7 +1103,7 @@ impl SpeakerRenderStage {
                         Self::fill_band_gains(
                             &self.unified_table,
                             Some(&mut self.table_caches[input_channel_idx]),
-                            &self.render_bands,
+                            (&self.render_bands, &mut self.band_scratches),
                             render_params,
                             position,
                             size,
@@ -1094,7 +1122,7 @@ impl SpeakerRenderStage {
                         Self::fill_band_gains(
                             &self.unified_table,
                             Some(&mut self.table_caches[input_channel_idx]),
-                            &self.render_bands,
+                            (&self.render_bands, &mut self.band_scratches),
                             render_params,
                             position,
                             size,
@@ -1116,11 +1144,12 @@ impl SpeakerRenderStage {
                         let unified_table = &self.unified_table;
                         let table_cache = &mut self.table_caches[input_channel_idx];
                         let render_bands = &self.render_bands;
+                        let band_scratches = &mut self.band_scratches;
                         let lookup = |position, size, out: &mut Vec<Gains>| {
                             Self::fill_band_gains(
                                 unified_table,
                                 Some(&mut *table_cache),
-                                render_bands,
+                                (render_bands, &mut *band_scratches),
                                 render_params,
                                 position,
                                 size,
@@ -1177,7 +1206,7 @@ impl SpeakerRenderStage {
                         Self::fill_band_gains(
                             &self.unified_table,
                             Some(&mut self.table_caches[input_channel_idx]),
-                            &self.render_bands,
+                            (&self.render_bands, &mut self.band_scratches),
                             render_params,
                             position,
                             size,
@@ -1307,6 +1336,7 @@ impl SpeakerRenderStage {
             num_speakers,
             sample_rate,
             render_bands: Vec::new(),
+            band_scratches: Vec::new(),
             built: None,
             built_topology: None,
             requested: None,
@@ -1536,6 +1566,7 @@ impl SpeakerRenderStage {
             key,
             topology,
             render_bands,
+            band_scratches,
             crossover_filter_bank,
             crossover_info,
             crossover_filter_states,
@@ -1554,6 +1585,7 @@ impl SpeakerRenderStage {
         let replaced = (
             self.built_topology.replace(topology),
             std::mem::replace(&mut self.render_bands, render_bands),
+            std::mem::replace(&mut self.band_scratches, band_scratches),
             std::mem::replace(&mut self.crossover_filter_bank, crossover_filter_bank),
             std::mem::replace(&mut self.crossover_filter_states, crossover_filter_states),
             std::mem::replace(&mut self.unified_table, unified_table),
@@ -1671,6 +1703,7 @@ impl SpeakerRenderStage {
             None => Vec::new(),
         };
         let unified_table = Self::build_unified_table(&render_bands, num_speakers);
+        let band_scratches = render_bands.iter().map(BandRenderer::new_scratch).collect();
         let speaker_freq_ranges = layout
             .speakers
             .iter()
@@ -1680,6 +1713,7 @@ impl SpeakerRenderStage {
             key,
             topology,
             render_bands,
+            band_scratches,
             crossover_filter_bank,
             crossover_info,
             crossover_filter_states,
@@ -1956,7 +1990,7 @@ impl SpeakerRenderStage {
             // The test has no input channel, hence no cell cache: one lookup
             // per block reads the table directly.
             None,
-            &self.render_bands,
+            (&self.render_bands, &mut self.band_scratches),
             render_params,
             // The orbit position, not the placed one: the source is wherever
             // this block puts it.

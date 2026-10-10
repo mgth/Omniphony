@@ -1,5 +1,3 @@
-use crate::spatial_vbap::MAX_SPEAKERS;
-
 /// What a table build carries from one cell to the next along a row, for gain
 /// models whose solver iterates and converges faster when started from the
 /// solution of a neighbouring position.
@@ -20,12 +18,13 @@ pub struct NeighbourHint {
     cursor: usize,
 }
 
-/// One model's memory of the previous cell: up to [`MAX_SPEAKERS`] values, or
-/// nothing.
-#[derive(Clone, Copy)]
+/// One model's memory of the previous cell: a list of values, usually one per
+/// speaker, or nothing.
+#[derive(Default)]
 pub struct HintSlot {
-    values: [f32; MAX_SPEAKERS],
-    len: usize,
+    /// Grown by the first [`store`](Self::store) and reused from then on: a
+    /// table build keeps one hint per worker, so the cells allocate nothing.
+    values: Vec<f32>,
 }
 
 impl NeighbourHint {
@@ -36,12 +35,15 @@ impl NeighbourHint {
     /// An empty hint: the state at the first cell of a row.
     pub fn new() -> Self {
         Self {
-            slots: [HintSlot {
-                values: [0.0; MAX_SPEAKERS],
-                len: 0,
-            }; Self::SLOTS],
+            slots: std::array::from_fn(|_| HintSlot::default()),
             cursor: 0,
         }
+    }
+
+    /// Start another row with this hint: it is empty again, as a new one is.
+    pub fn begin_row(&mut self) {
+        self.slots.iter_mut().for_each(HintSlot::clear);
+        self.cursor = 0;
     }
 
     /// Start the next cell: slots are handed out from the first one again.
@@ -68,23 +70,18 @@ impl Default for NeighbourHint {
 impl HintSlot {
     /// What the previous cell stored, if it stored exactly `len` values.
     pub fn values(&self, len: usize) -> Option<&[f32]> {
-        (len != 0 && self.len == len).then(|| &self.values[..len])
+        (len != 0 && self.values.len() == len).then_some(&self.values[..])
     }
 
-    /// Remember `values` for the next cell. More than [`MAX_SPEAKERS`] values
-    /// do not fit and leave the slot empty.
+    /// Remember `values` for the next cell.
     pub fn store(&mut self, values: &[f32]) {
-        if values.len() > MAX_SPEAKERS {
-            self.len = 0;
-            return;
-        }
-        self.values[..values.len()].copy_from_slice(values);
-        self.len = values.len();
+        self.values.clear();
+        self.values.extend_from_slice(values);
     }
 
     /// Leave nothing for the next cell.
     pub fn clear(&mut self) {
-        self.len = 0;
+        self.values.clear();
     }
 }
 
@@ -130,9 +127,24 @@ mod tests {
         assert!(slot.values(3).is_none());
         slot.clear();
         assert!(slot.values(2).is_none());
-        slot.store(&[0.0; MAX_SPEAKERS + 1]);
-        assert!(slot.values(MAX_SPEAKERS + 1).is_none());
-        assert!(slot.values(MAX_SPEAKERS).is_none());
+        // As many values as a layout has speakers, however many that is.
+        slot.store(&[0.5; 100]);
+        assert_eq!(slot.values(100), Some(&[0.5; 100][..]));
+        assert!(slot.values(99).is_none());
+    }
+
+    #[test]
+    fn a_row_begun_again_starts_empty() {
+        let mut hint = NeighbourHint::new();
+        hint.slot().unwrap().store(&[1.0, 2.0]);
+        hint.slot().unwrap().store(&[3.0]);
+        hint.begin_row();
+        for _ in 0..NeighbourHint::SLOTS {
+            let slot = hint
+                .slot()
+                .expect("slots are handed out from the first again");
+            assert!(slot.values(1).is_none() && slot.values(2).is_none());
+        }
     }
 
     fn speakers() -> Vec<[f32; 3]> {
@@ -208,7 +220,7 @@ mod tests {
 
         let cartesian = |threads| {
             in_pool(threads, || {
-                let table = SampledCartesianEvaluator::new(model(), &config).expect("table");
+                let table = SampledCartesianEvaluator::new(model(), &config);
                 bits(table.cartesian_parts().expect("cartesian table").gains)
             })
         };
@@ -220,7 +232,7 @@ mod tests {
 
         let polar = |threads| {
             in_pool(threads, || {
-                let table = SampledPolarEvaluator::new(model(), &config).expect("table");
+                let table = SampledPolarEvaluator::new(model(), &config);
                 bits(table.polar_parts().expect("polar table").gains)
             })
         };
@@ -238,7 +250,7 @@ mod tests {
             ..neutral_request()
         });
         let backend = Arc::new(BarycenterBackend::new(speakers(), 0.5));
-        let table = SampledCartesianEvaluator::new(backend.clone(), &config).expect("table");
+        let table = SampledCartesianEvaluator::new(backend.clone(), &config);
         let parts = table.cartesian_parts().expect("cartesian table");
         let (nx, ny) = (parts.x.len(), parts.y.len());
         for (cell, gains) in parts.gains.chunks(parts.speaker_count).enumerate() {
@@ -248,7 +260,7 @@ mod tests {
                 table.y_positions[(cell / nx) % ny] as f64,
                 table.z_positions[cell / (nx * ny)] as f64,
             ];
-            let cold = backend.compute_gains(&request).gains;
+            let cold = backend.gains_at(&request);
             assert!(bits(gains) == bits(&cold), "cell {cell}");
         }
     }
@@ -260,7 +272,7 @@ mod tests {
             speakers(),
             crate::live_params::ExperimentalDistanceLiveParams::default(),
         ));
-        let table = SampledCartesianEvaluator::new(backend.clone(), &config).expect("table");
+        let table = SampledCartesianEvaluator::new(backend.clone(), &config);
         let parts = table.cartesian_parts().expect("cartesian table");
         let (nx, ny) = (parts.x.len(), parts.y.len());
         for (cell, gains) in parts.gains.chunks(parts.speaker_count).enumerate() {
@@ -270,7 +282,7 @@ mod tests {
                 table.y_positions[(cell / nx) % ny] as f64,
                 table.z_positions[cell / (nx * ny)] as f64,
             ];
-            let direct = backend.compute_gains(&request).gains;
+            let direct = backend.gains_at(&request);
             assert!(bits(gains) == bits(&direct), "cell {cell}");
         }
     }

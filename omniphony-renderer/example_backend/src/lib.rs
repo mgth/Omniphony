@@ -18,9 +18,14 @@
 //!
 //! `compute_gains` runs in the realtime audio thread, once per object per band
 //! per frame. It MUST NOT panic, allocate on the heap, lock, or block, and it
-//! MUST return exactly [`speaker_count`](GainModel::speaker_count) finite gains.
-//! Do expensive setup (here: normalising the speaker directions) when the model
-//! is built, never in `compute_gains`. See the `GainModel` trait docs.
+//! MUST write every one of the [`speaker_count`](GainModel::speaker_count)
+//! gains it is handed, all finite: the buffer is the caller's and arrives
+//! holding its previous contents, not zeros. Do expensive setup (here:
+//! normalising the speaker directions) when the model is built, never in
+//! `compute_gains`. A backend that needs working memory per call (a second
+//! gain set, a solver's arrays) sizes it once in
+//! [`new_scratch`](GainModel::new_scratch) and gets it back on every call;
+//! this one needs none. See the `GainModel` trait docs.
 //!
 //! ## Selecting it at runtime
 //!
@@ -40,9 +45,9 @@ use renderer::backend_registry::{
 };
 use renderer::plugin::PluginFactory;
 use renderer::render_backend::{
-    BackendCapabilities, GainModel, RenderRequest, RenderResponse, room_scaled_position,
+    BackendCapabilities, GainModel, GainScratch, RenderRequest, room_scaled_position,
 };
-use renderer::spatial_vbap::{Gains, spherical_to_adm};
+use renderer::spatial_vbap::spherical_to_adm;
 use renderer::speaker_layout::SpeakerLayout;
 
 /// Default sharpness of the cosine lobe when the host has not set the param.
@@ -104,11 +109,10 @@ impl GainModel for ExampleBackend {
         self.speaker_dirs.len()
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let n = self.speaker_dirs.len();
-        // `Gains` is a fixed-capacity, stack-backed buffer: `zeroed` does not
-        // allocate on the heap, so this stays allocation-free.
-        let mut gains = Gains::zeroed(n);
+    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, gains: &mut [f32]) {
+        // `gains` is the caller's buffer, one gain per speaker: writing it
+        // allocates nothing. This backend needs no working memory beyond it,
+        // so it leaves `new_scratch` at its default and ignores the scratch.
 
         // The speakers were placed in the room the topology pans in (the
         // factory read them so); the object goes through the same warp,
@@ -127,11 +131,13 @@ impl GainModel for ExampleBackend {
         ));
 
         // Pass 1: raw cosine weights into the gain buffer, accumulating energy.
+        // Every gain is written: what the buffer held before is not ours.
+        let n = gains.len();
         let mut sum_sq = 0.0f32;
-        for (i, sd) in self.speaker_dirs.iter().enumerate() {
+        for (gain, sd) in gains.iter_mut().zip(&self.speaker_dirs) {
             let dot = dir[0] * sd[0] + dir[1] * sd[1] + dir[2] * sd[2];
             let w = dot.max(0.0).powf(self.sharpness);
-            gains[i] = w;
+            *gain = w;
             sum_sq += w * w;
         }
 
@@ -149,8 +155,6 @@ impl GainModel for ExampleBackend {
                 *g = eq;
             }
         }
-
-        RenderResponse { gains }
     }
 
     fn save_to_file(&self, _path: &std::path::Path, _layout: &SpeakerLayout) -> anyhow::Result<()> {
@@ -314,7 +318,7 @@ mod tests {
             req.room_ratio_rear = room.rear;
             req.room_ratio_lower = room.lower;
             req.room_ratio_center_blend = room.center_blend;
-            model.compute_gains(&req).gains.to_vec()
+            model.gains_at(&req).to_vec()
         };
         let on_a = gains_at([1.0, 1.0, 0.0]);
         assert!(
@@ -331,7 +335,7 @@ mod tests {
     #[test]
     fn returns_one_finite_gain_per_speaker() {
         let backend = quad();
-        let gains = backend.compute_gains(&request([0.7, 0.7, 0.0])).gains;
+        let gains = backend.gains_at(&request([0.7, 0.7, 0.0]));
         assert_eq!(gains.len(), 4);
         assert!(gains.iter().all(|g| g.is_finite()));
     }
@@ -340,7 +344,7 @@ mod tests {
     fn normalises_to_unit_energy() {
         let backend = quad();
         for pos in [[0.7, 0.7, 0.0], [1.0, 0.0, 0.0], [-0.3, 0.9, 0.0]] {
-            let gains = backend.compute_gains(&request(pos)).gains;
+            let gains = backend.gains_at(&request(pos));
             assert!(
                 (energy(&gains) - 1.0).abs() < 1e-4,
                 "energy at {pos:?} was {}",
@@ -352,7 +356,7 @@ mod tests {
     #[test]
     fn centre_falls_back_to_equal_power() {
         let backend = quad();
-        let gains = backend.compute_gains(&request([0.0, 0.0, 0.0])).gains;
+        let gains = backend.gains_at(&request([0.0, 0.0, 0.0]));
         assert!((energy(&gains) - 1.0).abs() < 1e-4);
         // Equal power: every speaker gets the same gain.
         let first = gains[0];
@@ -376,7 +380,7 @@ mod tests {
     fn favours_the_aligned_speaker() {
         let backend = quad();
         // Object towards speaker 0 ([1,1,0]); it should get the largest gain.
-        let gains = backend.compute_gains(&request([1.0, 1.0, 0.0])).gains;
+        let gains = backend.gains_at(&request([1.0, 1.0, 0.0]));
         let max_idx = gains
             .iter()
             .enumerate()

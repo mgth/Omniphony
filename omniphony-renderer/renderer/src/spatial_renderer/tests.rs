@@ -222,15 +222,12 @@ impl crate::render_backend::GainModel for CountingModel {
     fn compute_gains(
         &self,
         _req: &crate::render_backend::RenderRequest,
-    ) -> crate::render_backend::RenderResponse {
+        _scratch: &mut crate::render_backend::GainScratch,
+        gains: &mut [f32],
+    ) {
         self.calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut gains = crate::spatial_vbap::Gains::zeroed(self.speakers);
-        let g = 1.0 / (self.speakers as f32).sqrt();
-        for index in 0..self.speakers {
-            gains.set(index, g);
-        }
-        crate::render_backend::RenderResponse { gains }
+        gains.fill(1.0 / (self.speakers as f32).sqrt());
     }
     fn save_to_file(&self, _path: &std::path::Path, _layout: &SpeakerLayout) -> Result<()> {
         Ok(())
@@ -3157,9 +3154,9 @@ fn brir_layout_gains(
     position: [f32; 3],
 ) -> Vec<f32> {
     let room = topology.room;
-    let response = topology
+    let gains = topology
         .backend
-        .compute_gains(&crate::render_backend::RenderRequest {
+        .gains_at(&crate::render_backend::RenderRequest {
             adm_position: [position[0] as f64, position[1] as f64, position[2] as f64],
             event_size: [0.0; 3],
             room_ratio: room.ratio,
@@ -3176,7 +3173,7 @@ fn brir_layout_gains(
         .map(|speaker| {
             topology
                 .backend_speaker_index_for_layout_speaker(speaker)
-                .map_or(0.0, |i| response.gains[i])
+                .map_or(0.0, |i| gains[i])
         })
         .collect()
 }
@@ -3880,9 +3877,9 @@ fn cell_caches_do_not_change_the_render() {
 /// The gains the published topology's model pans a normalized position with,
 /// in layout speaker order (the LFE's entry stays 0), in the fixture's room.
 fn topology_gains(topology: &crate::live_params::RenderTopology, position: [f32; 3]) -> Vec<f32> {
-    let response = topology
+    let gains = topology
         .backend
-        .compute_gains(&crate::render_backend::RenderRequest {
+        .gains_at(&crate::render_backend::RenderRequest {
             adm_position: [position[0] as f64, position[1] as f64, position[2] as f64],
             event_size: [0.0; 3],
             room_ratio: [1.0, 2.0, 0.5],
@@ -3899,7 +3896,7 @@ fn topology_gains(topology: &crate::live_params::RenderTopology, position: [f32;
         .map(|speaker| {
             topology
                 .backend_speaker_index_for_layout_speaker(speaker)
-                .map_or(0.0, |i| response.gains[i])
+                .map_or(0.0, |i| gains[i])
         })
         .collect()
 }

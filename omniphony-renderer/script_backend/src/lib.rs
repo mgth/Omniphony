@@ -118,9 +118,9 @@ use renderer::backend_registry::{
 };
 use renderer::plugin::PluginFactory;
 use renderer::render_backend::{
-    BackendCapabilities, GainModel, RenderRequest, RenderResponse, room_scaled_position,
+    BackendCapabilities, GainModel, GainScratch, RenderRequest, room_scaled_position,
 };
-use renderer::spatial_vbap::{Gains, VbapPanner, adm_to_spherical, spherical_to_adm};
+use renderer::spatial_vbap::{VbapPanner, adm_to_spherical, spherical_to_adm};
 use renderer::speaker_layout::SpeakerLayout;
 
 /// Per-VM heap cap: generous for honest scripts, low enough that a runaway
@@ -241,13 +241,13 @@ impl GainModel for ScriptBackend {
         self.speakers.len()
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, out: &mut [f32]) {
         let pos = [
             req.adm_position[0] as f32,
             req.adm_position[1] as f32,
             req.adm_position[2] as f32,
         ];
-        let result = VM_CACHE.with(|cell| -> Result<Gains> {
+        let result = VM_CACHE.with(|cell| -> Result<()> {
             let mut slot = cell.borrow_mut();
             if slot.as_ref().map(|c| c.generation) != Some(self.generation) {
                 *slot = Some(CachedVm {
@@ -257,25 +257,21 @@ impl GainModel for ScriptBackend {
             }
             let vm = &slot.as_ref().expect("vm just inserted").vm;
             let values = vm.eval_gains(pos, RoomParams::from_request(req))?;
-            let mut gains = Gains::zeroed(self.speakers.len());
-            for (i, g) in values.into_iter().enumerate() {
-                gains.set(i, g);
+            // One gain per speaker on both sides (`eval_gains` checks the
+            // script's count); a speaker the script did not answer for is
+            // silent rather than left on what the buffer held.
+            out.fill(0.0);
+            for (gain, value) in out.iter_mut().zip(values) {
+                *gain = value;
             }
-            Ok(gains)
+            Ok(())
         });
 
-        match result {
-            Ok(gains) => RenderResponse { gains },
-            Err(_) => {
-                // A sampling-time error: emit non-finite gains so the host's
-                // build-time smoke test rejects this backend (the eager probe in
-                // `new` already caught the common cases with a precise message).
-                let mut gains = Gains::zeroed(self.speakers.len());
-                for i in 0..self.speakers.len() {
-                    gains.set(i, f32::NAN);
-                }
-                RenderResponse { gains }
-            }
+        if result.is_err() {
+            // A sampling-time error: emit non-finite gains so the host's
+            // build-time smoke test rejects this backend (the eager probe in
+            // `new` already caught the common cases with a precise message).
+            out.fill(f32::NAN);
         }
     }
 
@@ -965,7 +961,7 @@ mod tests {
     #[test]
     fn nearest_script_selects_closest() {
         let model = backend(NEAREST).expect("valid script");
-        let gains = model.compute_gains(&request([0.9, 0.0, 0.0])).gains;
+        let gains = model.gains_at(&request([0.9, 0.0, 0.0]));
         assert_eq!(gains.len(), 4);
         assert_eq!(gains[1], 1.0);
         assert!(gains.iter().all(|g| g.is_finite()));
@@ -983,7 +979,7 @@ mod tests {
         "#;
         let model = ScriptBackend::new(src, speakers(), vec![("level".into(), 0.25)], None)
             .expect("valid script");
-        let gains = model.compute_gains(&request([0.0, 0.0, 0.0])).gains;
+        let gains = model.gains_at(&request([0.0, 0.0, 0.0]));
         assert!(gains.iter().all(|g| (*g - 4.25).abs() < 1e-6));
     }
 
@@ -999,7 +995,7 @@ mod tests {
             end
         "#;
         let model = ScriptBackend::new(src, dirs, Vec::new(), panner).expect("valid script");
-        let gains = model.compute_gains(&request([0.3, 0.6, 0.2])).gains;
+        let gains = model.gains_at(&request([0.3, 0.6, 0.2]));
         assert_eq!(gains.len(), 5);
         assert!(gains.iter().all(|g| g.is_finite()));
         let energy: f32 = gains.iter().map(|g| g * g).sum();
@@ -1033,9 +1029,7 @@ mod tests {
         // The full-layout panner is irrelevant here — the script builds its own.
         let model =
             ScriptBackend::new(src, dirs, Vec::new(), panner_for(&az_el)).expect("valid script");
-        let gains = model
-            .compute_gains(&request([x as f64, y as f64, z as f64]))
-            .gains;
+        let gains = model.gains_at(&request([x as f64, y as f64, z as f64]));
         assert_eq!(gains.len(), 5);
         assert!(gains.iter().all(|g| g.is_finite()));
         // Speakers outside the chosen subset {1,2,5} are never touched.
@@ -1070,7 +1064,7 @@ mod tests {
             end
         "#;
         let model = backend(src).expect("valid script");
-        let gains = model.compute_gains(&request([0.0, 0.0, 0.0])).gains;
+        let gains = model.gains_at(&request([0.0, 0.0, 0.0]));
         assert_eq!(gains.len(), 4);
         // Every marker is a near-zero error term.
         for (i, g) in gains.iter().enumerate() {
@@ -1094,7 +1088,7 @@ mod tests {
         let model = backend(src).expect("valid script");
         let mut req = request([0.0, 0.0, 0.0]);
         req.room_ratio = [2.0, 1.0, 1.0];
-        let gains = model.compute_gains(&req).gains;
+        let gains = model.gains_at(&req);
         assert!(
             (gains[0] - 1.0).abs() < 1e-4,
             "room_scaled x = {}",
@@ -1127,7 +1121,7 @@ mod tests {
             end
         "#;
         let model = backend(src).expect("valid script");
-        let gains = model.compute_gains(&request([0.0, 0.0, 0.0])).gains;
+        let gains = model.gains_at(&request([0.0, 0.0, 0.0]));
         let energy: f32 = gains.iter().map(|g| g * g).sum();
         assert!((energy - 1.0).abs() < 1e-4, "equal-power energy={energy}");
         let first = gains[0];
@@ -1204,7 +1198,7 @@ mod tests {
             end
         "#;
         let model = backend(src).expect("eager probe at origin passes");
-        let bad = model.compute_gains(&request([-1.0, 0.0, 0.0])).gains;
+        let bad = model.gains_at(&request([-1.0, 0.0, 0.0]));
         assert!(bad.iter().any(|g| !g.is_finite()));
     }
 
@@ -1245,7 +1239,7 @@ mod tests {
         let source = std::fs::read_to_string(path).expect("example script readable");
         let model = ScriptBackend::new(source.clone(), speakers(), Vec::new(), None)
             .expect("example is valid");
-        let gains = model.compute_gains(&request([0.7, -0.3, 0.2])).gains;
+        let gains = model.gains_at(&request([0.7, -0.3, 0.2]));
         let energy: f32 = gains.iter().map(|g| g * g).sum();
         assert!(
             (energy - 1.0).abs() < 1e-4,
@@ -1270,7 +1264,7 @@ mod tests {
         let params = vec![("spread".to_string(), 0.2)];
         let model = ScriptBackend::new(source, dirs, params, panner_for(&az_el))
             .expect("vbap_blend is valid");
-        let gains = model.compute_gains(&request([0.4, 0.5, 0.3])).gains;
+        let gains = model.gains_at(&request([0.4, 0.5, 0.3]));
         assert_eq!(gains.len(), 5);
         let energy: f32 = gains.iter().map(|g| g * g).sum();
         assert!(
@@ -1359,8 +1353,8 @@ mod tests {
             let mut req = template;
             req.adm_position = [position[0] as f64, position[1] as f64, position[2] as f64];
             (
-                native.compute_gains(&req).gains.to_vec(),
-                script.compute_gains(&req).gains.to_vec(),
+                native.gains_at(&req).to_vec(),
+                script.gains_at(&req).to_vec(),
             )
         };
         let unit = |p: [f32; 3]| {
@@ -1453,7 +1447,7 @@ mod tests {
             req.room_ratio_rear = room.rear;
             req.room_ratio_lower = room.lower;
             req.room_ratio_center_blend = room.center_blend;
-            model.compute_gains(&req).gains.to_vec()
+            model.gains_at(&req).to_vec()
         };
         let on_a = gains_at([1.0, 1.0, 0.0]);
         assert!(
@@ -1478,7 +1472,7 @@ mod tests {
         // floor_only = 0 → ground ring + the overhead speaker (triangulable).
         let params = vec![("floor_only".to_string(), 0.0)];
         let model = ScriptBackend::new(source, dirs, params, None).expect("vbap_subset is valid");
-        let gains = model.compute_gains(&request([0.4, 0.5, 0.3])).gains;
+        let gains = model.gains_at(&request([0.4, 0.5, 0.3]));
         assert_eq!(gains.len(), 5);
         assert!(gains.iter().all(|g| g.is_finite()));
     }

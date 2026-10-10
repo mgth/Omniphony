@@ -48,8 +48,8 @@ fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
 /// down the realtime audio thread on its first frame.
 ///
 /// This is the build-time guard behind the [`GainModel`] hot-path contract: a
-/// contributor backend that panics, returns the wrong number of gains, or emits
-/// a non-finite gain turns into a plain `Err` from topology construction (which
+/// contributor backend that panics, leaves a gain unwritten, or emits a
+/// non-finite gain turns into a plain `Err` from topology construction (which
 /// the OSC recompute path already surfaces to Studio), never an uncaught panic
 /// in `SpatialRenderer::render_frame`.
 fn smoke_test_engine(
@@ -57,13 +57,17 @@ fn smoke_test_engine(
     config: &EvaluationBuildConfig,
     backend_id: &str,
 ) -> Result<()> {
-    let expected = engine.speaker_count();
+    let mut gains = vec![0.0f32; engine.speaker_count()];
+    let mut scratch = engine.new_scratch();
     for position in SMOKE_TEST_POSITIONS {
         let mut request = config.request_template;
         request.adm_position = position;
 
-        let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            engine.compute_gains(&request)
+        // A gain the backend does not write is still NaN afterwards, and is
+        // caught with the non-finite ones.
+        gains.fill(f32::NAN);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine.compute_gains(&request, &mut scratch, &mut gains)
         }))
         .map_err(|payload| {
             anyhow::anyhow!(
@@ -72,20 +76,11 @@ fn smoke_test_engine(
             )
         })?;
 
-        if response.gains.len() != expected {
-            return Err(anyhow::anyhow!(
-                "backend '{backend_id}' returned {} gains at position {position:?}, expected {expected}",
-                response.gains.len()
-            ));
-        }
-        if let Some((speaker, gain)) = response
-            .gains
-            .iter()
-            .enumerate()
-            .find(|(_, gain)| !gain.is_finite())
+        if let Some((speaker, gain)) = gains.iter().enumerate().find(|(_, gain)| !gain.is_finite())
         {
             return Err(anyhow::anyhow!(
-                "backend '{backend_id}' returned non-finite gain {gain} for speaker {speaker} at position {position:?}"
+                "backend '{backend_id}' left a non-finite gain ({gain}) for speaker {speaker} at \
+                 position {position:?}: every gain must be written, and finite"
             ));
         }
     }
@@ -1441,10 +1436,10 @@ pub fn prepare_topology_build_plan(
 mod tests {
     use super::*;
     use crate::render_backend::{
-        BackendCapabilities, CartesianEvaluationConfig, PolarEvaluationConfig, RenderRequest,
-        RenderResponse, build_prepared_render_engine,
+        BackendCapabilities, CartesianEvaluationConfig, GainScratch, PolarEvaluationConfig,
+        RenderRequest, build_prepared_render_engine,
     };
-    use crate::spatial_vbap::{DistanceMetric, DistanceModel, Gains, OutOfHullMode};
+    use crate::spatial_vbap::{DistanceMetric, DistanceModel, OutOfHullMode};
 
     #[test]
     fn out_of_hull_bag_values_resolve_with_schema_defaults() {
@@ -1560,7 +1555,7 @@ mod tests {
     }
 
     macro_rules! fake_backend {
-        ($name:ident, $id:literal, $compute:expr) => {
+        ($name:ident, $id:literal, |$gains:ident| $compute:expr) => {
             struct $name;
             impl GainModel for $name {
                 fn backend_id(&self) -> &'static str {
@@ -1575,7 +1570,12 @@ mod tests {
                 fn speaker_count(&self) -> usize {
                     TEST_SPEAKERS
                 }
-                fn compute_gains(&self, _req: &RenderRequest) -> RenderResponse {
+                fn compute_gains(
+                    &self,
+                    _req: &RenderRequest,
+                    _scratch: &mut GainScratch,
+                    $gains: &mut [f32],
+                ) {
                     $compute
                 }
                 fn save_to_file(
@@ -1589,30 +1589,18 @@ mod tests {
         };
     }
 
-    fake_backend!(
-        PanicBackend,
-        "panic_backend",
-        panic!("boom from contributor backend")
-    );
-    fake_backend!(NonFiniteBackend, "nan_backend", {
-        let mut gains = Gains::zeroed(TEST_SPEAKERS);
-        gains.set(0, f32::NAN);
-        RenderResponse { gains }
+    fake_backend!(PanicBackend, "panic_backend", |_gains| panic!(
+        "boom from contributor backend"
+    ));
+    fake_backend!(NonFiniteBackend, "nan_backend", |gains| {
+        gains.fill(0.0);
+        gains[0] = f32::NAN;
     });
-    fake_backend!(
-        WrongCountBackend,
-        "wrong_count_backend",
-        RenderResponse {
-            gains: Gains::zeroed(TEST_SPEAKERS + 1),
-        }
-    );
-    fake_backend!(
-        GoodBackend,
-        "good_backend",
-        RenderResponse {
-            gains: Gains::zeroed(TEST_SPEAKERS),
-        }
-    );
+    // Every gain but the last: that one stays as the caller had it.
+    fake_backend!(UnwrittenBackend, "unwritten_backend", |gains| gains
+        [..TEST_SPEAKERS - 1]
+        .fill(0.0));
+    fake_backend!(GoodBackend, "good_backend", |gains| gains.fill(0.0));
 
     #[test]
     fn smoke_test_rejects_panicking_backend() {
@@ -1630,42 +1618,33 @@ mod tests {
         assert!(err.to_string().contains("non-finite"), "got: {err}");
     }
 
+    /// The gains are the caller's buffer, which arrives holding its previous
+    /// contents: a gain the backend does not write would play whatever the
+    /// last object left there.
     #[test]
-    fn smoke_test_rejects_wrong_gain_count() {
-        let engine = realtime_engine(Box::new(WrongCountBackend));
-        let err = smoke_test_engine(&engine, &build_config(), "wrong_count_backend").unwrap_err();
-        assert!(err.to_string().contains("expected"), "got: {err}");
+    fn smoke_test_rejects_an_unwritten_gain() {
+        let engine = realtime_engine(Box::new(UnwrittenBackend));
+        let err = smoke_test_engine(&engine, &build_config(), "unwritten_backend").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unwritten_backend")
+                && msg.contains(&format!("speaker {}", TEST_SPEAKERS - 1))
+                && msg.contains("every gain must be written"),
+            "got: {msg}"
+        );
     }
 
-    /// A model answering with another gain count than its `speaker_count`
-    /// fails the precomputed table build. The smoke test cannot see it there:
-    /// it reads the sampled table back, at the declared count.
+    /// A model writes each cell of a precomputed table in place, one gain per
+    /// speaker: one that leaves a gain out at a single position leaves that
+    /// one gain silent, and cannot shift the cells after it onto the wrong
+    /// speakers (as a model returning a shorter gain vector once could).
     #[test]
-    fn a_wrong_gain_count_fails_the_precomputed_table_build() {
-        for mode in [
-            EffectiveEvaluationMode::PrecomputedCartesian,
-            EffectiveEvaluationMode::PrecomputedPolar,
-        ] {
-            let err =
-                build_prepared_render_engine(Box::new(WrongCountBackend), mode, &build_config())
-                    .err()
-                    .unwrap_or_else(|| panic!("{mode:?}: a table of shifted cells was built"));
-            let msg = err.to_string();
-            assert!(
-                msg.contains("wrong_count_backend")
-                    && msg.contains(&format!("returned {} gains", TEST_SPEAKERS + 1))
-                    && msg.contains(&format!("expected {TEST_SPEAKERS}")),
-                "{mode:?}: got: {msg}"
-            );
-        }
-    }
-
-    /// The count is checked on every cell, not only on the first: a model
-    /// that comes up short at a single position would otherwise shift every
-    /// later cell of the table onto the wrong speakers.
-    #[test]
-    fn a_gain_count_off_at_one_cell_fails_the_table_build() {
+    fn a_gain_left_unwritten_at_one_cell_stays_in_that_cell() {
         struct ShortInOneColumn;
+        /// One column of the 5×5 grid, off every smoke position.
+        fn in_short_column(position: [f64; 3]) -> bool {
+            (position[0] + 0.5).abs() < 1e-6 && (position[1] - 0.5).abs() < 1e-6
+        }
         impl GainModel for ShortInOneColumn {
             fn backend_id(&self) -> &'static str {
                 "short_in_one_column"
@@ -1679,13 +1658,17 @@ mod tests {
             fn speaker_count(&self) -> usize {
                 TEST_SPEAKERS
             }
-            fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-                // One column of the 5×5 grid, off every smoke position.
-                let short = (req.adm_position[0] + 0.5).abs() < 1e-6
-                    && (req.adm_position[1] - 0.5).abs() < 1e-6;
-                let mut gains = Gains::zeroed(TEST_SPEAKERS - usize::from(short));
-                gains.set(0, 1.0);
-                RenderResponse { gains }
+            fn compute_gains(
+                &self,
+                req: &RenderRequest,
+                _scratch: &mut GainScratch,
+                gains: &mut [f32],
+            ) {
+                // Speaker `i` gets `i + 1`, so a shifted cell would show.
+                let written = TEST_SPEAKERS - usize::from(in_short_column(req.adm_position));
+                for (index, gain) in gains[..written].iter_mut().enumerate() {
+                    *gain = index as f32 + 1.0;
+                }
             }
             fn save_to_file(&self, _path: &std::path::Path, _layout: &SpeakerLayout) -> Result<()> {
                 Ok(())
@@ -1695,18 +1678,30 @@ mod tests {
         let engine = realtime_engine(Box::new(ShortInOneColumn));
         smoke_test_engine(&engine, &build_config(), "short_in_one_column")
             .expect("the smoke positions do not reach the short column");
-        let err = build_prepared_render_engine(
+
+        let config = build_config();
+        let table = build_prepared_render_engine(
             Box::new(ShortInOneColumn),
             EffectiveEvaluationMode::PrecomputedCartesian,
-            &build_config(),
+            &config,
         )
-        .err()
-        .expect("the short cell fails the build");
-        assert!(
-            err.to_string()
-                .contains(&format!("returned {} gains", TEST_SPEAKERS - 1)),
-            "got: {err}"
-        );
+        .expect("the table builds");
+        let parts = table.cartesian_parts().expect("a cartesian table");
+        let mut short_cells = 0;
+        for (cell, gains) in parts.gains.chunks(parts.speaker_count).enumerate() {
+            let last = gains[TEST_SPEAKERS - 1];
+            let short = last == 0.0;
+            short_cells += usize::from(short);
+            assert!(
+                short || last == TEST_SPEAKERS as f32,
+                "cell {cell}: last gain {last}"
+            );
+            for (index, gain) in gains[..TEST_SPEAKERS - 1].iter().enumerate() {
+                assert_eq!(*gain, index as f32 + 1.0, "cell {cell}, speaker {index}");
+            }
+        }
+        // The column, at every height of the grid, and nothing else.
+        assert_eq!(short_cells, parts.z.len());
     }
 
     /// A ring of `n` spatialized speakers, alternating ear level and 40° up.

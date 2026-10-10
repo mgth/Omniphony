@@ -2,7 +2,7 @@
 //!
 //! Used when the `saf_vbap` feature is disabled (no C FFI, no external library).
 
-use super::{Gains, normalized_spread_to_degrees};
+use super::normalized_spread_to_degrees;
 use crate::spatial_vbap::vbap_native::{
     DummyRing, OutOfHullMode, invert_ls_mtx_3d, prepare_triangulation, vbap3d,
 };
@@ -13,7 +13,7 @@ use crate::spatial_vbap::vbap_native::{
 /// `prepare_triangulation` + `invert_ls_mtx_3d`. Computes VBAP gains directly
 /// via [`Self::vbap_gains`]; the panner stores one instance and samples it.
 pub(crate) struct NativeVbapLayout {
-    /// Number of *real* (non-dummy) speakers — the size of the returned `Gains`.
+    /// Number of *real* (non-dummy) speakers — the number of gains returned.
     pub(crate) n_speakers: usize,
     pub(crate) n_faces: usize,
     /// Number of virtual loudspeakers at the centre of coplanar hull faces
@@ -88,11 +88,11 @@ impl NativeVbapLayout {
         azimuth_deg: f32,
         elevation_deg: f32,
         spread: f32,
-    ) -> Result<Gains, String> {
+    ) -> Result<Vec<f32>, String> {
         let spread_deg = normalized_spread_to_degrees(spread);
         let src_dirs = [[azimuth_deg, elevation_deg]];
 
-        let gain_vec = vbap3d(
+        let mut gain_vec = vbap3d(
             &src_dirs,
             self.n_eff,
             &self.ls_groups,
@@ -104,7 +104,8 @@ impl NativeVbapLayout {
         );
 
         // Strip dummy speaker columns — keep only the first n_speakers entries.
-        Ok(Gains::from_slice(&gain_vec[..self.n_speakers]))
+        gain_vec.truncate(self.n_speakers);
+        Ok(gain_vec)
     }
 }
 
@@ -126,7 +127,7 @@ mod tests {
         ]
     }
 
-    fn rms(g: &Gains) -> f32 {
+    fn rms(g: &[f32]) -> f32 {
         (0..g.len()).map(|i| g[i] * g[i]).sum::<f32>().sqrt()
     }
 
@@ -384,7 +385,7 @@ mod tests {
 
         // Higher power concentrates the image: the number of speakers carrying
         // significant gain must not grow as power rises.
-        let count_active = |g: &Gains| (0..g.len()).filter(|&i| g[i] > 0.05).count();
+        let count_active = |g: &[f32]| (0..g.len()).filter(|&i| g[i] > 0.05).count();
         let wide = below(1.0);
         let sharp = below(64.0);
         assert!(
@@ -562,7 +563,7 @@ mod tests {
             NativeVbapLayout::from_speaker_dirs(&layout_714(), OutOfHullMode::VirtualPoles)
                 .unwrap();
         let spread = 1.0 / 3.0; // 60°
-        let diff = |a: &Gains, b: &Gains| {
+        let diff = |a: &[f32], b: &[f32]| {
             (0..a.len())
                 .map(|i| (a[i] - b[i]) * (a[i] - b[i]))
                 .sum::<f32>()
@@ -762,7 +763,7 @@ mod tests {
         ];
         let layout = NativeVbapLayout::from_speaker_dirs(&dirs, OutOfHullMode::Fade).unwrap();
         assert!(layout.n_centres > 0, "the rear quad has a centre");
-        let power = |g: &Gains| (0..g.len()).map(|i| g[i] * g[i]).sum::<f32>();
+        let power = |g: &[f32]| (0..g.len()).map(|i| g[i] * g[i]).sum::<f32>();
         // Just below the hull behind the right back: the parent's fade,
         // 0.977 (-0.10 dB), not the 1.265 (+1.02 dB) the downmix made of it.
         let g = layout.vbap_gains(-151.0, -4.0, 0.0).unwrap();

@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
 use super::{
-    BackendCapabilities, GainModel, RenderRequest, RenderResponse, SizeToSpreadMode,
+    BackendCapabilities, GainModel, GainScratch, RenderRequest, SizeToSpreadMode,
     reduce_size_to_spread,
 };
 use crate::spatial_vbap::{VbapPanner, adm_to_spherical};
@@ -87,7 +87,7 @@ impl VbapBackend {
         }
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+    pub fn compute_gains(&self, req: &RenderRequest, out: &mut [f32]) {
         let scaled = room_scaled_position(
             req.adm_position.map(|v| v as f32),
             req.room_ratio,
@@ -99,11 +99,8 @@ impl VbapBackend {
 
         // Distance diffuse blending is applied by the shared DistanceDiffuseModel
         // decorator; VBAP returns pure panning gains.
-        let gains =
-            self.panner
-                .get_gains_cartesian(scaled[0], scaled[1], scaled[2], effective_spread);
-
-        RenderResponse { gains }
+        self.panner
+            .gains_cartesian_into(scaled[0], scaled[1], scaled[2], effective_spread, out);
     }
 
     pub fn save_to_file(
@@ -149,8 +146,8 @@ impl GainModel for VbapBackend {
         VbapBackend::speaker_count(self)
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        VbapBackend::compute_gains(self, req)
+    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, out: &mut [f32]) {
+        VbapBackend::compute_gains(self, req, out)
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
