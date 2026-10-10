@@ -455,6 +455,10 @@ pub struct BinauralConfig {
     /// Diffuse-field equalisation of the HRIR set. Default false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diffuse_field_eq: Option<bool>,
+    /// Read room coordinates on the listener's sphere on the direct path
+    /// rather than in the room cube. Default false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sphere_coordinates: Option<bool>,
     /// How finely a direction must change before its HRIR is rebuilt:
     /// `"exact"` (default, bit-exact) | `"fine"` | `"balanced"` | `"coarse"`.
     /// Anything but `exact` trades fidelity for speed — see

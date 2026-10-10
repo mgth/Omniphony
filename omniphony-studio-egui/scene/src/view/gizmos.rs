@@ -63,9 +63,19 @@ pub enum GizmoTarget {
 }
 
 /// A scene position back to the normalised ADM triple the layout is written
-/// in: the room warp inverted, the axes swizzled, the result clamped.
+/// in: the room warp inverted, the axes swizzled, the result clamped. On the
+/// direct headphone path reading the sphere (`RoomRatio::sphere`), the room
+/// position heard at that point, kept within the unit sphere: the inverse of
+/// what [`super::scene_position`] draws there.
 pub fn scene_to_normalized(scene: Vec3, room: &RoomRatio) -> [f64; 3] {
     use omniphony_geometry::f64 as g;
+    if room.sphere {
+        return g::inverse_sphere_reading_direction(g::scene_to_adm([
+            scene.x as f64,
+            scene.y as f64,
+            scene.z as f64,
+        ]));
+    }
     g::inverse_room_scaled_position(
         g::scene_to_adm([scene.x as f64, scene.y as f64, scene.z as f64]),
         [room.width, room.length, room.height],
