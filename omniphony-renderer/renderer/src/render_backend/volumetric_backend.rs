@@ -126,9 +126,42 @@ const PLANE_EPS: f32 = 1e-6;
 /// A linear depth below this is rounding: an object authored on a wall
 /// measures a few ulps inside it (about `1e-7`), and must still get VBAP's
 /// gains bit for bit. The band is a ramp, not a step, and sits before the
-/// depth curve: a curve below `1` would turn a step of this size into a
-/// large one.
+/// depth curve.
 const DEPTH_EPS: f32 = 1e-6;
+
+/// The linear depth over which the central share fades in, in amplitude,
+/// from the surface. The equal-power law and a depth curve below `1` both
+/// have an unbounded slope at zero depth: without this, one `f32` quantum
+/// of position past the rounding band is an audible step of the central
+/// distribution. Over this band the step a quantum can make stays below
+/// a thousandth of full scale, and past it the law applies untouched.
+const FADE_IN: f32 = 1e-4;
+
+/// Where an object sits between the surface and the listener.
+#[derive(Clone, Copy)]
+struct Depth {
+    /// `0` on the surface and beyond, `1` at the listener, linear along the
+    /// ray, after the rounding band.
+    linear: f32,
+    /// `linear` bent by the depth curve.
+    curved: f32,
+    /// How far the surface is ahead along the ray and behind the listener in
+    /// the opposite direction; `None` when the object is at the listener.
+    reach: Option<(f32, f32)>,
+}
+
+impl Depth {
+    const SURFACE: Self = Self {
+        linear: 0.0,
+        curved: 0.0,
+        reach: None,
+    };
+    const LISTENER: Self = Self {
+        linear: 1.0,
+        curved: 1.0,
+        reach: None,
+    };
+}
 
 /// Read-only view of a triangulation: what the surface is built from.
 #[derive(Clone, Copy)]
@@ -434,32 +467,29 @@ impl VolumetricBackend {
     /// `0` on the surface and beyond, `1` at the listener, linear in the
     /// distance along the ray between them, then bent by the depth curve.
     pub fn depth(&self, req: &RenderRequest) -> f32 {
-        self.depth_and_reach(self.scaled_position(req)).0
+        self.measure(self.scaled_position(req)).curved
     }
 
-    /// The depth of `position`, and how far the surface is behind the
-    /// listener in the opposite direction (`None` when that is unknown or
-    /// irrelevant).
-    fn depth_and_reach(&self, position: [f32; 3]) -> (f32, Option<(f32, f32)>) {
+    fn measure(&self, position: [f32; 3]) -> Depth {
         let (azimuth, elevation, radius) = adm_to_spherical(position[0], position[1], position[2]);
         if radius <= LISTENER_EPS {
-            return (1.0, None);
+            return Depth::LISTENER;
         }
         let direction = unit_direction_deg(azimuth, elevation);
         let Some(ahead) = self.surface.distance_along(direction) else {
-            return (0.0, None);
+            return Depth::SURFACE;
         };
         if ahead <= PLANE_EPS {
-            return (0.0, None);
+            return Depth::SURFACE;
         }
         let linear = (1.0 - radius / ahead).clamp(0.0, 1.0);
         // The rounding band, as a ramp: zero up to `DEPTH_EPS`, then rising
         // continuously to one at the listener.
         let linear = ((linear - DEPTH_EPS) / (1.0 - DEPTH_EPS)).max(0.0);
         if linear <= 0.0 {
-            return (0.0, None);
+            return Depth::SURFACE;
         }
-        let depth = if self.params.depth_curve == 1.0 {
+        let curved = if self.params.depth_curve == 1.0 {
             linear
         } else {
             linear.powf(self.params.depth_curve)
@@ -467,23 +497,30 @@ impl VolumetricBackend {
         let behind = self
             .surface
             .distance_along([-direction[0], -direction[1], -direction[2]]);
-        (depth, Some((ahead, behind.unwrap_or(ahead))))
+        Depth {
+            linear,
+            curved,
+            reach: Some((ahead, behind.unwrap_or(ahead))),
+        }
     }
 
     /// The share of the object's power the central distribution gets. For the
     /// uniform distribution, whose centre of power is the listener, it is the
     /// depth itself. For the antipode it is the depth scaled so the power
     /// centroid of the near and far faces lands on the object: the two faces
-    /// meet at equal level at the listener, not before.
-    fn central_weight(&self, depth: f32, reach: Option<(f32, f32)>) -> f32 {
-        match (self.params.central, reach) {
+    /// meet at equal level at the listener, not before. Next to the surface
+    /// the share fades in over [`FADE_IN`] (in amplitude, so squared here).
+    fn central_weight(&self, depth: Depth) -> f32 {
+        let share = match (self.params.central, depth.reach) {
             (CentralDistribution::Antipode, Some((ahead, behind))) if ahead + behind > 0.0 => {
-                depth * ahead / (ahead + behind)
+                depth.curved * ahead / (ahead + behind)
             }
             // At the listener the antipode is undefined and the uniform
             // distribution plays alone.
-            _ => depth,
-        }
+            _ => depth.curved,
+        };
+        let fade_in = (depth.linear / FADE_IN).min(1.0);
+        (share * fade_in * fade_in).clamp(0.0, 1.0)
     }
 
     fn uniform_gains(&self) -> Gains {
@@ -520,27 +557,41 @@ impl VolumetricBackend {
     pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
         let face = self.vbap.compute_gains(req).gains;
         let position = self.scaled_position(req);
-        let (depth, reach) = self.depth_and_reach(position);
-        if depth <= 0.0 {
+        let depth = self.measure(position);
+        if depth.curved <= 0.0 {
             // On the surface and beyond: VBAP, untouched.
             return RenderResponse { gains: face };
         }
-        let weight = self.central_weight(depth, reach).clamp(0.0, 1.0);
-        let central = self.central_gains(req, position, reach.is_none());
+        let weight = self.central_weight(depth);
+        let central = self.central_gains(req, position, depth.reach.is_none());
 
         // Equal-power crossfade, then renormalised: the two sets share
-        // loudspeakers, so their coherent sum is not unit power.
+        // loudspeakers, so their coherent sum is not at the level they blend
+        // to. That level is the power-weighted mean of theirs, which keeps
+        // the VBAP's own at the surface (a `fade` VBAP attenuates a direction
+        // outside its hull) and reaches the central distribution's at the
+        // listener.
         let w_face = (1.0 - weight).sqrt();
         let w_central = weight.sqrt();
         let n = face.len().min(central.len());
         let mut gains = Gains::zeroed(self.speaker_count());
         let mut energy = 0.0f32;
+        let mut energy_face = 0.0f32;
+        let mut energy_central = 0.0f32;
         for index in 0..n {
             let gain = w_face * face[index] + w_central * central[index];
             gains.set(index, gain);
             energy += gain * gain;
+            energy_face += face[index] * face[index];
+            energy_central += central[index] * central[index];
         }
-        gains.normalize_to_unit_energy(energy);
+        let target = (1.0 - weight) * energy_face + weight * energy_central;
+        if energy > 1e-12 {
+            let scale = (target / energy).sqrt();
+            for gain in gains.iter_mut() {
+                *gain *= scale;
+            }
+        }
         RenderResponse { gains }
     }
 
@@ -1123,13 +1174,95 @@ mod tests {
         );
         let inside = model.compute_gains(&request([0.0, 0.999989, 0.0])).gains;
         let nearer = model.compute_gains(&request([0.0, 0.999991, 0.0])).gains;
-        assert!(
-            inside[b] > 0.1,
-            "a quarter-root curve lifts a tiny depth: back {}",
-            inside[b]
-        );
         let jump = l2_step(&inside, &nearer);
         assert!(jump < 0.02, "gains stepped by {jump} across two microns");
+        // Past the fade-in band the curve lifts a small depth as it should:
+        // a thousandth of the way in, the opposite wall is well audible.
+        let lifted = model.compute_gains(&request([0.0, 0.999, 0.0])).gains;
+        assert!(
+            lifted[b] > 0.25,
+            "a quarter-root curve lifts a small depth: back {}",
+            lifted[b]
+        );
+    }
+
+    /// Review finding: the ramp is continuous, but `f32` leaves one quantum
+    /// of position between zero and the first depth past the band, and a
+    /// curve below one made that quantum a step of 0.07. The central share
+    /// fades in over the first `FADE_IN` of depth, so no quantum steps.
+    #[test]
+    fn the_central_share_fades_in_within_float_precision() {
+        let layout = octahedron();
+        let model = volumetric(
+            &layout,
+            VolumetricParams {
+                central: CentralDistribution::Antipode,
+                depth_curve: 0.25,
+            },
+        );
+        let before = model.compute_gains(&request([0.0, 0.99999896, 0.0])).gains;
+        let after = model.compute_gains(&request([0.0, 0.99999902, 0.0])).gains;
+        let jump = l2_step(&before, &after);
+        assert!(
+            jump < 1e-3,
+            "gains stepped by {jump} across one float quantum"
+        );
+
+        // Every quantum from the wall to past the band, and the law beyond.
+        let mut previous: Option<Gains> = None;
+        let mut largest = 0.0f32;
+        for step in 0..=3000 {
+            let y = 1.0 - step as f64 * 1e-7;
+            let gains = model.compute_gains(&request([0.0, y, 0.0])).gains;
+            if let Some(previous) = &previous {
+                largest = largest.max(l2_step(&gains, previous));
+            }
+            previous = Some(gains);
+        }
+        assert!(
+            largest < 2e-3,
+            "largest step over the first 3e-4 of depth: {largest}"
+        );
+    }
+
+    /// Review finding: a `fade` VBAP attenuates a direction outside its hull,
+    /// and renormalising the blend to unit power threw that away as soon as
+    /// the object came inside the (closed) surface. The level is now the
+    /// blend's own: the VBAP's at the surface, the central distribution's
+    /// at the listener.
+    #[test]
+    fn the_fade_level_is_kept_at_the_surface() {
+        let layout = layout_714();
+        let plain = vbap_with(&layout, OutOfHullMode::Fade, true);
+        let ray = [0.2, 0.3, -0.5];
+        for central in [CentralDistribution::Uniform, CentralDistribution::Antipode] {
+            let model = volumetric_with(&layout, with_central(central), OutOfHullMode::Fade, true);
+            // Outside, VBAP attenuates this direction; a step inside keeps
+            // that level.
+            let outside = rms(&plain.compute_gains(&request(ray.map(|v| v * 1.45))).gains);
+            assert!(
+                outside < 0.9,
+                "fade attenuates below the hull: rms {outside}"
+            );
+            let inside = rms(&model.compute_gains(&request(ray.map(|v| v * 1.40))).gains);
+            assert!(
+                (inside - outside).abs() < 0.02,
+                "{central:?}: rms {inside} just inside vs {outside} just outside"
+            );
+            // And the level moves continuously all the way to the listener.
+            let mut previous: Option<f32> = None;
+            for step in 0..=310 {
+                let s = 1.6 - step as f64 * 0.005;
+                let level = rms(&model.compute_gains(&request(ray.map(|v| v * s))).gains);
+                if let Some(previous) = previous {
+                    assert!(
+                        (level - previous).abs() < 0.01,
+                        "{central:?}: rms stepped from {previous} to {level} at {s}"
+                    );
+                }
+                previous = Some(level);
+            }
+        }
     }
 
     /// Objects authored on the walls and the ceiling, all around: every one

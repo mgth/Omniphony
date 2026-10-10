@@ -24,7 +24,9 @@ backend:
    listener, linear between;
 3. moves that share of the object's power from the VBAP face to a *central
    distribution*, which stands for "at the listener", with an equal-power
-   crossfade renormalised to unit power.
+   crossfade renormalised to the level the two blend to: VBAP's own at the
+   surface (a direction a `fade` VBAP attenuates keeps its attenuation), the
+   central distribution's at the listener.
 
 Geometrically this is the triangulation of the loudspeaker directions with
 the listener as one more vertex every face is joined to: a fan of tetrahedra.
@@ -74,8 +76,11 @@ bed ring; a wall closed around a virtual centre keeps being a flat wall.
 
 An object authored on a wall measures a few ulps inside it. Linear depths
 below `1e-6` are taken as rounding, through a ramp rather than a step, and
-before the depth curve: a curve below `1` would turn a step of that size into
-a large one. On the surface the gains are therefore VBAP's exactly.
+before the depth curve. On the surface the gains are therefore VBAP's
+exactly. Past the band the central share fades in, in amplitude, over the
+first `1e-4` of depth: the equal-power law and a curve below `1` both have an
+unbounded slope at zero depth, and without that fade one `f32` quantum of
+position would be an audible step of the central distribution.
 
 ### The VBAP underneath
 
