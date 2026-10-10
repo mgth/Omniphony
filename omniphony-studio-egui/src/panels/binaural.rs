@@ -1,6 +1,6 @@
 //! The Binaural tab of the renderer panel (`controls/binaural.js`): the HRTF
 //! source and its parametric variants, distance, the simulated listening
-//! room, and head tracking.
+//! room, and head tracking. Drawn while the output is the headphones.
 //!
 //! The renderer's `/omniphony/state/binaural` document is passed through as
 //! JSON, so the panel reads it by key rather than through a typed mirror, the
@@ -106,12 +106,9 @@ impl StudioSpike {
         // - a measured room (BRIR) reads its own file options and the head
         //   pose only — the measurement is the distance, the reflections and
         //   the tail, so those groups are not drawn;
-        // - with the output on the speakers nothing here renders: the tab
-        //   stays editable, with a note saying so.
+        // - with the output on the speakers nothing here renders, and the
+        //   renderer section does not draw the tab (`RendererTab::on_path`).
         let path = BinauralPath::of(doc);
-        if text(doc, &["outputMode"]).as_deref() != Some("binaural") {
-            widgets::note(ui, t("binaural.speakerOutputNote"));
-        }
         self.hrtf_block(ui, doc, path, true);
         if path != BinauralPath::Brir {
             self.distance_block(ui, doc, path);
