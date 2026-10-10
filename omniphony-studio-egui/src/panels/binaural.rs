@@ -13,18 +13,9 @@ use crate::app::StudioSpike;
 use crate::host::commands::SharedState;
 use crate::host::commands::binaural as cmd;
 use crate::i18n::{t, tf};
+use crate::model::binaural::{HRIR_SOURCES, OutputMode, hrir_source_offered, last_hrir_file};
 use crate::ui::group::Group;
 use crate::ui::{theme, widgets};
-
-/// HRTF sources, in the select's order.
-const HRIR_SOURCES: &[(&str, &str)] = &[
-    ("saf", "binaural.hrtfSource.kemar"),
-    ("synthetic", "binaural.hrtfSource.synthetic"),
-    ("pinna", "binaural.hrtfSource.pinna"),
-    ("prtf", "binaural.hrtfSource.prtf"),
-    ("sofa", "binaural.hrtfSource.sofa"),
-    ("brir", "binaural.hrtfSource.brir"),
-];
 
 /// Which measured head orientations of a BRIR stay resident, as the
 /// renderer reports it (`auto` follows the head-tracking address).
@@ -219,8 +210,20 @@ impl StudioSpike {
                         .width(w)
                         .truncate()
                         .show_ui(ui, |ui| {
+                            // The output mode says which sources apply: a
+                            // measured room is listed under the virtual room
+                            // only (`hrir_source_offered`).
                             for (id, key) in HRIR_SOURCES {
-                                ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                                if !hrir_source_offered(doc, id) {
+                                    continue;
+                                }
+                                let entry =
+                                    ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                                // A file source names the file it reopens.
+                                if let Some(name) = last_hrir_file(doc, id) {
+                                    entry
+                                        .on_hover_text(tf("binaural.lastFile", &[("name", &name)]));
+                                }
                             }
                         })
                 });
@@ -304,6 +307,12 @@ impl StudioSpike {
                     );
                 }
             }
+        }
+
+        // Where a measured room is chosen: under the virtual room, the one
+        // headphone path that can render it.
+        if !OutputMode::virtual_room(doc) {
+            widgets::note(ui, t("binaural.brirUnderVirtualRoom"));
         }
 
         if !full {
@@ -519,6 +528,12 @@ impl StudioSpike {
                 theme::TEXT_MUTED,
             ));
         }
+        // The set's loudspeakers did not fit the speaker stage: the room
+        // renders on the editable layout instead, and the view shows that.
+        if let Some(error) = text(doc, &["brir", "layoutError"]) {
+            ui.label(small(t("binaural.brirLayoutError").to_owned(), theme::WARN))
+                .on_hover_text(error);
+        }
 
         // Load options: a change reloads the set on the renderer.
         let tracking = match status.and_then(|b| b.get("headTracking")) {
@@ -699,6 +714,32 @@ impl StudioSpike {
                     |v| format!("{v:.1}"),
                 ) {
                     cmd::control_binaural_reflections_room(&self.host, axis.to_owned(), value);
+                }
+            }
+            // The room in use: the configured one grown to hold the scene
+            // (`roomEffectiveM`), said when it differs, since the sliders
+            // above are then a minimum rather than the room.
+            if let Some(in_use) = doc
+                .and_then(|d| d.get("reflections"))
+                .and_then(|r| r.get("roomEffectiveM"))
+                .and_then(|v| v.as_array())
+                .filter(|a| a.len() == 3)
+            {
+                let value = |i: usize| in_use[i].as_f64().unwrap_or(room[i]);
+                let grown = (0..3).any(|i| (value(i) - room[i]).abs() > 0.05);
+                if grown {
+                    ui.label(
+                        RichText::new(tf(
+                            "binaural.roomInUse",
+                            &[
+                                ("w", &format!("{:.1}", value(0))),
+                                ("d", &format!("{:.1}", value(1))),
+                                ("h", &format!("{:.1}", value(2))),
+                            ],
+                        ))
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                    );
                 }
             }
             // The cutoff travels in hertz; the slider is in kilohertz.

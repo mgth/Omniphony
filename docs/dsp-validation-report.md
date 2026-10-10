@@ -542,3 +542,85 @@ needs and determinism is worth more.
 state table above was already correct, and is now true again. Note that the
 tolerance was never the problem and was not touched, and the suite was not
 serialised.
+
+# Coplanar hull faces: a virtual loudspeaker at the centre
+
+Found on the BBC System G BRIR set in the Studio (a headphone render pans
+onto the set's own loudspeakers since #778): the gains of an object at the
+rear or overhead were not mirror-symmetric, although the set's loudspeakers
+are. An object dead centre at the rear, half way up, played 0.81 / 0.30 on the
+two backs and 0.50 / 0 on the two top backs. The editable 9.1.6 in the user's
+room did the same: 0.77 / 0.09 on the two top backs, 0.63 on one back and
+nothing on the other.
+
+## Cause
+
+`find_ls_triplets` triangulates the loudspeaker directions by convex hull
+(`convhull_3d`, with a 1e-7 jitter to break ties). A hull is made of
+triangles, so a planar face with four or more vertices is split along one of
+its diagonals — the one the jitter picks, which has nothing to do with the
+layout's symmetry. Every symmetric layout has such faces: two loudspeaker
+pairs at one elevation each (the backs at 0° and the top backs over them, the
+four ceiling speakers of a 7.1.4) span two edges parallel to the left–right
+axis, hence a plane. VBAP then pans a direction inside the face with that one
+triangle: the face's fourth loudspeaker stays silent, and the split depends
+on which diagonal was drawn. The 7.1.4 preset's rear quad and ceiling, the
+9.1.6's, and the BBC set's are all planar to within the directions' `f32`
+rounding (1e-7). Nothing in the BRIR path: the SOFA file's positions and the
+measured-room warp are exact and symmetric.
+
+## Fix
+
+`prepare_triangulation` (`spatial_vbap/vbap_native.rs`) groups adjacent hull
+faces that lie in one plane (every vertex within 1e-3 of the neighbour's
+plane, about 0.06°) and replaces each group by a fan around a virtual
+loudspeaker at the polygon's centre — its vertices' mean, back on the sphere.
+A group with a vertex inside its boundary is left alone: four loudspeakers a
+degree apart around a fifth read as coplanar within the tolerance, but the
+patch is a shallow dome whose apex is a loudspeaker, the hull's fan around it
+is already right, and a virtual centre would have silenced it (found in
+review, `a_loudspeaker_inside_a_flat_patch_keeps_its_faces`). So is a group
+whose centre does not see every boundary edge from inside, the signed volume
+of a fan triangle at or below 1e-9: faces merged along a chain of
+near-coplanar neighbours can form a concave patch, over which a fan reverses
+and overlaps and the wrong face matches (also found in review,
+`a_concave_flat_patch_keeps_its_faces`).
+
+The review also caught a step in the MDAP spread path that the new fan edges
+exposed: `vbap3d`'s spread loop summed every face that held a cloud member,
+and within the hit tolerance of a shared edge that is both neighbours, so a
+member crossing an edge counted twice — 0.115 in L2 norm over 0.00003° at
+the rear quad's fan edge on the 7.1.4, and the same at every hull edge
+before this change. The loop now takes the first face that holds the member,
+as the pure path always did (`spread_sources_are_continuous_across_edges`).
+
+Third round: in `Fade` the pure path skips the energy normalise so the fold's
+attenuation survives, and the centre downmix — power added to loudspeakers
+already playing — amplified a source just below the hull by 1.02 dB instead
+of fading it. The downmix now restores the power the folded gains came with
+(`the_fade_survives_the_centre_downmix`: 0.977 as on the parent); nothing
+changes when no centre has gain.
+The centre's gain is downmixed at `1/√n` over the polygon's loudspeakers
+through the `DummyRing` mechanism of the virtual poles, in every out-of-hull
+mode. At the centre every loudspeaker of the face plays at equal power (0.5
+each on a quad); on the face's edges the pairwise VBAP is what it was
+(0.707 / 0.707 between the two backs at 0°); inside, the field is continuous
+(the seam gate `vbap_gains_are_continuous_across_triplet_boundaries` holds)
+and mirror symmetric (`gains_are_mirror_symmetric_across_coplanar_faces` on
+the BBC set, the 7.1.4 and a cube, and the renderer-level
+`a_position_and_its_mirror_pan_alike_across_planar_faces` on the 7.1.4 and
+9.1.6 presets in the fixture's room). The construction log counts them:
+`N triangles (M virtual face centres)`.
+
+ITU-R BS.2127's point source panner handles these faces as quadrilateral
+regions with bilinear gains (EAR's `QuadRegion`): the same answer at the
+centre and on the edges, a different interpolation inside. Not parity with
+EAR.
+
+## Goldens
+
+The three speaker goldens (`speaker_714_32obj`, `partial_metadata`,
+`crossover_bands`) were blessed: peak residual −14.0 / −15.3 / −13.9 dBFS,
+rms residual −30.7 / −31.8 / −30.8 dBFS, all of it on the 7.1.4's backs and
+heights as objects cross its rear quad and ceiling. The binaural golden is
+unchanged.
