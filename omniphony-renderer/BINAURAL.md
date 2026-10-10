@@ -184,8 +184,8 @@ runs: the switch takes effect on the next block. In Studio it is *Read
 positions on a sphere*, in the Distance group of the Binaural tab, shown
 while the headphone mode is the direct one; the 3D view then draws the
 listener's sphere in place of the cube, with every source where it is heard,
-and the channel editor's polar readouts and its gizmo follow the same
-reading.
+and the object list's polar readout, the channel editor's and its gizmo
+follow the same reading (the cartesian columns stay the room position).
 
 ## Head tracking
 
