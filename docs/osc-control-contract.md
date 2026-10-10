@@ -511,10 +511,11 @@ input](#audio-output--live-input)): the same setters take their keys, their
 schema entries follow the core's in `/state/options_schema`, and their values
 go out in `/state/host_options` (`{"options": {key: requested}, "applied":
 {key: in force}, "pending": {group: bool}}`) — the `/state/renderer`
-`options` block keeps the core's. A host with audio I/O leaves out the
-options only the embedded engine offers (`decode_thread`, flagged
-`embedded_only`): not in its schema, a write refused, a save keeps the
-file's value.
+`options` block keeps the core's. An option flagged `embedded_only`
+(`decode_thread`) takes effect in the embedded engine only; a host with audio
+I/O publishes, takes and saves it all the same and leaves it inert, so a
+client sets it there for the player that shares the config and says, from the
+flag, that it changes nothing in the renderer it is talking to.
 
 The host's options (standalone renderer):
 

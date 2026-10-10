@@ -216,7 +216,7 @@ if chosen != current {
 
 | Section | Groups | Status |
 |---|---|---|
-| Renderer (`renderer.rs`) | Output mode and decode thread (embedded engine only) above the tabs; Backend, Evaluation, Distance model, Distance diffuse, Ramp; Crossover on both tabs | follows this document |
+| Renderer (`renderer.rs`) | Output mode and decode thread (always offered; a note says it takes effect in the embedded engine only) above the tabs; Backend, Evaluation, Distance model, Distance diffuse, Ramp; Crossover on both tabs | follows this document |
 | Renderer › Binaural tab (`binaural.rs`) | HRTF, Distance, Listening room, Head tracking | follows |
 | Latency (`latency.rs`) | Global far actions, Local resampling controller (its switch in the bar, pause and the wizard in the inset), Stabilization phases | follows |
 | Master (`audio.rs`) | Auto-gain (switch and clip dot in the bar, ceiling in the inset) | follows |

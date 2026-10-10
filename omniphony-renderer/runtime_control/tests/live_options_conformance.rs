@@ -1054,8 +1054,11 @@ mod host_scope {
             .collect()
     }
 
+    /// Every host publishes the core options, the embedded engine's own
+    /// (`decode_thread`) included: a host with audio I/O leaves that one inert
+    /// and is still where it gets set. A host adds the options it declares.
     #[test]
-    fn each_host_publishes_what_it_offers() {
+    fn each_host_publishes_the_core_options_and_its_own() {
         let control = fixture_control();
         let embedded = published(&control, None);
         let keys = schema_keys(&embedded);
@@ -1065,7 +1068,7 @@ mod host_scope {
 
         let standalone = published(&control, Some(&StubHost));
         let keys = schema_keys(&standalone);
-        assert!(!keys.iter().any(|k| k == "decode_thread"));
+        assert!(keys.iter().any(|k| k == "decode_thread"));
         assert_eq!(keys.last().map(String::as_str), Some("stub_rate"));
         let host_options = &standalone[osc_contract::STATE_HOST_OPTIONS];
         assert_eq!(host_options["options"]["stub_rate"], 48_000);
@@ -1073,11 +1076,11 @@ mod host_scope {
         assert_eq!(host_options["pending"]["stub"], true);
     }
 
-    /// A save by the standalone renderer keeps the embedded engine's
-    /// `decode_thread` as the file has it (the two share the config); the
-    /// embedded engine writes its own.
+    /// The two hosts share the config, so a save by either writes the
+    /// embedded engine's `decode_thread` as it stands live: set from the
+    /// standalone renderer, it is there for the player's next start.
     #[test]
-    fn a_host_save_keeps_the_options_it_does_not_offer() {
+    fn every_host_saves_the_embedded_engines_options() {
         let control = fixture_control();
         let base = temp_path("scope-base");
         let out = temp_path("scope-out");
@@ -1092,21 +1095,21 @@ mod host_scope {
         config.save(&base).expect("base written");
         assert!(!control.live.read().options.decode_thread);
 
-        save_live_config_to_path(&control, Some(&StubHost), &base, &out).expect("save");
-        let saved = Config::load_or_default(&out).render.expect("render");
-        assert_eq!(
-            saved.options.decode_thread,
-            Some(true),
-            "the file's value survives"
-        );
+        for host in [Some(&StubHost as &dyn HostControlHandler), None] {
+            control.live.write().options.decode_thread = false;
+            save_live_config_to_path(&control, host, &base, &out).expect("save");
+            let saved = Config::load_or_default(&out).render.expect("render");
+            assert_ne!(
+                saved.options.decode_thread,
+                Some(true),
+                "the live value replaces the file's"
+            );
 
-        save_live_config_to_path(&control, None, &base, &out).expect("save");
-        let saved = Config::load_or_default(&out).render.expect("render");
-        assert_ne!(
-            saved.options.decode_thread,
-            Some(true),
-            "the embedded engine writes its own"
-        );
+            control.live.write().options.decode_thread = true;
+            save_live_config_to_path(&control, host, &base, &out).expect("save");
+            let saved = Config::load_or_default(&out).render.expect("render");
+            assert_eq!(saved.options.decode_thread, Some(true));
+        }
 
         let _ = std::fs::remove_file(&base);
         let _ = std::fs::remove_file(&out);

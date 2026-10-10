@@ -1773,22 +1773,19 @@ mod tests {
         );
         let mut cli_state = published_state(&cli_control, true);
         let mut embedded_state = published_state(&embedded_control, false);
-        // The options schema differs by exactly the embedded engine's own
-        // options (`decode_thread`), which the standalone host leaves out.
-        let schema = |state: &std::collections::BTreeMap<String, Vec<rosc::OscType>>| match state
-            .get(runtime_control::osc_contract::STATE_OPTIONS_SCHEMA)
-            .and_then(|args| args.first())
-        {
-            Some(rosc::OscType::String(json)) => json.clone(),
-            _ => panic!("no options schema published"),
-        };
-        let (cli_schema, embedded_schema) = (schema(&cli_state), schema(&embedded_state));
-        let entries = |json: &str| json.matches("\"key\":").count();
-        assert!(embedded_schema.contains("\"key\":\"decode_thread\""));
-        assert!(!cli_schema.contains("\"key\":\"decode_thread\""));
-        assert_eq!(entries(&cli_schema) + 1, entries(&embedded_schema));
-        cli_state.remove(runtime_control::osc_contract::STATE_OPTIONS_SCHEMA);
-        embedded_state.remove(runtime_control::osc_contract::STATE_OPTIONS_SCHEMA);
+        // Both publish the embedded engine's own options (`decode_thread`):
+        // the standalone host leaves them inert, and a client sets them there.
+        for (host, state) in [("cli", &cli_state), ("embedded", &embedded_state)] {
+            match state
+                .get(runtime_control::osc_contract::STATE_OPTIONS_SCHEMA)
+                .and_then(|args| args.first())
+            {
+                Some(rosc::OscType::String(json)) => {
+                    assert!(json.contains("\"key\":\"decode_thread\""), "{host}: {json}")
+                }
+                _ => panic!("{host}: no options schema published"),
+            }
+        }
         for addr in HOST_SPECIFIC {
             assert!(cli_state.remove(*addr).is_some(), "{addr} not published");
             embedded_state.remove(*addr);

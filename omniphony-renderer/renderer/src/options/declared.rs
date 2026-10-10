@@ -479,7 +479,8 @@ declared_options! {
     /// option decide (`orender_set_option("decode_thread", "live")`), since the
     /// host must then stamp its output from the input timestamps carried with the
     /// audio and drain at end of stream. The standalone renderer always decodes on
-    /// its own thread and ignores it.
+    /// its own thread: it takes, publishes and saves the value for the player
+    /// that shares its config, and ignores it.
     decode_thread: Bool = false => {
         kind: OptionKind::Bool,
         // No REPLAN: nothing synthesized depends on where decoding runs.

@@ -170,7 +170,10 @@ impl StudioSpike {
                     tf("renderer.summary", &[("mode", evaluation_label(&mode))])
                 ),
                 embedded,
-                live.option_bool("decode_thread").unwrap_or(false),
+                // A standalone renderer older than the shared option does
+                // not declare it and refuses the write: no switch then.
+                (embedded || live.declares_option("decode_thread"))
+                    .then(|| live.option_bool("decode_thread").unwrap_or(false)),
             )
         };
         // The gauge's bar sits in the header, as `#rendererPerfWrap` does, so
@@ -191,11 +194,12 @@ impl StudioSpike {
             if embedded {
                 widgets::note(ui, t("outputMode.mpvNote"));
             }
-            // Where decoding runs: a choice for the player's embedded engine
-            // only, since the standalone renderer always decodes on a thread
-            // of its own.
-            if embedded {
-                let mut on = decode_thread;
+            // Where decoding runs: a choice that takes effect in a player's
+            // embedded engine only. It is offered on the standalone renderer
+            // too, which shares the player's config and always decodes on a
+            // thread of its own: the note says the switch changes nothing
+            // there.
+            if let Some(mut on) = decode_thread {
                 if widgets::switch_row_help(
                     ui,
                     t("renderer.decodeThreadLabel"),
@@ -204,7 +208,8 @@ impl StudioSpike {
                 ) {
                     self.set_option("decode_thread", serde_json::json!(on));
                 }
-            } else {
+            }
+            if !embedded {
                 widgets::note(ui, t("renderer.decodeThreadStandaloneNote"));
             }
             ui.add_space(2.0);

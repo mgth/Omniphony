@@ -325,11 +325,13 @@ impl OptionFlags {
     /// `RendererControl::options_epoch`, which plan signatures compare instead
     /// of enumerating options field by field.
     pub const REPLAN: Self = Self(1 << 1);
-    /// Published, accepted and saved only by a host without audio I/O of its
-    /// own — the embedded engine (the `embedded` variant of
-    /// `/state/capabilities`). Elsewhere it is inert: left out of the schema
-    /// and the snapshot, a write refused, and a save keeps what the file says
-    /// for the host that does use it.
+    /// Takes effect only in a host without audio I/O of its own — the embedded
+    /// engine (the `embedded` variant of `/state/capabilities`). Every host
+    /// publishes, accepts and saves it all the same: the two share one
+    /// config, so the standalone renderer is where a user sets it for the
+    /// player to come, and there the value is inert. The schema carries the
+    /// flag (`embedded_only`) so a client can say so; the standalone renderer
+    /// has no command-line flag for it.
     pub const EMBEDDED_ONLY: Self = Self(1 << 2);
     /// Part of the evaluation grid the active bridge hints: while the grid
     /// follows the bridge (`evaluation_grid: bridge`), a client write and a
@@ -472,9 +474,6 @@ pub fn refused_by_grid_source(
 #[derive(Clone, Copy)]
 pub struct OptionEnv<'a> {
     control: Option<&'a crate::live_params::RendererControl>,
-    /// Whether the host has audio I/O of its own (the standalone renderer),
-    /// which scopes `EMBEDDED_ONLY` options out.
-    host_io: bool,
 }
 
 impl<'a> OptionEnv<'a> {
@@ -482,28 +481,13 @@ impl<'a> OptionEnv<'a> {
     pub fn of(control: &'a crate::live_params::RendererControl) -> Self {
         Self {
             control: Some(control),
-            host_io: false,
         }
-    }
-
-    /// The same environment, on a host with (`true`) or without audio I/O of
-    /// its own.
-    pub const fn with_host_io(self, host_io: bool) -> Self {
-        Self { host_io, ..self }
-    }
-
-    /// Whether `spec` exists on this host (see [`OptionFlags::EMBEDDED_ONLY`]).
-    pub fn offers(&self, spec: &OptionSpec) -> bool {
-        offered(spec.flags, self.host_io)
     }
 
     /// No control: only the built-in backends exist and no build facts are
     /// known. For code that works on bare `LiveParams` (tests, tools).
     pub const fn detached() -> Self {
-        Self {
-            control: None,
-            host_io: false,
-        }
+        Self { control: None }
     }
 
     /// Whether a backend with this id is registered.
@@ -3305,7 +3289,7 @@ pub fn seed_rebuilding_rows_from_config(
 /// write), then its row's `config_store`. Rows not named keep what the config
 /// says. For a config edited without a renderer (the command line): the rows
 /// work on a scratch [`LiveParams`] seeded from `render`. Returns the keys
-/// that are unknown, not offered on this host, or whose value was refused.
+/// that are unknown or whose value was refused.
 pub fn store_client_values(
     render: &mut RenderConfig,
     values: &[(&str, RawOptionValue)],
@@ -3317,7 +3301,7 @@ pub fn store_client_values(
     let mut refused = Vec::new();
     let mut applied = Vec::new();
     for (key, raw) in values {
-        match find(key).filter(|spec| env.offers(spec)) {
+        match find(key) {
             Some(spec) if (spec.set)(&mut live, raw, env).is_some() => applied.push(spec),
             _ => refused.push((*key).to_string()),
         }
@@ -3357,9 +3341,7 @@ fn pin_room_ratio(render: &mut RenderConfig, live: &LiveParams, key: &str) -> bo
 /// `PluginParams::store_to_config`). Used by the full live-state save; the OSC targeted
 /// persist stores single options through `OptionSpec::config_store`.
 pub fn store_live_to_config(render: &mut RenderConfig, live: &LiveParams, env: &OptionEnv) {
-    // An option this host does not offer keeps what the file says, for the
-    // host that does use it.
-    for spec in LIVE_OPTIONS.iter().filter(|spec| env.offers(spec)) {
+    for spec in LIVE_OPTIONS {
         (spec.config_store)(render, live, env);
     }
     // Legacy global-host and phantom boolean keys are read-only migrations.
@@ -3387,21 +3369,14 @@ pub fn options_json(live: &LiveParams) -> serde_json::Value {
 /// contract check (CI) and the `data-option` binder. Shape mirrors the
 /// object-generator/phantom param schemas: an array of specs with i18n keys.
 pub fn schema_json() -> String {
-    schema_json_for(false)
+    serde_json::Value::Array(schema_entries()).to_string()
 }
 
-/// The schema a host publishes: [`schema_json`] without the options it does
-/// not offer (`EMBEDDED_ONLY` ones on a host with audio I/O).
-pub fn schema_json_for(host_io: bool) -> String {
-    serde_json::Value::Array(schema_entries(host_io)).to_string()
-}
-
-/// The schema entries of the core options a host offers, for a host that
-/// appends its own ([`host_schema_entries`]).
-pub fn schema_entries(host_io: bool) -> Vec<serde_json::Value> {
+/// The schema entries of the core options, for a host that appends its own
+/// ([`host_schema_entries`]).
+pub fn schema_entries() -> Vec<serde_json::Value> {
     LIVE_OPTIONS
         .iter()
-        .filter(|spec| offered(spec.flags, host_io))
         .map(|spec| {
             schema_entry(
                 spec.key,
@@ -3414,12 +3389,6 @@ pub fn schema_entries(host_io: bool) -> Vec<serde_json::Value> {
             )
         })
         .collect()
-}
-
-/// Whether an option with `flags` exists on a host with (or without) audio
-/// I/O of its own.
-fn offered(flags: OptionFlags, host_io: bool) -> bool {
-    !(host_io && flags.contains(OptionFlags::EMBEDDED_ONLY))
 }
 
 /// One schema entry, for a core or a host row.

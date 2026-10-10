@@ -491,10 +491,9 @@ fn hrir_params_json(source: &renderer::binaural::HrirSource) -> serde_json::Valu
     }
 }
 
-/// The options schema a host publishes: the core options it offers (a host
-/// with audio I/O leaves out the embedded engine's), then its own.
-fn options_schema_json(has_audio: bool, host: Option<&dyn crate::HostControlHandler>) -> String {
-    let mut entries = renderer::options::schema_entries(has_audio);
+/// The options schema a host publishes: the core options, then its own.
+fn options_schema_json(host: Option<&dyn crate::HostControlHandler>) -> String {
+    let mut entries = renderer::options::schema_entries();
     if let Some(host) = host {
         entries.extend(host.options_schema());
     }
@@ -725,7 +724,7 @@ pub fn build_live_state_bundle_with_host(
             // default, flags, i18n keys) — same pattern as the generator /
             // phantom param schemas, so clients can build controls from it.
             addr: crate::osc_contract::STATE_OPTIONS_SCHEMA.to_string(),
-            args: vec![OscType::String(options_schema_json(has_audio, host))],
+            args: vec![OscType::String(options_schema_json(host))],
         }),
         OscPacket::Message(OscMessage {
             // Named config profiles (docs/config-profiles.md): active + list,
