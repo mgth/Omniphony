@@ -27,7 +27,11 @@ const BLOCK: usize = 40;
 /// A 7.1.4 renderer whose front speakers are band-limited, so objects go
 /// through a 4-band crossover and the unified table.
 fn renderer() -> SpatialRenderer {
-    let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
+    renderer_for(SpeakerLayout::preset("7.1.4").unwrap())
+}
+
+/// [`renderer`] on `layout`, its first three speakers band-limited.
+fn renderer_for(mut layout: SpeakerLayout) -> SpatialRenderer {
     for (speaker, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
         speaker.freq_low = Some(cutoff);
     }
@@ -215,6 +219,53 @@ fn a_warmed_up_realtime_render_does_not_allocate() {
                  blocks"
             );
         }
+    }
+}
+
+/// Nothing in a block is sized by a fixed speaker count: a dome of 128
+/// speakers, from tables and from gains computed live, metered or not, is as
+/// free of allocations once warmed up as a 7.1.4.
+#[test]
+fn a_warmed_up_render_on_128_speakers_does_not_allocate() {
+    let dome = || renderer_for(renderer::test_support::dome_layout(128));
+    for ramp_mode in [RampMode::Frame, RampMode::Sample, RampMode::Interp] {
+        for metered in [false, true] {
+            let r = dome();
+            let control = r.renderer_control();
+            {
+                let mut live = control.live.write();
+                live.options.crossover_type = CrossoverType::Fir;
+                live.options.ramp_mode = ramp_mode;
+            }
+            let allocations = count_steady_state_of(r, metered, 240, 120);
+            assert_eq!(
+                allocations, 0,
+                "tables, {ramp_mode:?}, metered {metered}: {allocations} allocation(s) in 120 \
+                 warmed-up blocks"
+            );
+        }
+
+        let r = dome();
+        let control = r.renderer_control();
+        {
+            let mut live = control.live.write();
+            live.options.crossover_type = CrossoverType::Lr4;
+            live.options.ramp_mode = ramp_mode;
+            live.backend_id = "barycenter".to_string();
+            live.set_evaluation_mode(LiveEvaluationMode::Realtime);
+        }
+        let topology = control
+            .prepare_topology_rebuild()
+            .expect("rebuild plan")
+            .build_topology()
+            .expect("barycenter topology");
+        control.publish_topology(topology);
+        let allocations = count_steady_state_of(r, false, 240, 120);
+        assert_eq!(
+            allocations, 0,
+            "realtime barycenter, {ramp_mode:?}: {allocations} allocation(s) in 120 warmed-up \
+             blocks"
+        );
     }
 }
 

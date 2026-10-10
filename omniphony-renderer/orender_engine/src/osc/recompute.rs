@@ -401,7 +401,7 @@ pub(crate) mod hold {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use renderer::speaker_layout::{Speaker, SpeakerLayout};
+    use renderer::speaker_layout::SpeakerLayout;
     use renderer::test_support::fixture_control;
     use rosc::{OscPacket, OscType};
     use std::net::UdpSocket;
@@ -692,38 +692,28 @@ mod tests {
     }
 
     /// Studio grows the layout past the 24 speakers the renderer's gain sets
-    /// used to hold (#745), whichever backend is selected: the recompute
-    /// builds the wider topology and publishes it.
+    /// used to hold (#745) — to 40, 80 and 128 — whichever backend is
+    /// selected: the recompute builds the wider topology and publishes it.
     #[test]
     fn a_layout_wider_than_24_speakers_recomputes_with_every_backend() {
-        for backend in [
-            "vbap",
-            "volumetric",
-            "barycenter",
-            "experimental_distance",
-            "hybrid",
-        ] {
-            a_wider_layout_recomputes(backend);
+        for n in [40, 80, 128] {
+            for backend in [
+                "vbap",
+                "volumetric",
+                "barycenter",
+                "experimental_distance",
+                "hybrid",
+            ] {
+                a_wider_layout_recomputes(backend, n);
+            }
         }
     }
 
-    fn a_wider_layout_recomputes(backend: &str) {
+    fn a_wider_layout_recomputes(backend: &str, n: usize) {
         let control = fixture_control();
         let before = control.active_topology();
         control.live.write().backend_id = backend.to_string();
-        let n: usize = 40;
-        let layout = SpeakerLayout::from_speakers(
-            (0..n)
-                .map(|i| {
-                    Speaker::new(
-                        format!("S{i}"),
-                        -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
-                        if i % 2 == 0 { 0.0 } else { 40.0 },
-                    )
-                })
-                .collect(),
-        )
-        .expect("ring layout");
+        let layout = renderer::test_support::dome_layout(n);
         control.with_editable_layout(|l| *l = layout);
         control.bump_geometry_generation();
 
@@ -742,7 +732,7 @@ mod tests {
         {
             assert!(
                 Instant::now() < deadline,
-                "{backend}: the wider topology was never published"
+                "{backend}, {n} speakers: the wider topology was never published"
             );
             std::thread::sleep(Duration::from_millis(10));
         }

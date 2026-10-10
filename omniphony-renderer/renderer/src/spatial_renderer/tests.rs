@@ -2236,53 +2236,96 @@ fn try_renderer_for_layout(layout: SpeakerLayout) -> Result<SpatialRenderer> {
 }
 
 /// A layout wider than the 24 speakers the renderer's gain sets used to hold
-/// (#745) builds and renders like any other, in every ramp mode, with and
-/// without a crossover. An object taken round the room reaches every speaker
-/// of the layout, those past the 24th included, and what each speaker plays
-/// is the object's signal at the gain the renderer reports for it.
+/// (#745) builds and renders like any other: domes of 25 to 256 speakers, 80
+/// and 128 among them, from gain tables (cartesian, polar) and from gains
+/// computed live, in every ramp mode, with and without a crossover. An object
+/// taken to each speaker in turn reaches every speaker of the layout, and
+/// what each speaker plays is the object's signal at the gain the renderer
+/// reports for it.
 #[test]
 fn a_layout_wider_than_24_speakers_renders() {
-    use crate::speaker_layout::Speaker;
+    use crate::test_support::{dome_direction, dome_layout};
     const BLOCK: usize = 64;
-    // Two rings of speakers, ear level and 40° up.
-    let ring = |n: usize, crossover: bool| {
-        let mut speakers: Vec<Speaker> = (0..n)
-            .map(|i| {
-                Speaker::new(
-                    format!("S{i}"),
-                    -180.0 + 360.0 * (i / 2) as f32 / n.div_ceil(2) as f32,
-                    if i % 2 == 0 { 0.0 } else { 40.0 },
-                )
-            })
-            .collect();
-        if crossover {
-            // Band-limited speakers: the objects go through the crossover
-            // and the unified table.
-            speakers[0].freq_low = Some(80.0);
-            speakers[1].freq_low = Some(200.0);
-        }
-        SpeakerLayout::from_speakers(speakers).unwrap()
-    };
-    for (n, crossover, ramp_mode) in [
-        (25, false, RampMode::Frame),
-        (32, false, RampMode::Sample),
-        (64, false, RampMode::Interp),
-        (40, true, RampMode::Frame),
-        (64, true, RampMode::Sample),
-        (33, true, RampMode::Interp),
+    let cartesian = LiveEvaluationMode::PrecomputedCartesian;
+    let polar = LiveEvaluationMode::PrecomputedPolar;
+    let realtime = LiveEvaluationMode::Realtime;
+    for (n, crossover, ramp_mode, evaluation) in [
+        (25, false, RampMode::Frame, cartesian),
+        (32, false, RampMode::Sample, realtime),
+        (64, true, RampMode::Interp, cartesian),
+        (80, false, RampMode::Frame, polar),
+        (80, true, RampMode::Sample, cartesian),
+        (128, false, RampMode::Interp, realtime),
+        (128, true, RampMode::Frame, polar),
+        (128, true, RampMode::Sample, cartesian),
+        (256, true, RampMode::Sample, cartesian),
     ] {
         let context = |step: usize| {
-            format!("{n} speakers, crossover {crossover}, {ramp_mode:?}, step {step}")
+            format!(
+                "{n} speakers, crossover {crossover}, {ramp_mode:?}, {evaluation:?}, step {step}"
+            )
         };
-        let mut r = try_renderer_for_layout(ring(n, crossover))
-            .unwrap_or_else(|e| panic!("{}: {e:#}", context(0)));
+        let mut layout = dome_layout(n);
+        if crossover {
+            // Band-limited speakers: the objects go through the crossover
+            // and the unified table. Everything above ear level, as in a
+            // room whose height speakers are the small ones.
+            for speaker in &mut layout.speakers {
+                speaker.freq_low = match speaker.elevation {
+                    e if e > 40.0 => Some(200.0),
+                    e if e > 10.0 => Some(80.0),
+                    _ => None,
+                };
+            }
+        }
+        let polar_table = evaluation == polar;
+        let base = test_support::spec(layout);
+        let mut r = SpatialRenderer::new(RendererSpec {
+            // The dome has a ring below the floor.
+            allow_negative_z: true,
+            // A unit room: an object in the direction of a speaker is at
+            // that speaker, not where the room ratios would take it.
+            room_ratio: [1.0, 1.0, 1.0],
+            room_ratio_rear: 1.0,
+            room_ratio_lower: 1.0,
+            table_mode: if polar_table {
+                VbapTableMode::Polar
+            } else {
+                base.table_mode
+            },
+            // A 2° polar grid: at 1° a single band of 128 speakers is past
+            // the table budget (`MAX_EVALUATION_TABLE_BYTES`), which is
+            // about the grid, not about the width of the layout.
+            az_res_deg: 2,
+            el_res_deg: 2,
+            preferred_evaluation_mode: if polar_table {
+                PreferredEvaluationMode::PrecomputedPolar
+            } else {
+                PreferredEvaluationMode::PrecomputedCartesian
+            },
+            initial_evaluation_mode: evaluation,
+            ..base
+        })
+        .unwrap_or_else(|e| panic!("{}: {e:#}", context(0)));
         r.set_synchronous_stage_builds(true);
-        r.renderer_control().live.write().options.ramp_mode = ramp_mode;
+        let control = r.renderer_control();
+        control.live.write().options.ramp_mode = ramp_mode;
+        if evaluation == realtime {
+            // As a host does when its config asks for it: the mode, then the
+            // topology rebuilt for it.
+            control.live.write().set_evaluation_mode(realtime);
+            let topology = control
+                .prepare_topology_rebuild()
+                .expect("rebuild plan")
+                .build_topology()
+                .unwrap_or_else(|e| panic!("{}: {e:#}", context(0)));
+            control.publish_topology(topology);
+        }
         let pcm = noise_block(1, BLOCK, n);
-        // Let the object's gain slew settle at unity before anything is
-        // measured: a quarter of a second.
-        let at = |azimuth: f32| {
-            let (x, y, z) = crate::spatial_vbap::spherical_to_adm(azimuth, 20.0, 1.0);
+        // The object, in the direction of loudspeaker `speaker`.
+        let at = |speaker: usize| {
+            let (azimuth, elevation) = dome_direction(speaker, n);
+            let (x, y, z) = crate::spatial_vbap::spherical_to_adm(azimuth, elevation, 1.0);
             [SpatialChannelEvent {
                 channel_idx: 0,
                 is_bed: false,
@@ -2293,19 +2336,26 @@ fn a_layout_wider_than_24_speakers_renders() {
                 sample_pos: Some(0),
             }]
         };
+        // Let the object's gain slew settle at unity before anything is
+        // measured: a quarter of a second.
         let mut samples = Vec::new();
         for block in 0..48_000 / 4 / BLOCK {
-            let events = at(0.0);
+            let events = at(0);
             let events: &[SpatialChannelEvent] = if block == 0 { &events } else { &[] };
             samples = r
                 .render_frame(&pcm, 1, events, samples, false)
                 .expect("render")
                 .samples;
         }
+        assert_eq!(
+            control.active_topology().backend.evaluation_mode().as_str(),
+            evaluation.as_str(),
+            "{}",
+            context(0)
+        );
         let mut heard = vec![false; n];
-        // Round the room between the two rings, a step per speaker pair.
         for step in 0..n {
-            let events = at(-180.0 + 360.0 * step as f32 / n as f32);
+            let events = at(step);
             let mut frame = r
                 .render_frame(&pcm, 1, &events, samples, true)
                 .expect("render");
@@ -2327,6 +2377,12 @@ fn a_layout_wider_than_24_speakers_renders() {
             assert!(
                 gains.iter().all(|gain| gain.is_finite() && *gain >= 0.0),
                 "{}: {gains:?}",
+                context(step)
+            );
+            // The object is on that speaker: it plays there.
+            assert!(
+                gains[step] > 0.0,
+                "{}: no gain on the speaker the object is at: {gains:?}",
                 context(step)
             );
             for (speaker, heard) in heard.iter_mut().enumerate() {

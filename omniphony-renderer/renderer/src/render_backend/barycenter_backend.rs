@@ -830,7 +830,7 @@ mod tests {
     }
 
     /// The widest of [`layouts`].
-    const WIDE: usize = 64;
+    const WIDE: usize = 128;
 
     fn layouts() -> Vec<Vec<[f32; 3]>> {
         let home = home_layout();

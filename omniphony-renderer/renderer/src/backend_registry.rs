@@ -1698,33 +1698,22 @@ mod tests {
         assert_eq!(short_cells, parts.z.len());
     }
 
-    /// A ring of `n` spatialized speakers, alternating ear level and 40° up.
-    fn ring_layout(n: usize) -> SpeakerLayout {
-        let ring = n.div_ceil(2) as f32;
-        SpeakerLayout::from_speakers(
-            (0..n)
-                .map(|i| {
-                    crate::speaker_layout::Speaker::new(
-                        format!("S{i}"),
-                        -180.0 + 360.0 * (i / 2) as f32 / ring,
-                        if i % 2 == 0 { 0.0 } else { 40.0 },
-                    )
-                })
-                .collect(),
-        )
-        .expect("ring layout")
-    }
-
     /// No backend sizes anything by a fixed speaker count (#745): a layout
-    /// wider than the 24 speakers the gain sets used to hold builds with each
-    /// of them, as the published topology (model only) and as a band's (its
-    /// table sampled), and answers one finite gain per speaker.
+    /// wider than the 24 speakers the gain sets used to hold — 40, 80 and
+    /// 128 here — builds with each of them, as the published topology (model
+    /// only) and as a band's (its table sampled), and answers one finite
+    /// gain per speaker.
     #[test]
     fn a_layout_wider_than_24_speakers_builds_with_every_backend() {
-        const SPEAKERS: usize = 40;
-        let layout = ring_layout(SPEAKERS);
+        for speakers in [40, 80, 128] {
+            a_wide_layout_builds_with_every_backend(speakers);
+        }
+    }
+
+    fn a_wide_layout_builds_with_every_backend(speakers: usize) {
+        let layout = crate::test_support::dome_layout(speakers);
         let positions = collect_spatializable_positions(&layout);
-        assert_eq!(positions.len(), SPEAKERS);
+        assert_eq!(positions.len(), speakers);
         let barycenter = || BarycenterBuildPlan {
             speaker_positions: positions.clone(),
             localize: 0.5,
@@ -1765,16 +1754,16 @@ mod tests {
             };
             let published = plan
                 .build_topology()
-                .unwrap_or_else(|e| panic!("{backend_id}: {e:#}"));
+                .unwrap_or_else(|e| panic!("{speakers} speakers, {backend_id}: {e:#}"));
             let band = plan
                 .build_band_topology_reusing(None)
-                .unwrap_or_else(|e| panic!("{backend_id}, band: {e:#}"));
+                .unwrap_or_else(|e| panic!("{speakers} speakers, {backend_id}, band: {e:#}"));
             for (what, topology) in [("published", &published), ("band", &band)] {
-                assert_eq!(topology.backend.speaker_count(), SPEAKERS, "{backend_id}");
+                assert_eq!(topology.backend.speaker_count(), speakers, "{backend_id}");
                 let mut request = build_config().request_template;
                 request.adm_position = [0.3, -0.4, 0.2];
                 let gains = topology.backend.gains_at(&request);
-                assert_eq!(gains.len(), SPEAKERS, "{backend_id}, {what}");
+                assert_eq!(gains.len(), speakers, "{backend_id}, {what}");
                 assert!(
                     gains.iter().all(|gain| gain.is_finite())
                         && gains.iter().any(|gain| *gain > 0.0),
