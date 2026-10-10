@@ -7,7 +7,7 @@
 # and commit this file with the change.
 #
 # toolchain: 1.99.0
-# total: 257
+# total: 256
 #
 # crate lint count
 audio_input clippy::doc_lazy_continuation 6
@@ -61,7 +61,6 @@ renderer clippy::manual_slice_fill 4
 renderer clippy::needless_borrow 1
 renderer clippy::needless_question_mark 1
 renderer clippy::needless_range_loop 17
-renderer clippy::ptr_arg 1
 renderer clippy::redundant_closure 2
 renderer clippy::should_implement_trait 19
 renderer clippy::too_many_arguments 6

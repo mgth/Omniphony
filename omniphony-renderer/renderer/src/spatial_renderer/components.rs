@@ -7,10 +7,10 @@ use crate::crossover::FreqBand;
 use crate::live_params::{RenderTopology, RendererControl};
 use crate::ramp_strategy::ChannelRampState;
 use crate::render_backend::{
-    CartesianEvaluationConfig, EvaluationBuildConfig, GainScratch, PolarEvaluationConfig,
-    PreparedRenderEngine, RenderRequest,
+    BandGains, CartesianEvaluationConfig, EvaluationBuildConfig, GainScratch,
+    PolarEvaluationConfig, PreparedRenderEngine, RenderRequest,
 };
-use crate::spatial_vbap::{Gains, VbapTableMode};
+use crate::spatial_vbap::VbapTableMode;
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -38,12 +38,12 @@ pub struct RenderedFrame {
     /// This list and the two below are lent by the renderer: hand the frame
     /// back with [`SpatialRenderer::recycle_frame`](super::SpatialRenderer::recycle_frame)
     /// and the next metered frame refills them instead of allocating.
-    pub object_gains: Vec<(usize, Gains)>,
+    pub object_gains: Vec<(usize, Vec<f32>)>,
     /// Per-band VBAP gains for crossover objects.
-    /// `(channel_idx, [band0_gains, band1_gains, ...])` — each `Gains` is full-size
-    /// (`num_speakers`), indexed by global speaker index.
+    /// `(channel_idx, band gains)` — one full-size set per band
+    /// (`num_speakers` gains, indexed by global speaker index).
     /// Empty for non-crossover objects or when no crossover is active.
-    pub object_band_gains: Vec<(usize, Vec<Gains>)>,
+    pub object_band_gains: Vec<(usize, BandGains)>,
     /// Per-band sum of squared band samples over this frame for crossover
     /// objects: `(channel_idx, [band0_sum_sq, ...])`, band order matching
     /// [`Self::object_band_gains`]. Measured post object-gain — the energy the
@@ -215,7 +215,7 @@ pub(super) struct ChannelState {
     /// `RampMode::Interp` only: this channel's destination band gains from the
     /// previous block, reused as the start of the next block's interpolation.
     /// Empty until the first block for this channel.
-    pub(super) interp_prev_gains: Vec<Gains>,
+    pub(super) interp_prev_gains: BandGains,
 }
 
 impl ChannelState {
@@ -252,7 +252,7 @@ impl Default for ChannelState {
             gain_db: GAIN_DB_NEG_INF, // -inf dB (muted)
             slewed_gain: 0.0,
             ramp: ChannelRampState::default(),
-            interp_prev_gains: Vec::new(),
+            interp_prev_gains: BandGains::new(),
         }
     }
 }

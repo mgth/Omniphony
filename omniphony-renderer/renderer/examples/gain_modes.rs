@@ -84,7 +84,7 @@ fn gains_at(r: &mut SpatialRenderer, p: [f64; 3]) -> Vec<f32> {
         .object_gains
         .iter()
         .find(|(ch, _)| *ch == 0)
-        .map(|(_, g)| g.iter().copied().collect())
+        .map(|(_, g)| g.clone())
         .unwrap_or_default()
 }
 
