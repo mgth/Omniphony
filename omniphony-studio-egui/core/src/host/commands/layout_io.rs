@@ -247,12 +247,17 @@ pub fn import_start_dir(app: &HostPaths, state: &SharedState) -> Option<std::pat
 /// are known. A checkout build has no resources, only the checkout's copy;
 /// looking for the shipped one alone sent its picker to the desktop. `None`
 /// when neither exists, and the picker opens wherever the platform puts it.
+///
+/// Absolute: a `--layouts-dir` given relative to the working directory is
+/// read fine, but the picker may run in another process (the XDG portal)
+/// that does not share that directory.
 pub fn presets_dir(app: &HostPaths) -> Option<std::path::PathBuf> {
     app.layouts_dir
         .iter()
         .cloned()
         .chain(app.resource_dir.iter().map(|dir| dir.join("layouts")))
         .find(|dir| dir.is_dir())
+        .map(|dir| std::path::absolute(&dir).unwrap_or(dir))
 }
 
 /// Remember where the user imported from, for the next import.
@@ -551,6 +556,16 @@ mod tests {
         assert_eq!(presets_dir(&paths), Some(shipped.join("layouts")));
         // Nothing known: the picker is left to the platform.
         assert_eq!(presets_dir(&HostPaths::default()), None);
+        // A relative `--layouts-dir` is read relative to the working
+        // directory; the picker, in another process, gets it absolute.
+        let paths = HostPaths {
+            resource_dir: Some(shipped.clone()),
+            layouts_dir: Some(std::path::PathBuf::from(".")),
+            ..Default::default()
+        };
+        let here = std::env::current_dir().unwrap();
+        assert!(here.is_absolute());
+        assert_eq!(presets_dir(&paths), Some(here));
     }
 
     #[test]
