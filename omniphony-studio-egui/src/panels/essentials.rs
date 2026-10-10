@@ -14,7 +14,7 @@ use egui::Ui;
 use crate::app::StudioSpike;
 use crate::host::channels::{Family, ModeSource, family_label, family_placement, playing_family};
 use crate::i18n::t;
-use crate::panels::renderer::OutputMode;
+use crate::model::binaural::OutputMode;
 use crate::ui::section::Section;
 use crate::ui::widgets;
 
@@ -52,7 +52,7 @@ impl StudioSpike {
         Section::new("listeningSection", "essentials.listening")
             .icon(&crate::ui::icons::SECTION_RENDERER)
             .default_open(true)
-            .summary(mode.label())
+            .summary(t(mode.i18n_key()))
             .show(ui, |ui| {
                 self.output_mode_row(ui);
                 if embedded {

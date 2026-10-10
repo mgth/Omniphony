@@ -38,6 +38,7 @@ impl VbapPanner {
                 native_backend::NativeVbapLayout::from_speaker_dirs(speaker_dirs_deg, mode)?;
             Ok(VbapPanner {
                 n_triangles: source.n_faces,
+                n_virtual_centres: source.n_centres,
                 n_speakers,
                 allow_negative_z: true,
                 source,
@@ -49,6 +50,7 @@ impl VbapPanner {
             let layout = saf_backend::SpartaVbapLayout::from_speaker_dirs(speaker_dirs_deg)?;
             Ok(VbapPanner {
                 n_triangles: layout.n_faces as usize,
+                n_virtual_centres: 0,
                 n_speakers,
                 allow_negative_z: true,
                 speaker_dirs_deg: speaker_dirs_deg.to_vec(),
@@ -75,6 +77,11 @@ impl VbapPanner {
 
     pub fn num_triangles(&self) -> usize {
         self.n_triangles
+    }
+
+    /// Virtual loudspeakers at the centre of coplanar hull faces.
+    pub fn num_virtual_centres(&self) -> usize {
+        self.n_virtual_centres
     }
 
     // ── Direct gain computation ──────────────────────────────────────────────

@@ -32,7 +32,7 @@ forced to precomputed (calling Lua per sample is not viable).
 -- REQUIRED: gains per speaker for one position.
 function gains(pos, speakers, state, params)
   -- pos      = { x=, y=, z= }            (raw ADM position)
-  -- speakers = { {x=,y=,z=}, ... }       (unit speaker directions)
+  -- speakers = { {x=,y=,z=}, ... }       (unit speaker directions, in the room-relative space `room_scale(pos)` maps a position into)
   -- state    = value returned by setup(), or nil
   -- params   = { key = number, ... }     (values for params() below)
   -- return an array of #speakers finite numbers, in speaker order.

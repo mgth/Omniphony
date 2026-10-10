@@ -193,7 +193,9 @@ impl VolumeInput {
         settings: &VolumeSettings,
         selected_speaker: Option<usize>,
     ) {
-        self.room.clone_from(&live.app.room_ratio);
+        // The frame the sources are drawn in (`AppState::display_room`): the
+        // field stays on them when the path changes the room.
+        self.room = live.app.display_room();
         self.objects.clear();
         if settings.object_field_enabled {
             self.objects.extend(active_objects(live, settings));

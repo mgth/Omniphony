@@ -12,3 +12,6 @@ name = "example_backend"
 [dependencies]
 renderer.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+renderer = { workspace = true, features = ["test-support"] }

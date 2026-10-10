@@ -270,6 +270,12 @@ impl StudioSpike {
                                 "help.display.speakerFaceListener",
                                 &mut s.speaker_face_listener_enabled,
                             );
+                            widgets::switch_row_help(
+                                ui,
+                                t("display.speakersOnHeadphones"),
+                                "help.display.speakersOnHeadphones",
+                                &mut s.speakers_on_headphones,
+                            );
                             widgets::slider_line_help(
                                 ui,
                                 t("display.speakerSize"),

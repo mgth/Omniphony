@@ -76,6 +76,8 @@ pub struct DisplayPrefs {
     pub object_labels: Option<bool>,
     pub show_object_details: Option<bool>,
     pub speakers_visible: Option<bool>,
+    /// The speaker layout kept in view on the direct headphone path.
+    pub speakers_on_headphones: Option<bool>,
     pub speaker_labels: Option<bool>,
     pub speaker_bands: Option<bool>,
     pub speaker_face_listener: Option<bool>,
@@ -131,6 +133,7 @@ impl DisplayPrefs {
             object_labels: Some(settings.object_labels_enabled),
             show_object_details: Some(settings.show_object_details),
             speakers_visible: Some(settings.speakers_visible),
+            speakers_on_headphones: Some(settings.speakers_on_headphones),
             speaker_labels: Some(settings.speaker_labels_enabled),
             speaker_bands: Some(settings.speaker_band_bars_enabled),
             speaker_face_listener: Some(settings.speaker_face_listener_enabled),
@@ -182,6 +185,7 @@ impl DisplayPrefs {
             && self.object_labels == Some(settings.object_labels_enabled)
             && self.show_object_details == Some(settings.show_object_details)
             && self.speakers_visible == Some(settings.speakers_visible)
+            && self.speakers_on_headphones == Some(settings.speakers_on_headphones)
             && self.speaker_labels == Some(settings.speaker_labels_enabled)
             && self.speaker_bands == Some(settings.speaker_band_bars_enabled)
             && self.speaker_face_listener == Some(settings.speaker_face_listener_enabled)
@@ -236,6 +240,7 @@ impl DisplayPrefs {
         set!(settings.object_labels_enabled, self.object_labels);
         set!(settings.show_object_details, self.show_object_details);
         set!(settings.speakers_visible, self.speakers_visible);
+        set!(settings.speakers_on_headphones, self.speakers_on_headphones);
         set!(settings.speaker_labels_enabled, self.speaker_labels);
         set!(settings.speaker_band_bars_enabled, self.speaker_bands);
         set!(
@@ -368,6 +373,7 @@ fn every_display_setting_is_classified(settings: &ViewSettings, volume: &VolumeS
         effective_render_enabled: _,
         heatmap_band_index: _,
         speakers_visible: _,
+        speakers_on_headphones: _,
         speaker_labels_enabled: _,
         speaker_band_bars_enabled: _,
         speaker_face_listener_enabled: _,
@@ -436,6 +442,7 @@ mod tests {
         volume.object_colormap = Colormap::WhiteRed;
         volume.discontinuity_mode = DiscontinuityMode::Centroid;
         settings.speakers_visible = false;
+        settings.speakers_on_headphones = true;
         settings.vbap_grid = true;
         let json = serde_json::to_string(&DisplayPrefs::capture(&settings, &volume)).unwrap();
         let back: DisplayPrefs = serde_json::from_str(&json).unwrap();
@@ -451,6 +458,7 @@ mod tests {
         assert_eq!(v2.object_colormap, Colormap::WhiteRed);
         assert_eq!(v2.discontinuity_mode, DiscontinuityMode::Centroid);
         assert!(!s2.speakers_visible);
+        assert!(s2.speakers_on_headphones);
         assert!(s2.vbap_grid);
     }
 

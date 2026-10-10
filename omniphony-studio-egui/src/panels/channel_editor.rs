@@ -60,8 +60,8 @@ impl StudioSpike {
             let direct = (!channel.spatialize).then(|| self.direct_target(&live, &name));
             (
                 channel,
-                live.app.room_ratio.clone(),
-                live.app.room_ratio.scale_m.max(0.001),
+                live.app.display_room(),
+                live.app.display_room().scale_m.max(0.001),
                 direct,
                 family,
                 family_label(&live.app, family),
@@ -376,7 +376,7 @@ impl StudioSpike {
     /// path the output speakers use, so the channel lands exactly where it was
     /// put.
     fn set_channel_cartesian(&mut self, name: &str, adm: [f64; 3]) {
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.host.read().app.display_room();
         let adm = [
             adm[0].clamp(-1.0, 1.0),
             adm[1].clamp(-1.0, 1.0),
@@ -409,7 +409,7 @@ impl StudioSpike {
             self.set_channel_polar(name, azimuth, elevation, distance);
             return;
         }
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.host.read().app.display_room();
         let distance = distance.max(0.01);
         let adm = polar_to_adm(&room, azimuth, elevation, distance);
         let live = self.host.read();
@@ -431,7 +431,7 @@ impl StudioSpike {
     }
 
     fn set_channel_polar(&mut self, name: &str, azimuth: f64, elevation: f64, distance: f64) {
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.host.read().app.display_room();
         let distance = if distance > 0.0 { distance } else { 0.01 };
         let adm = polar_to_adm(&room, azimuth, elevation, distance);
         self.commit_channel(name, |c| {

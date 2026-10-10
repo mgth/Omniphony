@@ -223,6 +223,10 @@ pub struct VbapPanner {
     /// Number of speaker triangles in the triangulation.
     n_triangles: usize,
 
+    /// Number of virtual loudspeakers at the centre of coplanar hull faces
+    /// (`vbap_native::Triangulation`); 0 under `saf_vbap`.
+    n_virtual_centres: usize,
+
     /// Number of speakers in the layout.
     n_speakers: usize,
 

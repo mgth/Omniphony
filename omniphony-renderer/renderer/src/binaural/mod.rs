@@ -36,7 +36,7 @@ pub mod tracking;
 #[cfg(test)]
 mod validation;
 
-pub use brir_stage::{BrirStage, BrirStatus};
+pub use brir_stage::{BrirStage, BrirStatus, BrirSummary};
 pub use head_pose::HeadPose;
 pub use tracking::{CalibrationStep, HeadTracking, HeadTrackingFormat};
 

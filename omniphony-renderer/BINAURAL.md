@@ -60,6 +60,30 @@ render:
 Everything below is also live-tunable from the **Binaural / Headphones** panel
 in Studio and over OSC (addresses listed at the end).
 
+Studio's 3D view follows the path that renders. On the direct path the
+objects sit in the listener's cube — no room warp, `unit_scale_m` metres to
+the unit, read off a guide on its edge — and the speaker layout is hidden,
+since nothing feeds it (Display → *Speaker layout on headphones* keeps it as
+a ghosted reference). Through the virtual room the user's room is drawn
+with its speakers as wireframe cubes: the virtual speakers the cascade
+convolves, metered. A measured room replaces the user's room: its
+loudspeakers are wireframe cubes at their measured positions in metres,
+in the room's own colour, inside the box the file states (`RoomCornerA`,
+`RoomCornerB`) or, without one, a box around the loudspeakers. That box
+is also the room the render pans in — the set's loudspeakers are placed
+in it as fractions and the objects are warped into it, so an object is
+panned among them in the room's own metric, not the user's room ratio
+(#803); the room panel shows the measured room's dimensions, read-only,
+and says when the box is an estimate rather than the file's. A set that
+does not fit the speaker stage is flagged in the HRTF group and the view
+stays on the layout that renders. A badge at the bottom left of the
+view names the path and the set in force, and says *fallback* with the
+reason when what renders is not what was asked for. On the two HRTF paths, while the early reflections
+are on, the listening room they mirror sources in is drawn as a dashed box
+around the listener, in metres at the distance scale, with its dimensions
+— the room in use, grown to hold the scene when the configured one is
+smaller.
+
 ## Configuration reference (`render.binaural`)
 
 | Key | Default | Meaning |
@@ -68,8 +92,8 @@ in Studio and over OSC (addresses listed at the end).
 | `unit_scale_m` | `1.0` | metres per ADM unit — isotropic distance scale (the anisotropic `room_ratio` is deliberately not used here) |
 | `head_radius_m` | `0.0875` | effective head radius (half the inter-ear distance) for the Woodworth ITD model; fit it to the listener (clamped 0.05–0.15) |
 | `hrir_source` | `saf` | `saf`/`kemar` (embedded measured KEMAR), `synthetic` (analytic head shadow), `sofa` (personalised set, needs the `sofa` build feature), `brir` (a measured room, see *Room responses* below; same build feature) |
-| `hrtf_sofa_path` | — | SOFA file used when `hrir_source: sofa` |
-| `brir_sofa_path` | — | SOFA room-response file used when `hrir_source: brir` |
+| `hrtf_sofa_path` | — | SOFA file used when `hrir_source: sofa`; kept while another source is selected, and reopened by a bare `sofa` |
+| `brir_sofa_path` | — | SOFA room-response file used when `hrir_source: brir`; kept while another source is selected, and reopened by a bare `brir` |
 | `brir_head_tracking` | — | keep every measured head orientation of the BRIR resident. Unset: follows `head_tracking.osc_address` (orientations are loaded when it is set, a single one otherwise) |
 | `brir_max_length_s` | `2.0` | longest response kept, seconds (`0` = whole responses) |
 | `brir_tail_floor_db` | `60` | decibels below a response's total energy at which its tail is cut |
@@ -209,8 +233,11 @@ How it renders:
   BRIR options above. The diffuse-field EQ, head radius, update lattice,
   distance scale, air absorption, reflections and reverb shape the HRTF
   stage, which a room response bypasses; Studio does not show them for a
-  room, and the output-mode select offers only the virtual room. The state
-  snapshot's `binaural.modeEffective` says which path renders.
+  room, and lists the room source under the virtual-room output mode only:
+  choosing the direct headphone mode over a room brings the source back to
+  KEMAR, and the room's file is kept (`brir_sofa_path`) for the next time
+  the room is chosen. The state snapshot's `binaural.modeEffective` says
+  which path renders.
 
 ### Where to get one
 
@@ -329,7 +356,7 @@ carry no license at all). Accordingly:
 | Address | Args | Meaning |
 |---|---|---|
 | `/omniphony/control/output_mode` | `s: speaker\|binaural` | select the output stage |
-| `/omniphony/control/binaural/hrir_source` | `s: synthetic\|saf\|sofa:<path>\|brir:<path>` | HRIR set, or a room response (see *Room responses*) |
+| `/omniphony/control/binaural/hrir_source` | `s: synthetic\|saf\|sofa:<path>\|brir:<path>` | HRIR set, or a room response (see *Room responses*); a bare `sofa` / `brir` reopens the file last named for it |
 | `/omniphony/control/binaural/brir/head_tracking` | `s: auto` or `i\|f` (bool) | which head orientations of a BRIR stay resident: `auto` follows the tracking address, true = all, false = front only |
 | `/omniphony/control/binaural/brir/max_length` | `f` (s) | longest response kept (0 = whole) |
 | `/omniphony/control/binaural/brir/tail_floor` | `f` (dB) | tail cut, decibels below the response's total energy |
@@ -360,8 +387,16 @@ carry no license at all). Accordingly:
 | `/omniphony/control/head/tracking/invert` | `i` (bool) | mirror the rotation |
 
 State broadcast: the `binaural` object inside `/omniphony/state/renderer`
-(10 Hz when the pose moves) — including `hrirEffective`, the set actually
-being convolved, and `hrirError`: when a SOFA file cannot be loaded the
+(10 Hz when the pose moves) — including `reflections.roomEffectiveM`, the
+listening room the reflections mirror sources in (the configured extents
+grown to hold the scene, see *Scale* above), `brir.loaded.emittersM`,
+`roomCornersM` and `roomType` (a resident set's loudspeakers in metres
+around the listener, renderer frame, and its room when the file states
+one), `brir.room` while the render pans onto those loudspeakers (the
+measured room it pans in: `boxM`, `estimated` when the box is derived
+from the loudspeakers rather than the file, and `ratio` in the shape of
+`roomRatio`, `scaleM` being the metres to one unit),
+`hrirEffective`, the set actually being convolved, and `hrirError`: when a SOFA file cannot be loaded the
 renderer falls back to the embedded KEMAR set, and these two say so
 (`hrirSource` keeps the request) — plus a dedicated lightweight
 `/omniphony/state/head_pose` (`ffff` = w x y z, ~30 Hz) for low-latency pose

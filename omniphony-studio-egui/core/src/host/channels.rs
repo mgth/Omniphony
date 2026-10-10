@@ -456,12 +456,14 @@ pub struct Channel {
 }
 
 /// Polar → ADM normalised cartesian, exactly like the speaker editor: the room
-/// warp is inverted and the result clamped. "Norm" is the ADM position, not a
-/// raw axis swizzle.
+/// warp is inverted, a position past a wall first drawn back along its own
+/// line so that the angle survives (the renderer's `angles_to_normalized`;
+/// a measured room can be lower than the entry's radius). "Norm" is the ADM
+/// position, not a raw axis swizzle.
 pub fn polar_to_adm(room: &RoomRatio, azimuth: f64, elevation: f64, distance: f64) -> [f64; 3] {
     use omniphony_geometry::f64 as g;
     let (x, y, z) = g::from_spherical(azimuth, elevation, distance);
-    g::inverse_room_scaled_position(
+    g::inverse_room_scaled_direction(
         [x, y, z],
         [room.width, room.length, room.height],
         room.rear,
@@ -645,7 +647,12 @@ pub fn effective_channels_for(
     app: &AppState,
     family: Family,
 ) -> Vec<Channel> {
-    let room = &app.room_ratio;
+    // The room a pose is read in: the one the output renders in and the
+    // scene draws in (`AppState::display_room`), so a polar entry on the
+    // direct headphone path lands on its angle rather than being
+    // pre-compensated for a warp that path does not apply (#783's rule).
+    let room = app.display_room();
+    let room = &room;
     let mode = family_placement(app, family).effective_mode;
     let mut bases = catalog.bases.clone();
     let add_base = |name: &str, source: Option<&serde_json::Value>, bases: &mut Vec<Base>| {
@@ -924,6 +931,34 @@ mod tests {
         }
     }
 
+    /// A polar entry past a wall of a low room keeps its angle, as the
+    /// renderer keeps it: the position is drawn back into the room, not
+    /// clamped axis by axis (#803).
+    #[test]
+    fn a_polar_entry_keeps_its_angle_in_a_low_room() {
+        let low = RoomRatio {
+            width: 1.0,
+            length: 1.2,
+            height: 0.4,
+            rear: 0.8,
+            lower: 0.48,
+            center_blend: 0.5,
+            scale_m: 2.5,
+        };
+        for (az, el) in [(-30.0, 30.0), (110.0, 30.0), (-45.0, 45.0), (-135.0, 0.0)] {
+            let adm = polar_to_adm(&low, az, el, 1.0);
+            assert!(
+                adm.iter().all(|c| c.abs() <= 1.0 + 1e-9),
+                "{az}/{el}: {adm:?}"
+            );
+            let (got_az, got_el, _) = adm_to_polar(&low, adm);
+            assert!(
+                (got_az - az).abs() < 1e-6 && (got_el - el).abs() < 1e-6,
+                "{az}/{el} came back as {got_az}/{got_el}"
+            );
+        }
+    }
+
     #[test]
     fn metres_carry_the_room_warp_and_convert_back_unchanged() {
         let r = room();
@@ -1145,6 +1180,78 @@ mod tests {
             family_placement(&app, Family::named("dolby")).layout_source,
             LayoutSource::Generic
         );
+    }
+
+    /// The direct headphone path reads a pose straight off the position,
+    /// so a manual polar entry is read back on its angle there: through the
+    /// payload and the model, not only the coordinate helpers. The cascaded
+    /// path keeps the live room's reading.
+    #[test]
+    fn a_manual_polar_entry_reads_back_on_its_angle_on_the_direct_path() {
+        let entries = serde_json::json!({ "speakers": [
+            { "name": "L", "coord_mode": "polar", "azimuth": -30.0, "elevation": 0.0, "distance": 1.0 }
+        ] });
+        let placement = serde_json::json!({
+            "generic": { "layout": entries },
+            "dolby": { "mode": "manual" }
+        });
+        let mut app = app_with_placement(placement.clone());
+        app.room_ratio = room();
+        app.binaural = Some(serde_json::json!({
+            "outputMode": "binaural", "mode": "direct", "modeEffective": "direct",
+            "hrirSource": "saf", "unitScaleM": 1.0,
+        }));
+        let mut catalog = ChannelCatalog::default();
+        catalog.refresh(&app);
+        let read = |app: &AppState| {
+            let channels = effective_channels_for(&catalog, app, Family::named("dolby"));
+            channels.into_iter().find(|c| c.name == "L").expect("L")
+        };
+        let l = read(&app);
+        assert_eq!((l.azimuth, l.elevation, l.distance), (-30.0, 0.0, 1.0));
+        assert!(
+            (l.x + 0.5).abs() < 1e-6 && (l.y - 0.866).abs() < 1e-3,
+            "{} {}",
+            l.x,
+            l.y
+        );
+        let (azimuth, _, distance) = adm_to_polar(&app.display_room(), [l.x, l.y, l.z]);
+        assert!((azimuth + 30.0).abs() < 1e-6 && (distance - 1.0).abs() < 1e-6);
+
+        // Serialised and read again, the same entry comes back the same.
+        let channels = effective_channels_for(&catalog, &app, Family::named("dolby"));
+        let payload = build_layout_payload(&app, &channels);
+        let stored = payload["speakers"]
+            .as_array()
+            .and_then(|s| s.iter().find(|e| e["name"] == "L"))
+            .expect("L stored");
+        assert_eq!(
+            (stored["azimuth"].as_f64(), stored["distance"].as_f64()),
+            (Some(-30.0), Some(1.0))
+        );
+        app.live_options.placement = Some(serde_json::json!({
+            "generic": { "layout": payload },
+            "dolby": { "mode": "manual" }
+        }));
+        let again = read(&app);
+        assert_eq!((again.azimuth, again.distance), (-30.0, 1.0));
+        assert!((again.x - l.x).abs() < 1e-9 && (again.y - l.y).abs() < 1e-9);
+
+        // Through the virtual room the live room's reading applies: the
+        // position is pre-compensated for the warp the speaker stage undoes.
+        app.binaural = Some(serde_json::json!({
+            "outputMode": "binaural", "mode": "cascaded", "modeEffective": "cascaded",
+            "hrirSource": "saf",
+        }));
+        let warped = read(&app);
+        assert_eq!((warped.azimuth, warped.distance), (-30.0, 1.0));
+        assert!(
+            (warped.y - l.y).abs() > 0.1,
+            "the live room moves it: {}",
+            warped.y
+        );
+        let (azimuth, _, _) = adm_to_polar(&app.room_ratio, [warped.x, warped.y, warped.z]);
+        assert!((azimuth + 30.0).abs() < 1e-6);
     }
 
     #[test]

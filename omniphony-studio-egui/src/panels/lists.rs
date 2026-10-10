@@ -9,6 +9,7 @@ use crate::host::commands::gain;
 use crate::host::peak_hold::METER_DB_MIN;
 use crate::i18n::t;
 use crate::model::app_state::Meter;
+use crate::model::binaural::RenderPath;
 use crate::panels::audio::meter_fraction;
 use crate::panels::row_glyphs;
 use crate::ui::{section::Section, theme, widgets};
@@ -41,6 +42,9 @@ struct Row {
     /// A read-only speaker (a BRIR set's own loudspeaker): no mute, no solo,
     /// no reordering — it can only be selected.
     fixed: bool,
+    /// A speaker of a headphone room, virtual or measured: its thumbnail's
+    /// frame is dashed, as the scene draws its cube in wire.
+    virtual_speaker: bool,
     /// How much of the selected object this entry carries, 0..1, and the same
     /// split per crossover band. Both empty unless an object is selected.
     contribution: Option<f64>,
@@ -119,11 +123,7 @@ impl StudioSpike {
     /// mode, so they carry the same meter and mute a speaker row does — but
     /// they are addressed by ear, not by layout index.
     pub(crate) fn headphones_section(&mut self, ui: &mut Ui) {
-        let mode = {
-            let live = self.host.read();
-            crate::panels::renderer::OutputMode::from_state(live.app.binaural.as_ref())
-        };
-        if mode == crate::panels::renderer::OutputMode::Speaker {
+        if !self.host.read().app.render_path().is_binaural() {
             return;
         }
         // A mute pattern that no longer matches the solo interpretation
@@ -194,6 +194,7 @@ impl StudioSpike {
                     freq_low: None,
                     freq_high: None,
                     fixed: false,
+                    virtual_speaker: false,
                     contribution: None,
                     band_gains: Vec::new(),
                     size: None,
@@ -234,14 +235,10 @@ impl StudioSpike {
     }
 
     pub(crate) fn speakers_section(&mut self, ui: &mut Ui) {
-        // In binaural-direct mode the speakers are not the output, so the list
-        // stands down; the virtual-room mode shows both because it renders
-        // through the speakers into the ears.
-        let mode = {
-            let live = self.host.read();
-            crate::panels::renderer::OutputMode::from_state(live.app.binaural.as_ref())
-        };
-        if mode == crate::panels::renderer::OutputMode::BinauralDirect {
+        // On the direct headphone path nothing feeds the speakers, so the
+        // list stands down; the two rooms render through them into the ears.
+        let path = self.host.read().app.render_path();
+        if path == RenderPath::Direct {
             return;
         }
         let rows = self.speaker_rows();
@@ -260,12 +257,20 @@ impl StudioSpike {
             let name = if brir {
                 t("speakers.brirLayout").to_string()
             } else {
-                live.app
+                let name = live
+                    .app
                     .layouts
                     .iter()
                     .find(|l| Some(&l.key) == live.app.selected_layout_key.as_ref())
                     .map(|l| l.name.clone())
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                // The layout stands in for a room on headphones: the summary
+                // says so, as the scene draws its speakers in wire.
+                if path == RenderPath::VirtualRoom {
+                    format!("{} · {name}", t("speakers.kind.virtual"))
+                } else {
+                    name
+                }
             };
             (name, brir)
         };
@@ -518,6 +523,7 @@ impl StudioSpike {
                     freq_low: None,
                     freq_high: None,
                     fixed: false,
+                    virtual_speaker: false,
                     contribution: selected_speaker.and_then(|spk| {
                         contribution_fraction(
                             live.app
@@ -617,6 +623,12 @@ impl StudioSpike {
         // A BRIR set's own loudspeakers: the editable layout's rows (gain,
         // mute) index other speakers, so none is shown or offered.
         let brir = live.app.brir_speakers.is_some();
+        // The speakers of a headphone room, virtual or measured: the
+        // thumbnail's frame goes dashed, as the scene draws them in wire.
+        let virtual_speaker = matches!(
+            live.app.render_path(),
+            RenderPath::VirtualRoom | RenderPath::MeasuredRoom
+        );
         // The contribution overlay answers "where does *this* object go", so it
         // exists only while one is selected.
         let selected = self.selection.object.as_deref();
@@ -653,6 +665,7 @@ impl StudioSpike {
                     freq_low: speaker.freq_low,
                     freq_high: speaker.freq_high,
                     fixed: brir,
+                    virtual_speaker,
                     // The object's own RMS through this speaker's panning gain
                     // — what it actually contributes, not what it was asked for.
                     contribution: contribution_fraction(
@@ -1242,7 +1255,7 @@ fn dominant_speaker(gains: Option<&Vec<f64>>, name_of: impl Fn(usize) -> Option<
 fn row_line(ui: &mut Ui, row: &Row, action: &mut RowAction) {
     ui.horizontal(|ui| {
         if let Some(position) = row.position {
-            row_glyphs::position_icon(ui, position, row.spatialize);
+            row_glyphs::position_icon(ui, position, row.spatialize, row.virtual_speaker);
         }
         if row.speaker {
             row_glyphs::filter_icon(ui, row.freq_low, row.freq_high);
@@ -1345,6 +1358,7 @@ mod tests {
             freq_low: None,
             freq_high: None,
             fixed: false,
+            virtual_speaker: false,
             contribution: None,
             band_gains: Vec::new(),
             size: None,
@@ -1400,6 +1414,7 @@ mod tests {
             freq_low: None,
             freq_high: None,
             fixed: false,
+            virtual_speaker: false,
             contribution: None,
             band_gains: Vec::new(),
             size: None,
