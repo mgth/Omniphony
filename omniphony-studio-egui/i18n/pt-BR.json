@@ -797,6 +797,7 @@
   "status.noEngine.body": "O Studio é o painel de controle do motor de áudio do Omniphony, e ainda não há nenhum motor para controlar. Inicie-o aqui, ou reproduza algo no mpv-omniphony, que traz o seu próprio.",
   "status.noEngine.bodyRemote": "O Studio não recebe resposta do motor de áudio que deve controlar. Inicie esse motor, ou reproduza algo no mpv-omniphony, que traz o seu próprio.",
   "status.noEngine.start": "Iniciar o motor de áudio",
+  "status.noEngine.starting": "Iniciando o motor de áudio…",
   "status.noEngine.getPlayer": "Baixar o mpv-omniphony",
   "status.noEngine.autostartFailed": "A inicialização automática do motor falhou: {error}\nSeu log: {log}",
   "status.error": "Erro",

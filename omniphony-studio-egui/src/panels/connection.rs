@@ -10,6 +10,7 @@ use crate::app::StudioSpike;
 use crate::host::commands::app as app_cmd;
 use crate::host::commands::mpv_config::MpvOrenderState;
 use crate::host::commands::orender::RendererMismatch;
+use crate::host::services::watchdog::EngineStartProgress;
 use crate::i18n::{t, tf};
 use crate::model::app_state::BridgeProblemKind;
 use crate::ui::section::Section;
@@ -140,6 +141,19 @@ impl StudioSpike {
             let can_start = crate::host::capabilities::ActionPolicy::of(&self.host).manage_process;
             self.host_operations.poll();
             let pending = self.host_operations.pending();
+            // What the watchdog is about to do, or has just done: a launch
+            // under way here is a start as much as one it made.
+            let progress_shows_launch = self.host_operations.launching();
+            let progress = if !can_start {
+                EngineStartProgress::None
+            } else if progress_shows_launch {
+                EngineStartProgress::Starting
+            } else {
+                EngineStartProgress::of(&self.host)
+            };
+            if let Some(after) = progress.repaint_after() {
+                ui.ctx().request_repaint_after(after);
+            }
             let mut start = false;
             widgets::banner_with(
                 ui,
@@ -158,13 +172,37 @@ impl StudioSpike {
                     );
                     ui.horizontal_wrapped(|ui| {
                         if can_start {
+                            let (text, shown) = match progress {
+                                EngineStartProgress::None => {
+                                    ("status.noEngine.start", widgets::ButtonProgress::Idle)
+                                }
+                                EngineStartProgress::Countdown { fraction } => (
+                                    "status.noEngine.start",
+                                    widgets::ButtonProgress::Fill(fraction),
+                                ),
+                                EngineStartProgress::Starting => {
+                                    ("status.noEngine.starting", widgets::ButtonProgress::Busy)
+                                }
+                            };
+                            // Clicking during the countdown starts the
+                            // engine at once; a busy button takes no click.
+                            // Another operation under way holds it, as before.
                             start = ui
-                                .add_enabled(
-                                    !pending,
-                                    egui::Button::new(t("status.noEngine.start")),
-                                )
+                                .add_enabled_ui(!pending, |ui| {
+                                    widgets::progress_button(
+                                        ui,
+                                        t(text),
+                                        &[
+                                            t("status.noEngine.start"),
+                                            t("status.noEngine.starting"),
+                                        ],
+                                        shown,
+                                    )
+                                })
+                                .inner
                                 .clicked();
-                            if pending {
+                            // A launch shows on the button itself.
+                            if pending && !progress_shows_launch {
                                 ui.spinner();
                             }
                         }

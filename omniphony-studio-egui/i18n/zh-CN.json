@@ -797,6 +797,7 @@
   "status.noEngine.body": "Studio 是 Omniphony 音频引擎的控制面板，但目前还没有可以控制的引擎。在这里启动它，或在自带引擎的 mpv-omniphony 中播放内容。",
   "status.noEngine.bodyRemote": "Studio 没有收到它要控制的音频引擎的响应。启动那个引擎，或在自带引擎的 mpv-omniphony 中播放内容。",
   "status.noEngine.start": "启动音频引擎",
+  "status.noEngine.starting": "正在启动音频引擎…",
   "status.noEngine.getPlayer": "获取 mpv-omniphony",
   "status.noEngine.autostartFailed": "自动启动引擎失败：{error}\n日志：{log}",
   "status.error": "错误",

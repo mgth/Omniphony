@@ -797,6 +797,7 @@
   "status.noEngine.body": "Studio is the control panel of Omniphony's audio engine, and there is no engine to control yet. Start it here, or play something in mpv-omniphony, which brings its own.",
   "status.noEngine.bodyRemote": "Studio gets no answer from the audio engine it is set to control. Start that engine, or play something in mpv-omniphony, which brings its own.",
   "status.noEngine.start": "Start the audio engine",
+  "status.noEngine.starting": "Starting the audio engine…",
   "status.noEngine.getPlayer": "Get mpv-omniphony",
   "status.noEngine.autostartFailed": "Starting the engine automatically failed: {error}\nIts log: {log}",
   "status.error": "Error",
