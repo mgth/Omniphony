@@ -7,7 +7,7 @@
 # and commit this file with the change.
 #
 # toolchain: 1.99.0
-# total: 256
+# total: 255
 #
 # crate lint count
 audio_input clippy::doc_lazy_continuation 6
@@ -15,7 +15,6 @@ audio_input clippy::manual_c_str_literals 8
 audio_input clippy::too_many_arguments 1
 audio_output clippy::chunks_exact_to_as_chunks 1
 audio_output clippy::collapsible_if 3
-audio_output clippy::derivable_impls 1
 audio_output clippy::manual_is_multiple_of 4
 audio_output clippy::needless_borrow 1
 audio_output clippy::too_many_arguments 8

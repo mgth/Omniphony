@@ -28,6 +28,9 @@ struct AudioDomainState {
     error: Option<String>,
     adaptive_resampling: Option<AudioAdaptiveDomainState>,
     latency_target_ms: Option<u32>,
+    /// The latency held in place of the target when the stream needs more
+    /// (the sync engine); absent or null while the target holds.
+    latency_target_held_ms: Option<f64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -513,6 +516,8 @@ pub fn apply_audio_domain_state(s: &mut AppState, value: &str) -> bool {
         s.latency.latency_target_ms = Some(latency_target_ms as i64);
         s.latency.latency_requested_ms = Some(latency_target_ms as i64);
     }
+    // Every document says it: one without the field means the target holds.
+    s.latency.latency_held_ms = parsed.latency_target_held_ms.map(|ms| ms.round() as i64);
     true
 }
 
@@ -1464,6 +1469,31 @@ mod audio_domain_tests {
             r#"{"sampleRate": 48000}"#
         ));
         assert_eq!(state.audio.audio_output_host.as_deref(), Some("ASIO"));
+    }
+
+    /// The latency the renderer holds in place of the target follows every
+    /// audio document: there when the stream needs more, gone when the
+    /// document says null or (an engine that never raises it) nothing.
+    #[test]
+    fn the_held_latency_follows_every_document() {
+        let mut state = AppState::default();
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"latencyTargetMs": 50, "latencyTargetHeldMs": 98.6}"#
+        ));
+        assert_eq!(state.latency.latency_requested_ms, Some(50));
+        assert_eq!(state.latency.latency_held_ms, Some(99));
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"latencyTargetMs": 120, "latencyTargetHeldMs": null}"#
+        ));
+        assert_eq!(state.latency.latency_held_ms, None);
+        state.latency.latency_held_ms = Some(99);
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"latencyTargetMs": 120}"#
+        ));
+        assert_eq!(state.latency.latency_held_ms, None);
     }
 }
 

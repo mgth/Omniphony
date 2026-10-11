@@ -547,6 +547,10 @@ pub struct RuntimeLatencyState {
     pub latency_target_ms: Option<i64>,
     #[serde(rename = "latencyRequestedMs")]
     pub latency_requested_ms: Option<i64>,
+    /// The latency the renderer holds in place of the requested target,
+    /// when the stream needs more than it (`None`: the target holds).
+    #[serde(rename = "latencyHeldMs")]
+    pub latency_held_ms: Option<i64>,
     /// Ring-buffer occupancy converted to ms — first component of control_available.
     #[serde(rename = "latencyAvailInputMs")]
     pub latency_avail_input_ms: Option<f64>,

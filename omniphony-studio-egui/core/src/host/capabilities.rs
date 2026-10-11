@@ -12,6 +12,10 @@ pub struct ActionPolicy {
     pub renderer_ready: bool,
     pub audio_output: bool,
     pub adaptive_resampling: bool,
+    /// The output is regulated by the sync engine: a latency target and its
+    /// two loop settings, none of the adaptive resampler's tuning. Only a
+    /// renderer that says so: an unknown one is taken for the legacy engine.
+    pub sync_engine: bool,
     pub manage_process: bool,
     pub input: bool,
 }
@@ -59,6 +63,12 @@ impl ActionPolicy {
             adaptive_resampling: !embedded
                 && supports("domains", "audio")
                 && supports("controlConfig", "adaptive_resampling"),
+            sync_engine: !embedded
+                && caps.is_some_and(|caps| {
+                    caps.get("controlConfig")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("sync")))
+                }),
             manage_process: local && !embedded,
             input: !embedded && supports("domains", "input"),
         }
@@ -107,5 +117,25 @@ mod tests {
         );
         assert!(partial.audio_output);
         assert!(!partial.adaptive_resampling && !partial.input && !partial.renderer_ready);
+        assert!(!full.sync_engine && !legacy.sync_engine && !hosted.sync_engine);
+    }
+
+    /// The sync engine's renderer has an audio output and a latency target,
+    /// no resampler tuning and, for now, no input to reconfigure.
+    #[test]
+    fn the_sync_engine_shows_its_latency_and_hides_the_resampler_tuning() {
+        let sync = json!({
+            "variant": "standalone",
+            "domains": ["renderer", "audio"],
+            "controlConfig": ["layout", "speakers", "audio", "sync"],
+        });
+        let policy =
+            ActionPolicy::from_producer(ConnectionState::Connected, true, true, Some(&sync));
+        assert!(policy.audio_output && policy.sync_engine && policy.manage_process);
+        assert!(!policy.adaptive_resampling && !policy.input);
+        // Not connected any more: what it said no longer describes anything.
+        let offline =
+            ActionPolicy::from_producer(ConnectionState::Reconnecting, true, true, Some(&sync));
+        assert!(!offline.sync_engine);
     }
 }

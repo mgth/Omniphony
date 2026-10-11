@@ -320,6 +320,14 @@ pub struct RenderConfig {
     pub adaptive_resampling_disable_backpressure: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_sample_rate: Option<u32>,
+    /// Sync engine: bandwidth of the latency loop (Hz); absent or 0 is the
+    /// source's own default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_bandwidth_hz: Option<f32>,
+    /// Sync engine: latency error beyond which the output realigns instead
+    /// of steering (ms); absent is 20.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realign_threshold_ms: Option<f32>,
     /// OSC meter cadence (Hz). Persisted so the renderer is the source of truth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meter_rate: Option<f32>,

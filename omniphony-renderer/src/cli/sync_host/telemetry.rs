@@ -51,7 +51,10 @@ pub struct HostTelemetry {
     held_ms: f64,
     /// The held target when a raise was last logged.
     logged_ms: f64,
+    /// A raise the host has not passed on to its clients yet.
+    unreported_raise: Option<f64>,
     target_ms: Arc<AtomicU64>,
+    configured_target_ms: Arc<AtomicU64>,
     latency_ms: Arc<AtomicU64>,
     error_ms: Arc<AtomicU64>,
     floor_ms: Arc<AtomicU64>,
@@ -113,7 +116,9 @@ impl HostTelemetry {
             configured_ms: target_ms,
             held_ms: target_ms,
             logged_ms: target_ms,
+            unreported_raise: None,
             target_ms: target,
+            configured_target_ms: configured,
             latency_ms: channel("latency_ms", "End-to-end latency", "latency", "ms"),
             error_ms: channel("latency_error_ms", "Latency error", "latency", "ms"),
             floor_ms: channel("latency_floor_ms", "Latency floor", "latency", "ms"),
@@ -143,6 +148,24 @@ impl HostTelemetry {
         engine.publish_diag(|| (self.registry.schema_json(), self.registry.values_json()));
     }
 
+    /// The client set another target: it is the one held from now on, and
+    /// what an earlier stream had raised the previous one to is forgotten.
+    pub fn set_configured_target(&mut self, target_ms: f64) {
+        self.configured_ms = target_ms;
+        self.held_ms = target_ms;
+        self.logged_ms = target_ms;
+        self.unreported_raise = None;
+        put(&self.target_ms, target_ms);
+        put(&self.configured_target_ms, target_ms);
+    }
+
+    /// A raise of the held target since the last call, for the host to
+    /// publish (at the step the log uses: the servo's refinements of a
+    /// fraction of a ms are not news).
+    pub fn take_raise(&mut self) -> Option<f64> {
+        self.unreported_raise.take()
+    }
+
     /// The latency the next stream starts at: the configured target, or what
     /// an earlier stream showed the pipeline needs.
     pub fn held_target_ms(&self) -> f64 {
@@ -158,6 +181,7 @@ impl HostTelemetry {
         put(&self.target_ms, held);
         if held - self.logged_ms >= RAISE_LOG_STEP_MS {
             self.logged_ms = held;
+            self.unreported_raise = Some(held);
             log::warn!(
                 "sync host: a latency target of {:.0} ms is below what this stream needs \
                  (floor {:.1} ms): holding {:.1} ms. Set render.latency_target to at least \
@@ -275,6 +299,8 @@ mod tests {
             ..SyncSnapshot::default()
         });
         assert_eq!(t.held_target_ms(), 99.0);
+        assert_eq!(t.take_raise(), Some(99.0));
+        assert_eq!(t.take_raise(), None, "reported once");
         assert_eq!(value(&t, "latency_target_ms"), 99.0);
         assert_eq!(value(&t, "latency_target_configured_ms"), 50.0);
         assert_eq!(
@@ -288,6 +314,12 @@ mod tests {
         });
         t.store(&SyncSnapshot::default());
         assert_eq!(t.held_target_ms(), 99.0);
+
+        // A target the client sets replaces both.
+        t.set_configured_target(120.0);
+        assert_eq!(t.held_target_ms(), 120.0);
+        assert_eq!(value(&t, "latency_target_ms"), 120.0);
+        assert_eq!(value(&t, "latency_target_configured_ms"), 120.0);
     }
 
     /// The counts are the host's, not the stream's: a new stream's servo

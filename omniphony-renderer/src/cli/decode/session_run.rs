@@ -116,6 +116,9 @@ struct ResolvedRun {
     /// The config file as this run loaded it (live-handoff sidecar included):
     /// the base `--save-config` writes the flags over.
     config: renderer::config::Config,
+    /// A live-handoff sidecar came with it: what runs is unsaved.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    live_restored: bool,
     /// The render section this run uses: the file with the CLI flags applied.
     render_cfg: renderer::config::RenderConfig,
     /// Renderer construction params, resolved from `render_cfg` by the same
@@ -136,9 +139,9 @@ fn resolve_effective_decode_args(
     // Sidecar-aware load: when a yielded predecessor handed over unsaved live
     // state, the args fold and the render config below must both see it, or
     // the renderer would start on the base file and silently undo the handoff.
-    let config = config_path
+    let (config, live_restored) = config_path
         .as_deref()
-        .map(|p| renderer::config::Config::load_or_default_with_live(p).0)
+        .map(renderer::config::Config::load_or_default_with_live)
         .unwrap_or_default();
 
     // The registered options given as flags go into the render section
@@ -163,6 +166,7 @@ fn resolve_effective_decode_args(
         config_path,
         args: effective,
         config,
+        live_restored,
         render_cfg,
         renderer_params,
         current_layout,
@@ -1290,16 +1294,22 @@ fn sync_engine_requested(args: &RenderArgs) -> bool {
 /// pipe followed on its writer's), the latency target, the output device and
 /// the OSC server, as this run resolved them.
 ///
-/// The engine itself reads the config file: layout, presentation and live
-/// options given as flags do not reach it yet, nor the output backends other
-/// than PipeWire (plan §17).
+/// The engine is built on the config as this run resolved it, so the flags
+/// reach it as they reach the legacy host: the registered options, the
+/// renderer flags, the presentation, the speaker layout file and the channel
+/// render mode. Not yet: the output backends other than PipeWire, and the
+/// two CLI-only renderer knobs (`--vbap-table`, `--log-object-positions`).
 #[cfg(target_os = "linux")]
 fn sync_host_config(
     args: &RenderArgs,
+    config: &renderer::config::Config,
+    live_restored: bool,
     render_cfg: &renderer::config::RenderConfig,
     config_path: Option<&std::path::Path>,
 ) -> Result<crate::cli::sync_host::HostConfig> {
-    use crate::cli::sync_host::{HostConfig, Source, resolve_target_latency_ms};
+    use crate::cli::sync_host::{
+        HostConfig, Source, resolve_realign_threshold_ms, resolve_target_latency_ms,
+    };
     use renderer::config::InputModeConfig;
 
     let backend = args.output_backend.or_else(OutputBackend::platform_default);
@@ -1328,12 +1338,25 @@ fn sync_host_config(
             drain: !args.no_drain_pipe,
         },
     };
+    // What the engine is built on: this run's render section (the file with
+    // the flags folded in) in place of the file's, and the presentation,
+    // which the args resolution keeps on its own.
+    let mut effective = render_cfg.clone();
+    renderer::config_fields::presentation::store(&mut effective, &args.presentation);
+    let resolved = renderer::config::Config {
+        render: Some(effective),
+        ..config.clone()
+    };
     Ok(HostConfig {
         config_path: config_path.map(std::path::Path::to_path_buf),
+        resolved_config: Some((resolved, live_restored)),
+        speaker_layout: args.speaker_layout.clone(),
+        channel_render_mode: Some(args.channel_render_mode.into()),
         bridge_paths: args.bridge_paths.clone(),
         source,
         target_latency_ms: resolve_target_latency_ms(None, args.latency_target_ms),
-        loop_bandwidth_hz: None,
+        loop_bandwidth_hz: render_cfg.loop_bandwidth_hz.map(f64::from),
+        realign_threshold_ms: resolve_realign_threshold_ms(render_cfg.realign_threshold_ms),
         output_target: args.output_device.clone(),
         quantum: args.pw_quantum.unwrap_or(1024),
         osc: orender_engine::OscSettings {
@@ -1355,7 +1378,13 @@ fn run_on_sync_host(
     run: &ResolvedRun,
     session: &mut crate::cli::sync_host::HostSession,
 ) -> Result<Vec<std::path::PathBuf>> {
-    let config = sync_host_config(&run.args, &run.render_cfg, run.config_path.as_deref())?;
+    let config = sync_host_config(
+        &run.args,
+        &run.config,
+        run.live_restored,
+        &run.render_cfg,
+        run.config_path.as_deref(),
+    )?;
     // Only the load is "bridge unavailable", as for the legacy host: with OSC
     // on, the caller then idles with the error published instead of exiting.
     let request = resolve_bridges(&run.args.bridge_paths, &[]).context(BridgeUnavailable)?;
@@ -1506,12 +1535,24 @@ mod tests {
             "--osc",
             "--osc-port",
             "9123",
+            "--presentation",
+            "3",
+            "--speaker-layout",
+            "room.yaml",
+            "--channel-render-mode",
+            "host",
         ]);
         args.latency_target_ms = Some(80);
         args.output_device = Some("dac".into());
+        let file = renderer::config::Config::default();
         let sink = sync_host_config(
             &args,
-            &config("input_mode: pipewire\nlive_input:\n  node: my-sink\n"),
+            &file,
+            false,
+            &config(
+                "input_mode: pipewire\nlive_input:\n  node: my-sink\nmaster_gain: -6.0\n\
+                 loop_bandwidth_hz: 0.01\nrealign_threshold_ms: 35.0\n",
+            ),
             None,
         )
         .expect("a PipeWire run");
@@ -1527,10 +1568,27 @@ mod tests {
         assert_eq!(sink.output_target.as_deref(), Some("dac"));
         assert!(sink.osc.enabled);
         assert_eq!(sink.osc.port_out, 9123);
+        assert_eq!(sink.loop_bandwidth_hz, Some(f64::from(0.01f32)));
+        assert_eq!(sink.realign_threshold_ms, 35.0);
+        // The engine is built on this run's render section, flags included:
+        // not on a second reading of the file.
+        let (resolved, live_restored) = sink.resolved_config.as_ref().expect("resolved");
+        assert!(!live_restored);
+        let render = resolved.render.as_ref().expect("the run's render section");
+        assert_eq!(render.master_gain, Some(-6.0));
+        assert_eq!(render.presentation, Some(3));
+        assert_eq!(
+            sink.speaker_layout.as_deref(),
+            Some(std::path::Path::new("room.yaml"))
+        );
+        assert_eq!(
+            sink.channel_render_mode,
+            Some(renderer::live_params::ChannelRenderMode::Host)
+        );
 
         // No input mode is the pipe; no latency target is the host's default.
         args.latency_target_ms = None;
-        let pipe = sync_host_config(&args, &config("{}"), None).expect("a pipe run");
+        let pipe = sync_host_config(&args, &file, false, &config("{}"), None).expect("a pipe run");
         assert_eq!(
             pipe.source,
             Source::Pipe {
@@ -1542,7 +1600,8 @@ mod tests {
 
         // The other backends are not there yet: said, not played wrongly.
         args.output_backend = Some(OutputBackend::File);
-        let err = sync_host_config(&args, &config("{}"), None).expect_err("file backend");
+        let err =
+            sync_host_config(&args, &file, false, &config("{}"), None).expect_err("file backend");
         assert!(err.to_string().contains("PipeWire"), "{err:#}");
     }
 

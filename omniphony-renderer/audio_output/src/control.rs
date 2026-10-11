@@ -24,7 +24,16 @@ pub struct RequestedAudioOutputConfig {
     pub output_file: Option<String>,
     /// Live-requested `file` backend encoding ("raw_f32" / "caf").
     pub output_file_format: Option<String>,
+    /// Sync engine: bandwidth of the latency loop (Hz); 0 is the source's
+    /// own default (`audio_sync::ServoConfig`).
+    pub loop_bandwidth_hz: f32,
+    /// Sync engine: latency error beyond which the output realigns instead
+    /// of steering (ms).
+    pub realign_threshold_ms: f32,
 }
+
+/// [`RequestedAudioOutputConfig::realign_threshold_ms`] when nothing sets it.
+pub const DEFAULT_REALIGN_THRESHOLD_MS: f32 = 20.0;
 
 impl Default for RequestedAudioOutputConfig {
     fn default() -> Self {
@@ -37,6 +46,8 @@ impl Default for RequestedAudioOutputConfig {
             output_backend: None,
             output_file: None,
             output_file_format: None,
+            loop_bandwidth_hz: 0.0,
+            realign_threshold_ms: DEFAULT_REALIGN_THRESHOLD_MS,
         }
     }
 }
@@ -52,6 +63,9 @@ pub struct AppliedAudioOutputState {
     /// when no stream is open or the backend has no host to name (PipeWire,
     /// file).
     pub output_host: Option<&'static str>,
+    /// Sync engine: the latency the output holds when it had to raise the
+    /// requested target (ms); `None` while it holds the target itself.
+    pub latency_held_ms: Option<f64>,
 }
 
 pub struct AudioControl {
@@ -143,6 +157,14 @@ impl AudioControl {
 
     pub fn requested_latency_target_ms(&self) -> Option<u32> {
         self.requested_snapshot().latency_target_ms
+    }
+
+    pub fn set_requested_loop_bandwidth_hz(&self, value: f32) {
+        self.update_requested(|requested| requested.loop_bandwidth_hz = value);
+    }
+
+    pub fn set_requested_realign_threshold_ms(&self, value: f32) {
+        self.update_requested(|requested| requested.realign_threshold_ms = value);
     }
 
     pub fn set_requested_adaptive_resampling(&self, enabled: bool) {
@@ -320,6 +342,10 @@ impl AudioControl {
 
     pub fn effective_output_host(&self) -> Option<&'static str> {
         self.applied.lock().output_host
+    }
+
+    pub fn set_latency_held_ms(&self, held_ms: Option<f64>) {
+        self.update_applied(|applied| applied.latency_held_ms = held_ms);
     }
 
     pub fn set_audio_error(&self, error: Option<String>) {

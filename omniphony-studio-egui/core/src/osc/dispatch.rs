@@ -438,6 +438,33 @@ impl Live {
         self.option(key).and_then(|v| v.as_bool())
     }
 
+    /// One of the host's declared options (`/state/host_options`), as a
+    /// number: the output's and the input's, which the renderer's own
+    /// options ([`option`](Self::option)) do not hold.
+    pub fn host_option_f64(&self, key: &str) -> Option<f64> {
+        self.host_options
+            .as_ref()
+            .and_then(|h| h.get("options"))
+            .and_then(|o| o.get(key))
+            .and_then(|v| v.as_f64())
+    }
+
+    /// Optimistic write of a host option, as [`set_option`](Self::set_option)
+    /// is for the renderer's.
+    pub fn set_host_option(&mut self, key: &str, value: serde_json::Value) {
+        let host = self
+            .host_options
+            .get_or_insert_with(|| serde_json::json!({}));
+        if let Some(map) = host.as_object_mut() {
+            let options = map
+                .entry("options")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(options) = options.as_object_mut() {
+                options.insert(key.to_owned(), value);
+            }
+        }
+    }
+
     /// Optimistic write into the option store, so a control does not lag the
     /// click while the renderer echoes the canonical value.
     pub fn set_option(&mut self, key: &str, value: serde_json::Value) {

@@ -213,7 +213,10 @@ fn build_audio_state_json(audio: &AudioControl) -> String {
             "useOutputPacing": requested.adaptive.use_output_pacing,
             "disableBackpressure": requested.adaptive.disable_backpressure
         },
-        "latencyTargetMs": requested.latency_target_ms
+        "latencyTargetMs": requested.latency_target_ms,
+        // The latency held instead, when the stream needs more than the
+        // target (the sync engine raises it); null while the target holds.
+        "latencyTargetHeldMs": audio.applied_snapshot().latency_held_ms
     })
     .to_string()
 }
@@ -225,6 +228,13 @@ pub struct HostAudio {
     /// The output and input the option rows reach (`HostAudio` derefs to
     /// it, so `host.audio` / `host.input` read through).
     io: HostIo,
+    /// The engine that regulates this host's output, and with it the rows
+    /// the host declares and the capabilities it advertises.
+    engine: options::HostEngine,
+    /// Bumped by the host when its output state changed on its own (a
+    /// stream opened, a device failed): part of
+    /// [`state_generation`](HostControlHandler::state_generation).
+    output_generation: std::sync::atomic::AtomicU64,
     /// Whether the live input holds staged values not applied yet: set by a
     /// write that changes one, cleared by the apply. The `pending` flag of
     /// the `live_input` group in `/state/host_options`.
@@ -262,7 +272,7 @@ impl HostAudio {
     /// output and live input were built straight from config.yaml, before
     /// anything plays. Returns the keys it changed.
     pub fn bound_options_to_their_kinds(&self) -> Vec<&'static str> {
-        renderer::options::bound_host_options(&self.io, options::HOST_OPTIONS)
+        renderer::options::bound_host_options(&self.io, self.rows())
     }
 
     pub fn new(
@@ -273,8 +283,35 @@ impl HostAudio {
         Self {
             renderer,
             io: HostIo { audio, input },
+            engine: options::HostEngine::Legacy,
+            output_generation: std::sync::atomic::AtomicU64::new(0),
             input_staged: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The host of the sync engine: [`new`](Self::new) with that engine's
+    /// rows and capabilities.
+    pub fn for_sync_engine(
+        renderer: Arc<RendererControl>,
+        audio: Arc<AudioControl>,
+        input: Arc<InputControl>,
+    ) -> Self {
+        Self {
+            engine: options::HostEngine::Sync,
+            ..Self::new(renderer, audio, input)
+        }
+    }
+
+    /// The output's applied state changed without a client asking (a stream
+    /// opened, a device failed): the snapshot goes out again.
+    pub fn mark_output_changed(&self) {
+        self.output_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The rows this host declares.
+    fn rows(&self) -> &'static [renderer::options::HostOptionSpec<HostIo>] {
+        self.engine.rows()
     }
 }
 
@@ -607,13 +644,24 @@ static HOST_COMMANDS: &[Command<HostHandler>] = &[
 ];
 
 impl HostControlHandler for HostAudio {
+    fn capabilities(&self) -> runtime_control::HostCapabilities {
+        match self.engine {
+            options::HostEngine::Legacy => runtime_control::HostCapabilities::default(),
+            // No resampler tuning; the input is not reconfigured live yet.
+            options::HostEngine::Sync => runtime_control::HostCapabilities {
+                input: false,
+                adaptive_resampling: false,
+            },
+        }
+    }
+
     fn handle(&self, addr: &str, msg: &OscMessage) -> Option<ControlEffects> {
         if let Some(run) = command_table::find(HOST_COMMANDS, addr) {
             return run(self, msg);
         }
 
         // ── The dedicated per-option addresses: aliases of the rows ──
-        let key = renderer::options::find_host_by_legacy_addr(options::HOST_OPTIONS, addr)
+        let key = renderer::options::find_host_by_legacy_addr(self.rows(), addr)
             .map(|spec| spec.key)
             .or_else(|| {
                 options::EXTRA_ALIASES
@@ -695,17 +743,20 @@ impl HostControlHandler for HostAudio {
 
     fn state_generation(&self) -> u64 {
         self.input.state_generation()
+            + self
+                .output_generation
+                .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn option_kind(&self, key: &str) -> Option<OptionKind> {
-        renderer::options::find_host(options::HOST_OPTIONS, key).map(|spec| spec.kind)
+        renderer::options::find_host(self.rows(), key).map(|spec| spec.kind)
     }
 
     fn apply_options(&self, items: &[(&str, RawOptionValue)]) -> HostBatchApplied {
-        let batch = renderer::options::host_apply_batch(&self.io, options::HOST_OPTIONS, items);
+        let batch = renderer::options::host_apply_batch(&self.io, self.rows(), items);
         let staged = items.iter().zip(&batch.results).any(|((key, _), result)| {
             result.as_ref().is_some_and(|applied| applied.changed)
-                && renderer::options::find_host(options::HOST_OPTIONS, key)
+                && renderer::options::find_host(self.rows(), key)
                     .and_then(|spec| spec.group)
                     .is_some_and(|group| std::ptr::eq(group, &options::LIVE_INPUT))
         });
@@ -735,15 +786,15 @@ impl HostControlHandler for HostAudio {
     }
 
     fn options_schema(&self) -> Vec<serde_json::Value> {
-        renderer::options::host_schema_entries(options::HOST_OPTIONS)
+        renderer::options::host_schema_entries(self.rows())
     }
 
     fn options_json(&self) -> serde_json::Map<String, serde_json::Value> {
-        renderer::options::host_options_json(&self.io, options::HOST_OPTIONS)
+        renderer::options::host_options_json(&self.io, self.rows())
     }
 
     fn options_applied_json(&self) -> serde_json::Map<String, serde_json::Value> {
-        renderer::options::host_applied_json(&self.io, options::HOST_OPTIONS)
+        renderer::options::host_applied_json(&self.io, self.rows())
     }
 
     fn option_groups_pending(&self) -> Vec<(&'static str, bool)> {
@@ -757,11 +808,15 @@ impl HostControlHandler for HostAudio {
         // Every declared option (audio output, adaptive resampling, live
         // input), then the imported live-input layout, which is structured
         // data rather than an option.
-        renderer::options::host_store_to_config(render, &self.io, options::HOST_OPTIONS);
-        render
-            .live_input
-            .get_or_insert_with(Default::default)
-            .current_layout = self.input.requested_snapshot().current_layout;
+        renderer::options::host_store_to_config(render, &self.io, self.rows());
+        // The sync engine's host does not own the live input yet: what the
+        // file says of it stays.
+        if self.engine == options::HostEngine::Legacy {
+            render
+                .live_input
+                .get_or_insert_with(Default::default)
+                .current_layout = self.input.requested_snapshot().current_layout;
+        }
     }
 }
 
@@ -1171,7 +1226,8 @@ mod tests {
     #[test]
     fn rows_set_and_save_like_the_hand_written_save() {
         let host = host();
-        let items: Vec<(&str, RawOptionValue)> = options::HOST_OPTIONS
+        let items: Vec<(&str, RawOptionValue)> = options::HostEngine::Legacy
+            .rows()
             .iter()
             .map(|spec| (spec.key, sample(spec.key)))
             .collect();
@@ -1399,11 +1455,65 @@ mod tests {
         );
     }
 
+    /// Until the cutover the table holds the rows of both engines, and a
+    /// host declares its engine's: the legacy host everything but the sync
+    /// engine's group, the sync engine's host its group plus the part of
+    /// the audio output it acts on. No row is left to neither.
+    #[test]
+    fn each_engine_declares_its_own_rows() {
+        let keys = |engine: options::HostEngine| -> Vec<&'static str> {
+            engine.rows().iter().map(|spec| spec.key).collect()
+        };
+        let legacy = keys(options::HostEngine::Legacy);
+        let sync = keys(options::HostEngine::Sync);
+        assert_eq!(
+            sync,
+            [
+                "output_device",
+                "latency_target",
+                "loop_bandwidth_hz",
+                "realign_threshold_ms"
+            ]
+        );
+        assert!(!legacy.contains(&"loop_bandwidth_hz"));
+        assert!(!legacy.contains(&"realign_threshold_ms"));
+        assert!(legacy.contains(&"adaptive_resampling_kp_near"));
+        assert!(legacy.contains(&"live_input_clock_mode"));
+        for spec in options::HOST_OPTIONS {
+            assert!(
+                legacy.contains(&spec.key) || sync.contains(&spec.key),
+                "{}: declared by no host",
+                spec.key
+            );
+        }
+
+        // The sync engine's host says so, and its schema is its rows.
+        let h = host();
+        let sync_host = HostAudio::for_sync_engine(
+            Arc::clone(&h.renderer),
+            Arc::clone(&h.audio),
+            Arc::clone(&h.input),
+        );
+        assert_eq!(sync_host.options_schema().len(), sync.len());
+        assert!(!sync_host.capabilities().adaptive_resampling);
+        assert!(!sync_host.capabilities().input);
+        assert!(h.capabilities().adaptive_resampling);
+        assert!(h.capabilities().input);
+        assert!(
+            sync_host
+                .option_kind("adaptive_resampling_kp_near")
+                .is_none()
+        );
+        assert!(sync_host.option_kind("loop_bandwidth_hz").is_some());
+        assert!(h.option_kind("loop_bandwidth_hz").is_none());
+    }
+
     #[test]
     fn the_schema_carries_every_row_with_its_group() {
         let schema = host().options_schema();
-        assert_eq!(schema.len(), options::HOST_OPTIONS.len());
-        for (spec, entry) in options::HOST_OPTIONS.iter().zip(&schema) {
+        let rows = options::HostEngine::Legacy.rows();
+        assert_eq!(schema.len(), rows.len());
+        for (spec, entry) in rows.iter().zip(&schema) {
             assert_eq!(entry["key"], spec.key);
             assert_eq!(entry["group"]["key"], spec.group.unwrap().key);
         }

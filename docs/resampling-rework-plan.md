@@ -1211,17 +1211,16 @@ Each is one pull request, stacked in this order.
   not built: the servo published its floor but kept a target below it, and
   underran in a loop. `latency_target` meant the output buffer for the
   legacy engine, and a value like 50 ms is below every floor here.
-- **6c — control surface.** The host options on the new host:
-  `latency_target`, and the new `source_clock` (`own` / `follow` / `none`),
-  `loop_bandwidth_hz` and `realign_threshold_ms` rows (Save-only, per the
-  persistence policy); the output and input option handlers; capabilities
-  that name the sync engine instead of `adaptive_resampling`, so the Studio
-  shows the latency target and hides the PI controls on this host. The
-  flags of `render` that the engine does not see yet (layout, presentation,
-  live options) go through here too.
+- **6c — control surface.** DONE, see §20: the latency target, the output
+  device and the loop's two settings as host options on the new host, with
+  capabilities that name the sync engine, the Studio's latency section for
+  it, and the flags of `render` reaching the engine. The `source_clock` row
+  waits for the mode that gives it a second value (`none`, 6d); the rows of
+  the backend, the file sink and the rate, and those of the live input, join
+  with the slices that make the engine act on them (6d to 6f).
 - **6d — `none` and files (4b).** Files, stdin and faster-than-real-time
   writers under back-pressure at `L`; the `file` output backend and offline
-  rendering.
+  rendering; the `source_clock` option (`own` / `follow` / `none`).
 - **6e — formats.** Stream rates other than 48 kHz, `output_sample_rate`,
   width changes, `output_channel_mapping`.
 - **6f — the live sink.** PCM on the `own` sink, the `live_input.*` options
@@ -1412,9 +1411,102 @@ the decoder simply held more than the target leaves room for.
 ### Not done
 
 - **The player is not told.** The `own` sink advertised the configured
-  latency once; with a raised target, audio is late on the picture by the
-  difference until the user sets a reachable target. Advertising the raised
-  value again belongs with the control surface (6c), which also puts the
-  warning in the Studio.
+  latency once; with a raised target, audio was late on the picture by the
+  difference. Done in §20: the sink advertises the latency held, and the
+  Studio shows the raise.
 - **The configuration-time refusal** (first half of the §7 decision), for
   the reason above.
+
+## 20. Phase 6c — the control surface (2026-10-11)
+
+### The host options
+
+The sync host registers the same control handler as the legacy host
+(`host_audio::HostAudio`) with the OSC server, on its own rows. Until the
+flip the option table holds the rows of both engines, and a host declares
+its engine's (`HostEngine::rows`):
+
+| Row | Legacy host | Sync host |
+|---|---|---|
+| `output_device`, `latency_target` | yes | yes |
+| `loop_bandwidth_hz`, `realign_threshold_ms` (group `sync`) | no | yes |
+| `output_backend`, `output_file`, `output_file_format`, `output_sample_rate` | yes | not yet (6d, 6e) |
+| `enable_adaptive_resampling`, `adaptive_resampling_*` | yes | no |
+| `input_mode`, `live_input_*` | yes | not yet (6f) |
+
+A row the host does not declare is not in its schema, is refused when
+written, and is left as the file has it on Save. So nothing is offered that
+the running output would ignore, and a Save from the sync host keeps the
+legacy tuning and the live input of a config untouched.
+
+- **`loop_bandwidth_hz`** (0 to 1, default 0): bandwidth of the latency
+  loop; 0 is the source's own default (0.02 Hz `own`, 0.005 Hz `follow`).
+- **`realign_threshold_ms`** (1 to 1000, default 20).
+- Both are config keys of the same name, command-line flags of `render`
+  (generated from the rows), and reach `config.yaml` through Save only.
+
+### Capabilities
+
+`HostControlHandler::capabilities` says what the handshake advertises. The
+sync host: the `audio` domain, `controlConfig: [.., "audio", "sync"]`, no
+`adaptive_resampling`, and no `input` domain until it can reconfigure one.
+
+### Taking a write
+
+The host reads the requested settings on every turn of its loop. When they
+differ from what plays, the stream's epoch is closed, and its next chunk
+opens one with the new settings (the mechanism of a restart from the
+config, §18): a new target or device costs one realign.
+
+- **The latency the player is told follows.** The `own` sink advertises
+  the latency held again whenever it moves: a new target, or one the servo
+  had to raise (§19). The sink is no longer reopened for it.
+- **An output that does not play is said.** A device that is not there
+  leaves the stream waiting; after 2 s the audio state carries the error
+  (`<device> is not playing: is the device there?`), and clears when it
+  plays. An output that cannot be opened at all no longer ends the renderer.
+- **A raised target is in the audio state**: `latencyTargetHeldMs` beside
+  `latencyTargetMs` in `/state/audio`, null while the target holds.
+
+### The flags of `render`
+
+The engine is built on the config as the run resolved it
+(`Engine::from_config`), not on a second reading of the file: the registered
+options given as flags, the renderer flags, `--presentation`,
+`--speaker-layout` and `--channel-render-mode` now reach it as they reach the
+legacy host. Left out: `--vbap-table` and `--log-object-positions`.
+
+### Studio
+
+With these capabilities the Studio already hid the adaptive controller. On
+top of that, on a renderer that says `sync`:
+
+- the latency section shows the meter against the latency held, the target,
+  and in the advanced view the two loop settings; the adaptive resampler's
+  readouts, band indicator and long explanation are left out;
+- a warning under the target when the renderer holds more than it
+  (`Holding 96 ms instead of 40 ms`), with the value to set;
+- the audio output section leaves out the backend and the rate, which the
+  renderer does not declare;
+- the input summary says `renderer's clock` instead of a clock mode.
+
+Eight catalogues carry the new strings.
+
+### Live (isolated as before; mpv AC-3 into the `own` sink)
+
+| Step | Result |
+|---|---|
+| Capabilities | `variant=standalone`, `domains` with `audio`, `controlConfig` with `sync` |
+| `/control/latency_target 120` while playing | Sink: `now advertising 120.0 ms`; 120.00 ms held, error within ±0.01 ms |
+| `/control/option realign_threshold_ms 35` | Output reopened on the running stream |
+| Output device set to a sink that does not exist | After 2 s: the error in `/state/audio`, no effective device |
+| ... and back | Error cleared, playing again |
+| Launched at `latency_target: 40` | `holding 96.9 ms`, sink `now advertising 96.9 ms` |
+| The Studio on that renderer (window capture) | Latency 95 ms against the held target, the warning, the two loop rows, no adaptive controller |
+
+### Not done
+
+- The Studio was captured, not operated: its rows were not clicked from
+  this workflow (their commands are covered by the core's tests).
+- The pipe has nobody to tell a raised latency to: with the timed writer
+  the launcher gave the player the configured value (§15).

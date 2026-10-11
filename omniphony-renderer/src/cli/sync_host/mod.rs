@@ -28,6 +28,7 @@
 //!
 //! Hidden while experimental. Linux only for now (PipeWire output).
 
+mod controls;
 mod own_sink;
 mod reader;
 mod telemetry;
@@ -48,6 +49,7 @@ use orender_engine::engine::{Engine, RenderedAudio};
 use orender_engine::{OscOverrides, OscSettings};
 use spdif::SpdifParser;
 
+use controls::{Controls, OutputSettings};
 use reader::{ReaderMsg, Transport, spawn_reader};
 use telemetry::HostTelemetry;
 
@@ -127,6 +129,12 @@ pub struct SyncPlayArgs {
 /// Latency held when neither the command line nor the config names one (ms).
 const DEFAULT_TARGET_LATENCY_MS: f64 = 150.0;
 
+/// The realign threshold (ms): the config's `render.realign_threshold_ms`,
+/// else the default.
+pub fn resolve_realign_threshold_ms(config: Option<f32>) -> f64 {
+    f64::from(config.unwrap_or(audio_output::control::DEFAULT_REALIGN_THRESHOLD_MS))
+}
+
 /// The end-to-end latency to hold (ms): the flag, else the config's
 /// `render.latency_target`, else [`DEFAULT_TARGET_LATENCY_MS`].
 pub fn resolve_target_latency_ms(flag: Option<f64>, config: Option<u32>) -> f64 {
@@ -169,6 +177,20 @@ fn pipe_carrier(data_type: u8) -> Option<(u32, u32)> {
     }
 }
 
+/// What the clients have been told of an epoch's output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputReport {
+    /// Opened, not seen playing yet.
+    Pending,
+    Playing,
+    /// Not playing: said so.
+    Missing,
+}
+
+/// How long an output may take to start playing before the clients are told
+/// it is not (a device that is not there leaves the stream waiting for it).
+const OUTPUT_WAIT: Duration = Duration::from_secs(2);
+
 /// One stream's playback: ring, clock tap and output stream.
 struct Epoch {
     producer: Producer,
@@ -197,6 +219,8 @@ struct Epoch {
     data_type: Option<u8>,
     parser_bytes: u64,
     started: Instant,
+    /// What the clients were last told of this epoch's output.
+    output_report: OutputReport,
     /// Set at end of stream: the epoch is dropped once what it queued has
     /// played. The engine thread never waits for it.
     ending_at: Option<Instant>,
@@ -228,10 +252,20 @@ impl Source {
 }
 
 /// Everything a run of the host is given: what `sync-play` and `render`
-/// each resolve from their own arguments and the config.
+/// each resolve from their own arguments and the config. The latency, the
+/// loop settings and the output device are what the run starts with: OSC
+/// clients change them while it runs ([`controls`]).
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub config_path: Option<PathBuf>,
+    /// The config as the host resolved it (the file with its own flags
+    /// folded in), with whether a live-handoff sidecar came with it; `None`
+    /// lets the engine read `config_path` itself.
+    pub resolved_config: Option<(renderer::config::Config, bool)>,
+    /// A speaker layout file that overrides the config's.
+    pub speaker_layout: Option<PathBuf>,
+    /// The channel render mode a host pins, over the config's.
+    pub channel_render_mode: Option<renderer::live_params::ChannelRenderMode>,
     /// The decoder bridges, in load order; empty takes the config's, else
     /// auto-discovery (as [`Engine::from_paths`]).
     pub bridge_paths: Vec<PathBuf>,
@@ -240,6 +274,8 @@ pub struct HostConfig {
     pub target_latency_ms: f64,
     /// Phase-loop bandwidth (Hz); `None` is the source's own default.
     pub loop_bandwidth_hz: Option<f64>,
+    /// Latency error beyond which the output realigns (ms).
+    pub realign_threshold_ms: f64,
     /// PipeWire sink to play into (pinned); `None` is the session's choice.
     pub output_target: Option<String>,
     /// PipeWire quantum requested (frames).
@@ -266,8 +302,8 @@ pub struct HostSession {
 #[derive(Debug, Clone, PartialEq)]
 struct CaptureKey {
     source: Source,
-    /// What the `own` sink advertises and asks for; the pipe has neither.
-    sink_latency_ns: i64,
+    /// The quantum the `own` sink asks for; the pipe has none. (The latency
+    /// it advertises is not here: the sink advertises a new one in place.)
     sink_quantum: u32,
 }
 
@@ -276,11 +312,6 @@ impl CaptureKey {
         let own = matches!(config.source, Source::OwnSink { .. });
         Self {
             source: config.source.clone(),
-            sink_latency_ns: if own {
-                (config.target_latency_ms * 1e6) as i64
-            } else {
-                0
-            },
             sink_quantum: if own { config.quantum } else { 0 },
         }
     }
@@ -305,7 +336,7 @@ impl HostSession {
                 } => own_sink::spawn_own_sink(own_sink::OwnSinkConfig {
                     node_name: node_name.clone(),
                     description: description.clone(),
-                    latency_ns: key.sink_latency_ns,
+                    latency_ns: (config.target_latency_ms * 1e6) as i64,
                     quantum: config.quantum,
                     session_priority: *session_priority,
                 })?,
@@ -373,10 +404,16 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
         false,
     );
     let config = HostConfig {
+        resolved_config: None,
+        speaker_layout: None,
+        channel_render_mode: None,
         bridge_paths: render.bridges(),
         source,
         target_latency_ms: resolve_target_latency_ms(args.target_latency_ms, render.latency_target),
-        loop_bandwidth_hz: args.loop_bandwidth_hz,
+        loop_bandwidth_hz: args
+            .loop_bandwidth_hz
+            .or(render.loop_bandwidth_hz.map(f64::from)),
+        realign_threshold_ms: resolve_realign_threshold_ms(render.realign_threshold_ms),
         output_target: args
             .output_target
             .clone()
@@ -394,25 +431,41 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
 /// asked to stop or to restart from the config. `session` carries the
 /// capture from one run to the next.
 pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
-    let mut engine = Engine::from_paths(
-        config.config_path.as_deref(),
-        None,
-        &config.bridge_paths,
-        None,
-        RENDER_RATE,
-    )
+    let mut engine = match &config.resolved_config {
+        Some((resolved, live_restored)) => Engine::from_config(
+            config.config_path.as_deref(),
+            Some(resolved.clone()),
+            *live_restored,
+            config.speaker_layout.as_deref(),
+            &config.bridge_paths,
+            None,
+            RENDER_RATE,
+        ),
+        None => Engine::from_paths(
+            config.config_path.as_deref(),
+            config.speaker_layout.as_deref(),
+            &config.bridge_paths,
+            None,
+            RENDER_RATE,
+        ),
+    }
     .context("building the render engine")?;
+    if let Some(mode) = config.channel_render_mode {
+        engine.renderer_control().live.write().channel_render_mode = mode;
+    }
     let channels = engine.channel_count() as usize;
     let positions: Vec<String> = engine
         .channel_layout()
         .into_iter()
         .map(|l| bridge_api::labels::canonical_name(l).to_string())
         .collect();
-    let target_ms = config.target_latency_ms;
+    let controls = Controls::new(config, engine.renderer_control());
+    let mut settings = controls.settings();
     log::info!(
-        "sync host: {channels} channels ({}), target {target_ms} ms, output {}",
+        "sync host: {channels} channels ({}), target {} ms, output {}",
         positions.join(","),
-        config
+        settings.target_ms,
+        settings
             .output_target
             .as_deref()
             .unwrap_or("<session default>")
@@ -421,10 +474,13 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
     if let Some(options) = config.osc.options() {
         log::info!("sync host: OSC on {}:{}", options.host, options.port_out);
         engine
-            .enable_osc(options)
+            .enable_osc_with_host(options, Some(controls.handler()))
             .context("starting the OSC server")?;
     }
-    let mut telemetry = HostTelemetry::new(target_ms);
+    let mut telemetry = HostTelemetry::new(settings.target_ms);
+    // An output that failed to open is not retried on every chunk: only
+    // when a stream starts or the settings change.
+    let mut output_failed = false;
 
     let capture = session.capture(config)?;
     sys::notify_ready();
@@ -454,6 +510,25 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         {
             break HostExit::Finished;
         }
+        // What a client asked for since the last turn. The stream playing is
+        // closed; its next chunk opens it again with the new settings, as
+        // for a run that takes a running stream over.
+        let wanted = controls.settings();
+        if wanted != settings {
+            log::info!("sync host: output settings changed: {wanted:?}");
+            if wanted.target_ms != settings.target_ms {
+                telemetry.set_configured_target(wanted.target_ms);
+                controls.held_target(None);
+            }
+            settings = wanted;
+            output_failed = false;
+            if let Some(ep) = epoch.take() {
+                telemetry.close_epoch(&ep.telemetry.snapshot());
+            }
+        }
+        // The setpoint the player syncs to: the target, or what the servo
+        // had to raise it to. (A store of the same value changes nothing.)
+        capture.advertise_latency_ms(telemetry.held_target_ms());
         if epoch
             .as_ref()
             .and_then(|ep| ep.ending_at)
@@ -479,12 +554,15 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                     telemetry.close_epoch(&ep.telemetry.snapshot());
                 }
                 engine.reset();
-                epoch = Some(start_epoch(
+                epoch = open_epoch(
                     config,
+                    &settings,
                     telemetry.held_target_ms(),
                     channels,
                     &positions,
-                )?);
+                    &controls,
+                );
+                output_failed = epoch.is_none();
                 log::info!("sync host: stream opened, new epoch");
             }
             Some(ReaderMsg::Chunk {
@@ -495,14 +573,17 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 // No epoch for it: the stream was already running when this
                 // run took the capture over (a restart from the config, the
                 // end of a standby). It is picked up where it is.
-                if epoch.is_none() {
+                if epoch.is_none() && !output_failed {
                     engine.reset();
-                    epoch = Some(start_epoch(
+                    epoch = open_epoch(
                         config,
+                        &settings,
                         telemetry.held_target_ms(),
                         channels,
                         &positions,
-                    )?);
+                        &controls,
+                    );
+                    output_failed = epoch.is_none();
                     log::info!("sync host: stream already running, new epoch");
                 }
                 if let Some(ep) = epoch.as_mut() {
@@ -527,10 +608,16 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
             }
             None => {}
         }
+        if let Some(ep) = epoch.as_mut().filter(|ep| ep.ending_at.is_none()) {
+            ep.report_output(&controls, &settings);
+        }
         telemetry.publish(
             &mut engine,
             epoch.as_ref().map(|ep| ep.telemetry.snapshot()).as_ref(),
         );
+        if let Some(held_ms) = telemetry.take_raise() {
+            controls.held_target(Some(held_ms));
+        }
         if config.report_every > 0.0 && started.elapsed().as_secs_f64() >= next_report {
             next_report += config.report_every;
             if let Some(ep) = epoch.as_ref() {
@@ -582,10 +669,63 @@ fn stand_by(engine: &mut Engine, capture: &reader::Capture) {
     }
 }
 
+impl Epoch {
+    /// Tell the clients what became of the output: playing on the device
+    /// asked for, or not playing (the stream waits for a device that is not
+    /// there, or lost it). A device that comes back is reported again.
+    fn report_output(&mut self, controls: &Controls, settings: &OutputSettings) {
+        let playing = self.output.is_streaming();
+        let report = match (self.output_report, playing) {
+            (OutputReport::Pending | OutputReport::Missing, true) => {
+                controls.opened(settings);
+                OutputReport::Playing
+            }
+            (OutputReport::Playing, false) => OutputReport::Missing,
+            (OutputReport::Pending, false) if self.started.elapsed() >= OUTPUT_WAIT => {
+                OutputReport::Missing
+            }
+            (report, _) => report,
+        };
+        if report == OutputReport::Missing && self.output_report != OutputReport::Missing {
+            let device = settings
+                .output_target
+                .as_deref()
+                .unwrap_or("the session's default output");
+            log::warn!("sync host: {device} is not playing");
+            controls.failed(format!("{device} is not playing: is the device there?"));
+        }
+        self.output_report = report;
+    }
+}
+
+/// [`start_epoch`], with the outcome published to the clients: what plays,
+/// or why nothing does. An output that cannot be opened (a device that is
+/// gone) leaves the host running without one, for the client to pick
+/// another, instead of ending the renderer.
+fn open_epoch(
+    config: &HostConfig,
+    settings: &OutputSettings,
+    target_ms: f64,
+    channels: usize,
+    positions: &[String],
+    controls: &Controls,
+) -> Option<Epoch> {
+    match start_epoch(config, settings, target_ms, channels, positions) {
+        // What plays is published once it does ([`Epoch::report_output`]).
+        Ok(epoch) => Some(epoch),
+        Err(e) => {
+            log::error!("sync host: opening the output: {e:#}");
+            controls.failed(format!("{e:#}"));
+            None
+        }
+    }
+}
+
 /// Open a stream's playback. `target_ms` is the latency it starts at: the
 /// configured target, or what an earlier stream showed the pipeline needs.
 fn start_epoch(
     config: &HostConfig,
+    settings: &OutputSettings,
     target_ms: f64,
     channels: usize,
     positions: &[String],
@@ -604,9 +744,10 @@ fn start_epoch(
             ..follow
         };
     }
-    if let Some(hz) = config.loop_bandwidth_hz {
+    if let Some(hz) = settings.loop_bandwidth_hz {
         core_config.servo.loop_bandwidth_hz = hz;
     }
+    core_config.servo.realign_threshold_s = settings.realign_threshold_ms / 1e3;
     core_config.servo.target_latency_s = target_ms / 1e3;
     let core = OutputCore::new(
         core_config,
@@ -617,7 +758,7 @@ fn start_epoch(
     let output = PipewireSyncOutput::start(
         PipewireSyncOutputConfig {
             node_name: "omniphony-sync".into(),
-            target: config.output_target.clone(),
+            target: settings.output_target.clone(),
             channels: channels as u32,
             positions: Some(positions.to_vec()),
             rate: RENDER_RATE,
@@ -643,6 +784,7 @@ fn start_epoch(
         data_type: None,
         parser_bytes: 0,
         started: Instant::now(),
+        output_report: OutputReport::Pending,
         ending_at: None,
         channel_mismatch_logged: false,
         trace: std::env::var_os("ORENDER_SYNC_TRACE").is_some(),
@@ -854,10 +996,14 @@ mod tests {
     fn config(source: Source, target_latency_ms: f64) -> HostConfig {
         HostConfig {
             config_path: None,
+            resolved_config: None,
+            speaker_layout: None,
+            channel_render_mode: None,
             bridge_paths: Vec::new(),
             source,
             target_latency_ms,
             loop_bandwidth_hz: None,
+            realign_threshold_ms: 20.0,
             output_target: None,
             quantum: 1024,
             osc: OscSettings::resolve(None, &OscOverrides::default(), false),
@@ -867,8 +1013,8 @@ mod tests {
     }
 
     /// A restart from the config keeps the capture unless the config asks
-    /// for another: the pipe ignores the latency (it advertises nothing),
-    /// the `own` sink advertises it and is reopened when it changes.
+    /// for another one. Another latency is not another capture: the pipe
+    /// advertises none, and the `own` sink advertises the new one in place.
     #[test]
     fn a_capture_is_reopened_only_when_what_it_was_opened_with_changes() {
         let pipe = |path: &str| Source::Pipe {
@@ -883,8 +1029,7 @@ mod tests {
         let key = |source, ms| CaptureKey::of(&config(source, ms));
         assert_eq!(key(pipe("/a"), 150.0), key(pipe("/a"), 200.0));
         assert_ne!(key(pipe("/a"), 150.0), key(pipe("/b"), 150.0));
-        assert_eq!(key(sink(), 150.0), key(sink(), 150.0));
-        assert_ne!(key(sink(), 150.0), key(sink(), 200.0));
+        assert_eq!(key(sink(), 150.0), key(sink(), 200.0));
         assert_ne!(key(sink(), 150.0), key(pipe("/a"), 150.0));
     }
 

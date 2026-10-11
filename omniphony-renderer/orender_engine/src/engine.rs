@@ -373,6 +373,19 @@ impl Engine {
     /// inactive (studio hides the matching panels via the capabilities
     /// handshake). The server is owned by the engine and shut down on drop.
     pub fn enable_osc(&mut self, opts: OscOptions) -> Result<()> {
+        self.enable_osc_with_host(opts, None)
+    }
+
+    /// [`enable_osc`](Self::enable_osc) for a host that owns an audio output:
+    /// `host` handles its control domains (the output device, the latency
+    /// target), its state joins the snapshot and its options the saved
+    /// config, and the capabilities say so (Studio shows the matching
+    /// panels).
+    pub fn enable_osc_with_host(
+        &mut self,
+        opts: OscOptions,
+        host: Option<Arc<dyn runtime_control::HostControlHandler>>,
+    ) -> Result<()> {
         use std::net::SocketAddrV4;
         use std::str::FromStr;
 
@@ -391,6 +404,9 @@ impl Engine {
             sender.set_default_metering(true);
         }
         sender.attach_renderer_control(self.renderer.renderer_control());
+        if let Some(host) = host {
+            sender.attach_host_handler(host);
+        }
         sender.start_listener(opts.port_in, true)?;
         // Meter cadence reads the RendererControl atomic each poll (source of
         // truth, OSC-adjustable, persisted).
@@ -403,6 +419,12 @@ impl Engine {
         ));
         self.osc = Some(sender);
         Ok(())
+    }
+
+    /// The renderer's live control state, for a host that builds its own
+    /// control handler around it.
+    pub fn renderer_control(&self) -> Arc<renderer::live_params::RendererControl> {
+        self.renderer.renderer_control()
     }
 
     /// The decoder bridges in force: as asked for at construction, or as a
@@ -485,7 +507,6 @@ impl Engine {
         input_codec: Option<&str>,
         sample_rate: u32,
     ) -> Result<Self> {
-        let t_total = std::time::Instant::now();
         let (loaded_cfg, live_restored) = match config_yaml_path {
             Some(path) => {
                 let (cfg, restored) = Config::load_or_default_with_live(path);
@@ -493,6 +514,34 @@ impl Engine {
             }
             None => (None, false),
         };
+        Self::from_config(
+            config_yaml_path,
+            loaded_cfg,
+            live_restored,
+            speaker_layout_path,
+            bridge_paths,
+            input_codec,
+            sample_rate,
+        )
+    }
+
+    /// [`from_paths`](Self::from_paths) for a host that has loaded the config
+    /// itself and resolved its own overrides into it (the standalone
+    /// renderer's command-line flags): `config` is used as given instead of
+    /// being read from `config_yaml_path`, which stays the file Save writes
+    /// to. `live_restored`: the config came with a live-handoff sidecar, so
+    /// what runs is unsaved.
+    pub fn from_config(
+        config_yaml_path: Option<&Path>,
+        config: Option<Config>,
+        live_restored: bool,
+        speaker_layout_path: Option<&Path>,
+        bridge_paths: &[PathBuf],
+        input_codec: Option<&str>,
+        sample_rate: u32,
+    ) -> Result<Self> {
+        let t_total = std::time::Instant::now();
+        let loaded_cfg = config;
         // Client-visible profiles view (active name + list), applied to the
         // control below once it exists; see docs/config-profiles.md.
         let profiles_info = loaded_cfg.as_ref().map(Config::profiles_info);

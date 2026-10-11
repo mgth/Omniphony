@@ -12,7 +12,36 @@ use rosc::{OscMessage, OscPacket};
 
 use crate::osc::ControlEffects;
 
+/// What of a host the capabilities handshake advertises, beside its audio
+/// output (every host that registers a handler has one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostCapabilities {
+    /// The input source can be chosen and configured over OSC.
+    pub input: bool,
+    /// The output is regulated by the legacy adaptive resampler, with its
+    /// tuning controls. `false`: by the sync engine, which has none
+    /// (`docs/resampling-rework-plan.md`).
+    pub adaptive_resampling: bool,
+}
+
+impl Default for HostCapabilities {
+    /// The standalone renderer's legacy host: everything.
+    fn default() -> Self {
+        Self {
+            input: true,
+            adaptive_resampling: true,
+        }
+    }
+}
+
 pub trait HostControlHandler: Send + Sync {
+    /// What the capabilities handshake says of this host
+    /// (`/omniphony/state/capabilities`): clients show the controls that
+    /// apply and hide the others.
+    fn capabilities(&self) -> HostCapabilities {
+        HostCapabilities::default()
+    }
+
     /// Handle a control message the core did not recognise (e.g.
     /// `/omniphony/control/audio/*`, `/omniphony/control/input/*`). Returns the
     /// resulting effects, or `None` if this handler does not own `addr`.

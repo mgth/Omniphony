@@ -19,7 +19,7 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::time::Duration;
@@ -81,6 +81,9 @@ pub struct Capture {
     pub stats: Arc<ReaderStats>,
     stop: Arc<AtomicBool>,
     threads: Vec<thread::JoinHandle<()>>,
+    /// The latency the capture tells its player (ns), for one that does
+    /// (the `own` sink): written by the host, read by the capture.
+    advertised_latency_ns: Arc<AtomicI64>,
 }
 
 impl Capture {
@@ -91,7 +94,20 @@ impl Capture {
             stats,
             stop,
             threads: Vec::new(),
+            advertised_latency_ns: Arc::new(AtomicI64::new(0)),
         }
+    }
+
+    /// The cell the capture reads the latency to advertise from.
+    pub fn advertised_latency(&self) -> Arc<AtomicI64> {
+        Arc::clone(&self.advertised_latency_ns)
+    }
+
+    /// Tell the player another latency: the target changed, or the servo
+    /// raised it. A pipe has nobody to tell.
+    pub fn advertise_latency_ms(&self, ms: f64) {
+        self.advertised_latency_ns
+            .store((ms * 1e6) as i64, Ordering::Relaxed);
     }
 
     /// A thread the capture owns, joined when it is dropped.

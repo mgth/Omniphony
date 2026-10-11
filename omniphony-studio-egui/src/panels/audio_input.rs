@@ -61,7 +61,17 @@ impl StudioSpike {
             )
         };
         let pipewire = mode == "pipewire";
-        let summary = if pipewire {
+        let summary = if pipewire && policy.sync_engine {
+            // The sync engine's sink runs on the renderer's own clock: there
+            // is no clock mode to name.
+            tf(
+                "input.summary.rendererClock",
+                &[
+                    ("requested", mode_label(&mode)),
+                    ("active", mode_label(active.as_deref().unwrap_or(""))),
+                ],
+            )
+        } else if pipewire {
             tf(
                 "input.summary.pipewire",
                 &[

@@ -125,6 +125,9 @@ pub struct StudioSpike {
     pub(crate) hrir_params_seen: Option<serde_json::Value>,
     /// Target latency being typed, until Apply.
     pub(crate) latency_target_edit: Option<f64>,
+    /// The sync engine's loop settings being typed, until Apply: bandwidth,
+    /// then realign threshold.
+    pub(crate) sync_edits: [Option<f64>; 2],
     /// Adaptive-controller fields edited but not yet applied.
     pub(crate) adaptive_edits:
         std::collections::BTreeMap<crate::host::commands::adaptive::Param, f64>,
@@ -484,6 +487,7 @@ impl StudioSpike {
             prtf_freq_scale: 100.0,
             hrir_params_seen: None,
             latency_target_edit: None,
+            sync_edits: [None; 2],
             adaptive_edits: Default::default(),
             file_picker: None,
             layout_transfer: Default::default(),

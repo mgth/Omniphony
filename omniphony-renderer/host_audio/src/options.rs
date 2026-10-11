@@ -57,8 +57,67 @@ pub static LIVE_INPUT: OptionGroup = OptionGroup {
     i18n_key: "section.audioInput",
 };
 
+/// The sync engine's latency loop (`docs/resampling-rework-plan.md`): the
+/// output takes a new value at once, with a realign.
+pub static SYNC: OptionGroup = OptionGroup {
+    key: "sync",
+    mode: GroupMode::Live,
+    effect: ApplyEffect::RestartOutput,
+    i18n_key: "sync.title",
+};
+
 /// This host's groups.
-pub static HOST_GROUPS: &[&OptionGroup] = &[&AUDIO_OUTPUT, &ADAPTIVE_RESAMPLING, &LIVE_INPUT];
+pub static HOST_GROUPS: &[&OptionGroup] =
+    &[&AUDIO_OUTPUT, &ADAPTIVE_RESAMPLING, &SYNC, &LIVE_INPUT];
+
+/// Which engine regulates the output of the host a table of rows is for.
+/// Both exist until the cutover (plan §17): the legacy adaptive resampler
+/// with its tuning rows, and the sync engine with its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostEngine {
+    Legacy,
+    Sync,
+}
+
+impl HostEngine {
+    /// The rows a host on this engine declares: what a client is shown, can
+    /// write and what Save stores. A row of the other engine is left out, so
+    /// nothing is offered that the running output would ignore.
+    pub fn rows(self) -> &'static [HostOptionSpec<HostIo>] {
+        static SYNC_ROWS: std::sync::LazyLock<Vec<HostOptionSpec<HostIo>>> =
+            std::sync::LazyLock::new(|| {
+                HOST_OPTIONS
+                    .iter()
+                    .filter(|spec| on_sync_engine(spec))
+                    .copied()
+                    .collect()
+            });
+        static LEGACY_ROWS: std::sync::LazyLock<Vec<HostOptionSpec<HostIo>>> =
+            std::sync::LazyLock::new(|| {
+                HOST_OPTIONS
+                    .iter()
+                    .filter(|spec| !in_group(spec, &SYNC))
+                    .copied()
+                    .collect()
+            });
+        match self {
+            HostEngine::Legacy => &LEGACY_ROWS,
+            HostEngine::Sync => &SYNC_ROWS,
+        }
+    }
+}
+
+fn in_group(spec: &HostOptionSpec<HostIo>, group: &'static OptionGroup) -> bool {
+    spec.group.is_some_and(|g| std::ptr::eq(g, group))
+}
+
+/// The rows the sync engine's host acts on today: its own, the output
+/// device and the latency target. The rest of the audio output (backend,
+/// file, rate) and the live input join as the engine learns them (plan §17,
+/// slices 6d to 6f).
+fn on_sync_engine(spec: &HostOptionSpec<HostIo>) -> bool {
+    in_group(spec, &SYNC) || matches!(spec.key, "output_device" | "latency_target")
+}
 
 // ── Value helpers ───────────────────────────────────────────────────────
 
@@ -167,6 +226,16 @@ const CUTOFF_HZ_KIND: OptionKind = OptionKind::Float {
     min: 0.001,
     max: 1000.0,
     step: 0.001,
+};
+const LOOP_BANDWIDTH_KIND: OptionKind = OptionKind::Float {
+    min: 0.0,
+    max: 1.0,
+    step: 0.001,
+};
+const REALIGN_THRESHOLD_KIND: OptionKind = OptionKind::Float {
+    min: 1.0,
+    max: 1000.0,
+    step: 1.0,
 };
 
 /// A boolean adaptive-resampling row.
@@ -449,6 +518,52 @@ pub static HOST_OPTIONS: &[HostOptionSpec<HostIo>] = &[
         applied_json: None,
         config_store: |render, host| {
             render.latency_target = host.audio.requested_snapshot().latency_target_ms;
+        },
+    },
+    // ── Sync engine ─────────────────────────────────────────────────────
+    HostOptionSpec {
+        key: "loop_bandwidth_hz",
+        kind: LOOP_BANDWIDTH_KIND,
+        default: OptionDefault::Float(0.0),
+        flags: OptionFlags::NONE,
+        group: Some(&SYNC),
+        i18n_key: "sync.loopBandwidth",
+        help_i18n_key: Some("help.sync.loopBandwidth"),
+        legacy_control_addr: LegacyAddr::None,
+        // 0: the source's own default.
+        set: |host, raw| {
+            let value = raw_float_if(raw, LOOP_BANDWIDTH_KIND, non_negative)?;
+            host.audio.set_requested_loop_bandwidth_hz(value);
+            Some(format!("{value}"))
+        },
+        get_json: |host| host.audio.requested_snapshot().loop_bandwidth_hz.into(),
+        applied_json: None,
+        config_store: |render, host| {
+            let value = host.audio.requested_snapshot().loop_bandwidth_hz;
+            render.loop_bandwidth_hz = (value > 0.0).then_some(value);
+        },
+    },
+    HostOptionSpec {
+        key: "realign_threshold_ms",
+        kind: REALIGN_THRESHOLD_KIND,
+        default: OptionDefault::Float(audio_output::control::DEFAULT_REALIGN_THRESHOLD_MS),
+        flags: OptionFlags::NONE,
+        group: Some(&SYNC),
+        i18n_key: "sync.realignThreshold",
+        help_i18n_key: Some("help.sync.realignThreshold"),
+        legacy_control_addr: LegacyAddr::None,
+        set: |host, raw| {
+            let value = raw_float_if(raw, REALIGN_THRESHOLD_KIND, positive)?;
+            host.audio.set_requested_realign_threshold_ms(value);
+            Some(format!("{value}"))
+        },
+        get_json: |host| host.audio.requested_snapshot().realign_threshold_ms.into(),
+        applied_json: None,
+        // The default leaves the file.
+        config_store: |render, host| {
+            let value = host.audio.requested_snapshot().realign_threshold_ms;
+            render.realign_threshold_ms =
+                (value != audio_output::control::DEFAULT_REALIGN_THRESHOLD_MS).then_some(value);
         },
     },
     // ── Adaptive resampling ─────────────────────────────────────────────

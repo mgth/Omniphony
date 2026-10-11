@@ -28,8 +28,12 @@ impl StudioSpike {
         if !policy.audio_output {
             return;
         }
-        let (audio, devices, ready, unroutable, mapping) = {
+        let (audio, devices, ready, unroutable, mapping, backend_declared, rate_declared) = {
             let live = self.host.read();
+            // The sync engine's renderer says which parts of the output it
+            // can change (its declared options); an older renderer, which
+            // says nothing, can change them all.
+            let declared = |key: &str| !policy.sync_engine || live.declares_option(key);
             (
                 live.app.audio.clone(),
                 live.app.audio.audio_output_devices.clone(),
@@ -41,6 +45,8 @@ impl StudioSpike {
                     .unwrap_or_default(),
                 live.option_str("output_channel_mapping")
                     .unwrap_or_else(|| "by_index".to_owned()),
+                declared("output_backend"),
+                declared("output_sample_rate"),
             )
         };
         let file_backend = audio.audio_output_backend.as_deref() == Some("file");
@@ -75,7 +81,7 @@ impl StudioSpike {
                 // the backend select that leads back to a device.
                 let advanced = self.advanced;
                 ui.add_enabled_ui(ready, |ui| {
-                    if advanced || file_backend {
+                    if backend_declared && (advanced || file_backend) {
                         self.output_backend_row(ui, file_backend);
                     }
                     if file_backend {
@@ -85,7 +91,9 @@ impl StudioSpike {
                     }
                     if advanced {
                         self.channel_mapping_row(ui, &mapping, &unroutable);
-                        self.sample_rate_row(ui, audio.audio_sample_rate.unwrap_or(0));
+                        if rate_declared {
+                            self.sample_rate_row(ui, audio.audio_sample_rate.unwrap_or(0));
+                        }
                     }
                 });
             });

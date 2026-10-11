@@ -19,7 +19,7 @@
 
 use std::cell::Cell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread;
 use std::time::Duration;
@@ -104,6 +104,8 @@ pub fn spawn_own_sink(config: OwnSinkConfig) -> Result<Capture> {
     // From here the capture owns its threads: an early return stops and
     // joins the ones already started.
     let mut capture = Capture::new(rx, Arc::clone(&stats), Arc::clone(&stop));
+    capture.advertise_latency_ms(config.latency_ns as f64 / 1e6);
+    let latency = capture.advertised_latency();
     {
         let shared = Arc::clone(&shared);
         let stop = Arc::clone(&stop);
@@ -111,8 +113,9 @@ pub fn spawn_own_sink(config: OwnSinkConfig) -> Result<Capture> {
             thread::Builder::new()
                 .name("own-sink".into())
                 .spawn(move || {
-                    if let Err(e) = run_sink(config, shared, bytes_tx, stamps_tx, &ready_tx, &stop)
-                    {
+                    if let Err(e) = run_sink(
+                        config, shared, bytes_tx, stamps_tx, &ready_tx, &stop, &latency,
+                    ) {
                         let _ = ready_tx.send(Err(e));
                     }
                 })?,
@@ -139,6 +142,7 @@ fn run_sink(
     mut stamps_tx: Producer<CycleStamp>,
     ready: &SyncSender<Result<()>>,
     stop: &AtomicBool,
+    latency_ns: &AtomicI64,
 ) -> Result<()> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
@@ -343,8 +347,10 @@ fn run_sink(
         )
         .map_err(|e| anyhow!("connecting the own sink: {e:?}"))?;
 
-    // The latency players see: the configured target, once.
-    let latency_pod = build_pipewire_bridge_latency_pod(config.latency_ns)?;
+    // The latency players see: the target, a setpoint. It is advertised
+    // again only when the setpoint moves (see the loop below).
+    let mut advertised_ns = config.latency_ns;
+    let latency_pod = build_pipewire_bridge_latency_pod(advertised_ns)?;
     if let Some(pod) = Pod::from_bytes(&latency_pod) {
         stream
             .update_params(&mut [pod])
@@ -374,6 +380,20 @@ fn run_sink(
         }
         if let Some(rate) = pending.take() {
             set_force_rate(&stream, rate);
+        }
+        // The host moved the setpoint: a new target, or one the servo had to
+        // raise. The player's A/V sync follows what the sink says.
+        let wanted_ns = latency_ns.load(Ordering::Relaxed);
+        if wanted_ns != advertised_ns {
+            advertised_ns = wanted_ns;
+            let pod = build_pipewire_bridge_latency_pod(wanted_ns)?;
+            match Pod::from_bytes(&pod).map(|pod| stream.update_params(&mut [pod])) {
+                Some(Ok(())) => {
+                    log::info!("own sink: now advertising {:.1} ms", wanted_ns as f64 / 1e6)
+                }
+                Some(Err(e)) => log::warn!("own sink: advertising the latency: {e:?}"),
+                None => log::warn!("own sink: invalid latency pod"),
+            }
         }
         if stop.load(Ordering::Relaxed) || sys::ShutdownHandle::is_requested() {
             break;
