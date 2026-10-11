@@ -2273,13 +2273,14 @@ argument parser, as any unknown flag is.
   so once.
 - The Studio against that renderer: the window was captured (not driven):
   the Latency section and the input's summary are as described above.
+- Nothing outside this repository names what was removed: the mpv fork,
+  its packaging (`mpv-omniphony`), the bridge and the workspace's scripts
+  were searched for the flags, the addresses and the config keys.
 
 ### Not done
 
 - Nothing on Windows or macOS hardware (§27), by decision (§17).
 - The Studio was not operated by hand after the removal: its tests pass and
   one capture was read.
-- mpv-omniphony's own scripts and documentation were not searched for the
-  removed addresses and flags.
 - `output_channel_mapping: by_name` is still not positional on PipeWire
   (it was not before either).
