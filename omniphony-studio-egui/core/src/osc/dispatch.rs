@@ -449,6 +449,16 @@ impl Live {
             .and_then(|v| v.as_f64())
     }
 
+    /// A host option that is a name (one of an enum's values).
+    pub fn host_option_str(&self, key: &str) -> Option<String> {
+        self.host_options
+            .as_ref()
+            .and_then(|h| h.get("options"))
+            .and_then(|o| o.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    }
+
     /// Optimistic write of a host option, as [`set_option`](Self::set_option)
     /// is for the renderer's.
     pub fn set_host_option(&mut self, key: &str, value: serde_json::Value) {

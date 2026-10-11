@@ -33,5 +33,5 @@ pub use accounting::{Accounting, DiscontinuityEvent, DiscontinuityReason, Stage}
 pub use dll::{Dll, DllConfig};
 pub use envelope::ArrivalEnvelope;
 pub use servo::{
-    CallbackInput, CallbackPlan, Phase, Servo, ServoConfig, SourceObservation, Telemetry,
+    CallbackInput, CallbackPlan, Pacing, Phase, Servo, ServoConfig, SourceObservation, Telemetry,
 };

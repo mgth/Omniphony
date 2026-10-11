@@ -403,6 +403,26 @@ impl StudioSpike {
                 " ms",
             ),
         ];
+        // The clock the source runs on: taken at once, like a choice.
+        let clock = resampling::source_clock(&self.host);
+        let mut chosen = clock.clone();
+        let label_of = |name: &str| t(&format!("sync.sourceClock.{name}"));
+        widgets::label_row_help(ui, t("sync.sourceClock"), "help.sync.sourceClock", |ui| {
+            widgets::bounded_combo(ui, 200.0, |ui, width| {
+                egui::ComboBox::from_id_salt("sync-source-clock")
+                    .selected_text(label_of(&clock))
+                    .width(width)
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        for name in resampling::SOURCE_CLOCKS {
+                            ui.selectable_value(&mut chosen, name.to_owned(), label_of(name));
+                        }
+                    })
+            });
+        });
+        if chosen != clock {
+            resampling::set_source_clock(&self.host, &chosen);
+        }
         for (index, (setting, label, help, speed, decimals, suffix)) in ROWS.into_iter().enumerate()
         {
             let (min, max) = setting.range();

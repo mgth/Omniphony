@@ -1472,6 +1472,7 @@ mod tests {
                 "output_device",
                 "latency_target",
                 "loop_bandwidth_hz",
+                "source_clock",
                 "realign_threshold_ms"
             ]
         );

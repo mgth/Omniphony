@@ -429,6 +429,31 @@ impl Engine {
         Ok(())
     }
 
+    /// Have the binaural stages build their filters on the render path
+    /// instead of in the background: for an offline render, where nothing
+    /// waits on the output and a filter that lands whenever its worker is
+    /// done would make two renders of the same file differ.
+    pub fn set_synchronous_stage_builds(&mut self, on: bool) {
+        self.renderer.set_synchronous_stage_builds(on);
+    }
+
+    /// Where the output's channels are, as `(azimuth, elevation, distance)`
+    /// per speaker, when the output is the speaker array itself: `None` for
+    /// a binaural pair or any output that is not one channel per speaker.
+    /// What a capture of the output needs to describe itself.
+    pub fn output_speaker_positions(&self) -> Option<Vec<[f32; 3]>> {
+        (self.renderer.output_is_speaker_array()
+            && self.renderer.output_channel_count() == self.channel_count() as usize)
+            .then(|| {
+                self.renderer
+                    .speaker_layout()
+                    .speakers
+                    .iter()
+                    .map(|s| [s.azimuth, s.elevation, s.distance])
+                    .collect()
+            })
+    }
+
     /// The renderer's live control state, for a host that builds its own
     /// control handler around it.
     pub fn renderer_control(&self) -> Arc<renderer::live_params::RendererControl> {

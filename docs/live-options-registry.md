@@ -316,6 +316,7 @@ seeds its state at its own bootstrap (the CLI's argument resolution).
 | `output_sample_rate` | int or null [1, 768000] | unset | `audio_output` (live, restart_output) | — | `/control/audio/sample_rate` |
 | `latency_target` | int or null [1, 10000] | unset | `audio_output` (live, restart_output) | — | `/control/latency_target` |
 | `loop_bandwidth_hz` | float [0, 1], step 0.001 | `0` | `sync` (live, restart_output) | — | — |
+| `source_clock` | `auto` \| `own` \| `follow` \| `none` | `"auto"` | `sync` (live, restart_output) | — | — |
 | `realign_threshold_ms` | float [1, 1000], step 1 | `20` | `sync` (live, restart_output) | — | — |
 | `enable_adaptive_resampling` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling` |
 | `adaptive_resampling_enable_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/enable_far_mode` |

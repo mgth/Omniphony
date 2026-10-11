@@ -30,6 +30,50 @@ pub struct RequestedAudioOutputConfig {
     /// Sync engine: latency error beyond which the output realigns instead
     /// of steering (ms).
     pub realign_threshold_ms: f32,
+    /// Sync engine: the clock the source is taken to run on.
+    pub source_clock: SourceClock,
+}
+
+/// The clock a source runs on, as asked for (`docs/resampling-rework-plan.md`
+/// §2.1). The input decides what is possible: a setting it cannot have falls
+/// back to its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SourceClock {
+    /// The input's own: `own` for the renderer's sink, `follow` for a pipe,
+    /// `none` for a file.
+    #[default]
+    Auto,
+    /// The renderer's clock (its sink, which it drives).
+    Own,
+    /// The writer's clock, read from the arrival of its bytes (a player
+    /// writing a pipe in real time).
+    Follow,
+    /// No clock (a file, a writer faster than real time): the device is the
+    /// master and the source is held back.
+    None,
+}
+
+impl SourceClock {
+    pub const NAMES: [&'static str; 4] = ["auto", "own", "follow", "none"];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceClock::Auto => "auto",
+            SourceClock::Own => "own",
+            SourceClock::Follow => "follow",
+            SourceClock::None => "none",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(SourceClock::Auto),
+            "own" => Some(SourceClock::Own),
+            "follow" => Some(SourceClock::Follow),
+            "none" => Some(SourceClock::None),
+            _ => None,
+        }
+    }
 }
 
 /// [`RequestedAudioOutputConfig::realign_threshold_ms`] when nothing sets it.
@@ -48,6 +92,7 @@ impl Default for RequestedAudioOutputConfig {
             output_file_format: None,
             loop_bandwidth_hz: 0.0,
             realign_threshold_ms: DEFAULT_REALIGN_THRESHOLD_MS,
+            source_clock: SourceClock::Auto,
         }
     }
 }
@@ -161,6 +206,10 @@ impl AudioControl {
 
     pub fn set_requested_loop_bandwidth_hz(&self, value: f32) {
         self.update_requested(|requested| requested.loop_bandwidth_hz = value);
+    }
+
+    pub fn set_requested_source_clock(&self, value: SourceClock) {
+        self.update_requested(|requested| requested.source_clock = value);
     }
 
     pub fn set_requested_realign_threshold_ms(&self, value: f32) {

@@ -544,6 +544,32 @@ pub static HOST_OPTIONS: &[HostOptionSpec<HostIo>] = &[
         },
     },
     HostOptionSpec {
+        key: "source_clock",
+        kind: OptionKind::Enum(&audio_output::control::SourceClock::NAMES),
+        default: OptionDefault::Str("auto"),
+        flags: OptionFlags::NONE,
+        group: Some(&SYNC),
+        i18n_key: "sync.sourceClock",
+        help_i18n_key: Some("help.sync.sourceClock"),
+        legacy_control_addr: LegacyAddr::None,
+        set: |host, raw| {
+            let RawOptionValue::Str(value) = raw else {
+                return None;
+            };
+            let clock = audio_output::control::SourceClock::from_name(value)?;
+            host.audio.set_requested_source_clock(clock);
+            Some(clock.as_str().to_string())
+        },
+        get_json: |host| host.audio.requested_snapshot().source_clock.as_str().into(),
+        applied_json: None,
+        // The default leaves the file.
+        config_store: |render, host| {
+            let clock = host.audio.requested_snapshot().source_clock;
+            render.source_clock = (clock != audio_output::control::SourceClock::Auto)
+                .then(|| clock.as_str().to_string());
+        },
+    },
+    HostOptionSpec {
         key: "realign_threshold_ms",
         kind: REALIGN_THRESHOLD_KIND,
         default: OptionDefault::Float(audio_output::control::DEFAULT_REALIGN_THRESHOLD_MS),

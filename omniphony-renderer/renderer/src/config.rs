@@ -328,6 +328,10 @@ pub struct RenderConfig {
     /// of steering (ms); absent is 20.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub realign_threshold_ms: Option<f32>,
+    /// Sync engine: the clock the source is taken to run on (`auto`, `own`,
+    /// `follow`, `none`); absent is `auto`, the input's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_clock: Option<String>,
     /// OSC meter cadence (Hz). Persisted so the renderer is the source of truth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meter_rate: Option<f32>,

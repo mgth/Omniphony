@@ -1297,8 +1297,13 @@ fn sync_engine_requested(args: &RenderArgs) -> bool {
 /// The engine is built on the config as this run resolved it, so the flags
 /// reach it as they reach the legacy host: the registered options, the
 /// renderer flags, the presentation, the speaker layout file and the channel
-/// render mode. Not yet: the output backends other than PipeWire, and the
-/// two CLI-only renderer knobs (`--vbap-table`, `--log-object-positions`).
+/// render mode. Not yet: the two CLI-only renderer knobs (`--vbap-table`,
+/// `--log-object-positions`).
+///
+/// The input is the PipeWire sink, or INPUT: a regular file or `-` (standard
+/// input), read to its end with no clock, or a pipe. The output is the
+/// PipeWire device or the `file` backend; a file out without `--continuous`
+/// is an offline render, of INPUT.
 #[cfg(target_os = "linux")]
 fn sync_host_config(
     args: &RenderArgs,
@@ -1307,17 +1312,37 @@ fn sync_host_config(
     render_cfg: &renderer::config::RenderConfig,
     config_path: Option<&std::path::Path>,
 ) -> Result<crate::cli::sync_host::HostConfig> {
+    use crate::cli::command::OutputFileFormatArg;
     use crate::cli::sync_host::{
-        HostConfig, Source, resolve_realign_threshold_ms, resolve_target_latency_ms,
+        HostConfig, OutputKind, Source, resolve_realign_threshold_ms, resolve_source_clock,
+        resolve_target_latency_ms,
     };
     use renderer::config::InputModeConfig;
 
     let backend = args.output_backend.or_else(OutputBackend::platform_default);
-    anyhow::ensure!(
-        backend == Some(OutputBackend::Pipewire),
-        "the sync engine only plays through PipeWire for now (output backend: {backend:?})"
-    );
-    let source = match render_cfg.input_mode_or_default() {
+    let output = match backend {
+        Some(OutputBackend::Pipewire) => OutputKind::Device,
+        Some(OutputBackend::File) => OutputKind::File {
+            destination: args.output_file.clone(),
+            format: match args.output_file_format {
+                OutputFileFormatArg::RawF32 => audio_output::FileSinkFormat::RawF32,
+                OutputFileFormatArg::Caf => audio_output::FileSinkFormat::Caf,
+            },
+        },
+        other => anyhow::bail!(
+            "the sync engine plays through PipeWire or writes a file for now \
+             (output backend: {other:?})"
+        ),
+    };
+    // An offline render — a file out, once — reads its INPUT whatever the
+    // config's input mode says: the live sink is none of its business.
+    let offline = output != OutputKind::Device && !args.continuous;
+    let input_mode = if offline {
+        InputModeConfig::Bridge
+    } else {
+        render_cfg.input_mode_or_default()
+    };
+    let source = match input_mode {
         InputModeConfig::Pipewire => {
             let live = render_cfg.live_input.as_ref();
             Source::OwnSink {
@@ -1330,13 +1355,25 @@ fn sync_host_config(
                 session_priority: None,
             }
         }
-        InputModeConfig::Bridge => Source::Pipe {
-            path: args
-                .input
-                .clone()
-                .context("the sync engine needs an input pipe (INPUT, or render.input_pipe)")?,
-            drain: !args.no_drain_pipe,
-        },
+        InputModeConfig::Bridge => {
+            let path = args.input.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no input given. orender renders one stream: a file, a named pipe, \
+                     or `-` for stdin (`orender render <INPUT>`)."
+                )
+            })?;
+            // A regular file and standard input are read to their end, with
+            // no clock; anything else is a pipe (created when missing) that
+            // writers come to.
+            if path.as_os_str() == "-" || path.is_file() {
+                Source::File { path }
+            } else {
+                Source::Pipe {
+                    path,
+                    drain: !args.no_drain_pipe,
+                }
+            }
+        }
     };
     // What the engine is built on: this run's render section (the file with
     // the flags folded in) in place of the file's, and the presentation,
@@ -1358,6 +1395,10 @@ fn sync_host_config(
         loop_bandwidth_hz: render_cfg.loop_bandwidth_hz.map(f64::from),
         realign_threshold_ms: resolve_realign_threshold_ms(render_cfg.realign_threshold_ms),
         output_target: args.output_device.clone(),
+        output,
+        source_clock: resolve_source_clock(render_cfg.source_clock.as_deref()),
+        continuous: args.continuous,
+        offline,
         quantum: args.pw_quantum.unwrap_or(1024),
         osc: orender_engine::OscSettings {
             enabled: args.osc,
@@ -1598,11 +1639,41 @@ mod tests {
         );
         assert_eq!(pipe.target_latency_ms, 150.0);
 
-        // The other backends are not there yet: said, not played wrongly.
+        // A file out, once: an offline render of INPUT, whatever the input
+        // mode says. A path that is a regular file is read to its end.
+        use crate::cli::sync_host::OutputKind;
+        let input = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        args.input = Some(input.clone());
         args.output_backend = Some(OutputBackend::File);
-        let err =
-            sync_host_config(&args, &file, false, &config("{}"), None).expect_err("file backend");
-        assert!(err.to_string().contains("PipeWire"), "{err:#}");
+        args.output_file = "out.f32".into();
+        let offline = sync_host_config(
+            &args,
+            &file,
+            false,
+            &config("input_mode: pipewire\nsource_clock: none\n"),
+            None,
+        )
+        .expect("an offline run");
+        assert_eq!(offline.source, Source::File { path: input });
+        assert_eq!(
+            offline.output,
+            OutputKind::File {
+                destination: "out.f32".into(),
+                format: audio_output::FileSinkFormat::RawF32,
+            }
+        );
+        assert!(offline.offline && !offline.continuous);
+        assert_eq!(
+            offline.source_clock,
+            audio_output::control::SourceClock::None
+        );
+        // Standard input is a file too; the same output kept up for more
+        // streams is not offline, and takes the configured input.
+        args.input = Some("-".into());
+        args.continuous = true;
+        let live = sync_host_config(&args, &file, false, &config("{}"), None).expect("live");
+        assert_eq!(live.source, Source::File { path: "-".into() });
+        assert!(!live.offline && live.continuous);
     }
 
     /// PipeWire input mode with the capture up: the requested mode, and the

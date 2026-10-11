@@ -1218,9 +1218,9 @@ Each is one pull request, stacked in this order.
   waits for the mode that gives it a second value (`none`, 6d); the rows of
   the backend, the file sink and the rate, and those of the live input, join
   with the slices that make the engine act on them (6d to 6f).
-- **6d — `none` and files (4b).** Files, stdin and faster-than-real-time
-  writers under back-pressure at `L`; the `file` output backend and offline
-  rendering; the `source_clock` option (`own` / `follow` / `none`).
+- **6d — `none` and files (4b).** DONE, see §22: files, standard input
+  and writers faster than real time, held back by the ring; the `file`
+  output backend and offline rendering; the `source_clock` option.
 - **6e — formats.** Stream rates other than 48 kHz, `output_sample_rate`,
   width changes, `output_channel_mapping`.
 - **6f — the live sink.** PCM on the `own` sink: DONE ahead of its turn,
@@ -1590,3 +1590,86 @@ standby goes through the same code.
   (the format offered is 8 channels; a player maps to it).
 - The cost of the idle PCM stream (a render of silence around the clock)
   was not measured on the target box.
+
+## 22. Phase 6d — sources with no clock, and files (2026-10-11)
+
+### `none`: the device is the master
+
+A file, standard input or a writer faster than real time has no clock to
+measure a latency against. The servo gets a second pacing
+(`audio_sync::Pacing::Device`): playback runs at the nominal ratio, takes
+what the ring holds, and a dry ring is a silent callback and a counted
+underrun, with a fade-in when it resumes. Nothing is read from the source
+and nothing is steered. What is published as the latency is the audio
+buffered ahead plus the device delay.
+
+The source is held back, not dropped:
+
+- Rendered blocks wait in a queue and go into the ring only while it holds
+  less than the latency target, here a buffer level. While blocks wait, the
+  host takes nothing more from the capture.
+- A paced reader reads no further than two chunks ahead of what the host
+  took, so the writer of a pipe is held back by the pipe itself.
+- The host's loop never blocks on this: it sleeps 2 ms and comes back, so
+  telemetry, the controls and a shutdown are served as usual. (Not the
+  condition variable §3 had in mind; the producer thread is not the realtime
+  one.)
+
+### Inputs
+
+| INPUT | Source | Clock |
+|---|---|---|
+| A regular file, or `-` (standard input) | Read to its end in the 64 KiB chunks the legacy host reads, one stream | `none`, always |
+| A pipe (created when missing) | As before | `follow`, or `none` when `source_clock` says so |
+| The PipeWire sink (`input_mode: pipewire`) | As before | `own` |
+
+- **`source_clock`** (`auto` / `own` / `follow` / `none`): a host option, a
+  config key and a `render` flag, in the Studio's latency section (advanced
+  view). The input decides what is possible, and a clock it cannot have is
+  its own instead; in practice the option chooses between `follow` and
+  `none` for a pipe.
+- **End of stream.** The decoder is drained, and for a device a cycle of
+  silence follows, so the last frames are not left in the ring for want of a
+  whole cycle. The host no longer sleeps the stream out: the epoch closes
+  when what it queued has played.
+- **End of run.** Without `--continuous` the run ends with its first stream,
+  played out. With it the host stays up, for the pipe's next writer or the
+  sink's next player; a regular file is played once.
+
+### The `file` output backend
+
+`--output-backend file`: the samples are written as they are rendered (raw
+`f32` or CAF, to a file, a FIFO or standard output), with no ring and no
+clock. One writer for the run, so a capture holds every stream of it. A CAF
+capture of a speaker-array render carries where its speakers are. A file
+out without `--continuous` is an offline render: it reads INPUT whatever the
+config's input mode says, and the binaural stages build on the render path,
+so two renders of a file are the same.
+
+### Verified
+
+- **Offline renders are the legacy host's, bit for bit**
+  (`tests/host_parity.rs`): the demo on speakers, with the object synthesis
+  stages, and in binaural, rendered by `orender render` with and without
+  `--sync-engine`.
+- Unit tests: the device-paced servo; the paced push (to the limit, in order,
+  by parts, nothing lost); the file reader (one stream, the legacy chunks, an
+  empty file is no stream, a paced reader waits for the host).
+- Live, isolated, output recorded at the sink's monitor:
+
+| Run | Result |
+|---|---|
+| An 8 s AC-3 file to the device | The run lasts 8.4 s and exits 0; 8 s of audio at the output, no gap |
+| A pipe written at once by `cat`, `--source-clock none` | Played at the device's pace: 8 s of audio, nothing dropped; exits with its stream |
+| Standard input to a file | 0.55 s; 382 464 frames |
+| The runs of §18, §20 and §21 again | Unchanged |
+
+### Not done
+
+- **The last access unit of a stream stays in the decoder** (AC-3: 249 of
+  250 frames written): the bridge has no flush, as the audit noted (§6.5).
+  The legacy host loses the same frame.
+- The CAF speaker description was not compared with the legacy host's.
+- The output's width is fixed for a run: a change of output mode while a
+  file is being written (speakers to binaural) drops the blocks of the other
+  width instead of starting another capture (6e).

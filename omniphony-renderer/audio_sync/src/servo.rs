@@ -45,9 +45,27 @@
 use crate::dll::{Dll, DllConfig};
 use std::f64::consts::TAU;
 
+/// What paces playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Pacing {
+    /// The source runs on a clock of its own (`own`, `follow`): the servo
+    /// measures it and resamples to hold the latency against it.
+    #[default]
+    Source,
+    /// The source has no clock (`none`: a file, a writer faster than real
+    /// time). The device is the master: playback runs at the nominal ratio,
+    /// takes what the ring holds, and the producer is held back by the ring.
+    /// Nothing is measured against the source, so there is no latency to
+    /// hold: [`ServoConfig::target_latency_s`] is how much the producer keeps
+    /// ahead, which is its business.
+    Device,
+}
+
 /// Tunables. Only the first three are meant for users.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ServoConfig {
+    /// What paces playback.
+    pub pacing: Pacing,
     /// End-to-end latency to hold (s).
     pub target_latency_s: f64,
     /// Phase-loop bandwidth (Hz).
@@ -140,6 +158,7 @@ impl ServoConfig {
 impl Default for ServoConfig {
     fn default() -> Self {
         Self {
+            pacing: Pacing::Source,
             target_latency_s: 0.100,
             loop_bandwidth_hz: 0.02,
             loop_start_bandwidth_hz: 0.0,
@@ -419,6 +438,9 @@ impl Servo {
 
     /// Decide this callback. See the [module docs](self).
     pub fn plan(&mut self, input: &CallbackInput) -> CallbackPlan {
+        if self.config.pacing == Pacing::Device {
+            return self.plan_device_paced(input);
+        }
         let dt = self
             .last_t
             .map(|last| (input.t - last).clamp(0.0, 0.5))
@@ -498,6 +520,53 @@ impl Servo {
                 let plan = self.steer(input.t, error, ratio_ff, dt);
                 self.guard_underrun(input, plan)
             }
+        }
+    }
+
+    /// [`Pacing::Device`]: play what the ring holds at the nominal ratio, or
+    /// nothing when it does not hold a callback's worth. No source is read
+    /// and nothing is steered. What is published as the latency is what is
+    /// heard after the ring's read front: the audio buffered ahead plus the
+    /// device delay.
+    fn plan_device_paced(&mut self, input: &CallbackInput) -> CallbackPlan {
+        self.last_t = Some(input.t);
+        self.device_dll.observe(input.t, input.device_position);
+        let rate_d = self.device_dll.rate().unwrap_or(self.config.output_rate_hz);
+        let ratio = self.nominal_ratio;
+        self.telemetry.device_ppm = ppm(rate_d / self.config.output_rate_hz);
+        self.telemetry.source_ppm = 0.0;
+        self.telemetry.feedforward_ppm = 0.0;
+        self.telemetry.correction_ppm = 0.0;
+        self.telemetry.error_s = 0.0;
+        self.telemetry.ratio = ratio;
+        let buffered = (input.available - input.play_position).max(0.0);
+        self.telemetry.latency_s =
+            Some(input.heard_delay_s + buffered / self.config.source_rate_hz);
+
+        let needed = input.play_position
+            + ratio * input.frames as f64
+            + self.config.resampler_lookahead_frames;
+        if needed > input.available {
+            // The producer is behind (the start, a slow decode) or done.
+            if self.phase == Phase::Running {
+                self.telemetry.underruns += 1;
+                self.phase = Phase::Starting;
+            }
+            return CallbackPlan::silent(input.frames, ratio);
+        }
+        let resuming = self.phase != Phase::Running;
+        self.phase = Phase::Running;
+        CallbackPlan {
+            silence_frames: 0,
+            skip_source_frames: 0.0,
+            ratio,
+            // After a gap, not on every callback.
+            fade_in_frames: if resuming {
+                (self.config.fade_s * self.config.output_rate_hz).round() as usize
+            } else {
+                0
+            },
+            fade_out: false,
         }
     }
 
@@ -809,6 +878,53 @@ mod tests {
             source_offset: 0.0,
             source_breaks: 0,
         }
+    }
+
+    /// A source with no clock: the device is the master. Playback starts as
+    /// soon as the ring holds a callback's worth, runs at the nominal ratio
+    /// whatever the readings say, and a dry ring is a silent callback and a
+    /// counted underrun, not a realign.
+    #[test]
+    fn a_device_paced_source_plays_what_the_ring_holds() {
+        let mut servo = Servo::new(ServoConfig {
+            pacing: Pacing::Device,
+            ..ServoConfig::default()
+        });
+        let frames = 1024.0;
+        let cb = |t: f64, play: f64, available: f64| CallbackInput {
+            source: None,
+            ..input(t, play, available)
+        };
+        // Not a callback's worth yet: silence, still starting.
+        let plan = servo.plan(&cb(0.0, 0.0, 512.0));
+        assert_eq!(plan.silence_frames, 1024);
+        assert_eq!(servo.phase(), Phase::Starting);
+        assert_eq!(servo.telemetry().underruns, 0);
+
+        // Enough: played from the read front, at the nominal ratio, faded in.
+        let plan = servo.plan(&cb(0.021, 0.0, 4096.0));
+        assert_eq!(plan.silence_frames, 0);
+        assert_eq!(plan.skip_source_frames, 0.0);
+        assert_eq!(plan.ratio, 1.0);
+        assert!(plan.fade_in_frames > 0);
+        assert_eq!(servo.phase(), Phase::Running);
+        // The latency read is what is buffered ahead, plus the device.
+        let latency = servo.telemetry().latency_s.unwrap();
+        assert!((latency - (0.032 + 4096.0 / 48_000.0)).abs() < 1e-9);
+
+        // Steady: no fade, the ratio does not move however full the ring is.
+        let plan = servo.plan(&cb(0.042, frames, 48_000.0));
+        assert_eq!((plan.ratio, plan.fade_in_frames), (1.0, 0));
+        assert_eq!(servo.telemetry().correction_ppm, 0.0);
+
+        // The ring ran dry: one silent callback, counted, then it resumes.
+        let plan = servo.plan(&cb(0.063, 2.0 * frames, 2.0 * frames + 100.0));
+        assert_eq!(plan.silence_frames, 1024);
+        assert_eq!(servo.telemetry().underruns, 1);
+        assert_eq!(servo.telemetry().realigns, 0);
+        let plan = servo.plan(&cb(0.084, 2.0 * frames, 4.0 * frames));
+        assert_eq!(plan.silence_frames, 0);
+        assert!(plan.fade_in_frames > 0);
     }
 
     #[test]

@@ -52,6 +52,43 @@ impl SyncSetting {
     }
 }
 
+/// The clocks a source can be taken to run on (the renderer's `source_clock`
+/// option), in the order a client lists them. The renderer falls back to the
+/// input's own for one the input cannot have.
+pub const SOURCE_CLOCKS: [&str; 4] = ["auto", "own", "follow", "none"];
+
+/// The source clock asked for, as the renderer last published it.
+pub fn source_clock(state: &SharedState) -> String {
+    state
+        .read()
+        .host_option_str("source_clock")
+        .filter(|clock| SOURCE_CLOCKS.contains(&clock.as_str()))
+        .unwrap_or_else(|| SOURCE_CLOCKS[0].to_owned())
+}
+
+/// Ask for another source clock: shown at once and sent. A name that is not
+/// one of [`SOURCE_CLOCKS`] is not sent.
+pub fn set_source_clock(state: &SharedState, clock: &str) {
+    if !SOURCE_CLOCKS.contains(&clock) {
+        return;
+    }
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .set_host_option("source_clock", serde_json::json!(clock));
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: osc_contract::CONTROL_OPTION.to_string(),
+            args: vec![
+                rosc::OscType::String("source_clock".to_owned()),
+                rosc::OscType::String(clock.to_owned()),
+            ],
+        },
+    );
+}
+
 /// Set one of the sync engine's loop settings: clamped, shown at once and
 /// sent. The renderer reopens its output with it.
 pub fn set_sync_setting(state: &SharedState, setting: SyncSetting, value: f64) {
@@ -301,6 +338,32 @@ mod sync_setting_tests {
         assert_eq!(
             sent[1].1[0],
             rosc::OscType::String("loop_bandwidth_hz".into())
+        );
+    }
+
+    /// The source clock is one of the renderer's names: shown at once, sent
+    /// as the option message, and anything else is not sent at all.
+    #[test]
+    fn a_source_clock_is_sent_by_name_or_not_at_all() {
+        let (state, rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        assert_eq!(source_clock(&state), "auto");
+        set_source_clock(&state, "none");
+        assert_eq!(source_clock(&state), "none");
+        set_source_clock(&state, "dac");
+        assert_eq!(source_clock(&state), "none");
+        let sent: Vec<Vec<rosc::OscType>> = rx
+            .try_iter()
+            .filter_map(|control| match control {
+                Control::Send { args, .. } => Some(args),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            vec![vec![
+                rosc::OscType::String("source_clock".into()),
+                rosc::OscType::String("none".into())
+            ]]
         );
     }
 }

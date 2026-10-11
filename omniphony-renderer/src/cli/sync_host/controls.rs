@@ -13,7 +13,9 @@
 use std::sync::Arc;
 
 use audio_input::{InputBackend, InputControl, InputMode};
-use audio_output::control::{AudioControl, OutputDeviceOption, RequestedAudioOutputConfig};
+use audio_output::control::{
+    AudioControl, OutputDeviceOption, RequestedAudioOutputConfig, SourceClock,
+};
 use host_audio::HostAudio;
 use renderer::live_params::RendererControl;
 use runtime_control::HostControlHandler;
@@ -31,6 +33,8 @@ pub struct OutputSettings {
     pub loop_bandwidth_hz: Option<f64>,
     /// Latency error beyond which the output realigns (ms).
     pub realign_threshold_ms: f64,
+    /// The clock the source is taken to run on.
+    pub source_clock: SourceClock,
 }
 
 /// See the [module docs](self).
@@ -55,6 +59,7 @@ impl Controls {
             latency_target_ms: Some(config.target_latency_ms.round().max(1.0) as u32),
             loop_bandwidth_hz: config.loop_bandwidth_hz.unwrap_or(0.0) as f32,
             realign_threshold_ms: config.realign_threshold_ms as f32,
+            source_clock: config.source_clock,
             ..RequestedAudioOutputConfig::default()
         }));
         audio.set_available_output_devices(output_devices());
@@ -107,6 +112,7 @@ impl Controls {
             loop_bandwidth_hz: (requested.loop_bandwidth_hz > 0.0)
                 .then(|| f64::from(requested.loop_bandwidth_hz)),
             realign_threshold_ms: f64::from(requested.realign_threshold_ms),
+            source_clock: requested.source_clock,
         }
     }
 
@@ -156,6 +162,10 @@ mod tests {
             loop_bandwidth_hz: None,
             realign_threshold_ms: 20.0,
             output_target: Some("dac".into()),
+            output: crate::cli::sync_host::OutputKind::Device,
+            source_clock: SourceClock::Auto,
+            continuous: true,
+            offline: false,
             quantum: 1024,
             osc: OscSettings::resolve(None, &OscOverrides::default(), false),
             seconds: None,
@@ -176,6 +186,7 @@ mod tests {
                 output_target: Some("dac".into()),
                 loop_bandwidth_hz: None,
                 realign_threshold_ms: 20.0,
+                source_clock: SourceClock::Auto,
             }
         );
 
@@ -185,6 +196,7 @@ mod tests {
             ("output_device", RawOptionValue::Str("other")),
             ("loop_bandwidth_hz", RawOptionValue::Number(0.01)),
             ("realign_threshold_ms", RawOptionValue::Number(35.0)),
+            ("source_clock", RawOptionValue::Str("none")),
         ]);
         assert!(applied.changed);
         assert!(applied.results.iter().all(Option::is_some));
@@ -193,6 +205,7 @@ mod tests {
         assert_eq!(now.output_target.as_deref(), Some("other"));
         assert!((now.loop_bandwidth_hz.unwrap() - 0.01).abs() < 1e-9);
         assert_eq!(now.realign_threshold_ms, 35.0);
+        assert_eq!(now.source_clock, SourceClock::None);
         assert_ne!(now, launched);
 
         // Unset: the host's own default, not zero.
@@ -218,6 +231,7 @@ mod tests {
                 "output_device",
                 "latency_target",
                 "loop_bandwidth_hz",
+                "source_clock",
                 "realign_threshold_ms"
             ]
         );
