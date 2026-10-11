@@ -1,18 +1,18 @@
-//! The sync host: `orender sync-play`, the new playback path of the
-//! resampling rework (`docs/resampling-rework-plan.md` §10).
+//! The render host: what `orender render` runs
+//! (`docs/resampling-rework-plan.md`).
 //!
 //! ```text
-//! pipe ─► reader thread ─► engine thread: IEC 61937 deframe ─► Engine (decode + render)
-//!                                         ─► ring ─► OutputCore ─► PipeWire
-//!                         └─ arrival time + frames ─► SourceTap ─┘
+//! capture (pipe reader, PipeWire sink, file) ─► engine thread: IEC 61937 deframe
+//!        ─► Engine (decode + render) ─► ring ─► OutputCore ─► device
+//!        └─ arrival time + frames ─► SourceTap ─────┘
 //! ```
 //!
-//! Slice 4a: the `follow` source clock for a pipe written in real time (mpv
-//! `--ao=pcm`; with `--ao-pcm-timed` it writes at the pace of its own clock,
-//! in small regular periods, plan §15). The source clock is the arrival of
-//! the bytes; the output resamples to hold a fixed end-to-end latency against
-//! it. Each stream (pipe open → EOF) is an epoch with its own ring and
-//! output, so nothing carries over between files.
+//! The source has a clock of its own (`follow`: a pipe written in real time,
+//! whose clock is the arrival of its bytes; `own`: the PipeWire sink the
+//! renderer drives) or none (`none`: a file, a writer faster than real time,
+//! which the device then paces). With a clock, the output resamples to hold
+//! a fixed end-to-end latency against it. Each stream is an epoch with its
+//! own ring and output, so nothing carries over from one to the next.
 //!
 //! The frames counted in (`N_in`) are counted in transport time: the carrier
 //! bytes that have arrived, from the first burst, at the carrier's rate (the
@@ -24,11 +24,12 @@
 //!
 //! With the OSC server on (`--osc`, or the config's `render.osc`), the host
 //! publishes the latency it holds, the latency it measures and the servo's
-//! quantities ([`telemetry`], plan §16).
+//! quantities ([`telemetry`], plan §16), and takes its settings from its
+//! clients ([`controls`]).
 //!
-//! Hidden while experimental. The output is PipeWire's on Linux and cpal's
-//! (ASIO or WASAPI, CoreAudio) on Windows and macOS; the input is a pipe (a
-//! FIFO, a named pipe on Windows), a file, or, on Linux, the PipeWire sink.
+//! The output is PipeWire's on Linux and cpal's (ASIO or WASAPI, CoreAudio)
+//! on Windows and macOS, or a file; the input is a pipe (a FIFO, a named pipe
+//! on Windows), a file, or, on Linux, the PipeWire sink.
 
 mod controls;
 #[cfg(target_os = "linux")]
@@ -52,9 +53,8 @@ use audio_output::sync_output::{
 use audio_rt::{Producer, frame_ring};
 use audio_sync::{Accounting, DiscontinuityEvent, DiscontinuityReason, InFlightAudit, Stage};
 use bridge_api::RInputTransport;
-use clap::Args;
-use orender_engine::engine::{Engine, RenderedAudio};
-use orender_engine::{OscOverrides, OscSettings};
+use orender_engine::OscSettings;
+use orender_engine::engine::{Engine, HostSetup, RenderedAudio};
 use renderer::live_params::OutputChannelMapping;
 use spdif::SpdifParser;
 
@@ -63,82 +63,10 @@ use audio_input::InputMode;
 use audio_output::control::SourceClock;
 use audio_output::sync_output::reference_now_s;
 use audio_output::{CafChannelDesc, FileAudioWriter, FileSinkFormat};
-use controls::{Controls, OutputSettings};
+pub use controls::Controls;
+use controls::OutputSettings;
 use reader::{CarrierFormat, ReaderMsg, Transport, spawn_file_reader, spawn_reader};
 use telemetry::HostTelemetry;
-
-/// `orender sync-play` arguments.
-#[derive(Debug, Clone, Args)]
-pub struct SyncPlayArgs {
-    /// Input pipe (IEC 61937 or raw bitstream), for `--source pipe`.
-    #[arg(value_name = "INPUT")]
-    pub input: Option<PathBuf>,
-
-    /// Where the stream comes from: `pipe` (a writer on its own clock,
-    /// `follow`) or `own` (orender's PipeWire sink on orender's clock).
-    #[arg(long, value_enum, default_value_t = SourceKind::Pipe)]
-    pub source: SourceKind,
-
-    /// Node name of the `own` sink.
-    #[arg(long = "sink-name", default_value = "omniphony-sync")]
-    pub sink_name: String,
-
-    /// `priority.session` of the `own` sink (0 keeps it from ever being
-    /// picked as the default sink, e.g. for tests).
-    #[arg(long = "sink-session-priority")]
-    pub sink_session_priority: Option<u32>,
-
-    /// End-to-end latency to hold (ms). Defaults to the config's
-    /// `render.latency_target`, else 150.
-    #[arg(long = "target-latency-ms")]
-    pub target_latency_ms: Option<f64>,
-
-    /// Phase-loop bandwidth (Hz). Defaults to the `follow` value.
-    #[arg(long = "loop-bandwidth-hz")]
-    pub loop_bandwidth_hz: Option<f64>,
-
-    /// PipeWire sink to play into (pinned); defaults to the config's
-    /// `render.output_device`, else the session's choice.
-    #[arg(long = "output-target")]
-    pub output_target: Option<String>,
-
-    /// PipeWire quantum requested (frames).
-    #[arg(long, default_value_t = 1024)]
-    pub quantum: u32,
-
-    /// Stop after this many seconds (tests).
-    #[arg(long)]
-    pub seconds: Option<f64>,
-
-    /// Print the servo telemetry every N seconds (0 = never).
-    #[arg(long = "report-every", default_value_t = 5.0)]
-    pub report_every: f64,
-
-    /// Keep bytes already queued in the pipe when it opens.
-    #[arg(long = "no-drain-pipe")]
-    pub no_drain_pipe: bool,
-
-    /// Run the OSC server (Studio control and monitoring), as `render --osc`.
-    /// Without this or `--no-osc`, the config's `render.osc` decides.
-    #[arg(long, conflicts_with = "no_osc")]
-    pub osc: bool,
-
-    /// Keep the OSC server off whatever the config says.
-    #[arg(long, conflicts_with = "osc")]
-    pub no_osc: bool,
-
-    /// OSC target host (default: the config's, else localhost).
-    #[arg(long, value_name = "HOST")]
-    pub osc_host: Option<String>,
-
-    /// OSC target port (default: the config's).
-    #[arg(long, value_name = "PORT")]
-    pub osc_port: Option<u16>,
-
-    /// OSC registration listener port (default: the config's).
-    #[arg(long, value_name = "PORT")]
-    pub osc_rx_port: Option<u16>,
-}
 
 /// Latency held when neither the command line nor the config names one (ms).
 const DEFAULT_TARGET_LATENCY_MS: f64 = 150.0;
@@ -162,13 +90,6 @@ pub fn resolve_source_clock(config: Option<&str>) -> SourceClock {
 pub fn resolve_target_latency_ms(flag: Option<f64>, config: Option<u32>) -> f64 {
     flag.or(config.map(f64::from))
         .unwrap_or(DEFAULT_TARGET_LATENCY_MS)
-}
-
-/// Where the stream comes from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum SourceKind {
-    Pipe,
-    Own,
 }
 
 /// The rate the engine is built at: what it renders before a stream sets its
@@ -646,6 +567,10 @@ pub struct HostConfig {
     /// The file the config names for the `file` backend, if any: what a
     /// switch to it writes until a client names another.
     pub output_file: Option<String>,
+    /// A precomputed VBAP table to load, and whether the objects' positions
+    /// are logged: the renderer settings that are the command line's alone.
+    pub vbap_table: Option<PathBuf>,
+    pub log_object_positions: bool,
     /// The clock the source is taken to run on, as asked for.
     pub source_clock: SourceClock,
     /// Stay up after a stream ends, for the next one. Without it the run
@@ -772,93 +697,22 @@ pub enum HostExit {
     RestartFromConfig,
 }
 
-pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Result<()> {
-    let config_path = config_path.or_else(renderer::config::default_config_path);
-    let config = config_path
-        .as_deref()
-        .map(renderer::config::Config::load_or_default)
-        .unwrap_or_default();
-    let render = config.render.clone().unwrap_or_default();
-    let source = match args.source {
-        SourceKind::Pipe => Source::Pipe {
-            path: args
-                .input
-                .clone()
-                .context("--source pipe needs an INPUT pipe")?,
-            drain: !args.no_drain_pipe,
-        },
-        SourceKind::Own => Source::OwnSink {
-            node_name: args.sink_name.clone(),
-            description: "Omniphony (sync)".into(),
-            session_priority: args.sink_session_priority,
-        },
-    };
-    // The same resolution as every host (flag, config, workflow port); off
-    // unless one of them asks, as for `render`.
-    let osc = OscSettings::resolve(
-        Some(&render),
-        &OscOverrides {
-            enabled: args.osc.then_some(true).or(args.no_osc.then_some(false)),
-            host: args.osc_host.clone(),
-            port_out: args.osc_port,
-            port_in: args.osc_rx_port,
-            metering: None,
-        },
-        false,
-    );
-    let config = HostConfig {
-        resolved_config: None,
-        speaker_layout: None,
-        channel_render_mode: None,
-        bridge_paths: render.bridges(),
-        input_request: InputRequest {
-            mode: match args.source {
-                SourceKind::Pipe => InputMode::Bridge,
-                SourceKind::Own => InputMode::Pipewire,
-            },
-            node: matches!(args.source, SourceKind::Own).then(|| args.sink_name.clone()),
-            description: None,
-        },
-        input_path: args.input.clone(),
-        drain_pipe: !args.no_drain_pipe,
-        source,
-        target_latency_ms: resolve_target_latency_ms(args.target_latency_ms, render.latency_target),
-        loop_bandwidth_hz: args
-            .loop_bandwidth_hz
-            .or(render.loop_bandwidth_hz.map(f64::from)),
-        realign_threshold_ms: resolve_realign_threshold_ms(render.realign_threshold_ms),
-        output: OutputKind::Device,
-        output_file: render.output_file.clone(),
-        source_clock: resolve_source_clock(render.source_clock.as_deref()),
-        continuous: true,
-        offline: false,
-        output_target: args
-            .output_target
-            .clone()
-            .or_else(|| render.output_device.clone()),
-        quantum: args.quantum,
-        osc,
-        seconds: args.seconds,
-        report_every: args.report_every,
-        config_path,
-    };
-    run(&config, &mut HostSession::default()).map(|_| ())
-}
-
 /// Run the host until its capture ends, its time runs out, or the process is
 /// asked to stop or to restart from the config. `session` carries the
 /// capture from one run to the next.
 pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
     let mut engine = match &config.resolved_config {
-        Some((resolved, live_restored)) => Engine::from_config(
-            config.config_path.as_deref(),
-            Some(resolved.clone()),
-            *live_restored,
-            config.speaker_layout.as_deref(),
-            &config.bridge_paths,
-            None,
-            ENGINE_RATE,
-        ),
+        Some((resolved, live_restored)) => Engine::from_host(HostSetup {
+            config_yaml_path: config.config_path.as_deref(),
+            config: Some(resolved.clone()),
+            live_restored: *live_restored,
+            speaker_layout_path: config.speaker_layout.as_deref(),
+            bridge_paths: &config.bridge_paths,
+            input_codec: None,
+            sample_rate: ENGINE_RATE,
+            vbap_table: config.vbap_table.clone(),
+            log_object_positions: config.log_object_positions,
+        }),
         None => Engine::from_paths(
             config.config_path.as_deref(),
             config.speaker_layout.as_deref(),
@@ -1565,6 +1419,9 @@ fn start_device(
     telemetry: &Arc<SyncTelemetry>,
 ) -> Result<(Device, Option<usize>)> {
     let (config, settings) = (ctx.env.config, ctx.settings);
+    if let Some(reason) = own_sink_loop(ctx.source, settings.output_target.as_deref()) {
+        anyhow::bail!(reason);
+    }
     // The live option says how the device routes the channels: by the
     // position each is tagged with, or one to one in order (positionless
     // names), port N being the layout's speaker N.
@@ -1644,6 +1501,141 @@ fn start_device(
         },
         pace_limit,
     ))
+}
+
+/// Why the output device asked for cannot be played on, when it is the very
+/// sink this renderer publishes as its input: the rendered audio would come
+/// back in to be rendered again. Refused while it is still a setting to
+/// change; the message reaches the clients as the output's error.
+fn own_sink_loop(source: &Source, output_target: Option<&str>) -> Option<String> {
+    match (source, output_target) {
+        (Source::OwnSink { node_name, .. }, Some(target)) if target == node_name => Some(format!(
+            "Output device '{target}' is this renderer's own input sink: playing into it \
+             would loop the audio back into the render. Select a real playback device."
+        )),
+        _ => None,
+    }
+}
+
+/// The meter and diag cadences (Hz) this host falls back on when the config
+/// names none, as the standalone renderer always has.
+const CADENCE_DEFAULTS_HZ: (f32, f32) = (50.0, 50.0);
+
+/// The no-bridge runtime of [`run_without_bridge`], serving OSC when the run
+/// has it on, with the controls its handler reads.
+pub fn no_bridge_runtime(
+    config: &HostConfig,
+    bridge_error: &str,
+) -> Result<(orender_engine::NoBridgeRuntime, Controls)> {
+    let render_cfg = config
+        .resolved_config
+        .as_ref()
+        .and_then(|(resolved, _)| resolved.render.clone());
+    let mut renderer_params =
+        orender_engine::renderer_build::SpatialRendererParams::from_render_config(
+            render_cfg.as_ref(),
+        );
+    renderer_params.vbap_table = config.vbap_table.clone();
+    renderer_params.log_object_positions = config.log_object_positions;
+    let mut runtime = orender_engine::NoBridgeRuntime::build(orender_engine::NoBridgeSetup {
+        config_path: config.config_path.clone(),
+        render_cfg,
+        renderer_params,
+        speaker_layout_path: config.speaker_layout.clone(),
+        requested_bridge_paths: config.bridge_paths.clone(),
+        sample_rate: ENGINE_RATE,
+        cadence_defaults_hz: CADENCE_DEFAULTS_HZ,
+        bridge_error: bridge_error.to_string(),
+        host_abi: None,
+    })?;
+    let control = runtime.control();
+    if let Some(path) = &config.input_path {
+        control.set_input_path(Some(path.display().to_string()));
+    }
+    if let Some(mode) = config.channel_render_mode {
+        control.live.write().channel_render_mode = mode;
+    }
+    let controls = Controls::new(config, Arc::clone(&control));
+    // The input panel says what to do about it.
+    if let Some(summary) = control.bridge_error() {
+        controls.input_failed(format!(
+            "Bridge unavailable ({summary}). Set a working bridge binary path and Apply."
+        ));
+    }
+    if let Some(options) = config.osc.options() {
+        runtime.start_osc(&options, Some(controls.handler()), true)?;
+    }
+    Ok((runtime, controls))
+}
+
+/// A run with no decoder bridge: nothing can be decoded or played, and the
+/// renderer stays up to say why and to be fixed. The engine's no-bridge
+/// runtime (the one the embedded host keeps up too) serves the live state and
+/// the bridge error over OSC, with this host's controls attached, so a client
+/// can still set a bridge path and pick an output; it ends on a shutdown or a
+/// restart from the config, like any run.
+pub fn run_without_bridge(config: &HostConfig, bridge_error: &anyhow::Error) -> Result<HostRun> {
+    let (runtime, _controls) = no_bridge_runtime(config, &format!("{bridge_error:#}"))?;
+    log::warn!(
+        "Bridge unavailable, idle with no decode and no audio: {bridge_error:#}. \
+         Waiting for /omniphony/control/reload_config with a working render.bridge_path."
+    );
+    let (renderer, mut osc) = runtime.into_parts();
+    sys::notify_ready();
+    let exit = loop {
+        if sys::ShutdownHandle::is_requested() {
+            break HostExit::Shutdown;
+        }
+        if sys::ShutdownHandle::is_restart_from_config_requested() {
+            break HostExit::RestartFromConfig;
+        }
+        // An idle holder of the OSC port still yields it to a player's
+        // embedded engine, and takes it back.
+        if sys::shutdown::is_standby_requested() {
+            sys::shutdown::take_standby_request();
+            if let Some(osc) = osc.as_mut() {
+                idle_stand_by(osc);
+            }
+            continue;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    if exit == HostExit::Shutdown {
+        sys::notify_stopping();
+    }
+    Ok(HostRun {
+        exit,
+        bridge_paths: renderer.renderer_control().bridge_paths(),
+    })
+}
+
+/// [`stand_by`] for the run with no bridge: the port is released until the
+/// player hands it back (or the process is asked to stop or restart), and
+/// released again when it is still held at the resume.
+fn idle_stand_by(osc: &mut orender_engine::osc::OscSender) {
+    loop {
+        log::info!("sync host: standby, OSC port released");
+        osc.enter_standby();
+        loop {
+            if sys::ShutdownHandle::is_requested()
+                || sys::ShutdownHandle::is_restart_from_config_requested()
+            {
+                return;
+            }
+            if sys::shutdown::take_resume_request() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if let Err(e) = osc.resume() {
+            log::error!("sync host: the OSC port could not be bound again: {e}");
+        }
+        if osc.is_listening() {
+            log::info!("sync host: resumed from standby");
+            return;
+        }
+        log::warn!("sync host: the OSC port is still held, standing by again");
+    }
 }
 
 /// Push the blocks in `pending`, oldest first, until the ring holds `limit`
@@ -2416,6 +2408,8 @@ mod tests {
             input_path: None,
             drain_pipe: true,
             output_file: None,
+            vbap_table: None,
+            log_object_positions: false,
             source,
             target_latency_ms,
             loop_bandwidth_hz: None,
@@ -2426,7 +2420,7 @@ mod tests {
             continuous: true,
             offline: false,
             quantum: 1024,
-            osc: OscSettings::resolve(None, &OscOverrides::default(), false),
+            osc: OscSettings::resolve(None, &orender_engine::OscOverrides::default(), false),
             seconds: None,
             report_every: 0.0,
         }
@@ -2499,6 +2493,25 @@ mod tests {
                 .source(None, true, None)
                 .is_err()
         );
+    }
+
+    /// Playing into the sink the renderer publishes as its input is refused;
+    /// any other device, the default one, or another input, is not.
+    #[test]
+    fn playing_into_its_own_input_sink_is_refused() {
+        let sink = Source::OwnSink {
+            node_name: "omniphony".into(),
+            description: "Omniphony".into(),
+            session_priority: None,
+        };
+        let pipe = Source::Pipe {
+            path: "/p".into(),
+            drain: true,
+        };
+        assert!(own_sink_loop(&sink, Some("omniphony")).is_some_and(|m| m.contains("omniphony")));
+        assert_eq!(own_sink_loop(&sink, Some("alsa_output.usb-dac")), None);
+        assert_eq!(own_sink_loop(&sink, None), None);
+        assert_eq!(own_sink_loop(&pipe, Some("omniphony")), None);
     }
 
     /// An epoch that picks a stream up on the way counts the transport from

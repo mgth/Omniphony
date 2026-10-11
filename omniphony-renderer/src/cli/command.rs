@@ -114,10 +114,6 @@ pub enum Commands {
     /// Generate VBAP gain table from speaker layout configuration
     GenerateVbap(GenerateVbapArgs),
 
-    /// Play a pipe through the new sync output (resampling rework, experimental).
-    #[command(hide = true)]
-    SyncPlay(crate::cli::sync_host::SyncPlayArgs),
-
     /// List the realtime output devices (Windows only): the ASIO ones, or the
     /// WASAPI ones when no ASIO driver is installed
     #[cfg(target_os = "windows")]
@@ -300,12 +296,6 @@ pub struct RenderArgs {
     /// (By default, orender drains FIFOs to minimize latency for real-time streams)
     #[arg(long)]
     pub no_drain_pipe: bool,
-
-    /// [LINUX ONLY] Play through the sync host (the resampling rework's
-    /// engine) instead of the legacy one. Also `ORENDER_SYNC_ENGINE=1`.
-    /// Temporary: gone at the cutover (docs/resampling-rework-plan.md §17).
-    #[arg(long, hide = true)]
-    pub sync_engine: bool,
 
     /// Output sample rate in Hz: option `output_sample_rate` (unset = the
     /// stream's).

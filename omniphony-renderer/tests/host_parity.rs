@@ -61,33 +61,11 @@ fn work_dir(name: &str, config: &str) -> PathBuf {
 
 /// The demo rendered by the CLI to a raw `f32` file, as samples.
 fn render_with_cli(work: &Path) -> Vec<f32> {
-    render_with_cli_host(work, CliHost::Legacy)
-}
-
-/// Which of the CLI's two hosts renders, while there are two
-/// (`docs/resampling-rework-plan.md` §17).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CliHost {
-    Legacy,
-    /// The sync host, behind `--sync-engine`.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    Sync,
-}
-
-fn render_with_cli_host(work: &Path, host: CliHost) -> Vec<f32> {
-    let name = match host {
-        CliHost::Legacy => "cli",
-        CliHost::Sync => "cli-sync",
-    };
+    let name = "cli";
     let output = work.join(format!("{name}.f32"));
     let log = work.join(format!("{name}-stderr.log"));
     let mut command = Command::new(env!("CARGO_BIN_EXE_orender"));
-    // The environment must not pick the host for a run that names it.
-    command.env_remove("ORENDER_SYNC_ENGINE");
     command.arg("render");
-    if host == CliHost::Sync {
-        command.arg("--sync-engine");
-    }
     let mut child = command
         .arg(demo_input())
         .arg("--bridge-path")
@@ -241,70 +219,4 @@ fn cli_and_engine_render_binaural_identically() {
         "host_parity_binaural",
         &std::fs::read_to_string(manifest_dir().join("assets/demo/demo.yaml")).unwrap(),
     );
-}
-
-/// The sync host's offline render (a file in, a file out) against the legacy
-/// host's, bit for bit, on the same three configurations: until the cutover
-/// `orender render` has two hosts, and a file must come out the same from
-/// either.
-#[cfg(target_os = "linux")]
-mod sync_host {
-    use super::*;
-
-    fn assert_sync_host_agrees(name: &str, config: &str) {
-        let work = work_dir(name, config);
-        let legacy = render_with_cli_host(&work, CliHost::Legacy);
-        let sync = render_with_cli_host(&work, CliHost::Sync);
-        assert!(
-            legacy.iter().any(|s| *s != 0.0),
-            "the legacy host rendered silence: the comparison would prove nothing"
-        );
-        assert_eq!(
-            legacy.len(),
-            sync.len(),
-            "the legacy host wrote {} samples, the sync host {}",
-            legacy.len(),
-            sync.len()
-        );
-        if let Some(first) = legacy
-            .iter()
-            .zip(&sync)
-            .position(|(a, b)| a.to_bits() != b.to_bits())
-        {
-            let differing = legacy
-                .iter()
-                .zip(&sync)
-                .filter(|(a, b)| a.to_bits() != b.to_bits())
-                .count();
-            panic!(
-                "the hosts render differently: {differing} of {} samples differ, the first \
-                 at sample {first} (legacy {} vs sync {})",
-                legacy.len(),
-                legacy[first],
-                sync[first],
-            );
-        }
-    }
-
-    #[test]
-    fn the_sync_host_renders_the_demo_as_the_legacy_host_does() {
-        assert_sync_host_agrees("sync_parity_speakers", "render: {}\n");
-    }
-
-    #[test]
-    fn the_sync_host_synthesizes_objects_as_the_legacy_host_does() {
-        assert_sync_host_agrees(
-            "sync_parity_synthetic_objects",
-            "render:\n  synthetic_objects_enabled: true\n  phantom_extract_mode: broadband\n  \
-             object_generator_id: pad\n",
-        );
-    }
-
-    #[test]
-    fn the_sync_host_renders_binaural_as_the_legacy_host_does() {
-        assert_sync_host_agrees(
-            "sync_parity_binaural",
-            &std::fs::read_to_string(manifest_dir().join("assets/demo/demo.yaml")).unwrap(),
-        );
-    }
 }

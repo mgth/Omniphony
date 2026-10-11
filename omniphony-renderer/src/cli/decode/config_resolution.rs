@@ -3,7 +3,7 @@ use crate::cli::command::{
 };
 use anyhow::Result;
 use orender_engine::osc_settings::{OscOverrides, OscSettings};
-use orender_engine::renderer_build::{DEFAULT_ROOM_RATIO, SpatialRendererParams};
+use orender_engine::renderer_build::DEFAULT_ROOM_RATIO;
 
 /// Parse the persisted `output_file_format` string into the CLI enum.
 fn parse_output_file_format(s: &str) -> Option<OutputFileFormatArg> {
@@ -62,10 +62,10 @@ pub(super) fn apply_render_cfg_overrides(
 /// registry options (the VBAP spread keys, the master gain in dB) into a
 /// render config, over whatever the file says.
 ///
-/// The CLI's renderer params are [`renderer_params`] of the result, which is
-/// [`SpatialRendererParams::from_render_config`] — the resolution the embedded
-/// engine runs — so a config key one host honours cannot be missed by the
-/// other, nor defaulted differently. Only explicit flags are written: a flag
+/// The renderer is built from the result by
+/// [`SpatialRendererParams::from_render_config`], the resolution the embedded
+/// engine runs too (both go through `Engine`), so a config key one host
+/// honours cannot be missed by the other, nor defaulted differently. Only explicit flags are written: a flag
 /// left at its clap default must not mask the file. Values go to the raw
 /// fields (never through the skip-if-default `store`), so an explicit default
 /// still overrides a non-default file value, and the legacy VBAP spread keys
@@ -99,19 +99,6 @@ pub(super) fn apply_explicit_renderer_args(
     if explicit("master_gain") {
         render.master_gain = Some(args.master_gain);
     }
-}
-
-/// Renderer construction params for a run: the shared config resolution of
-/// the effective render config (the file with the explicit flags applied, see
-/// [`apply_explicit_renderer_args`]) plus the two CLI-only knobs.
-pub(super) fn renderer_params(
-    effective: &renderer::config::RenderConfig,
-    args: &RenderArgs,
-) -> SpatialRendererParams {
-    let mut params = SpatialRendererParams::from_render_config(Some(effective));
-    params.vbap_table = args.vbap_table.clone();
-    params.log_object_positions = args.log_object_positions;
-    params
 }
 
 /// The host overrides the OSC flags given on the command line express.
@@ -599,7 +586,9 @@ mod tests {
         super::apply_explicit_renderer_args(&mut render, &args, &cli.render_sources());
 
         let renderer = orender_engine::renderer_build::build_spatial_renderer(
-            &super::renderer_params(&render, &args),
+            &orender_engine::renderer_build::SpatialRendererParams::from_render_config(Some(
+                &render,
+            )),
             renderer::speaker_layout::SpeakerLayout::preset("7.1.4").expect("preset"),
             48_000,
             bridge_api::RVbapCartesianDefaults {
@@ -617,9 +606,9 @@ mod tests {
         assert_eq!(bag["vbap"].get("spread_max"), Some(&ParamValue::Float(0.5)));
     }
 
-    /// The CLI's renderer params are the shared config resolution — the call
-    /// the embedded engine makes — with the explicit flags over it, and
-    /// nothing else: with no flags, the two hosts build the same renderer.
+    /// The renderer params are the shared config resolution, of the render
+    /// section with the explicit flags written over it, and nothing else:
+    /// with no flags, the two hosts build the same renderer.
     #[test]
     fn renderer_params_are_the_engine_resolution_plus_explicit_flags() {
         let file = renderer::config::RenderConfig {
@@ -642,7 +631,7 @@ mod tests {
             )
             .expect("valid flags");
             super::apply_explicit_renderer_args(&mut render, &args, &cli.render_sources());
-            super::renderer_params(&render, &args)
+            orender_engine::renderer_build::SpatialRendererParams::from_render_config(Some(&render))
         };
 
         let engine =
@@ -699,7 +688,9 @@ mod tests {
             )
             .expect("valid flags");
             super::apply_explicit_renderer_args(&mut render, &args, &cli.render_sources());
-            let params = super::renderer_params(&render, &args);
+            let params = orender_engine::renderer_build::SpatialRendererParams::from_render_config(
+                Some(&render),
+            );
             let room = renderer::config_fields::room::parse(
                 &params.room_ratio,
                 params.room_ratio_rear,

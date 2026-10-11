@@ -303,6 +303,23 @@ impl Drop for Engine {
     }
 }
 
+/// What a host that loaded the config itself hands the engine
+/// ([`Engine::from_host`]): [`Engine::from_config`]'s inputs, and the two
+/// renderer settings that are a command line's alone.
+pub struct HostSetup<'a> {
+    pub config_yaml_path: Option<&'a Path>,
+    pub config: Option<Config>,
+    pub live_restored: bool,
+    pub speaker_layout_path: Option<&'a Path>,
+    pub bridge_paths: &'a [PathBuf],
+    pub input_codec: Option<&'a str>,
+    pub sample_rate: u32,
+    /// A precomputed VBAP table to load (`--vbap-table`).
+    pub vbap_table: Option<PathBuf>,
+    /// Log the objects' positions as they are rendered.
+    pub log_object_positions: bool,
+}
+
 impl Engine {
     /// Build a session around an already-loaded bridge and a constructed
     /// renderer. The bridge must already be configured (presentation, DRC mode)
@@ -600,6 +617,33 @@ impl Engine {
         input_codec: Option<&str>,
         sample_rate: u32,
     ) -> Result<Self> {
+        Self::from_host(HostSetup {
+            config_yaml_path,
+            config,
+            live_restored,
+            speaker_layout_path,
+            bridge_paths,
+            input_codec,
+            sample_rate,
+            vbap_table: None,
+            log_object_positions: false,
+        })
+    }
+
+    /// [`from_config`](Self::from_config), with what only a host with flags
+    /// of its own can ask of the renderer ([`HostSetup`]).
+    pub fn from_host(setup: HostSetup<'_>) -> Result<Self> {
+        let HostSetup {
+            config_yaml_path,
+            config,
+            live_restored,
+            speaker_layout_path,
+            bridge_paths,
+            input_codec,
+            sample_rate,
+            vbap_table,
+            log_object_positions,
+        } = setup;
         let t_total = std::time::Instant::now();
         let loaded_cfg = config;
         // Client-visible profiles view (active name + list), applied to the
@@ -671,7 +715,9 @@ impl Engine {
             .migrated
         });
 
-        let params = SpatialRendererParams::from_render_config(render_cfg.as_ref());
+        let mut params = SpatialRendererParams::from_render_config(render_cfg.as_ref());
+        params.vbap_table = vbap_table;
+        params.log_object_positions = log_object_positions;
         let mut renderer = build_spatial_renderer(
             &params,
             layout,

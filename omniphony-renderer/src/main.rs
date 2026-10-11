@@ -172,7 +172,6 @@ fn main() -> Result<()> {
             anyhow::bail!("The 'input-live' command is defined but not implemented yet.")
         }
         Commands::GenerateVbap(ref args) => cmd_generate_vbap(args),
-        Commands::SyncPlay(ref args) => cli::sync_host::cmd_sync_play(args, cli.config.clone()),
         #[cfg(target_os = "windows")]
         Commands::ListAsioDevices => cmd_list_asio_devices(),
         #[cfg(target_os = "macos")]

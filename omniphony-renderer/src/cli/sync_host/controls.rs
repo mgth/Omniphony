@@ -278,6 +278,8 @@ mod tests {
             input_path: Some("/in".into()),
             drain_pipe: true,
             output_file: None,
+            vbap_table: None,
+            log_object_positions: false,
             target_latency_ms: 180.0,
             loop_bandwidth_hz: None,
             realign_threshold_ms: 20.0,
