@@ -12,55 +12,13 @@ use orender_engine::stream_state::StreamDeclaration;
 use renderer::metering::AudioMeter;
 use renderer::placement::{PlacementState, SourceFamily};
 use renderer::spatial_renderer::SpatialRenderer;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// What the handler calls the PipeWire sink's plain PCM, which has no bridge
 /// to name it (`StreamDeclaration::label`).
 const LIVE_PCM_LABEL: &str = "PCM";
 
-/// Tracks the diag-publication cadence. The rate is read from a shared
-/// atomic (`RendererControl::diag_rate_atomic`) each tick so the user
-/// can adjust the cadence live; the interval is cached to avoid recomputing
-/// the Duration from f32 each call.
-pub struct DiagPublishCadence {
-    pub rate_hz_bits: Arc<AtomicU32>,
-    pub interval: Duration,
-    pub last_rate_seen: f32,
-    pub last_send_at: Option<Instant>,
-}
-
-impl DiagPublishCadence {
-    pub fn new(rate_hz_bits: Arc<AtomicU32>) -> Self {
-        let initial = f32::from_bits(rate_hz_bits.load(Ordering::Relaxed)).max(1.0);
-        Self {
-            rate_hz_bits,
-            interval: Duration::from_secs_f32(1.0 / initial),
-            last_rate_seen: initial,
-            last_send_at: None,
-        }
-    }
-
-    /// Return true if the interval has elapsed since the last send (or no
-    /// send has happened yet); refresh the cached interval from the atomic
-    /// when the rate has changed.
-    pub fn should_send(&mut self, now: Instant) -> bool {
-        let hz = f32::from_bits(self.rate_hz_bits.load(Ordering::Relaxed)).max(1.0);
-        if (hz - self.last_rate_seen).abs() > 1e-3 {
-            self.last_rate_seen = hz;
-            self.interval = Duration::from_secs_f32(1.0 / hz);
-        }
-        match self.last_send_at {
-            None => true,
-            Some(last) => now.duration_since(last) >= self.interval,
-        }
-    }
-
-    pub fn mark_sent(&mut self, now: Instant) {
-        self.last_send_at = Some(now);
-    }
-}
+pub use orender_engine::DiagPublishCadence;
 
 #[derive(Clone)]
 pub struct RuntimeOutputState {
@@ -313,9 +271,6 @@ pub struct OutputState {
     /// Reused copy of the decoded PCM for the unrendered writes.
     pub pcm_i32_buf: Vec<i32>,
     pub output_init_failed: bool,
-    pub last_audio_delay_written_ms: Option<f32>,
-    pub last_audio_delay_attempted_ms: Option<f32>,
-    pub last_audio_delay_write_error_at: Option<Instant>,
     pub last_audio_sample_rate_hz: Option<u32>,
     pub last_audio_sample_format: Option<String>,
     pub last_audio_output_device: Option<String>,
@@ -334,9 +289,6 @@ impl Default for OutputState {
             render_buf: Vec::new(),
             pcm_i32_buf: Vec::new(),
             output_init_failed: false,
-            last_audio_delay_written_ms: None,
-            last_audio_delay_attempted_ms: None,
-            last_audio_delay_write_error_at: None,
             last_audio_sample_rate_hz: None,
             last_audio_sample_format: None,
             last_audio_output_device: None,
@@ -369,9 +321,6 @@ impl OutputState {
     pub fn reset_realtime_output_tracking(&mut self) {
         self.bootstrap_frames_seen = 0;
         self.bootstrap_started_at = None;
-        self.last_audio_delay_written_ms = None;
-        self.last_audio_delay_attempted_ms = None;
-        self.last_audio_delay_write_error_at = None;
     }
 
     pub fn update_adaptive_config(&self, config: audio_output::AdaptiveResamplingConfig) {

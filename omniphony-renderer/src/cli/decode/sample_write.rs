@@ -168,53 +168,6 @@ impl<'a> SampleWriteCoordinator<'a> {
             }
         }
 
-        let freeze_delay_sync = current_latency_control_ms
-            .zip(current_latency_target_ms)
-            .map(|(control_ms, target_ms)| control_ms + 40.0 < target_ms)
-            .unwrap_or(false)
-            || current_resample_ratio
-                .map(|ratio| (ratio - 1.0).abs() >= 0.03)
-                .unwrap_or(false);
-        if let Some(total_ms) = self.output.audio_writer.as_ref().and_then(|w| {
-            w.measured_audio_delay_ms()
-                .or_else(|| w.target_audio_delay_ms())
-        }) {
-            let should_write = !freeze_delay_sync
-                && self
-                    .output
-                    .last_audio_delay_attempted_ms
-                    .map(|prev| (total_ms - prev).abs() >= 20.0)
-                    .unwrap_or(true);
-            if should_write {
-                let delay_s = -(total_ms / 1000.0);
-                let delay_path = std::env::temp_dir().join("omniphony_delay");
-                self.output.last_audio_delay_attempted_ms = Some(total_ms);
-                if let Err(e) = std::fs::write(&delay_path, format!("{:.4}\n", delay_s)) {
-                    let now = Instant::now();
-                    let should_log = self
-                        .output
-                        .last_audio_delay_write_error_at
-                        .map(|prev| now.saturating_duration_since(prev).as_secs_f32() >= 5.0)
-                        .unwrap_or(true);
-                    if should_log {
-                        log::warn!("Could not write {}: {}", delay_path.display(), e);
-                        self.output.last_audio_delay_write_error_at = Some(now);
-                    }
-                } else {
-                    self.output.last_audio_delay_written_ms = Some(total_ms);
-                    self.output.last_audio_delay_write_error_at = None;
-                }
-            } else if freeze_delay_sync {
-                log::trace!(
-                    "Freezing omniphony_delay update during audio recovery: control_ms={:?} target_ms={:?} ratio={:?} band={:?}",
-                    current_latency_control_ms,
-                    current_latency_target_ms,
-                    current_resample_ratio,
-                    current_adaptive_band
-                );
-            }
-        }
-
         if self.output.audio_writer.is_none() {
             return Ok(());
         }

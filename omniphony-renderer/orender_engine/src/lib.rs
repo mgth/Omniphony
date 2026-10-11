@@ -16,6 +16,7 @@ pub mod channel_layout;
 pub mod channel_objects;
 pub mod decode_step;
 pub mod degraded;
+pub mod diag_cadence;
 pub mod engine;
 pub mod events;
 pub mod frame_pipeline;
@@ -35,6 +36,7 @@ pub mod virtual_bed;
 
 pub use channel_layout::label_for_speaker_name;
 pub use degraded::{NoBridgeRuntime, NoBridgeSetup};
+pub use diag_cadence::DiagPublishCadence;
 pub use engine::{DecodeThreadMode, Engine, OscOptions, RenderedAudio};
 pub use osc::{ObjectMeta, OscSender};
 pub use osc_settings::{OscOverrides, OscSettings};

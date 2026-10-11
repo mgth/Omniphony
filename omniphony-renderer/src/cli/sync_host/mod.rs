@@ -22,10 +22,15 @@
 //! arrival of the bytes that completed them: exact in rate, but the decoder's
 //! burst granularity shows as up to a chunk of arrival lateness.
 //!
+//! With the OSC server on (`--osc`, or the config's `render.osc`), the host
+//! publishes the latency it holds, the latency it measures and the servo's
+//! quantities ([`telemetry`], plan §16).
+//!
 //! Hidden while experimental. Linux only for now (PipeWire output).
 
 mod own_sink;
 mod reader;
+mod telemetry;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,9 +45,11 @@ use audio_rt::{Producer, frame_ring};
 use bridge_api::RInputTransport;
 use clap::Args;
 use orender_engine::engine::{Engine, RenderedAudio};
+use orender_engine::{OscOverrides, OscSettings};
 use spdif::SpdifParser;
 
 use reader::{ReaderMsg, Transport, spawn_reader};
+use telemetry::HostTelemetry;
 
 /// `orender sync-play` arguments.
 #[derive(Debug, Clone, Args)]
@@ -65,9 +72,10 @@ pub struct SyncPlayArgs {
     #[arg(long = "sink-session-priority")]
     pub sink_session_priority: Option<u32>,
 
-    /// End-to-end latency to hold (ms).
-    #[arg(long = "target-latency-ms", default_value_t = 150.0)]
-    pub target_latency_ms: f64,
+    /// End-to-end latency to hold (ms). Defaults to the config's
+    /// `render.latency_target`, else 150.
+    #[arg(long = "target-latency-ms")]
+    pub target_latency_ms: Option<f64>,
 
     /// Phase-loop bandwidth (Hz). Defaults to the `follow` value.
     #[arg(long = "loop-bandwidth-hz")]
@@ -93,6 +101,37 @@ pub struct SyncPlayArgs {
     /// Keep bytes already queued in the pipe when it opens.
     #[arg(long = "no-drain-pipe")]
     pub no_drain_pipe: bool,
+
+    /// Run the OSC server (Studio control and monitoring), as `render --osc`.
+    /// Without this or `--no-osc`, the config's `render.osc` decides.
+    #[arg(long, conflicts_with = "no_osc")]
+    pub osc: bool,
+
+    /// Keep the OSC server off whatever the config says.
+    #[arg(long, conflicts_with = "osc")]
+    pub no_osc: bool,
+
+    /// OSC target host (default: the config's, else localhost).
+    #[arg(long, value_name = "HOST")]
+    pub osc_host: Option<String>,
+
+    /// OSC target port (default: the config's).
+    #[arg(long, value_name = "PORT")]
+    pub osc_port: Option<u16>,
+
+    /// OSC registration listener port (default: the config's).
+    #[arg(long, value_name = "PORT")]
+    pub osc_rx_port: Option<u16>,
+}
+
+/// Latency held when neither the command line nor the config names one (ms).
+const DEFAULT_TARGET_LATENCY_MS: f64 = 150.0;
+
+/// The end-to-end latency to hold (ms): the flag, else the config's
+/// `render.latency_target`, else [`DEFAULT_TARGET_LATENCY_MS`].
+fn resolve_target_latency_ms(flag: Option<f64>, config: Option<u32>) -> f64 {
+    flag.or(config.map(f64::from))
+        .unwrap_or(DEFAULT_TARGET_LATENCY_MS)
 }
 
 /// Where the stream comes from.
@@ -191,12 +230,33 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
         .output_target
         .clone()
         .or_else(|| render.output_device.clone());
+    let target_ms = resolve_target_latency_ms(args.target_latency_ms, render.latency_target);
     log::info!(
-        "sync host: {channels} channels ({}), target {} ms, output {}",
+        "sync host: {channels} channels ({}), target {target_ms} ms, output {}",
         positions.join(","),
-        args.target_latency_ms,
         target.as_deref().unwrap_or("<session default>")
     );
+
+    // The same resolution as every host (flag, config, workflow port); off
+    // unless one of them asks, as for `render`.
+    let osc = OscSettings::resolve(
+        Some(&render),
+        &OscOverrides {
+            enabled: args.osc.then_some(true).or(args.no_osc.then_some(false)),
+            host: args.osc_host.clone(),
+            port_out: args.osc_port,
+            port_in: args.osc_rx_port,
+            metering: None,
+        },
+        false,
+    );
+    if let Some(options) = osc.options() {
+        log::info!("sync host: OSC on {}:{}", options.host, options.port_out);
+        engine
+            .enable_osc(options)
+            .context("starting the OSC server")?;
+    }
+    let mut telemetry = HostTelemetry::new(target_ms);
 
     let (rx, stats) = match args.source {
         SourceKind::Pipe => {
@@ -209,7 +269,7 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
         SourceKind::Own => own_sink::spawn_own_sink(own_sink::OwnSinkConfig {
             node_name: args.sink_name.clone(),
             description: "Omniphony (sync)".into(),
-            latency_ns: (args.target_latency_ms * 1e6) as i64,
+            latency_ns: (target_ms * 1e6) as i64,
             quantum: args.quantum,
             session_priority: args.sink_session_priority,
         })?,
@@ -230,6 +290,7 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
             .is_some_and(|at| Instant::now() >= at)
             && let Some(ep) = epoch.take()
         {
+            telemetry.close_epoch(&ep.telemetry.snapshot());
             log::info!(
                 "sync host: stream ended after {:.1} s; {}",
                 ep.started.elapsed().as_secs_f64(),
@@ -244,9 +305,17 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
         match msg {
             Some(ReaderMsg::Start) => {
                 // A new stream replaces whatever was still playing out.
-                drop(epoch.take());
+                if let Some(ep) = epoch.take() {
+                    telemetry.close_epoch(&ep.telemetry.snapshot());
+                }
                 engine.reset();
-                epoch = Some(start_epoch(args, channels, &positions, target.clone())?);
+                epoch = Some(start_epoch(
+                    args,
+                    target_ms,
+                    channels,
+                    &positions,
+                    target.clone(),
+                )?);
                 log::info!("sync host: stream opened, new epoch");
             }
             Some(ReaderMsg::Chunk {
@@ -262,9 +331,8 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
             Some(ReaderMsg::End) => {
                 if let Some(ep) = epoch.take() {
                     // Let what is queued play out, then close the stream.
-                    std::thread::sleep(Duration::from_secs_f64(
-                        args.target_latency_ms / 1e3 + 0.05,
-                    ));
+                    std::thread::sleep(Duration::from_secs_f64(target_ms / 1e3 + 0.05));
+                    telemetry.close_epoch(&ep.telemetry.snapshot());
                     log::info!(
                         "sync host: stream ended after {:.1} s; {}",
                         ep.started.elapsed().as_secs_f64(),
@@ -274,6 +342,10 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
             }
             None => {}
         }
+        telemetry.publish(
+            &mut engine,
+            epoch.as_ref().map(|ep| ep.telemetry.snapshot()).as_ref(),
+        );
         if args.report_every > 0.0 && started.elapsed().as_secs_f64() >= next_report {
             next_report += args.report_every;
             if let Some(ep) = epoch.as_ref() {
@@ -290,6 +362,7 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
 
 fn start_epoch(
     args: &SyncPlayArgs,
+    target_ms: f64,
     channels: usize,
     positions: &[String],
     target: Option<String>,
@@ -311,7 +384,7 @@ fn start_epoch(
     if let Some(hz) = args.loop_bandwidth_hz {
         config.servo.loop_bandwidth_hz = hz;
     }
-    config.servo.target_latency_s = args.target_latency_ms / 1e3;
+    config.servo.target_latency_s = target_ms / 1e3;
     let core = OutputCore::new(config, consumer, Arc::clone(&tap), Arc::clone(&telemetry));
     let output = PipewireSyncOutput::start(
         PipewireSyncOutputConfig {
@@ -520,6 +593,18 @@ mod tests {
 
     /// A second of each known pipe carrier is a second of source frames at
     /// the render rate.
+    /// The flag wins over the config's `latency_target`, which wins over the
+    /// built-in default.
+    #[test]
+    fn the_latency_target_is_the_flag_then_the_config_then_the_default() {
+        assert_eq!(resolve_target_latency_ms(Some(80.0), Some(500)), 80.0);
+        assert_eq!(resolve_target_latency_ms(None, Some(500)), 500.0);
+        assert_eq!(
+            resolve_target_latency_ms(None, None),
+            DEFAULT_TARGET_LATENCY_MS
+        );
+    }
+
     #[test]
     fn pipe_carriers_count_one_second_per_second() {
         for data_type in [1u8, 11, 12, 13, 21, 22] {

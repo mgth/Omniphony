@@ -203,14 +203,14 @@ that deletes the old code. `main` stays buildable throughout.
 - Explicit config; a warning when a `follow` source behaves clockless
   (sustained faster than real time).
 
-### Phase 5 — Latency contract
+### Phase 5 — Latency contract — DONE 2026-10-11, see §16
 
 - The sink advertises the constant `L` (plus the device delay as reported),
   never the instantaneous value.
 - Pipe: publish `L` over OSC and document the matching mpv `--audio-delay`.
 - Drop `$TMPDIR/omniphony_delay`.
 
-### Phase 6 — Surface and cutover
+### Phase 6 — Surface and cutover — sliced in §17
 
 - **Options.** Keep `latency_target_ms`, `source_clock` (`own` / `follow` /
   `none`), and advanced `loop_bandwidth_hz` and `realign_threshold_ms`.
@@ -1112,3 +1112,130 @@ The pause/seek script gives the same results after this change.
 Test: `a_reported_break_restarts_the_phase_and_realigns` (servo). Without the
 break handling, a 7.2 ms error persists.
 
+
+## 16. Phase 5 — latency contract (2026-10-11)
+
+Work continues in workflow `resampling-cutover` on `feat/resampling-cutover`.
+
+### The contract
+
+The latency the host tells the outside world is the **target `L`**, a
+setpoint: it does not move with the measurement.
+
+| Source | How the player learns `L` |
+|---|---|
+| `own` sink | `SPA_PARAM_Latency`, advertised once (in place since 4c, §13) |
+| Pipe, timed writer | The launcher passes the same value to both sides: `--ao-pcm-timed=yes --ao-pcm-latency=<L in s>` (§15) |
+| Pipe, untimed writer (`--ao=pcm`) | `--audio-delay=-<L in s>`: mpv believes the audio is heard as it is written |
+
+`L` is the flag `--target-latency-ms`, else the config's
+`render.latency_target`, else 150 ms.
+
+### What is built
+
+- **The sync host runs the OSC server.** `--osc` / `--no-osc`, `--osc-host`,
+  `--osc-port`, `--osc-rx-port`, resolved like every host
+  (`OscSettings::resolve`: flag, then `render.osc*`, then the workflow port).
+- **`L` and the measurement over OSC**, on addresses that exist already:
+  - the meter bundle carries `/state/latency_target` (the constant `L`),
+    `/state/latency_instant` (the latency measured) and
+    `/state/resample_ratio` (feed-forward × phase correction). The engine
+    takes them from its host: `Engine::set_output_timings`;
+  - the diag channels carry the servo's quantities, which the Studio's diag
+    plot discovers from the schema: `latency_ms`, `latency_target_ms`,
+    `latency_error_ms`, `feedforward_ppm`, `correction_ppm` (base tab), and
+    `latency_floor_ms`, `source_ppm`, `device_ppm`, `realigns`, `underruns`,
+    `source_rephases`. The counts run for the life of the host, across
+    streams. `Engine::publish_diag` sends them at the diag cadence, and only
+    to a client that asked.
+
+  This is the plot Phase 6 asks for (`e`, `r_ff`, `u`, realigns, underruns),
+  with no new address and no new panel.
+- **`$TMPDIR/omniphony_delay` is gone.** The legacy host wrote the
+  instantaneous delay there every 20 ms of change. Nothing reads it: not the
+  mpv fork, its launchers, nor mpv-omniphony.
+
+### Live (reference bridge on a paced 12-channel WAV → FIFO, private null sink, OSC on the workflow port, 55 s)
+
+| Measure | Result |
+|---|---|
+| `/state/latency_target` | 180.0 throughout (`render.latency_target: 180`), 503 bundles |
+| `/state/latency_instant` | 179.97–180.02 ms |
+| Diag `latency_error_ms` | within ±0.03 ms |
+| Diag `correction_ppm` / `feedforward_ppm` | ≤ 5 ppm / ≤ 2.3 ppm, settling to 0 |
+| Realigns / underruns / rephases | 0 / 0 / 0 while the stream runs |
+
+### Not changed here
+
+- The legacy live sink still republishes its Latency param from the
+  instantaneous value at 1 Hz. It goes with the legacy host at the cutover.
+- The Studio's latency section stays hidden on this host: it is gated on the
+  audio-output capability, which arrives with the host options (§17, 6a).
+- `set_heard_us` (the listener's position, so a client shows each block when
+  it is heard) is not reported yet: it needs the played position, which
+  comes with the accounting slice (6f).
+
+## 17. Phase 6 — what the cutover needs (2026-10-11)
+
+Phase 4 delivered 4a (pipe `follow`) and 4c (`own` sink) with tracks 1 and 2.
+Slices 4b (`none`) and 4d (accounting) were not built, and the sync host is
+still a test command: it shares nothing of `orender render`'s surface. An
+inventory of the legacy host against it gives the list below. The cutover is
+therefore a series of pull requests, each leaving `main` playable, and the
+deletion comes last.
+
+### What `orender render` does that the sync host does not
+
+| Area | Missing |
+|---|---|
+| Control | Host options (`latency_target`, output device/backend/rate, input mode) and their OSC handlers; the audio-output and input capabilities; `--save-config`; restart from config; `--osc-yield` standby; no-bridge idle runtime |
+| Process | Shutdown handler, systemd/SCM notify, Windows service mode, SIGHUP reload |
+| Inputs | Regular file, stdin, exit at end of file; `--continuous` and `render.input_pipe`; the Windows named pipe |
+| Outputs | The `file` backend (raw / CAF, stdout, FIFO) and offline rendering; ASIO, WASAPI, CoreAudio; device listing; hot switch of device, backend, rate and latency |
+| Formats | Rates other than 48 kHz, `output_sample_rate`, a rate change mid-stream; output width changes (binaural, passthrough, bed-conform); `output_channel_mapping` |
+| Live sink | PCM (desktop audio); `live_input.*` (node, description, channels, map, LFE mode) and their hot apply; refusal to play into its own sink |
+| Tests | The idle feed for speaker and object tests (an output only exists during a stream) |
+| Telemetry | The listener's position (`send_heard`) |
+| Flags | Every `render` flag and generated option flag |
+
+### Slices
+
+Each is one pull request, stacked in this order.
+
+- **6a — control surface.** The host options on the new host: `latency_target`,
+  and the new `source_clock` (`own` / `follow` / `none`), `loop_bandwidth_hz`
+  and `realign_threshold_ms` rows (Save-only, per the persistence policy);
+  the output and input option handlers; capabilities that name the sync
+  engine instead of `adaptive_resampling`, so the Studio shows the latency
+  target and hides the PI controls on this host.
+- **6b — `orender render` on the new host, opt-in.** `render` takes its
+  arguments and config as today and hands them to the sync host behind a
+  temporary switch. Process plumbing with it: shutdown, notify,
+  restart from config, standby, no-bridge idle. From here the Studio can
+  launch the new engine, and it can be listened to on the real setup.
+- **6c — `none` and files (4b).** Files, stdin and faster-than-real-time
+  writers under back-pressure at `L`; the `file` output backend and offline
+  rendering; `--continuous`, `render.input_pipe`.
+- **6d — formats.** Stream rates other than 48 kHz, `output_sample_rate`,
+  width changes, `output_channel_mapping`.
+- **6e — the live sink.** PCM on the `own` sink, the `live_input.*` options
+  and their hot apply.
+- **6f — accounting (4d).** The time-conserving deframer, the per-burst
+  decoder audit, discontinuity events, and the listener's position.
+- **6g — runtime switches.** Hot switch of device, backend, rate and
+  latency; device listing; the idle feed.
+- **6h — Windows and macOS.** The cpal adapter wired in (with the timestamp
+  patch, §9), the QPC reference clock, the named-pipe reader (§12). Cannot be
+  run from the Linux workflow: needs the hardware.
+- **6i — the flip.** The new host becomes `render`. Studio: the auto-tune
+  wizard and the PI controls go, the plot is the diag channels of §16. The
+  legacy regulation, the trigger path, `PwClientNode` and their documents are
+  deleted; `adaptive_resampling_*`, `clock_mode` and `use_output_pacing` are
+  read, ignored with one warning, and kept on write.
+
+### Open: Windows and macOS at the flip
+
+6i deletes the only regulation Windows and macOS have. Either 6h is validated
+on hardware first, or the flip is Linux-only and the legacy output stays
+compiled for the other two until it is. The second keeps two engines alive
+for a while; the first holds the Linux cutover back.

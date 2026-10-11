@@ -172,6 +172,13 @@ pub struct Engine {
     osc: Option<OscSender>,
     /// VU meter, created with the OSC server; feeds outgoing meter bundles.
     audio_meter: Option<AudioMeter>,
+    /// The output stage's figures, from a host that plays the rendered audio
+    /// itself ([`set_output_timings`](Self::set_output_timings)); empty for a
+    /// host that hands the audio to a player.
+    output_timings: crate::osc::MeterTimings,
+    /// When the host's diag channels last went out
+    /// ([`publish_diag`](Self::publish_diag)); set with the OSC server.
+    diag_cadence: Option<crate::DiagPublishCadence>,
     /// Opt-in per-frame perf accumulator (env `ORENDER_PERF_LOG`). `None` = off
     /// (zero overhead). Diagnostic only; safe to remove once perf work lands.
     perf: Option<PerfLog>,
@@ -318,6 +325,8 @@ impl Engine {
             last_output_input_pts: None,
             osc: None,
             audio_meter: None,
+            output_timings: crate::osc::MeterTimings::default(),
+            diag_cadence: None,
             perf: std::env::var_os("ORENDER_PERF_LOG")
                 .is_some()
                 .then(PerfLog::new),
@@ -389,8 +398,38 @@ impl Engine {
             self.renderer.num_speakers(),
             self.renderer.renderer_control().meter_rate_atomic(),
         ));
+        self.diag_cadence = Some(crate::DiagPublishCadence::new(
+            self.renderer.renderer_control().diag_rate_atomic(),
+        ));
         self.osc = Some(sender);
         Ok(())
+    }
+
+    /// The output stage's latency and resampling figures, carried by every
+    /// meter bundle from now on. For a host that plays the rendered audio
+    /// itself and so has an output stage to report; a host that hands the
+    /// audio to a player leaves them empty. The frame's own timings (decode,
+    /// render) are filled in by the pipeline and need not be set here.
+    pub fn set_output_timings(&mut self, timings: crate::osc::MeterTimings) {
+        self.output_timings = timings;
+    }
+
+    /// Publish the host's diag channels to the clients that asked for them,
+    /// at the diag cadence (`render.diag_rate`, adjustable over OSC).
+    /// `bundle` returns the schema and the values as JSON
+    /// (`DiagRegistry::schema_json` / `values_json`); it only runs when a
+    /// bundle is due, so a host can call this on every turn of its loop.
+    pub fn publish_diag(&mut self, bundle: impl FnOnce() -> (Option<String>, Option<String>)) {
+        let (Some(osc), Some(cadence)) = (self.osc.as_mut(), self.diag_cadence.as_mut()) else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if !osc.has_diag_clients() || !cadence.should_send(now) {
+            return;
+        }
+        let (schema, values) = bundle();
+        osc.send_diag_bundle(schema, values);
+        cadence.mark_sent(now);
     }
 
     /// Build a session from file paths: load the omniphony YAML config (if any),
@@ -1309,7 +1348,7 @@ impl Engine {
             &mut self.audio_meter,
             donated,
             decode_time_ms,
-            crate::osc::MeterTimings::default(),
+            self.output_timings,
         )?;
         let (samples, n_channels) = match render.output {
             FrameOutput::Rendered { samples, channels } => (samples, channels as u32),
