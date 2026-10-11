@@ -522,24 +522,18 @@ fn host_options_json(host: &dyn crate::HostControlHandler) -> Option<String> {
     )
 }
 
-fn build_renderer_capabilities_json(
-    has_audio: bool,
-    has_input: bool,
-    adaptive_resampling: bool,
-) -> String {
+fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String {
     let mut domains = vec!["renderer", "layout", "speakers", "loudness"];
     let mut control_config = vec!["layout", "speakers"];
     if has_audio {
         domains.push("audio");
         // The output device and the latency target live in the audio-output
-        // stage, with what regulates it: the legacy adaptive resampler and
-        // its tuning, or the sync engine, which has none.
+        // stage, with what regulates it. `sync` is the engine that holds an
+        // end-to-end latency (`docs/resampling-rework-plan.md`); a renderer
+        // from before it said `adaptive_resampling` here, with the tuning
+        // controls a client then showed.
         control_config.push("audio");
-        control_config.push(if adaptive_resampling {
-            "adaptive_resampling"
-        } else {
-            "sync"
-        });
+        control_config.push("sync");
     }
     if has_input {
         domains.push("input");
@@ -572,9 +566,7 @@ mod capability_tests {
     #[test]
     fn both_variants_advertise_the_contract_revision() {
         for has_host in [true, false] {
-            let v = parse(&build_renderer_capabilities_json(
-                has_host, has_host, has_host,
-            ));
+            let v = parse(&build_renderer_capabilities_json(has_host, has_host));
             assert_eq!(
                 v["contractRevision"],
                 crate::osc_contract::CONTRACT_REVISION
@@ -584,7 +576,7 @@ mod capability_tests {
 
     #[test]
     fn standalone_advertises_full_set() {
-        let v = parse(&build_renderer_capabilities_json(true, true, true));
+        let v = parse(&build_renderer_capabilities_json(true, true));
         assert_eq!(v["variant"], "standalone");
         assert_eq!(v["host"], "cli");
         assert_eq!(v["fileRequestIds"], true);
@@ -593,13 +585,14 @@ mod capability_tests {
         assert!(domains.iter().any(|d| d == "input"));
         let cc = v["controlConfig"].as_array().unwrap();
         assert!(cc.iter().any(|c| c == "audio"));
-        assert!(cc.iter().any(|c| c == "adaptive_resampling"));
+        assert!(cc.iter().any(|c| c == "sync"));
+        assert!(!cc.iter().any(|c| c == "adaptive_resampling"));
         assert!(cc.iter().any(|c| c == "input"));
     }
 
     #[test]
     fn embedded_drops_audio_and_input() {
-        let v = parse(&build_renderer_capabilities_json(false, false, false));
+        let v = parse(&build_renderer_capabilities_json(false, false));
         assert_eq!(v["variant"], "embedded");
         assert_eq!(v["host"], "mpv");
         assert_eq!(v["fileRequestIds"], true);
@@ -611,27 +604,9 @@ mod capability_tests {
         assert!(domains.iter().any(|d| d == "speakers"));
         let cc = v["controlConfig"].as_array().unwrap();
         assert!(!cc.iter().any(|c| c == "audio"));
-        assert!(!cc.iter().any(|c| c == "adaptive_resampling"));
+        assert!(!cc.iter().any(|c| c == "sync"));
         assert!(!cc.iter().any(|c| c == "input"));
         assert!(cc.iter().any(|c| c == "speakers"));
-    }
-
-    /// The sync engine's host has an audio output and a latency target, but
-    /// no resampler tuning: it says `sync` where the legacy host says
-    /// `adaptive_resampling`, and leaves the input out until it can
-    /// reconfigure one.
-    #[test]
-    fn the_sync_engine_host_drops_the_resampler_tuning() {
-        let v = parse(&build_renderer_capabilities_json(true, false, false));
-        assert_eq!(v["variant"], "standalone");
-        let domains = v["domains"].as_array().unwrap();
-        assert!(domains.iter().any(|d| d == "audio"));
-        assert!(!domains.iter().any(|d| d == "input"));
-        let cc = v["controlConfig"].as_array().unwrap();
-        assert!(cc.iter().any(|c| c == "audio"));
-        assert!(cc.iter().any(|c| c == "sync"));
-        assert!(!cc.iter().any(|c| c == "adaptive_resampling"));
-        assert!(!cc.iter().any(|c| c == "input"));
     }
 }
 
@@ -745,11 +720,7 @@ pub fn build_live_state_bundle_with_host(
         OscPacket::Message(OscMessage {
             addr: crate::osc_contract::STATE_CAPABILITIES.to_string(),
             args: vec![OscType::String(build_renderer_capabilities_json(
-                has_audio,
-                has_input,
-                // Without a handler to ask (the callers that pass none), an
-                // audio host is the legacy one.
-                host.map_or(has_audio, |h| h.capabilities().adaptive_resampling),
+                has_audio, has_input,
             ))],
         }),
         OscPacket::Message(OscMessage {

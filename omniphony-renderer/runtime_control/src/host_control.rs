@@ -18,19 +18,12 @@ use crate::osc::ControlEffects;
 pub struct HostCapabilities {
     /// The input source can be chosen and configured over OSC.
     pub input: bool,
-    /// The output is regulated by the legacy adaptive resampler, with its
-    /// tuning controls. `false`: by the sync engine, which has none
-    /// (`docs/resampling-rework-plan.md`).
-    pub adaptive_resampling: bool,
 }
 
 impl Default for HostCapabilities {
-    /// The standalone renderer's legacy host: everything.
+    /// The standalone renderer's host: everything.
     fn default() -> Self {
-        Self {
-            input: true,
-            adaptive_resampling: true,
-        }
+        Self { input: true }
     }
 }
 

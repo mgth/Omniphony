@@ -1,10 +1,10 @@
 //! The host's control surface: what OSC clients (the Studio) ask of the
 //! output, and what the host tells them it did.
 //!
-//! The requested values live in an [`AudioControl`], behind the same handler
-//! as the legacy host's ([`HostAudio`], here with the sync engine's rows and
-//! capabilities): the output device, the latency target, and the two
-//! settings of the latency loop. The host reads them back on every turn of
+//! The requested values live in an [`AudioControl`] and an [`InputControl`],
+//! behind the host's handler ([`HostAudio`]): the output (device, backend,
+//! file, rate), the latency target, the settings of the latency loop, and
+//! the input. The host reads them back on every turn of
 //! its loop ([`Controls::settings`]) and reopens its output when they
 //! differ from what plays, so a write takes effect as it arrives. They reach
 //! `config.yaml` only through Save, like every setting that changes the
@@ -124,7 +124,7 @@ impl Controls {
         input.set_requested_mode(request.mode);
         input.set_requested_node_name(request.node.clone());
         input.set_requested_node_description(request.description.clone());
-        let host = Arc::new(HostAudio::for_sync_engine(
+        let host = Arc::new(HostAudio::new(
             renderer,
             Arc::clone(&audio),
             Arc::clone(&input),
@@ -377,7 +377,6 @@ mod tests {
             ("live_input_lfe_mode", RawOptionValue::Str("drop")),
         ]);
         assert!(refused.results.iter().all(Option::is_none));
-        assert!(!handler.capabilities().adaptive_resampling);
         assert!(handler.capabilities().input);
     }
 
