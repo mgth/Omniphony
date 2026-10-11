@@ -232,6 +232,22 @@ fn host_config(run: &ResolvedRun) -> Result<crate::cli::sync_host::HostConfig> {
     )
 }
 
+/// Say once, for the life of the process, which keys of the config are no
+/// longer used. They are left in the file: nothing here removes them.
+fn warn_of_retired_keys(render_cfg: &renderer::config::RenderConfig) {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let keys = render_cfg.retired_keys();
+    if keys.is_empty() || SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    log::warn!(
+        "config: {} key(s) are no longer used and are ignored (the output now holds an \
+         end-to-end latency, `latency_target`, instead of tuning a resampler): {}",
+        keys.len(),
+        keys.join(", ")
+    );
+}
+
 /// One `render` run. Returns the bridges it ended on, for a restart from the
 /// config.
 ///
@@ -244,6 +260,7 @@ fn run_once(
     session: &mut crate::cli::sync_host::HostSession,
 ) -> Result<Vec<std::path::PathBuf>> {
     let config = host_config(run)?;
+    warn_of_retired_keys(&run.render_cfg);
     let _shutdown = sys::shutdown::ShutdownHandle::install()?;
     let bridges =
         resolve_bridges(&run.args.bridge_paths, &[]).and_then(|request| load_bridges(&request));

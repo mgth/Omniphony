@@ -1,6 +1,4 @@
-use crate::AdaptiveResamplingConfig;
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct OutputDeviceOption {
@@ -13,8 +11,6 @@ pub struct RequestedAudioOutputConfig {
     pub output_device: Option<String>,
     pub output_sample_rate_hz: Option<u32>,
     pub latency_target_ms: Option<u32>,
-    pub adaptive_enabled: bool,
-    pub adaptive: AdaptiveResamplingConfig,
     /// Live-requested output backend id ("pipewire" / "asio" / "file"), or
     /// `None` to keep the active one. Parsed by the CLI's runtime sync layer
     /// (this crate stays decoupled from the CLI's `OutputBackend` enum).
@@ -85,8 +81,6 @@ impl Default for RequestedAudioOutputConfig {
             output_device: None,
             output_sample_rate_hz: None,
             latency_target_ms: None,
-            adaptive_enabled: false,
-            adaptive: AdaptiveResamplingConfig::default(),
             output_backend: None,
             output_file: None,
             output_file_format: None,
@@ -118,7 +112,6 @@ pub struct AudioControl {
     applied: Mutex<AppliedAudioOutputState>,
     available_output_devices: Mutex<Vec<OutputDeviceOption>>,
     device_list_fetcher: Mutex<Option<Box<dyn Fn() -> Vec<OutputDeviceOption> + Send + Sync>>>,
-    reset_ratio_pending: AtomicBool,
 }
 
 impl Default for AudioControl {
@@ -134,7 +127,6 @@ impl AudioControl {
             applied: Mutex::new(AppliedAudioOutputState::default()),
             available_output_devices: Mutex::new(Vec::new()),
             device_list_fetcher: Mutex::new(None),
-            reset_ratio_pending: AtomicBool::new(false),
         }
     }
 
@@ -216,140 +208,6 @@ impl AudioControl {
         self.update_requested(|requested| requested.realign_threshold_ms = value);
     }
 
-    pub fn set_requested_adaptive_resampling(&self, enabled: bool) {
-        self.update_requested(|requested| requested.adaptive_enabled = enabled);
-    }
-
-    pub fn requested_adaptive_resampling(&self) -> bool {
-        self.requested_snapshot().adaptive_enabled
-    }
-
-    /// The requested adaptive-resampling tuning, copied out under one lock
-    /// (the rest of the requested config is not cloned).
-    pub fn requested_adaptive_config(&self) -> AdaptiveResamplingConfig {
-        self.requested.lock().adaptive.clone()
-    }
-
-    pub fn set_requested_adaptive_resampling_enable_far_mode(&self, enabled: bool) {
-        self.update_requested(|requested| requested.adaptive.enable_far_mode = enabled);
-    }
-
-    pub fn set_requested_adaptive_resampling_force_silence_in_far_mode(&self, enabled: bool) {
-        self.update_requested(|requested| requested.adaptive.force_silence_in_far_mode = enabled);
-    }
-
-    pub fn set_requested_adaptive_resampling_hard_recover_high_in_far_mode(&self, enabled: bool) {
-        self.update_requested(|requested| {
-            requested.adaptive.hard_recover_high_in_far_mode = enabled
-        });
-    }
-
-    pub fn set_requested_adaptive_resampling_hard_recover_low_in_far_mode(&self, enabled: bool) {
-        self.update_requested(|requested| {
-            requested.adaptive.hard_recover_low_in_far_mode = enabled
-        });
-    }
-
-    pub fn set_requested_adaptive_resampling_far_mode_return_fade_in_ms(&self, value: u32) {
-        self.update_requested(|requested| requested.adaptive.far_mode_return_fade_in_ms = value);
-    }
-
-    pub fn set_requested_adaptive_resampling_kp_near(&self, value: f32) {
-        self.update_requested(|requested| requested.adaptive.kp_near = value as f64);
-    }
-
-    pub fn set_requested_adaptive_resampling_ki(&self, value: f32) {
-        self.update_requested(|requested| requested.adaptive.ki = value as f64);
-    }
-
-    pub fn set_requested_adaptive_resampling_integral_discharge_ratio(&self, value: f32) {
-        self.update_requested(|requested| {
-            requested.adaptive.integral_discharge_ratio = value as f64;
-        });
-    }
-
-    pub fn set_requested_adaptive_resampling_max_adjust(&self, value: f32) {
-        self.update_requested(|requested| requested.adaptive.max_adjust = value as f64);
-    }
-
-    pub fn set_requested_adaptive_resampling_update_interval_callbacks(&self, value: u32) {
-        self.update_requested(|requested| requested.adaptive.update_interval_callbacks = value);
-    }
-
-    pub fn set_requested_adaptive_resampling_high_recover_entry_margin_ms(&self, value: u32) {
-        self.update_requested(|requested| requested.adaptive.high_recover_entry_margin_ms = value);
-    }
-
-    pub fn set_requested_adaptive_resampling_low_recover_settle_stable_ms(&self, value: f32) {
-        self.update_requested(|requested| {
-            requested.adaptive.low_recover_settle_stable_ms = value;
-        });
-    }
-
-    pub fn set_requested_adaptive_resampling_low_recover_entry_margin_ms(&self, value: f32) {
-        self.update_requested(|requested| {
-            requested.adaptive.low_recover_entry_margin_ms = value;
-        });
-    }
-
-    pub fn set_requested_adaptive_resampling_low_recover_exit_margin_ms(&self, value: f32) {
-        self.update_requested(|requested| {
-            requested.adaptive.low_recover_exit_margin_ms = value;
-        });
-    }
-
-    pub fn set_requested_adaptive_resampling_low_recover_settle_margin_ms(&self, value: f32) {
-        self.update_requested(|requested| {
-            requested.adaptive.low_recover_settle_margin_ms = value;
-        });
-    }
-
-    pub fn set_requested_adaptive_resampling_low_recover_refill_delta_alpha(&self, value: f32) {
-        self.update_requested(|requested| {
-            requested.adaptive.low_recover_refill_delta_alpha = value;
-        });
-    }
-
-    pub fn set_requested_adaptive_resampling_control_smoothing_cutoff_hz(&self, value: f32) {
-        self.update_requested(|requested| {
-            requested.adaptive.control_smoothing_cutoff_hz = value as f64;
-        });
-    }
-
-    pub fn set_requested_adaptive_resampling_control_smoothing_order(&self, value: u32) {
-        self.update_requested(|requested| {
-            requested.adaptive.control_smoothing_order = value.clamp(1, 2);
-        });
-    }
-
-    pub fn set_requested_adaptive_resampling_paused(&self, paused: bool) {
-        self.update_requested(|requested| requested.adaptive.paused = paused);
-    }
-
-    pub fn set_requested_adaptive_resampling_use_pre_bridge_clock(&self, enabled: bool) {
-        self.update_requested(|requested| requested.adaptive.use_pre_bridge_clock = enabled);
-    }
-
-    pub fn set_requested_adaptive_resampling_use_output_pacing(&self, enabled: bool) {
-        self.update_requested(|requested| requested.adaptive.use_output_pacing = enabled);
-    }
-
-    pub fn set_requested_adaptive_resampling_disable_backpressure(&self, disabled: bool) {
-        self.update_requested(|requested| requested.adaptive.disable_backpressure = disabled);
-    }
-
-    /// Request a one-shot ratio reset. Consumed by the sync loop via `take_ratio_reset`.
-    pub fn request_ratio_reset(&self) {
-        self.reset_ratio_pending.store(true, Ordering::Relaxed);
-    }
-
-    /// Returns true and clears the pending flag if a reset was requested.
-    pub fn take_ratio_reset(&self) -> bool {
-        self.reset_ratio_pending
-            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-    }
-
     pub fn set_available_output_devices(&self, devices: Vec<OutputDeviceOption>) {
         *self.available_output_devices.lock() = devices;
     }
@@ -412,26 +270,5 @@ impl AudioControl {
 
     pub fn effective_output_device(&self) -> Option<String> {
         self.applied_snapshot().output_device
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The one snapshot the live sync reads carries every setter's value, and
-    /// compares unequal to the config it replaces.
-    #[test]
-    fn requested_adaptive_config_reflects_the_setters() {
-        let control = AudioControl::default();
-        let before = control.requested_adaptive_config();
-        assert_eq!(before, AdaptiveResamplingConfig::default());
-
-        control.set_requested_adaptive_resampling_ki(3.0);
-        control.set_requested_adaptive_resampling_use_output_pacing(true);
-        let after = control.requested_adaptive_config();
-        assert_eq!(after.ki, 3.0);
-        assert!(after.use_output_pacing);
-        assert_ne!(after, before);
     }
 }

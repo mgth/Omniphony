@@ -19,8 +19,8 @@
 //!
 //! The stream is opened in the device's own sample format; anything but
 //! `f32` is converted from a scratch buffer sized once here. The callback
-//! never allocates: a cycle larger than that scratch is played as silence and
-//! logged once.
+//! never allocates and never logs: a cycle larger than that scratch is played
+//! as silence and marks the stream as failed, for its owner to report.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,7 +95,9 @@ struct Callback {
     channels: usize,
     rate: f64,
     position: u64,
-    oversize_logged: Arc<AtomicBool>,
+    /// Set when the stream cannot be played (a cycle larger than the
+    /// converting path's scratch): the callback says nothing itself.
+    failed: Arc<AtomicBool>,
 }
 
 impl Callback {
@@ -117,11 +119,9 @@ impl Callback {
     }
 
     fn silence_oversize(&mut self, frames: usize) {
-        if !self.oversize_logged.swap(true, Ordering::Relaxed) {
-            log::warn!(
-                "output cycle of {frames} frames exceeds the {MAX_CYCLE_FRAMES}-frame scratch; playing silence"
-            );
-        }
+        // Not a log line: this is the device's thread. The owner reads the
+        // flag as "the output is not playing".
+        self.failed.store(true, Ordering::Relaxed);
         self.position += frames as u64;
     }
 }
@@ -142,7 +142,7 @@ where
         channels,
         rate,
         position: 0,
-        oversize_logged: Arc::new(AtomicBool::new(false)),
+        failed: Arc::clone(&failed),
     };
     let err_fn = move |err| {
         log::error!("output stream error: {err}");

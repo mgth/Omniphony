@@ -228,18 +228,6 @@ pub(super) fn merge_render_config(
     } else if args.no_bed_conform {
         args.bed_conform = false;
     }
-    args.enable_adaptive_resampling = renderer::config_fields::enable_adaptive_resampling::get(cfg)
-        .unwrap_or(renderer::config_fields::enable_adaptive_resampling::DEFAULT);
-    // The file/FIFO/stdout backend has no device clock to track, so adaptive
-    // resampling is meaningless there — force it off (warn if it was asked for).
-    if args.output_backend == Some(OutputBackend::File) && args.enable_adaptive_resampling {
-        if arg_sources.is_explicit("enable_adaptive_resampling") {
-            log::warn!(
-                "Adaptive resampling has no effect with --output-backend file; ignoring it."
-            );
-        }
-        args.enable_adaptive_resampling = false;
-    }
 }
 
 pub(super) fn effective_to_config(
@@ -399,7 +387,7 @@ mod tests {
             Commands::Render(ref a) => a.clone(),
             _ => unreachable!("explicit render subcommand"),
         };
-        (parsed, args)
+        (parsed, *args)
     }
 
     /// Build a fully-defaulted `render` arg set + `Cli`.

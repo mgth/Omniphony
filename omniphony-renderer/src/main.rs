@@ -166,17 +166,14 @@ fn main() -> Result<()> {
 
     info!("{}", cli::command::VERSION_INFO);
 
-    let result: Result<()> = (|| match cli.command {
+    let result: Result<()> = match cli.command {
         Commands::Render(ref args) => cmd_render(args, &cli, &parsed.render_sources()),
-        Commands::InputLive(_) => {
-            anyhow::bail!("The 'input-live' command is defined but not implemented yet.")
-        }
         Commands::GenerateVbap(ref args) => cmd_generate_vbap(args),
         #[cfg(target_os = "windows")]
         Commands::ListAsioDevices => cmd_list_asio_devices(),
         #[cfg(target_os = "macos")]
         Commands::ListCoreaudioDevices => cmd_list_coreaudio_devices(),
-    })();
+    };
 
     if let Err(ref err) = result {
         error!("orender exiting with error: {err:#}");

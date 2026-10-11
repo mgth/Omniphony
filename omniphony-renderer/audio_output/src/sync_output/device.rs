@@ -80,6 +80,13 @@ pub fn list_output_devices() -> Vec<(String, String)> {
     imp::list_output_devices()
 }
 
+/// The host those devices belong to, as a client shows it (`ASIO`,
+/// `WASAPI (fallback: …)`, `CoreAudio`); `None` where there is one host
+/// only and nothing to say, or when none can be opened.
+pub fn output_host_label() -> Option<&'static str> {
+    imp::output_host_label()
+}
+
 #[cfg(all(target_os = "linux", not(feature = "cpal-check")))]
 mod imp {
     use anyhow::Result;
@@ -131,6 +138,10 @@ mod imp {
 
     pub fn list_output_devices() -> Vec<(String, String)> {
         crate::pipewire::list_pipewire_output_devices().unwrap_or_default()
+    }
+
+    pub fn output_host_label() -> Option<&'static str> {
+        None
     }
 }
 
@@ -399,6 +410,11 @@ mod imp {
             .filter_map(|device| device.name().ok())
             .map(|name| (name.clone(), name))
             .collect()
+    }
+
+    pub fn output_host_label() -> Option<&'static str> {
+        let _one_at_a_time = host_lock();
+        output_host(None).ok().map(|opened| opened.label)
     }
 
     #[cfg(test)]

@@ -23,7 +23,7 @@ fn thd_n_db(freq: f64, ratio: f64) -> f64 {
     let source = |j: u64| (TAU * freq * j as f64 / FS).sin() * 0.5;
     let mut chunk = Vec::with_capacity(4096 * CH);
     for call in 0..300 {
-        while produced < rx.read() + 8192 {
+        while produced < rx.consumed() + 8192 {
             chunk.clear();
             for j in produced..produced + 4096 {
                 let v = source(j) as f32;

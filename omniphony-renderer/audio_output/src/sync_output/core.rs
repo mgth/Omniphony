@@ -101,7 +101,7 @@ impl OutputCore {
             * (1.0 + config.servo.max_correction)
             * 1.001;
         let mut resampler = DriftResampler::new(channels, &config.design, max_frames, max_step);
-        resampler.reset(ring.read() as i64);
+        resampler.reset(ring.consumed() as i64);
         resampler.set_ratio(nominal);
         Self {
             source_rate_hz: config.servo.source_rate_hz,
@@ -202,7 +202,7 @@ impl OutputCore {
 
     fn short_read(&mut self) -> bool {
         self.telemetry.note_short_read();
-        self.resampler.reset(self.ring.read() as i64);
+        self.resampler.reset(self.ring.consumed() as i64);
         false
     }
 

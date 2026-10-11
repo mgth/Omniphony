@@ -335,10 +335,6 @@ mod tests {
             "output_file_format" => "caf",
             "live_input_node" => "omniphony-in",
             "live_input_description" => "Omniphony input",
-            "live_input_backend" => "pipewire",
-            "live_input_layout" => "7.1.4",
-            // Its only value so far.
-            "live_input_map" => "7.1-fixed",
             other => panic!("no command-line sample for string option `{other}`"),
         }
     }

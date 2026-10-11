@@ -1,9 +1,9 @@
-use crate::pacer_drain::OutputPacerDrain;
-use diag::DiagRegistry;
-use std::path::PathBuf;
+//! The input as a host's controls and its clients share it: what is asked
+//! for (staged until applied), and what runs.
+
 use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
+    Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -21,67 +21,30 @@ pub enum InputMode {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InputBackend {
-    /// The only live-input backend. An `asio` variant was reserved here for a
-    /// Windows capture path that was never implemented; it was removed, and
-    /// hosts reject the value (see `host_audio` and `renderer::config`).
+    /// The only live-input backend.
     Pipewire,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub enum InputMapMode {
-    #[serde(rename = "7.1-fixed", alias = "seven-one-fixed")]
-    SevenOneFixed,
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InputLfeMode {
-    Object,
-    Direct,
-    Drop,
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InputClockMode {
-    Dac,
-    Pipewire,
-    Upstream,
-}
-
-#[derive(Debug, Clone)]
+/// The input as it is asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestedAudioInputConfig {
     pub mode: InputMode,
-    pub backend: Option<InputBackend>,
+    /// The sink's node name and description; `None` is the default one.
     pub node_name: Option<String>,
     pub node_description: Option<String>,
-    pub layout_path: Option<PathBuf>,
-    pub current_layout: Option<renderer::speaker_layout::SpeakerLayout>,
-    pub clock_mode: InputClockMode,
-    pub channels: Option<u16>,
-    pub sample_rate_hz: Option<u32>,
-    pub map_mode: InputMapMode,
-    pub lfe_mode: InputLfeMode,
 }
 
 impl Default for RequestedAudioInputConfig {
     fn default() -> Self {
         Self {
             mode: InputMode::Bridge,
-            backend: None,
             node_name: None,
             node_description: None,
-            layout_path: None,
-            current_layout: None,
-            clock_mode: InputClockMode::Dac,
-            channels: None,
-            sample_rate_hz: None,
-            map_mode: InputMapMode::SevenOneFixed,
-            lfe_mode: InputLfeMode::Direct,
         }
     }
 }
 
+/// The input that runs.
 #[derive(Debug, Clone)]
 pub struct AppliedAudioInputState {
     pub active_mode: InputMode,
@@ -114,41 +77,6 @@ pub struct InputControl {
     applied: Mutex<AppliedAudioInputState>,
     apply_pending: AtomicBool,
     state_generation: AtomicU64,
-    output_rate_adjust: Arc<AtomicU32>,
-    pending_input_triggers: Mutex<Option<Arc<AtomicI64>>>,
-    input_trigger_rate_hz: AtomicU32,
-    input_trigger_quantum_frames: AtomicU32,
-    direct_trigger_active: Arc<AtomicBool>,
-    /// Generic diagnostic-metric registry. Any producer can register a metric
-    /// with a name/label/group/unit; the OSC publisher emits the full schema
-    /// (when changed) and the current values (each meter-bundle tick) so the
-    /// Studio plot can render an arbitrary subset chosen by the user.
-    diag_registry: Arc<DiagRegistry>,
-    /// Cumulative source-clock time in microseconds, f64-encoded as u64 bits.
-    /// Written by the input PwStream callback from per-IEC958-chunk subframe
-    /// counts. Read by the audio_output PI when `use_pre_bridge_clock` is on
-    /// so the servo sees a decoder-batching-free clock reference instead of
-    /// the post-decode ring buffer level. Also published to the diag plot.
-    input_clock_us: Arc<AtomicU64>,
-    /// Cross-crate handle to the audio_output post-rendering pacer, and
-    /// which clock drains it. A capture stream that is delivering drains
-    /// rendered samples from the pacer FIFO into the ring buffer in lockstep
-    /// with chunk arrival, smoothing the decoder's burst pattern out of the
-    /// ring; the token clock drains the rest of the time. The handle is
-    /// installed by the writer lifecycle once both sides exist. See
-    /// [`crate::pacer_drain`].
-    pub(crate) pacer_drain: Arc<OutputPacerDrain>,
-    /// Total latency of everything BEHIND the bridge sink's input, in
-    /// nanoseconds: render DSP latency (e.g. the linear-phase FIR crossover)
-    /// plus the measured output-chain latency (post-render ring + pacer FIFO
-    /// + graph delay to the DAC — the graph delay already folds in the
-    /// terminal sink's own declared latency, per PipeWire's latency
-    /// accounting). Written by the render/write path each rendered frame;
-    /// read by the client-node backend, which republishes the sink's
-    /// Latency/ProcessLatency params when it moves so upstream players
-    /// (pipewire-pulse → Firefox, …) delay video accordingly. 0 until the
-    /// first rendered frame.
-    downstream_latency_ns: AtomicU64,
 }
 
 impl Default for InputControl {
@@ -164,116 +92,7 @@ impl InputControl {
             applied: Mutex::new(AppliedAudioInputState::default()),
             apply_pending: AtomicBool::new(false),
             state_generation: AtomicU64::new(1),
-            output_rate_adjust: Arc::new(AtomicU32::new(1.0f32.to_bits())),
-            pending_input_triggers: Mutex::new(None),
-            input_trigger_rate_hz: AtomicU32::new(0),
-            input_trigger_quantum_frames: AtomicU32::new(0),
-            direct_trigger_active: Arc::new(AtomicBool::new(false)),
-            diag_registry: {
-                let r = Arc::new(DiagRegistry::new());
-                // Sentinel metric: present as soon as an InputControl exists,
-                // so the Studio diag plot can always confirm the schema/values
-                // OSC chain is alive. If the chips row is non-empty but the
-                // IEC958/bridge metrics are missing, the bridge register sites
-                // are not being reached.
-                let alive = r.register("_diag_alive", "diag alive (sentinel)", "_diag", "");
-                alive.store((1.0_f64).to_bits(), Ordering::Relaxed);
-                r
-            },
-            input_clock_us: Arc::new(AtomicU64::new(0)),
-            pacer_drain: Arc::new(OutputPacerDrain::new()),
-            downstream_latency_ns: AtomicU64::new(0),
         }
-    }
-
-    /// Publish the current downstream latency (see the field doc). Called by
-    /// the render/write path each rendered frame; a plain atomic store.
-    pub fn set_downstream_latency_ns(&self, ns: u64) {
-        self.downstream_latency_ns.store(ns, Ordering::Relaxed);
-    }
-
-    /// The last published downstream latency in nanoseconds (0 before the
-    /// first rendered frame).
-    pub fn downstream_latency_ns(&self) -> u64 {
-        self.downstream_latency_ns.load(Ordering::Relaxed)
-    }
-
-    pub fn diag_registry(&self) -> Arc<DiagRegistry> {
-        Arc::clone(&self.diag_registry)
-    }
-
-    /// Cumulative source-clock time atomic (f64-bits microseconds). Shared
-    /// owner-side: written by the input PwStream callback, read by the
-    /// audio_output PI loop when running on the pre-bridge clock signal.
-    pub fn input_clock_us_atomic(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.input_clock_us)
-    }
-
-    /// Install a cross-crate handle to the audio_output post-rendering
-    /// pacer. Called from the decode lifecycle once the PipewireWriter is
-    /// created. Whichever clock has the drain then moves the FIFO into the
-    /// ring: [`capture_drain_clock`](Self::capture_drain_clock) or
-    /// [`token_drain_pacer`](Self::token_drain_pacer).
-    pub fn install_output_pacer(&self, handle: audio_output::PacerHandle) {
-        self.pacer_drain.install(handle);
-    }
-
-    /// Drop the installed pacer handle. Called from the decode lifecycle when
-    /// the audio writer that owns the pacer is retired (backend switch, device
-    /// or rate change, standby, stream restart), so the input thread stops
-    /// draining a FIFO nothing feeds any more into a ring nothing plays. Left
-    /// in place, every chunk would burn `drain_samples` failed pops and pushes
-    /// on the RT thread and pile phantom underruns into the pacer telemetry.
-    /// The next writer installs its own handle when it is built.
-    pub fn clear_output_pacer(&self) {
-        self.pacer_drain.clear();
-    }
-
-    pub fn set_output_rate_adjust(&self, rate: f32) {
-        self.output_rate_adjust
-            .store(rate.to_bits(), Ordering::Relaxed);
-    }
-
-    pub fn output_rate_adjust_atomic(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.output_rate_adjust)
-    }
-
-    pub fn register_direct_trigger_target(&self, capture_rate_hz: u32) {
-        self.input_trigger_rate_hz
-            .store(capture_rate_hz, Ordering::Relaxed);
-    }
-
-    pub fn input_trigger_rate_hz(&self) -> u32 {
-        self.input_trigger_rate_hz.load(Ordering::Relaxed)
-    }
-
-    pub fn register_direct_trigger_quantum_frames(&self, quantum_frames: u32) {
-        self.input_trigger_quantum_frames
-            .store(quantum_frames, Ordering::Relaxed);
-    }
-
-    pub fn input_trigger_quantum_frames(&self) -> u32 {
-        self.input_trigger_quantum_frames.load(Ordering::Relaxed)
-    }
-
-    pub fn set_pending_input_triggers(&self, counter: Arc<AtomicI64>) {
-        *self.pending_input_triggers.lock().unwrap() = Some(counter);
-    }
-
-    pub fn pending_input_triggers(&self) -> Option<Arc<AtomicI64>> {
-        self.pending_input_triggers.lock().unwrap().clone()
-    }
-
-    pub fn clear_pending_input_triggers(&self) {
-        *self.pending_input_triggers.lock().unwrap() = None;
-    }
-
-    pub fn direct_trigger_active_arc(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.direct_trigger_active)
-    }
-
-    pub fn set_direct_trigger_active(&self, active: bool) {
-        self.direct_trigger_active.store(active, Ordering::Relaxed);
     }
 
     fn bump_state_generation(&self) {
@@ -330,47 +149,12 @@ impl InputControl {
         self.update_requested(|requested| requested.mode = mode);
     }
 
-    pub fn set_requested_backend(&self, backend: Option<InputBackend>) {
-        self.update_requested(|requested| requested.backend = backend);
-    }
-
     pub fn set_requested_node_name(&self, value: Option<String>) {
         self.update_requested(|requested| requested.node_name = value);
     }
 
     pub fn set_requested_node_description(&self, value: Option<String>) {
         self.update_requested(|requested| requested.node_description = value);
-    }
-
-    pub fn set_requested_layout_path(&self, value: Option<PathBuf>) {
-        self.update_requested(|requested| requested.layout_path = value);
-    }
-
-    pub fn set_requested_current_layout(
-        &self,
-        value: Option<renderer::speaker_layout::SpeakerLayout>,
-    ) {
-        self.update_requested(|requested| requested.current_layout = value);
-    }
-
-    pub fn set_requested_clock_mode(&self, value: InputClockMode) {
-        self.update_requested(|requested| requested.clock_mode = value);
-    }
-
-    pub fn set_requested_channels(&self, value: Option<u16>) {
-        self.update_requested(|requested| requested.channels = value);
-    }
-
-    pub fn set_requested_sample_rate_hz(&self, value: Option<u32>) {
-        self.update_requested(|requested| requested.sample_rate_hz = value);
-    }
-
-    pub fn set_requested_map_mode(&self, value: InputMapMode) {
-        self.update_requested(|requested| requested.map_mode = value);
-    }
-
-    pub fn set_requested_lfe_mode(&self, value: InputLfeMode) {
-        self.update_requested(|requested| requested.lfe_mode = value);
     }
 
     pub fn set_input_state(
