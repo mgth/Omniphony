@@ -95,16 +95,14 @@ Status: ✅ OK · 🟡 **justified** gap (do not fix) · 🔴 gap **to fix**.
 | `output_device`, `output_sample_rate` | ✅ | ✅ | 🟡 | 🟡 | mpv owns the audio chain, so the `audio` domain is withdrawn from the capabilities. **Justified.** |
 | `latency_target` | ✅ | ✅ | 🟡 | 🟡 | same. **Justified.** |
 | `pw_quantum` | ✅ | — | — | 🟡 | PipeWire, *load-time*. **Justified.** |
-| `enable_adaptive_resampling` | ✅ | ✅ | 🟡 | 🟡 | resampling belongs to the audio host; meaningless in mpv. **Justified.** |
-| PI tuning (`kp_near`, `ki`, `max_adjust`, far mode, margins…) | ✅ | ✅ | 🟡 | 🟡 | **Fixed for the standalone renderer (part 3)**: `--adaptive-resampling-kp-near`, `--adaptive-resampling-ki`, `--adaptive-resampling-max-adjust`, `--adaptive-resampling-*-far-mode*`, the recovery margins. In mpv: meaningless (no audio host), so justified. |
-| `adaptive_resampling_integral_discharge_ratio` | — | (✅) | — | 🟡 | **has no effect**, so deliberately not exposed on the CLI (see the note). |
+| `loop_bandwidth_hz`, `realign_threshold_ms`, `source_clock` | ✅ | ✅ | 🟡 | 🟡 | the latency loop belongs to the audio host; meaningless in mpv. **Justified.** |
 | `ramp_mode` | ✅ | ✅ | 🟡 | 🟡 | handled by mpv's render pipeline when embedded. **Justified.** |
 
 ### Live input
 
-| Option | CLI (`input-live`) | OSC/Studio | mpv | Status | Why |
+| Option | CLI | OSC/Studio | mpv | Status | Why |
 |---|:--:|:--:|:--:|:--:|---|
-| `live_input.*` (backend/node/channels/format/clock/map/lfe) | ✅ | ✅ | 🟡 | 🟡 | mpv supplies the decoded input, so the `input` domain is withdrawn. **Justified.** |
+| `input_mode`, `live_input.node`, `live_input.description` | ✅ | ✅ | 🟡 | 🟡 | mpv supplies the decoded input, so the `input` domain is withdrawn. **Justified.** |
 
 ### OSC / monitoring / miscellaneous
 
@@ -131,10 +129,3 @@ Done:
 
 Still to fix (🔴): `meter_rate`/`diag_rate` and `drc_mode`/`drc_weight` still
 have no CLI flag.
-
-## Note: `integral_discharge_ratio`
-
-`adaptive_resampling_integral_discharge_ratio` **has no effect** in the current
-adaptive-resampling PI implementation. It is deliberately **left out** of every
-CLI flag and of every tuning or recommendation tool, even where documentation
-still mentions it.

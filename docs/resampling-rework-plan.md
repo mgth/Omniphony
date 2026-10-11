@@ -1238,11 +1238,12 @@ Each is one pull request, stacked in this order.
   Windows. Type-checked for Windows and its unit tests run under Wine; the
   cpal output run for real on Linux through ALSA; macOS compiled nowhere
   yet. Not run on Windows or macOS hardware before the flip (decided below).
-- **6j — the flip.** The new host becomes `render`. Studio: the auto-tune
-  wizard and the PI controls go, the plot is the diag channels of §16. The
-  legacy regulation, the trigger path, `PwClientNode` and their documents are
-  deleted; `adaptive_resampling_*`, `clock_mode` and `use_output_pacing` are
-  read, ignored with one warning, and kept on write.
+- **6j — the flip.** DONE, see §28: the new host is `render`, on every
+  platform. Studio: the auto-tune wizard and the PI controls are gone, the
+  plot is the diag channels of §16. The regulation it replaced, the trigger
+  path, `PwClientNode` and their documents are deleted;
+  `adaptive_resampling_*`, `clock_mode` and `use_output_pacing` are read,
+  ignored with one warning, and kept on write.
 
 ### Decided 2026-10-11: one flip, every platform
 
@@ -2171,3 +2172,114 @@ The cpal run (a timed pipe, 180 ms asked for, a 43 ms device cycle):
   decoder bridge here.
 - The cpal patch for the driver's position and latencies (§9).
 - cpal's buffer size is the device's default.
+
+## 28. Phase 6j — the flip (2026-10-11)
+
+`orender render` is the host of §18–§27, on Linux, Windows and macOS. There
+is no switch back: the regulation it replaced is not compiled anywhere.
+
+### What went
+
+- **The host.** `--sync-engine`, `ORENDER_SYNC_ENGINE` and the `sync-play`
+  command (the host is `render`); the eleven modules of the old CLI host
+  (its bootstrap, decoder thread, handler, live bridge and input, output and
+  its runtime sync, writer lifecycle); `input-live`, a command that was
+  declared and never implemented.
+- **The output and input stages.** In `audio_output`: the adaptive runtime
+  (the PI servo and its recovery states), the shared callback core, the
+  PipeWire and cpal writers, the pacer, the resampler FIFO, the ring, the
+  IIR of the servo's input. In `audio_input`: the PipeWire bridge capture
+  and its client-node backend (`PwClientNode`), the pacer drain. What is
+  left of the two crates is the sync output, the file sink, the device
+  listing, the controls' state and the format pods of the sink.
+- **The options.** One set of host options, twelve rows: the output's
+  (`output_device`, `output_backend`, `output_file`, `output_file_format`,
+  `output_sample_rate`, `latency_target`), the loop's (`loop_bandwidth_hz`,
+  `source_clock`, `realign_threshold_ms`) and the input's (`input_mode`,
+  `live_input_node`, `live_input_description`). The rows of the adaptive
+  resampler (22 keys) and of the live input's shape (`backend`, `layout`, `clock_mode`,
+  `channels`, `sample_rate`, `map`, `lfe_mode`) are gone, with the flags
+  `render` generated from them.
+- **The contract** (`CONTRACT_REVISION` 6 → 7). Every address under
+  `/control/adaptive_resampling`, the live input's shape under
+  `/control/input/live/`, and the states only the old regulation published:
+  `latency_control`, `latency_smoothed`, `latency_downstream`,
+  `latency_avail_input`, `latency_output_fifo`, `latency_resampler_pending`,
+  `adaptive_resampling/{state,band}`. `/state/audio` has no
+  `adaptiveResampling` block. `/state/latency` is the measured latency (it
+  was the old controller's control latency when there was one).
+- **Studio.** The auto-tune wizard (its state machine, detectors, runner and
+  modal, with the quit guard that waited for a run), the adaptive
+  controller's form and its commands, the band indicator, the deviation
+  meter, the `ctrl`/`smoothed`/`path` readouts and markers, the input's
+  clock mode, and 142 strings in each of the eight catalogues. The Latency
+  section is the meter, the trace, the target, and in the advanced view the
+  source clock, the loop bandwidth and the realign threshold. The policy
+  that told a sync renderer from an older one (`sync_engine`,
+  `adaptive_resampling`) is gone: a standalone renderer has this output.
+  The plot's latency trace is the measured latency (it was fed by the
+  smoothed one, which the new host never published, so it stayed empty).
+- **The documents.** `PI_TUNING_PROCEDURE.md`; `docs/latency-regulation.md`
+  is rewritten for this design.
+
+### What stays readable
+
+A config written for the old regulation loads. Its keys
+(`enable_adaptive_resampling`, `adaptive_resampling_*`, and `backend`,
+`layout`, `current_layout`, `clock_mode`, `channels`, `sample_rate`, `map`,
+`lfe_mode` under `live_input`) still parse into `RenderConfig`, do nothing,
+and are written back as they were by a Save. A run names the ones it found,
+once (`RenderConfig::retired_keys`):
+
+```
+config: 5 key(s) are no longer used and are ignored (the output now holds an
+end-to-end latency, `latency_target`, instead of tuning a resampler): …
+```
+
+`latency_target` keeps its key and changes meaning, as §16 says: it was the
+level of the output buffer, it is the end-to-end latency. A value sized for
+the buffer is raised when the stream needs more (§19) and the Studio says so.
+
+A command line that still passes one of the removed flags is refused by the
+argument parser, as any unknown flag is.
+
+### Fixed on the way
+
+- **The device callbacks were not all free of log lines.** The tripwire
+  that scans them for locks and logging (`audio_output/tests/
+  realtime_callbacks.rs`) watched the old stage; pointed at the new one
+  (the PipeWire and cpal callbacks, the output core, the servo and its
+  estimators, the ring, the resampler), it found a `log::warn!` in the cpal
+  callback, for a cycle larger than the scratch buffer. It is a flag now,
+  which the owner reads as "not playing".
+- **A paced reader could read before it was told it was paced** (arm64 CI):
+  the pacing is given to the thread before it starts.
+- **Two cpal hosts enumerated at once crashed on Windows** (CI, access
+  violation in the test binary): host access goes through one lock.
+
+### Verified
+
+- The gates: `fmt`, the clippy ratchet (234 → 204 warnings, baseline
+  lowered), the renderer's suite (1439 tests) and the Studio's (531), the
+  doc tables, the options schema against the Studio's strings (12 host
+  options, 76 core), the catalogues' parity, the Studio's architecture
+  ratchet (unchanged), the contract's fingerprint.
+- Windows: the workspace type-checks for `x86_64-pc-windows-gnu`, and the
+  named-pipe tests pass under Wine.
+- Live, isolated (private sinks, private config, a free OSC port), on the
+  flipped binary: mpv AC-3 at 44.1 kHz into the sink, 150 ms held within
+  0.8 ms over 20 readings with no realign and nothing lost; the file and
+  pipe scenarios of §22; a config carrying five retired keys plays and says
+  so once.
+- The Studio against that renderer: the window was captured (not driven):
+  the Latency section and the input's summary are as described above.
+
+### Not done
+
+- Nothing on Windows or macOS hardware (§27), by decision (§17).
+- The Studio was not operated by hand after the removal: its tests pass and
+  one capture was read.
+- mpv-omniphony's own scripts and documentation were not searched for the
+  removed addresses and flags.
+- `output_channel_mapping: by_name` is still not positional on PipeWire
+  (it was not before either).

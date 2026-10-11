@@ -169,7 +169,7 @@ visualization / live-control UI for the renderer. It speaks OSC to whichever
 host runs `liborender` — the standalone `orender` CLI, or the embedded host
 inside this mpv build. Studio detects the embedded variant via the renderer's
 capabilities handshake and hides the panels that don't apply (audio-output
-device, adaptive resampler, latency target), keeping spatial controls and
+device, latency target and its loop), keeping spatial controls and
 metering enabled.
 
 ### Get Studio
