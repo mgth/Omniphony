@@ -20,7 +20,7 @@
 use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread;
 use std::time::Duration;
 
@@ -36,7 +36,7 @@ use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::Pod;
 
-use super::reader::{END_OF_STREAM_S, ReaderMsg, ReaderStats, Transport};
+use super::reader::{Capture, END_OF_STREAM_S, ReaderMsg, ReaderStats, Transport};
 
 /// `SPA_IO_CLOCK_FLAG_XRUN_RECOVER | SPA_IO_CLOCK_FLAG_DISCONT`
 /// (`spa/node/io.h`): the driver's clock restarted. Spelled out because the
@@ -93,35 +93,42 @@ pub struct OwnSinkConfig {
 
 /// Start the driver, the sink and the pump; returns the message stream the
 /// engine thread consumes, as for the pipe.
-pub fn spawn_own_sink(config: OwnSinkConfig) -> Result<(Receiver<ReaderMsg>, Arc<ReaderStats>)> {
+pub fn spawn_own_sink(config: OwnSinkConfig) -> Result<Capture> {
     let (bytes_tx, bytes_rx) = frame_ring::<u8>(1, BYTE_RING);
     let (stamps_tx, stamps_rx) = frame_ring::<CycleStamp>(1, STAMP_RING);
     let shared = Arc::new(Shared::default());
     let (ready_tx, ready_rx) = sync_channel::<Result<()>>(1);
+    let (tx, rx) = sync_channel(1024);
+    let stats = Arc::new(ReaderStats::default());
+    let stop = Arc::new(AtomicBool::new(false));
+    // From here the capture owns its threads: an early return stops and
+    // joins the ones already started.
+    let mut capture = Capture::new(rx, Arc::clone(&stats), Arc::clone(&stop));
     {
         let shared = Arc::clone(&shared);
-        thread::Builder::new()
-            .name("own-sink".into())
-            .spawn(move || {
-                if let Err(e) = run_sink(config, shared, bytes_tx, stamps_tx, &ready_tx) {
-                    let _ = ready_tx.send(Err(e));
-                }
-            })?;
+        let stop = Arc::clone(&stop);
+        capture.own(
+            thread::Builder::new()
+                .name("own-sink".into())
+                .spawn(move || {
+                    if let Err(e) = run_sink(config, shared, bytes_tx, stamps_tx, &ready_tx, &stop)
+                    {
+                        let _ = ready_tx.send(Err(e));
+                    }
+                })?,
+        );
     }
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(anyhow!("own sink did not start within 5 s")),
     }
-    let (tx, rx) = sync_channel(1024);
-    let stats = Arc::new(ReaderStats::default());
-    {
-        let stats = Arc::clone(&stats);
+    capture.own(
         thread::Builder::new()
             .name("own-sink-pump".into())
-            .spawn(move || pump(bytes_rx, stamps_rx, tx, &stats))?;
-    }
-    Ok((rx, stats))
+            .spawn(move || pump(bytes_rx, stamps_rx, tx, &stats, &stop))?,
+    );
+    Ok(capture)
 }
 
 /// Main loop of the sink thread: driver node, follower stream, then wait.
@@ -131,6 +138,7 @@ fn run_sink(
     mut bytes_tx: Producer<u8>,
     mut stamps_tx: Producer<CycleStamp>,
     ready: &SyncSender<Result<()>>,
+    stop: &AtomicBool,
 ) -> Result<()> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
@@ -217,11 +225,10 @@ fn run_sink(
                 info.channels()
             );
             param_shared.epoch.fetch_add(1, Ordering::Release);
-            let force = if iec958 && info.rate() != 48_000 {
-                info.rate()
-            } else {
-                0
-            };
+            // Every IEC 958 carrier, the 48 kHz ones included: the sink asks
+            // for 192 kHz by default, and a group left at that rate runs a
+            // 48 kHz carrier (AC-3, DTS core) four times too fast.
+            let force = if iec958 { info.rate() } else { 0 };
             if forced_for_param.get() != Some(force) {
                 forced_for_param.set(Some(force));
                 pending_for_param.set(Some(force));
@@ -368,7 +375,7 @@ fn run_sink(
         if let Some(rate) = pending.take() {
             set_force_rate(&stream, rate);
         }
-        if sys::ShutdownHandle::is_requested() {
+        if stop.load(Ordering::Relaxed) || sys::ShutdownHandle::is_requested() {
             break;
         }
     }
@@ -393,6 +400,7 @@ fn pump(
     mut stamps: Consumer<CycleStamp>,
     tx: SyncSender<ReaderMsg>,
     stats: &ReaderStats,
+    stop: &AtomicBool,
 ) {
     let mut stamp = [CycleStamp::default()];
     // The capture's epoch, whose byte count `bytes_end` runs in, and whether
@@ -405,7 +413,7 @@ fn pump(
     // own count (`Transport::bytes_end`) starts from.
     let mut stream_base = 0u64;
     let mut last_data_at = std::time::Instant::now();
-    loop {
+    while !stop.load(Ordering::Relaxed) {
         if !stamps.read_exact(&mut stamp) {
             if in_stream && last_data_at.elapsed().as_secs_f64() >= END_OF_STREAM_S {
                 in_stream = false;
@@ -460,6 +468,7 @@ fn pump(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::Receiver;
 
     const RATE: u32 = 48_000;
 
@@ -500,7 +509,8 @@ mod tests {
         let (tx, rx) = sync_channel(64);
         let stats = Arc::new(ReaderStats::default());
         let pump_stats = Arc::clone(&stats);
-        let pump = thread::spawn(move || pump(bytes_rx, stamps_rx, tx, &pump_stats));
+        let stop = AtomicBool::new(false);
+        let pump = thread::spawn(move || pump(bytes_rx, stamps_rx, tx, &pump_stats, &stop));
 
         bytes_tx.push(&[1; 4096]);
         stamps_tx.push(&[stamp(1_000_000_000, 4096, 7)]);

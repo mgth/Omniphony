@@ -19,9 +19,10 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::thread;
+use std::time::Duration;
 
 use audio_output::sync_output::reference_now_s;
 
@@ -67,12 +68,65 @@ pub struct ReaderStats {
     pub chunks_dropped: AtomicU64,
 }
 
-/// Spawn the reader on the FIFO at `path` (created if missing) and return
-/// the receiving end and its counters.
-pub fn spawn_reader(
-    path: PathBuf,
-    drain_on_open: bool,
-) -> std::io::Result<(Receiver<ReaderMsg>, Arc<ReaderStats>)> {
+/// A running capture (the pipe reader or the `own` sink): the messages it
+/// hands to the engine thread, and its counters.
+///
+/// Dropping it stops the capture's threads and waits for them, so the pipe
+/// is closed and the sink is gone from the graph before a successor opens
+/// its own (a restart from config).
+pub struct Capture {
+    /// `None` only while dropping: closed first, so a thread blocked on a
+    /// full queue wakes up.
+    rx: Option<Receiver<ReaderMsg>>,
+    pub stats: Arc<ReaderStats>,
+    stop: Arc<AtomicBool>,
+    threads: Vec<thread::JoinHandle<()>>,
+}
+
+impl Capture {
+    /// Wrap a capture's receiving end. `stop` is the flag its threads poll.
+    pub fn new(rx: Receiver<ReaderMsg>, stats: Arc<ReaderStats>, stop: Arc<AtomicBool>) -> Self {
+        Self {
+            rx: Some(rx),
+            stats,
+            stop,
+            threads: Vec::new(),
+        }
+    }
+
+    /// A thread the capture owns, joined when it is dropped.
+    pub fn own(&mut self, thread: thread::JoinHandle<()>) {
+        self.threads.push(thread);
+    }
+
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<ReaderMsg, RecvTimeoutError> {
+        match &self.rx {
+            Some(rx) => rx.recv_timeout(timeout),
+            None => Err(RecvTimeoutError::Disconnected),
+        }
+    }
+
+    /// Discard what is queued (standby: nothing is played, and the capture
+    /// must not fill its queue).
+    pub fn discard_pending(&self) {
+        if let Some(rx) = &self.rx {
+            while rx.try_recv().is_ok() {}
+        }
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.rx = None;
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Spawn the reader on the FIFO at `path` (created if missing).
+pub fn spawn_reader(path: PathBuf, drain_on_open: bool) -> std::io::Result<Capture> {
     let fd = open_fifo(&path)?;
     if drain_on_open {
         let drained = drain(fd);
@@ -85,11 +139,14 @@ pub fn spawn_reader(
     }
     let (tx, rx) = sync_channel(QUEUE_CHUNKS);
     let stats = Arc::new(ReaderStats::default());
-    let thread_stats = Arc::clone(&stats);
-    thread::Builder::new()
-        .name("sync-pipe-reader".into())
-        .spawn(move || read_loop(fd, tx, &thread_stats))?;
-    Ok((rx, stats))
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut capture = Capture::new(rx, Arc::clone(&stats), Arc::clone(&stop));
+    capture.own(
+        thread::Builder::new()
+            .name("sync-pipe-reader".into())
+            .spawn(move || read_loop(fd, tx, &stats, &stop))?,
+    );
+    Ok(capture)
 }
 
 fn open_fifo(path: &Path) -> std::io::Result<i32> {
@@ -135,11 +192,11 @@ fn poll_readable(fd: i32, timeout_ms: i32) -> bool {
     r > 0 && pfd.revents & libc::POLLIN != 0
 }
 
-fn read_loop(fd: i32, tx: SyncSender<ReaderMsg>, stats: &ReaderStats) {
+fn read_loop(fd: i32, tx: SyncSender<ReaderMsg>, stats: &ReaderStats, stop: &AtomicBool) {
     let mut buf = vec![0u8; CHUNK_BYTES];
     let mut in_stream = false;
     let mut last_data = 0.0f64;
-    loop {
+    while !stop.load(Ordering::Relaxed) {
         if !poll_readable(fd, POLL_MS) {
             if in_stream && reference_now_s() - last_data >= END_OF_STREAM_S {
                 in_stream = false;

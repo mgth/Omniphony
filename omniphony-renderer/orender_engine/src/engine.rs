@@ -405,6 +405,37 @@ impl Engine {
         Ok(())
     }
 
+    /// The decoder bridges in force: as asked for at construction, or as a
+    /// live change of the bridge path left them.
+    pub fn bridge_paths(&self) -> Vec<PathBuf> {
+        self.renderer.renderer_control().bridge_paths()
+    }
+
+    /// Release the OSC port and stop listening: the standby of a host that
+    /// yields the port to a player's embedded engine (`--osc-yield`). A no-op
+    /// without an OSC server.
+    pub fn osc_enter_standby(&mut self) {
+        if let Some(osc) = self.osc.as_mut() {
+            osc.enter_standby();
+        }
+    }
+
+    /// Take the OSC port back after a standby. Whether the server listens
+    /// again: `false` when the port is still held, and the host should stand
+    /// by again rather than run without a listener. `true` without an OSC
+    /// server, which has nothing to take back.
+    pub fn osc_resume(&mut self) -> bool {
+        match self.osc.as_mut() {
+            Some(osc) => {
+                if let Err(e) = osc.resume() {
+                    log::error!("standby resume: failed to re-bind the OSC port: {e}");
+                }
+                osc.is_listening()
+            }
+            None => true,
+        }
+    }
+
     /// The output stage's latency and resampling figures, carried by every
     /// meter bundle from now on. For a host that plays the rendered audio
     /// itself and so has an output stage to report; a host that hands the

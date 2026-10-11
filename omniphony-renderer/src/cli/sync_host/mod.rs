@@ -129,7 +129,7 @@ const DEFAULT_TARGET_LATENCY_MS: f64 = 150.0;
 
 /// The end-to-end latency to hold (ms): the flag, else the config's
 /// `render.latency_target`, else [`DEFAULT_TARGET_LATENCY_MS`].
-fn resolve_target_latency_ms(flag: Option<f64>, config: Option<u32>) -> f64 {
+pub fn resolve_target_latency_ms(flag: Option<f64>, config: Option<u32>) -> f64 {
     flag.or(config.map(f64::from))
         .unwrap_or(DEFAULT_TARGET_LATENCY_MS)
 }
@@ -185,6 +185,9 @@ struct Epoch {
     /// epoch; a pipe's carrier change rebases it.
     transport_base: Option<(u64, f64)>,
     last_transport: Option<Transport>,
+    /// The capture's byte count where this epoch's first chunk started: 0
+    /// for a stream the epoch saw open, more for one picked up on the way.
+    transport_origin: Option<u64>,
     /// `follow` source on a pipe: its carrier, once the first burst named
     /// the data type, and the bytes pushed into the parser since its reset.
     pipe_carrier: Option<(u32, u32)>,
@@ -204,6 +207,137 @@ struct Epoch {
     bytes_in: u64,
 }
 
+/// Where the stream comes from, and with it the source clock.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Source {
+    /// A pipe a player writes on its own clock (`follow`).
+    Pipe { path: PathBuf, drain: bool },
+    /// orender's own PipeWire sink, on orender's clock (`own`).
+    OwnSink {
+        node_name: String,
+        description: String,
+        /// `priority.session`, if set.
+        session_priority: Option<u32>,
+    },
+}
+
+impl Source {
+    fn follows_the_writer(&self) -> bool {
+        matches!(self, Source::Pipe { .. })
+    }
+}
+
+/// Everything a run of the host is given: what `sync-play` and `render`
+/// each resolve from their own arguments and the config.
+#[derive(Debug, Clone)]
+pub struct HostConfig {
+    pub config_path: Option<PathBuf>,
+    /// The decoder bridges, in load order; empty takes the config's, else
+    /// auto-discovery (as [`Engine::from_paths`]).
+    pub bridge_paths: Vec<PathBuf>,
+    pub source: Source,
+    /// End-to-end latency to hold (ms).
+    pub target_latency_ms: f64,
+    /// Phase-loop bandwidth (Hz); `None` is the source's own default.
+    pub loop_bandwidth_hz: Option<f64>,
+    /// PipeWire sink to play into (pinned); `None` is the session's choice.
+    pub output_target: Option<String>,
+    /// PipeWire quantum requested (frames).
+    pub quantum: u32,
+    pub osc: OscSettings,
+    /// Stop after this many seconds (tests).
+    pub seconds: Option<f64>,
+    /// Print the servo telemetry every this many seconds (0 = never).
+    pub report_every: f64,
+}
+
+/// What outlives a run of the host: the capture.
+///
+/// A restart from the config builds a new engine, but the pipe must not lose
+/// its reader meanwhile (its writer would be killed by `SIGPIPE`), nor the
+/// sink leave the graph (its player would be moved elsewhere). The capture
+/// is kept as long as the next run asks for the same one.
+#[derive(Default)]
+pub struct HostSession {
+    capture: Option<(CaptureKey, reader::Capture)>,
+}
+
+/// What a capture was opened with: a change in any of it opens another.
+#[derive(Debug, Clone, PartialEq)]
+struct CaptureKey {
+    source: Source,
+    /// What the `own` sink advertises and asks for; the pipe has neither.
+    sink_latency_ns: i64,
+    sink_quantum: u32,
+}
+
+impl CaptureKey {
+    fn of(config: &HostConfig) -> Self {
+        let own = matches!(config.source, Source::OwnSink { .. });
+        Self {
+            source: config.source.clone(),
+            sink_latency_ns: if own {
+                (config.target_latency_ms * 1e6) as i64
+            } else {
+                0
+            },
+            sink_quantum: if own { config.quantum } else { 0 },
+        }
+    }
+}
+
+impl HostSession {
+    /// The capture `config` asks for: the one already running when it is the
+    /// same, with what it queued meanwhile discarded; else a new one, opened
+    /// once the old one is closed.
+    fn capture(&mut self, config: &HostConfig) -> Result<&reader::Capture> {
+        let key = CaptureKey::of(config);
+        if self.capture.as_ref().is_some_and(|(k, _)| *k == key) {
+            log::info!("sync host: keeping the capture open");
+        } else {
+            self.capture = None;
+            let capture = match &config.source {
+                Source::Pipe { path, drain } => spawn_reader(path.clone(), *drain)?,
+                Source::OwnSink {
+                    node_name,
+                    description,
+                    session_priority,
+                } => own_sink::spawn_own_sink(own_sink::OwnSinkConfig {
+                    node_name: node_name.clone(),
+                    description: description.clone(),
+                    latency_ns: key.sink_latency_ns,
+                    quantum: config.quantum,
+                    session_priority: *session_priority,
+                })?,
+            };
+            self.capture = Some((key, capture));
+        }
+        let (_, capture) = self.capture.as_ref().context("the capture just opened")?;
+        capture.discard_pending();
+        Ok(capture)
+    }
+}
+
+/// How a run of the host ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRun {
+    pub exit: HostExit,
+    /// The bridges in force when it ended: a live change of the bridge path
+    /// is what a restart from the config must load.
+    pub bridge_paths: Vec<PathBuf>,
+}
+
+/// Why a run of the host ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostExit {
+    /// The capture ended or the time given ran out.
+    Finished,
+    /// The process was asked to stop.
+    Shutdown,
+    /// A reload of the config was asked for: the caller builds a new run.
+    RestartFromConfig,
+}
+
 pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Result<()> {
     let config_path = config_path.or_else(renderer::config::default_config_path);
     let config = config_path
@@ -211,32 +345,20 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
         .map(renderer::config::Config::load_or_default)
         .unwrap_or_default();
     let render = config.render.clone().unwrap_or_default();
-    let bridge_paths = render.bridges();
-    let mut engine = Engine::from_paths(
-        config_path.as_deref(),
-        None,
-        &bridge_paths,
-        None,
-        RENDER_RATE,
-    )
-    .context("building the render engine")?;
-    let channels = engine.channel_count() as usize;
-    let positions: Vec<String> = engine
-        .channel_layout()
-        .into_iter()
-        .map(|l| bridge_api::labels::canonical_name(l).to_string())
-        .collect();
-    let target = args
-        .output_target
-        .clone()
-        .or_else(|| render.output_device.clone());
-    let target_ms = resolve_target_latency_ms(args.target_latency_ms, render.latency_target);
-    log::info!(
-        "sync host: {channels} channels ({}), target {target_ms} ms, output {}",
-        positions.join(","),
-        target.as_deref().unwrap_or("<session default>")
-    );
-
+    let source = match args.source {
+        SourceKind::Pipe => Source::Pipe {
+            path: args
+                .input
+                .clone()
+                .context("--source pipe needs an INPUT pipe")?,
+            drain: !args.no_drain_pipe,
+        },
+        SourceKind::Own => Source::OwnSink {
+            node_name: args.sink_name.clone(),
+            description: "Omniphony (sync)".into(),
+            session_priority: args.sink_session_priority,
+        },
+    };
     // The same resolution as every host (flag, config, workflow port); off
     // unless one of them asks, as for `render`.
     let osc = OscSettings::resolve(
@@ -250,7 +372,53 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
         },
         false,
     );
-    if let Some(options) = osc.options() {
+    let config = HostConfig {
+        bridge_paths: render.bridges(),
+        source,
+        target_latency_ms: resolve_target_latency_ms(args.target_latency_ms, render.latency_target),
+        loop_bandwidth_hz: args.loop_bandwidth_hz,
+        output_target: args
+            .output_target
+            .clone()
+            .or_else(|| render.output_device.clone()),
+        quantum: args.quantum,
+        osc,
+        seconds: args.seconds,
+        report_every: args.report_every,
+        config_path,
+    };
+    run(&config, &mut HostSession::default()).map(|_| ())
+}
+
+/// Run the host until its capture ends, its time runs out, or the process is
+/// asked to stop or to restart from the config. `session` carries the
+/// capture from one run to the next.
+pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
+    let mut engine = Engine::from_paths(
+        config.config_path.as_deref(),
+        None,
+        &config.bridge_paths,
+        None,
+        RENDER_RATE,
+    )
+    .context("building the render engine")?;
+    let channels = engine.channel_count() as usize;
+    let positions: Vec<String> = engine
+        .channel_layout()
+        .into_iter()
+        .map(|l| bridge_api::labels::canonical_name(l).to_string())
+        .collect();
+    let target_ms = config.target_latency_ms;
+    log::info!(
+        "sync host: {channels} channels ({}), target {target_ms} ms, output {}",
+        positions.join(","),
+        config
+            .output_target
+            .as_deref()
+            .unwrap_or("<session default>")
+    );
+
+    if let Some(options) = config.osc.options() {
         log::info!("sync host: OSC on {}:{}", options.host, options.port_out);
         engine
             .enable_osc(options)
@@ -258,31 +426,33 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
     }
     let mut telemetry = HostTelemetry::new(target_ms);
 
-    let (rx, stats) = match args.source {
-        SourceKind::Pipe => {
-            let input = args
-                .input
-                .clone()
-                .context("--source pipe needs an INPUT pipe")?;
-            spawn_reader(input, !args.no_drain_pipe)?
-        }
-        SourceKind::Own => own_sink::spawn_own_sink(own_sink::OwnSinkConfig {
-            node_name: args.sink_name.clone(),
-            description: "Omniphony (sync)".into(),
-            latency_ns: (target_ms * 1e6) as i64,
-            quantum: args.quantum,
-            session_priority: args.sink_session_priority,
-        })?,
-    };
+    let capture = session.capture(config)?;
+    sys::notify_ready();
     let started = Instant::now();
     let mut epoch: Option<Epoch> = None;
-    let mut next_report = args.report_every;
+    let mut next_report = config.report_every;
 
-    loop {
-        if let Some(limit) = args.seconds
+    let exit = loop {
+        if sys::ShutdownHandle::is_requested() {
+            break HostExit::Shutdown;
+        }
+        if sys::ShutdownHandle::is_restart_from_config_requested() {
+            break HostExit::RestartFromConfig;
+        }
+        if sys::shutdown::is_standby_requested() {
+            sys::shutdown::take_standby_request();
+            // The audio output goes with the port: the player that asked for
+            // it plays through its own.
+            if let Some(ep) = epoch.take() {
+                telemetry.close_epoch(&ep.telemetry.snapshot());
+            }
+            stand_by(&mut engine, capture);
+            continue;
+        }
+        if let Some(limit) = config.seconds
             && started.elapsed().as_secs_f64() >= limit
         {
-            break;
+            break HostExit::Finished;
         }
         if epoch
             .as_ref()
@@ -294,13 +464,13 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
             log::info!(
                 "sync host: stream ended after {:.1} s; {}",
                 ep.started.elapsed().as_secs_f64(),
-                describe(&ep, &stats)
+                describe(&ep, &capture.stats)
             );
         }
-        let msg = match rx.recv_timeout(Duration::from_millis(20)) {
+        let msg = match capture.recv_timeout(Duration::from_millis(20)) {
             Ok(m) => Some(m),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break HostExit::Finished,
         };
         match msg {
             Some(ReaderMsg::Start) => {
@@ -309,13 +479,7 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
                     telemetry.close_epoch(&ep.telemetry.snapshot());
                 }
                 engine.reset();
-                epoch = Some(start_epoch(
-                    args,
-                    target_ms,
-                    channels,
-                    &positions,
-                    target.clone(),
-                )?);
+                epoch = Some(start_epoch(config, channels, &positions)?);
                 log::info!("sync host: stream opened, new epoch");
             }
             Some(ReaderMsg::Chunk {
@@ -323,8 +487,17 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
                 bytes,
                 transport,
             }) => {
+                // No epoch for it: the stream was already running when this
+                // run took the capture over (a restart from the config, the
+                // end of a standby). It is picked up where it is.
+                if epoch.is_none() {
+                    engine.reset();
+                    epoch = Some(start_epoch(config, channels, &positions)?);
+                    log::info!("sync host: stream already running, new epoch");
+                }
                 if let Some(ep) = epoch.as_mut() {
-                    ep.last_transport = transport;
+                    ep.last_transport =
+                        transport_in_epoch(&mut ep.transport_origin, transport, bytes.len());
                     feed_chunk(&mut engine, ep, t, &bytes);
                 }
             }
@@ -336,7 +509,7 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
                     log::info!(
                         "sync host: stream ended after {:.1} s; {}",
                         ep.started.elapsed().as_secs_f64(),
-                        describe(&ep, &stats)
+                        describe(&ep, &capture.stats)
                     );
                 }
             }
@@ -346,54 +519,90 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
             &mut engine,
             epoch.as_ref().map(|ep| ep.telemetry.snapshot()).as_ref(),
         );
-        if args.report_every > 0.0 && started.elapsed().as_secs_f64() >= next_report {
-            next_report += args.report_every;
+        if config.report_every > 0.0 && started.elapsed().as_secs_f64() >= next_report {
+            next_report += config.report_every;
             if let Some(ep) = epoch.as_ref() {
                 println!(
                     "t={:7.1}s {}",
                     started.elapsed().as_secs_f64(),
-                    describe(ep, &stats)
+                    describe(ep, &capture.stats)
                 );
             }
         }
+    };
+    if exit == HostExit::Shutdown {
+        sys::notify_stopping();
     }
-    Ok(())
+    Ok(HostRun {
+        exit,
+        bridge_paths: engine.bridge_paths(),
+    })
 }
 
-fn start_epoch(
-    args: &SyncPlayArgs,
-    target_ms: f64,
-    channels: usize,
-    positions: &[String],
-    target: Option<String>,
-) -> Result<Epoch> {
+/// Standby: a player on this machine asked for the OSC port (an
+/// mpv-embedded engine). The port is released, nothing is played and what
+/// the capture delivers is discarded, until the player hands the port back
+/// or the process is asked to stop or restart.
+fn stand_by(engine: &mut Engine, capture: &reader::Capture) {
+    loop {
+        log::info!("sync host: standby, OSC port and audio output released");
+        engine.osc_enter_standby();
+        loop {
+            if sys::ShutdownHandle::is_requested()
+                || sys::ShutdownHandle::is_restart_from_config_requested()
+            {
+                return;
+            }
+            if sys::shutdown::take_resume_request() {
+                break;
+            }
+            capture.discard_pending();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if engine.osc_resume() {
+            log::info!("sync host: resumed from standby");
+            return;
+        }
+        // The port is still held (a resume that came early, the player still
+        // owns it): running on without a listener would strand the Studio.
+        // Stand by again; the port probe resumes for real once it is free.
+        log::warn!("sync host: the OSC port is still held, standing by again");
+    }
+}
+
+fn start_epoch(config: &HostConfig, channels: usize, positions: &[String]) -> Result<Epoch> {
     let capacity = (RING_SECONDS * RENDER_RATE as f64) as usize;
     let (producer, consumer) = frame_ring(channels, capacity);
     let tap = Arc::new(SourceTap::new());
     let telemetry = Arc::new(SyncTelemetry::new());
-    let mut config = OutputCoreConfig::new(channels, RENDER_RATE, RENDER_RATE, 8192);
-    if args.source == SourceKind::Pipe {
+    let mut core_config = OutputCoreConfig::new(channels, RENDER_RATE, RENDER_RATE, 8192);
+    if config.source.follows_the_writer() {
         let follow = audio_sync::ServoConfig::follow();
-        config.servo = audio_sync::ServoConfig {
-            source_rate_hz: config.servo.source_rate_hz,
-            output_rate_hz: config.servo.output_rate_hz,
-            resampler_lookahead_frames: config.servo.resampler_lookahead_frames,
+        core_config.servo = audio_sync::ServoConfig {
+            source_rate_hz: core_config.servo.source_rate_hz,
+            output_rate_hz: core_config.servo.output_rate_hz,
+            resampler_lookahead_frames: core_config.servo.resampler_lookahead_frames,
             ..follow
         };
     }
-    if let Some(hz) = args.loop_bandwidth_hz {
-        config.servo.loop_bandwidth_hz = hz;
+    if let Some(hz) = config.loop_bandwidth_hz {
+        core_config.servo.loop_bandwidth_hz = hz;
     }
-    config.servo.target_latency_s = target_ms / 1e3;
-    let core = OutputCore::new(config, consumer, Arc::clone(&tap), Arc::clone(&telemetry));
+    core_config.servo.target_latency_s = config.target_latency_ms / 1e3;
+    let core = OutputCore::new(
+        core_config,
+        consumer,
+        Arc::clone(&tap),
+        Arc::clone(&telemetry),
+    );
     let output = PipewireSyncOutput::start(
         PipewireSyncOutputConfig {
             node_name: "omniphony-sync".into(),
-            target,
+            target: config.output_target.clone(),
             channels: channels as u32,
             positions: Some(positions.to_vec()),
             rate: RENDER_RATE,
-            quantum: args.quantum,
+            quantum: config.quantum,
         },
         core,
     )?;
@@ -409,6 +618,7 @@ fn start_epoch(
         dropped_frames: 0,
         transport_base: None,
         last_transport: None,
+        transport_origin: None,
         pipe_carrier: None,
         pipe_carrier_known: false,
         data_type: None,
@@ -418,6 +628,23 @@ fn start_epoch(
         channel_mismatch_logged: false,
         trace: std::env::var_os("ORENDER_SYNC_TRACE").is_some(),
         bytes_in: 0,
+    })
+}
+
+/// A chunk's transport position counted from an epoch's first chunk, as the
+/// parser counts the bytes it is fed: the capture counts from the start of
+/// its stream, which an epoch that picked the stream up on the way never saw.
+/// `origin` is the epoch's: the capture's count where its first chunk began.
+fn transport_in_epoch(
+    origin: &mut Option<u64>,
+    transport: Option<Transport>,
+    len: usize,
+) -> Option<Transport> {
+    let transport = transport?;
+    let origin = *origin.get_or_insert(transport.bytes_end.saturating_sub(len as u64));
+    Some(Transport {
+        bytes_end: transport.bytes_end.saturating_sub(origin),
+        ..transport
     })
 }
 
@@ -603,6 +830,71 @@ mod tests {
             resolve_target_latency_ms(None, None),
             DEFAULT_TARGET_LATENCY_MS
         );
+    }
+
+    fn config(source: Source, target_latency_ms: f64) -> HostConfig {
+        HostConfig {
+            config_path: None,
+            bridge_paths: Vec::new(),
+            source,
+            target_latency_ms,
+            loop_bandwidth_hz: None,
+            output_target: None,
+            quantum: 1024,
+            osc: OscSettings::resolve(None, &OscOverrides::default(), false),
+            seconds: None,
+            report_every: 0.0,
+        }
+    }
+
+    /// A restart from the config keeps the capture unless the config asks
+    /// for another: the pipe ignores the latency (it advertises nothing),
+    /// the `own` sink advertises it and is reopened when it changes.
+    #[test]
+    fn a_capture_is_reopened_only_when_what_it_was_opened_with_changes() {
+        let pipe = |path: &str| Source::Pipe {
+            path: path.into(),
+            drain: true,
+        };
+        let sink = || Source::OwnSink {
+            node_name: "omniphony".into(),
+            description: "Omniphony".into(),
+            session_priority: None,
+        };
+        let key = |source, ms| CaptureKey::of(&config(source, ms));
+        assert_eq!(key(pipe("/a"), 150.0), key(pipe("/a"), 200.0));
+        assert_ne!(key(pipe("/a"), 150.0), key(pipe("/b"), 150.0));
+        assert_eq!(key(sink(), 150.0), key(sink(), 150.0));
+        assert_ne!(key(sink(), 150.0), key(sink(), 200.0));
+        assert_ne!(key(sink(), 150.0), key(pipe("/a"), 150.0));
+    }
+
+    /// An epoch that picks a stream up on the way counts the transport from
+    /// its own first chunk, as its parser counts the bytes it is fed; one
+    /// that saw the stream open counts as the capture does.
+    #[test]
+    fn an_epoch_counts_the_transport_from_its_first_chunk() {
+        let transport = |bytes_end| {
+            Some(Transport {
+                rate: 192_000,
+                channels: 2,
+                bytes_end,
+            })
+        };
+        let mut origin = None;
+        let mut in_epoch = |t: Option<Transport>, len: usize| {
+            transport_in_epoch(&mut origin, t, len).map(|t| t.bytes_end)
+        };
+        // Picked up 1 MiB into the stream, with a 4096-byte chunk.
+        assert_eq!(in_epoch(transport((1 << 20) + 4096), 4096), Some(4096));
+        assert_eq!(in_epoch(transport((1 << 20) + 12288), 8192), Some(12288));
+        // A pipe has no transport: nothing to rebase.
+        assert_eq!(in_epoch(None, 4096), None);
+
+        let mut origin = None;
+        let from_start = transport_in_epoch(&mut origin, transport(4096), 4096);
+        assert_eq!(from_start.map(|t| t.bytes_end), Some(4096));
+        assert_eq!(origin, Some(0));
     }
 
     #[test]

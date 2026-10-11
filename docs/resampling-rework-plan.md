@@ -1173,7 +1173,7 @@ setpoint: it does not move with the measurement.
   audio-output capability, which arrives with the host options (§17, 6a).
 - `set_heard_us` (the listener's position, so a client shows each block when
   it is heard) is not reported yet: it needs the played position, which
-  comes with the accounting slice (6f).
+  comes with the accounting slice (§17, 6g).
 
 ## 17. Phase 6 — what the cutover needs (2026-10-11)
 
@@ -1202,32 +1202,40 @@ deletion comes last.
 
 Each is one pull request, stacked in this order.
 
-- **6a — control surface.** The host options on the new host: `latency_target`,
-  and the new `source_clock` (`own` / `follow` / `none`), `loop_bandwidth_hz`
-  and `realign_threshold_ms` rows (Save-only, per the persistence policy);
-  the output and input option handlers; capabilities that name the sync
-  engine instead of `adaptive_resampling`, so the Studio shows the latency
-  target and hides the PI controls on this host.
-- **6b — `orender render` on the new host, opt-in.** `render` takes its
-  arguments and config as today and hands them to the sync host behind a
-  temporary switch. Process plumbing with it: shutdown, notify,
-  restart from config, standby, no-bridge idle. From here the Studio can
-  launch the new engine, and it can be listened to on the real setup.
-- **6c — `none` and files (4b).** Files, stdin and faster-than-real-time
+- **6a — `orender render` on the new host, opt-in.** DONE, see §18.
+  `render` takes its arguments and config as today and hands the run to the
+  sync host behind a temporary switch. Process plumbing with it: shutdown,
+  notify, restart from config, standby, no-bridge idle. From here the Studio
+  can launch the new engine, and it can be listened to on the real setup.
+- **6b — an unreachable target.** The decision of §7 is not built: the
+  servo publishes its floor but keeps a target below it, and underruns in a
+  loop. Refuse the target at configuration time from the per-codec floors,
+  play at the measured floor at runtime, and report it. Needed before the
+  new engine meets real configs: `latency_target` meant the output buffer
+  for the legacy engine, and a value like 50 ms is below every floor here.
+- **6c — control surface.** The host options on the new host:
+  `latency_target`, and the new `source_clock` (`own` / `follow` / `none`),
+  `loop_bandwidth_hz` and `realign_threshold_ms` rows (Save-only, per the
+  persistence policy); the output and input option handlers; capabilities
+  that name the sync engine instead of `adaptive_resampling`, so the Studio
+  shows the latency target and hides the PI controls on this host. The
+  flags of `render` that the engine does not see yet (layout, presentation,
+  live options) go through here too.
+- **6d — `none` and files (4b).** Files, stdin and faster-than-real-time
   writers under back-pressure at `L`; the `file` output backend and offline
-  rendering; `--continuous`, `render.input_pipe`.
-- **6d — formats.** Stream rates other than 48 kHz, `output_sample_rate`,
+  rendering.
+- **6e — formats.** Stream rates other than 48 kHz, `output_sample_rate`,
   width changes, `output_channel_mapping`.
-- **6e — the live sink.** PCM on the `own` sink, the `live_input.*` options
+- **6f — the live sink.** PCM on the `own` sink, the `live_input.*` options
   and their hot apply.
-- **6f — accounting (4d).** The time-conserving deframer, the per-burst
+- **6g — accounting (4d).** The time-conserving deframer, the per-burst
   decoder audit, discontinuity events, and the listener's position.
-- **6g — runtime switches.** Hot switch of device, backend, rate and
+- **6h — runtime switches.** Hot switch of device, backend, rate and
   latency; device listing; the idle feed.
-- **6h — Windows and macOS.** The cpal adapter wired in (with the timestamp
+- **6i — Windows and macOS.** The cpal adapter wired in (with the timestamp
   patch, §9), the QPC reference clock, the named-pipe reader (§12). Cannot be
   run from the Linux workflow: needs the hardware.
-- **6i — the flip.** The new host becomes `render`. Studio: the auto-tune
+- **6j — the flip.** The new host becomes `render`. Studio: the auto-tune
   wizard and the PI controls go, the plot is the diag channels of §16. The
   legacy regulation, the trigger path, `PwClientNode` and their documents are
   deleted; `adaptive_resampling_*`, `clock_mode` and `use_output_pacing` are
@@ -1235,7 +1243,90 @@ Each is one pull request, stacked in this order.
 
 ### Open: Windows and macOS at the flip
 
-6i deletes the only regulation Windows and macOS have. Either 6h is validated
+6j deletes the only regulation Windows and macOS have. Either 6i is validated
 on hardware first, or the flip is Linux-only and the legacy output stays
 compiled for the other two until it is. The second keeps two engines alive
 for a while; the first holds the Linux cutover back.
+
+## 18. Phase 6a — `orender render` on the sync host, opt-in (2026-10-11)
+
+`orender render --sync-engine` (hidden), or `ORENDER_SYNC_ENGINE=1` in the
+environment (what reaches a renderer the Studio launches), plays the run
+through the sync host instead of the legacy one. Linux, PipeWire output.
+
+### What the run is given
+
+`render` resolves its arguments and config as it always did; the sync host
+gets from that:
+
+| | From |
+|---|---|
+| Source | `render.input_mode`: `pipewire` is the `own` sink, under `live_input.node` / `description` (default `omniphony`); otherwise the input pipe (`render.input_pipe` in continuous mode, else INPUT), followed on its writer's clock |
+| Latency target | `render.latency_target`, else 150 ms |
+| Output | `render.output_device`; `--pw-quantum` |
+| OSC | As resolved for `render`: `--osc`, host and ports, `--osc-yield` |
+| Bridges | `--bridge-path`, else the config's |
+
+The engine reads the config file itself: layout, presentation and live
+options given as **flags** do not reach it yet (6c). A backend other than
+PipeWire is refused with a message.
+
+### Process plumbing
+
+- **Stop.** The shutdown handler is installed; SIGTERM ends the run and the
+  process exits cleanly.
+- **Restart from the config** (`/control/reload_config`). The run ends, and
+  `render`'s loop builds the next one.
+- **Standby** (`--osc-yield`). The OSC port and the audio output are
+  released, what the capture delivers is discarded, and the host resumes
+  when the port is handed back. A resume that cannot take the port stands by
+  again, as the legacy host does.
+- **No bridge.** A bridge that cannot be loaded, with OSC on, falls to the
+  idle runtime `render` already has, with the error published.
+- **Ready / stopping** notifications are sent.
+
+### The capture outlives a run
+
+A restart from the config used to close the pipe and open it again. In
+between the pipe had no reader, and its writer got `EPIPE` (seen live). The
+capture now belongs to a `HostSession` that `render` keeps across runs: it is
+reopened only when the config asks for another one (another pipe, another
+sink name, or, for the sink, another advertised latency or quantum).
+Dropping a capture stops and joins its threads, so the sink is gone from the
+graph before a successor could publish the same name.
+
+A run that takes over a capture, or that comes back from a standby, finds
+its stream already running: no `Start` will come for it. The first chunk
+opens the epoch, and the transport count starts from that chunk.
+
+### Fixed on the way: a 48 kHz carrier on the `own` sink
+
+AC-3 through the sink played four times too fast (source read at
++3 000 000 ppm, 157 realigns in 10 s). The sink asks for 192 kHz by default
+and `node.force-rate` was only set for the other carrier rates, so the
+group stayed at 192 kHz under a 48 kHz carrier. It is now set to the
+negotiated rate for every IEC 958 format. (§13 listed "AC-3/DTS at 48 kHz"
+as offered, not exercised.)
+
+### Live (isolated: private sinks, private config, the workflow's OSC port)
+
+`orender render <pipe> --continuous --enable-vbap --osc … --osc-yield`, as
+the Studio launches it, with `ORENDER_SYNC_ENGINE=1`:
+
+| Run | Result |
+|---|---|
+| Pipe, AC-3 (IEC 61937, 10 ms writes), integration's bridge, target 180 ms | 180.00 ms, error within ±0.05 ms, 0 realigns, 0 underruns |
+| … `reload_config` mid-stream | Capture kept, the writer undisturbed (3600 writes, no `EPIPE`); new epoch on the running stream, 180.03 ms at once |
+| … a second instance takes the OSC port for 6 s | Standby, then resume; new epoch on the running stream, 180.006 ms |
+| … SIGTERM | Exit code 0 |
+| `own` sink, mpv `--audio-spdif=ac3 --ao=pipewire` into it, target 150 ms, 22 s | 150.000 ms ± 0.005, source 0.00 ppm, 0 realigns |
+| … `reload_config` | The sink stays in the graph (one node before and after); gone after exit |
+
+### Not covered
+
+- TrueHD, E-AC-3 and DTS through `render` (E-AC-3 was run through
+  `sync-play` in §13 and §15).
+- The real DAC as output, and the Studio as client: the runs above used a
+  null sink and a script as OSC client.
+- A target below the floor (6b): with the legacy engine's usual
+  `latency_target: 50`, the new one underruns in a loop.

@@ -1266,6 +1266,105 @@ fn run_prepared_render(
     Ok(current_bridge_path)
 }
 
+/// What a render iteration has in hand once its bridges are known to load.
+enum RunOutcome {
+    /// The legacy host: decoder thread started, ready for its render loop.
+    Prepared(Box<PreparedDecodeRun>),
+    /// The sync host: the whole run is over, with the bridges it ended on.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Done(Vec<std::path::PathBuf>),
+}
+
+/// Whether this run plays through the sync host
+/// (`docs/resampling-rework-plan.md` §17): the hidden `--sync-engine` flag,
+/// or `ORENDER_SYNC_ENGINE` set to anything but empty or `0` (what reaches a
+/// renderer the Studio launches). Temporary, until the cutover.
+#[cfg(target_os = "linux")]
+fn sync_engine_requested(args: &RenderArgs) -> bool {
+    args.sync_engine
+        || std::env::var_os("ORENDER_SYNC_ENGINE").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// What the sync host is given for a `render` run: the source the config's
+/// `input_mode` names (the PipeWire sink on orender's clock, or the input
+/// pipe followed on its writer's), the latency target, the output device and
+/// the OSC server, as this run resolved them.
+///
+/// The engine itself reads the config file: layout, presentation and live
+/// options given as flags do not reach it yet, nor the output backends other
+/// than PipeWire (plan §17).
+#[cfg(target_os = "linux")]
+fn sync_host_config(
+    args: &RenderArgs,
+    render_cfg: &renderer::config::RenderConfig,
+    config_path: Option<&std::path::Path>,
+) -> Result<crate::cli::sync_host::HostConfig> {
+    use crate::cli::sync_host::{HostConfig, Source, resolve_target_latency_ms};
+    use renderer::config::InputModeConfig;
+
+    let backend = args.output_backend.or_else(OutputBackend::platform_default);
+    anyhow::ensure!(
+        backend == Some(OutputBackend::Pipewire),
+        "the sync engine only plays through PipeWire for now (output backend: {backend:?})"
+    );
+    let source = match render_cfg.input_mode_or_default() {
+        InputModeConfig::Pipewire => {
+            let live = render_cfg.live_input.as_ref();
+            Source::OwnSink {
+                node_name: live
+                    .and_then(|l| l.node.clone())
+                    .unwrap_or_else(|| super::live_input::DEFAULT_LIVE_BRIDGE_NODE.to_string()),
+                description: live.and_then(|l| l.description.clone()).unwrap_or_else(|| {
+                    super::live_input::DEFAULT_LIVE_BRIDGE_DESCRIPTION.to_string()
+                }),
+                session_priority: None,
+            }
+        }
+        InputModeConfig::Bridge => Source::Pipe {
+            path: args
+                .input
+                .clone()
+                .context("the sync engine needs an input pipe (INPUT, or render.input_pipe)")?,
+            drain: !args.no_drain_pipe,
+        },
+    };
+    Ok(HostConfig {
+        config_path: config_path.map(std::path::Path::to_path_buf),
+        bridge_paths: args.bridge_paths.clone(),
+        source,
+        target_latency_ms: resolve_target_latency_ms(None, args.latency_target_ms),
+        loop_bandwidth_hz: None,
+        output_target: args.output_device.clone(),
+        quantum: args.pw_quantum.unwrap_or(1024),
+        osc: orender_engine::OscSettings {
+            enabled: args.osc,
+            host: args.osc_host.clone(),
+            port_out: args.osc_port,
+            port_in: args.osc_rx_port,
+            metering: args.osc_metering,
+        },
+        seconds: None,
+        report_every: 0.0,
+    })
+}
+
+/// One `render` run on the sync host. Returns the bridges it ended on, as
+/// the legacy run does, for a restart from the config.
+#[cfg(target_os = "linux")]
+fn run_on_sync_host(
+    run: &ResolvedRun,
+    session: &mut crate::cli::sync_host::HostSession,
+) -> Result<Vec<std::path::PathBuf>> {
+    let config = sync_host_config(&run.args, &run.render_cfg, run.config_path.as_deref())?;
+    // Only the load is "bridge unavailable", as for the legacy host: with OSC
+    // on, the caller then idles with the error published instead of exiting.
+    let request = resolve_bridges(&run.args.bridge_paths, &[]).context(BridgeUnavailable)?;
+    load_bridges(&request).context(BridgeUnavailable)?;
+    let _shutdown = sys::shutdown::ShutdownHandle::install()?;
+    log::info!("Playing through the sync engine ({:?})", config.source);
+    Ok(crate::cli::sync_host::run(&config, session)?.bridge_paths)
+}
+
 /// Pre-flight OSC port negotiation, run BEFORE any config load of a render
 /// iteration: a yielded holder writes its live-state sidecar while still
 /// holding the port, and everything downstream (args fold, render-config
@@ -1292,6 +1391,8 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
     sys::shutdown::set_yieldable(args.osc_yield);
     sys::shutdown::set_restartable(true);
     let mut restart_bridge_path_override: Option<Vec<std::path::PathBuf>> = None;
+    #[cfg(target_os = "linux")]
+    let mut sync_session = crate::cli::sync_host::HostSession::default();
     loop {
         negotiate_osc_port_if_enabled(args, cli, arg_sources);
         let mut run = resolve_effective_decode_args(args, cli, arg_sources)?;
@@ -1304,8 +1405,18 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
         }
 
         let drc_mode = configured_drc_mode(&run.render_cfg);
-        let bridge_path_after_run = match prepare_render_run(&run.args, drc_mode) {
-            Ok(prepared) => run_prepared_render(prepared, &run)?,
+        #[cfg(target_os = "linux")]
+        let prepared = if sync_engine_requested(&run.args) {
+            run_on_sync_host(&run, &mut sync_session).map(RunOutcome::Done)
+        } else {
+            prepare_render_run(&run.args, drc_mode).map(|p| RunOutcome::Prepared(Box::new(p)))
+        };
+        #[cfg(not(target_os = "linux"))]
+        let prepared =
+            prepare_render_run(&run.args, drc_mode).map(|p| RunOutcome::Prepared(Box::new(p)));
+        let bridge_path_after_run = match prepared {
+            Ok(RunOutcome::Prepared(prepared)) => run_prepared_render(*prepared, &run)?,
+            Ok(RunOutcome::Done(bridge_paths)) => bridge_paths,
             Err(err) if run.args.osc && is_bridge_unavailable_error(&err) => {
                 run_idle_runtime(&run, &err)?
             }
@@ -1366,6 +1477,73 @@ mod tests {
             .err()
             .expect("missing input");
         assert!(!is_bridge_unavailable_error(&err), "{err:#}");
+    }
+
+    /// A `render` run on the sync host takes its source from the config's
+    /// input mode: the PipeWire sink under the configured name (orender's
+    /// clock), or the input pipe (its writer's clock); and its latency,
+    /// device and OSC server from what the run resolved.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_sync_host_is_given_what_the_render_run_resolved() {
+        use crate::cli::sync_host::Source;
+        let parse = |argv: &[&str]| match ParsedCli::parse_from(argv.iter().copied())
+            .expect("parse render args")
+            .cli
+            .command
+        {
+            Commands::Render(args) => args,
+            _ => unreachable!("render subcommand"),
+        };
+        let config = |yaml: &str| -> renderer::config::RenderConfig {
+            serde_yaml_ng::from_str(yaml).expect("render config")
+        };
+
+        let mut args = parse(&[
+            "orender",
+            "render",
+            "in.pipe",
+            "--osc",
+            "--osc-port",
+            "9123",
+        ]);
+        args.latency_target_ms = Some(80);
+        args.output_device = Some("dac".into());
+        let sink = sync_host_config(
+            &args,
+            &config("input_mode: pipewire\nlive_input:\n  node: my-sink\n"),
+            None,
+        )
+        .expect("a PipeWire run");
+        assert_eq!(
+            sink.source,
+            Source::OwnSink {
+                node_name: "my-sink".into(),
+                description: "Omniphony Bridge Input".into(),
+                session_priority: None,
+            }
+        );
+        assert_eq!(sink.target_latency_ms, 80.0);
+        assert_eq!(sink.output_target.as_deref(), Some("dac"));
+        assert!(sink.osc.enabled);
+        assert_eq!(sink.osc.port_out, 9123);
+
+        // No input mode is the pipe; no latency target is the host's default.
+        args.latency_target_ms = None;
+        let pipe = sync_host_config(&args, &config("{}"), None).expect("a pipe run");
+        assert_eq!(
+            pipe.source,
+            Source::Pipe {
+                path: "in.pipe".into(),
+                drain: true,
+            }
+        );
+        assert_eq!(pipe.target_latency_ms, 150.0);
+
+        // The other backends are not there yet: said, not played wrongly.
+        args.output_backend = Some(OutputBackend::File);
+        let err = sync_host_config(&args, &config("{}"), None).expect_err("file backend");
+        assert!(err.to_string().contains("PipeWire"), "{err:#}");
     }
 
     /// PipeWire input mode with the capture up: the requested mode, and the

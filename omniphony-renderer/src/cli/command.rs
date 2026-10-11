@@ -302,6 +302,13 @@ pub struct RenderArgs {
     #[arg(long)]
     pub no_drain_pipe: bool,
 
+    /// [LINUX ONLY] Play through the sync host (the resampling rework's
+    /// engine) instead of the legacy one. Also `ORENDER_SYNC_ENGINE=1`.
+    /// Temporary: gone at the cutover (docs/resampling-rework-plan.md §17).
+    #[cfg(target_os = "linux")]
+    #[arg(long, hide = true)]
+    pub sync_engine: bool,
+
     /// Output sample rate in Hz: option `output_sample_rate` (unset = the
     /// stream's).
     #[arg(skip)]

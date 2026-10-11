@@ -40,8 +40,8 @@ use std::time::Instant;
 const DEFAULT_LIVE_INPUT_CHANNELS: u16 = 8;
 const DEFAULT_LIVE_BRIDGE_CHANNELS: u16 = 2;
 const DEFAULT_LIVE_BRIDGE_SAMPLE_RATE_HZ: u32 = 192_000;
-const DEFAULT_LIVE_BRIDGE_NODE: &str = "omniphony";
-const DEFAULT_LIVE_BRIDGE_DESCRIPTION: &str = "Omniphony Bridge Input";
+pub(super) const DEFAULT_LIVE_BRIDGE_NODE: &str = "omniphony";
+pub(super) const DEFAULT_LIVE_BRIDGE_DESCRIPTION: &str = "Omniphony Bridge Input";
 #[cfg(target_os = "linux")]
 const LIVE_BRIDGE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 // Manager and requested/applied capture configuration.
